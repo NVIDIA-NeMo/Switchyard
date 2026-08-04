@@ -10,7 +10,7 @@
 //! in libsy's orchestration crate — so a client crate that depends only on the
 //! protocol can serve routed calls without pulling in the orchestrator.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -26,7 +26,7 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 /// while boxed sources preserve implementation-specific detail. `General` is the
 /// escape hatch for failures that do not fit a shared category.
 #[non_exhaustive]
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum LlmClientError {
     /// The request cannot be served as supplied.
     #[error("invalid request: {message}")]
@@ -108,6 +108,60 @@ pub enum LlmClientError {
     /// A string message. Useful in testing, but prefer adding variants over using this.
     #[error("{0}")]
     General(String),
+}
+
+impl fmt::Debug for LlmClientError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRequest { message } => formatter
+                .debug_struct("InvalidRequest")
+                .field("message", message)
+                .finish(),
+            Self::RequestTranslation(message) => formatter
+                .debug_tuple("RequestTranslation")
+                .field(message)
+                .finish(),
+            Self::RequestEncoding(message) => formatter
+                .debug_tuple("RequestEncoding")
+                .field(message)
+                .finish(),
+            Self::ResponseTranslation(message) => formatter
+                .debug_tuple("ResponseTranslation")
+                .field(message)
+                .finish(),
+            Self::Configuration { message } => formatter
+                .debug_struct("Configuration")
+                .field("message", message)
+                .finish(),
+            Self::Transport { source } => formatter
+                .debug_struct("Transport")
+                .field("source", source)
+                .finish(),
+            Self::Timeout { source } => formatter
+                .debug_struct("Timeout")
+                .field("source", source)
+                .finish(),
+            Self::ContextWindowExceeded { model, .. } => formatter
+                .debug_struct("ContextWindowExceeded")
+                .field("model", model)
+                .field("message", &"[REDACTED]")
+                .finish(),
+            Self::UpstreamHttp { status, .. } => formatter
+                .debug_struct("UpstreamHttp")
+                .field("status", status)
+                .field("body", &"[REDACTED]")
+                .finish(),
+            Self::InvalidResponse { source } => formatter
+                .debug_struct("InvalidResponse")
+                .field("source", source)
+                .finish(),
+            Self::Ffi { source } => formatter
+                .debug_struct("Ffi")
+                .field("source", source)
+                .finish(),
+            Self::General(message) => formatter.debug_tuple("General").field(message).finish(),
+        }
+    }
 }
 
 /// A decision/trace object produced by an algorithm.
@@ -199,5 +253,41 @@ pub trait RoutedLlmClient: Send + Sync {
         Err(LlmClientError::Configuration {
             message: "count_tokens is not supported by this client".to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LlmClientError;
+
+    #[test]
+    fn context_window_message_is_redacted_from_display_and_debug() {
+        let secret = "provider context-window details";
+        let error = LlmClientError::ContextWindowExceeded {
+            model: "provider/model".to_string(),
+            message: secret.to_string(),
+        };
+
+        assert!(!error.to_string().contains(secret));
+        let debug = format!("{error:?}");
+        assert!(!debug.contains(secret));
+        assert_eq!(
+            debug,
+            "ContextWindowExceeded { model: \"provider/model\", message: \"[REDACTED]\" }"
+        );
+    }
+
+    #[test]
+    fn upstream_http_body_is_redacted_from_display_and_debug() {
+        let secret = "provider error body";
+        let error = LlmClientError::UpstreamHttp {
+            status: 500,
+            body: secret.to_string(),
+        };
+
+        assert!(!error.to_string().contains(secret));
+        let debug = format!("{error:?}");
+        assert!(!debug.contains(secret));
+        assert_eq!(debug, "UpstreamHttp { status: 500, body: \"[REDACTED]\" }");
     }
 }
