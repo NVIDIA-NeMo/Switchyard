@@ -1107,6 +1107,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/rust_api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1321,9 +1349,9 @@ mechanical work. Which tier a turn defaults to depends on the picker you choose
 (<code>capable_first</code> or <code>efficient_first</code>); the signals then move individual turns
 off that default. You configure it with a single knob, <code>confidence_threshold</code>,
 plus an optional LLM classifier.</p>
-<p>If the selected backend hits a context-window overflow, the router retries once
-against <code>fallback_target_on_evict</code>; a second overflow surfaces a
-context-pool-exhausted error (see <a href="../../operations/context_window/">Context-Window Handling</a>).</p>
+<p>If the selected target exceeds its context window, the router tries the next
+eligible target until one succeeds or all configured targets have been tried. See
+<a href="../../operations/context_window/">Context-Window Handling</a>.</p>
 <h2 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
 <p>A coding agent's run moves through stages: early on it explores the codebase and
 recovers from errors, and later it settles into more mechanical implementation.
@@ -1395,9 +1423,8 @@ cheaper tier:</p>
 clears the threshold to escalate to capable.</p>
 <p>(If you add the optional classifier, sub-threshold turns go to it instead of
 staying on the default tier.)</p>
-<p><strong>Set <code>0.5</code> explicitly.</strong> It's the recommended starting point and what the
-example below uses. When you omit the field the native config default is <code>0.5</code>,
-but setting it explicitly keeps the intent clear.</p>
+<p><strong>Set <code>0.5</code> explicitly.</strong> <code>confidence_threshold</code> is required by the TOML schema;
+<code>0.5</code> is the recommended starting point and what the example below uses.</p>
 <table>
 <thead>
 <tr>
@@ -1415,7 +1442,7 @@ but setting it explicitly keeps the intent clear.</p>
 <tr>
 <td><code>0.5</code></td>
 <td>no</td>
-<td>Recommended starting point (config default). The scorer is corroborative — one full wrong signal scores ~<code>0.46</code>, just under <code>0.5</code> — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration.</td>
+<td>Recommended starting point. The scorer is corroborative — one full wrong signal scores ~<code>0.46</code>, just under <code>0.5</code> — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration.</td>
 </tr>
 <tr>
 <td><code>0.7</code> - <code>0.9</code></td>
@@ -1425,13 +1452,13 @@ but setting it explicitly keeps the intent clear.</p>
 <tr>
 <td><code>1.0</code></td>
 <td>yes (required)</td>
-<td>Classifier-driven; every undecided turn uses the classifier.</td>
+<td>Classifier-driven. Tool signals only apply hard overrides; other turns reach the classifier.</td>
 </tr>
 </tbody>
 </table>
 <p>The signal-vs-classifier split is dataset-dependent. Measure it in
-production via <code>routing_decisions.stage_router</code> on <code>/v1/stats</code> rather than relying on
-priors from this doc.</p>
+production: <code>/v1/stats</code> reports traffic by tier and model, while response headers
+and structured decision logs explain individual selections.</p>
 <h3 id="calibrating-the-threshold-from-run-data">Calibrating the threshold from run data<a class="headerlink" href="#calibrating-the-threshold-from-run-data" title="Permanent link">&para;</a></h3>
 <p>The recommended <code>0.5</code> starting point was derived from SWE-Bench Pro Python-75
 calibration. To tune for a different task set or model pair, follow this
@@ -1512,7 +1539,7 @@ quadrant candidates identified from those capable results.</p>
 <p>Replay your runs through the real Rust scorer and picker with
 <code>benchmark/score_staged_run.py</code> (the <code>switchyard-stage-router-scorer</code> skill). It emits
 per-turn scores and per-task routing splits at a given threshold and window —
-the actual <code>pick_capable_first</code> / <code>pick_efficient_first</code> decisions, not a
+the actual <code>capable_first</code> / <code>efficient_first</code> picker decisions, not a
 counterfactual:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Score a probe run at a candidate threshold</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>benchmark/score_staged_run.py<span class="w"> </span>--run<span class="w"> </span>benchmark/tb_runs/&lt;your_run&gt;<span class="w"> </span><span class="se">\</span>
@@ -1588,7 +1615,11 @@ that fall below the threshold:</p>
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span><span class="w">       </span><span class="c1"># p_solve floor to route efficient; below this → capable</span>
 </span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">min_confidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.7</span><span class="w">       </span><span class="c1"># judge confidence floor; below this → abstain</span>
 </span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">recent_turn_window</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="w">     </span><span class="c1"># conversation span the judge sees</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Estimate whether the efficient target can complete this request.&quot;</span>
 </span></code></pre></div>
+<p><code>prompt</code> replaces the packaged capability-classifier prompt. Add
+<code>{{RESPONSE_SCHEMA}}</code> where the active capability schema should appear in the
+prompt. The verdict schema and routing thresholds remain unchanged.</p>
 <p>Give the classifier its own LLM client or quota bucket where possible. Sharing
 one provider bucket with the efficient tier adds a request per classified turn
 and can cause sustained 429s at scale.</p>
@@ -1613,8 +1644,8 @@ and can cause sustained 429s at scale.</p>
 </tbody>
 </table>
 <h3 id="decision-sources">Decision sources<a class="headerlink" href="#decision-sources" title="Permanent link">&para;</a></h3>
-<p>The <code>decision_source</code> recorded internally for each turn explains why the routing
-went the way it did. It appears in per-tier metrics tagged on the decision:</p>
+<p>The router records an internal <code>decision_source</code> for each turn to distinguish the
+paths through its cascade:</p>
 <table>
 <thead>
 <tr>
@@ -1647,7 +1678,7 @@ went the way it did. It appears in per-tier metrics tagged on the decision:</p>
 </table>
 <h2 id="when-not-to-use-stage-router">When <em>not</em> to use stage-router<a class="headerlink" href="#when-not-to-use-stage-router" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Single-model deployments.</strong> Use a <code>model</code> route instead.</li>
+<li><strong>Single-model deployments.</strong> Use a <code>passthrough</code> route instead.</li>
 <li><strong>Probabilistic A/B splits.</strong> Use
   <a href="../random_routing/">Random Routing</a> (<code>type = "random"</code>).
   The stage-router's signals are wasted on a fixed traffic ratio.</li>
