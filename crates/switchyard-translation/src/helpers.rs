@@ -196,6 +196,7 @@ where
         source: Some(source_format.clone()),
         ..StreamTranslationState::default()
     };
+    let mut saw_anthropic_message_stop = false;
     let mut frame = String::new();
     let stream = Box::pin(try_stream! {
         futures::pin_mut!(lines);
@@ -210,6 +211,8 @@ where
                     sse::SseFrame::Empty => {}
                     sse::SseFrame::Done => break,
                     sse::SseFrame::Data(value) => {
+                        saw_anthropic_message_stop |= source == WireFormat::AnthropicMessages
+                            && value.get("type").and_then(Value::as_str) == Some("message_stop");
                         let normalized = codec.decode_event(&mut state, &value);
                         yield LlmResponseStreamEvent::preserved(
                             source_format.clone(),
@@ -231,9 +234,17 @@ where
             let parsed = sse::parse_json_sse_frame(&frame, marker)
                 .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
             if let sse::SseFrame::Data(value) = parsed {
+                saw_anthropic_message_stop |= source == WireFormat::AnthropicMessages
+                    && value.get("type").and_then(Value::as_str) == Some("message_stop");
                 let normalized = codec.decode_event(&mut state, &value);
                 yield LlmResponseStreamEvent::preserved(source_format, value, normalized);
             }
+        }
+
+        if source == WireFormat::AnthropicMessages && !saw_anthropic_message_stop {
+            Err(LlmClientError::ResponseTranslation(
+                "anthropic stream ended before message_stop".to_string(),
+            ))?;
         }
     });
     Ok(stream)
@@ -567,6 +578,31 @@ mod tests {
         let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
         let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
         assert_eq!(text_of(&chunks), "tail");
+        Ok(())
+    }
+
+    #[test]
+    fn anthropic_stream_without_message_stop_is_an_error() -> Result<(), BoxError> {
+        let sse = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\"}}\n\n".to_vec();
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
+        let decoded = decode_stream(bytes, WireFormat::AnthropicMessages)?;
+        let results = block_on(
+            encode_stream(decoded, WireFormat::AnthropicMessages, None)?.collect::<Vec<_>>(),
+        );
+
+        let Some(Err(error)) = results.last() else {
+            panic!("expected incomplete Anthropic stream to fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            "response translation failed: anthropic stream ended before message_stop"
+        );
+        assert!(
+            results
+                .iter()
+                .filter_map(|result| result.as_ref().ok())
+                .all(|event| event.get("type").and_then(Value::as_str) != Some("message_stop"))
+        );
         Ok(())
     }
 
