@@ -176,6 +176,7 @@ impl TranslatingLlmClient {
         // deliberately via `extra_body`.
         if matches!(backend, Backend::Anthropic(_)) {
             strip_anthropic_incompatible_fields(&mut body);
+            strip_unsigned_thinking_blocks(&mut body);
         }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
@@ -691,6 +692,58 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
         object.remove("reasoning_effort");
         object.remove("context_management");
     }
+}
+
+// Removes replayed `thinking` blocks that carry no signature.
+//
+// Anthropic requires signed thinking blocks on replay. A router can serve earlier
+// turns of a session from an OpenAI-format target whose thinking blocks are
+// unsigned, so the Anthropic leg must drop them or the upstream rejects the
+// request. Bedrock enforces this (surfacing as a SigV4 signature mismatch) where
+// Azure-hosted Anthropic currently does not. Mirrors `switchyard-components`'
+// `strip_unsigned_thinking_blocks`.
+fn strip_unsigned_thinking_blocks(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    let Some(Value::Array(messages)) = object.get_mut("messages") else {
+        return;
+    };
+    for message in messages {
+        strip_unsigned_thinking_from_message(message);
+    }
+}
+
+// Drops unsigned thinking blocks from one message, collapsing content that ends
+// up empty to an empty string so the message stays valid.
+fn strip_unsigned_thinking_from_message(message: &mut Value) {
+    let Value::Object(message) = message else {
+        return;
+    };
+    let Some(Value::Array(blocks)) = message.get("content") else {
+        return;
+    };
+    if !blocks.iter().any(is_unsigned_thinking_block) {
+        return;
+    }
+    let Some(Value::Array(blocks)) = message.get_mut("content") else {
+        return;
+    };
+    blocks.retain(|block| !is_unsigned_thinking_block(block));
+    if blocks.is_empty() {
+        message.insert("content".to_string(), Value::String(String::new()));
+    }
+}
+
+// A thinking block is unsigned when `signature` is absent or empty.
+fn is_unsigned_thinking_block(block: &Value) -> bool {
+    if block.get("type").and_then(Value::as_str) != Some("thinking") {
+        return false;
+    }
+    !matches!(
+        block.get("signature").and_then(Value::as_str),
+        Some(signature) if !signature.is_empty()
+    )
 }
 
 // Applies target defaults without overriding fields supplied by the caller.
@@ -1239,6 +1292,81 @@ mod tests {
                 None,
                 Some("gpt"),
                 WireFormat::OpenAiChat,
+            )
+            .await?;
+        Ok(())
+    }
+
+    // A weak OpenAI-format tier emits thinking blocks with no signature. Replaying
+    // them to Anthropic is rejected (Bedrock reports it as a SigV4 mismatch), so
+    // the Anthropic leg must drop them while keeping signed ones.
+    #[tokio::test]
+    async fn anthropic_requests_drop_unsigned_thinking_blocks()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let messages = body.get("messages").and_then(Value::as_array).cloned();
+                let Some(messages) = messages else {
+                    return false;
+                };
+                // The unsigned block is gone, the signed one survives, and the
+                // message whose only block was unsigned is not left with an empty
+                // content array.
+                let blocks: Vec<&Value> = messages
+                    .iter()
+                    .filter_map(|message| message.get("content"))
+                    .filter_map(Value::as_array)
+                    .flatten()
+                    .collect();
+                let thinking: Vec<&&Value> = blocks
+                    .iter()
+                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("thinking"))
+                    .collect();
+                thinking.len() == 1
+                    && thinking[0].get("signature").and_then(Value::as_str) == Some("sig-abc")
+                    && messages
+                        .iter()
+                        .all(|message| message.get("content") != Some(&json!([])))
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&anthropic_map(&server.uri()))?;
+        let raw = json!({
+            "model": "client-facing",
+            "max_tokens": 7,
+            "messages": [
+                {"role": "user", "content": "fix the build"},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "weak tier reasoning", "signature": ""}
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "signed reasoning", "signature": "sig-abc"},
+                    {"type": "text", "text": "here goes"}
+                ]},
+                {"role": "user", "content": "continue"}
+            ]
+        });
+
+        client
+            .call_rewrite_model_raw(
+                Context::default(),
+                raw,
+                None,
+                Some("claude"),
+                WireFormat::AnthropicMessages,
             )
             .await?;
         Ok(())
