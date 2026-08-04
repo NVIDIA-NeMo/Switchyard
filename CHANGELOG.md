@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Switchyard HTTP transport limits** — provider redirects are rejected,
+  connection and read-inactivity timeouts are enforced, buffered success and
+  error bodies are bounded, and oversized SSE events fail before unbounded line
+  buffering. Provider error bodies remain available in typed errors but are no
+  longer included in their default display text.
+
 ### Removed
 
 - **Latency-aware router** — the `latency_service` route type and its
