@@ -46,6 +46,7 @@ impl PyServer {
                     addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
                     backlog: DEFAULT_LISTEN_BACKLOG,
                     dry_run: false,
+                    shutdown_timeout: Duration::from_secs(2),
                     tls: None,
                 },
             )

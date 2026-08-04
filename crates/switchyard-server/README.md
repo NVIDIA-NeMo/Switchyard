@@ -58,6 +58,9 @@ export API_KEY="..."
 cargo run -p switchyard-server -- --config routes.toml
 ```
 
+Ctrl+C and Unix `SIGTERM` stop new connections and allow active requests to drain for up to
+`--shutdown-timeout` (30 seconds by default) before they are terminated.
+
 The server logs exactly one structured terminal event per LLM request: successful responses at
 `INFO`, 4xx responses at `WARN`, and 5xx responses at `ERROR`. Set
 `RUST_LOG=switchyard_server=debug,libsy=debug` to include routing decisions and nested failure

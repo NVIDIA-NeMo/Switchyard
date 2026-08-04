@@ -50,6 +50,9 @@ pub use observability::{flush_observability, initialize_observability};
 /// Default TCP listen backlog used by the Rust server.
 pub const DEFAULT_LISTEN_BACKLOG: u32 = 65_535;
 
+/// Default time allowed for active requests to finish during shutdown.
+pub const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Maximum buffered JSON request size accepted by the LLM endpoints.
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
@@ -214,6 +217,8 @@ pub struct ServerRunOptions {
     pub backlog: u32,
     /// Validate runtime construction without binding a socket.
     pub dry_run: bool,
+    /// Maximum time active requests may drain after shutdown begins.
+    pub shutdown_timeout: Duration,
     /// TLS certificate configuration, when HTTPS is enabled.
     pub tls: Option<TlsOptions>,
 }
@@ -276,10 +281,11 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> ServerResult<()> {
+        let shutdown_timeout = self.options.shutdown_timeout;
         if let Some(tls) = self.options.tls {
-            serve_tls(self.listener, self.router, tls, shutdown).await
+            serve_tls(self.listener, self.router, tls, shutdown_timeout, shutdown).await
         } else {
-            serve(self.listener, self.router, shutdown).await
+            serve(self.listener, self.router, shutdown_timeout, shutdown).await
         }
     }
 
@@ -292,6 +298,7 @@ async fn serve_tls(
     listener: TcpListener,
     router: Router,
     tls: TlsOptions,
+    shutdown_timeout: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> ServerResult<()> {
     if let Err(error) = rustls::crypto::aws_lc_rs::default_provider().install_default() {
@@ -302,31 +309,51 @@ async fn serve_tls(
         .await
         .map_err(server_io_error)?;
     let handle = axum_server::Handle::new();
-
-    let shutdown_handle = handle.clone();
-    tokio::spawn(async move {
-        shutdown.await;
-        shutdown_handle.graceful_shutdown(Some(Duration::from_secs(2)));
-    });
+    let shutdown_task = schedule_shutdown(handle.clone(), shutdown_timeout, shutdown);
 
     let std_listener = listener.into_std().map_err(server_io_error)?;
-    axum_server::from_tcp_rustls(std_listener, config)
+    let result = axum_server::from_tcp_rustls(std_listener, config)
         .map_err(server_io_error)?
         .handle(handle)
         .serve(router.into_make_service())
         .await
-        .map_err(server_io_error)
+        .map_err(server_io_error);
+    shutdown_task.abort();
+    result
 }
 
 async fn serve(
     listener: TcpListener,
     router: Router,
+    shutdown_timeout: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> ServerResult<()> {
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
+    let handle = axum_server::Handle::new();
+    let shutdown_task = schedule_shutdown(handle.clone(), shutdown_timeout, shutdown);
+    let std_listener = listener.into_std().map_err(server_io_error)?;
+    let result = axum_server::from_tcp(std_listener)
+        .map_err(server_io_error)?
+        .handle(handle)
+        .serve(router.into_make_service())
         .await
-        .map_err(server_io_error)
+        .map_err(server_io_error);
+    shutdown_task.abort();
+    result
+}
+
+fn schedule_shutdown(
+    handle: axum_server::Handle<SocketAddr>,
+    timeout: Duration,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> task::JoinHandle<()> {
+    tokio::spawn(async move {
+        shutdown.await;
+        tracing::info!(
+            ?timeout,
+            "shutdown signal received; draining active requests"
+        );
+        handle.graceful_shutdown(Some(timeout));
+    })
 }
 
 /// Ingress timestamp for one request, taken before any body is read.
@@ -412,6 +439,17 @@ fn server_io_error(error: std::io::Error) -> ServerError {
 }
 
 async fn shutdown_signal() {
+    #[cfg(unix)]
+    tokio::select! {
+        _ = ctrl_c_signal() => {},
+        _ = terminate_signal() => {},
+    }
+
+    #[cfg(not(unix))]
+    ctrl_c_signal().await;
+}
+
+async fn ctrl_c_signal() {
     if let Err(error) = tokio::signal::ctrl_c().await {
         tracing::warn!(
             error = %error,
@@ -419,6 +457,23 @@ async fn shutdown_signal() {
         );
         std::future::pending::<()>().await;
     }
+}
+
+#[cfg(unix)]
+async fn terminate_signal() {
+    let mut signal = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        Ok(signal) => signal,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "SIGTERM shutdown signal unavailable; continuing without SIGTERM trigger"
+            );
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+    signal.recv().await;
 }
 
 async fn openai_chat_completions(
@@ -1079,7 +1134,110 @@ fn endpoint_listing(has_routing_log: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::{Notify, oneshot};
+
     use super::*;
+
+    #[derive(Clone)]
+    struct ShutdownTestState {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    struct ShutdownTestServer {
+        state: ShutdownTestState,
+        shutdown: oneshot::Sender<()>,
+        server: task::JoinHandle<ServerResult<()>>,
+        request: task::JoinHandle<std::io::Result<Vec<u8>>>,
+    }
+
+    async fn blocked_request(State(state): State<ShutdownTestState>) -> &'static str {
+        state.started.notify_one();
+        state.release.notified().await;
+        "done"
+    }
+
+    async fn raw_request(addr: SocketAddr) -> std::io::Result<Vec<u8>> {
+        let mut stream = tokio::net::TcpStream::connect(addr).await?;
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await?;
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await?;
+        Ok(response)
+    }
+
+    fn shutdown_test_server(shutdown_timeout: Duration) -> ShutdownTestServer {
+        let state = ShutdownTestState {
+            started: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+        };
+        let router = Router::new()
+            .route("/", get(blocked_request))
+            .with_state(state.clone());
+        let listener = bind_tcp_listener("127.0.0.1:0".parse().expect("valid address"), 16)
+            .expect("listener binds");
+        let addr = listener.local_addr().expect("listener has an address");
+        let (shutdown, shutdown_receiver) = oneshot::channel();
+        let server = tokio::spawn(serve(listener, router, shutdown_timeout, async move {
+            let _ = shutdown_receiver.await;
+        }));
+        let request = tokio::spawn(raw_request(addr));
+        ShutdownTestServer {
+            state,
+            shutdown,
+            server,
+            request,
+        }
+    }
+
+    // Active requests may finish within the grace period, while stuck requests are bounded.
+    #[tokio::test]
+    async fn shutdown_drains_until_configured_deadline() {
+        let ShutdownTestServer {
+            state,
+            shutdown,
+            mut server,
+            request,
+        } = shutdown_test_server(Duration::from_secs(1));
+        state.started.notified().await;
+        shutdown.send(()).expect("server receives shutdown");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut server)
+                .await
+                .is_err(),
+            "server must wait for the active request"
+        );
+        state.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("server stops after request drains")
+            .expect("server task completes")
+            .expect("server exits cleanly");
+        let response = request
+            .await
+            .expect("request task completes")
+            .expect("request succeeds");
+        assert!(response.windows(8).any(|part| part == b"200 OK\r\n"));
+        assert!(response.ends_with(b"done"));
+
+        let ShutdownTestServer {
+            state,
+            shutdown,
+            server,
+            request,
+        } = shutdown_test_server(Duration::from_millis(25));
+        state.started.notified().await;
+        shutdown.send(()).expect("server receives shutdown");
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("shutdown deadline is enforced")
+            .expect("server task completes")
+            .expect("server exits cleanly");
+        state.release.notify_one();
+        request.abort();
+    }
 
     // Terminal request severity follows HTTP status instead of error-path bookkeeping.
     #[test]
