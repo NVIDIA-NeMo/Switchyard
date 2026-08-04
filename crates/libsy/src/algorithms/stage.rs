@@ -18,7 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::fall_through::{DefaultTarget, FallThrough};
-use super::llm_class::{LlmTaskClassifier, TaskClassifierConfig};
+use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
@@ -197,12 +197,12 @@ fn build_route(
         // The capability judge takes its tiers in the same order the capability
         // route passes them: efficient first, capable second.
         router = router.with_classifier(Arc::new(SourceStamp {
-            inner: Arc::new(LlmTaskClassifier::new(
-                fallback.judge_target,
-                efficient,
-                capable,
-                fallback.config,
-            )?),
+            inner: Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                judge_target: fallback.judge_target,
+                efficient_target: efficient,
+                capable_target: capable,
+                config: fallback.config,
+            })?),
             source: DecisionSource::LlmClassifier,
         }));
     }

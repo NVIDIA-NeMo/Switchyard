@@ -30,7 +30,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::StreamExt;
 use switchyard_libsy::{
-    Algorithm, LibsyError, LlmTarget, LlmTaskClassifier, Step, TaskClassifierConfig,
+    Algorithm, LibsyError, LlmClassifierConfig, LlmTarget, LlmTaskClassifier, Step,
+    TaskClassifierConfig,
 };
 use switchyard_protocol::{
     AggLlmResponse, ContentBlock, Context, Decision, LlmClientError, LlmRequest,
@@ -86,12 +87,14 @@ async fn main() -> switchyard_libsy::Result<()> {
     };
 
     let router: Arc<dyn Algorithm> = Arc::new(LlmTaskClassifier::new(
-        target("judge"),
-        target("efficient"),
-        target("capable"),
-        TaskClassifierConfig {
-            base_threshold: 0.5,
-            ..TaskClassifierConfig::default()
+        LlmClassifierConfig::Capability {
+            judge_target: target("judge"),
+            efficient_target: target("efficient"),
+            capable_target: target("capable"),
+            config: TaskClassifierConfig {
+                base_threshold: 0.5,
+                ..TaskClassifierConfig::default()
+            },
         },
     )?);
     let request = Request {

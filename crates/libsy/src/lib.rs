@@ -18,7 +18,8 @@ pub use error::{DriverError, LibsyError, Result};
 
 mod algorithms;
 pub use algorithms::llm_class::{
-    CustomClassifierConfig, CustomClassifierPolicy, LlmTaskClassifier, TaskClassifierConfig,
+    CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
+    TaskClassifierConfig,
 };
 pub use algorithms::noop::{Noop, NoopDecision};
 pub use algorithms::passthrough::{Passthrough, PassthroughDecision};

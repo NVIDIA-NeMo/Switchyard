@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use switchyard_libsy::{
-    Algorithm, LibsyError, LlmTarget, LlmTargetSet, LlmTaskClassifier, Result, TaskClassifierConfig,
+    Algorithm, LibsyError, LlmClassifierConfig, LlmTarget, LlmTargetSet, LlmTaskClassifier, Result,
+    TaskClassifierConfig,
 };
 use switchyard_protocol::{
     Context, Decision, LlmResponse, Request, Response, RoutedLlmClient, completion_text,
@@ -103,15 +104,16 @@ async fn main() -> Result<()> {
     let classifier = target_set.get_target(CLASSIFIER)?;
     let weak = target_set.get_target(WEAK)?;
     let strong = target_set.get_target(STRONG)?;
-    let algo: Arc<dyn Algorithm> = Arc::new(LlmTaskClassifier::new(
-        classifier,
-        weak,
-        strong,
-        TaskClassifierConfig {
-            base_threshold: BASE_THRESHOLD,
-            ..TaskClassifierConfig::default()
-        },
-    )?);
+    let algo: Arc<dyn Algorithm> =
+        Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+            judge_target: classifier,
+            efficient_target: weak,
+            capable_target: strong,
+            config: TaskClassifierConfig {
+                base_threshold: BASE_THRESHOLD,
+                ..TaskClassifierConfig::default()
+            },
+        })?);
 
     let agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);

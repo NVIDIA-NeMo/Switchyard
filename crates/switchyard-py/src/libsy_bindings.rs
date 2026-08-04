@@ -11,8 +11,8 @@ use pyo3::prelude::*;
 use serde_json::{Value, json};
 use switchyard_libsy::{
     Algorithm, ClassifierContractConfig, HandoffNoteConfig, LibsyError as RustLibsyError,
-    LlmFallback, LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, PickerMode, Random, StageRouter,
-    StageRouterConfig, TaskClassifierConfig,
+    LlmClassifierConfig, LlmFallback, LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, PickerMode,
+    Random, StageRouter, StageRouterConfig, TaskClassifierConfig,
 };
 use switchyard_protocol::{
     AggLlmResponse, Context, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
@@ -298,12 +298,12 @@ fn llm_task_classifier_algorithm(
     capable_target: Py<PyLlmTarget>,
     config: Py<PyTaskClassifierConfig>,
 ) -> PyResult<PyAlgorithm> {
-    let algorithm = LlmTaskClassifier::new(
-        judge_target.bind(py).try_borrow()?.clone_core(py),
-        efficient_target.bind(py).try_borrow()?.clone_core(py),
-        capable_target.bind(py).try_borrow()?.clone_core(py),
-        config.bind(py).try_borrow()?.clone_core(),
-    )
+    let algorithm = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+        judge_target: judge_target.bind(py).try_borrow()?.clone_core(py),
+        efficient_target: efficient_target.bind(py).try_borrow()?.clone_core(py),
+        capable_target: capable_target.bind(py).try_borrow()?.clone_core(py),
+        config: config.bind(py).try_borrow()?.clone_core(),
+    })
     .map_err(|error| PyValueError::new_err(error.to_string()))?;
     Ok(PyAlgorithm::new(Arc::new(algorithm)))
 }

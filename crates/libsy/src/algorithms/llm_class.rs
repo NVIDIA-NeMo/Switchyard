@@ -557,20 +557,88 @@ struct ClassifierRouteConfig {
     message_hash_fallback: bool,
 }
 
+/// Complete construction settings for one LLM classifier mode.
+#[non_exhaustive]
+pub enum LlmClassifierConfig {
+    /// Routes between efficient and capable targets from a task-level verdict.
+    Capability {
+        /// Target that produces classifier verdicts.
+        judge_target: LlmTarget,
+        /// Target used when the efficient tier can handle the task.
+        efficient_target: LlmTarget,
+        /// Target used when the task needs the capable tier.
+        capable_target: LlmTarget,
+        /// Capability classifier settings.
+        config: TaskClassifierConfig,
+    },
+    /// Judges efficient responses and escalates after a confirmed streak.
+    Escalation {
+        /// Target that produces escalation verdicts.
+        judge_target: LlmTarget,
+        /// Target called before each escalation decision.
+        efficient_target: LlmTarget,
+        /// Target used after escalation is confirmed.
+        capable_target: LlmTarget,
+        /// Prompt and verdict contract settings for the escalation judge.
+        contract: ClassifierContractConfig,
+        /// Escalation policy settings.
+        config: EscalationJudgeConfig,
+        /// Maximum completion tokens available to the escalation verdict.
+        max_output_tokens: u64,
+    },
+    /// Routes among named targets using a user-supplied schema and policy.
+    Custom {
+        /// Target that produces classifier verdicts.
+        judge_target: LlmTarget,
+        /// User-facing labels paired with their resolved routing targets.
+        targets: Vec<(String, LlmTarget)>,
+        /// Label selected when the judge does not produce a usable verdict.
+        default_target: String,
+        /// Custom classifier settings.
+        config: CustomClassifierConfig,
+    },
+}
+
 impl LlmTaskClassifier {
-    /// Builds task-level capability routing over `efficient_target` and `capable_target`.
-    ///
-    /// `judge_target` serves the classification call and is not itself a routing
-    /// destination. When enabled, session affinity runs before the judge and can
-    /// short-circuit it with a retained assignment.
+    /// Builds the classifier mode described by `config`.
     ///
     /// # Errors
     ///
-    /// Returns an error when thresholds are outside `[0, 1]`, the elevated floor is
-    /// not above the base threshold, the output-token budget is zero, message-hash
-    /// fallback is enabled without affinity, or the packaged judge prompt/schema
-    /// cannot be loaded.
-    pub fn new(
+    /// Returns an error when the selected mode's targets, contract, policy, or runtime
+    /// settings are invalid.
+    pub fn new(config: LlmClassifierConfig) -> Result<Self> {
+        match config {
+            LlmClassifierConfig::Capability {
+                judge_target,
+                efficient_target,
+                capable_target,
+                config,
+            } => Self::build_capability(judge_target, efficient_target, capable_target, config),
+            LlmClassifierConfig::Escalation {
+                judge_target,
+                efficient_target,
+                capable_target,
+                contract,
+                config,
+                max_output_tokens,
+            } => Self::build_escalation(
+                judge_target,
+                efficient_target,
+                capable_target,
+                contract,
+                config,
+                max_output_tokens,
+            ),
+            LlmClassifierConfig::Custom {
+                judge_target,
+                targets,
+                default_target,
+                config,
+            } => Self::build_custom(judge_target, targets, default_target, config),
+        }
+    }
+
+    fn build_capability(
         judge_target: LlmTarget,
         efficient_target: LlmTarget,
         capable_target: LlmTarget,
@@ -613,15 +681,10 @@ impl LlmTaskClassifier {
         )
     }
 
-    /// Builds routing over named targets using a user-supplied schema and policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the contract, targets, fallback, or runtime settings are invalid.
-    pub fn new_custom(
+    fn build_custom(
         judge_target: LlmTarget,
         targets: Vec<(String, LlmTarget)>,
-        default_target: &str,
+        default_target: String,
         config: CustomClassifierConfig,
     ) -> Result<Self> {
         config.validate()?;
@@ -660,7 +723,7 @@ impl LlmTaskClassifier {
         }
         let default_semantic_name =
             target_map
-                .get(default_target)
+                .get(&default_target)
                 .cloned()
                 .ok_or_else(|| LibsyError::AlgorithmError {
                     message: format!(
@@ -707,32 +770,7 @@ impl LlmTaskClassifier {
         )
     }
 
-    /// Constructs an escalation variant that calls the efficient model each turn, judges its
-    /// response, and latches to the capable tier once the streak confirms.
-    ///
-    /// Every unlatched turn calls the efficient model, buffers its reply, and consults the
-    /// trajectory judge. Once `config.confirmations` consecutive escalate verdicts accumulate
-    /// the session latches to the capable tier for its remainder. A judge outage always stays
-    /// efficient.
-    pub fn new_with_escalation(
-        judge_target: LlmTarget,
-        efficient_target: LlmTarget,
-        capable_target: LlmTarget,
-        config: EscalationJudgeConfig,
-        max_output_tokens: u64,
-    ) -> Result<Self> {
-        Self::new_with_escalation_contract(
-            judge_target,
-            efficient_target,
-            capable_target,
-            ClassifierContractConfig::default(),
-            config,
-            max_output_tokens,
-        )
-    }
-
-    /// Constructs an escalation variant with a configurable classifier contract.
-    pub fn new_with_escalation_contract(
+    fn build_escalation(
         judge_target: LlmTarget,
         efficient_target: LlmTarget,
         capable_target: LlmTarget,
@@ -1006,10 +1044,12 @@ mod tests {
             llm_client: Some(client.clone()),
         };
         Ok(Arc::new(LlmTaskClassifier::new(
-            target("judge"),
-            target("efficient"),
-            target("capable"),
-            test_config(TEST_THRESHOLD),
+            LlmClassifierConfig::Capability {
+                judge_target: target("judge"),
+                efficient_target: target("efficient"),
+                capable_target: target("capable"),
+                config: test_config(TEST_THRESHOLD),
+            },
         )?))
     }
 
@@ -1081,15 +1121,15 @@ mod tests {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
         };
-        let router = Arc::new(LlmTaskClassifier::new(
-            target("judge"),
-            target("efficient"),
-            target("capable"),
-            TaskClassifierConfig {
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+            judge_target: target("judge"),
+            efficient_target: target("efficient"),
+            capable_target: target("capable"),
+            config: TaskClassifierConfig {
                 max_output_tokens: 512,
                 ..test_config(TEST_THRESHOLD)
             },
-        )?);
+        })?);
 
         router.run(Context::default(), classify_request()).await?;
 
@@ -1104,16 +1144,16 @@ mod tests {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
         };
-        let router = Arc::new(LlmTaskClassifier::new(
-            target("judge"),
-            target("efficient"),
-            target("capable"),
-            TaskClassifierConfig {
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+            judge_target: target("judge"),
+            efficient_target: target("efficient"),
+            capable_target: target("capable"),
+            config: TaskClassifierConfig {
                 contract: ClassifierContractConfig::default()
                     .with_prompt("Custom capability rubric:\n{{RESPONSE_SCHEMA}}"),
                 ..test_config(TEST_THRESHOLD)
             },
-        )?);
+        })?);
 
         router.run(Context::default(), classify_request()).await?;
 
@@ -1132,15 +1172,15 @@ mod tests {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
         };
-        let router = Arc::new(LlmTaskClassifier::new(
-            target("judge"),
-            target("efficient"),
-            target("capable"),
-            TaskClassifierConfig {
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+            judge_target: target("judge"),
+            efficient_target: target("efficient"),
+            capable_target: target("capable"),
+            config: TaskClassifierConfig {
                 session_affinity: true,
                 ..test_config(TEST_THRESHOLD)
             },
-        )?);
+        })?);
 
         router
             .clone()
@@ -1162,17 +1202,17 @@ mod tests {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
         };
-        let router = Arc::new(LlmTaskClassifier::new(
-            target("judge"),
-            target("efficient"),
-            target("capable"),
-            TaskClassifierConfig {
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+            judge_target: target("judge"),
+            efficient_target: target("efficient"),
+            capable_target: target("capable"),
+            config: TaskClassifierConfig {
                 session_affinity: true,
                 message_hash_fallback: true,
                 recent_turn_window: None,
                 ..test_config(TEST_THRESHOLD)
             },
-        )?);
+        })?);
 
         router
             .clone()
@@ -1231,12 +1271,12 @@ mod tests {
         };
         for bad in [1.5, -0.1, f64::NAN, f64::INFINITY] {
             assert!(
-                LlmTaskClassifier::new(
-                    target("judge"),
-                    target("e"),
-                    target("c"),
-                    test_config(bad),
-                )
+                LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                    judge_target: target("judge"),
+                    efficient_target: target("e"),
+                    capable_target: target("c"),
+                    config: test_config(bad),
+                })
                 .is_err(),
                 "base threshold {bad} should be rejected"
             );
@@ -1264,11 +1304,23 @@ mod tests {
             },
         ] {
             assert!(
-                LlmTaskClassifier::new(target("judge"), target("e"), target("c"), config).is_err()
+                LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                    judge_target: target("judge"),
+                    efficient_target: target("e"),
+                    capable_target: target("c"),
+                    config,
+                })
+                .is_err()
             );
         }
-        LlmTaskClassifier::new(target("judge"), target("e"), target("c"), test_config(0.0))?;
-        LlmTaskClassifier::new(target("judge"), target("e"), target("c"), test_config(1.0))?;
+        for base_threshold in [0.0, 1.0] {
+            LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                judge_target: target("judge"),
+                efficient_target: target("e"),
+                capable_target: target("c"),
+                config: test_config(base_threshold),
+            })?;
+        }
         Ok(())
     }
 
@@ -1566,15 +1618,18 @@ mod tests {
             semantic_name: name.to_string(),
             llm_client: Some(c),
         };
-        Ok(Arc::new(LlmTaskClassifier::new_with_escalation(
-            target("judge", judge_client),
-            target("efficient", client.clone()),
-            target("capable", client),
-            EscalationJudgeConfig {
-                confirmations: 1,
-                ..EscalationJudgeConfig::default()
+        Ok(Arc::new(LlmTaskClassifier::new(
+            LlmClassifierConfig::Escalation {
+                judge_target: target("judge", judge_client),
+                efficient_target: target("efficient", client.clone()),
+                capable_target: target("capable", client),
+                contract: ClassifierContractConfig::default(),
+                config: EscalationJudgeConfig {
+                    confirmations: 1,
+                    ..EscalationJudgeConfig::default()
+                },
+                max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             },
-            DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         )?))
     }
 
@@ -1604,18 +1659,18 @@ mod tests {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
         };
-        let router = Arc::new(LlmTaskClassifier::new_with_escalation_contract(
-            target("judge"),
-            target("efficient"),
-            target("capable"),
-            ClassifierContractConfig::default()
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+            judge_target: target("judge"),
+            efficient_target: target("efficient"),
+            capable_target: target("capable"),
+            contract: ClassifierContractConfig::default()
                 .with_prompt("Custom trajectory rubric:\n{{RESPONSE_SCHEMA}}"),
-            EscalationJudgeConfig {
+            config: EscalationJudgeConfig {
                 confirmations: 1,
                 ..EscalationJudgeConfig::default()
             },
-            DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-        )?);
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+        })?);
 
         router.run(Context::default(), classify_request()).await?;
 

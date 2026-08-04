@@ -33,8 +33,8 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    Algorithm, Driver, LibsyError, LlmTarget, LlmTargetSet, LlmTaskClassifier, Step,
-    TaskClassifierConfig,
+    Algorithm, Driver, LibsyError, LlmClassifierConfig, LlmTarget, LlmTargetSet, LlmTaskClassifier,
+    Step, TaskClassifierConfig,
 };
 use switchyard_protocol::{
     Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
@@ -1040,15 +1040,15 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     let targets = LlmTargetSet::new(vec![target("weak"), target("strong")]);
     let weak = targets.get_target("weak")?;
     let strong = targets.get_target("strong")?;
-    let router = Arc::new(LlmTaskClassifier::new(
-        target("classifier"),
-        weak,
-        strong,
-        TaskClassifierConfig {
+    let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+        judge_target: target("classifier"),
+        efficient_target: weak,
+        capable_target: strong,
+        config: TaskClassifierConfig {
             base_threshold: 0.5,
             ..TaskClassifierConfig::default()
         },
-    )?);
+    })?);
 
     let (trace, _response) = router
         .run(

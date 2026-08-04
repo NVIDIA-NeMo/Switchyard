@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use libsy::{
     Algorithm, ClassifierContractConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    EscalationJudgeConfig, HandoffNoteConfig, LlmFallback, LlmTarget, LlmTargetSet,
-    LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter, StageRouterConfig,
-    TargetPrompts, TaskClassifierConfig,
+    EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTarget,
+    LlmTargetSet, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
+    StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -650,19 +650,24 @@ fn build_algorithm(
                         contract: classifier_contract(config.prompt.as_deref()),
                         max_output_tokens: config.max_output_tokens,
                     };
-                    LlmTaskClassifier::new(classifier, weak, strong, classifier_config)
+                    LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                        judge_target: classifier,
+                        efficient_target: weak,
+                        capable_target: strong,
+                        config: classifier_config,
+                    })
                 }
                 LlmClassifierModeConfig::Escalation(config) => {
                     let strong = resolve_target(route_name, &config.strong_target, targets)?;
                     let weak = resolve_target(route_name, &config.weak_target, targets)?;
-                    LlmTaskClassifier::new_with_escalation_contract(
-                        classifier,
-                        weak,
-                        strong,
-                        classifier_contract(config.prompt.as_deref()),
-                        config.judge,
-                        config.max_output_tokens,
-                    )
+                    LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+                        judge_target: classifier,
+                        efficient_target: weak,
+                        capable_target: strong,
+                        contract: classifier_contract(config.prompt.as_deref()),
+                        config: config.judge,
+                        max_output_tokens: config.max_output_tokens,
+                    })
                 }
                 LlmClassifierModeConfig::Custom(config) => {
                     let resolved_targets = config
@@ -689,12 +694,12 @@ fn build_algorithm(
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
                     classifier_config.max_output_tokens = config.max_output_tokens;
-                    LlmTaskClassifier::new_custom(
-                        classifier,
-                        resolved_targets,
-                        &config.default_target,
-                        classifier_config,
-                    )
+                    LlmTaskClassifier::new(LlmClassifierConfig::Custom {
+                        judge_target: classifier,
+                        targets: resolved_targets,
+                        default_target: config.default_target,
+                        config: classifier_config,
+                    })
                 }
             }
             .map_err(|error| {
