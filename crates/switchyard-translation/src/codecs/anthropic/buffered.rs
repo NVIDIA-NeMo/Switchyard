@@ -39,15 +39,17 @@ impl FormatCodec for AnthropicMessagesCodec {
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
         let mut diagnostics = Vec::new();
-        let max_output_tokens = match body.get("max_tokens") {
-            Some(value) => Some(value.as_u64().filter(|tokens| *tokens > 0).ok_or_else(|| {
-                TranslationError::InvalidValue {
-                    path: "$.max_tokens".to_string(),
-                    message: "expected a positive integer".to_string(),
-                }
-            })?),
-            None => None,
-        };
+        let max_output_tokens = body
+            .get("max_tokens")
+            .map(|value| {
+                value
+                    .as_u64()
+                    .ok_or_else(|| TranslationError::InvalidValue {
+                        path: "$.max_tokens".to_string(),
+                        message: "expected a non-negative integer".to_string(),
+                    })
+            })
+            .transpose()?;
         let mut request = LlmRequest {
             model: body
                 .get("model")
@@ -349,7 +351,7 @@ fn decode_anthropic_system(value: &Value) -> Result<Option<Vec<ContentBlock>>> {
         Value::String(text) if !text.is_empty() => {
             Ok(Some(vec![ContentBlock::Text { text: text.clone() }]))
         }
-        Value::String(_) => Ok(None),
+        Value::String(_) | Value::Null => Ok(None),
         Value::Array(blocks) => {
             let mut content = Vec::new();
             for block in blocks {

@@ -1112,13 +1112,13 @@ fn malformed_request_fields_are_rejected() {
             "Anthropic negative max_tokens",
             WireFormat::AnthropicMessages,
             json!({"model": "claude", "max_tokens": -1, "messages": []}),
-            "invalid value at $.max_tokens: expected a positive integer",
+            "invalid value at $.max_tokens: expected a non-negative integer",
         ),
         (
             "Anthropic string max_tokens",
             WireFormat::AnthropicMessages,
             json!({"model": "claude", "max_tokens": "8", "messages": []}),
-            "invalid value at $.max_tokens: expected a positive integer",
+            "invalid value at $.max_tokens: expected a non-negative integer",
         ),
         (
             "Responses boolean input",
@@ -1139,6 +1139,20 @@ fn malformed_request_fields_are_rejected() {
             Ok(_) => panic!("{case} should be rejected"),
             Err(error) => assert_eq!(error.to_string(), expected, "{case}"),
         }
+    }
+
+    let valid_empty_output = json!({
+        "model": "claude",
+        "max_tokens": 0,
+        "system": null,
+        "messages": []
+    });
+    if let Err(error) = engine.decode_request(
+        WireFormat::AnthropicMessages,
+        &valid_empty_output,
+        &TranslationPolicy::default(),
+    ) {
+        panic!("Anthropic null system and zero max_tokens should be accepted: {error}");
     }
 }
 
