@@ -5,7 +5,10 @@
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    ContentBlock, LossyConversionPolicy, PreservationPolicy, ToolChoice, TranslationEngine,
+    TranslationError, TranslationPolicy, WireFormat,
+};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -1404,5 +1407,188 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
             .iter()
             .any(|item| item["type"] == "function_call_output")
     );
+    Ok(())
+}
+
+// Valid provider-specific request forms retain their semantics in the IR.
+#[test]
+fn valid_provider_request_fidelity_is_preserved() -> TestResult {
+    let engine = TranslationEngine::default();
+
+    let responses = json!({
+        "model": "gpt-5",
+        "input": [{
+            "role": "user",
+            "content": [{"type": "input_text", "text": "easy input"}]
+        }],
+        "tool_choice": {"type": "web_search_preview"}
+    });
+    let decoded_responses = engine.decode_request(
+        WireFormat::OpenAiResponses,
+        &responses,
+        &TranslationPolicy::default(),
+    )?;
+    assert_eq!(decoded_responses.request.messages.len(), 1);
+    assert_eq!(
+        decoded_responses.request.messages[0].text_content(""),
+        Some("easy input".to_string())
+    );
+    assert_eq!(
+        decoded_responses.request.tool_choice,
+        Some(ToolChoice::Raw(json!({"type": "web_search_preview"})))
+    );
+
+    let anthropic = json!({
+        "model": "claude-sonnet",
+        "max_tokens": 64,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": [
+                    {"type": "text", "text": "found"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "aW1hZ2U="
+                        }
+                    },
+                    {
+                        "type": "document",
+                        "source": {"type": "file", "file_id": "file_1"}
+                    },
+                    {"type": "vendor_result", "data": {"kept": true}}
+                ]
+            }]
+        }]
+    });
+    let decoded_anthropic = engine.decode_request(
+        WireFormat::AnthropicMessages,
+        &anthropic,
+        &TranslationPolicy::default(),
+    )?;
+    let tool_result = decoded_anthropic.request.messages[0]
+        .content
+        .iter()
+        .find_map(|block| match block {
+            ContentBlock::ToolResult(result) => Some(result),
+            _ => None,
+        })
+        .ok_or("expected an Anthropic tool result")?;
+    assert!(matches!(tool_result.content[0], ContentBlock::Text { .. }));
+    assert!(matches!(tool_result.content[1], ContentBlock::Image { .. }));
+    assert!(matches!(tool_result.content[2], ContentBlock::File { .. }));
+    assert!(matches!(
+        tool_result.content[3],
+        ContentBlock::Unknown { .. }
+    ));
+
+    let no_preservation = TranslationPolicy {
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let replayed_anthropic = engine.encode_request(
+        WireFormat::AnthropicMessages,
+        &decoded_anthropic.request,
+        &no_preservation,
+    )?;
+    let replayed_blocks = replayed_anthropic.body["messages"][0]["content"][0]["content"]
+        .as_array()
+        .ok_or("rich tool-result content should remain an array")?;
+    assert_eq!(
+        replayed_blocks
+            .iter()
+            .map(|block| block["type"].as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            Some("text"),
+            Some("image"),
+            Some("document"),
+            Some("vendor_result")
+        ]
+    );
+
+    let openai_chat = json!({
+        "model": "gpt-4",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": null,
+                "function_call": {"name": "lookup", "arguments": "{\"q\":\"rust\"}"}
+            },
+            {
+                "role": "assistant",
+                "content": null,
+                "function_call": {"name": "legacy", "arguments": "{}"},
+                "tool_calls": [{
+                    "id": "call_modern",
+                    "type": "function",
+                    "function": {"name": "modern", "arguments": "{}"}
+                }]
+            }
+        ]
+    });
+    let decoded_chat = engine.decode_request(
+        WireFormat::OpenAiChat,
+        &openai_chat,
+        &TranslationPolicy::default(),
+    )?;
+    let legacy_call = decoded_chat.request.messages[0]
+        .content
+        .iter()
+        .find_map(|block| match block {
+            ContentBlock::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .ok_or("expected a legacy function call")?;
+    assert_eq!(legacy_call.id, "sw_00000001");
+    assert_eq!(legacy_call.name, "lookup");
+    assert_eq!(legacy_call.arguments, json!({"q": "rust"}));
+    assert!(
+        decoded_chat.request.messages[1]
+            .content
+            .iter()
+            .any(|block| {
+                matches!(block, ContentBlock::ToolCall(call) if call.name == "modern")
+            })
+    );
+    assert!(
+        !decoded_chat.request.messages[1]
+            .content
+            .iter()
+            .any(|block| {
+                matches!(block, ContentBlock::ToolCall(call) if call.name == "legacy")
+            })
+    );
+
+    let translated = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &anthropic,
+        &TranslationPolicy::default(),
+    )?;
+    assert!(
+        translated
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "lossy_conversion")
+    );
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+    assert!(matches!(
+        engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &anthropic,
+            &strict,
+        ),
+        Err(TranslationError::LossyConversion(_))
+    ));
+
     Ok(())
 }

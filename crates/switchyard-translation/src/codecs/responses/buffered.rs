@@ -301,7 +301,16 @@ fn decode_responses_input(
                     )?;
                     continue;
                 };
-                match item.get("type").and_then(Value::as_str) {
+                let item_type = item.get("type").and_then(Value::as_str);
+                let item_type = if item_type.is_none()
+                    && item.contains_key("role")
+                    && item.contains_key("content")
+                {
+                    Some("message")
+                } else {
+                    item_type
+                };
+                match item_type {
                     Some("message") => {
                         let role = request_role_from_responses(
                             item.get("role").and_then(Value::as_str),
@@ -794,7 +803,7 @@ fn decode_responses_tool_choice(value: &Value) -> Option<ToolChoice> {
                     name: name.to_string(),
                 })
         }
-        Value::Object(_) => None,
+        Value::Object(_) => Some(ToolChoice::Raw(value.clone())),
         _ => Some(ToolChoice::Raw(value.clone())),
     }
 }

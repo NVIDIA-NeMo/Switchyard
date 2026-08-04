@@ -5,7 +5,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::codecs::common::{is_known_role_name, provider_extensions, text_from_blocks};
+use crate::codecs::common::{is_known_role_name, provider_extensions};
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
@@ -425,7 +425,7 @@ fn decode_anthropic_content_block(
     block: &Map<String, Value>,
     _role: Role,
     generated_counter: usize,
-    _diagnostics: &mut Vec<TranslationDiagnostic>,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
 ) -> Result<Vec<ContentBlock>> {
     Ok(match block.get("type").and_then(Value::as_str) {
@@ -473,21 +473,21 @@ fn decode_anthropic_content_block(
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            content: decode_tool_result_content(block.get("content").unwrap_or(&Value::Null)),
+            content: decode_tool_result_content(
+                block.get("content").unwrap_or(&Value::Null),
+                generated_counter,
+                diagnostics,
+                policy,
+            )?,
             is_error: block.get("is_error").and_then(Value::as_bool),
         })],
-        Some("image") => {
-            let source = block
-                .get("source")
-                .cloned()
-                .map(ImageSource::Raw)
-                .unwrap_or_else(|| ImageSource::Raw(Value::Object(block.clone())));
-            vec![ContentBlock::Image { source }]
-        }
+        Some("image") => vec![ContentBlock::Image {
+            source: decode_anthropic_image_source(block),
+        }],
         Some("input_image") | Some("image_url") => decode_image_source(block)
             .map(|source| vec![ContentBlock::Image { source }])
             .unwrap_or_default(),
-        Some("input_file") | Some("file") => vec![ContentBlock::File {
+        Some("input_file") | Some("file") | Some("document") => vec![ContentBlock::File {
             source: decode_file_source(block),
         }],
         _ => vec![ContentBlock::Unknown {
@@ -497,37 +497,76 @@ fn decode_anthropic_content_block(
     })
 }
 
-// Converts Anthropic tool-result content into text-like IR blocks.
-fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
+// Normalizes Anthropic image sources while retaining unfamiliar block shapes.
+fn decode_anthropic_image_source(block: &Map<String, Value>) -> ImageSource {
+    let Some(source) = block.get("source").and_then(Value::as_object) else {
+        return ImageSource::Raw(Value::Object(block.clone()));
+    };
+    match source.get("type").and_then(Value::as_str) {
+        Some("base64") => source
+            .get("data")
+            .and_then(Value::as_str)
+            .map(|data| ImageSource::Base64 {
+                media_type: source
+                    .get("media_type")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                data: data.to_string(),
+            })
+            .unwrap_or_else(|| ImageSource::Raw(Value::Object(block.clone()))),
+        Some("url") => source
+            .get("url")
+            .and_then(Value::as_str)
+            .map(|url| ImageSource::Url {
+                url: url.to_string(),
+                detail: None,
+            })
+            .unwrap_or_else(|| ImageSource::Raw(Value::Object(block.clone()))),
+        _ => ImageSource::Raw(Value::Object(block.clone())),
+    }
+}
+
+// Decodes Anthropic tool-result content without flattening rich blocks.
+fn decode_tool_result_content(
+    value: &Value,
+    generated_counter: usize,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<ContentBlock>> {
     match value {
-        Value::String(text) => vec![ContentBlock::Text { text: text.clone() }],
+        Value::String(text) => Ok(vec![ContentBlock::Text { text: text.clone() }]),
         Value::Array(blocks) => {
-            let mut text = Vec::new();
-            for block in blocks {
-                if let Some(block) = block.as_object() {
-                    if block.get("type").and_then(Value::as_str) == Some("text") {
-                        text.push(
-                            block
-                                .get("text")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                        );
-                    } else {
-                        text.push(json_string(&Value::Object(block.clone())));
-                    }
-                }
+            let mut content = Vec::new();
+            for (index, block) in blocks.iter().enumerate() {
+                let Some(block) = block.as_object() else {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        format!("Anthropic tool-result content block {index} is not an object"),
+                    )?;
+                    continue;
+                };
+                content.extend(decode_anthropic_content_block(
+                    block,
+                    Role::User,
+                    generated_counter + index,
+                    diagnostics,
+                    policy,
+                )?);
             }
-            vec![ContentBlock::Text {
-                text: text.join(" "),
-            }]
+            if content.is_empty() {
+                content.push(ContentBlock::Text {
+                    text: String::new(),
+                });
+            }
+            Ok(content)
         }
-        Value::Null => vec![ContentBlock::Text {
+        Value::Null => Ok(vec![ContentBlock::Text {
             text: String::new(),
-        }],
-        other => vec![ContentBlock::Text {
+        }]),
+        other => Ok(vec![ContentBlock::Text {
             text: json_string(other),
-        }],
+        }]),
     }
 }
 
@@ -740,7 +779,7 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
         ContentBlock::ToolResult(result) => vec![json!({
             "type": "tool_result",
             "tool_use_id": sanitize_anthropic_tool_use_id(&result.tool_call_id),
-            "content": text_from_blocks(&result.content, " "),
+            "content": encode_anthropic_tool_result_content(&result.content),
         })],
         ContentBlock::Image { source } => vec![match source {
             ImageSource::Url { url, .. } => {
@@ -799,6 +838,25 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
             MediaSource::Raw(raw) => raw.clone(),
         }],
         ContentBlock::Unknown { raw, .. } => vec![raw.clone()],
+    }
+}
+
+// Preserves ordered rich blocks inside Anthropic tool results.
+fn encode_anthropic_tool_result_content(content: &[ContentBlock]) -> Value {
+    let blocks = content
+        .iter()
+        .flat_map(encode_one_anthropic_block)
+        .collect::<Vec<_>>();
+    if content.len() == 1
+        && let Some(text) = blocks
+            .first()
+            .and_then(Value::as_object)
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .and_then(|block| block.get("text"))
+    {
+        text.clone()
+    } else {
+        Value::Array(blocks)
     }
 }
 

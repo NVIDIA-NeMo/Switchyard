@@ -95,7 +95,10 @@ impl FormatCodec for OpenAiChatCodec {
                 )?;
                 prepend_openai_reasoning_blocks(&mut content, message);
                 if role == Role::Assistant
-                    && let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array)
+                    && let Some(tool_calls) = message
+                        .get("tool_calls")
+                        .and_then(Value::as_array)
+                        .filter(|tool_calls| !tool_calls.is_empty())
                 {
                     if is_empty_text_only(&content) {
                         content.clear();
@@ -107,6 +110,18 @@ impl FormatCodec for OpenAiChatCodec {
                         {
                             content.push(ContentBlock::ToolCall(call));
                         }
+                    }
+                } else if role == Role::Assistant
+                    && let Some(function_call) =
+                        message.get("function_call").and_then(Value::as_object)
+                {
+                    if is_empty_text_only(&content) {
+                        content.clear();
+                    }
+                    generated_id += 1;
+                    let tool_call = json!({"function": function_call});
+                    if let Some(call) = decode_openai_tool_call(&tool_call, generated_id, policy)? {
+                        content.push(ContentBlock::ToolCall(call));
                     }
                 }
                 if role == Role::Tool {
@@ -707,10 +722,11 @@ fn encode_message_with_tool_results_to_openai(
                 diagnostics,
                 policy,
             )?;
+            let content = encode_openai_tool_result_content(result, diagnostics, policy)?;
             out.push(json!({
                 "role": "tool",
                 "tool_call_id": result.tool_call_id,
-                "content": text_from_blocks(&result.content, " "),
+                "content": content,
             }));
         } else {
             pending_content.push(block.clone());
@@ -725,6 +741,27 @@ fn encode_message_with_tool_results_to_openai(
         policy,
     )?;
     Ok(out)
+}
+
+// Converts tool-result content to Chat's text-only tool message shape.
+fn encode_openai_tool_result_content(
+    result: &ToolResult,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<String> {
+    if result.content.iter().any(|block| {
+        !matches!(
+            block,
+            ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
+        )
+    }) {
+        push_lossy(
+            diagnostics,
+            policy,
+            "OpenAI Chat tool-result messages only support text content",
+        )?;
+    }
+    Ok(text_from_blocks(&result.content, " "))
 }
 
 // Flushes accumulated non-tool-result content as a normal OpenAI message.
