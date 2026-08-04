@@ -960,7 +960,49 @@ fn responses_deferred_message_stays_after_matching_tool_result_for_openai_chat()
     Ok(())
 }
 
-// Verifies Chat-compatible Responses extension fields survive translation.
+// Verifies Responses-compatible extension fields survive a Chat-to-Responses
+// hop, and that Chat-only fields are excluded rather than passed through.
+#[test]
+fn chat_compatible_extensions_survive_to_responses() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"trace": "abc"},
+        "parallel_tool_calls": false,
+        "prompt_cache_key": "session-1",
+        "prompt_cache_retention": "24h",
+        "safety_identifier": "safe-1",
+        "service_tier": "flex",
+        "store": false,
+        "stream_options": {"include_usage": true},
+        "top_logprobs": 2,
+        "user": "u-123"
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["metadata"], json!({"trace": "abc"}));
+    assert_eq!(output["parallel_tool_calls"], false);
+    assert_eq!(output["prompt_cache_key"], "session-1");
+    assert_eq!(output["prompt_cache_retention"], "24h");
+    assert_eq!(output["safety_identifier"], "safe-1");
+    assert_eq!(output["service_tier"], "flex");
+    assert_eq!(output["store"], false);
+    assert_eq!(output["user"], "u-123");
+    // Chat-only fields are not in the Responses allowlist, so they stay dropped.
+    assert!(output.get("stream_options").is_none());
+    assert!(output.get("top_logprobs").is_none());
+    Ok(())
+}
+
 #[test]
 fn responses_chat_compatible_extensions_survive_to_openai_chat() -> TestResult {
     let engine = TranslationEngine::default();
