@@ -148,12 +148,21 @@ impl Backend {
         self.config().max_retries
     }
 
-    /// Per-attempt request timeout, when one is configured.
+    /// Per-attempt request timeout, when a usable one is configured.
     ///
     /// Applies to each attempt rather than the call as a whole, so a call that
     /// exhausts its retry budget can take up to `(max_retries + 1)` times this.
+    ///
+    /// Validated here rather than trusted from the field: [`HttpBackendConfig`] is
+    /// public and constructible directly, so the server's config check is not the only
+    /// way a value can arrive. `Duration::from_secs_f64` panics on negative, NaN, and
+    /// infinite input, and a malformed timeout must not be able to abort a request — an
+    /// unusable value is therefore treated as no timeout, matching an omitted field.
     pub fn timeout(&self) -> Option<Duration> {
-        self.config().timeout_secs.map(Duration::from_secs_f64)
+        self.config()
+            .timeout_secs
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+            .map(Duration::from_secs_f64)
     }
 
     /// Whether this backend speaks the Anthropic Messages wire format — the only
@@ -284,6 +293,28 @@ mod tests {
         assert_eq!(
             Backend::Anthropic(config("https://host/v1/")).count_tokens_url(),
             "https://host/v1/messages/count_tokens"
+        );
+    }
+
+    #[test]
+    fn an_unusable_timeout_is_treated_as_no_timeout() {
+        // `HttpBackendConfig` is public, so the server's validation is not the only way
+        // a value arrives. None of these may panic a request.
+        for seconds in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.0] {
+            let mut inner = config("x");
+            inner.timeout_secs = Some(seconds);
+            assert_eq!(
+                Backend::OpenAiChat(inner).timeout(),
+                None,
+                "{seconds} must not configure a timeout"
+            );
+        }
+
+        let mut inner = config("x");
+        inner.timeout_secs = Some(1.5);
+        assert_eq!(
+            Backend::OpenAiChat(inner).timeout(),
+            Some(Duration::from_millis(1_500))
         );
     }
 
