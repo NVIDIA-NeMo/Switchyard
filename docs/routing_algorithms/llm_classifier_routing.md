@@ -69,6 +69,16 @@ An abstention, an invalid or unparseable verdict, a judge failure, or confidence
 below `min_confidence` routes to `strong_target`. Raising either threshold sends
 more traffic to the strong model.
 
+!!! note "Reasoning-model compatibility"
+
+    The verdict must be returned in normal assistant `content`. Some
+    model/provider pairs put it only in `reasoning_content`, which causes
+    fail-open routing. Where supported, a provider-specific override such as
+    `extra_body = { chat_template_kwargs = { enable_thinking = false } }` can
+    disable reasoning for the classifier target. Only use this override when
+    the provider supports it and the judge would otherwise return the verdict
+    outside normal `content`.
+
 ## Tuning options
 
 | Key | Default | Meaning |
