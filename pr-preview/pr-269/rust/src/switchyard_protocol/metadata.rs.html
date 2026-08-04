@@ -7,7 +7,7 @@
 <a href=#7 id=7 data-nosnippet>7</a>//! response. [`Metadata::from_headers`] normalizes host-specific HTTP headers into
 <a href=#8 id=8 data-nosnippet>8</a>//! that neutral shape.
 <a href=#9 id=9 data-nosnippet>9</a>
-<a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">use </span>std::collections::BTreeMap;
+<a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">use </span>std::{collections::BTreeMap, str::FromStr <span class="kw">as _</span>};
 <a href=#11 id=11 data-nosnippet>11</a>
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span><span class="kw">crate</span>::WireFormat;
 <a href=#13 id=13 data-nosnippet>13</a>
@@ -314,431 +314,287 @@
 <a href=#314 id=314 data-nosnippet>314</a>        <span class="prelude-val">Some</span>((name, rest)) =&gt; (name, <span class="prelude-val">Some</span>(rest)),
 <a href=#315 id=315 data-nosnippet>315</a>        <span class="prelude-val">None </span>=&gt; (path, <span class="prelude-val">None</span>),
 <a href=#316 id=316 data-nosnippet>316</a>    };
-<a href=#317 id=317 data-nosnippet>317</a>    <span class="kw">let </span>raw = headers
-<a href=#318 id=318 data-nosnippet>318</a>        .get(header_name)<span class="question-mark">?
-<a href=#319 id=319 data-nosnippet>319</a>        </span>.to_str()
-<a href=#320 id=320 data-nosnippet>320</a>        .ok()
-<a href=#321 id=321 data-nosnippet>321</a>        .map(|s| s.to_string())<span class="question-mark">?</span>;
-<a href=#322 id=322 data-nosnippet>322</a>
-<a href=#323 id=323 data-nosnippet>323</a>    <span class="comment">// A bare header name resolves to its value verbatim; no JSON parsing needed.
-<a href=#324 id=324 data-nosnippet>324</a>    </span><span class="kw">let </span><span class="prelude-val">Some</span>(nested) = nested <span class="kw">else </span>{
-<a href=#325 id=325 data-nosnippet>325</a>        <span class="kw">return </span><span class="prelude-val">Some</span>(raw);
-<a href=#326 id=326 data-nosnippet>326</a>    };
-<a href=#327 id=327 data-nosnippet>327</a>
-<a href=#328 id=328 data-nosnippet>328</a>    <span class="comment">// Nested path: parse the header value as JSON and descend key by key.
-<a href=#329 id=329 data-nosnippet>329</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>current: serde_json::Value = serde_json::from_str(<span class="kw-2">&amp;</span>raw).ok()<span class="question-mark">?</span>;
-<a href=#330 id=330 data-nosnippet>330</a>    <span class="kw">for </span>segment <span class="kw">in </span>nested.split(<span class="string">'.'</span>) {
-<a href=#331 id=331 data-nosnippet>331</a>        current = current.as_object()<span class="question-mark">?</span>.get(segment)<span class="question-mark">?</span>.clone();
-<a href=#332 id=332 data-nosnippet>332</a>    }
-<a href=#333 id=333 data-nosnippet>333</a>
-<a href=#334 id=334 data-nosnippet>334</a>    <span class="kw">match </span>current {
-<a href=#335 id=335 data-nosnippet>335</a>        serde_json::Value::String(s) =&gt; <span class="prelude-val">Some</span>(s),
-<a href=#336 id=336 data-nosnippet>336</a>        serde_json::Value::Null =&gt; <span class="prelude-val">None</span>,
-<a href=#337 id=337 data-nosnippet>337</a>        leaf =&gt; <span class="prelude-val">Some</span>(leaf.to_string()),
-<a href=#338 id=338 data-nosnippet>338</a>    }
-<a href=#339 id=339 data-nosnippet>339</a>}
-<a href=#340 id=340 data-nosnippet>340</a>
-<a href=#341 id=341 data-nosnippet>341</a><span class="kw">fn </span>header&lt;<span class="lifetime">'a</span>&gt;(headers: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>http::HeaderMap, key: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt; {
-<a href=#342 id=342 data-nosnippet>342</a>    <span class="kw">let </span>lower_key = key.to_ascii_lowercase();
-<a href=#343 id=343 data-nosnippet>343</a>    headers.get(<span class="kw-2">&amp;</span>lower_key).and_then(|s| s.to_str().ok())
-<a href=#344 id=344 data-nosnippet>344</a>}
-<a href=#345 id=345 data-nosnippet>345</a>
-<a href=#346 id=346 data-nosnippet>346</a><span class="attr">#[cfg(test)]
-<a href=#347 id=347 data-nosnippet>347</a></span><span class="kw">mod </span>tests {
-<a href=#348 id=348 data-nosnippet>348</a>    <span class="kw">use </span>std::collections::HashMap;
-<a href=#349 id=349 data-nosnippet>349</a>
-<a href=#350 id=350 data-nosnippet>350</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#351 id=351 data-nosnippet>351</a>
-<a href=#352 id=352 data-nosnippet>352</a>    <span class="doccomment">/// Header carrying Codex's structured turn metadata as a JSON object.
-<a href=#353 id=353 data-nosnippet>353</a>    </span><span class="kw">const </span>CODEX_TURN_METADATA_HEADER: <span class="kw-2">&amp;</span>str = <span class="string">"x-codex-turn-metadata"</span>;
-<a href=#354 id=354 data-nosnippet>354</a>
-<a href=#355 id=355 data-nosnippet>355</a>    <span class="attr">#[test]
-<a href=#356 id=356 data-nosnippet>356</a>    </span><span class="kw">fn </span>normalizes_codex_child_metadata() {
-<a href=#357 id=357 data-nosnippet>357</a>        <span class="kw">let </span>m = HashMap::from([(
-<a href=#358 id=358 data-nosnippet>358</a>            CODEX_TURN_METADATA_HEADER.to_string(),
-<a href=#359 id=359 data-nosnippet>359</a>            <span class="macro">serde_json::json!</span>({
-<a href=#360 id=360 data-nosnippet>360</a>                <span class="string">"session_id"</span>: <span class="string">"root-session"</span>,
-<a href=#361 id=361 data-nosnippet>361</a>                <span class="string">"thread_id"</span>: <span class="string">"child-agent"</span>,
-<a href=#362 id=362 data-nosnippet>362</a>                <span class="string">"parent_thread_id"</span>: <span class="string">"root-agent"</span>,
-<a href=#363 id=363 data-nosnippet>363</a>                <span class="string">"turn_id"</span>: <span class="string">"turn-7"</span>,
-<a href=#364 id=364 data-nosnippet>364</a>                <span class="string">"subagent_kind"</span>: <span class="string">"collab_spawn"</span>,
-<a href=#365 id=365 data-nosnippet>365</a>            })
-<a href=#366 id=366 data-nosnippet>366</a>            .to_string(),
-<a href=#367 id=367 data-nosnippet>367</a>        )]);
-<a href=#368 id=368 data-nosnippet>368</a>        <span class="kw">let </span>headers: http::HeaderMap = (<span class="kw-2">&amp;</span>m).try_into().unwrap();
-<a href=#369 id=369 data-nosnippet>369</a>
-<a href=#370 id=370 data-nosnippet>370</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>headers);
-<a href=#371 id=371 data-nosnippet>371</a>        <span class="macro">assert_eq!</span>(metadata.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"root-session"</span>));
-<a href=#372 id=372 data-nosnippet>372</a>        <span class="macro">assert_eq!</span>(metadata.agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"child-agent"</span>));
-<a href=#373 id=373 data-nosnippet>373</a>        <span class="macro">assert!</span>(metadata.is_subagent);
-<a href=#374 id=374 data-nosnippet>374</a>        <span class="macro">assert_eq!</span>(metadata.parent_agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"root-agent"</span>));
-<a href=#375 id=375 data-nosnippet>375</a>    }
-<a href=#376 id=376 data-nosnippet>376</a>
-<a href=#377 id=377 data-nosnippet>377</a>    <span class="attr">#[test]
-<a href=#378 id=378 data-nosnippet>378</a>    </span><span class="kw">fn </span>root_codex_metadata_is_not_inferred_as_a_subagent() {
-<a href=#379 id=379 data-nosnippet>379</a>        <span class="kw">let </span>headers = HashMap::from([(
-<a href=#380 id=380 data-nosnippet>380</a>            CODEX_TURN_METADATA_HEADER.to_string(),
-<a href=#381 id=381 data-nosnippet>381</a>            <span class="macro">serde_json::json!</span>({
-<a href=#382 id=382 data-nosnippet>382</a>                <span class="string">"session_id"</span>: <span class="string">"root-session"</span>,
-<a href=#383 id=383 data-nosnippet>383</a>                <span class="string">"thread_id"</span>: <span class="string">"root-agent"</span>,
-<a href=#384 id=384 data-nosnippet>384</a>                <span class="string">"turn_id"</span>: <span class="string">"turn-1"</span>,
-<a href=#385 id=385 data-nosnippet>385</a>            })
-<a href=#386 id=386 data-nosnippet>386</a>            .to_string(),
-<a href=#387 id=387 data-nosnippet>387</a>        )]);
-<a href=#388 id=388 data-nosnippet>388</a>
-<a href=#389 id=389 data-nosnippet>389</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#390 id=390 data-nosnippet>390</a>        <span class="macro">assert!</span>(!metadata.is_subagent);
-<a href=#391 id=391 data-nosnippet>391</a>    }
-<a href=#392 id=392 data-nosnippet>392</a>
-<a href=#393 id=393 data-nosnippet>393</a>    <span class="attr">#[test]
-<a href=#394 id=394 data-nosnippet>394</a>    </span><span class="kw">fn </span>codex_parent_thread_id_alone_is_not_a_subagent_signal() {
-<a href=#395 id=395 data-nosnippet>395</a>        <span class="comment">// Parent-thread-id is correlation data, not a routing signal. A Codex
-<a href=#396 id=396 data-nosnippet>396</a>        // turn that carries a parent thread id but no `x-openai-subagent` must
-<a href=#397 id=397 data-nosnippet>397</a>        // not be treated as sub-agent work.
-<a href=#398 id=398 data-nosnippet>398</a>        </span><span class="kw">let </span>headers = HashMap::from([(
-<a href=#399 id=399 data-nosnippet>399</a>            CODEX_TURN_METADATA_HEADER.to_string(),
-<a href=#400 id=400 data-nosnippet>400</a>            <span class="macro">serde_json::json!</span>({
-<a href=#401 id=401 data-nosnippet>401</a>                <span class="string">"session_id"</span>: <span class="string">"root-session"</span>,
-<a href=#402 id=402 data-nosnippet>402</a>                <span class="string">"thread_id"</span>: <span class="string">"child-thread"</span>,
-<a href=#403 id=403 data-nosnippet>403</a>                <span class="string">"parent_thread_id"</span>: <span class="string">"root-thread"</span>,
-<a href=#404 id=404 data-nosnippet>404</a>                <span class="string">"turn_id"</span>: <span class="string">"turn-3"</span>,
-<a href=#405 id=405 data-nosnippet>405</a>                <span class="comment">// no subagent_kind
-<a href=#406 id=406 data-nosnippet>406</a>            </span>})
-<a href=#407 id=407 data-nosnippet>407</a>            .to_string(),
-<a href=#408 id=408 data-nosnippet>408</a>        )]);
-<a href=#409 id=409 data-nosnippet>409</a>
-<a href=#410 id=410 data-nosnippet>410</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#411 id=411 data-nosnippet>411</a>        <span class="comment">// Parent id is still captured for observability.
-<a href=#412 id=412 data-nosnippet>412</a>        </span><span class="macro">assert_eq!</span>(metadata.parent_agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"root-thread"</span>));
-<a href=#413 id=413 data-nosnippet>413</a>        <span class="comment">// But it must not drive routing.
-<a href=#414 id=414 data-nosnippet>414</a>        </span><span class="macro">assert!</span>(!metadata.is_subagent);
-<a href=#415 id=415 data-nosnippet>415</a>        <span class="macro">assert!</span>(!metadata.is_subagent_work());
-<a href=#416 id=416 data-nosnippet>416</a>    }
-<a href=#417 id=417 data-nosnippet>417</a>
-<a href=#418 id=418 data-nosnippet>418</a>    <span class="attr">#[test]
-<a href=#419 id=419 data-nosnippet>419</a>    </span><span class="kw">fn </span>explicit_switchyard_subagent_flag_overrides_inference() {
-<a href=#420 id=420 data-nosnippet>420</a>        <span class="kw">let </span>headers = HashMap::from([
-<a href=#421 id=421 data-nosnippet>421</a>            (<span class="string">"x-switchyard-is-subagent"</span>.to_string(), <span class="string">"false"</span>.to_string()),
-<a href=#422 id=422 data-nosnippet>422</a>            (
-<a href=#423 id=423 data-nosnippet>423</a>                <span class="string">"x-switchyard-parent-agent-id"</span>.to_string(),
-<a href=#424 id=424 data-nosnippet>424</a>                <span class="string">"parent"</span>.to_string(),
-<a href=#425 id=425 data-nosnippet>425</a>            ),
-<a href=#426 id=426 data-nosnippet>426</a>        ]);
-<a href=#427 id=427 data-nosnippet>427</a>
-<a href=#428 id=428 data-nosnippet>428</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#429 id=429 data-nosnippet>429</a>        <span class="macro">assert!</span>(!metadata.is_subagent);
-<a href=#430 id=430 data-nosnippet>430</a>    }
-<a href=#431 id=431 data-nosnippet>431</a>
-<a href=#432 id=432 data-nosnippet>432</a>    <span class="attr">#[test]
-<a href=#433 id=433 data-nosnippet>433</a>    </span><span class="kw">fn </span>normalizes_claude_code_session_header() {
-<a href=#434 id=434 data-nosnippet>434</a>        <span class="comment">// Claude Code identifies a session with `x-claude-code-session-id`; session
-<a href=#435 id=435 data-nosnippet>435</a>        // affinity keys on it so a whole CLI session pins to one tier.
-<a href=#436 id=436 data-nosnippet>436</a>        </span><span class="kw">let </span>headers = HashMap::from([(
-<a href=#437 id=437 data-nosnippet>437</a>            <span class="string">"x-claude-code-session-id"</span>.to_string(),
-<a href=#438 id=438 data-nosnippet>438</a>            <span class="string">"fb46caae-eac6-4f5f-83fd-8fc8f5743abb"</span>.to_string(),
-<a href=#439 id=439 data-nosnippet>439</a>        )]);
-<a href=#440 id=440 data-nosnippet>440</a>
-<a href=#441 id=441 data-nosnippet>441</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#442 id=442 data-nosnippet>442</a>        <span class="macro">assert_eq!</span>(
-<a href=#443 id=443 data-nosnippet>443</a>            metadata.session_id.as_deref(),
-<a href=#444 id=444 data-nosnippet>444</a>            <span class="prelude-val">Some</span>(<span class="string">"fb46caae-eac6-4f5f-83fd-8fc8f5743abb"</span>)
-<a href=#445 id=445 data-nosnippet>445</a>        );
-<a href=#446 id=446 data-nosnippet>446</a>    }
-<a href=#447 id=447 data-nosnippet>447</a>
-<a href=#448 id=448 data-nosnippet>448</a>    <span class="attr">#[test]
-<a href=#449 id=449 data-nosnippet>449</a>    </span><span class="kw">fn </span>normalizes_relay_and_dynamo_child_headers() {
-<a href=#450 id=450 data-nosnippet>450</a>        <span class="comment">// Integrating-host headers are correlation data, not routing signals.
-<a href=#451 id=451 data-nosnippet>451</a>        // They populate observability fields but must not trigger sub-agent routing.
-<a href=#452 id=452 data-nosnippet>452</a>        </span><span class="kw">let </span>headers = HashMap::from([
-<a href=#453 id=453 data-nosnippet>453</a>            (
-<a href=#454 id=454 data-nosnippet>454</a>                <span class="string">"x-nemo-relay-session-id"</span>.to_string(),
-<a href=#455 id=455 data-nosnippet>455</a>                <span class="string">"relay-session"</span>.to_string(),
-<a href=#456 id=456 data-nosnippet>456</a>            ),
-<a href=#457 id=457 data-nosnippet>457</a>            (
-<a href=#458 id=458 data-nosnippet>458</a>                <span class="string">"x-nemo-relay-subagent-id"</span>.to_string(),
-<a href=#459 id=459 data-nosnippet>459</a>                <span class="string">"relay-child"</span>.to_string(),
-<a href=#460 id=460 data-nosnippet>460</a>            ),
-<a href=#461 id=461 data-nosnippet>461</a>            (
-<a href=#462 id=462 data-nosnippet>462</a>                <span class="string">"x-dynamo-parent-session-id"</span>.to_string(),
-<a href=#463 id=463 data-nosnippet>463</a>                <span class="string">"relay-parent"</span>.to_string(),
-<a href=#464 id=464 data-nosnippet>464</a>            ),
-<a href=#465 id=465 data-nosnippet>465</a>        ]);
-<a href=#466 id=466 data-nosnippet>466</a>
-<a href=#467 id=467 data-nosnippet>467</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#468 id=468 data-nosnippet>468</a>        <span class="macro">assert_eq!</span>(metadata.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"relay-session"</span>));
-<a href=#469 id=469 data-nosnippet>469</a>        <span class="macro">assert_eq!</span>(metadata.agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"relay-child"</span>));
-<a href=#470 id=470 data-nosnippet>470</a>        <span class="macro">assert_eq!</span>(metadata.parent_agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"relay-parent"</span>));
-<a href=#471 id=471 data-nosnippet>471</a>        <span class="macro">assert!</span>(!metadata.is_subagent);
-<a href=#472 id=472 data-nosnippet>472</a>        <span class="macro">assert!</span>(!metadata.is_subagent_work());
-<a href=#473 id=473 data-nosnippet>473</a>    }
-<a href=#474 id=474 data-nosnippet>474</a>
-<a href=#475 id=475 data-nosnippet>475</a>    <span class="attr">#[test]
-<a href=#476 id=476 data-nosnippet>476</a>    </span><span class="kw">fn </span>claude_code_agent_lineage_marks_subagent_and_infers_parent() {
-<a href=#477 id=477 data-nosnippet>477</a>        <span class="comment">// Any non-empty agent id is a child agent. Without an explicit parent
-<a href=#478 id=478 data-nosnippet>478</a>        // header the parent is inferred to be the session it was spawned under.
-<a href=#479 id=479 data-nosnippet>479</a>        </span><span class="kw">let </span>headers = HashMap::from([
-<a href=#480 id=480 data-nosnippet>480</a>            (
-<a href=#481 id=481 data-nosnippet>481</a>                <span class="string">"x-claude-code-session-id"</span>.to_string(),
-<a href=#482 id=482 data-nosnippet>482</a>                <span class="string">"claude-session"</span>.to_string(),
-<a href=#483 id=483 data-nosnippet>483</a>            ),
-<a href=#484 id=484 data-nosnippet>484</a>            (
-<a href=#485 id=485 data-nosnippet>485</a>                <span class="string">"x-claude-code-agent-id"</span>.to_string(),
-<a href=#486 id=486 data-nosnippet>486</a>                <span class="string">"claude-agent"</span>.to_string(),
-<a href=#487 id=487 data-nosnippet>487</a>            ),
-<a href=#488 id=488 data-nosnippet>488</a>        ]);
-<a href=#489 id=489 data-nosnippet>489</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#490 id=490 data-nosnippet>490</a>        <span class="macro">assert_eq!</span>(metadata.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"claude-session"</span>));
-<a href=#491 id=491 data-nosnippet>491</a>        <span class="macro">assert_eq!</span>(metadata.agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"claude-agent"</span>));
-<a href=#492 id=492 data-nosnippet>492</a>        <span class="macro">assert!</span>(metadata.is_subagent);
-<a href=#493 id=493 data-nosnippet>493</a>        <span class="macro">assert_eq!</span>(metadata.parent_agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"claude-session"</span>));
-<a href=#494 id=494 data-nosnippet>494</a>    }
+<a href=#317 id=317 data-nosnippet>317</a>    <span class="kw">let </span>raw = headers.get(header_name)<span class="question-mark">?</span>.to_str().ok().map(|s| s.trim())<span class="question-mark">?</span>;
+<a href=#318 id=318 data-nosnippet>318</a>    <span class="kw">if </span>raw.is_empty() {
+<a href=#319 id=319 data-nosnippet>319</a>        <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#320 id=320 data-nosnippet>320</a>    }
+<a href=#321 id=321 data-nosnippet>321</a>
+<a href=#322 id=322 data-nosnippet>322</a>    <span class="comment">// A bare header name resolves to its value verbatim; no JSON parsing needed.
+<a href=#323 id=323 data-nosnippet>323</a>    </span><span class="kw">let </span><span class="prelude-val">Some</span>(nested) = nested <span class="kw">else </span>{
+<a href=#324 id=324 data-nosnippet>324</a>        <span class="kw">return </span><span class="prelude-val">Some</span>(raw.to_string());
+<a href=#325 id=325 data-nosnippet>325</a>    };
+<a href=#326 id=326 data-nosnippet>326</a>
+<a href=#327 id=327 data-nosnippet>327</a>    <span class="comment">// Nested path: parse the header value as JSON and descend key by key.
+<a href=#328 id=328 data-nosnippet>328</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>current: serde_json::Value = serde_json::from_str(raw).ok()<span class="question-mark">?</span>;
+<a href=#329 id=329 data-nosnippet>329</a>    <span class="kw">for </span>segment <span class="kw">in </span>nested.split(<span class="string">'.'</span>) {
+<a href=#330 id=330 data-nosnippet>330</a>        current = current.as_object()<span class="question-mark">?</span>.get(segment)<span class="question-mark">?</span>.clone();
+<a href=#331 id=331 data-nosnippet>331</a>    }
+<a href=#332 id=332 data-nosnippet>332</a>
+<a href=#333 id=333 data-nosnippet>333</a>    <span class="kw">match </span>current {
+<a href=#334 id=334 data-nosnippet>334</a>        serde_json::Value::String(s) =&gt; <span class="prelude-val">Some</span>(s),
+<a href=#335 id=335 data-nosnippet>335</a>        serde_json::Value::Null =&gt; <span class="prelude-val">None</span>,
+<a href=#336 id=336 data-nosnippet>336</a>        leaf =&gt; <span class="prelude-val">Some</span>(leaf.to_string()),
+<a href=#337 id=337 data-nosnippet>337</a>    }
+<a href=#338 id=338 data-nosnippet>338</a>}
+<a href=#339 id=339 data-nosnippet>339</a>
+<a href=#340 id=340 data-nosnippet>340</a><span class="kw">fn </span>header&lt;<span class="lifetime">'a</span>&gt;(headers: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>http::HeaderMap, key: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt; {
+<a href=#341 id=341 data-nosnippet>341</a>    headers
+<a href=#342 id=342 data-nosnippet>342</a>        .get(key)
+<a href=#343 id=343 data-nosnippet>343</a>        .and_then(|s| s.to_str().ok())
+<a href=#344 id=344 data-nosnippet>344</a>        .map(str::trim)
+<a href=#345 id=345 data-nosnippet>345</a>        .filter(|s| !s.is_empty())
+<a href=#346 id=346 data-nosnippet>346</a>}
+<a href=#347 id=347 data-nosnippet>347</a>
+<a href=#348 id=348 data-nosnippet>348</a><span class="doccomment">/// Utility to convert a slice of string pairs into an `http::HeaderMap`.
+<a href=#349 id=349 data-nosnippet>349</a></span><span class="kw">pub fn </span>slice_to_header_map(sl: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str)]) -&gt; http::HeaderMap {
+<a href=#350 id=350 data-nosnippet>350</a>    <span class="kw">let </span><span class="kw-2">mut </span>m = http::HeaderMap::with_capacity(sl.len());
+<a href=#351 id=351 data-nosnippet>351</a>    <span class="kw">for </span>(k, v) <span class="kw">in </span>sl {
+<a href=#352 id=352 data-nosnippet>352</a>        m.insert(
+<a href=#353 id=353 data-nosnippet>353</a>            http::HeaderName::from_str(k).unwrap(),
+<a href=#354 id=354 data-nosnippet>354</a>            (<span class="kw-2">*</span>v).try_into().unwrap(),
+<a href=#355 id=355 data-nosnippet>355</a>        );
+<a href=#356 id=356 data-nosnippet>356</a>    }
+<a href=#357 id=357 data-nosnippet>357</a>    m
+<a href=#358 id=358 data-nosnippet>358</a>}
+<a href=#359 id=359 data-nosnippet>359</a>
+<a href=#360 id=360 data-nosnippet>360</a><span class="attr">#[cfg(test)]
+<a href=#361 id=361 data-nosnippet>361</a></span><span class="kw">mod </span>tests {
+<a href=#362 id=362 data-nosnippet>362</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#363 id=363 data-nosnippet>363</a>
+<a href=#364 id=364 data-nosnippet>364</a>    <span class="doccomment">/// Header carrying Codex's structured turn metadata as a JSON object.
+<a href=#365 id=365 data-nosnippet>365</a>    </span><span class="kw">const </span>CODEX_TURN_METADATA_HEADER: <span class="kw-2">&amp;</span>str = <span class="string">"x-codex-turn-metadata"</span>;
+<a href=#366 id=366 data-nosnippet>366</a>
+<a href=#367 id=367 data-nosnippet>367</a>    <span class="kw">fn </span>metadata(headers: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str)]) -&gt; Metadata {
+<a href=#368 id=368 data-nosnippet>368</a>        Metadata::from_headers(<span class="kw-2">&amp;</span>slice_to_header_map(headers))
+<a href=#369 id=369 data-nosnippet>369</a>    }
+<a href=#370 id=370 data-nosnippet>370</a>
+<a href=#371 id=371 data-nosnippet>371</a>    <span class="attr">#[test]
+<a href=#372 id=372 data-nosnippet>372</a>    </span><span class="kw">fn </span>normalizes_codex_metadata_and_lineage() {
+<a href=#373 id=373 data-nosnippet>373</a>        <span class="kw">let </span>child_body = <span class="macro">serde_json::json!</span>({
+<a href=#374 id=374 data-nosnippet>374</a>            <span class="string">"session_id"</span>: <span class="string">"root-session"</span>,
+<a href=#375 id=375 data-nosnippet>375</a>            <span class="string">"thread_id"</span>: <span class="string">"child-agent"</span>,
+<a href=#376 id=376 data-nosnippet>376</a>            <span class="string">"parent_thread_id"</span>: <span class="string">"root-agent"</span>,
+<a href=#377 id=377 data-nosnippet>377</a>            <span class="string">"turn_id"</span>: <span class="string">"turn-7"</span>,
+<a href=#378 id=378 data-nosnippet>378</a>            <span class="string">"subagent_kind"</span>: <span class="string">"collab_spawn"</span>,
+<a href=#379 id=379 data-nosnippet>379</a>        })
+<a href=#380 id=380 data-nosnippet>380</a>        .to_string();
+<a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">let </span>child = metadata(<span class="kw-2">&amp;</span>[(CODEX_TURN_METADATA_HEADER, child_body.as_str())]);
+<a href=#382 id=382 data-nosnippet>382</a>        <span class="macro">assert_eq!</span>(child.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"root-session"</span>));
+<a href=#383 id=383 data-nosnippet>383</a>        <span class="macro">assert_eq!</span>(child.agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"child-agent"</span>));
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="macro">assert_eq!</span>(child.parent_agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"root-agent"</span>));
+<a href=#385 id=385 data-nosnippet>385</a>        <span class="macro">assert!</span>(child.is_subagent);
+<a href=#386 id=386 data-nosnippet>386</a>
+<a href=#387 id=387 data-nosnippet>387</a>        <span class="kw">let </span>root_body = <span class="macro">serde_json::json!</span>({
+<a href=#388 id=388 data-nosnippet>388</a>            <span class="string">"session_id"</span>: <span class="string">"root-session"</span>,
+<a href=#389 id=389 data-nosnippet>389</a>            <span class="string">"thread_id"</span>: <span class="string">"root-agent"</span>,
+<a href=#390 id=390 data-nosnippet>390</a>            <span class="string">"turn_id"</span>: <span class="string">"turn-1"</span>,
+<a href=#391 id=391 data-nosnippet>391</a>        })
+<a href=#392 id=392 data-nosnippet>392</a>        .to_string();
+<a href=#393 id=393 data-nosnippet>393</a>        <span class="kw">let </span>root = metadata(<span class="kw-2">&amp;</span>[(CODEX_TURN_METADATA_HEADER, root_body.as_str())]);
+<a href=#394 id=394 data-nosnippet>394</a>        <span class="macro">assert!</span>(!root.is_subagent);
+<a href=#395 id=395 data-nosnippet>395</a>
+<a href=#396 id=396 data-nosnippet>396</a>        <span class="comment">// Parent-thread-id is correlation data, not a routing signal. A Codex
+<a href=#397 id=397 data-nosnippet>397</a>        // turn that carries a parent thread id but no `x-openai-subagent` must
+<a href=#398 id=398 data-nosnippet>398</a>        // not be treated as sub-agent work.
+<a href=#399 id=399 data-nosnippet>399</a>        </span><span class="kw">let </span>correlated_body = <span class="macro">serde_json::json!</span>({
+<a href=#400 id=400 data-nosnippet>400</a>            <span class="string">"session_id"</span>: <span class="string">"root-session"</span>,
+<a href=#401 id=401 data-nosnippet>401</a>            <span class="string">"thread_id"</span>: <span class="string">"child-thread"</span>,
+<a href=#402 id=402 data-nosnippet>402</a>            <span class="string">"parent_thread_id"</span>: <span class="string">"root-thread"</span>,
+<a href=#403 id=403 data-nosnippet>403</a>            <span class="string">"turn_id"</span>: <span class="string">"turn-3"</span>,
+<a href=#404 id=404 data-nosnippet>404</a>        })
+<a href=#405 id=405 data-nosnippet>405</a>        .to_string();
+<a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">let </span>correlated = metadata(<span class="kw-2">&amp;</span>[(CODEX_TURN_METADATA_HEADER, correlated_body.as_str())]);
+<a href=#407 id=407 data-nosnippet>407</a>        <span class="macro">assert_eq!</span>(correlated.parent_agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"root-thread"</span>));
+<a href=#408 id=408 data-nosnippet>408</a>        <span class="macro">assert!</span>(!correlated.is_subagent);
+<a href=#409 id=409 data-nosnippet>409</a>        <span class="macro">assert!</span>(!correlated.is_subagent_work());
+<a href=#410 id=410 data-nosnippet>410</a>    }
+<a href=#411 id=411 data-nosnippet>411</a>
+<a href=#412 id=412 data-nosnippet>412</a>    <span class="attr">#[test]
+<a href=#413 id=413 data-nosnippet>413</a>    </span><span class="kw">fn </span>normalizes_claude_code_metadata_and_lineage() {
+<a href=#414 id=414 data-nosnippet>414</a>        <span class="comment">// Claude Code identifies a session with `x-claude-code-session-id`; session
+<a href=#415 id=415 data-nosnippet>415</a>        // affinity keys on it so a whole CLI session pins to one tier.
+<a href=#416 id=416 data-nosnippet>416</a>        </span><span class="kw">let </span>session = metadata(<span class="kw-2">&amp;</span>[(
+<a href=#417 id=417 data-nosnippet>417</a>            <span class="string">"x-claude-code-session-id"</span>,
+<a href=#418 id=418 data-nosnippet>418</a>            <span class="string">"fb46caae-eac6-4f5f-83fd-8fc8f5743abb"</span>,
+<a href=#419 id=419 data-nosnippet>419</a>        )]);
+<a href=#420 id=420 data-nosnippet>420</a>        <span class="macro">assert_eq!</span>(
+<a href=#421 id=421 data-nosnippet>421</a>            session.session_id.as_deref(),
+<a href=#422 id=422 data-nosnippet>422</a>            <span class="prelude-val">Some</span>(<span class="string">"fb46caae-eac6-4f5f-83fd-8fc8f5743abb"</span>)
+<a href=#423 id=423 data-nosnippet>423</a>        );
+<a href=#424 id=424 data-nosnippet>424</a>
+<a href=#425 id=425 data-nosnippet>425</a>        <span class="comment">// Any non-empty agent id is a child agent. Without an explicit parent
+<a href=#426 id=426 data-nosnippet>426</a>        // header the parent is inferred to be the session it was spawned under.
+<a href=#427 id=427 data-nosnippet>427</a>        </span><span class="kw">let </span>child = metadata(<span class="kw-2">&amp;</span>[
+<a href=#428 id=428 data-nosnippet>428</a>            (<span class="string">"x-claude-code-session-id"</span>, <span class="string">"claude-session"</span>),
+<a href=#429 id=429 data-nosnippet>429</a>            (<span class="string">"x-claude-code-agent-id"</span>, <span class="string">"claude-agent"</span>),
+<a href=#430 id=430 data-nosnippet>430</a>        ]);
+<a href=#431 id=431 data-nosnippet>431</a>        <span class="macro">assert_eq!</span>(child.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"claude-session"</span>));
+<a href=#432 id=432 data-nosnippet>432</a>        <span class="macro">assert_eq!</span>(child.agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"claude-agent"</span>));
+<a href=#433 id=433 data-nosnippet>433</a>        <span class="macro">assert_eq!</span>(child.parent_agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"claude-session"</span>));
+<a href=#434 id=434 data-nosnippet>434</a>        <span class="macro">assert!</span>(child.is_subagent);
+<a href=#435 id=435 data-nosnippet>435</a>
+<a href=#436 id=436 data-nosnippet>436</a>        <span class="kw">let </span>child_without_session = metadata(<span class="kw-2">&amp;</span>[(<span class="string">"x-claude-code-agent-id"</span>, <span class="string">"claude-agent"</span>)]);
+<a href=#437 id=437 data-nosnippet>437</a>        <span class="macro">assert_eq!</span>(
+<a href=#438 id=438 data-nosnippet>438</a>            child_without_session.agent_id.as_deref(),
+<a href=#439 id=439 data-nosnippet>439</a>            <span class="prelude-val">Some</span>(<span class="string">"claude-agent"</span>)
+<a href=#440 id=440 data-nosnippet>440</a>        );
+<a href=#441 id=441 data-nosnippet>441</a>        <span class="macro">assert_eq!</span>(child_without_session.parent_agent_id, <span class="prelude-val">None</span>);
+<a href=#442 id=442 data-nosnippet>442</a>        <span class="macro">assert!</span>(child_without_session.is_subagent);
+<a href=#443 id=443 data-nosnippet>443</a>
+<a href=#444 id=444 data-nosnippet>444</a>        <span class="kw">let </span>explicit_parent = metadata(<span class="kw-2">&amp;</span>[
+<a href=#445 id=445 data-nosnippet>445</a>            (<span class="string">"x-claude-code-session-id"</span>, <span class="string">"claude-session"</span>),
+<a href=#446 id=446 data-nosnippet>446</a>            (<span class="string">"x-claude-code-agent-id"</span>, <span class="string">"claude-agent"</span>),
+<a href=#447 id=447 data-nosnippet>447</a>            (<span class="string">"x-claude-code-parent-agent-id"</span>, <span class="string">"claude-parent-agent"</span>),
+<a href=#448 id=448 data-nosnippet>448</a>        ]);
+<a href=#449 id=449 data-nosnippet>449</a>        <span class="macro">assert_eq!</span>(
+<a href=#450 id=450 data-nosnippet>450</a>            explicit_parent.parent_agent_id.as_deref(),
+<a href=#451 id=451 data-nosnippet>451</a>            <span class="prelude-val">Some</span>(<span class="string">"claude-parent-agent"</span>)
+<a href=#452 id=452 data-nosnippet>452</a>        );
+<a href=#453 id=453 data-nosnippet>453</a>
+<a href=#454 id=454 data-nosnippet>454</a>        <span class="comment">// Root agents omit x-claude-code-agent-id entirely. A stray parent-agent
+<a href=#455 id=455 data-nosnippet>455</a>        // header without an agent-id must not mark the request as a child.
+<a href=#456 id=456 data-nosnippet>456</a>        </span><span class="kw">let </span>root = metadata(<span class="kw-2">&amp;</span>[
+<a href=#457 id=457 data-nosnippet>457</a>            (<span class="string">"x-claude-code-session-id"</span>, <span class="string">"claude-session"</span>),
+<a href=#458 id=458 data-nosnippet>458</a>            (<span class="string">"x-claude-code-parent-agent-id"</span>, <span class="string">"claude-parent-agent"</span>),
+<a href=#459 id=459 data-nosnippet>459</a>        ]);
+<a href=#460 id=460 data-nosnippet>460</a>        <span class="macro">assert_eq!</span>(root.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"claude-session"</span>));
+<a href=#461 id=461 data-nosnippet>461</a>        <span class="macro">assert_eq!</span>(root.agent_id, <span class="prelude-val">None</span>);
+<a href=#462 id=462 data-nosnippet>462</a>        <span class="macro">assert_eq!</span>(root.parent_agent_id, <span class="prelude-val">None</span>);
+<a href=#463 id=463 data-nosnippet>463</a>        <span class="macro">assert!</span>(!root.is_subagent);
+<a href=#464 id=464 data-nosnippet>464</a>    }
+<a href=#465 id=465 data-nosnippet>465</a>
+<a href=#466 id=466 data-nosnippet>466</a>    <span class="attr">#[test]
+<a href=#467 id=467 data-nosnippet>467</a>    </span><span class="kw">fn </span>normalizes_correlation_and_session_headers_without_routing() {
+<a href=#468 id=468 data-nosnippet>468</a>        <span class="comment">// Integrating-host headers are correlation data, not routing signals.
+<a href=#469 id=469 data-nosnippet>469</a>        </span><span class="kw">let </span>relay = metadata(<span class="kw-2">&amp;</span>[
+<a href=#470 id=470 data-nosnippet>470</a>            (<span class="string">"x-nemo-relay-session-id"</span>, <span class="string">"relay-session"</span>),
+<a href=#471 id=471 data-nosnippet>471</a>            (<span class="string">"x-nemo-relay-subagent-id"</span>, <span class="string">"relay-child"</span>),
+<a href=#472 id=472 data-nosnippet>472</a>            (<span class="string">"x-dynamo-parent-session-id"</span>, <span class="string">"relay-parent"</span>),
+<a href=#473 id=473 data-nosnippet>473</a>        ]);
+<a href=#474 id=474 data-nosnippet>474</a>        <span class="macro">assert_eq!</span>(relay.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"relay-session"</span>));
+<a href=#475 id=475 data-nosnippet>475</a>        <span class="macro">assert_eq!</span>(relay.agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"relay-child"</span>));
+<a href=#476 id=476 data-nosnippet>476</a>        <span class="macro">assert_eq!</span>(relay.parent_agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"relay-parent"</span>));
+<a href=#477 id=477 data-nosnippet>477</a>        <span class="macro">assert!</span>(!relay.is_subagent);
+<a href=#478 id=478 data-nosnippet>478</a>        <span class="macro">assert!</span>(!relay.is_subagent_work());
+<a href=#479 id=479 data-nosnippet>479</a>
+<a href=#480 id=480 data-nosnippet>480</a>        <span class="kw">let </span>opencode = metadata(<span class="kw-2">&amp;</span>[
+<a href=#481 id=481 data-nosnippet>481</a>            (<span class="string">"x-session-id"</span>, <span class="string">"opencode-run"</span>),
+<a href=#482 id=482 data-nosnippet>482</a>            (<span class="string">"x-parent-session-id"</span>, <span class="string">"opencode-parent"</span>),
+<a href=#483 id=483 data-nosnippet>483</a>        ]);
+<a href=#484 id=484 data-nosnippet>484</a>        <span class="macro">assert_eq!</span>(opencode.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"opencode-run"</span>));
+<a href=#485 id=485 data-nosnippet>485</a>        <span class="macro">assert_eq!</span>(opencode.parent_agent_id, <span class="prelude-val">None</span>);
+<a href=#486 id=486 data-nosnippet>486</a>        <span class="macro">assert!</span>(!opencode.is_subagent);
+<a href=#487 id=487 data-nosnippet>487</a>
+<a href=#488 id=488 data-nosnippet>488</a>        <span class="kw">let </span>codex_session = metadata(<span class="kw-2">&amp;</span>[
+<a href=#489 id=489 data-nosnippet>489</a>            (<span class="string">"session-id"</span>, <span class="string">"codex-run"</span>),
+<a href=#490 id=490 data-nosnippet>490</a>            (<span class="string">"x-parent-session-id"</span>, <span class="string">"stray-parent"</span>),
+<a href=#491 id=491 data-nosnippet>491</a>        ]);
+<a href=#492 id=492 data-nosnippet>492</a>        <span class="macro">assert_eq!</span>(codex_session.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"codex-run"</span>));
+<a href=#493 id=493 data-nosnippet>493</a>        <span class="macro">assert_eq!</span>(codex_session.parent_agent_id, <span class="prelude-val">None</span>);
+<a href=#494 id=494 data-nosnippet>494</a>        <span class="macro">assert!</span>(!codex_session.is_subagent);
 <a href=#495 id=495 data-nosnippet>495</a>
-<a href=#496 id=496 data-nosnippet>496</a>    <span class="attr">#[test]
-<a href=#497 id=497 data-nosnippet>497</a>    </span><span class="kw">fn </span>claude_code_agent_id_alone_marks_subagent() {
-<a href=#498 id=498 data-nosnippet>498</a>        <span class="comment">// The agent-id header is the detection predicate; the session header is
-<a href=#499 id=499 data-nosnippet>499</a>        // correlation data. A request with only agent-id is still a child agent.
-<a href=#500 id=500 data-nosnippet>500</a>        </span><span class="kw">let </span>headers = HashMap::from([(
-<a href=#501 id=501 data-nosnippet>501</a>            <span class="string">"x-claude-code-agent-id"</span>.to_string(),
-<a href=#502 id=502 data-nosnippet>502</a>            <span class="string">"claude-agent"</span>.to_string(),
-<a href=#503 id=503 data-nosnippet>503</a>        )]);
-<a href=#504 id=504 data-nosnippet>504</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#505 id=505 data-nosnippet>505</a>        <span class="macro">assert!</span>(metadata.is_subagent);
-<a href=#506 id=506 data-nosnippet>506</a>        <span class="macro">assert_eq!</span>(metadata.agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"claude-agent"</span>));
-<a href=#507 id=507 data-nosnippet>507</a>        <span class="macro">assert_eq!</span>(metadata.parent_agent_id, <span class="prelude-val">None</span>);
-<a href=#508 id=508 data-nosnippet>508</a>    }
-<a href=#509 id=509 data-nosnippet>509</a>
-<a href=#510 id=510 data-nosnippet>510</a>    <span class="attr">#[test]
-<a href=#511 id=511 data-nosnippet>511</a>    </span><span class="kw">fn </span>explicit_claude_parent_agent_overrides_inferred_session() {
-<a href=#512 id=512 data-nosnippet>512</a>        <span class="kw">let </span>headers = HashMap::from([
-<a href=#513 id=513 data-nosnippet>513</a>            (
-<a href=#514 id=514 data-nosnippet>514</a>                <span class="string">"x-claude-code-session-id"</span>.to_string(),
-<a href=#515 id=515 data-nosnippet>515</a>                <span class="string">"claude-session"</span>.to_string(),
-<a href=#516 id=516 data-nosnippet>516</a>            ),
-<a href=#517 id=517 data-nosnippet>517</a>            (
-<a href=#518 id=518 data-nosnippet>518</a>                <span class="string">"x-claude-code-agent-id"</span>.to_string(),
-<a href=#519 id=519 data-nosnippet>519</a>                <span class="string">"claude-agent"</span>.to_string(),
-<a href=#520 id=520 data-nosnippet>520</a>            ),
-<a href=#521 id=521 data-nosnippet>521</a>            (
-<a href=#522 id=522 data-nosnippet>522</a>                <span class="string">"x-claude-code-parent-agent-id"</span>.to_string(),
-<a href=#523 id=523 data-nosnippet>523</a>                <span class="string">"claude-parent-agent"</span>.to_string(),
-<a href=#524 id=524 data-nosnippet>524</a>            ),
-<a href=#525 id=525 data-nosnippet>525</a>        ]);
-<a href=#526 id=526 data-nosnippet>526</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#527 id=527 data-nosnippet>527</a>        <span class="macro">assert_eq!</span>(
-<a href=#528 id=528 data-nosnippet>528</a>            metadata.parent_agent_id.as_deref(),
-<a href=#529 id=529 data-nosnippet>529</a>            <span class="prelude-val">Some</span>(<span class="string">"claude-parent-agent"</span>)
-<a href=#530 id=530 data-nosnippet>530</a>        );
-<a href=#531 id=531 data-nosnippet>531</a>    }
-<a href=#532 id=532 data-nosnippet>532</a>
-<a href=#533 id=533 data-nosnippet>533</a>    <span class="attr">#[test]
-<a href=#534 id=534 data-nosnippet>534</a>    </span><span class="kw">fn </span>claude_root_agent_without_agent_id_is_not_a_subagent() {
-<a href=#535 id=535 data-nosnippet>535</a>        <span class="comment">// Root agents omit x-claude-code-agent-id entirely. A stray parent-agent
-<a href=#536 id=536 data-nosnippet>536</a>        // header without an agent-id must not mark the request as a child.
-<a href=#537 id=537 data-nosnippet>537</a>        </span><span class="kw">let </span>headers = HashMap::from([
-<a href=#538 id=538 data-nosnippet>538</a>            (
-<a href=#539 id=539 data-nosnippet>539</a>                <span class="string">"x-claude-code-session-id"</span>.to_string(),
-<a href=#540 id=540 data-nosnippet>540</a>                <span class="string">"claude-session"</span>.to_string(),
-<a href=#541 id=541 data-nosnippet>541</a>            ),
-<a href=#542 id=542 data-nosnippet>542</a>            (
-<a href=#543 id=543 data-nosnippet>543</a>                <span class="string">"x-claude-code-parent-agent-id"</span>.to_string(),
-<a href=#544 id=544 data-nosnippet>544</a>                <span class="string">"claude-parent-agent"</span>.to_string(),
-<a href=#545 id=545 data-nosnippet>545</a>            ),
-<a href=#546 id=546 data-nosnippet>546</a>        ]);
-<a href=#547 id=547 data-nosnippet>547</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#548 id=548 data-nosnippet>548</a>        <span class="macro">assert_eq!</span>(metadata.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"claude-session"</span>));
-<a href=#549 id=549 data-nosnippet>549</a>        <span class="macro">assert_eq!</span>(metadata.agent_id, <span class="prelude-val">None</span>);
-<a href=#550 id=550 data-nosnippet>550</a>        <span class="macro">assert!</span>(!metadata.is_subagent);
-<a href=#551 id=551 data-nosnippet>551</a>        <span class="macro">assert_eq!</span>(metadata.parent_agent_id, <span class="prelude-val">None</span>);
-<a href=#552 id=552 data-nosnippet>552</a>    }
-<a href=#553 id=553 data-nosnippet>553</a>
-<a href=#554 id=554 data-nosnippet>554</a>    <span class="attr">#[test]
-<a href=#555 id=555 data-nosnippet>555</a>    </span><span class="kw">fn </span>opencode_session_headers_are_correlation_only() {
-<a href=#556 id=556 data-nosnippet>556</a>        <span class="comment">// OpenCode's x-session-id / x-parent-session-id are correlation headers;
-<a href=#557 id=557 data-nosnippet>557</a>        // they populate session_id for observability but do not trigger routing.
-<a href=#558 id=558 data-nosnippet>558</a>        </span><span class="kw">let </span>headers = HashMap::from([
-<a href=#559 id=559 data-nosnippet>559</a>            (<span class="string">"x-session-id"</span>.to_string(), <span class="string">"opencode-run"</span>.to_string()),
-<a href=#560 id=560 data-nosnippet>560</a>            (
-<a href=#561 id=561 data-nosnippet>561</a>                <span class="string">"x-parent-session-id"</span>.to_string(),
-<a href=#562 id=562 data-nosnippet>562</a>                <span class="string">"opencode-parent"</span>.to_string(),
-<a href=#563 id=563 data-nosnippet>563</a>            ),
-<a href=#564 id=564 data-nosnippet>564</a>        ]);
-<a href=#565 id=565 data-nosnippet>565</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#566 id=566 data-nosnippet>566</a>        <span class="macro">assert_eq!</span>(metadata.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"opencode-run"</span>));
-<a href=#567 id=567 data-nosnippet>567</a>        <span class="macro">assert!</span>(!metadata.is_subagent);
-<a href=#568 id=568 data-nosnippet>568</a>        <span class="macro">assert_eq!</span>(metadata.parent_agent_id, <span class="prelude-val">None</span>);
-<a href=#569 id=569 data-nosnippet>569</a>    }
-<a href=#570 id=570 data-nosnippet>570</a>
-<a href=#571 id=571 data-nosnippet>571</a>    <span class="attr">#[test]
-<a href=#572 id=572 data-nosnippet>572</a>    </span><span class="kw">fn </span>opencode_parent_header_is_not_a_parent_agent_id_source() {
-<a href=#573 id=573 data-nosnippet>573</a>        <span class="comment">// x-parent-session-id is not listed in HEADER_CONFIG for parent_agent_id;
-<a href=#574 id=574 data-nosnippet>574</a>        // it must not surface as a parent regardless of adjacent session headers.
-<a href=#575 id=575 data-nosnippet>575</a>        </span><span class="kw">let </span>headers = HashMap::from([
-<a href=#576 id=576 data-nosnippet>576</a>            (<span class="string">"session-id"</span>.to_string(), <span class="string">"codex-run"</span>.to_string()),
-<a href=#577 id=577 data-nosnippet>577</a>            (
-<a href=#578 id=578 data-nosnippet>578</a>                <span class="string">"x-parent-session-id"</span>.to_string(),
-<a href=#579 id=579 data-nosnippet>579</a>                <span class="string">"stray-parent"</span>.to_string(),
-<a href=#580 id=580 data-nosnippet>580</a>            ),
+<a href=#496 id=496 data-nosnippet>496</a>        <span class="kw">let </span>final_session = metadata(<span class="kw-2">&amp;</span>[
+<a href=#497 id=497 data-nosnippet>497</a>            (<span class="string">"x-dynamo-session-id"</span>, <span class="string">"generic-run"</span>),
+<a href=#498 id=498 data-nosnippet>498</a>            (<span class="string">"x-dynamo-parent-session-id"</span>, <span class="string">"generic-parent"</span>),
+<a href=#499 id=499 data-nosnippet>499</a>            (<span class="string">"x-dynamo-session-final"</span>, <span class="string">"true"</span>),
+<a href=#500 id=500 data-nosnippet>500</a>        ]);
+<a href=#501 id=501 data-nosnippet>501</a>        <span class="macro">assert_eq!</span>(final_session.agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"generic-run"</span>));
+<a href=#502 id=502 data-nosnippet>502</a>        <span class="macro">assert_eq!</span>(
+<a href=#503 id=503 data-nosnippet>503</a>            final_session.parent_agent_id.as_deref(),
+<a href=#504 id=504 data-nosnippet>504</a>            <span class="prelude-val">Some</span>(<span class="string">"generic-parent"</span>)
+<a href=#505 id=505 data-nosnippet>505</a>        );
+<a href=#506 id=506 data-nosnippet>506</a>        <span class="macro">assert_eq!</span>(final_session.session_final, <span class="prelude-val">Some</span>(<span class="bool-val">true</span>));
+<a href=#507 id=507 data-nosnippet>507</a>
+<a href=#508 id=508 data-nosnippet>508</a>        <span class="kw">let </span>active_session = metadata(<span class="kw-2">&amp;</span>[
+<a href=#509 id=509 data-nosnippet>509</a>            (<span class="string">"x-dynamo-session-id"</span>, <span class="string">"generic-run"</span>),
+<a href=#510 id=510 data-nosnippet>510</a>            (<span class="string">"x-dynamo-session-final"</span>, <span class="string">"false"</span>),
+<a href=#511 id=511 data-nosnippet>511</a>        ]);
+<a href=#512 id=512 data-nosnippet>512</a>        <span class="macro">assert_eq!</span>(active_session.session_final, <span class="prelude-val">Some</span>(<span class="bool-val">false</span>));
+<a href=#513 id=513 data-nosnippet>513</a>    }
+<a href=#514 id=514 data-nosnippet>514</a>
+<a href=#515 id=515 data-nosnippet>515</a>    <span class="attr">#[test]
+<a href=#516 id=516 data-nosnippet>516</a>    </span><span class="kw">fn </span>sy_header_resolves_paths_in_order_and_descends_into_json() {
+<a href=#517 id=517 data-nosnippet>517</a>        <span class="comment">// Only the JSON-nested Codex path is present, so descent supplies the value.
+<a href=#518 id=518 data-nosnippet>518</a>        </span><span class="kw">let </span>body = <span class="macro">serde_json::json!</span>({ <span class="string">"session_id"</span>: <span class="string">"codex-session" </span>}).to_string();
+<a href=#519 id=519 data-nosnippet>519</a>        <span class="kw">let </span>headers = slice_to_header_map(<span class="kw-2">&amp;</span>[(CODEX_TURN_METADATA_HEADER, body.as_str())]);
+<a href=#520 id=520 data-nosnippet>520</a>        <span class="macro">assert_eq!</span>(
+<a href=#521 id=521 data-nosnippet>521</a>            sy_header(<span class="kw-2">&amp;</span>headers, SWITCHYARD_SESSION_ID_HEADER).as_deref(),
+<a href=#522 id=522 data-nosnippet>522</a>            <span class="prelude-val">Some</span>(<span class="string">"codex-session"</span>)
+<a href=#523 id=523 data-nosnippet>523</a>        );
+<a href=#524 id=524 data-nosnippet>524</a>
+<a href=#525 id=525 data-nosnippet>525</a>        <span class="comment">// The explicit Switchyard header outranks the Codex path when both resolve.
+<a href=#526 id=526 data-nosnippet>526</a>        </span><span class="kw">let </span>headers = slice_to_header_map(<span class="kw-2">&amp;</span>[
+<a href=#527 id=527 data-nosnippet>527</a>            (SWITCHYARD_SESSION_ID_HEADER, <span class="string">"explicit"</span>),
+<a href=#528 id=528 data-nosnippet>528</a>            (CODEX_TURN_METADATA_HEADER, body.as_str()),
+<a href=#529 id=529 data-nosnippet>529</a>        ]);
+<a href=#530 id=530 data-nosnippet>530</a>        <span class="macro">assert_eq!</span>(
+<a href=#531 id=531 data-nosnippet>531</a>            sy_header(<span class="kw-2">&amp;</span>headers, SWITCHYARD_SESSION_ID_HEADER).as_deref(),
+<a href=#532 id=532 data-nosnippet>532</a>            <span class="prelude-val">Some</span>(<span class="string">"explicit"</span>)
+<a href=#533 id=533 data-nosnippet>533</a>        );
+<a href=#534 id=534 data-nosnippet>534</a>
+<a href=#535 id=535 data-nosnippet>535</a>        <span class="comment">// Nothing resolves for an empty header set or an unknown field.
+<a href=#536 id=536 data-nosnippet>536</a>        </span><span class="macro">assert_eq!</span>(
+<a href=#537 id=537 data-nosnippet>537</a>            sy_header(<span class="kw-2">&amp;</span>http::HeaderMap::new(), SWITCHYARD_SESSION_ID_HEADER),
+<a href=#538 id=538 data-nosnippet>538</a>            <span class="prelude-val">None
+<a href=#539 id=539 data-nosnippet>539</a>        </span>);
+<a href=#540 id=540 data-nosnippet>540</a>        <span class="macro">assert_eq!</span>(sy_header(<span class="kw-2">&amp;</span>headers, <span class="string">"x-not-a-field"</span>), <span class="prelude-val">None</span>);
+<a href=#541 id=541 data-nosnippet>541</a>    }
+<a href=#542 id=542 data-nosnippet>542</a>
+<a href=#543 id=543 data-nosnippet>543</a>    <span class="attr">#[test]
+<a href=#544 id=544 data-nosnippet>544</a>    </span><span class="kw">fn </span>subagent_routing_honors_explicit_signals_and_delegated_work_kinds() {
+<a href=#545 id=545 data-nosnippet>545</a>        <span class="comment">// Explicit `false` wins over presence-based inference even when no
+<a href=#546 id=546 data-nosnippet>546</a>        // parent id accompanies it; the flag decides in both directions.
+<a href=#547 id=547 data-nosnippet>547</a>        </span><span class="kw">let </span>explicitly_root = metadata(<span class="kw-2">&amp;</span>[
+<a href=#548 id=548 data-nosnippet>548</a>            (<span class="string">"x-switchyard-is-subagent"</span>, <span class="string">"false"</span>),
+<a href=#549 id=549 data-nosnippet>549</a>            (<span class="string">"x-openai-subagent"</span>, <span class="string">"review"</span>),
+<a href=#550 id=550 data-nosnippet>550</a>        ]);
+<a href=#551 id=551 data-nosnippet>551</a>        <span class="macro">assert!</span>(!explicitly_root.is_subagent);
+<a href=#552 id=552 data-nosnippet>552</a>
+<a href=#553 id=553 data-nosnippet>553</a>        <span class="kw">let </span>explicitly_child = metadata(<span class="kw-2">&amp;</span>[(<span class="string">"x-switchyard-is-subagent"</span>, <span class="string">"true"</span>)]);
+<a href=#554 id=554 data-nosnippet>554</a>        <span class="macro">assert!</span>(explicitly_child.is_subagent);
+<a href=#555 id=555 data-nosnippet>555</a>
+<a href=#556 id=556 data-nosnippet>556</a>        <span class="kw">let </span>child_with_parent = metadata(<span class="kw-2">&amp;</span>[
+<a href=#557 id=557 data-nosnippet>557</a>            (<span class="string">"x-switchyard-is-subagent"</span>, <span class="string">"false"</span>),
+<a href=#558 id=558 data-nosnippet>558</a>            (<span class="string">"x-switchyard-parent-agent-id"</span>, <span class="string">"parent"</span>),
+<a href=#559 id=559 data-nosnippet>559</a>        ]);
+<a href=#560 id=560 data-nosnippet>560</a>        <span class="macro">assert!</span>(!child_with_parent.is_subagent);
+<a href=#561 id=561 data-nosnippet>561</a>
+<a href=#562 id=562 data-nosnippet>562</a>        <span class="comment">// Operator labels do not filter routing signals from the harness.
+<a href=#563 id=563 data-nosnippet>563</a>        </span><span class="kw">let </span>with_openai = metadata(<span class="kw-2">&amp;</span>[
+<a href=#564 id=564 data-nosnippet>564</a>            (<span class="string">"x-openai-subagent"</span>, <span class="string">"review"</span>),
+<a href=#565 id=565 data-nosnippet>565</a>            (<span class="string">"x-switchyard-agent-kind"</span>, <span class="string">"researcher"</span>),
+<a href=#566 id=566 data-nosnippet>566</a>        ]);
+<a href=#567 id=567 data-nosnippet>567</a>        <span class="macro">assert!</span>(with_openai.is_subagent);
+<a href=#568 id=568 data-nosnippet>568</a>        <span class="macro">assert!</span>(with_openai.is_subagent_work());
+<a href=#569 id=569 data-nosnippet>569</a>
+<a href=#570 id=570 data-nosnippet>570</a>        <span class="kw">let </span>with_explicit = metadata(<span class="kw-2">&amp;</span>[
+<a href=#571 id=571 data-nosnippet>571</a>            (<span class="string">"x-switchyard-is-subagent"</span>, <span class="string">"true"</span>),
+<a href=#572 id=572 data-nosnippet>572</a>            (<span class="string">"x-switchyard-agent-kind"</span>, <span class="string">"researcher"</span>),
+<a href=#573 id=573 data-nosnippet>573</a>        ]);
+<a href=#574 id=574 data-nosnippet>574</a>        <span class="macro">assert!</span>(with_explicit.is_subagent);
+<a href=#575 id=575 data-nosnippet>575</a>        <span class="macro">assert!</span>(with_explicit.is_subagent_work());
+<a href=#576 id=576 data-nosnippet>576</a>
+<a href=#577 id=577 data-nosnippet>577</a>        <span class="comment">// Kindless lineage (Claude Code child agent) counts as delegated work.
+<a href=#578 id=578 data-nosnippet>578</a>        </span><span class="kw">let </span>claude_child = metadata(<span class="kw-2">&amp;</span>[
+<a href=#579 id=579 data-nosnippet>579</a>            (<span class="string">"x-claude-code-session-id"</span>, <span class="string">"root"</span>),
+<a href=#580 id=580 data-nosnippet>580</a>            (<span class="string">"x-claude-code-agent-id"</span>, <span class="string">"worker"</span>),
 <a href=#581 id=581 data-nosnippet>581</a>        ]);
-<a href=#582 id=582 data-nosnippet>582</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#583 id=583 data-nosnippet>583</a>        <span class="macro">assert_eq!</span>(metadata.session_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"codex-run"</span>));
-<a href=#584 id=584 data-nosnippet>584</a>        <span class="macro">assert!</span>(!metadata.is_subagent);
-<a href=#585 id=585 data-nosnippet>585</a>        <span class="macro">assert_eq!</span>(metadata.parent_agent_id, <span class="prelude-val">None</span>);
-<a href=#586 id=586 data-nosnippet>586</a>    }
+<a href=#582 id=582 data-nosnippet>582</a>        <span class="macro">assert!</span>(claude_child.is_subagent_work());
+<a href=#583 id=583 data-nosnippet>583</a>
+<a href=#584 id=584 data-nosnippet>584</a>        <span class="comment">// Codex delegated-work kinds route as sub-agent work.
+<a href=#585 id=585 data-nosnippet>585</a>        </span><span class="kw">let </span>review = metadata(<span class="kw-2">&amp;</span>[(<span class="string">"x-openai-subagent"</span>, <span class="string">"review"</span>)]);
+<a href=#586 id=586 data-nosnippet>586</a>        <span class="macro">assert!</span>(review.is_subagent_work());
 <a href=#587 id=587 data-nosnippet>587</a>
-<a href=#588 id=588 data-nosnippet>588</a>    <span class="attr">#[test]
-<a href=#589 id=589 data-nosnippet>589</a>    </span><span class="kw">fn </span>dynamo_session_final_is_captured() {
-<a href=#590 id=590 data-nosnippet>590</a>        <span class="kw">let </span>headers = HashMap::from([
-<a href=#591 id=591 data-nosnippet>591</a>            (<span class="string">"x-dynamo-session-id"</span>.to_string(), <span class="string">"generic-run"</span>.to_string()),
-<a href=#592 id=592 data-nosnippet>592</a>            (
-<a href=#593 id=593 data-nosnippet>593</a>                <span class="string">"x-dynamo-parent-session-id"</span>.to_string(),
-<a href=#594 id=594 data-nosnippet>594</a>                <span class="string">"generic-parent"</span>.to_string(),
-<a href=#595 id=595 data-nosnippet>595</a>            ),
-<a href=#596 id=596 data-nosnippet>596</a>            (<span class="string">"x-dynamo-session-final"</span>.to_string(), <span class="string">"true"</span>.to_string()),
-<a href=#597 id=597 data-nosnippet>597</a>        ]);
-<a href=#598 id=598 data-nosnippet>598</a>        <span class="kw">let </span>metadata = Metadata::from_headers(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>headers).try_into().unwrap());
-<a href=#599 id=599 data-nosnippet>599</a>        <span class="macro">assert_eq!</span>(metadata.agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"generic-run"</span>));
-<a href=#600 id=600 data-nosnippet>600</a>        <span class="macro">assert_eq!</span>(metadata.parent_agent_id.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"generic-parent"</span>));
-<a href=#601 id=601 data-nosnippet>601</a>        <span class="macro">assert_eq!</span>(metadata.session_final, <span class="prelude-val">Some</span>(<span class="bool-val">true</span>));
-<a href=#602 id=602 data-nosnippet>602</a>
-<a href=#603 id=603 data-nosnippet>603</a>        <span class="kw">let </span>not_final = Metadata::from_headers(
-<a href=#604 id=604 data-nosnippet>604</a>            <span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>HashMap::from([
-<a href=#605 id=605 data-nosnippet>605</a>                (<span class="string">"x-dynamo-session-id"</span>.to_string(), <span class="string">"generic-run"</span>.to_string()),
-<a href=#606 id=606 data-nosnippet>606</a>                (<span class="string">"x-dynamo-session-final"</span>.to_string(), <span class="string">"false"</span>.to_string()),
-<a href=#607 id=607 data-nosnippet>607</a>            ]))
-<a href=#608 id=608 data-nosnippet>608</a>                .try_into()
-<a href=#609 id=609 data-nosnippet>609</a>                .unwrap(),
-<a href=#610 id=610 data-nosnippet>610</a>        );
-<a href=#611 id=611 data-nosnippet>611</a>        <span class="macro">assert_eq!</span>(not_final.session_final, <span class="prelude-val">Some</span>(<span class="bool-val">false</span>));
-<a href=#612 id=612 data-nosnippet>612</a>    }
-<a href=#613 id=613 data-nosnippet>613</a>
-<a href=#614 id=614 data-nosnippet>614</a>    <span class="attr">#[test]
-<a href=#615 id=615 data-nosnippet>615</a>    </span><span class="kw">fn </span>sy_header_resolves_paths_in_order_and_descends_into_json() {
-<a href=#616 id=616 data-nosnippet>616</a>        <span class="comment">// Only the JSON-nested Codex path is present, so descent supplies the value.
-<a href=#617 id=617 data-nosnippet>617</a>        </span><span class="kw">let </span>h = HashMap::from([(
-<a href=#618 id=618 data-nosnippet>618</a>            CODEX_TURN_METADATA_HEADER.to_string(),
-<a href=#619 id=619 data-nosnippet>619</a>            <span class="macro">serde_json::json!</span>({ <span class="string">"session_id"</span>: <span class="string">"codex-session" </span>}).to_string(),
-<a href=#620 id=620 data-nosnippet>620</a>        )]);
-<a href=#621 id=621 data-nosnippet>621</a>        <span class="kw">let </span>headers: http::HeaderMap = (<span class="kw-2">&amp;</span>h).try_into().unwrap();
-<a href=#622 id=622 data-nosnippet>622</a>        <span class="macro">assert_eq!</span>(
-<a href=#623 id=623 data-nosnippet>623</a>            sy_header(<span class="kw-2">&amp;</span>headers, SWITCHYARD_SESSION_ID_HEADER).as_deref(),
-<a href=#624 id=624 data-nosnippet>624</a>            <span class="prelude-val">Some</span>(<span class="string">"codex-session"</span>)
-<a href=#625 id=625 data-nosnippet>625</a>        );
-<a href=#626 id=626 data-nosnippet>626</a>
-<a href=#627 id=627 data-nosnippet>627</a>        <span class="comment">// The explicit Switchyard header outranks the Codex path when both resolve.
-<a href=#628 id=628 data-nosnippet>628</a>        </span><span class="kw">let </span>h = HashMap::from([
-<a href=#629 id=629 data-nosnippet>629</a>            (
-<a href=#630 id=630 data-nosnippet>630</a>                SWITCHYARD_SESSION_ID_HEADER.to_string(),
-<a href=#631 id=631 data-nosnippet>631</a>                <span class="string">"explicit"</span>.to_string(),
-<a href=#632 id=632 data-nosnippet>632</a>            ),
-<a href=#633 id=633 data-nosnippet>633</a>            (
-<a href=#634 id=634 data-nosnippet>634</a>                CODEX_TURN_METADATA_HEADER.to_string(),
-<a href=#635 id=635 data-nosnippet>635</a>                <span class="macro">serde_json::json!</span>({ <span class="string">"session_id"</span>: <span class="string">"codex-session" </span>}).to_string(),
-<a href=#636 id=636 data-nosnippet>636</a>            ),
-<a href=#637 id=637 data-nosnippet>637</a>        ]);
-<a href=#638 id=638 data-nosnippet>638</a>        <span class="kw">let </span>headers: http::HeaderMap = (<span class="kw-2">&amp;</span>h).try_into().unwrap();
-<a href=#639 id=639 data-nosnippet>639</a>        <span class="macro">assert_eq!</span>(
-<a href=#640 id=640 data-nosnippet>640</a>            sy_header(<span class="kw-2">&amp;</span>headers, SWITCHYARD_SESSION_ID_HEADER).as_deref(),
-<a href=#641 id=641 data-nosnippet>641</a>            <span class="prelude-val">Some</span>(<span class="string">"explicit"</span>)
-<a href=#642 id=642 data-nosnippet>642</a>        );
-<a href=#643 id=643 data-nosnippet>643</a>
-<a href=#644 id=644 data-nosnippet>644</a>        <span class="comment">// Nothing resolves for an empty header set or an unknown field.
-<a href=#645 id=645 data-nosnippet>645</a>        </span><span class="macro">assert_eq!</span>(
-<a href=#646 id=646 data-nosnippet>646</a>            sy_header(<span class="kw-2">&amp;</span>http::HeaderMap::new(), SWITCHYARD_SESSION_ID_HEADER),
-<a href=#647 id=647 data-nosnippet>647</a>            <span class="prelude-val">None
-<a href=#648 id=648 data-nosnippet>648</a>        </span>);
-<a href=#649 id=649 data-nosnippet>649</a>        <span class="macro">assert_eq!</span>(sy_header(<span class="kw-2">&amp;</span>headers, <span class="string">"x-not-a-field"</span>), <span class="prelude-val">None</span>);
-<a href=#650 id=650 data-nosnippet>650</a>    }
-<a href=#651 id=651 data-nosnippet>651</a>
-<a href=#652 id=652 data-nosnippet>652</a>    <span class="attr">#[test]
-<a href=#653 id=653 data-nosnippet>653</a>    </span><span class="kw">fn </span>explicit_subagent_flag_decides_without_a_parent_header() {
-<a href=#654 id=654 data-nosnippet>654</a>        <span class="comment">// Explicit `false` wins over presence-based inference even when no
-<a href=#655 id=655 data-nosnippet>655</a>        // parent id accompanies it; the flag decides in both directions.
-<a href=#656 id=656 data-nosnippet>656</a>        </span><span class="kw">let </span>metadata = Metadata::from_headers(
-<a href=#657 id=657 data-nosnippet>657</a>            <span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>HashMap::from([
-<a href=#658 id=658 data-nosnippet>658</a>                (<span class="string">"x-switchyard-is-subagent"</span>.to_string(), <span class="string">"false"</span>.to_string()),
-<a href=#659 id=659 data-nosnippet>659</a>                (<span class="string">"x-openai-subagent"</span>.to_string(), <span class="string">"review"</span>.to_string()),
-<a href=#660 id=660 data-nosnippet>660</a>            ]))
-<a href=#661 id=661 data-nosnippet>661</a>                .try_into()
-<a href=#662 id=662 data-nosnippet>662</a>                .unwrap(),
-<a href=#663 id=663 data-nosnippet>663</a>        );
-<a href=#664 id=664 data-nosnippet>664</a>        <span class="macro">assert!</span>(!metadata.is_subagent);
-<a href=#665 id=665 data-nosnippet>665</a>
-<a href=#666 id=666 data-nosnippet>666</a>        <span class="kw">let </span>metadata = Metadata::from_headers(
-<a href=#667 id=667 data-nosnippet>667</a>            <span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>HashMap::from([(<span class="string">"x-switchyard-is-subagent"</span>.to_string(), <span class="string">"true"</span>.to_string())]))
-<a href=#668 id=668 data-nosnippet>668</a>                .try_into()
-<a href=#669 id=669 data-nosnippet>669</a>                .unwrap(),
-<a href=#670 id=670 data-nosnippet>670</a>        );
-<a href=#671 id=671 data-nosnippet>671</a>        <span class="macro">assert!</span>(metadata.is_subagent);
-<a href=#672 id=672 data-nosnippet>672</a>    }
-<a href=#673 id=673 data-nosnippet>673</a>
-<a href=#674 id=674 data-nosnippet>674</a>    <span class="attr">#[test]
-<a href=#675 id=675 data-nosnippet>675</a>    </span><span class="kw">fn </span>operator_agent_kind_does_not_suppress_harness_subagent_routing() {
-<a href=#676 id=676 data-nosnippet>676</a>        <span class="comment">// x-switchyard-agent-kind is an operator semantic label and must not filter
-<a href=#677 id=677 data-nosnippet>677</a>        // routing signals from the harness (x-openai-subagent, x-switchyard-is-subagent).
-<a href=#678 id=678 data-nosnippet>678</a>        </span><span class="kw">let </span>with_openai = Metadata::from_headers(
-<a href=#679 id=679 data-nosnippet>679</a>            <span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>HashMap::from([
-<a href=#680 id=680 data-nosnippet>680</a>                (<span class="string">"x-openai-subagent"</span>.to_string(), <span class="string">"review"</span>.to_string()),
-<a href=#681 id=681 data-nosnippet>681</a>                (
-<a href=#682 id=682 data-nosnippet>682</a>                    <span class="string">"x-switchyard-agent-kind"</span>.to_string(),
-<a href=#683 id=683 data-nosnippet>683</a>                    <span class="string">"researcher"</span>.to_string(),
-<a href=#684 id=684 data-nosnippet>684</a>                ),
-<a href=#685 id=685 data-nosnippet>685</a>            ]))
-<a href=#686 id=686 data-nosnippet>686</a>                .try_into()
-<a href=#687 id=687 data-nosnippet>687</a>                .unwrap(),
-<a href=#688 id=688 data-nosnippet>688</a>        );
-<a href=#689 id=689 data-nosnippet>689</a>        <span class="macro">assert!</span>(with_openai.is_subagent);
-<a href=#690 id=690 data-nosnippet>690</a>        <span class="macro">assert!</span>(with_openai.is_subagent_work());
-<a href=#691 id=691 data-nosnippet>691</a>
-<a href=#692 id=692 data-nosnippet>692</a>        <span class="kw">let </span>with_explicit = Metadata::from_headers(
-<a href=#693 id=693 data-nosnippet>693</a>            <span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>HashMap::from([
-<a href=#694 id=694 data-nosnippet>694</a>                (<span class="string">"x-switchyard-is-subagent"</span>.to_string(), <span class="string">"true"</span>.to_string()),
-<a href=#695 id=695 data-nosnippet>695</a>                (
-<a href=#696 id=696 data-nosnippet>696</a>                    <span class="string">"x-switchyard-agent-kind"</span>.to_string(),
-<a href=#697 id=697 data-nosnippet>697</a>                    <span class="string">"researcher"</span>.to_string(),
-<a href=#698 id=698 data-nosnippet>698</a>                ),
-<a href=#699 id=699 data-nosnippet>699</a>            ]))
-<a href=#700 id=700 data-nosnippet>700</a>                .try_into()
-<a href=#701 id=701 data-nosnippet>701</a>                .unwrap(),
-<a href=#702 id=702 data-nosnippet>702</a>        );
-<a href=#703 id=703 data-nosnippet>703</a>        <span class="macro">assert!</span>(with_explicit.is_subagent);
-<a href=#704 id=704 data-nosnippet>704</a>        <span class="macro">assert!</span>(with_explicit.is_subagent_work());
-<a href=#705 id=705 data-nosnippet>705</a>    }
-<a href=#706 id=706 data-nosnippet>706</a>
-<a href=#707 id=707 data-nosnippet>707</a>    <span class="attr">#[test]
-<a href=#708 id=708 data-nosnippet>708</a>    </span><span class="kw">fn </span>subagent_work_requires_a_delegated_work_kind_when_kinded() {
-<a href=#709 id=709 data-nosnippet>709</a>        <span class="comment">// Kindless lineage (Claude Code child agent) counts as delegated work.
-<a href=#710 id=710 data-nosnippet>710</a>        </span><span class="kw">let </span>claude_child = Metadata::from_headers(
-<a href=#711 id=711 data-nosnippet>711</a>            <span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>HashMap::from([
-<a href=#712 id=712 data-nosnippet>712</a>                (<span class="string">"x-claude-code-session-id"</span>.to_string(), <span class="string">"root"</span>.to_string()),
-<a href=#713 id=713 data-nosnippet>713</a>                (<span class="string">"x-claude-code-agent-id"</span>.to_string(), <span class="string">"worker"</span>.to_string()),
-<a href=#714 id=714 data-nosnippet>714</a>            ]))
-<a href=#715 id=715 data-nosnippet>715</a>                .try_into()
-<a href=#716 id=716 data-nosnippet>716</a>                .unwrap(),
-<a href=#717 id=717 data-nosnippet>717</a>        );
-<a href=#718 id=718 data-nosnippet>718</a>        <span class="macro">assert!</span>(claude_child.is_subagent_work());
-<a href=#719 id=719 data-nosnippet>719</a>
-<a href=#720 id=720 data-nosnippet>720</a>        <span class="comment">// Codex delegated-work kinds route as sub-agent work.
-<a href=#721 id=721 data-nosnippet>721</a>        </span><span class="kw">let </span>review = Metadata::from_headers(
-<a href=#722 id=722 data-nosnippet>722</a>            <span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>HashMap::from([(<span class="string">"x-openai-subagent"</span>.to_string(), <span class="string">"review"</span>.to_string())]))
-<a href=#723 id=723 data-nosnippet>723</a>                .try_into()
-<a href=#724 id=724 data-nosnippet>724</a>                .unwrap(),
-<a href=#725 id=725 data-nosnippet>725</a>        );
-<a href=#726 id=726 data-nosnippet>726</a>        <span class="macro">assert!</span>(review.is_subagent_work());
-<a href=#727 id=727 data-nosnippet>727</a>
-<a href=#728 id=728 data-nosnippet>728</a>        <span class="comment">// Harness maintenance and unknown kinds stay on normal routing even
-<a href=#729 id=729 data-nosnippet>729</a>        // though the lineage fact still marks them as child-agent requests.
-<a href=#730 id=730 data-nosnippet>730</a>        </span><span class="kw">for </span>kind <span class="kw">in </span>[<span class="string">"compact"</span>, <span class="string">"memory_consolidation"</span>, <span class="string">"brand_new_kind"</span>] {
-<a href=#731 id=731 data-nosnippet>731</a>            <span class="kw">let </span>metadata = Metadata::from_headers(
-<a href=#732 id=732 data-nosnippet>732</a>                <span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>HashMap::from([(<span class="string">"x-openai-subagent"</span>.to_string(), kind.to_string())]))
-<a href=#733 id=733 data-nosnippet>733</a>                    .try_into()
-<a href=#734 id=734 data-nosnippet>734</a>                    .unwrap(),
-<a href=#735 id=735 data-nosnippet>735</a>            );
-<a href=#736 id=736 data-nosnippet>736</a>            <span class="macro">assert!</span>(metadata.is_subagent, <span class="string">"{kind} keeps the lineage fact"</span>);
-<a href=#737 id=737 data-nosnippet>737</a>            <span class="macro">assert!</span>(!metadata.is_subagent_work(), <span class="string">"{kind} is not routed as work"</span>);
-<a href=#738 id=738 data-nosnippet>738</a>        }
-<a href=#739 id=739 data-nosnippet>739</a>
-<a href=#740 id=740 data-nosnippet>740</a>        <span class="comment">// A non-subagent request is never work, whatever its kind says.
-<a href=#741 id=741 data-nosnippet>741</a>        </span><span class="macro">assert!</span>(!Metadata::default().is_subagent_work());
-<a href=#742 id=742 data-nosnippet>742</a>    }
-<a href=#743 id=743 data-nosnippet>743</a>}
+<a href=#588 id=588 data-nosnippet>588</a>        <span class="comment">// Harness maintenance and unknown kinds stay on normal routing even
+<a href=#589 id=589 data-nosnippet>589</a>        // though the lineage fact still marks them as child-agent requests.
+<a href=#590 id=590 data-nosnippet>590</a>        </span><span class="kw">for </span>kind <span class="kw">in </span>[<span class="string">"compact"</span>, <span class="string">"memory_consolidation"</span>, <span class="string">"brand_new_kind"</span>] {
+<a href=#591 id=591 data-nosnippet>591</a>            <span class="kw">let </span>request = metadata(<span class="kw-2">&amp;</span>[(<span class="string">"x-openai-subagent"</span>, kind)]);
+<a href=#592 id=592 data-nosnippet>592</a>            <span class="macro">assert!</span>(request.is_subagent, <span class="string">"{kind} keeps the lineage fact"</span>);
+<a href=#593 id=593 data-nosnippet>593</a>            <span class="macro">assert!</span>(!request.is_subagent_work(), <span class="string">"{kind} is not routed as work"</span>);
+<a href=#594 id=594 data-nosnippet>594</a>        }
+<a href=#595 id=595 data-nosnippet>595</a>
+<a href=#596 id=596 data-nosnippet>596</a>        <span class="comment">// A non-subagent request is never work, whatever its kind says.
+<a href=#597 id=597 data-nosnippet>597</a>        </span><span class="macro">assert!</span>(!Metadata::default().is_subagent_work());
+<a href=#598 id=598 data-nosnippet>598</a>    }
+<a href=#599 id=599 data-nosnippet>599</a>}
 </code></pre></div></section></main></body></html>
