@@ -1333,9 +1333,19 @@ TOML deployment schema accepted by the launcher.</p>
 <td>TCP listen backlog configured before accepting traffic.</td>
 </tr>
 <tr>
+<td><code>--shutdown-timeout SHUTDOWN_TIMEOUT</code></td>
+<td><code>30s</code></td>
+<td>Maximum time active requests may drain during shutdown.</td>
+</tr>
+<tr>
 <td><code>--dry-run</code></td>
 <td>Off</td>
 <td>Validate the deployment without binding a socket.</td>
+</tr>
+<tr>
+<td><code>--routing-log-file PATH</code></td>
+<td>None</td>
+<td>Append durable per-request routing records to this JSONL file.</td>
 </tr>
 <tr>
 <td><code>--tls-cert PATH</code></td>
@@ -1380,7 +1390,7 @@ validate a native deployment before starting the standalone server.</p>
 <h2 id="related-documentation">Related Documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../getting_started/">Getting Started</a>: installation, configuration, and validation for both paths</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00db9c6997b3af60116e674ef5da21efd210954c/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, TLS, and metrics</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/315dd083f9cba4503c2e4f1ac8f2efbdac792d63/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, TLS, and metrics</li>
 </ul>
 
 
