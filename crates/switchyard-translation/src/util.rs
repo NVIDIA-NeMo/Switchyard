@@ -30,6 +30,69 @@ pub fn object<'a>(value: &'a Value, path: &str) -> Result<&'a Map<String, Value>
         })
 }
 
+pub(crate) fn array<'a>(value: &'a Value, path: &str) -> Result<&'a [Value]> {
+    value
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| TranslationError::InvalidType {
+            path: path.to_string(),
+            expected: "array",
+        })
+}
+
+pub(crate) fn string<'a>(value: &'a Value, path: &str) -> Result<&'a str> {
+    value.as_str().ok_or_else(|| TranslationError::InvalidType {
+        path: path.to_string(),
+        expected: "string",
+    })
+}
+
+pub(crate) fn boolean(value: &Value, path: &str) -> Result<bool> {
+    value
+        .as_bool()
+        .ok_or_else(|| TranslationError::InvalidType {
+            path: path.to_string(),
+            expected: "boolean",
+        })
+}
+
+pub(crate) fn number(value: &Value, path: &str) -> Result<f64> {
+    value.as_f64().ok_or_else(|| TranslationError::InvalidType {
+        path: path.to_string(),
+        expected: "number",
+    })
+}
+
+// Distinguishes a wrong JSON type from a numeric value that is not a non-negative integer.
+pub(crate) fn non_negative_integer(value: &Value, path: &str) -> Result<u64> {
+    let Value::Number(number) = value else {
+        return Err(TranslationError::InvalidType {
+            path: path.to_string(),
+            expected: "non-negative integer",
+        });
+    };
+    number
+        .as_u64()
+        .ok_or_else(|| TranslationError::InvalidValue {
+            path: path.to_string(),
+            message: "expected a non-negative integer".to_string(),
+        })
+}
+
+pub(crate) fn string_enum<'a>(value: &'a Value, path: &str, allowed: &[&str]) -> Result<&'a str> {
+    let value = string(value, path)?;
+    if allowed.contains(&value) {
+        return Ok(value);
+    }
+    Err(TranslationError::InvalidValue {
+        path: path.to_string(),
+        message: format!(
+            "unsupported value {value:?}; expected one of {}",
+            allowed.join(", ")
+        ),
+    })
+}
+
 /// Converts JSON scalars to Python-compatible string values where providers do so.
 pub fn string_value(value: &Value) -> Option<String> {
     match value {

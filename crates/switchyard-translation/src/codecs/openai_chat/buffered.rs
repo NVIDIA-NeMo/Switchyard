@@ -21,9 +21,10 @@ use crate::llm::{
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response, json_string, object, push_lossy, stable_id,
-    string_value, validate_request_capabilities,
+    array, boolean, capture_request_preservation, capture_response_preservation,
+    embed_preservation, exact_preserved_request, exact_preserved_response, json_string,
+    non_negative_integer, number, object, push_lossy, stable_id, string, string_enum, string_value,
+    validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Chat Completions payloads.
@@ -36,6 +37,7 @@ impl FormatCodec for OpenAiChatCodec {
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = object(body, "$")?;
+        validate_openai_chat_request(body)?;
         let mut diagnostics = Vec::new();
         let mut request = LlmRequest {
             model: body
@@ -387,6 +389,243 @@ impl FormatCodec for OpenAiChatCodec {
     }
 }
 
+// Validates source fields before normalization can replace malformed values with defaults.
+fn validate_openai_chat_request(body: &Map<String, Value>) -> Result<()> {
+    if let Some(value) = body.get("model") {
+        string(value, "$.model")?;
+    }
+    if let Some(value) = body.get("stream").filter(|value| !value.is_null()) {
+        boolean(value, "$.stream")?;
+    }
+    for field in ["temperature", "top_p"] {
+        if let Some(value) = body.get(field).filter(|value| !value.is_null()) {
+            number(value, &format!("$.{field}"))?;
+        }
+    }
+    for field in ["max_completion_tokens", "max_tokens"] {
+        if let Some(value) = body.get(field).filter(|value| !value.is_null()) {
+            non_negative_integer(value, &format!("$.{field}"))?;
+        }
+    }
+    if let Some(value) = body.get("response_format").filter(|value| !value.is_null()) {
+        object(value, "$.response_format")?;
+    }
+    if let Some(value) = body
+        .get("reasoning_effort")
+        .filter(|value| !value.is_null())
+    {
+        string_enum(
+            value,
+            "$.reasoning_effort",
+            &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        )?;
+    }
+    if let Some(value) = body.get("messages") {
+        for (index, message) in array(value, "$.messages")?.iter().enumerate() {
+            validate_openai_chat_message(message, index)?;
+        }
+    }
+    if let Some(value) = body.get("tools").filter(|value| !value.is_null()) {
+        validate_openai_chat_tools(value)?;
+    }
+    if let Some(value) = body.get("tool_choice").filter(|value| !value.is_null()) {
+        validate_openai_chat_tool_choice(value)?;
+    }
+    Ok(())
+}
+
+fn validate_openai_chat_message(value: &Value, index: usize) -> Result<()> {
+    let path = format!("$.messages[{index}]");
+    let message = object(value, &path)?;
+    let role = match message.get("role") {
+        Some(value) => Some(string_enum(
+            value,
+            &format!("{path}.role"),
+            &[
+                "system",
+                "developer",
+                "user",
+                "assistant",
+                "tool",
+                "function",
+            ],
+        )?),
+        None => None,
+    };
+    if let Some(content) = message.get("content") {
+        validate_openai_chat_content(content, role, &format!("{path}.content"))?;
+    }
+    if let Some(tool_calls) = message.get("tool_calls").filter(|value| !value.is_null()) {
+        for (call_index, tool_call) in array(tool_calls, &format!("{path}.tool_calls"))?
+            .iter()
+            .enumerate()
+        {
+            validate_openai_chat_tool_call(tool_call, &format!("{path}.tool_calls[{call_index}]"))?;
+        }
+    }
+    if let Some(tool_call_id) = message.get("tool_call_id").filter(|value| !value.is_null()) {
+        string(tool_call_id, &format!("{path}.tool_call_id"))?;
+    }
+    Ok(())
+}
+
+fn validate_openai_chat_content(value: &Value, role: Option<&str>, path: &str) -> Result<()> {
+    match value {
+        Value::String(_) => Ok(()),
+        Value::Null if matches!(role, Some("assistant" | "function")) => Ok(()),
+        Value::Array(blocks) => {
+            for (index, block) in blocks.iter().enumerate() {
+                validate_openai_content_block(block, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        _ => Err(TranslationError::InvalidType {
+            path: path.to_string(),
+            expected: "string or array",
+        }),
+    }
+}
+
+fn validate_openai_content_block(value: &Value, path: &str) -> Result<()> {
+    let block = object(value, path)?;
+    let Some(block_type) = block.get("type") else {
+        return Ok(());
+    };
+    let block_type = string(block_type, &format!("{path}.type"))?;
+    match block_type {
+        "text" | "input_text" | "output_text" | "reasoning_text" | "summary_text" => {
+            if let Some(value) = block.get("text") {
+                string(value, &format!("{path}.text"))?;
+            }
+        }
+        "refusal" => {
+            if let Some(value) = block.get("refusal") {
+                string(value, &format!("{path}.refusal"))?;
+            }
+        }
+        "image_url" => {
+            if let Some(value) = block.get("image_url") {
+                let image = object(value, &format!("{path}.image_url"))?;
+                if let Some(value) = image.get("url") {
+                    string(value, &format!("{path}.image_url.url"))?;
+                }
+                if let Some(value) = image.get("detail").filter(|value| !value.is_null()) {
+                    string_enum(
+                        value,
+                        &format!("{path}.image_url.detail"),
+                        &["auto", "low", "high"],
+                    )?;
+                }
+            }
+        }
+        "file" => {
+            if let Some(value) = block.get("file") {
+                let file = object(value, &format!("{path}.file"))?;
+                for field in ["file_data", "file_id", "filename"] {
+                    if let Some(value) = file.get(field).filter(|value| !value.is_null()) {
+                        string(value, &format!("{path}.file.{field}"))?;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_openai_chat_tool_call(value: &Value, path: &str) -> Result<()> {
+    let tool_call = object(value, path)?;
+    if let Some(value) = tool_call.get("id") {
+        string(value, &format!("{path}.id"))?;
+    }
+    let Some(call_type) = tool_call.get("type") else {
+        return Ok(());
+    };
+    let call_type = string_enum(call_type, &format!("{path}.type"), &["function", "custom"])?;
+    if call_type != "function" {
+        return Ok(());
+    }
+    let Some(function) = tool_call.get("function") else {
+        return Ok(());
+    };
+    let function = object(function, &format!("{path}.function"))?;
+    for field in ["name", "arguments"] {
+        if let Some(value) = function.get(field) {
+            string(value, &format!("{path}.function.{field}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_openai_chat_tools(value: &Value) -> Result<()> {
+    for (index, tool) in array(value, "$.tools")?.iter().enumerate() {
+        let path = format!("$.tools[{index}]");
+        let tool = object(tool, &path)?;
+        let Some(tool_type) = tool.get("type") else {
+            continue;
+        };
+        let tool_type = string(tool_type, &format!("{path}.type"))?;
+        if tool_type != "function" {
+            continue;
+        }
+        let Some(function) = tool.get("function") else {
+            continue;
+        };
+        validate_function_definition(
+            object(function, &format!("{path}.function"))?,
+            &format!("{path}.function"),
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_function_definition(
+    function: &Map<String, Value>,
+    path: &str,
+) -> Result<()> {
+    if let Some(value) = function.get("name") {
+        string(value, &format!("{path}.name"))?;
+    }
+    if let Some(value) = function.get("description").filter(|value| !value.is_null()) {
+        string(value, &format!("{path}.description"))?;
+    }
+    if let Some(value) = function.get("parameters").filter(|value| !value.is_null()) {
+        object(value, &format!("{path}.parameters"))?;
+    }
+    if let Some(value) = function.get("strict").filter(|value| !value.is_null()) {
+        boolean(value, &format!("{path}.strict"))?;
+    }
+    Ok(())
+}
+
+fn validate_openai_chat_tool_choice(value: &Value) -> Result<()> {
+    match value {
+        Value::String(_) => {
+            string_enum(value, "$.tool_choice", &["none", "auto", "required"])?;
+        }
+        Value::Object(choice) => {
+            if let Some(value) = choice.get("type") {
+                let choice_type = string(value, "$.tool_choice.type")?;
+                if choice_type == "function"
+                    && let Some(function) = choice.get("function")
+                {
+                    let function = object(function, "$.tool_choice.function")?;
+                    if let Some(name) = function.get("name") {
+                        string(name, "$.tool_choice.function.name")?;
+                    }
+                }
+            }
+        }
+        _ => {
+            return Err(TranslationError::InvalidType {
+                path: "$.tool_choice".to_string(),
+                expected: "string or object",
+            });
+        }
+    }
+    Ok(())
+}
+
 // Pulls OpenAI-compatible reasoning fields into private reasoning IR blocks.
 fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map<String, Value>) {
     let reasoning = ["reasoning_content", "reasoning"]
@@ -411,9 +650,9 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
 ///
 /// Unknown role strings are rejected with [`TranslationError::InvalidValue`] so
 /// the router returns the same `invalid_value` error the provider would, rather
-/// than silently coercing an invalid role to `user`. A missing role and
-/// known-but-unmapped roles (e.g. the legacy `function` role) keep their
-/// historical mapping to `user`. `path` points at the offending field.
+/// than silently coercing an invalid role to `user`. A missing role and the
+/// legacy `function` role keep their historical mapping to `user`. `path`
+/// points at the offending field.
 pub(crate) fn role_from_openai(role: Option<&str>, path: &str) -> Result<Role> {
     match role {
         Some("system") => Ok(Role::System),

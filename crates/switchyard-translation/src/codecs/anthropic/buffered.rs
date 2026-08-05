@@ -5,7 +5,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::codecs::common::{is_known_role_name, provider_extensions, text_from_blocks};
+use crate::codecs::common::{provider_extensions, text_from_blocks};
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
@@ -21,11 +21,12 @@ use crate::llm::{
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::sanitize_anthropic_tool_use_id;
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response,
+    array, boolean, json_string, non_negative_integer, number, object, push_lossy, stable_id,
+    string, string_enum, string_value, validate_request_capabilities,
 };
 use crate::util::{
-    json_string, push_lossy, stable_id, string_value, validate_request_capabilities,
+    capture_request_preservation, capture_response_preservation, embed_preservation,
+    exact_preserved_request, exact_preserved_response,
 };
 
 /// Format codec for Anthropic Messages payloads.
@@ -37,18 +38,13 @@ impl FormatCodec for AnthropicMessagesCodec {
     }
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
-        let body = crate::util::object(body, "$")?;
+        let body = object(body, "$")?;
+        validate_anthropic_request(body)?;
         let mut diagnostics = Vec::new();
         let max_output_tokens = body
             .get("max_tokens")
-            .map(|value| {
-                value
-                    .as_u64()
-                    .ok_or_else(|| TranslationError::InvalidValue {
-                        path: "$.max_tokens".to_string(),
-                        message: "expected a non-negative integer".to_string(),
-                    })
-            })
+            .filter(|value| !value.is_null())
+            .map(|value| non_negative_integer(value, "$.max_tokens"))
             .transpose()?;
         let mut request = LlmRequest {
             model: body
@@ -101,15 +97,9 @@ impl FormatCodec for AnthropicMessagesCodec {
                     )?;
                     continue;
                 };
-                // Request decoding enforces the provider contract: an unknown
-                // role is rejected rather than coerced to `user`. Anthropic
-                // Messages only defines `user`/`assistant`, but other known
-                // role names stay lenient (mapped to `user`) to preserve
-                // historical cross-format behaviour.
                 let role = match message.get("role").and_then(Value::as_str) {
                     Some("assistant") => Role::Assistant,
-                    None => Role::User,
-                    Some(other) if is_known_role_name(other) => Role::User,
+                    Some("user") | None => Role::User,
                     Some(other) => {
                         return Err(TranslationError::unsupported_role(
                             format!("$.messages[{index}].role"),
@@ -358,6 +348,209 @@ impl FormatCodec for AnthropicMessagesCodec {
             diagnostics: Vec::new(),
         })
     }
+}
+
+// Validates source fields before normalization can replace malformed values with defaults.
+fn validate_anthropic_request(body: &Map<String, Value>) -> Result<()> {
+    if let Some(value) = body.get("model") {
+        string(value, "$.model")?;
+    }
+    if let Some(value) = body.get("max_tokens") {
+        non_negative_integer(value, "$.max_tokens")?;
+    }
+    if let Some(value) = body.get("stream") {
+        boolean(value, "$.stream")?;
+    }
+    for field in ["temperature", "top_p"] {
+        if let Some(value) = body.get(field) {
+            number(value, &format!("$.{field}"))?;
+        }
+    }
+    if let Some(value) = body.get("top_k") {
+        non_negative_integer(value, "$.top_k")?;
+    }
+    if let Some(value) = body.get("system") {
+        validate_anthropic_system(value)?;
+    }
+    if let Some(value) = body.get("messages") {
+        for (index, message) in array(value, "$.messages")?.iter().enumerate() {
+            validate_anthropic_message(message, index)?;
+        }
+    }
+    if let Some(value) = body.get("tools") {
+        validate_anthropic_tools(value)?;
+    }
+    if let Some(value) = body.get("tool_choice") {
+        validate_anthropic_tool_choice(value)?;
+    }
+    if let Some(value) = body.get("thinking") {
+        let thinking = object(value, "$.thinking")?;
+        if let Some(value) = thinking.get("type") {
+            string_enum(
+                value,
+                "$.thinking.type",
+                &["enabled", "disabled", "adaptive"],
+            )?;
+        }
+        if let Some(value) = thinking.get("budget_tokens") {
+            non_negative_integer(value, "$.thinking.budget_tokens")?;
+        }
+    }
+    if let Some(value) = body.get("output_config") {
+        let output_config = object(value, "$.output_config")?;
+        if let Some(value) = output_config.get("effort").filter(|value| !value.is_null()) {
+            string_enum(
+                value,
+                "$.output_config.effort",
+                &["low", "medium", "high", "xhigh", "max"],
+            )?;
+        }
+        if let Some(value) = output_config.get("format").filter(|value| !value.is_null()) {
+            object(value, "$.output_config.format")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_anthropic_system(value: &Value) -> Result<()> {
+    match value {
+        Value::String(_) => Ok(()),
+        Value::Array(blocks) => {
+            for (index, block) in blocks.iter().enumerate() {
+                let path = format!("$.system[{index}]");
+                let block = object(block, &path)?;
+                if let Some(value) = block.get("type") {
+                    string_enum(value, &format!("{path}.type"), &["text"])?;
+                }
+                if let Some(value) = block.get("text") {
+                    string(value, &format!("{path}.text"))?;
+                }
+            }
+            Ok(())
+        }
+        _ => Err(TranslationError::InvalidType {
+            path: "$.system".to_string(),
+            expected: "string or array of text blocks",
+        }),
+    }
+}
+
+fn validate_anthropic_message(value: &Value, index: usize) -> Result<()> {
+    let path = format!("$.messages[{index}]");
+    let message = object(value, &path)?;
+    if let Some(value) = message.get("role") {
+        string_enum(value, &format!("{path}.role"), &["user", "assistant"])?;
+    }
+    if let Some(value) = message.get("content") {
+        validate_anthropic_content_container(value, &format!("{path}.content"))?;
+    }
+    Ok(())
+}
+
+fn validate_anthropic_content_container(value: &Value, path: &str) -> Result<()> {
+    match value {
+        Value::String(_) => Ok(()),
+        Value::Array(blocks) => {
+            for (index, block) in blocks.iter().enumerate() {
+                validate_anthropic_content_block_fields(block, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        _ => Err(TranslationError::InvalidType {
+            path: path.to_string(),
+            expected: "string or array",
+        }),
+    }
+}
+
+fn validate_anthropic_content_block_fields(value: &Value, path: &str) -> Result<()> {
+    let block = object(value, path)?;
+    let Some(block_type) = block.get("type") else {
+        return Ok(());
+    };
+    let block_type = string(block_type, &format!("{path}.type"))?;
+    match block_type {
+        "text" => {
+            if let Some(value) = block.get("text") {
+                string(value, &format!("{path}.text"))?;
+            }
+        }
+        "thinking" => {
+            for field in ["thinking", "signature"] {
+                if let Some(value) = block.get(field) {
+                    string(value, &format!("{path}.{field}"))?;
+                }
+            }
+        }
+        "tool_use" => {
+            for field in ["id", "name"] {
+                if let Some(value) = block.get(field) {
+                    string(value, &format!("{path}.{field}"))?;
+                }
+            }
+            if let Some(value) = block.get("input") {
+                object(value, &format!("{path}.input"))?;
+            }
+        }
+        "tool_result" => {
+            if let Some(value) = block.get("tool_use_id") {
+                string(value, &format!("{path}.tool_use_id"))?;
+            }
+            if let Some(value) = block.get("is_error") {
+                boolean(value, &format!("{path}.is_error"))?;
+            }
+            if let Some(value) = block.get("content") {
+                validate_anthropic_content_container(value, &format!("{path}.content"))?;
+            }
+        }
+        "image" | "document" => {
+            if let Some(value) = block.get("source") {
+                object(value, &format!("{path}.source"))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_anthropic_tools(value: &Value) -> Result<()> {
+    for (index, tool) in array(value, "$.tools")?.iter().enumerate() {
+        let path = format!("$.tools[{index}]");
+        let tool = object(tool, &path)?;
+        if let Some(value) = tool.get("type") {
+            string(value, &format!("{path}.type"))?;
+        }
+        if let Some(value) = tool.get("name") {
+            string(value, &format!("{path}.name"))?;
+        }
+        if let Some(value) = tool.get("description") {
+            string(value, &format!("{path}.description"))?;
+        }
+        if let Some(value) = tool.get("input_schema") {
+            object(value, &format!("{path}.input_schema"))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_anthropic_tool_choice(value: &Value) -> Result<()> {
+    let choice = object(value, "$.tool_choice")?;
+    if let Some(value) = choice.get("type") {
+        let choice_type = string_enum(
+            value,
+            "$.tool_choice.type",
+            &["auto", "any", "tool", "none"],
+        )?;
+        if choice_type == "tool"
+            && let Some(value) = choice.get("name")
+        {
+            string(value, "$.tool_choice.name")?;
+        }
+    }
+    if let Some(value) = choice.get("disable_parallel_tool_use") {
+        boolean(value, "$.tool_choice.disable_parallel_tool_use")?;
+    }
+    Ok(())
 }
 
 /// Maps the neutral OpenAI-shaped JSON schema to Anthropic's output format.
