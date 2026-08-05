@@ -16,7 +16,11 @@
 //! Every composition retains one thing regardless: a target that overflows its context window is
 //! remembered for the rest of its session and skipped on later turns.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Once, Weak},
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -28,7 +32,15 @@ use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
 use switchyard_protocol::{Context, Decision, Request, Response, RoutedLlmClient};
 
-type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
+struct SessionState<S> {
+    state: Arc<AsyncMutex<S>>,
+    last_accessed: Instant,
+}
+
+type SessionStates<S> = Mutex<HashMap<String, SessionState<S>>>;
+
+const SESSION_STATE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const SESSION_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// The decision a fall-through run produces: the selected model plus a human-readable reason.
 pub struct FallThroughDecision {
@@ -104,7 +116,8 @@ pub struct FallThrough<S = ()> {
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: LlmTargetSet,
-    session_states: Option<SessionStates<S>>,
+    session_states: Option<Arc<SessionStates<S>>>,
+    cleanup_started: Once,
     session_evictions: SessionEvictions,
 }
 
@@ -118,6 +131,7 @@ impl FallThrough<()> {
             classifiers: Vec::new(),
             targets,
             session_states: None,
+            cleanup_started: Once::new(),
             session_evictions: SessionEvictions::default(),
         }
     }
@@ -135,7 +149,8 @@ where
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
-            session_states: Some(Mutex::new(HashMap::new())),
+            session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
+            cleanup_started: Once::new(),
             session_evictions: SessionEvictions::default(),
         }
     }
@@ -170,17 +185,45 @@ where
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
+        self.start_cleanup_task();
+        let session = session_id(&request);
+        let session_final = request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.session_final)
+            == Some(true);
+        let result = self
+            .execute_session(ctx, driver, request, session.as_deref())
+            .await;
+        if session_final && let Some(session) = session.as_deref() {
+            self.remove_session(session);
+        }
+        result
+    }
+
+    /// Starts one cleanup task on the first request handled by a stateful router.
+    fn start_cleanup_task(&self) {
+        let Some(states) = &self.session_states else {
+            return;
+        };
+        let states = Arc::downgrade(states);
+        self.cleanup_started.call_once(move || {
+            drop(tokio::spawn(cleanup_inactive_sessions(states)));
+        });
+    }
+
+    async fn execute_session(
+        &self,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+        session: Option<&str>,
+    ) -> Result<Response> {
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
-        let session = session_id(&request);
         let mut ctx = ctx;
-        algorithm::exclude_evicted(
-            &mut ctx,
-            &self.targets,
-            &self.session_evictions,
-            session.as_deref(),
-        );
+        algorithm::exclude_evicted(&mut ctx, &self.targets, &self.session_evictions, session);
         let session_state = self.session_state(&request);
         let (target, decision, served) = match session_state {
             Some(state) => {
@@ -208,13 +251,21 @@ where
                     target,
                     decision,
                     request,
-                    session.as_deref(),
+                    session,
                     &self.session_evictions,
                     |from, to| self.fallback_decision(from, to),
                 )
                 .await
             }
         }
+    }
+
+    /// Drops retained routing state once the host marks a session complete.
+    fn remove_session(&self, session: &str) {
+        if let Some(states) = &self.session_states {
+            states.lock().remove(session);
+        }
+        self.session_evictions.remove(session);
     }
 
     /// The decision published when an overflow sends the request to a different target.
@@ -237,10 +288,13 @@ where
         let states = self.session_states.as_ref()?;
         let session_id = session_id(request)?;
         let mut states = states.lock();
-        let state = states
-            .entry(session_id)
-            .or_insert_with(|| Arc::new(AsyncMutex::new(S::default())));
-        Some(Arc::clone(state))
+        let now = Instant::now();
+        let session = states.entry(session_id).or_insert_with(|| SessionState {
+            state: Arc::new(AsyncMutex::new(S::default())),
+            last_accessed: now,
+        });
+        session.last_accessed = now;
+        Some(Arc::clone(&session.state))
     }
 
     async fn route(
@@ -307,6 +361,31 @@ where
 
         Ok((target, decision, served))
     }
+}
+
+async fn cleanup_inactive_sessions<S>(states: Weak<SessionStates<S>>)
+where
+    S: Send + 'static,
+{
+    let start = tokio::time::Instant::now() + SESSION_CLEANUP_INTERVAL;
+    let mut interval = tokio::time::interval_at(start, SESSION_CLEANUP_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        let Some(states) = states.upgrade() else {
+            break;
+        };
+        remove_inactive_sessions(&states, Instant::now(), SESSION_STATE_TTL);
+    }
+}
+
+fn remove_inactive_sessions<S>(states: &SessionStates<S>, now: Instant, ttl: Duration) {
+    states.lock().retain(|_, session| {
+        // The registry owns one strong reference. Any others belong to active requests,
+        // which must keep sharing this state until their routing work finishes.
+        Arc::strong_count(&session.state) > 1
+            || now.saturating_duration_since(session.last_accessed) < ttl
+    });
 }
 
 fn session_id(request: &Request) -> Option<String> {
@@ -1158,6 +1237,16 @@ mod tests {
 
         let (turn1, _) = run_turn(&router).await?;
         let (turn2, _) = run_turn(&router).await?;
+        let final_request = Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                session_final: Some(true),
+                ..Metadata::default()
+            }),
+            ..request()
+        };
+        let (final_turn, _) = run_request(&router, final_request).await?;
+        let (restarted_session, _) = run_turn(&router).await?;
         let (second_session, _) = run_request(
             &router,
             Request {
@@ -1178,9 +1267,97 @@ mod tests {
 
         assert_eq!(turn1, "weak");
         assert_eq!(turn2, "strong");
+        assert_eq!(final_turn, "strong");
+        assert_eq!(restarted_session, "weak");
         assert_eq!(second_session, "weak");
         assert_eq!(anonymous1, "weak");
         assert_eq!(anonymous2, "weak");
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn final_session_is_removed_when_routing_fails() {
+        let router = Arc::new(FallThrough::<u32>::new_with_state(target_set(&["strong"])));
+        let final_request = Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                session_final: Some(true),
+                ..Metadata::default()
+            }),
+            ..request()
+        };
+
+        let result = router.clone().run(Context::default(), final_request).await;
+
+        assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
+        let states = router
+            .session_states
+            .as_ref()
+            .expect("stateful router has a session registry")
+            .lock();
+        assert!(!states.contains_key("session-1"));
+    }
+
+    #[tokio::test]
+    async fn session_state_refreshes_last_accessed() {
+        let router = FallThrough::<u32>::new_with_state(target_set(&["strong"]));
+        let request = request();
+
+        drop(router.session_state(&request));
+        let first_accessed = router
+            .session_states
+            .as_ref()
+            .expect("stateful router has a session registry")
+            .lock()
+            .get("session-1")
+            .expect("session state was inserted")
+            .last_accessed;
+
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        drop(router.session_state(&request));
+        let second_accessed = router
+            .session_states
+            .as_ref()
+            .expect("stateful router has a session registry")
+            .lock()
+            .get("session-1")
+            .expect("session state is retained")
+            .last_accessed;
+
+        assert!(second_accessed > first_accessed);
+    }
+
+    #[test]
+    fn cleanup_removes_only_inactive_idle_sessions() {
+        let router = FallThrough::<u32>::new_with_state(target_set(&["strong"]));
+        let _active_state = router
+            .session_state(&request())
+            .expect("session state was inserted");
+        let inactive_request = Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-2".to_string()),
+                ..Metadata::default()
+            }),
+            ..request()
+        };
+        drop(router.session_state(&inactive_request));
+
+        let now = Instant::now();
+        let stale = now
+            .checked_sub(SESSION_STATE_TTL + Duration::from_secs(1))
+            .expect("test timestamp is representable");
+        let states = router
+            .session_states
+            .as_ref()
+            .expect("stateful router has a session registry");
+        for session in states.lock().values_mut() {
+            session.last_accessed = stale;
+        }
+
+        remove_inactive_sessions(states, now, SESSION_STATE_TTL);
+
+        let states = states.lock();
+        assert!(states.contains_key("session-1"));
+        assert!(!states.contains_key("session-2"));
     }
 }

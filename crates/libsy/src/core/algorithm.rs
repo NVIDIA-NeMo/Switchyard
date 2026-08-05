@@ -435,6 +435,11 @@ pub(crate) struct SessionEvictions {
 }
 
 impl SessionEvictions {
+    /// Forgets overflow history for a completed session.
+    pub(crate) fn remove(&self, session: &str) {
+        self.sessions.lock().remove(session);
+    }
+
     /// The targets `session` has already overflowed; empty for an untracked request.
     fn evicted_in(&self, session: Option<&str>) -> Vec<String> {
         let Some(session) = session else {
