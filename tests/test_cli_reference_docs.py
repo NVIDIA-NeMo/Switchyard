@@ -43,7 +43,9 @@ def test_reference_documents_launcher_before_server() -> None:
 
 def test_reference_marks_removed_setup_commands() -> None:
     text = CLI_REFERENCE.read_text()
-    removed = text[text.index("## Removed Setup Commands") :]
+    removed_start = text.index("## Removed Setup Commands")
+    related_start = text.index("## Related Documentation", removed_start)
+    removed = text[removed_start:related_start]
     commands = _subparsers(_build_parser())
 
     assert "`switchyard configure` and `switchyard verify` are not available" in removed
