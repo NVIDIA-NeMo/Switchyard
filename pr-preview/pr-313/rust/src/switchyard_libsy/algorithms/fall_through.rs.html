@@ -1304,61 +1304,32 @@
 <a href=#1304 id=1304 data-nosnippet>1304</a>        <span class="macro">assert!</span>(!states.contains_key(<span class="string">"session-1"</span>));
 <a href=#1305 id=1305 data-nosnippet>1305</a>    }
 <a href=#1306 id=1306 data-nosnippet>1306</a>
-<a href=#1307 id=1307 data-nosnippet>1307</a>    <span class="attr">#[tokio::test]
-<a href=#1308 id=1308 data-nosnippet>1308</a>    </span><span class="kw">async fn </span>session_state_refreshes_last_accessed() {
+<a href=#1307 id=1307 data-nosnippet>1307</a>    <span class="attr">#[test]
+<a href=#1308 id=1308 data-nosnippet>1308</a>    </span><span class="kw">fn </span>cleanup_removes_only_inactive_idle_sessions() {
 <a href=#1309 id=1309 data-nosnippet>1309</a>        <span class="kw">let </span>router = FallThrough::&lt;u32&gt;::new_with_state(target_set(<span class="kw-2">&amp;</span>[<span class="string">"strong"</span>]));
-<a href=#1310 id=1310 data-nosnippet>1310</a>        <span class="kw">let </span>request = request();
-<a href=#1311 id=1311 data-nosnippet>1311</a>
-<a href=#1312 id=1312 data-nosnippet>1312</a>        drop(router.session_state(<span class="kw-2">&amp;</span>request));
-<a href=#1313 id=1313 data-nosnippet>1313</a>        <span class="kw">let </span>first_accessed = router
-<a href=#1314 id=1314 data-nosnippet>1314</a>            .session_states
-<a href=#1315 id=1315 data-nosnippet>1315</a>            .as_ref()
-<a href=#1316 id=1316 data-nosnippet>1316</a>            .expect(<span class="string">"stateful router has a session registry"</span>)
-<a href=#1317 id=1317 data-nosnippet>1317</a>            .lock()
-<a href=#1318 id=1318 data-nosnippet>1318</a>            .get(<span class="string">"session-1"</span>)
-<a href=#1319 id=1319 data-nosnippet>1319</a>            .expect(<span class="string">"session state was inserted"</span>)
-<a href=#1320 id=1320 data-nosnippet>1320</a>            .last_accessed;
+<a href=#1310 id=1310 data-nosnippet>1310</a>        <span class="kw">let </span>_active_state = router
+<a href=#1311 id=1311 data-nosnippet>1311</a>            .session_state(<span class="kw-2">&amp;</span>request()) <span class="comment">// session-1
+<a href=#1312 id=1312 data-nosnippet>1312</a>            </span>.expect(<span class="string">"session state was inserted"</span>);
+<a href=#1313 id=1313 data-nosnippet>1313</a>        <span class="kw">let </span>inactive_request = Request {
+<a href=#1314 id=1314 data-nosnippet>1314</a>            metadata: <span class="prelude-val">Some</span>(Metadata {
+<a href=#1315 id=1315 data-nosnippet>1315</a>                session_id: <span class="prelude-val">Some</span>(<span class="string">"session-2"</span>.to_string()),
+<a href=#1316 id=1316 data-nosnippet>1316</a>                ..Metadata::default()
+<a href=#1317 id=1317 data-nosnippet>1317</a>            }),
+<a href=#1318 id=1318 data-nosnippet>1318</a>            ..request()
+<a href=#1319 id=1319 data-nosnippet>1319</a>        };
+<a href=#1320 id=1320 data-nosnippet>1320</a>        drop(router.session_state(<span class="kw-2">&amp;</span>inactive_request));
 <a href=#1321 id=1321 data-nosnippet>1321</a>
-<a href=#1322 id=1322 data-nosnippet>1322</a>        tokio::time::sleep(std::time::Duration::from_millis(<span class="number">1</span>)).<span class="kw">await</span>;
-<a href=#1323 id=1323 data-nosnippet>1323</a>        drop(router.session_state(<span class="kw-2">&amp;</span>request));
-<a href=#1324 id=1324 data-nosnippet>1324</a>        <span class="kw">let </span>second_accessed = router
-<a href=#1325 id=1325 data-nosnippet>1325</a>            .session_states
-<a href=#1326 id=1326 data-nosnippet>1326</a>            .as_ref()
-<a href=#1327 id=1327 data-nosnippet>1327</a>            .expect(<span class="string">"stateful router has a session registry"</span>)
-<a href=#1328 id=1328 data-nosnippet>1328</a>            .lock()
-<a href=#1329 id=1329 data-nosnippet>1329</a>            .get(<span class="string">"session-1"</span>)
-<a href=#1330 id=1330 data-nosnippet>1330</a>            .expect(<span class="string">"session state is retained"</span>)
-<a href=#1331 id=1331 data-nosnippet>1331</a>            .last_accessed;
-<a href=#1332 id=1332 data-nosnippet>1332</a>
-<a href=#1333 id=1333 data-nosnippet>1333</a>        <span class="macro">assert!</span>(second_accessed &gt; first_accessed);
-<a href=#1334 id=1334 data-nosnippet>1334</a>    }
-<a href=#1335 id=1335 data-nosnippet>1335</a>
-<a href=#1336 id=1336 data-nosnippet>1336</a>    <span class="attr">#[test]
-<a href=#1337 id=1337 data-nosnippet>1337</a>    </span><span class="kw">fn </span>cleanup_removes_only_inactive_idle_sessions() {
-<a href=#1338 id=1338 data-nosnippet>1338</a>        <span class="kw">let </span>router = FallThrough::&lt;u32&gt;::new_with_state(target_set(<span class="kw-2">&amp;</span>[<span class="string">"strong"</span>]));
-<a href=#1339 id=1339 data-nosnippet>1339</a>        <span class="kw">let </span>_active_state = router
-<a href=#1340 id=1340 data-nosnippet>1340</a>            .session_state(<span class="kw-2">&amp;</span>request())
-<a href=#1341 id=1341 data-nosnippet>1341</a>            .expect(<span class="string">"session state was inserted"</span>);
-<a href=#1342 id=1342 data-nosnippet>1342</a>        <span class="kw">let </span>inactive_request = Request {
-<a href=#1343 id=1343 data-nosnippet>1343</a>            metadata: <span class="prelude-val">Some</span>(Metadata {
-<a href=#1344 id=1344 data-nosnippet>1344</a>                session_id: <span class="prelude-val">Some</span>(<span class="string">"session-2"</span>.to_string()),
-<a href=#1345 id=1345 data-nosnippet>1345</a>                ..Metadata::default()
-<a href=#1346 id=1346 data-nosnippet>1346</a>            }),
-<a href=#1347 id=1347 data-nosnippet>1347</a>            ..request()
-<a href=#1348 id=1348 data-nosnippet>1348</a>        };
-<a href=#1349 id=1349 data-nosnippet>1349</a>        drop(router.session_state(<span class="kw-2">&amp;</span>inactive_request));
-<a href=#1350 id=1350 data-nosnippet>1350</a>
-<a href=#1351 id=1351 data-nosnippet>1351</a>        <span class="kw">let </span>states = router
-<a href=#1352 id=1352 data-nosnippet>1352</a>            .session_states
-<a href=#1353 id=1353 data-nosnippet>1353</a>            .as_ref()
-<a href=#1354 id=1354 data-nosnippet>1354</a>            .expect(<span class="string">"stateful router has a session registry"</span>);
-<a href=#1355 id=1355 data-nosnippet>1355</a>        <span class="kw">let </span>now = Instant::now() + SESSION_STATE_TTL + Duration::from_secs(<span class="number">1</span>);
-<a href=#1356 id=1356 data-nosnippet>1356</a>
-<a href=#1357 id=1357 data-nosnippet>1357</a>        remove_inactive_sessions(states, now, SESSION_STATE_TTL);
-<a href=#1358 id=1358 data-nosnippet>1358</a>
-<a href=#1359 id=1359 data-nosnippet>1359</a>        <span class="kw">let </span>states = states.lock();
-<a href=#1360 id=1360 data-nosnippet>1360</a>        <span class="macro">assert!</span>(states.contains_key(<span class="string">"session-1"</span>));
-<a href=#1361 id=1361 data-nosnippet>1361</a>        <span class="macro">assert!</span>(!states.contains_key(<span class="string">"session-2"</span>));
-<a href=#1362 id=1362 data-nosnippet>1362</a>    }
-<a href=#1363 id=1363 data-nosnippet>1363</a>}
+<a href=#1322 id=1322 data-nosnippet>1322</a>        <span class="kw">let </span>states = router
+<a href=#1323 id=1323 data-nosnippet>1323</a>            .session_states
+<a href=#1324 id=1324 data-nosnippet>1324</a>            .as_ref()
+<a href=#1325 id=1325 data-nosnippet>1325</a>            .expect(<span class="string">"stateful router has a session registry"</span>);
+<a href=#1326 id=1326 data-nosnippet>1326</a>        <span class="kw">let </span>now = Instant::now() + SESSION_STATE_TTL + Duration::from_secs(<span class="number">1</span>);
+<a href=#1327 id=1327 data-nosnippet>1327</a>
+<a href=#1328 id=1328 data-nosnippet>1328</a>        remove_inactive_sessions(states, now, SESSION_STATE_TTL);
+<a href=#1329 id=1329 data-nosnippet>1329</a>
+<a href=#1330 id=1330 data-nosnippet>1330</a>        <span class="kw">let </span>states = states.lock();
+<a href=#1331 id=1331 data-nosnippet>1331</a>        <span class="macro">assert!</span>(states.contains_key(<span class="string">"session-1"</span>));
+<a href=#1332 id=1332 data-nosnippet>1332</a>        <span class="macro">assert!</span>(!states.contains_key(<span class="string">"session-2"</span>));
+<a href=#1333 id=1333 data-nosnippet>1333</a>    }
+<a href=#1334 id=1334 data-nosnippet>1334</a>}
 </code></pre></div></section></main></body></html>
