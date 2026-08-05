@@ -97,6 +97,7 @@ def build_tier_passthrough_switchyard(
     enable_stats: bool = True,
     extra_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
+    backend_wrapper: Callable[[Any], Any] | None = None,
 ) -> ChainRuntime:
     """Build a single-tier chain for an explicitly selected model."""
     from switchyard.lib.profiles import PassthroughProfileConfig, ProfileSwitchyard
@@ -111,6 +112,7 @@ def build_tier_passthrough_switchyard(
             stats_accumulator=stats,
             pre_request_processors=extra_request_processors,
             response_processors=extra_response_processors,
+            backend_wrapper=backend_wrapper,
         )
     )
 

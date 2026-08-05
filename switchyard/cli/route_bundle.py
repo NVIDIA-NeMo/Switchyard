@@ -22,9 +22,10 @@ Launchers skip the parser and construct a :class:`RouteBundle` directly so
 argparse-driven and YAML-driven assembly share one builder.
 """
 
+import logging
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from importlib import import_module
 from pathlib import Path
@@ -57,6 +58,8 @@ from switchyard.lib.route_table_builders import (
     build_tier_passthrough_switchyard,
 )
 from switchyard.lib.stats_accumulator import StatsAccumulator
+
+logger = logging.getLogger(__name__)
 
 
 def _default_discovery_fn(base_url: str, api_key: str) -> list[str]:
@@ -164,6 +167,18 @@ _TARGET_DEFAULT_ROUTE_KEYS = _TARGET_DEFAULT_KEYS | frozenset({"defaults"})
 _MODEL_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozenset({
     "target",
     "model",
+    # Opts this route's single target into token capture. Applied to the target
+    # before coercion.
+    "token_capture_engine",
+    # Opts this route into token-continuity injection (requires
+    # token_capture_engine). Parser names mirror the vLLM server flags.
+    "token_injection",
+    # How injected history reaches the engine: "completions" (default; raw
+    # token IDs via /v1/completions) or "prefix_chat" (chat completions with
+    # required_prefix_token_ids, for NeMo-RL-style training servers).
+    "injection_transport",
+    "tool_parser",
+    "reasoning_parser",
 })
 _RANDOM_ROUTING_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozenset({
     "strong",
@@ -191,7 +206,15 @@ _PASSTHROUGH_SETTING_KEYS = frozenset({
 })
 _PASSTHROUGH_ROUTE_KEYS = (
     _ROUTE_METADATA_KEYS
-    | frozenset({"defaults", "enable_stats"})
+    | frozenset({
+        "defaults",
+        "enable_stats",
+        "token_capture_engine",
+        "token_injection",
+        "injection_transport",
+        "tool_parser",
+        "reasoning_parser",
+    })
     | _PASSTHROUGH_SETTING_KEYS
 )
 _LATENCY_ENDPOINT_DEFAULT_KEYS = frozenset({
@@ -418,6 +441,7 @@ def load_route_bundle_table(
     stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
+    token_capture_enabled: bool = False,
 ) -> RouteTable:
     """Load *path* and return a table keyed by route model id.
 
@@ -430,12 +454,17 @@ def load_route_bundle_table(
     ``pre_routing_request_processors`` / ``extra_response_processors`` let
     callers attach process-level components such as Intake telemetry to every
     YAML-declared route.
+
+    ``token_capture_enabled`` honors routes' ``token_capture_engine`` declarations
+    (deriving token-capture request params); when ``False`` the key is ignored
+    with a warning so clients never receive token fields nobody will capture.
     """
     return build_route_bundle_table(
         parse_routing_profiles_file(path),
         stats_accumulator=stats_accumulator,
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
+        token_capture_enabled=token_capture_enabled,
     )
 
 
@@ -444,6 +473,7 @@ def build_route_bundle_table(
     stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
+    token_capture_enabled: bool = False,
 ) -> RouteTable:
     """Parse *raw* dict and build a :class:`RouteTable`.
 
@@ -452,6 +482,8 @@ def build_route_bundle_table(
     then delegates to :func:`build_table_from_bundle`. Optional
     ``stats_accumulator`` overrides the parsed bundle's default ``None``.
     """
+    if not token_capture_enabled:
+        raw = _strip_token_capture_engine(raw)
     bundle = _parse_route_bundle_dict(raw)
     if stats_accumulator is not None:
         bundle = replace(bundle, stats_accumulator=stats_accumulator)
@@ -460,6 +492,75 @@ def build_route_bundle_table(
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
     )
+
+
+def route_bundle_declares_token_capture(raw_or_path: object) -> bool:
+    """True when the bundle declares ``token_capture_engine`` on any route.
+
+    Accepts either a path to a routing-profiles YAML file or an
+    already-parsed bundle dict. Token capture activates under
+    ``--enable-rl-logging`` when at least one route opts in via
+    ``token_capture_engine``. A bundle that cannot be parsed reports ``False`` —
+    the real table load surfaces the parse error.
+    """
+    if raw_or_path is None:
+        return False
+    raw: object
+    if isinstance(raw_or_path, str | Path):
+        try:
+            raw = parse_routing_profiles_file(raw_or_path)
+        except RouteBundleConfigError:
+            return False
+    else:
+        raw = raw_or_path
+
+    def _walk(node: object) -> bool:
+        if isinstance(node, Mapping):
+            return "token_capture_engine" in node or any(_walk(value) for value in node.values())
+        if isinstance(node, list):
+            return any(_walk(item) for item in node)
+        return False
+
+    return _walk(raw)
+
+
+def _strip_token_capture_engine(raw: object) -> object:
+    """Drop ``token_capture_engine`` keys when token capture is disabled.
+
+    The field derives token-capture request params into the route target's
+    ``extra_body`` (see ``llm_target_with_token_capture``); honoring it while
+    RL logging is off would make clients receive token fields that nothing
+    captures. Warns once so the config mismatch is visible.
+    """
+
+    stripped = 0
+
+    def _walk(node: object) -> object:
+        nonlocal stripped
+        if isinstance(node, Mapping):
+            out: dict[str, object] = {}
+            for key, value in node.items():
+                if key == "token_capture_engine":
+                    stripped += 1
+                    continue
+                # Injection rides on capture; without capture it must not
+                # activate (its records would go unstored).
+                if key in ("token_injection", "injection_transport"):
+                    continue
+                out[key] = _walk(value)
+            return out
+        if isinstance(node, list):
+            return [_walk(item) for item in node]
+        return node
+
+    result = _walk(raw)
+    if stripped:
+        logger.warning(
+            "route bundle declares token_capture_engine on %d route(s) but token "
+            "capture is disabled; ignoring (enable with --enable-rl-logging)",
+            stripped,
+        )
+    return result
 
 
 def _parse_route_bundle_dict(raw: object) -> RouteBundle:
@@ -573,7 +674,10 @@ def build_table_from_bundle(
         table.register(
             model_id,
             switchyard,
-            metadata=_route_metadata(model_id, route, route_type),
+            metadata={
+                **_route_metadata(model_id, route, route_type),
+                **_capture_route_metadata_extras(model_id, route, route_type, route_defaults),
+            },
         )
     return table
 
@@ -786,6 +890,7 @@ def _build_switchyard_for_route(
             enable_stats=_optional_bool(route.get("enable_stats"), default=True),
             extra_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
+            backend_wrapper=_token_injection_wrapper(model_id, route, target),
         )
 
     if route_type == "routellm":
@@ -1129,10 +1234,70 @@ def _passthrough_target(
         if route_type == "model":
             raise RouteBundleConfigError(f"route {model_id!r} requires target or model")
         target_raw = model_id
-    return coerce_llm_target(
-        _target_mapping(target_raw, target_defaults, default_id=model_id, where="target"),
-        default_id=model_id,
+    target = _target_mapping(target_raw, target_defaults, default_id=model_id, where="target")
+    # Apply the route's token_capture_engine to its single target.
+    route_engine = route.get("token_capture_engine")
+    if route_engine is not None:
+        target["token_capture_engine"] = route_engine
+    return coerce_llm_target(target, default_id=model_id)
+
+
+def _token_injection_wrapper(
+    model_id: str,
+    route: Mapping[str, object],
+    target: LlmTarget,
+) -> Callable[[Any], Any] | None:
+    """Backend wrapper enabling token-continuity injection, or ``None``.
+
+    ``token_injection: true`` opts the route in; it requires
+    ``token_capture_engine`` (injection's records must be captured) and an
+    explicit target ``base_url`` for the direct ``/tokenize`` and
+    ``/v1/completions`` calls. Parser names are optional and mirror the vLLM
+    server's ``--tool-call-parser`` / ``--reasoning-parser`` flags.
+    """
+    if not route.get("token_injection"):
+        return None
+    if route.get("token_capture_engine") is None:
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: token_injection requires token_capture_engine"
+        )
+    endpoint = target.endpoint
+    base_url = endpoint.base_url if endpoint is not None else None
+    if not base_url:
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: token_injection requires an explicit base_url"
+        )
+    tool_parser = _optional_str(route["tool_parser"]) if "tool_parser" in route else None
+    reasoning_parser = (
+        _optional_str(route["reasoning_parser"]) if "reasoning_parser" in route else None
     )
+    transport = (
+        _optional_str(route["injection_transport"]) if "injection_transport" in route else None
+    ) or "completions"
+    if transport not in ("completions", "prefix_chat"):
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: injection_transport must be 'completions' or "
+            f"'prefix_chat', got {transport!r}"
+        )
+    api_key = endpoint.api_key if endpoint is not None else None
+    timeout_secs = (endpoint.timeout_secs if endpoint is not None else None) or 600.0
+    model = target.model
+
+    def _wrap(backend: Any) -> Any:
+        from switchyard.lib.backends.token_injection_backend import TokenInjectionBackend
+
+        return TokenInjectionBackend(
+            backend,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
+            timeout_secs=timeout_secs,
+            transport=transport,
+        )
+
+    return _wrap
 
 
 def _latency_service_switchyard(
@@ -1393,6 +1558,79 @@ def _validate_allowed_keys(
         )
 
 
+def _capture_route_metadata_extras(
+    model_id: str,
+    route: Mapping[str, object],
+    route_type: str,
+    target_defaults: Mapping[str, object],
+) -> dict[str, object]:
+    """Upstream-model facts exposed on ``/v1/models`` for token-capture routes.
+
+    Training consumers (e.g. NeMo Gym's opencode provider config) need the
+    served model's context length; the route target is the only component that
+    always knows the engine's address, so the fact is surfaced here. Absent on
+    fetch failure — consumers degrade gracefully.
+    """
+    if route_type not in ("model", "passthrough") or route.get("token_capture_engine") is None:
+        return {}
+    try:
+        target = _passthrough_target(model_id, route, target_defaults, route_type)
+    except (RouteBundleConfigError, TypeError, ValueError):
+        return {}
+    endpoint = target.endpoint
+    base_url = endpoint.base_url if endpoint is not None else None
+    if not base_url:
+        return {}
+    max_model_len = _fetch_upstream_max_model_len(base_url, endpoint.api_key)
+    return {"max_model_len": max_model_len} if max_model_len is not None else {}
+
+
+def _fetch_upstream_max_model_len(base_url: str, api_key: str | None) -> int | None:
+    """The engine's ``max_model_len`` from its ``/v1/models`` card, or ``None``.
+
+    Falls back to a ``POST /tokenize`` probe when ``/v1/models`` is absent or
+    carries no ``max_model_len`` — the NeMo-RL training server only exposes
+    ``/tokenize`` and ``/v1/chat/completions``, but ``TokenizeResponse`` always
+    includes ``max_model_len`` regardless of the payload.
+    """
+    import httpx
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    base = base_url.rstrip("/")
+
+    try:
+        response = httpx.get(f"{base}/models", headers=headers, timeout=5.0)
+        response.raise_for_status()
+        data = response.json().get("data")
+        for entry in data if isinstance(data, list) else []:
+            value = entry.get("max_model_len") if isinstance(entry, dict) else None
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+    except Exception:  # noqa: BLE001 - metadata is best-effort at startup
+        logger.debug("could not fetch max_model_len from %s /v1/models", base, exc_info=True)
+
+    # /tokenize fallback: works against NeMo-RL's vllm_worker_async server which
+    # skips /v1/models but always returns max_model_len in TokenizeResponse.
+    # Completion form (prompt string) avoids the chat template entirely.
+    # model=None is explicitly accepted by vLLM's _is_model_supported().
+    # /tokenize lives at the server root (not under /v1) — same as the injection backend.
+    try:
+        response = httpx.post(
+            f"{base.removesuffix('/v1')}/tokenize",
+            json={"prompt": ""},
+            headers=headers,
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        value = response.json().get("max_model_len")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    except Exception:  # noqa: BLE001
+        logger.debug("could not fetch max_model_len from %s /tokenize", base, exc_info=True)
+
+    return None
+
+
 def _route_metadata(
     model_id: str,
     route: Mapping[str, object],
@@ -1506,5 +1744,6 @@ __all__ = [
     "build_route_bundle_table",
     "load_route_bundle_table",
     "parse_routing_profiles_file",
+    "route_bundle_declares_token_capture",
     "routing_profile_model_ids",
 ]
