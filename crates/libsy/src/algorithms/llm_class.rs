@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-use switchyard_protocol::{Message, Role, SimpleDecision};
+use switchyard_protocol::{ContentBlock, Message, Role, SimpleDecision};
 
 use super::fall_through::{DefaultTarget, FallThrough};
 use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
@@ -92,8 +92,39 @@ fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message
         .iter()
         .filter(|m| !is_instruction(m))
         .collect();
-    kept.extend(&tail[tail.len().saturating_sub(recent_turn_window)..]);
+    kept.extend(&tail[window_start(&tail, recent_turn_window)..]);
     kept.into_iter().cloned().collect()
+}
+
+/// The first index of the trailing window.
+///
+/// Counting messages alone can start the window between an assistant tool call and the
+/// result answering it, leaving the judge a result whose call id was never introduced.
+/// The start therefore moves back to the nearest one that keeps every tool pair whole.
+/// A result that no earlier start can pair — its call sits before the opening task, which
+/// this function never reaches — falls back to the counted start, so an unanswerable
+/// result cannot widen the window to the entire conversation.
+fn window_start(tail: &[&Message], recent_turn_window: usize) -> usize {
+    let counted = tail.len().saturating_sub(recent_turn_window);
+    (0..=counted)
+        .rev()
+        .find(|start| !has_orphan_tool_result(&tail[*start..]))
+        .unwrap_or(counted)
+}
+
+/// Whether `window` holds a tool result whose originating call is not also in `window`.
+fn has_orphan_tool_result(window: &[&Message]) -> bool {
+    let blocks = || window.iter().flat_map(|message| &message.content);
+    let calls: BTreeSet<&str> = blocks()
+        .filter_map(|block| match block {
+            ContentBlock::ToolCall(call) => Some(call.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    blocks().any(|block| match block {
+        ContentBlock::ToolResult(result) => !calls.contains(result.tool_call_id.as_str()),
+        _ => false,
+    })
 }
 
 /// Keeps the opening task and the latest user follow-up when they differ.
@@ -919,8 +950,8 @@ mod tests {
 
     use super::*;
     use switchyard_protocol::{
-        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, Metadata, completion_text,
-        text_request, text_response,
+        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, Metadata, ToolCall, ToolResult,
+        completion_text, text_request, text_response,
     };
 
     use crate::algorithms::util::llm_judge::Judge;
@@ -1454,6 +1485,99 @@ mod tests {
         assert!(contents.contains(&"initial task".to_string()));
         assert!(!contents.contains(&"recent 2".to_string()));
         Ok(())
+    }
+
+    fn tool_call(id: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: id.to_string(),
+                name: "search".to_string(),
+                arguments: Value::Null,
+            })],
+        }
+    }
+
+    fn tool_result(id: &str) -> Message {
+        Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: id.to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "tool output".to_string(),
+                }],
+                is_error: None,
+            })],
+        }
+    }
+
+    /// Tool-call ids answered by a result that no kept call introduced.
+    fn orphan_tool_results(messages: &[Message]) -> Vec<String> {
+        let blocks = |messages: &[Message]| {
+            messages
+                .iter()
+                .flat_map(|message| message.content.clone())
+                .collect::<Vec<_>>()
+        };
+        let calls = blocks(messages)
+            .into_iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall(call) => Some(call.id),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        blocks(messages)
+            .into_iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult(result) if !calls.contains(&result.tool_call_id) => {
+                    Some(result.tool_call_id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A count-based window can begin on a tool result, which leaves the call that
+    /// introduced its id outside the window and the classifier history invalid.
+    #[test]
+    fn trimming_keeps_the_call_that_introduced_a_kept_tool_result() {
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            Message::text(Role::User, "initial task"),
+            Message::text(Role::Assistant, "old response"),
+            tool_call("call-1"),
+            tool_result("call-1"),
+            Message::text(Role::Assistant, "recent 1"),
+            Message::text(Role::User, "recent 2"),
+            Message::text(Role::Assistant, "recent 3"),
+            Message::text(Role::User, "recent 4"),
+        ];
+
+        // The five-message tail begins exactly on the tool result.
+        let kept = trim_messages(&messages, 5);
+
+        assert_eq!(orphan_tool_results(&kept), Vec::<String>::new());
+    }
+
+    /// Widening is only for tool pairs: a plain conversation keeps the window it asked for.
+    #[test]
+    fn trimming_without_tool_calls_keeps_only_the_window() {
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            Message::text(Role::User, "initial task"),
+            Message::text(Role::Assistant, "old response"),
+            Message::text(Role::User, "recent 1"),
+            Message::text(Role::Assistant, "recent 2"),
+        ];
+
+        let kept = trim_messages(&messages, 2);
+
+        let contents = kept
+            .iter()
+            .filter_map(|message| message.text_content("\n"))
+            .collect::<Vec<_>>();
+        assert!(!contents.contains(&"old response".to_string()));
+        assert_eq!(kept.len(), 4);
     }
 
     #[test]
