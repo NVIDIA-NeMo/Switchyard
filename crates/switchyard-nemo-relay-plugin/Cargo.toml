@@ -20,9 +20,7 @@ async-channel.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 http = "1"
-# Use the published release candidate during development. This becomes `0.7.0`
-# before the integration lands, after the stable crate is published.
-nemo-relay-plugin = "=0.7.0-rc.5"
+nemo-relay-plugin = "=0.7.0"
 serde.workspace = true
 serde_json.workspace = true
 switchyard-libsy.workspace = true

@@ -1288,9 +1288,9 @@ dependencies = [
 
 [[package]]
 name = "nemo-relay-plugin"
-version = "0.7.0-rc.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae9f5d2e2f16f0db4e9b666068fb3c470eb655b6067ac7f5fa4c66ce8051c220"
+checksum = "df37bebc79a6d757a7cb18d6c94ca0825fcb6c8e51ab4e13900e7d5853e0de8b"
 dependencies = [
  "nemo-relay-types",
  "serde",
@@ -1299,9 +1299,9 @@ dependencies = [
 
 [[package]]
 name = "nemo-relay-types"
-version = "0.7.0-rc.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70b2358889074b00eba89ec42bc8114f3515541f928306ed770ddf995cfa416b"
+checksum = "432c945ced80fd10e0ff803d77fa48226b89593f5acc097c072b5e7f24928120"
 dependencies = [
  "bitflags",
  "chrono",
