@@ -115,7 +115,18 @@ impl ClassifierInput for TaskInput {
         // The default preserves the whole-task anchor and latest user update. A
         // configured window widens that to the surrounding conversation.
         match self.recent_turn_window {
-            Some(window) => trim_messages(&request.llm_request.messages, window),
+            // Inbound decoders normalize client system/developer content into
+            // `instructions`, so the window only sees it when folded back in.
+            Some(window) => request
+                .llm_request
+                .instructions
+                .iter()
+                .map(|block| Message {
+                    role: block.role,
+                    content: block.content.clone(),
+                })
+                .chain(trim_messages(&request.llm_request.messages, window))
+                .collect(),
             None => task_messages(&request.llm_request.messages),
         }
     }
@@ -904,7 +915,8 @@ mod tests {
 
     use super::*;
     use switchyard_protocol::{
-        LlmClientError, LlmRequest, Metadata, completion_text, text_request, text_response,
+        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, Metadata, completion_text,
+        text_request, text_response,
     };
 
     use crate::algorithms::util::llm_judge::Judge;
@@ -1420,6 +1432,35 @@ mod tests {
         assert!(contents.contains(&"recent 1".to_string()));
         assert!(contents.contains(&"recent 2".to_string()));
         assert!(!contents.contains(&"old response".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn the_judge_sees_normalized_client_instructions() -> Result<()> {
+        // Inbound decoders normalize client system/developer content into
+        // `instructions`, not into `messages`.
+        let mut llm_request = text_request(None, "initial task");
+        llm_request.instructions.push(InstructionBlock {
+            role: Role::System,
+            content: vec![ContentBlock::Text {
+                text: "client instructions".to_string(),
+            }],
+        });
+        let request = Request {
+            llm_request,
+            raw_request: None,
+            metadata: None,
+        };
+        let judged = capability_judge(Some(2))?.build_request(&State::default(), &request);
+        assert!(
+            judged
+                .llm_request
+                .messages
+                .iter()
+                .filter_map(|message| message.text_content("\n"))
+                .any(|text| text == "client instructions"),
+            "judge lost the client instructions"
+        );
         Ok(())
     }
 
