@@ -999,6 +999,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#removed-setup-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removed Setup Commands
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#related-documentation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1188,6 +1199,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#removed-setup-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removed Setup Commands
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#related-documentation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1342,10 +1364,23 @@ TOML deployment schema accepted by the launcher.</p>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
+<h2 id="removed-setup-commands">Removed Setup Commands<a class="headerlink" href="#removed-setup-commands" title="Permanent link">&para;</a></h2>
+<p><code>switchyard configure</code> and <code>switchyard verify</code> are not available. Export the
+environment variable named by <code>api_key_env</code> in the native TOML deployment,
+then pass that deployment on each run. For example:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[llm_clients.provider]</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">api_key_env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;PROVIDER_API_KEY&quot;</span>
+</span></code></pre></div>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">PROVIDER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-provider-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>my-route<span class="w"> </span>--config<span class="w"> </span>routes.toml
+</span></code></pre></div>
+<p>The CLI does not save provider credentials or deployment paths.
+Use <code>./target/release/switchyard-server --config routes.toml --dry-run</code> to
+validate a native deployment before starting the standalone server.</p>
 <h2 id="related-documentation">Related Documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../getting_started/">Getting Started</a>: installation, configuration, and verification for both paths</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5c25651bc52e7d28880c17f2a5d63f8081eaa20e/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, TLS, and metrics</li>
+<li><a href="../getting_started/">Getting Started</a>: installation, configuration, and validation for both paths</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/016a5111286883173b24f09678c4ccc142777981/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, TLS, and metrics</li>
 </ul>
 
 
