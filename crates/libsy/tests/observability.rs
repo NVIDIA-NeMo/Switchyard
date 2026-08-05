@@ -499,7 +499,12 @@ impl Algorithm for AlgorithmMetricsAlgo {
             Some("metrics-first") => (2, [10.0, 20.0]),
             _ => (3, [30.0, 40.0]),
         };
-        let attributes = || [MetricAttribute::new("source", "test-classifier")];
+        let attributes = || {
+            [
+                MetricAttribute::new("source", "test-classifier"),
+                MetricAttribute::new("algorithm", "spoofed"),
+            ]
+        };
         driver.record_counter(
             "switchyard.test.algorithm_decisions",
             counter_delta,

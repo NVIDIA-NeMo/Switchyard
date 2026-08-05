@@ -273,8 +273,9 @@ impl Driver {
         &self,
         name: &'static str,
         value: AlgorithmMetricValue,
-        attributes: Vec<MetricAttribute>,
+        mut attributes: Vec<MetricAttribute>,
     ) {
+        attributes.retain(|attribute| attribute.key != "algorithm");
         let observation = AlgorithmMetricObservation {
             algorithm: self.algorithm.to_string(),
             name,
