@@ -272,6 +272,12 @@ impl FormatCodec for OpenAiResponsesCodec {
                 .and_then(|output| output.stop_reason),
             Some(StopReason::MaxTokens)
         );
+        let status = if is_truncated {
+            "incomplete"
+        } else {
+            "completed"
+        };
+        let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
         Ok(EncodedResponse {
             body: embed_preservation(
                 json!({
@@ -279,8 +285,8 @@ impl FormatCodec for OpenAiResponsesCodec {
                     "object": "response",
                     "created_at": 0,
                     "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
-                    "status": if is_truncated { "incomplete" } else { "completed" },
-                    "incomplete_details": is_truncated.then(|| json!({ "reason": "max_output_tokens" })),
+                    "status": status,
+                    "incomplete_details": incomplete_details,
                     "output": encode_responses_output(&response.outputs),
                     "usage": encode_responses_usage(&response.usage),
                     "parallel_tool_calls": true,
@@ -1110,6 +1116,11 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     .any(|block| matches!(block, ContentBlock::ToolCall(_)));
                 let text = text_from_blocks(&output.content, "");
                 let reasoning = reasoning_text_from_blocks(&output.content, "\n");
+                let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
+                    "incomplete"
+                } else {
+                    "completed"
+                };
                 let mut items = Vec::new();
 
                 if !reasoning.is_empty() {
@@ -1120,11 +1131,7 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     items.push(json!({
                         "type": "message",
                         "id": "msg_switchyard",
-                        "status": if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
-                            "incomplete"
-                        } else {
-                            "completed"
-                        },
+                        "status": status,
                         "role": role_to_responses(output.role),
                         "content": [{
                             "type": "output_text",

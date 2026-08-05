@@ -196,11 +196,12 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         state.stop_reason.as_deref(),
         Some("length") | Some("max_tokens")
     );
-    let message_status = if is_truncated {
-        "incomplete"
+    let (event_type, status) = if is_truncated {
+        ("response.incomplete", "incomplete")
     } else {
-        "completed"
+        ("response.completed", "completed")
     };
+    let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
     let mut out = ensure_responses_created(state);
     if state.response_text_started
         && let Some(output_index) = state.response_text_output_index
@@ -217,7 +218,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "item": {
                 "type": "message",
                 "role": "assistant",
-                "status": message_status,
+                "status": status,
                 "content": [{"type": "output_text", "text": state.response_text}],
             },
         }));
@@ -258,7 +259,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             json!({
                 "type": "message",
                 "role": "assistant",
-                "status": message_status,
+                "status": status,
                 "content": [{"type": "output_text", "text": state.response_text}],
             }),
         ));
@@ -297,12 +298,12 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         .collect::<Vec<_>>();
 
     out.push(json!({
-        "type": if is_truncated { "response.incomplete" } else { "response.completed" },
+        "type": event_type,
         "response": {
             "id": responses_id(state),
             "object": "response",
-            "status": if is_truncated { "incomplete" } else { "completed" },
-            "incomplete_details": is_truncated.then(|| json!({ "reason": "max_output_tokens" })),
+            "status": status,
+            "incomplete_details": incomplete_details,
             "model": target_model_or_source_model(state),
             "output": output,
             "usage": responses_usage_value(&state.usage),
