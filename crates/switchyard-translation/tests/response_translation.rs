@@ -569,3 +569,34 @@ fn openai_chat_length_finish_translates_to_incomplete_responses_status() -> Test
     assert_eq!(output["output"][0]["status"], "incomplete");
     Ok(())
 }
+
+// Verifies a truncated Responses source keeps its stop reason when re-encoded.
+#[test]
+fn incomplete_responses_source_survives_translation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp_1",
+        "object": "response",
+        "model": "gpt-4o",
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Half an ans"}]
+        }],
+        "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["choices"][0]["finish_reason"], "length");
+    Ok(())
+}

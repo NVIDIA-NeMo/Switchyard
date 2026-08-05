@@ -1024,3 +1024,29 @@ fn anthropic_max_tokens_stop_translates_to_responses_incomplete_event() -> TestR
     );
     Ok(())
 }
+
+// Verifies a streamed response.incomplete from a Responses upstream reaches a Chat client.
+#[test]
+fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
+    let incomplete = json!({
+        "type": "response.incomplete",
+        "response": {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &incomplete,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiChat)?);
+
+    let Some(terminal) = events.last() else {
+        return Err("finish should emit a terminal Chat chunk".into());
+    };
+    assert_eq!(terminal["choices"][0]["finish_reason"], "length");
+    Ok(())
+}

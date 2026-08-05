@@ -199,6 +199,16 @@ impl FormatCodec for OpenAiResponsesCodec {
                 }
             }
         }
+        // The truncation signal is on the response, not the output items.
+        if body.get("status").and_then(Value::as_str) == Some("incomplete")
+            && body
+                .get("incomplete_details")
+                .and_then(|details| details.get("reason"))
+                .and_then(Value::as_str)
+                == Some("max_output_tokens")
+        {
+            stop_reason = Some(StopReason::MaxTokens);
+        }
         let outputs = vec![if has_output {
             ResponseOutput {
                 role,

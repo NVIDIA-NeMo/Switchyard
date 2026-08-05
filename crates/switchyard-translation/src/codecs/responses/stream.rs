@@ -137,6 +137,10 @@ fn decode_responses_stream(
             out.push(LlmResponseChunk::MessageStop { reason: None });
             out
         }
+        // Carries the Anthropic spelling because every encoder already maps it.
+        Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
+            reason: Some("max_tokens".to_string()),
+        }],
         Some("error") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("message")
