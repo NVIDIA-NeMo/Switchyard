@@ -1161,6 +1161,36 @@ target = "shared"
     assert_eq!(capabilities["restricted"]["tool_calling"], json!(false));
     assert_eq!(capabilities["undeclared"]["context_window"], json!(null));
     assert_eq!(capabilities["undeclared"]["tool_calling"], json!(null));
+
+    let codex_models = body["models"].as_array().cloned().unwrap_or_default();
+    let codex_metadata = codex_models
+        .iter()
+        .filter_map(|entry| entry["slug"].as_str().map(|slug| (slug, entry)))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(codex_metadata.len(), 3);
+    assert_eq!(
+        codex_metadata["declared"]["context_window"],
+        json!(1_000_000)
+    );
+    assert_eq!(codex_metadata["declared"]["shell_type"], "shell_command");
+    assert_eq!(
+        codex_metadata["declared"]["apply_patch_tool_type"],
+        "freeform"
+    );
+    assert_eq!(
+        codex_metadata["restricted"]["context_window"],
+        json!(262_000)
+    );
+    assert_eq!(codex_metadata["restricted"]["shell_type"], "disabled");
+    assert_eq!(
+        codex_metadata["restricted"]["apply_patch_tool_type"],
+        json!(null)
+    );
+    assert_eq!(codex_metadata["undeclared"]["context_window"], json!(null));
+    assert_eq!(
+        codex_metadata["undeclared"]["supported_reasoning_levels"],
+        json!([])
+    );
     Ok(())
 }
 

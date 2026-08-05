@@ -1045,6 +1045,11 @@ fn model_list_payload<'a>(
     json!({
         "object": "list",
         "data": entries.iter().map(|(model, caps)| model_entry_json(model, *caps)).collect::<Vec<_>>(),
+        "models": entries
+            .iter()
+            .enumerate()
+            .map(|(priority, (model, caps))| codex_model_entry_json(model, *caps, priority))
+            .collect::<Vec<_>>(),
         "first_id": first_id,
         "last_id": last_id,
         "has_more": false,
@@ -1071,6 +1076,41 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
                 "anthropic-messages",
             ],
         },
+    })
+}
+
+// Builds the metadata Codex requires when it discovers models from a direct provider.
+fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority: usize) -> Value {
+    let tool_calling = capabilities.tool_calling.unwrap_or(true);
+    json!({
+        "slug": model,
+        "display_name": model,
+        "description": "Switchyard-routed model.",
+        "default_reasoning_level": null,
+        "supported_reasoning_levels": [],
+        "shell_type": if tool_calling { "shell_command" } else { "disabled" },
+        "visibility": "list",
+        "supported_in_api": true,
+        "priority": priority,
+        "additional_speed_tiers": [],
+        "availability_nux": null,
+        "upgrade": null,
+        "base_instructions": "You are Codex, a coding agent.",
+        "supports_reasoning_summaries": false,
+        "default_reasoning_summary": "none",
+        "support_verbosity": false,
+        "default_verbosity": null,
+        "apply_patch_tool_type": if tool_calling { Some("freeform") } else { None },
+        "web_search_tool_type": "text",
+        "truncation_policy": {"mode": "tokens", "limit": 10_000},
+        "supports_parallel_tool_calls": tool_calling,
+        "supports_image_detail_original": false,
+        "context_window": capabilities.context_window,
+        "max_context_window": capabilities.context_window,
+        "effective_context_window_percent": 95,
+        "experimental_supported_tools": [],
+        "input_modalities": ["text"],
+        "supports_search_tool": false,
     })
 }
 
