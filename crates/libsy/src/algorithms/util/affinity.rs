@@ -19,6 +19,7 @@
 
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -67,6 +68,8 @@ pub struct AffinityRouter {
     /// Held on the instance so the two roles share one process-local map through a
     /// single registered [`Arc`](std::sync::Arc); bounded by [`MAX_ASSIGNMENTS`].
     assignments: Mutex<HashMap<AffinityKey, String>>,
+    /// Whether the "no identity to key on" warning has already been emitted.
+    unkeyed_warning_emitted: AtomicBool,
 }
 
 impl AffinityRouter {
@@ -107,39 +110,51 @@ impl AffinityRouter {
 
     /// Derives the stable identity this router should retain for `request`.
     fn affinity_key(&self, request: &Request) -> Option<AffinityKey> {
-        // An empty session header carries no identity: keying on it would collapse every
-        // task onto one assignment. Treat it as absent, as the fall-through router does.
-        if let Some(metadata) = request.metadata.as_ref()
-            && let Some(session) = metadata
-                .session_id
-                .clone()
-                .filter(|session| !session.is_empty())
-        {
-            return if metadata.is_subagent {
-                metadata
-                    .agent_id
-                    .clone()
-                    .map(|agent| AffinityKey::Subagent { session, agent })
-            } else if self.subagents_only {
-                None
-            } else {
-                Some(AffinityKey::Session(session))
-            };
+        let metadata = request.metadata.as_ref();
+        let is_subagent = metadata.is_some_and(|metadata| metadata.is_subagent);
+        // Abstaining on root traffic is this mode's contract, not a misconfiguration.
+        if self.subagents_only && !is_subagent {
+            return None;
         }
 
-        // If headers are not present and we are not a subagent, use the message hash based fallback key to do task based routing
-        let is_subagent = request
-            .metadata
-            .as_ref()
-            .is_some_and(|metadata| metadata.is_subagent);
-        (!self.subagents_only && !is_subagent && self.message_hash_fallback)
-            .then(|| {
+        // An empty session header carries no identity: keying on it would collapse every
+        // task onto one assignment. Treat it as absent, as the fall-through router does.
+        let session = metadata
+            .and_then(|metadata| metadata.session_id.clone())
+            .filter(|session| !session.is_empty());
+        let key = match (session, is_subagent) {
+            (Some(session), true) => metadata
+                .and_then(|metadata| metadata.agent_id.clone())
+                .map(|agent| AffinityKey::Subagent { session, agent }),
+            (Some(session), false) => Some(AffinityKey::Session(session)),
+            // Child requests require their explicit session + agent identity and never fall
+            // back to task text.
+            (None, true) => None,
+            (None, false) if self.message_hash_fallback => {
                 first_user_message_hash(request).map(|hash| {
                     tracing::debug!(affinity_key = %hash, "affinity using message hash fallback");
                     AffinityKey::Session(hash)
                 })
-            })
-            .flatten()
+            }
+            (None, false) => None,
+        };
+        // Affinity that never keys anything is silent otherwise: the route reports itself as
+        // configured while every turn is classified afresh. Say so once rather than per turn.
+        if key.is_none() && self.should_warn_unkeyed() {
+            tracing::warn!(
+                is_subagent,
+                message_hash_fallback = self.message_hash_fallback,
+                "affinity is enabled but this request carries no usable identity, so no \
+                 affinity is applied; root requests need a session id or message hash \
+                 fallback, and child requests need both session and agent ids"
+            );
+        }
+        key
+    }
+
+    /// Reports whether this call owns the one-time warning for an unkeyable request.
+    fn should_warn_unkeyed(&self) -> bool {
+        !self.unkeyed_warning_emitted.swap(true, Ordering::Relaxed)
     }
 }
 
@@ -517,6 +532,39 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn unkeyable_requests_warn_only_once() -> Result<(), BoxErr> {
+        // Affinity without the fallback and without session metadata can never key anything.
+        let router = AffinityRouter::new();
+        let mut state = ();
+
+        let mut first = task_request(None, "Add a unit test for this function.", None);
+        assert!(scores(&router, &mut state, &mut first).await?.is_empty());
+        assert!(
+            !router.should_warn_unkeyed(),
+            "the first unkeyable request should have consumed the warning"
+        );
+
+        let mut second = task_request(None, "Reimplement this binary.", None);
+        assert!(scores(&router, &mut state, &mut second).await?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subagents_only_root_traffic_does_not_warn() -> Result<(), BoxErr> {
+        // Abstaining on root traffic is this mode's contract, so it must not warn.
+        let router = AffinityRouter::for_subagents();
+        let mut state = ();
+
+        let mut root = request(session("session-1", "agent-1"));
+        assert!(scores(&router, &mut state, &mut root).await?.is_empty());
+        assert!(
+            router.should_warn_unkeyed(),
+            "an intentional abstention should leave the warning unconsumed"
+        );
+        Ok(())
+    }
+
     #[test]
     fn user_message_hash_ignores_non_text_provider_payloads() {
         let request = |user_message| Request {
@@ -573,19 +621,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn message_hash_fallback_abstains_for_subagents() -> Result<(), BoxErr> {
-        let router = AffinityRouter::new().with_message_hash_fallback();
-        let mut state = ();
-        let mut subagent = task_request(
-            Some(Metadata {
-                is_subagent: true,
-                ..Metadata::default()
-            }),
-            "Implement the parser.",
-            None,
-        );
+    async fn subagent_without_a_session_abstains_and_warns() -> Result<(), BoxErr> {
+        for session_id in [None, Some(String::new())] {
+            let router = AffinityRouter::new().with_message_hash_fallback();
+            let mut state = ();
+            let mut subagent = task_request(
+                Some(Metadata {
+                    session_id,
+                    is_subagent: true,
+                    ..Metadata::default()
+                }),
+                "Implement the parser.",
+                None,
+            );
 
-        assert!(scores(&router, &mut state, &mut subagent).await?.is_empty());
+            retain(&router, &mut state, &mut subagent, "model-a").await?;
+            assert!(scores(&router, &mut state, &mut subagent).await?.is_empty());
+            assert!(
+                !router.should_warn_unkeyed(),
+                "an unidentifiable subagent should consume the warning"
+            );
+        }
         Ok(())
     }
 
@@ -724,7 +780,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subagent_without_an_agent_id_is_not_keyed() -> Result<(), BoxErr> {
+    async fn subagent_without_an_agent_id_abstains_and_warns() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
         let mut state = ();
 
@@ -738,6 +794,10 @@ mod tests {
         let mut req = request(metadata);
         retain(&router, &mut state, &mut req, "model-a").await?;
         assert!(scores(&router, &mut state, &mut req).await?.is_empty());
+        assert!(
+            !router.should_warn_unkeyed(),
+            "an unidentifiable subagent should consume the warning"
+        );
         Ok(())
     }
 
