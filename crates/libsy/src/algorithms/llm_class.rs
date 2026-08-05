@@ -3,7 +3,7 @@
 
 //! Judge-backed capability, escalation, and custom-policy routing.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -99,32 +99,41 @@ fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message
 /// The first index of the trailing window.
 ///
 /// Counting messages alone can start the window between an assistant tool call and the
-/// result answering it, leaving the judge a result whose call id was never introduced.
-/// The start therefore moves back to the nearest one that keeps every tool pair whole.
-/// A result that no earlier start can pair — its call sits before the opening task, which
-/// this function never reaches — falls back to the counted start, so an unanswerable
-/// result cannot widen the window to the entire conversation.
+/// result answering it, leaving the judge a result whose call id was never introduced. The
+/// start therefore moves back to the nearest one that keeps every tool pair whole.
+///
+/// One newest-to-oldest pass carries the ids still waiting for a call. Direction is what
+/// makes it correct: ids repeat across a conversation, and in this order a call is only
+/// ever seen after the results it could answer, so a later call — already passed — clears
+/// nothing. A result whose call sits before the opening task, which trimming never reaches,
+/// keeps the set non-empty to the end and falls back to the counted start, so an unpairable
+/// result costs one pass and cannot widen the window to the whole conversation.
 fn window_start(tail: &[&Message], recent_turn_window: usize) -> usize {
     let counted = tail.len().saturating_sub(recent_turn_window);
-    (0..=counted)
-        .rev()
-        .find(|start| !has_orphan_tool_result(&tail[*start..]))
-        .unwrap_or(counted)
-}
-
-/// Whether `window` holds a tool result whose originating call is not also in `window`.
-fn has_orphan_tool_result(window: &[&Message]) -> bool {
-    let blocks = || window.iter().flat_map(|message| &message.content);
-    let calls: BTreeSet<&str> = blocks()
-        .filter_map(|block| match block {
-            ContentBlock::ToolCall(call) => Some(call.id.as_str()),
-            _ => None,
-        })
-        .collect();
-    blocks().any(|block| match block {
-        ContentBlock::ToolResult(result) => !calls.contains(result.tool_call_id.as_str()),
-        _ => false,
-    })
+    // An empty window holds no result to pair, and the loop below never visits its start.
+    if counted == tail.len() {
+        return counted;
+    }
+    let mut unpaired: HashSet<&str> = HashSet::new();
+    for (start, message) in tail.iter().enumerate().rev() {
+        // Blocks reverse too, so a call answers a result only when it precedes it inside
+        // one message as well as across messages.
+        for block in message.content.iter().rev() {
+            match block {
+                ContentBlock::ToolResult(result) => {
+                    unpaired.insert(result.tool_call_id.as_str());
+                }
+                ContentBlock::ToolCall(call) => {
+                    unpaired.remove(call.id.as_str());
+                }
+                _ => {}
+            }
+        }
+        if start <= counted && unpaired.is_empty() {
+            return start;
+        }
+    }
+    counted
 }
 
 /// Keeps the opening task and the latest user follow-up when they differ.
@@ -1511,32 +1520,6 @@ mod tests {
         }
     }
 
-    /// Tool-call ids answered by a result that no kept call introduced.
-    fn orphan_tool_results(messages: &[Message]) -> Vec<String> {
-        let blocks = |messages: &[Message]| {
-            messages
-                .iter()
-                .flat_map(|message| message.content.clone())
-                .collect::<Vec<_>>()
-        };
-        let calls = blocks(messages)
-            .into_iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolCall(call) => Some(call.id),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>();
-        blocks(messages)
-            .into_iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolResult(result) if !calls.contains(&result.tool_call_id) => {
-                    Some(result.tool_call_id)
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
     /// A count-based window can begin on a tool result, which leaves the call that
     /// introduced its id outside the window and the classifier history invalid.
     #[test]
@@ -1556,28 +1539,78 @@ mod tests {
         // The five-message tail begins exactly on the tool result.
         let kept = trim_messages(&messages, 5);
 
-        assert_eq!(orphan_tool_results(&kept), Vec::<String>::new());
+        assert_eq!(
+            kept,
+            vec![
+                Message::text(Role::System, "client instructions"),
+                Message::text(Role::User, "initial task"),
+                tool_call("call-1"),
+                tool_result("call-1"),
+                Message::text(Role::Assistant, "recent 1"),
+                Message::text(Role::User, "recent 2"),
+                Message::text(Role::Assistant, "recent 3"),
+                Message::text(Role::User, "recent 4"),
+            ]
+        );
     }
 
-    /// Widening is only for tool pairs: a plain conversation keeps the window it asked for.
+    /// Ids repeat across a conversation, so a later call must not stand in for the one that
+    /// answers an earlier result.
     #[test]
-    fn trimming_without_tool_calls_keeps_only_the_window() {
+    fn trimming_pairs_a_repeated_id_with_the_call_that_precedes_it() {
         let messages = vec![
             Message::text(Role::System, "client instructions"),
             Message::text(Role::User, "initial task"),
-            Message::text(Role::Assistant, "old response"),
-            Message::text(Role::User, "recent 1"),
-            Message::text(Role::Assistant, "recent 2"),
+            tool_call("x"),
+            tool_result("x"),
+            Message::text(Role::Assistant, "later"),
+            tool_call("x"),
+            tool_result("x"),
         ];
 
-        let kept = trim_messages(&messages, 2);
+        // The four-message tail begins on the first result, whose own call sits one earlier.
+        let kept = trim_messages(&messages, 4);
 
-        let contents = kept
-            .iter()
-            .filter_map(|message| message.text_content("\n"))
-            .collect::<Vec<_>>();
-        assert!(!contents.contains(&"old response".to_string()));
-        assert_eq!(kept.len(), 4);
+        assert_eq!(
+            kept,
+            vec![
+                Message::text(Role::System, "client instructions"),
+                Message::text(Role::User, "initial task"),
+                tool_call("x"),
+                tool_result("x"),
+                Message::text(Role::Assistant, "later"),
+                tool_call("x"),
+                tool_result("x"),
+            ]
+        );
+    }
+
+    /// A result whose call precedes the opening task can never be paired, because trimming
+    /// never reaches behind the task. The window must not widen hunting for it.
+    #[test]
+    fn trimming_keeps_the_counted_window_when_a_result_cannot_be_paired() {
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            tool_call("orphan"),
+            Message::text(Role::User, "initial task"),
+            Message::text(Role::Assistant, "old response"),
+            tool_result("orphan"),
+            Message::text(Role::Assistant, "recent 1"),
+            Message::text(Role::User, "recent 2"),
+        ];
+
+        let kept = trim_messages(&messages, 3);
+
+        assert_eq!(
+            kept,
+            vec![
+                Message::text(Role::System, "client instructions"),
+                Message::text(Role::User, "initial task"),
+                tool_result("orphan"),
+                Message::text(Role::Assistant, "recent 1"),
+                Message::text(Role::User, "recent 2"),
+            ]
+        );
     }
 
     #[test]
