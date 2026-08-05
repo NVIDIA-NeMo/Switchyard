@@ -107,8 +107,13 @@ impl AffinityRouter {
 
     /// Derives the stable identity this router should retain for `request`.
     fn affinity_key(&self, request: &Request) -> Option<AffinityKey> {
+        // An empty session header carries no identity: keying on it would collapse every
+        // task onto one assignment. Treat it as absent, as the fall-through router does.
         if let Some(metadata) = request.metadata.as_ref()
-            && let Some(session) = metadata.session_id.clone()
+            && let Some(session) = metadata
+                .session_id
+                .clone()
+                .filter(|session| !session.is_empty())
         {
             return if metadata.is_subagent {
                 metadata
@@ -473,6 +478,36 @@ mod tests {
             None,
             "Reimplement this binary from two input/output pairs.",
             Some("Now run the test suite."),
+        );
+        assert!(
+            scores(&router, &mut state, &mut other_task)
+                .await?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn empty_session_id_is_treated_as_absent() -> Result<(), BoxErr> {
+        let router = AffinityRouter::new().with_message_hash_fallback();
+        let mut state = ();
+        // A harness that sets the session header to an empty string, rather than omitting it.
+        let empty_session = || {
+            Some(Metadata {
+                session_id: Some(String::new()),
+                ..Metadata::default()
+            })
+        };
+
+        let mut first = task_request(empty_session(), "Add a unit test for this function.", None);
+        retain(&router, &mut state, &mut first, "weak").await?;
+
+        // An unrelated task shares the empty session id, so keying on it would wrongly
+        // hand this task the first task's model.
+        let mut other_task = task_request(
+            empty_session(),
+            "Reimplement this binary from two input/output pairs.",
+            None,
         );
         assert!(
             scores(&router, &mut state, &mut other_task)
