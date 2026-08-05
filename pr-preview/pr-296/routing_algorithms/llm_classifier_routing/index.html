@@ -1340,7 +1340,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/dc4db477e6136abfb60168da39fdd50131b725ca/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/6efd499be995df57695ea13d3621dd6ae4688bc4/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1365,7 +1365,7 @@ for the server merge behavior.</p>
 <tr>
 <td><code>recent_turn_window</code></td>
 <td>unset</td>
-<td>When unset, the judge sees only the newest user message. When set to <code>N</code>, it sees client system/developer instructions, the opening user task, and the last <code>N</code> conversation messages after that task. <code>0</code> keeps only the instructions and opening task.</td>
+<td>When unset, the judge sees the opening user task and the latest user message when they differ. When set to <code>N</code>, it sees client system/developer instructions, the opening user task, and the last <code>N</code> conversation messages after that task. <code>0</code> keeps only the instructions and opening task.</td>
 </tr>
 <tr>
 <td><code>session_affinity</code></td>
@@ -1458,12 +1458,12 @@ missing, non-string, or unknown target falls back to <code>default_target</code>
 It produces a probability and capability boundary but does not choose a route.
 The deterministic policy applies <code>base_threshold</code> and <code>threshold_step</code> after
 generation.</p>
-<p>Without affinity, the runtime judges every request; by default, it sends the
-newest user message rather than the initial task. The example enables affinity
-and its message-hash fallback so the first request is judged and later requests
-with the same opening task reuse that decision. If you use a different weak
-model or per-request routing, tune the thresholds before treating classifier
-decisions as production policy.</p>
+<p>Without affinity, the runtime judges every request. By default, it sends the
+opening task and the latest user follow-up when they differ. Set
+<code>recent_turn_window</code> when intervening conversation context affects the forecast.
+If a client sends only a follow-up fragment without the opening task, enable
+affinity or include the task history. Threshold tuning changes routing policy;
+it cannot recover missing task context.</p>
 <h2 id="session-affinity">Session affinity<a class="headerlink" href="#session-affinity" title="Permanent link">&para;</a></h2>
 <p>With <code>session_affinity = true</code>, the first selected target is retained for the
 request's session identity. This includes <code>strong_target</code> when it was selected
