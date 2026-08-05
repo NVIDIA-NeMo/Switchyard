@@ -980,10 +980,14 @@ base_url = "{base_url}"
 id = "real/opus"
 llm_client = "claude"
 
+[targets.other]
+id = "real/sonnet"
+llm_client = "claude"
+
 [routes.random]
 id = "switchyard/random"
 type = "random"
-targets = ["strong"]
+targets = ["other", "strong"]
 "#,
         base_url = upstream.base_url
     ))?;
@@ -1044,15 +1048,14 @@ targets = ["weak"]
     )
     .await?;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
-    // The route's picked target is OpenAI, so count_tokens (Anthropic-only) is
-    // unsupported for it.
+    // This route has no Anthropic-format target.
     assert_eq!(
         response.json()?,
         json!({
             "type": "error",
             "error": {
                 "type": "invalid_request_error",
-                "message": "no target supports count_tokens (needs an Anthropic upstream)"
+                "message": "route has no Anthropic target for token counting"
             }
         })
     );

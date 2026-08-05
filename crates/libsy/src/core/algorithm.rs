@@ -405,19 +405,6 @@ impl LlmTargetSet {
             .cloned()
             .ok_or(LibsyError::AllTargetsExcluded)
     }
-
-    /// The first target's client that can serve `count_tokens` (an Anthropic
-    /// upstream), or `None` when no target has one. Used by an algorithm's
-    /// [`count_tokens_client`](crate::Algorithm::count_tokens_client).
-    pub fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.targets.iter().find_map(|target| {
-            target
-                .llm_client
-                .as_ref()
-                .filter(|client| client.supports_count_tokens())
-                .cloned()
-        })
-    }
 }
 
 /// Bounds process-local overflow history. Dropping a live session's entry costs one
@@ -588,39 +575,6 @@ pub trait Algorithm: Send + Sync + 'static {
     #[allow(unused_variables)]
     async fn process_signals(self: Arc<Self>, signals: Signals) -> Result<()> {
         Ok(())
-    }
-
-    /// The client [`count_tokens`](Self::count_tokens) forwards to: the first of
-    /// this algorithm's targets whose client can count tokens (an Anthropic
-    /// upstream). The default is `None` — an algorithm with no Anthropic target
-    /// does not support token counting.
-    ///
-    /// CAVEAT: this picks the *first* Anthropic target, not a routed one —
-    /// count_tokens is a direct passthrough, so it does not run the routing
-    /// cascade. For a route with several Anthropic tiers "first" is arbitrary;
-    /// choosing which tier count_tokens should reflect is deferred.
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        None
-    }
-
-    /// Count the tokens `request` would use — a **direct passthrough** to this
-    /// algorithm's Anthropic target (via
-    /// [`count_tokens_client`](Self::count_tokens_client)), **not** a routed
-    /// call. Token counting is a pre-flight estimate with no routing decision,
-    /// so it deliberately bypasses the classifier cascade (which runs only for
-    /// completions via [`run`](Self::run)). Returns the upstream's JSON
-    /// verbatim. Errors when the algorithm has no Anthropic target.
-    async fn count_tokens(&self, request: Request) -> Result<serde_json::Value> {
-        let client = self
-            .count_tokens_client()
-            .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "no target supports count_tokens (needs an Anthropic upstream)"
-                    .to_string(),
-            })?;
-        client
-            .count_tokens(request)
-            .await
-            .map_err(|source| LibsyError::client_call("count_tokens", source))
     }
 
     /// Process a request to completion, returning a stream of [`Step`]s.

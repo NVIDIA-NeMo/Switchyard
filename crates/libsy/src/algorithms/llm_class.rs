@@ -26,7 +26,7 @@ use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
 use switchyard_protocol::{
-    AggLlmResponse, Context, LlmClientError, LlmResponse, Request, Response, RoutedLlmClient,
+    AggLlmResponse, Context, LlmClientError, LlmResponse, Request, Response,
 };
 
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
@@ -934,10 +934,6 @@ impl Classifier<State> for LlmTaskClassifier {
 impl Algorithm for LlmTaskClassifier {
     fn name(&self) -> &str {
         "llm_task_classifier"
-    }
-
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.route.count_tokens_client()
     }
 
     async fn create_run_task(

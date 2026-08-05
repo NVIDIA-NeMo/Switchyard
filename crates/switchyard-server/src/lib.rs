@@ -36,6 +36,7 @@ use libsy::{Algorithm, LibsyError, RunObservation, RunObserver};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use switchyard_llm_client::TranslatingLlmClient;
 use switchyard_protocol::{Context, Decision, LlmClientError, Metadata, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
@@ -97,12 +98,24 @@ struct ModelCapabilities {
     tool_calling: Option<bool>,
 }
 
-/// A registered route: the libsy algorithm that serves it and the capabilities
-/// advertised for it on `GET /v1/models`. One entry owns both so the routing
-/// runtime and the model listing can never drift apart.
+/// A registered algorithm route and its server-owned endpoint metadata.
 struct RouteEntry {
     algorithm: Arc<dyn Algorithm>,
     capabilities: ModelCapabilities,
+    count_tokens_target: Option<CountTokensTarget>,
+}
+
+/// Exact upstream model used by the server's Anthropic token-count endpoint.
+#[derive(Clone)]
+struct CountTokensTarget {
+    model: String,
+    client: Arc<TranslatingLlmClient>,
+}
+
+impl CountTokensTarget {
+    async fn count_tokens(&self, request: Request) -> Result<Value, LlmClientError> {
+        self.client.count_tokens(&self.model, request).await
+    }
 }
 
 /// Shared server state used by all endpoint handlers.
@@ -157,15 +170,22 @@ impl ServerState {
         Self::new_with_capabilities(
             routes
                 .into_iter()
-                .map(|(model, algorithm)| (model, algorithm, ModelCapabilities::default())),
+                .map(|(model, algorithm)| (model, algorithm, ModelCapabilities::default(), None)),
         )
     }
 
     fn new_with_capabilities(
-        routes: impl IntoIterator<Item = (String, Arc<dyn Algorithm>, ModelCapabilities)>,
+        routes: impl IntoIterator<
+            Item = (
+                String,
+                Arc<dyn Algorithm>,
+                ModelCapabilities,
+                Option<CountTokensTarget>,
+            ),
+        >,
     ) -> ServerResult<Self> {
         let mut entries = BTreeMap::new();
-        for (model, algorithm, capabilities) in routes {
+        for (model, algorithm, capabilities, count_tokens_target) in routes {
             let model = model.trim();
             if model.is_empty() {
                 return Err(ServerError::new("route model must not be empty"));
@@ -173,6 +193,7 @@ impl ServerState {
             let entry = RouteEntry {
                 algorithm,
                 capabilities,
+                count_tokens_target,
             };
             if entries.insert(model.to_string(), entry).is_some() {
                 return Err(ServerError::new(format!("duplicate route model {model}")));
@@ -202,10 +223,8 @@ impl ServerState {
         self.routes.keys().map(String::as_str)
     }
 
-    fn algorithm_for_model(&self, model: &str) -> Option<Arc<dyn Algorithm>> {
-        self.routes
-            .get(model)
-            .map(|entry| Arc::clone(&entry.algorithm))
+    fn route_for_model(&self, model: &str) -> Option<&RouteEntry> {
+        self.routes.get(model)
     }
 }
 
@@ -463,11 +482,7 @@ async fn openai_responses(
     handle_endpoint(state, started, headers, body, WireFormat::OpenAiResponses).await
 }
 
-/// Anthropic token counting. Resolves the route named by `model`, then does a
-/// **direct passthrough** via [`Algorithm::count_tokens`] to that route's
-/// Anthropic target — it does *not* run the routing cascade (count_tokens is a
-/// pre-flight estimate with no routing decision). Unknown route → 404; a route
-/// with no Anthropic target → 400.
+/// Anthropic token counting against the route's explicitly configured target.
 async fn anthropic_count_tokens(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -477,7 +492,7 @@ async fn anthropic_count_tokens(
         Ok(body) => body,
         Err(message) => return anthropic_error_response(invalid_body_error(message)),
     };
-    let (algorithm, request) = match resolve_route(
+    let (route, request) = match resolve_route(
         &state,
         metadata_from_headers(headers),
         body,
@@ -486,27 +501,23 @@ async fn anthropic_count_tokens(
         Ok(resolved) => resolved,
         Err(response) => return anthropic_error_response(response),
     };
-    anthropic_error_response(match algorithm.count_tokens(request).await {
+    let Some(target) = route.count_tokens_target.as_ref() else {
+        return anthropic_error_response(error_response(
+            StatusCode::BAD_REQUEST,
+            "route has no Anthropic target for token counting",
+            "invalid_request_error",
+            "count_tokens_unsupported",
+        ));
+    };
+    anthropic_error_response(match target.count_tokens(request).await {
         Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
         Err(error) => count_tokens_error(error),
     })
 }
 
-/// Map a [`count_tokens`](Algorithm::count_tokens) failure to an HTTP response:
-/// the route has no Anthropic target → 400, an upstream HTTP error → its own
-/// status, anything else → 502.
-fn count_tokens_error(error: LibsyError) -> Response {
-    // The one count_tokens-specific case is "no Anthropic target in the route";
-    // every upstream/client failure gets the same mapping completions use.
-    match &error {
-        LibsyError::AlgorithmError { message } => error_response(
-            StatusCode::BAD_REQUEST,
-            message.clone(),
-            "invalid_request_error",
-            "count_tokens_unsupported",
-        ),
-        _ => algorithm_error(error),
-    }
+/// Maps a token-count client failure with the same policy as a routed client call.
+fn count_tokens_error(error: LlmClientError) -> Response {
+    client_error(&error)
 }
 
 async fn handle_endpoint(
@@ -585,7 +596,7 @@ fn llm_json_body(
 
 /// Decode `body`, resolve the route named by its `model`, and build the
 /// [`Request`]. Shared by the completion and `count_tokens` handlers. Returns
-/// the resolved algorithm and the built request — or an error [`Response`]
+/// the resolved route and the built request — or an error [`Response`]
 /// (invalid body, empty `model` → 400, unknown route → 404).
 // Both callers immediately return the `Err(Response)` as the HTTP response, so
 // the large error type is intentional, not propagated up a call stack.
@@ -595,7 +606,7 @@ fn resolve_route(
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
-) -> std::result::Result<(Arc<dyn Algorithm>, Request), Response> {
+) -> std::result::Result<(&RouteEntry, Request), Response> {
     let llm_request = decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(error.to_string()))?;
     let requested_model = llm_request
@@ -610,7 +621,7 @@ fn resolve_route(
                 "invalid_request_error",
             )
         })?;
-    let algorithm = state.algorithm_for_model(&requested_model).ok_or_else(|| {
+    let route = state.route_for_model(&requested_model).ok_or_else(|| {
         error_response(
             StatusCode::NOT_FOUND,
             format!("No route registered for model {requested_model}"),
@@ -623,7 +634,7 @@ fn resolve_route(
         raw_request: Some(body),
         metadata: Some(metadata),
     };
-    Ok((algorithm, request))
+    Ok((route, request))
 }
 
 async fn handle_llm_request(
@@ -635,10 +646,11 @@ async fn handle_llm_request(
     routing_log_context: Option<routing_log::RoutingLogContext>,
 ) -> Response {
     let cache_probe = state.track_cache_eligibility.then(|| prefix_probe(&body));
-    let (algorithm, request) = match resolve_route(&state, metadata, body, wire_format) {
+    let (route, request) = match resolve_route(&state, metadata, body, wire_format) {
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
+    let algorithm = Arc::clone(&route.algorithm);
     let observer = stats_observer(state.stats.clone());
     let (trace, response) = match algorithm
         .run_observed(Context::default(), request, Some(observer))
@@ -784,7 +796,11 @@ fn algorithm_error(error: LibsyError) -> Response {
     let LibsyError::ClientCall { source, .. } = &error else {
         return server_error(error.to_string());
     };
-    match source {
+    client_error(source)
+}
+
+fn client_error(error: &LlmClientError) -> Response {
+    match error {
         LlmClientError::InvalidRequest { message }
         | LlmClientError::RequestTranslation(message) => error_response(
             StatusCode::BAD_REQUEST,

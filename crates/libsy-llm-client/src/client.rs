@@ -111,23 +111,6 @@ impl TranslatingLlmClient {
         })
     }
 
-    /// A configured Anthropic backend to forward a direct `count_tokens` call to,
-    /// paired with its upstream model id (the id the inbound route name is
-    /// restamped to). `None` when this client has no Anthropic backend;
-    /// `count_tokens` is Anthropic-only.
-    fn anthropic_backend(&self) -> Option<(&str, &Backend)> {
-        self.model_to_config.values().find_map(|config| {
-            if config.default_backend.is_anthropic() {
-                return Some((config.model_name.as_str(), &config.default_backend));
-            }
-            config
-                .other_backends
-                .as_ref()
-                .and_then(|backends| backends.iter().find(|backend| backend.is_anthropic()))
-                .map(|backend| (config.model_name.as_str(), backend))
-        })
-    }
-
     /// The backend serving `model` over `format` — the default backend when its
     /// format matches, otherwise a matching entry in `other_backends`; `None` when
     /// the model is unknown or has no backend for `format`.
@@ -144,6 +127,50 @@ impl TranslatingLlmClient {
         })
     }
 
+    /// Whether `model` has an Anthropic backend that supports token counting.
+    pub fn supports_count_tokens(&self, model: &str) -> bool {
+        self.backend_for(model, WireFormat::AnthropicMessages)
+            .is_some()
+    }
+
+    /// Counts input tokens with `model`'s Anthropic backend.
+    ///
+    /// Returns an error when the model has no Anthropic backend or the upstream
+    /// request fails or returns invalid JSON.
+    pub async fn count_tokens(&self, model: &str, request: Request) -> Result<Value> {
+        let backend = self
+            .backend_for(model, WireFormat::AnthropicMessages)
+            .ok_or_else(|| LlmClientError::Configuration {
+                message: format!("model {model} has no Anthropic backend for count_tokens"),
+            })?;
+        let Request {
+            llm_request,
+            metadata,
+            ..
+        } = request;
+        let http_response = self
+            .send_encoded(
+                backend,
+                WireFormat::AnthropicMessages,
+                llm_request,
+                metadata.as_ref(),
+                model,
+                UpstreamEndpoint::CountTokens,
+            )
+            .await?;
+        let body = match http_response {
+            EncodedResponse::Buffered { body, .. } => body,
+            EncodedResponse::Streaming(_) => {
+                return Err(LlmClientError::InvalidRequest {
+                    message: "count_tokens does not support streaming requests".to_string(),
+                });
+            }
+        };
+        serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
+            source: Box::new(error),
+        })
+    }
+
     /// Encode `llm_request` (its model restamped to `model`) for `wire_format`,
     /// POST it to `url` with the request's forwarded headers plus the backend's
     /// static headers and auth, and return the successful upstream response. A
@@ -153,8 +180,8 @@ impl TranslatingLlmClient {
     /// overflow via the backend's provider rules. Shared by
     /// [`call_rewrite_model`](Self::call_rewrite_model) (which POSTs to the
     /// backend's completion URL and decodes a response) and
-    /// [`count_tokens`](RoutedLlmClient::count_tokens) (which POSTs to the
-    /// `count_tokens` URL and returns the raw JSON).
+    /// [`count_tokens`](Self::count_tokens) (which POSTs to the `count_tokens`
+    /// URL and returns the raw JSON).
     async fn send_encoded(
         &self,
         backend: &Backend,
@@ -487,49 +514,6 @@ impl RoutedLlmClient for TranslatingLlmClient {
     ) -> Result<Response> {
         let model_name = Some(decision.selected_model());
         self.call_rewrite_model(ctx, request, model_name).await
-    }
-
-    fn supports_count_tokens(&self) -> bool {
-        self.anthropic_backend().is_some()
-    }
-
-    async fn count_tokens(&self, request: Request) -> Result<Value> {
-        // Direct passthrough: forward straight to this client's Anthropic
-        // backend's count_tokens endpoint. Not routed — no decision.
-        let (model, backend) =
-            self.anthropic_backend()
-                .ok_or_else(|| LlmClientError::Configuration {
-                    message: "count_tokens is anthropic-only; this client has no anthropic backend"
-                        .to_string(),
-                })?;
-        // Same encode-and-forward path as the completion call, only to the
-        // `count_tokens` URL; the response is the raw `{"input_tokens": N}` JSON.
-        let Request {
-            llm_request,
-            metadata,
-            ..
-        } = request;
-        let http_response = self
-            .send_encoded(
-                backend,
-                WireFormat::AnthropicMessages,
-                llm_request,
-                metadata.as_ref(),
-                model,
-                UpstreamEndpoint::CountTokens,
-            )
-            .await?;
-        let body = match http_response {
-            EncodedResponse::Buffered { body, .. } => body,
-            EncodedResponse::Streaming(_) => {
-                return Err(LlmClientError::InvalidRequest {
-                    message: "count_tokens does not support streaming requests".to_string(),
-                });
-            }
-        };
-        serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
-            source: Box::new(error),
-        })
     }
 }
 

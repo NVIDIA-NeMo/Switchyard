@@ -29,7 +29,7 @@ use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Request, Response, RoutedLlmClient};
+use switchyard_protocol::{Context, Request, Response};
 
 /// Telemetry name for a router this module assembles.
 const STAGE_ROUTER: &str = "stage_router";
@@ -140,10 +140,6 @@ impl StageRouter {
 impl Algorithm for StageRouter {
     fn name(&self) -> &str {
         STAGE_ROUTER
-    }
-
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.route.count_tokens_client()
     }
 
     async fn create_run_task(

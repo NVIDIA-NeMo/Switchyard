@@ -119,7 +119,7 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions |
 | `POST` | `/v1/messages` | Anthropic Messages |
 | `POST` | `/v1/responses` | OpenAI Responses |
-| `POST` | `/v1/messages/count_tokens` | Anthropic token count |
+| `POST` | `/v1/messages/count_tokens` | Token count from a route's Anthropic target |
 | `GET` | `/v1/models` | Routes served by this deployment |
 | `GET` | `/v1/stats` | Per-model request, token, and cost totals |
 | `POST` | `/v1/stats/reset` | Clear accumulated stats |
@@ -129,6 +129,9 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 Requests name a route by its `id`, so `POST /v1/chat/completions` with `"model": "switchyard/general"`
 routes through the `[routes.general]` entry above. Any of the three request formats can address any
 route, and the server translates between them.
+
+Token counting selects an Anthropic-format completion target, preferring target names or model IDs
+containing `opus`, `sonnet`, then `haiku`. Other ties preserve the route's target order.
 
 ## Metrics
 

@@ -21,7 +21,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::RoutedLlmClient;
 
-use crate::{ModelCapabilities, ServerError, ServerResult, ServerState};
+use crate::{CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState};
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIGURED_RETRIES: u32 = 10;
@@ -98,12 +98,18 @@ impl ServerConfig {
                 )));
             }
             let algorithm = build_algorithm(route_name, config, &targets)?;
-            routes.push((config.id().to_string(), algorithm, capabilities));
+            let count_tokens_target = self.build_count_tokens_target(config, &clients);
+            routes.push((
+                config.id().to_string(),
+                algorithm,
+                capabilities,
+                count_tokens_target,
+            ));
         }
         ServerState::new_with_capabilities(routes)
     }
 
-    fn build_clients(&self) -> ServerResult<BTreeMap<String, Arc<dyn RoutedLlmClient>>> {
+    fn build_clients(&self) -> ServerResult<BTreeMap<String, Arc<TranslatingLlmClient>>> {
         let mut models_by_client = self
             .llm_clients
             .keys()
@@ -132,7 +138,7 @@ impl ServerConfig {
 
         let mut clients = BTreeMap::new();
         for (name, model_configs) in models_by_client {
-            let client: Arc<dyn RoutedLlmClient> = Arc::new(
+            let client = Arc::new(
                 TranslatingLlmClient::new(&model_configs)
                     .map_err(|error| ServerError::new(error.to_string()))?,
             );
@@ -143,7 +149,7 @@ impl ServerConfig {
 
     fn build_targets(
         &self,
-        clients: &BTreeMap<String, Arc<dyn RoutedLlmClient>>,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
     ) -> ServerResult<BTreeMap<String, LlmTarget>> {
         self.targets
             .iter()
@@ -151,16 +157,53 @@ impl ServerConfig {
                 let client = clients.get(&config.llm_client).ok_or_else(|| {
                     ServerError::new(format!("target {name} has no constructed llm client"))
                 })?;
+                let client: Arc<dyn RoutedLlmClient> = client.clone();
                 Ok((
                     name.clone(),
                     LlmTarget {
                         semantic_name: config.id.clone(),
-                        llm_client: Some(Arc::clone(client)),
+                        llm_client: Some(client),
                     },
                 ))
             })
             .collect()
     }
+
+    fn build_count_tokens_target(
+        &self,
+        route_config: &RouteConfig,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> Option<CountTokensTarget> {
+        route_config
+            .routing_target_names()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, name)| {
+                let target = self.targets.get(name)?;
+                let client = clients.get(&target.llm_client)?;
+                client.supports_count_tokens(&target.id).then_some((
+                    count_tokens_priority(name, &target.id),
+                    index,
+                    target,
+                    client,
+                ))
+            })
+            .min_by_key(|(priority, index, _, _)| (*priority, *index))
+            .map(|(_, _, target, client)| CountTokensTarget {
+                model: target.id.clone(),
+                client: client.clone(),
+            })
+    }
+}
+
+// Prefer known Claude families, then preserve the route's target order.
+fn count_tokens_priority(target_name: &str, model_id: &str) -> usize {
+    let target_name = target_name.to_ascii_lowercase();
+    let model_id = model_id.to_ascii_lowercase();
+    ["opus", "sonnet", "haiku"]
+        .iter()
+        .position(|hint| target_name.contains(hint) || model_id.contains(hint))
+        .unwrap_or(3)
 }
 
 #[derive(Debug, Deserialize)]
@@ -396,6 +439,44 @@ impl RouteConfig {
             | LlmClassifier { id, .. }
             | Passthrough { id, .. }
             | StageRouter { id, .. } => id,
+        }
+    }
+
+    // Completion targets in algorithm order; judge-only targets are excluded.
+    fn routing_target_names(&self) -> Vec<&str> {
+        match self {
+            Self::Noop { .. } => Vec::new(),
+            Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
+            Self::Passthrough { target, .. } => vec![target],
+            Self::LlmClassifier {
+                mode,
+                strong_target,
+                weak_target,
+                escalation,
+                targets,
+                ..
+            } => match mode.unwrap_or(if escalation.is_some() {
+                ClassifierMode::Escalation
+            } else {
+                ClassifierMode::Capability
+            }) {
+                ClassifierMode::Capability => weak_target
+                    .iter()
+                    .chain(strong_target)
+                    .map(String::as_str)
+                    .collect(),
+                ClassifierMode::Escalation => strong_target
+                    .iter()
+                    .chain(weak_target)
+                    .map(String::as_str)
+                    .collect(),
+                ClassifierMode::Custom => targets.iter().flatten().map(String::as_str).collect(),
+            },
+            Self::StageRouter {
+                capable_target,
+                efficient_target,
+                ..
+            } => vec![capable_target, efficient_target],
         }
     }
 

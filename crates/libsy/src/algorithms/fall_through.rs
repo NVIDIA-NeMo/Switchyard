@@ -30,7 +30,7 @@ use crate::core::algorithm::{self, Algorithm, Driver, LlmTarget, LlmTargetSet, S
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Decision, Request, Response, RoutedLlmClient};
+use switchyard_protocol::{Context, Decision, Request, Response};
 
 struct SessionState<S> {
     state: Arc<AsyncMutex<S>>,
@@ -420,10 +420,6 @@ where
         &self.name
     }
 
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.targets.count_tokens_client()
-    }
-
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,
@@ -441,8 +437,8 @@ mod tests {
     use crate::{SystemPromptProcessor, TargetPrompts};
 
     use switchyard_protocol::{
-        LlmClientError, LlmRequest, LlmResponse, Message, Metadata, Role, completion_text,
-        text_request, text_response,
+        LlmClientError, LlmRequest, LlmResponse, Message, Metadata, Role, RoutedLlmClient,
+        completion_text, text_request, text_response,
     };
 
     #[derive(Debug, thiserror::Error)]
