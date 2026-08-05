@@ -100,7 +100,7 @@ for the server merge behavior.
 |---|---|---|
 | `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
 | `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
-| `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees client system/developer instructions, the opening user task, and the last `N` conversation messages after that task. `0` keeps only the instructions and opening task. |
+| `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
 | `session_affinity` | `false` | Retains the first selected target for a session and reuses it on later requests. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `session_affinity = true`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |

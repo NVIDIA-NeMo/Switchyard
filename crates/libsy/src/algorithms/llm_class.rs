@@ -71,8 +71,11 @@ impl TaskClassifierVerdict {
     }
 }
 
-/// Keeps client instructions, the opening task, and the last `recent_turn_window`
-/// turns after it. A window of `0` keeps the instructions and the task alone.
+/// Keeps the opening task and the last `recent_turn_window` turns after it. A
+/// window of `0` keeps the task alone.
+///
+/// Inbound decoders normalize client system and developer content into
+/// `LlmRequest::instructions`, so it never reaches this list.
 ///
 /// Selects by reference and clones only what survives — a coding-agent
 /// conversation carries every tool result, so cloning it whole to keep a window
