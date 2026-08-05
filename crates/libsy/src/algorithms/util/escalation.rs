@@ -375,12 +375,13 @@ mod tests {
             .push(Message::text(Role::Assistant, "this turn's reply"));
         let built = judge.build_request(&State::default(), &judged);
 
-        // Two messages: the rubric as system, the condensed trajectory as user.
-        assert_eq!(built.llm_request.messages.len(), 2);
-        assert_eq!(built.llm_request.messages[0].role, Role::System);
-        assert_eq!(built.llm_request.messages[1].role, Role::User);
+        // Rubric in instructions, condensed trajectory as the sole user message.
+        assert_eq!(built.llm_request.instructions.len(), 1);
+        assert_eq!(built.llm_request.instructions[0].role, Role::System);
+        assert_eq!(built.llm_request.messages.len(), 1);
+        assert_eq!(built.llm_request.messages[0].role, Role::User);
         assert!(
-            built.llm_request.messages[1]
+            built.llm_request.messages[0]
                 .text_content("")
                 .is_some_and(|text| text.contains("Conversation turn 4"))
         );

@@ -916,7 +916,8 @@ mod tests {
 
     use super::*;
     use switchyard_protocol::{
-        LlmClientError, LlmRequest, Metadata, completion_text, text_request, text_response,
+        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, Metadata, completion_text,
+        text_request, text_response,
     };
 
     use crate::algorithms::util::llm_judge::Judge;
@@ -1000,9 +1001,17 @@ mod tests {
                 self.judge_system_prompts.lock().extend(
                     request
                         .llm_request
-                        .messages
+                        .instructions
                         .first()
-                        .and_then(|message| message.text_content("\n")),
+                        .and_then(|instruction| {
+                            instruction.content.iter().find_map(|b| {
+                                if let ContentBlock::Text { text } = b {
+                                    Some(text.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                        }),
                 );
                 r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
             } else {
@@ -1470,7 +1479,17 @@ mod tests {
         let judge_request = judge.build_request(&State::default(), &request);
 
         assert_eq!(judge_request.llm_request.model, request.llm_request.model);
-        assert_eq!(judge_request.llm_request.messages.len(), 3);
+        assert_eq!(judge_request.llm_request.instructions.len(), 1);
+        assert_eq!(judge_request.llm_request.instructions[0].role, Role::System);
+        assert_eq!(
+            judge_request.llm_request.instructions[0].content,
+            InstructionBlock {
+                role: Role::System,
+                content: Message::text(Role::System, judge.contract().system_prompt()).content,
+            }
+            .content,
+        );
+        assert_eq!(judge_request.llm_request.messages.len(), 2);
         let contents = judge_request
             .llm_request
             .messages

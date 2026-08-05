@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use switchyard_protocol::{
-    AggLlmResponse, LlmRequest, Message, OutputParams, Role, completion_text,
+    AggLlmResponse, InstructionBlock, LlmRequest, Message, OutputParams, Role, completion_text,
 };
 
 use super::classifier_contract::ClassifierContract;
@@ -144,14 +144,15 @@ where
     type Verdict = D::Verdict;
 
     fn build_request(&self, state: &State, request: &Request) -> Request {
-        let mut messages = self.input.build_messages(state, request);
-        messages.insert(
-            0,
-            Message::text(Role::System, self.contract.system_prompt().to_string()),
-        );
+        let messages = self.input.build_messages(state, request);
         Request {
             llm_request: LlmRequest {
                 model: request.llm_request.model.clone(),
+                instructions: vec![InstructionBlock {
+                    role: Role::System,
+                    content: Message::text(Role::System, self.contract.system_prompt().to_string())
+                        .content,
+                }],
                 messages,
                 output: OutputParams {
                     max_output_tokens: Some(self.runtime.max_output_tokens),
