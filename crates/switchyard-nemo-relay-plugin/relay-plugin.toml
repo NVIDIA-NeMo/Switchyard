@@ -8,7 +8,7 @@ id = "nvidia.switchyard"
 kind = "rust_dynamic"
 
 [compat]
-relay = ">=0.7.0,<1.0"
+relay = ">=0.7.0,<0.8"
 native_api = "1"
 
 [defaults]
