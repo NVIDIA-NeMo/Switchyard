@@ -24,6 +24,7 @@ const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
     "context window",
     "context length is only",
     "please reduce the length of the input",
+    "exceeds the maximum allowed input length",
 ];
 
 // Anthropic has no structured `error.code`, so detection is phrase-based only.
@@ -310,6 +311,10 @@ mod tests {
             r#"{"error":{"message":"the model's context length is only 131072 tokens"}}"#
         ));
         assert!(!backend.is_context_overflow(r#"{"error":{"code":"invalid_api_key"}}"#));
+        // Hub GLM (LiteLLM-wrapped): code is "400", detection relies on phrase match.
+        assert!(backend.is_context_overflow(
+            r#"{"error":{"message":"Input length 877338 exceeds the maximum allowed input length of 639968 tokens","code":"400"}}"#
+        ));
     }
 
     #[test]
