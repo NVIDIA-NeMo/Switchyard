@@ -383,6 +383,7 @@ fn stats_observer(stats: StatsAccumulator) -> RunObserver {
         RunObservation::RoutingOverhead(duration) => {
             stats.record_routing_overhead(duration.as_secs_f64() * 1_000.0);
         }
+        RunObservation::AlgorithmMetric(_) => {}
     })
 }
 

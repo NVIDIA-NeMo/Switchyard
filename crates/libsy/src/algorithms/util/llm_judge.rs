@@ -18,7 +18,7 @@ use switchyard_protocol::{
 };
 
 use super::classifier_contract::ClassifierContract;
-use crate::core::algorithm::{Driver, LlmTarget};
+use crate::core::algorithm::{Driver, LlmTarget, MetricAttribute};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
@@ -235,23 +235,32 @@ where
                 }),
             )
             .await
-            .inspect_err(|error| report_fail_open(judge_model, error, libsy_error_reason(error)))
+            .inspect_err(|error| {
+                report_fail_open(driver, judge_model, error, libsy_error_reason(error))
+            })
             .ok()?;
         let aggregate = response
             .llm_response
             .into_agg()
             .await
-            .inspect_err(|error| report_fail_open(judge_model, error, client_error_reason(error)))
+            .inspect_err(|error| {
+                report_fail_open(driver, judge_model, error, client_error_reason(error))
+            })
             .ok()?;
         self.judge
             .parse(&aggregate)
-            .inspect_err(|error| report_fail_open(judge_model, error, "parse_error"))
+            .inspect_err(|error| report_fail_open(driver, judge_model, error, "parse_error"))
             .ok()
     }
 }
 
 /// Logs and counts a judge failure with a bounded label that excludes message content.
-fn report_fail_open(judge_model: &str, error: &dyn std::fmt::Display, reason: &'static str) {
+fn report_fail_open(
+    driver: &Driver,
+    judge_model: &str,
+    error: &dyn std::fmt::Display,
+    reason: &'static str,
+) {
     tracing::warn!(
         target: "libsy",
         judge_model,
@@ -259,7 +268,14 @@ fn report_fail_open(judge_model: &str, error: &dyn std::fmt::Display, reason: &'
         error = %error,
         "judge verdict unavailable; routing without one"
     );
-    crate::observability::record_classifier_fail_open(judge_model, reason);
+    driver.record_counter(
+        "switchyard.classifier_fail_open",
+        1,
+        [
+            MetricAttribute::new("judge_model", judge_model),
+            MetricAttribute::new("reason", reason),
+        ],
+    );
 }
 
 /// Returns a bounded reason for a judge call that failed at the libsy layer.
