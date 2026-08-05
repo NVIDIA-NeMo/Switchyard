@@ -1090,6 +1090,19 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 // `switchyard/cli/launchers/codex_model_catalog.py`; keep the two in sync when Codex
 // changes the shape. Every field below is either derived from the route's declared
 // capabilities or a required `ModelInfo` field the server has no better value for.
+//
+// Two kinds of fields live here. context_window, tool_calling, and reasoning are model
+// facts a backend can publish; the route declares them in config today. The rest
+// (shell_type, apply_patch_tool_type, base_instructions, the reasoning-level presets,
+// truncation_policy) are Codex client conventions no backend returns, so they stay
+// constant.
+//
+// TODO: source context_window, tool_calling, and reasoning from the backend, not route
+// config. Switchyard is a proxy, so it should re-publish what the backend advertises
+// when it can — OpenRouter's /api/v1/models exposes context_length and
+// supported_parameters — and fall back to the route's declared value. Some backends
+// publish nothing (the NVIDIA gateway returns id-only models and blocks /model/info),
+// so keep failing closed to config.
 fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority: usize) -> Value {
     // Codex is non-functional without shell and apply_patch, so an undeclared tool
     // capability defaults to enabled here; the OpenAI `data` entry reports the raw
