@@ -100,7 +100,7 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
 
     _, response = await algorithm.run(request_body())
 
-    prompt = judge.calls[0]["messages"][0]["content"][0]["text"]
+    prompt = judge.calls[0]["instructions"][0]["content"][0]["text"]
     assert prompt == "Custom capability rubric."
     assert judge.calls[0]["output"]["response_format"]["json_schema"]["schema"][
         "properties"
