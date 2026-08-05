@@ -90,11 +90,16 @@ pub type ServerResult<T> = std::result::Result<T, ServerError>;
 
 /// Capabilities that one route advertises on `GET /v1/models`.
 ///
-/// An unset capability is undeclared and serializes as `null`.
+/// An unset capability is undeclared: it serializes as `null` in the OpenAI
+/// `data` entry, and the Codex entry falls back to a safe default for it.
 #[derive(Clone, Copy, Default)]
 struct ModelCapabilities {
     context_window: Option<u32>,
     tool_calling: Option<bool>,
+    // Whether the routed model takes reasoning controls. The server cannot probe
+    // this, so a route opts in via config; undeclared routes advertise as
+    // non-reasoning to Codex (fail closed).
+    reasoning: Option<bool>,
 }
 
 /// A registered route: the libsy algorithm that serves it and the capabilities
@@ -1080,26 +1085,38 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 }
 
 // Builds the metadata Codex requires when it discovers models from a direct provider.
+//
+// This mirrors Codex's `ModelInfo` card. The launcher path builds the same card in
+// `switchyard/cli/launchers/codex_model_catalog.py`; keep the two in sync when Codex
+// changes the shape. Every field below is either derived from the route's declared
+// capabilities or a required `ModelInfo` field the server has no better value for.
 fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority: usize) -> Value {
+    // Codex is non-functional without shell and apply_patch, so an undeclared tool
+    // capability defaults to enabled here; the OpenAI `data` entry reports the raw
+    // Option separately for clients that want the undeclared state.
     let tool_calling = capabilities.tool_calling.unwrap_or(true);
+    let reasoning = capabilities.reasoning.unwrap_or(false);
     json!({
         "slug": model,
         "display_name": model,
         "description": "Switchyard-routed model.",
-        "default_reasoning_level": null,
-        "supported_reasoning_levels": [],
+        "default_reasoning_level": if reasoning { json!("xhigh") } else { Value::Null },
+        "supported_reasoning_levels": if reasoning { reasoning_levels() } else { json!([]) },
         "shell_type": if tool_calling { "shell_command" } else { "disabled" },
         "visibility": "list",
         "supported_in_api": true,
+        // Catalog list position (routes are listed in sorted id order), not a quality rank.
         "priority": priority,
         "additional_speed_tiers": [],
         "availability_nux": null,
         "upgrade": null,
+        // Required `ModelInfo` string. Unlike the launcher, the server cannot read
+        // Codex's bundled prompt, so it sends a minimal stub.
         "base_instructions": "You are Codex, a coding agent.",
-        "supports_reasoning_summaries": false,
+        "supports_reasoning_summaries": reasoning,
         "default_reasoning_summary": "none",
-        "support_verbosity": false,
-        "default_verbosity": null,
+        "support_verbosity": reasoning,
+        "default_verbosity": if reasoning { json!("low") } else { Value::Null },
         "apply_patch_tool_type": if tool_calling { Some("freeform") } else { None },
         "web_search_tool_type": "text",
         "truncation_policy": {"mode": "tokens", "limit": 10_000},
@@ -1112,6 +1129,17 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         "input_modalities": ["text"],
         "supports_search_tool": false,
     })
+}
+
+// The reasoning-effort presets Codex offers for a reasoning-capable route. Kept in
+// step with the launcher template in `codex_model_catalog.py`.
+fn reasoning_levels() -> Value {
+    json!([
+        {"effort": "low", "description": "Fast responses with lighter reasoning"},
+        {"effort": "medium", "description": "Balances speed and reasoning depth"},
+        {"effort": "high", "description": "Greater reasoning depth"},
+        {"effort": "xhigh", "description": "Extra high reasoning depth"},
+    ])
 }
 
 fn startup_banner(options: &ServerRunOptions, state: &ServerState, color: bool) -> String {

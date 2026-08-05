@@ -69,6 +69,7 @@ Every route takes the common keys below, plus the keys for its type.
 | `type` | Yes | — | Routing algorithm for this route. |
 | `context_window` | No | unset | Positive token count advertised for this route by `GET /v1/models`. Unset values appear as `null`. This does not enforce a request limit. |
 | `tool_calling` | No | unset | Whether `GET /v1/models` advertises tool-calling support for this route. Unset values appear as `null`. |
+| `reasoning` | No | unset | Whether `GET /v1/models` advertises reasoning support to Codex direct-provider discovery. Unset routes are advertised as non-reasoning. |
 
 ### `noop`
 

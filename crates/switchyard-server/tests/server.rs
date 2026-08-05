@@ -1140,6 +1140,12 @@ target = "shared"
 context_window = 262000
 tool_calling = false
 
+[routes.reasoning]
+id = "reasoning"
+type = "passthrough"
+target = "shared"
+reasoning = true
+
 [routes.undeclared]
 id = "undeclared"
 type = "passthrough"
@@ -1167,7 +1173,9 @@ target = "shared"
         .iter()
         .filter_map(|entry| entry["slug"].as_str().map(|slug| (slug, entry)))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(codex_metadata.len(), 3);
+    // This checks the shape the server emits. That Codex 0.144.5 actually decodes it
+    // (context_window: null included) is verified by a live Codex run in SWITCH-1225.
+    assert_eq!(codex_metadata.len(), 4);
     assert_eq!(
         codex_metadata["declared"]["context_window"],
         json!(1_000_000)
@@ -1176,6 +1184,18 @@ target = "shared"
     assert_eq!(
         codex_metadata["declared"]["apply_patch_tool_type"],
         "freeform"
+    );
+    // Constant fields Codex requires: a typo here would fail its decode, so pin them.
+    assert_eq!(codex_metadata["declared"]["visibility"], "list");
+    assert_eq!(codex_metadata["declared"]["supported_in_api"], json!(true));
+    assert_eq!(codex_metadata["declared"]["web_search_tool_type"], "text");
+    assert_eq!(
+        codex_metadata["declared"]["input_modalities"],
+        json!(["text"])
+    );
+    assert_eq!(
+        codex_metadata["declared"]["truncation_policy"],
+        json!({"mode": "tokens", "limit": 10_000})
     );
     assert_eq!(
         codex_metadata["restricted"]["context_window"],
@@ -1186,10 +1206,49 @@ target = "shared"
         codex_metadata["restricted"]["apply_patch_tool_type"],
         json!(null)
     );
+    // A reasoning route advertises the effort presets and reasoning controls.
+    assert_eq!(
+        codex_metadata["reasoning"]["default_reasoning_level"],
+        "xhigh"
+    );
+    assert_eq!(
+        codex_metadata["reasoning"]["supported_reasoning_levels"]
+            .as_array()
+            .map(Vec::len),
+        Some(4)
+    );
+    assert_eq!(
+        codex_metadata["reasoning"]["supports_reasoning_summaries"],
+        json!(true)
+    );
+    assert_eq!(
+        codex_metadata["reasoning"]["support_verbosity"],
+        json!(true)
+    );
+    assert_eq!(codex_metadata["reasoning"]["default_verbosity"], "low");
+    // An undeclared route: null context window, non-reasoning, but tools default on
+    // so `switchyard launch codex` stays usable out of the box.
     assert_eq!(codex_metadata["undeclared"]["context_window"], json!(null));
     assert_eq!(
         codex_metadata["undeclared"]["supported_reasoning_levels"],
         json!([])
+    );
+    assert_eq!(
+        codex_metadata["undeclared"]["default_reasoning_level"],
+        json!(null)
+    );
+    assert_eq!(
+        codex_metadata["undeclared"]["supports_reasoning_summaries"],
+        json!(false)
+    );
+    assert_eq!(codex_metadata["undeclared"]["shell_type"], "shell_command");
+    assert_eq!(
+        codex_metadata["undeclared"]["apply_patch_tool_type"],
+        "freeform"
+    );
+    assert_eq!(
+        codex_metadata["undeclared"]["supports_parallel_tool_calls"],
+        json!(true)
     );
     Ok(())
 }

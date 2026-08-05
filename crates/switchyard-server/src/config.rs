@@ -267,6 +267,8 @@ enum RouteConfig {
         context_window: Option<u32>,
         #[serde(default)]
         tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
     },
     Random {
         id: String,
@@ -274,6 +276,8 @@ enum RouteConfig {
         context_window: Option<u32>,
         #[serde(default)]
         tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
         targets: Vec<String>,
         weights: Option<Vec<f64>>,
         seed: Option<u64>,
@@ -284,6 +288,8 @@ enum RouteConfig {
         context_window: Option<u32>,
         #[serde(default)]
         tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
         target: String,
     },
     LlmClassifier {
@@ -292,6 +298,8 @@ enum RouteConfig {
         context_window: Option<u32>,
         #[serde(default)]
         tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
         classifier_target: String,
         #[serde(default)]
         mode: Option<ClassifierMode>,
@@ -330,6 +338,8 @@ enum RouteConfig {
         context_window: Option<u32>,
         #[serde(default)]
         tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
         capable_target: String,
         efficient_target: String,
         /// Tier a turn falls back to when the signals are not confident.
@@ -405,30 +415,36 @@ impl RouteConfig {
             Noop {
                 context_window,
                 tool_calling,
+                reasoning,
                 ..
             }
             | Random {
                 context_window,
                 tool_calling,
+                reasoning,
                 ..
             }
             | Passthrough {
                 context_window,
                 tool_calling,
+                reasoning,
                 ..
             }
             | LlmClassifier {
                 context_window,
                 tool_calling,
+                reasoning,
                 ..
             }
             | StageRouter {
                 context_window,
                 tool_calling,
+                reasoning,
                 ..
             } => ModelCapabilities {
                 context_window: *context_window,
                 tool_calling: *tool_calling,
+                reasoning: *reasoning,
             },
         }
     }
