@@ -475,7 +475,7 @@ async fn anthropic_count_tokens(
 ) -> Response {
     let body = match llm_json_body(body) {
         Ok(body) => body,
-        Err(message) => return invalid_body_error(message),
+        Err(message) => return anthropic_error_response(invalid_body_error(message)),
     };
     let (algorithm, request) = match resolve_route(
         &state,
@@ -484,12 +484,12 @@ async fn anthropic_count_tokens(
         WireFormat::AnthropicMessages,
     ) {
         Ok(resolved) => resolved,
-        Err(response) => return response,
+        Err(response) => return anthropic_error_response(response),
     };
-    match algorithm.count_tokens(request).await {
+    anthropic_error_response(match algorithm.count_tokens(request).await {
         Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
         Err(error) => count_tokens_error(error),
-    }
+    })
 }
 
 /// Map a [`count_tokens`](Algorithm::count_tokens) failure to an HTTP response:
@@ -567,6 +567,7 @@ async fn handle_endpoint_inner(
         }
         Err(message) => invalid_body_error(message),
     };
+    let response = render_error_response(response, wire_format);
     metrics::record_client_response(response.status().as_u16());
     request_log.emit(&response);
     response
@@ -805,7 +806,7 @@ fn algorithm_error(error: LibsyError) -> Response {
         ),
         LlmClientError::UpstreamHttp { status, body } => error_response(
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
-            body,
+            upstream_error_message(body),
             "upstream_error",
             "upstream_error",
         ),
@@ -834,6 +835,93 @@ fn algorithm_error(error: LibsyError) -> Response {
     }
 }
 
+// Provider errors are often JSON documents; expose their message without
+// embedding the entire document as an escaped string in our error envelope.
+fn upstream_error_message(body: &str) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|body| {
+            body.pointer("/error/message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| body.to_string())
+}
+
+// Error metadata retained until the client-facing endpoint selects an envelope.
+#[derive(Clone)]
+struct ApiError {
+    status: StatusCode,
+    message: String,
+    error_type: &'static str,
+    code: &'static str,
+}
+
+impl ApiError {
+    fn new(
+        status: StatusCode,
+        message: impl Into<String>,
+        error_type: &'static str,
+        code: &'static str,
+    ) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            error_type,
+            code,
+        }
+    }
+
+    fn into_response(self, wire_format: WireFormat) -> Response {
+        let body = match wire_format {
+            WireFormat::AnthropicMessages => json!({
+                "type": "error",
+                "error": {
+                    "type": anthropic_error_type(self.status),
+                    "message": self.message.clone(),
+                }
+            }),
+            WireFormat::OpenAiChat | WireFormat::OpenAiResponses => json!({
+                "error": {
+                    "message": self.message.clone(),
+                    "type": self.error_type,
+                    "code": self.code,
+                }
+            }),
+        };
+        let mut response = (self.status, Json(body)).into_response();
+        response
+            .extensions_mut()
+            .insert(RequestLogError(self.message.clone()));
+        response.extensions_mut().insert(self);
+        response
+    }
+}
+
+fn render_error_response(response: Response, wire_format: WireFormat) -> Response {
+    let Some(error) = response.extensions().get::<ApiError>().cloned() else {
+        return response;
+    };
+    error.into_response(wire_format)
+}
+
+fn anthropic_error_response(response: Response) -> Response {
+    render_error_response(response, WireFormat::AnthropicMessages)
+}
+
+fn anthropic_error_type(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST => "invalid_request_error",
+        StatusCode::UNAUTHORIZED => "authentication_error",
+        StatusCode::FORBIDDEN => "permission_error",
+        StatusCode::NOT_FOUND => "not_found_error",
+        StatusCode::PAYLOAD_TOO_LARGE => "request_too_large",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
+        status if status.as_u16() == 529 => "overloaded_error",
+        _ => "api_error",
+    }
+}
+
 fn server_error(message: impl Into<String>) -> Response {
     error_response(
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -858,20 +946,7 @@ fn error_response(
     error_type: &'static str,
     code: &'static str,
 ) -> Response {
-    let message = message.into();
-    let mut response = (
-        status,
-        Json(json!({
-            "error": {
-                "message": message.clone(),
-                "type": error_type,
-                "code": code,
-            }
-        })),
-    )
-        .into_response();
-    response.extensions_mut().insert(RequestLogError(message));
-    response
+    ApiError::new(status, message, error_type, code).into_response(WireFormat::OpenAiChat)
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {

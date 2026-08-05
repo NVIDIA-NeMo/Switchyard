@@ -81,6 +81,13 @@ async fn upstream_chat(
         )
             .into_response();
     }
+    if body["messages"][0]["content"] == "auth-fail" {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "upstream authentication failed"}})),
+        )
+            .into_response();
+    }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
     if body["stream"].as_bool() == Some(true) {
@@ -1476,7 +1483,7 @@ async fn streaming_error_records_error_without_usage_or_latency() -> TestResult 
 }
 
 #[tokio::test]
-async fn request_and_upstream_errors_use_the_canonical_envelope() -> TestResult {
+async fn request_and_upstream_errors_use_the_inbound_wire_format() -> TestResult {
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
     let unknown = send(
@@ -1505,17 +1512,75 @@ async fn request_and_upstream_errors_use_the_canonical_envelope() -> TestResult 
         "invalid_request_error"
     );
 
-    let upstream_error = send(
+    let upstream_cases = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "auth-fail"}]
+            }),
+            json!({
+                "error": {
+                    "message": "upstream authentication failed",
+                    "type": "upstream_error",
+                    "code": "upstream_error"
+                }
+            }),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "auth-fail"}),
+            json!({
+                "error": {
+                    "message": "upstream authentication failed",
+                    "type": "upstream_error",
+                    "code": "upstream_error"
+                }
+            }),
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL,
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "auth-fail"}]
+            }),
+            json!({
+                "type": "error",
+                "error": {
+                    "type": "authentication_error",
+                    "message": "upstream authentication failed"
+                }
+            }),
+        ),
+    ];
+    for (path, body, expected) in upstream_cases {
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{path}");
+        assert_eq!(response.json()?, expected, "{path}");
+    }
+
+    let anthropic_unknown = send(
         &app,
         "POST",
-        "/v1/chat/completions",
+        "/v1/messages",
         Some(json!({
-            "model": ROUTE_MODEL,
-            "messages": [{"role": "user", "content": "fail"}]
+            "model": "other",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}]
         })),
     )
     .await?;
-    assert_eq!(upstream_error.status, StatusCode::IM_A_TEAPOT);
-    assert_eq!(upstream_error.json()?["error"]["code"], "upstream_error");
+    assert_eq!(anthropic_unknown.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        anthropic_unknown.json()?,
+        json!({
+            "type": "error",
+            "error": {
+                "type": "not_found_error",
+                "message": "No route registered for model other"
+            }
+        })
+    );
     Ok(())
 }
