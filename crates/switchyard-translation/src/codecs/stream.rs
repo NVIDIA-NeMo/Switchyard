@@ -35,6 +35,8 @@ pub struct StreamTranslationState {
     pub saw_message_start: bool,
     pub emitted_message_start: bool,
     pub finished: bool,
+    /// Set once an in-band error event was emitted; the encoder then emits nothing further.
+    pub errored: bool,
     pub usage: Usage,
 
     pub(crate) output_tokens_seen: u64,

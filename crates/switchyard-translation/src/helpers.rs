@@ -449,6 +449,98 @@ mod tests {
         Ok(())
     }
 
+    // An in-band error is terminal for every target format: the encoder emits the pre-error
+    // content and the error, then drops any later chunk. Production truncates the source before
+    // the encoder, so this contract is only observable by driving encode_stream directly.
+    #[test]
+    fn encode_stream_stops_after_an_in_band_error() -> Result<(), BoxError> {
+        for message in [
+            LlmResponseChunk::StreamError {
+                message: "boom".to_string(),
+            },
+            LlmResponseChunk::DecodeError {
+                message: "boom".to_string(),
+            },
+        ] {
+            for target in [
+                WireFormat::OpenAiChat,
+                WireFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages,
+            ] {
+                let chunks: LlmResponseStream = stream::iter(vec![
+                    Ok(LlmResponseChunk::TextDelta {
+                        index: 0,
+                        text: "before".to_string(),
+                    }
+                    .into()),
+                    Ok(message.clone().into()),
+                    Ok(LlmResponseChunk::TextDelta {
+                        index: 0,
+                        text: "after".to_string(),
+                    }
+                    .into()),
+                ])
+                .boxed();
+                let events = block_on(encode_stream(chunks, target, None)?.collect::<Vec<_>>())
+                    .into_iter()
+                    .collect::<Result<Vec<Value>, BoxError>>()?;
+                let body = serde_json::to_string(&events)?;
+                assert!(
+                    body.contains("before"),
+                    "{target:?}: pre-error content missing:\n{body}"
+                );
+                assert!(
+                    body.contains("boom"),
+                    "{target:?}: error event missing:\n{body}"
+                );
+                assert!(
+                    !body.contains("after"),
+                    "{target:?}/{message:?}: content leaked after the error:\n{body}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    // The guard keys on `errored`, not `finished`, so a normal completion still emits the
+    // trailing usage chunk the OpenAI chat codec reports only after `finished` is set.
+    #[test]
+    fn encode_stream_keeps_trailing_usage_after_a_normal_stop() -> Result<(), BoxError> {
+        let chunks: LlmResponseStream = stream::iter(vec![
+            Ok(LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "hi".to_string(),
+            }
+            .into()),
+            Ok(LlmResponseChunk::MessageStop {
+                reason: Some("stop".to_string()),
+            }
+            .into()),
+            Ok(LlmResponseChunk::Usage(switchyard_protocol::llm::Usage {
+                output_tokens: Some(7),
+                ..Default::default()
+            })
+            .into()),
+        ])
+        .boxed();
+        let events =
+            block_on(encode_stream(chunks, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>())
+                .into_iter()
+                .collect::<Result<Vec<Value>, BoxError>>()?;
+        let body = serde_json::to_string(&events)?;
+        assert!(
+            events
+                .iter()
+                .any(|event| event["choices"][0]["finish_reason"] == "stop"),
+            "missing stop terminal:\n{body}"
+        );
+        assert!(
+            body.contains("\"usage\""),
+            "trailing usage dropped after a normal stop:\n{body}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn decode_stream_parses_sse_bytes_into_ir_chunks() -> Result<(), LlmClientError> {
         let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
