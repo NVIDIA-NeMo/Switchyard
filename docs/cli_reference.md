@@ -83,6 +83,26 @@ Validate a deployment, then start the proxy:
   --host 127.0.0.1 --port 4000
 ```
 
+## Removed Setup Commands
+
+`switchyard configure` and `switchyard verify` are not available. Export the
+environment variable named by `api_key_env` in the native TOML deployment,
+then pass that deployment on each run. For example:
+
+```toml
+[llm_clients.provider]
+api_key_env = "PROVIDER_API_KEY"
+```
+
+```bash
+export PROVIDER_API_KEY="your-provider-key"  # pragma: allowlist secret
+switchyard launch claude --model my-route --config routes.toml
+```
+
+The CLI does not save provider credentials or deployment paths.
+Use `switchyard-server --config routes.toml --dry-run` to validate a native
+deployment before starting the standalone server.
+
 ## Related Documentation
 
 - [Getting Started](getting_started.md): installation, configuration, and verification for both paths
