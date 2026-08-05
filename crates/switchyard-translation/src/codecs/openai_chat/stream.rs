@@ -224,6 +224,8 @@ fn encode_openai_chat_stream(
             )]
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
+            // An in-band error is terminal: mark finished so finish() adds no success events after it.
+            state.finished = true;
             vec![json!({"error": {"message": message}})]
         }
     }

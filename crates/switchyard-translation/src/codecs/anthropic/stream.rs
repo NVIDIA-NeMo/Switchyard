@@ -204,6 +204,8 @@ fn encode_anthropic_stream(
             Vec::new()
         }
         LlmResponseChunk::StreamError { message } | LlmResponseChunk::DecodeError { message } => {
+            // An in-band error is terminal: mark finished so finish() adds no success events after it.
+            state.finished = true;
             vec![json!({"type": "error", "error": {"message": message}})]
         }
     }

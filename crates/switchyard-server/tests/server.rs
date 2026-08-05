@@ -1490,7 +1490,9 @@ async fn streaming_error_records_error_without_usage_or_latency() -> TestResult 
 
 #[tokio::test]
 async fn responses_stream_error_does_not_emit_success_terminal_events() -> TestResult {
-    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/stream-error"])]).await?;
+    // A distinct target keeps this test's error-counter increments off the shared
+    // model/stream-error metric that streaming_error_records_... asserts an exact delta on.
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/responses-stream-error"])]).await?;
 
     let response = send(
         &app,
@@ -1515,6 +1517,75 @@ async fn responses_stream_error_does_not_emit_success_terminal_events() -> TestR
         assert!(
             !body.contains(event_type),
             "{event_type} followed an upstream stream error"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn chat_stream_error_does_not_emit_success_terminal_chunk() -> TestResult {
+    // A distinct target keeps this test's error-counter increments off the shared
+    // model/stream-error metric that streaming_error_records_... asserts an exact delta on.
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/chat-stream-error"])]).await?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "stream-error"}],
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.text()?;
+    assert_in_order(body, &["before", "still here", "upstream stream failed"]);
+    // The finalizer must not synthesize a `finish_reason: stop` completion chunk after the error.
+    let after_error = body
+        .split_once("upstream stream failed")
+        .map(|(_, rest)| rest)
+        .unwrap_or_default();
+    assert!(
+        !after_error.contains(r#""finish_reason":"stop""#),
+        "a finish_reason=stop chunk followed an upstream stream error:\n{body}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn anthropic_stream_error_does_not_emit_success_terminal_events() -> TestResult {
+    // A distinct target keeps this test's error-counter increments off the shared
+    // model/stream-error metric that streaming_error_records_... asserts an exact delta on.
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/anthropic-stream-error"])]).await?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/messages",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "stream-error"}],
+            "max_tokens": 16,
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.text()?;
+    assert_in_order(body, &["before", "upstream stream failed"]);
+    // The finalizer must not close the turn with message_delta/message_stop after the error.
+    let after_error = body
+        .split_once("upstream stream failed")
+        .map(|(_, rest)| rest)
+        .unwrap_or_default();
+    for event_type in ["message_delta", "message_stop"] {
+        assert!(
+            !after_error.contains(event_type),
+            "{event_type} followed an upstream stream error:\n{body}"
         );
     }
     Ok(())
