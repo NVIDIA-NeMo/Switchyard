@@ -1320,6 +1320,10 @@ Switchyard server serves. It is read by <code>switchyard-server --config</code> 
 </span></code></pre></div>
 <p><code>schema_version</code> must be <code>1</code>. Table names under <code>llm_clients</code>, <code>targets</code>, and
 <code>routes</code> are local references; clients send the route's <code>id</code> as the model name.</p>
+<p><code>schema_version</code>, <code>[targets]</code>, and <code>[routes]</code> must all be present, even when a
+route reaches no upstream. A file without a <code>[targets]</code> table is rejected with
+<code>missing field targets</code>; an empty <code>[targets]</code> table satisfies it.
+<code>[llm_clients]</code> defaults to empty and may be omitted.</p>
 <h2 id="llm_clientsname"><code>[llm_clients.&lt;name&gt;]</code><a class="headerlink" href="#llm_clientsname" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1437,6 +1441,16 @@ must exist and be non-empty when the server loads.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
 upstream model. Use it for local smoke tests.</p>
+<p>A noop-only deployment reaches no upstream but still needs the <code>[targets]</code>
+table, which can be empty:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="k">[targets]</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="k">[routes.smoke]</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop-route&quot;</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop&quot;</span>
+</span></code></pre></div>
 <h3 id="passthrough"><code>passthrough</code><a class="headerlink" href="#passthrough" title="Permanent link">&para;</a></h3>
 <p>Sends every request to one target.</p>
 <table>
