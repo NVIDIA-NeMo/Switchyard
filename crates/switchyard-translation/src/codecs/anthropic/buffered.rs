@@ -233,6 +233,21 @@ impl FormatCodec for AnthropicMessagesCodec {
             body.insert("thinking".to_string(), json!({"type": "adaptive"}));
             body.insert("output_config".to_string(), json!({"effort": effort}));
         }
+        if let Some(response_format) = &request.output.response_format
+            && let Some(format) =
+                encode_anthropic_output_format(response_format, &mut diagnostics, policy)?
+        {
+            let output_config = body
+                .entry("output_config".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            let Some(output_config) = output_config.as_object_mut() else {
+                return Err(TranslationError::InvalidType {
+                    path: "$.output_config".to_string(),
+                    expected: "object",
+                });
+            };
+            output_config.insert("format".to_string(), format);
+        }
 
         let body = embed_preservation(Value::Object(body), &request.preservation, policy);
         Ok(EncodedRequest { body, diagnostics })
@@ -342,6 +357,69 @@ impl FormatCodec for AnthropicMessagesCodec {
             body: embed_preservation(body, &response.preservation, _policy),
             diagnostics: Vec::new(),
         })
+    }
+}
+
+/// Maps the neutral OpenAI-shaped JSON schema to Anthropic's output format.
+fn encode_anthropic_output_format(
+    response_format: &Value,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Option<Value>> {
+    let Some(json_schema) = response_format
+        .as_object()
+        .filter(|format| format.get("type").and_then(Value::as_str) == Some("json_schema"))
+        .and_then(|format| format.get("json_schema"))
+        .and_then(Value::as_object)
+    else {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output requires an OpenAI JSON schema response format",
+        )?;
+        return Ok(None);
+    };
+    let Some(schema) = json_schema.get("schema") else {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output requires json_schema.schema",
+        )?;
+        return Ok(None);
+    };
+
+    let mut schema = schema.clone();
+    if strip_anthropic_unsupported_constraints(&mut schema) {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output dropped unsupported JSON Schema constraints",
+        )?;
+    }
+    Ok(Some(json!({"type": "json_schema", "schema": schema})))
+}
+
+/// Removes constraints unsupported by Anthropic's structured-output grammar.
+fn strip_anthropic_unsupported_constraints(value: &mut Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            let mut removed = false;
+            for key in ["minimum", "maximum", "minLength", "maxLength"] {
+                removed |= object.remove(key).is_some();
+            }
+            for value in object.values_mut() {
+                removed |= strip_anthropic_unsupported_constraints(value);
+            }
+            removed
+        }
+        Value::Array(values) => {
+            let mut removed = false;
+            for value in values {
+                removed |= strip_anthropic_unsupported_constraints(value);
+            }
+            removed
+        }
+        _ => false,
     }
 }
 

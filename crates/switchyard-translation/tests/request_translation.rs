@@ -951,7 +951,20 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
             }
         ],
         "max_completion_tokens": 512,
-        "reasoning_effort": "high"
+        "reasoning_effort": "high",
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "strict": true,
+                "schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                    "additionalProperties": false
+                }
+            }
+        }
     });
 
     let output = engine
@@ -967,11 +980,82 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
     assert_eq!(output["system"], "System rules.\n\nDeveloper rules.");
     assert_eq!(output["max_tokens"], 512);
     assert_eq!(output["thinking"], json!({"type": "adaptive"}));
-    assert_eq!(output["output_config"], json!({"effort": "high"}));
+    assert_eq!(
+        output["output_config"],
+        json!({
+            "effort": "high",
+            "format": {
+                "type": "json_schema",
+                "schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                    "additionalProperties": false
+                }
+            }
+        })
+    );
     assert_eq!(output["messages"][0]["role"], "user");
     assert_eq!(
         output["messages"][0]["content"][0],
         json!({"type": "text", "text": "Describe"})
+    );
+    Ok(())
+}
+
+// Verifies Anthropic receives its supported schema subset without mutating the neutral contract.
+#[test]
+fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-opus-4-8",
+        "messages": [{"role": "user", "content": "Return a probability."}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "probability",
+                "strict": true,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "crux": {"type": "string", "minLength": 1, "maxLength": 80},
+                        "p_solve": {"type": "number", "minimum": 0, "maximum": 1}
+                    },
+                    "required": ["crux", "p_solve"],
+                    "additionalProperties": false
+                }
+            }
+        }
+    });
+
+    let translated = engine.translate_request(
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &body,
+        &TranslationPolicy::default(),
+    )?;
+
+    assert_eq!(
+        translated.body["output_config"]["format"]["schema"],
+        json!({
+            "type": "object",
+            "properties": {
+                "crux": {"type": "string"},
+                "p_solve": {"type": "number"}
+            },
+            "required": ["crux", "p_solve"],
+            "additionalProperties": false
+        })
+    );
+    assert_eq!(translated.diagnostics.len(), 1);
+    assert!(
+        translated.diagnostics[0]
+            .message
+            .contains("unsupported JSON Schema constraints")
+    );
+    assert_eq!(
+        body["response_format"]["json_schema"]["schema"]["properties"]["p_solve"]["minimum"],
+        0
     );
     Ok(())
 }

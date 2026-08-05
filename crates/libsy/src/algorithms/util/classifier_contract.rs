@@ -42,9 +42,8 @@ pub(crate) struct ClassifierContract {
 impl ClassifierContract {
     /// Builds a contract from user settings and packaged defaults.
     ///
-    /// The response format must contain `json_schema.schema`. Its inner schema replaces every
-    /// `{{RESPONSE_SCHEMA}}` placeholder in the prompt, while the complete response format is
-    /// retained for the model request.
+    /// The response format must contain `json_schema.schema` and is retained separately for the
+    /// model request. Schemas are never copied into the system prompt.
     pub(crate) fn from_config(
         config: &ClassifierContractConfig,
         default_prompt: &str,
@@ -94,20 +93,19 @@ impl ClassifierContract {
                 message: "classifier prompt must not be empty".to_string(),
             });
         }
-        let response_schema = response_format
+        if prompt_template.contains("{{RESPONSE_SCHEMA}}") {
+            return Err(LibsyError::AlgorithmError {
+                message: "classifier prompt must not include {{RESPONSE_SCHEMA}}; the response schema is sent separately".to_string(),
+            });
+        }
+        response_format
             .pointer("/json_schema/schema")
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "response schema has no json_schema.schema".to_string(),
-            })?
-            .clone();
-        let prompt_schema = serde_json::to_string_pretty(&response_schema).map_err(|error| {
-            LibsyError::AlgorithmError {
-                message: format!("prompt schema could not be rendered: {error}"),
-            }
-        })?;
+            })?;
 
         Ok(Self {
-            system_prompt: prompt_template.replace("{{RESPONSE_SCHEMA}}", &prompt_schema),
+            system_prompt: prompt_template.to_string(),
             response_format,
             validator,
         })
@@ -158,7 +156,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_runtime_contract_renders_its_own_schema() -> Result<()> {
+    fn a_runtime_contract_keeps_its_schema_out_of_the_prompt() -> Result<()> {
         let schema = r#"{
             "type": "json_schema",
             "json_schema": {
@@ -169,12 +167,16 @@ mod tests {
                 }
             }
         }"#;
-        let config = ClassifierContractConfig::default()
-            .with_prompt("Return a risk verdict matching:\n{{RESPONSE_SCHEMA}}");
+        let config = ClassifierContractConfig::default().with_prompt(
+            "Return a risk verdict matching the response schema supplied with the request.",
+        );
         let contract = ClassifierContract::from_config(&config, "packaged prompt", schema)?;
 
-        assert!(contract.system_prompt().contains("\"risk\""));
-        assert!(!contract.system_prompt().contains("{{RESPONSE_SCHEMA}}"));
+        assert_eq!(
+            contract.system_prompt(),
+            "Return a risk verdict matching the response schema supplied with the request."
+        );
+        assert!(!contract.system_prompt().contains("\"risk\""));
         assert_eq!(
             contract
                 .response_format()
@@ -211,9 +213,23 @@ mod tests {
     }
 
     #[test]
+    fn a_contract_rejects_a_response_schema_placeholder() {
+        let config = ClassifierContractConfig::default()
+            .with_prompt("Return JSON matching {{RESPONSE_SCHEMA}}");
+        let error = ClassifierContract::from_config(
+            &config,
+            "packaged prompt",
+            r#"{"json_schema":{"schema":{"type":"object"}}}"#,
+        )
+        .expect_err("schema placeholders should be rejected");
+
+        assert!(error.to_string().contains("schema is sent separately"));
+    }
+
+    #[test]
     fn a_custom_contract_wraps_and_validates_its_inner_schema() -> Result<()> {
         let contract = ClassifierContract::from_inner_schema(
-            "Choose a target:\n{{RESPONSE_SCHEMA}}",
+            "Choose a target matching the response schema supplied with the request.",
             json!({
                 "type": "object",
                 "$defs": {
@@ -248,7 +264,7 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
-        assert!(contract.system_prompt().contains("\"target\""));
+        assert!(!contract.system_prompt().contains("\"target\""));
         contract.validate_verdict(&json!({"decision": {"target": "sonnet"}}))?;
         assert!(
             contract

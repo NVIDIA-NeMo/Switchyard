@@ -32,7 +32,7 @@ const BASE_THRESHOLD: f64 = 0.5;
 async fn call_model(model: &str) -> Response {
     println!("  -> model call: {model}");
     let completion = if model == CLASSIFIER {
-        r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#.to_string()
+        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
     } else {
         format!("answer from {model}")
     };

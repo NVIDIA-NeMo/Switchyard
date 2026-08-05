@@ -405,7 +405,7 @@ mod tests {
             let completion = if target == JUDGE {
                 let p_solve = *self.judge_p_solve.lock();
                 format!(
-                    r#"{{"recommended_route":"efficient","p_solve":{p_solve},"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}}"#
+                    r#"{{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":{p_solve}}}"#
                 )
             } else {
                 target

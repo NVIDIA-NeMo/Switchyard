@@ -122,8 +122,7 @@ impl PyTaskClassifierConfig {
     #[pyo3(signature = (
         base_threshold,
         *,
-        min_confidence=0.0,
-        capability_elevated_floor=None,
+        threshold_step=0.0,
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
@@ -133,8 +132,7 @@ impl PyTaskClassifierConfig {
     #[allow(clippy::too_many_arguments)]
     fn new(
         base_threshold: f64,
-        min_confidence: f64,
-        capability_elevated_floor: Option<f64>,
+        threshold_step: f64,
         session_affinity: bool,
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
@@ -148,8 +146,7 @@ impl PyTaskClassifierConfig {
         Self {
             inner: TaskClassifierConfig {
                 base_threshold,
-                min_confidence,
-                capability_elevated_floor,
+                threshold_step,
                 session_affinity,
                 message_hash_fallback,
                 recent_turn_window,

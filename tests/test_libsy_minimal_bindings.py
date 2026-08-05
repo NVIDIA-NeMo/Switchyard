@@ -75,10 +75,8 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
                             {
                                 "type": "text",
                                 "text": (
-                                    '{"recommended_route":"efficient","p_solve":0.9,'
-                                    '"confidence":0.9,"abstain":false,'
-                                    '"capability_boundary":"supported",'
-                                    '"primary_rule":"SUP-1","crux":"bounded task"}'
+                                    '{"crux":"bounded task","primary_rule":"SUP-1",'
+                                    '"capability_boundary":"supported","p_solve":0.9}'
                                 ),
                             }
                         ],
@@ -95,16 +93,18 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
         LlmTarget("strong", EchoClient("strong")),
         config=TaskClassifierConfig(
             0.5,
-            prompt="Custom capability rubric:\n{{RESPONSE_SCHEMA}}",
+            threshold_step=0.1,
+            prompt="Custom capability rubric.",
         ),
     )
 
     _, response = await algorithm.run(request_body())
 
     prompt = judge.calls[0]["messages"][0]["content"][0]["text"]
-    assert prompt.startswith("Custom capability rubric:")
-    assert '"recommended_route"' in prompt
-    assert "{{RESPONSE_SCHEMA}}" not in prompt
+    assert prompt == "Custom capability rubric."
+    assert judge.calls[0]["output"]["response_format"]["json_schema"]["schema"][
+        "properties"
+    ]["p_solve"]
     assert response["model"] == "weak"
 
 

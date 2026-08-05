@@ -360,7 +360,7 @@ impl RoutedLlmClient for ClassifierClient {
             "routed response"
         } else {
             tokio::time::sleep(self.classifier_delay).await;
-            r#"{"recommended_route":"weak","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#
+            r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
         };
         Ok(Response {
             llm_response: LlmResponse::Agg(text_response(Some(model), completion)),
@@ -1202,7 +1202,7 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
         (
             "fo-valid",
             JudgeOutcome::Reply(
-                r#"{"recommended_route":"strong","p_solve":0.3,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"CAP-1","crux":"hard task"}"#,
+                r#"{"crux":"hard task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.3}"#,
             ),
             None,
         ),

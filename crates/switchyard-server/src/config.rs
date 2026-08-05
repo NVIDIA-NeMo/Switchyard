@@ -228,8 +228,7 @@ struct CapabilityClassifierRouteConfig {
     strong_target: String,
     weak_target: String,
     base_threshold: f64,
-    min_confidence: f64,
-    capability_elevated_floor: Option<f64>,
+    threshold_step: f64,
     session_affinity: bool,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
@@ -303,9 +302,7 @@ enum RouteConfig {
         #[serde(default)]
         base_threshold: Option<f64>,
         #[serde(default)]
-        min_confidence: Option<f64>,
-        #[serde(default)]
-        capability_elevated_floor: Option<f64>,
+        threshold_step: Option<f64>,
         #[serde(default)]
         session_affinity: bool,
         #[serde(default)]
@@ -363,9 +360,7 @@ struct StageClassifierConfig {
     target: String,
     base_threshold: f64,
     #[serde(default)]
-    min_confidence: f64,
-    #[serde(default)]
-    capability_elevated_floor: Option<f64>,
+    threshold_step: f64,
     #[serde(default)]
     session_affinity: bool,
     #[serde(default)]
@@ -382,8 +377,7 @@ impl StageClassifierConfig {
     fn task_classifier_config(&self) -> TaskClassifierConfig {
         TaskClassifierConfig {
             base_threshold: self.base_threshold,
-            min_confidence: self.min_confidence,
-            capability_elevated_floor: self.capability_elevated_floor,
+            threshold_step: self.threshold_step,
             session_affinity: self.session_affinity,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
@@ -445,8 +439,7 @@ impl RouteConfig {
             strong_target,
             weak_target,
             base_threshold,
-            min_confidence,
-            capability_elevated_floor,
+            threshold_step,
             session_affinity,
             message_hash_fallback,
             recent_turn_window,
@@ -503,8 +496,7 @@ impl RouteConfig {
                             "base_threshold",
                             base_threshold,
                         )?,
-                        min_confidence: min_confidence.unwrap_or_default(),
-                        capability_elevated_floor: *capability_elevated_floor,
+                        threshold_step: threshold_step.unwrap_or_default(),
                         session_affinity: *session_affinity,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
@@ -524,8 +516,7 @@ impl RouteConfig {
                 )?;
                 if mode.is_some()
                     && (base_threshold.is_some()
-                        || min_confidence.is_some()
-                        || capability_elevated_floor.is_some()
+                        || threshold_step.is_some()
                         || *session_affinity
                         || *message_hash_fallback
                         || recent_turn_window.is_some())
@@ -556,8 +547,7 @@ impl RouteConfig {
                 if strong_target.is_some()
                     || weak_target.is_some()
                     || base_threshold.is_some()
-                    || min_confidence.is_some()
-                    || capability_elevated_floor.is_some()
+                    || threshold_step.is_some()
                     || escalation.is_some()
                 {
                     return Err(ServerError::new(format!(
@@ -718,8 +708,7 @@ fn build_algorithm(
                     let weak = resolve_target(route_name, &config.weak_target, targets)?;
                     let classifier_config = TaskClassifierConfig {
                         base_threshold: config.base_threshold,
-                        min_confidence: config.min_confidence,
-                        capability_elevated_floor: config.capability_elevated_floor,
+                        threshold_step: config.threshold_step,
                         session_affinity: config.session_affinity,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
@@ -1021,6 +1010,12 @@ target = "weak"
             "base_threshold = 0.5\nprompt = \"   \"",
         );
         assert!(error_message(&empty).contains("classifier prompt must not be empty"));
+
+        let schema_placeholder = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nprompt = \"{{RESPONSE_SCHEMA}}\"",
+        );
+        assert!(error_message(&schema_placeholder).contains("schema is sent separately"));
         Ok(())
     }
 
@@ -1131,6 +1126,20 @@ classifier_magic = true
             (
                 VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 1.5"),
                 "base_threshold must be between 0 and 1",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "base_threshold = 0.5",
+                    "base_threshold = 0.5\nthreshold_step = -0.1",
+                ),
+                "threshold_step must be finite and greater than or equal to 0",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "base_threshold = 0.5",
+                    "base_threshold = 0.8\nthreshold_step = 0.11",
+                ),
+                "base_threshold + 2 * threshold_step must be at most 1",
             ),
             (
                 VALID_CONFIG.replace(
@@ -1262,7 +1271,7 @@ target = "azure"
     fn accepts_session_affinity_with_message_hash_fallback() -> ServerResult<()> {
         let configured = VALID_CONFIG.replace(
             "base_threshold = 0.5",
-            "base_threshold = 0.25\nmin_confidence = 0.0\ncapability_elevated_floor = 0.45\nsession_affinity = true\nmessage_hash_fallback = true",
+            "base_threshold = 0.25\nthreshold_step = 0.1\nsession_affinity = true\nmessage_hash_fallback = true",
         );
         server_state_from_toml(&configured)?;
         Ok(())

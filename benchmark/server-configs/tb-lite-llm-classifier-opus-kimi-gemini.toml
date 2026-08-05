@@ -30,6 +30,6 @@ classifier_target = "classifier"
 strong_target = "strong"
 weak_target = "weak"
 base_threshold = 0.5
-min_confidence = 0.0
+threshold_step = 0.0
 session_affinity = true
 message_hash_fallback = true

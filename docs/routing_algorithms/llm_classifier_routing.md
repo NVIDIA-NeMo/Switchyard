@@ -37,6 +37,7 @@ classifier_target = "classifier"
 strong_target = "strong"
 weak_target = "weak"
 base_threshold = 0.5
+threshold_step = 0.1
 session_affinity = true
 message_hash_fallback = true
 ```
@@ -54,20 +55,20 @@ model name clients send to Switchyard.
 The classifier target returns a structured verdict containing:
 
 - `p_solve`: the estimated probability that the weak model completes the task.
-- `confidence`: confidence in the assessment.
 - `capability_boundary`: `supported`, `uncertain`, `unsupported`, or `unmatched`.
+- `primary_rule`: the capability-card rule that determines the boundary.
+- `crux`: the hardest material requirement for whole-task success.
 
 For a usable verdict, Switchyard routes to `weak_target` when `p_solve` is
 greater than or equal to the applicable threshold. Otherwise it routes to
 `strong_target`:
 
 - `supported` uses `base_threshold`.
-- `uncertain`, `unsupported`, and `unmatched` use
-  `capability_elevated_floor` when configured, or `base_threshold` otherwise.
+- `uncertain` and `unmatched` use `base_threshold + threshold_step`.
+- `unsupported` uses `base_threshold + 2 * threshold_step`.
 
-An abstention, an invalid or unparseable verdict, a judge failure, or confidence
-below `min_confidence` routes to `strong_target`. Raising either threshold sends
-more traffic to the strong model.
+An invalid, inconsistent, or unparseable verdict, or a judge failure, routes to
+`strong_target`. Raising either knob sends more traffic to the strong model.
 
 ## Judge model compatibility
 
@@ -98,9 +99,8 @@ for the server merge behavior.
 | Key | Default | Meaning |
 |---|---|---|
 | `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
-| `min_confidence` | `0.0` | Lowest judge confidence that permits weak routing. Must be between `0` and `1`. |
-| `capability_elevated_floor` | unset | Higher threshold for uncertain, unsupported, and unmatched tasks. It must be between `0` and `1` and greater than `base_threshold`. |
-| `recent_turn_window` | unset | When unset, the judge sees only the newest user message. When set to `N`, it sees client system/developer instructions, the opening user task, and the last `N` conversation messages after that task. `0` keeps only the instructions and opening task. |
+| `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
+| `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees client system/developer instructions, the opening user task, and the last `N` conversation messages after that task. `0` keeps only the instructions and opening task. |
 | `session_affinity` | `false` | Retains the first selected target for a session and reuses it on later requests. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `session_affinity = true`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
@@ -109,8 +109,8 @@ for the server merge behavior.
 ### Override the classifier prompt
 
 Set `prompt` on the route when the packaged capability rubric does not describe
-your weak model. A `{{RESPONSE_SCHEMA}}` placeholder is optional. When present,
-Switchyard replaces it with the packaged capability-verdict schema.
+your weak model. Switchyard sends the response schema separately through the
+provider's structured-output request; do not copy it into the prompt.
 
 ```toml
 [routes.smart]
@@ -123,13 +123,12 @@ weak_target = "weak"
 base_threshold = 0.5
 prompt = """
 Estimate whether the weak target can complete the request.
-Return JSON matching this schema:
-{{RESPONSE_SCHEMA}}
+Return exactly one JSON object matching the response schema supplied with the request.
 """
 ```
 
 The override changes the instructions only. The judge must still return the
-packaged fields such as `p_solve`, `confidence`, and `capability_boundary`.
+packaged `crux`, `primary_rule`, `capability_boundary`, and `p_solve` fields.
 
 ## Custom multi-target routing
 
@@ -146,8 +145,7 @@ targets = ["fast", "balanced", "reasoning", "premium"]
 default_target = "premium"
 prompt = """
 Choose the best configured target for this request.
-Return JSON matching:
-{{RESPONSE_SCHEMA}}
+Return JSON matching the response schema supplied with the request.
 """
 response_schema = '''
 {
@@ -180,18 +178,22 @@ schema to the provider in a strict structured-output wrapper and validates the
 returned JSON again. `jsonptr` resolves the selector against that verdict. A
 missing, non-string, or unknown target falls back to `default_target`.
 
-### Classifier calibration
+This separation applies to every classifier mode. Prompts containing the legacy
+`{{RESPONSE_SCHEMA}}` placeholder are rejected during configuration validation.
 
-The packaged prompt is calibrated for one specific weak model, assumes it
-receives the initial task, and describes a sticky routing decision. It is not a
-model-neutral weak-target evaluator.
+### Forecast and policy assumptions
 
-Without affinity, the runtime judges every request; by default, it sends the
-newest user message rather than the initial task. The example enables affinity
-and its message-hash fallback so the first request is judged and later requests
-with the same opening task reuse that decision. If you use a different weak
-model or per-request routing, tune the thresholds before treating classifier
-decisions as production policy.
+The packaged prompt forecasts whole-task success for a generic efficient agent.
+It produces a probability and capability boundary but does not choose a route.
+The deterministic policy applies `base_threshold` and `threshold_step` after
+generation.
+
+Without affinity, the runtime judges every request. By default, it sends the
+opening task and the latest user follow-up when they differ. Set
+`recent_turn_window` when intervening conversation context affects the forecast.
+If a client sends only a follow-up fragment without the opening task, enable
+affinity or include the task history. Threshold tuning changes routing policy;
+it cannot recover missing task context.
 
 ## Session affinity
 

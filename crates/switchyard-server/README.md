@@ -97,8 +97,7 @@ routes to `weak_target` or `strong_target`. Beyond the three targets it accepts 
 | Key | Default | Meaning |
 |---|---|---|
 | `base_threshold` | *required* | Lowest solve probability that routes a task to `weak_target`. Raise it to send less traffic to the weak model. |
-| `min_confidence` | `0.0` | Lowest judge confidence that permits weak routing. `0.0` disables the gate. |
-| `capability_elevated_floor` | unset | Higher solve-probability floor applied only to tasks the judge marks uncertain, unsupported, or unmatched. Unset reuses `base_threshold`. |
+| `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `session_affinity` | `false` | Reuses a session's first routing decision on later turns, so the judge is called once per session rather than once per turn. |
 | `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `session_affinity = true`. |
 

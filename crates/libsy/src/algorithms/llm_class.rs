@@ -37,36 +37,37 @@ const ALGORITHM_NAME: &str = "llm_task_classifier";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TaskClassifierVerdict {
-    #[serde(rename = "recommended_route")]
-    _recommended_route: String,
-    p_solve: f64,
-    confidence: f64,
-    abstain: bool,
+    crux: String,
+    primary_rule: String,
     capability_boundary: String,
-    #[serde(rename = "primary_rule")]
-    _primary_rule: String,
-    #[serde(rename = "crux")]
-    _crux: String,
+    p_solve: f64,
 }
 
 impl TaskClassifierVerdict {
-    /// Reject out-of-range probabilities before the policy can route efficiently. Range
-    /// containment also rejects NaN and the infinities, which compare false against both bounds.
+    /// Rejects malformed or internally inconsistent verdicts before policy evaluation.
     fn is_valid(&self) -> bool {
         (0.0..=1.0).contains(&self.p_solve)
-            && (0.0..=1.0).contains(&self.confidence)
+            && !self.crux.trim().is_empty()
             && matches!(
-                self.capability_boundary.as_str(),
-                "supported" | "uncertain" | "unsupported" | "unmatched"
+                (
+                    self.primary_rule.as_str(),
+                    self.capability_boundary.as_str()
+                ),
+                ("SUP-1" | "SUP-2" | "SUP-3" | "SUP-4" | "SUP-5", "supported")
+                    | ("UNC-1" | "UNC-2", "uncertain")
+                    | ("LIM-1" | "LIM-2", "unsupported")
+                    | ("none", "unmatched")
             )
     }
 
-    /// Whether the capability boundary requires the elevated routing threshold.
-    fn is_capability_elevated(&self) -> bool {
-        matches!(
-            self.capability_boundary.as_str(),
-            "uncertain" | "unsupported" | "unmatched"
-        )
+    /// Returns the number of threshold steps assigned to this capability boundary.
+    fn boundary_steps(&self) -> Option<u8> {
+        match self.capability_boundary.as_str() {
+            "supported" => Some(0),
+            "uncertain" | "unmatched" => Some(1),
+            "unsupported" => Some(2),
+            _ => None,
+        }
     }
 }
 
@@ -92,6 +93,18 @@ fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message
     kept.into_iter().cloned().collect()
 }
 
+/// Keeps the opening task and the latest user follow-up when they differ.
+fn task_messages(messages: &[Message]) -> Vec<Message> {
+    let mut user_messages = messages.iter().filter(|message| message.role == Role::User);
+    let Some(opening_task) = user_messages.next() else {
+        return Vec::new();
+    };
+    match user_messages.next_back() {
+        Some(latest_follow_up) => vec![opening_task.clone(), latest_follow_up.clone()],
+        None => vec![opening_task.clone()],
+    }
+}
+
 /// Selects the task messages shown to capability and custom-schema classifiers.
 struct TaskInput {
     recent_turn_window: Option<usize>,
@@ -99,19 +112,11 @@ struct TaskInput {
 
 impl ClassifierInput for TaskInput {
     fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
-        // Task-based routing judges the newest user message alone. A configured
-        // window widens that to the surrounding conversation.
+        // The default preserves the whole-task anchor and latest user update. A
+        // configured window widens that to the surrounding conversation.
         match self.recent_turn_window {
             Some(window) => trim_messages(&request.llm_request.messages, window),
-            None => request
-                .llm_request
-                .messages
-                .iter()
-                .rev()
-                .find(|message| message.role == Role::User)
-                .cloned()
-                .into_iter()
-                .collect(),
+            None => task_messages(&request.llm_request.messages),
         }
     }
 }
@@ -122,8 +127,7 @@ struct TaskClassifierPolicy {
     efficient_target: String,
     capable_target: String,
     base_threshold: f64,
-    min_confidence: f64,
-    capability_elevated_floor: Option<f64>,
+    threshold_step: f64,
 }
 
 impl TaskClassifierPolicy {
@@ -136,19 +140,13 @@ impl TaskClassifierPolicy {
             efficient_target: efficient_target.into(),
             capable_target: capable_target.into(),
             base_threshold: config.base_threshold,
-            min_confidence: config.min_confidence,
-            capability_elevated_floor: config.capability_elevated_floor,
+            threshold_step: config.threshold_step,
         }
     }
 
     /// Returns the required solve probability for one validated verdict.
-    fn threshold(&self, verdict: &TaskClassifierVerdict) -> f64 {
-        if verdict.is_capability_elevated() {
-            self.capability_elevated_floor
-                .unwrap_or(self.base_threshold)
-        } else {
-            self.base_threshold
-        }
+    fn threshold(&self, verdict: &TaskClassifierVerdict) -> Option<f64> {
+        Some(self.base_threshold + f64::from(verdict.boundary_steps()?) * self.threshold_step)
     }
 }
 
@@ -156,18 +154,19 @@ impl JudgePolicy for TaskClassifierPolicy {
     type Verdict = TaskClassifierVerdict;
 
     fn to_classification(&self, verdict: Option<&Self::Verdict>) -> Classification {
-        // Judge output is untrusted, so only a complete, valid, non-abstained verdict that
-        // clears the configured confidence decides. Anything else is "I could not tell" —
-        // reported as ambiguous so the composition around this classifier chooses the
-        // fallback, rather than this policy silently imposing one.
-        let Some(verdict) =
-            verdict.filter(|v| v.is_valid() && !v.abstain && v.confidence >= self.min_confidence)
-        else {
+        // Judge output is untrusted. An absent, invalid, or inconsistent verdict is
+        // ambiguous so the surrounding router applies its configured fallback.
+        let Some(verdict) = verdict.filter(|verdict| verdict.is_valid()) else {
             return Classification::Ambiguous(vec![]);
         };
         // A usable verdict below the capability threshold is still a decision: the judge
         // does not trust the efficient tier with this task.
-        let target = if verdict.p_solve >= self.threshold(verdict) {
+        let Some(threshold) = self.threshold(verdict) else {
+            return Classification::Ambiguous(vec![]);
+        };
+        let target = if verdict.p_solve >= threshold
+            || (threshold - verdict.p_solve).abs() <= f64::EPSILON
+        {
             &self.efficient_target
         } else {
             &self.capable_target
@@ -184,10 +183,11 @@ impl JudgePolicy for TaskClassifierPolicy {
 pub struct TaskClassifierConfig {
     /// Lowest solve probability that routes a supported task to the efficient target.
     pub base_threshold: f64,
-    /// Lowest judge confidence that permits efficient routing.
-    pub min_confidence: f64,
-    /// Higher solve-probability floor for uncertain, unmatched, and unsupported tasks.
-    pub capability_elevated_floor: Option<f64>,
+    /// Amount added per capability-boundary step.
+    ///
+    /// Supported verdicts use `base_threshold`, uncertain and unmatched verdicts use one
+    /// step, and unsupported verdicts use two steps.
+    pub threshold_step: f64,
     /// Enables session affinity before the judge-backed classifier.
     pub session_affinity: bool,
     /// Uses the first user message as the SessionKey for sticky routing when session metadata is unavailable.
@@ -195,9 +195,9 @@ pub struct TaskClassifierConfig {
     /// Trailing conversation turns the judge sees on top of the client
     /// instructions and the opening task.
     ///
-    /// `None` (the default) judges the newest user message alone — the task, with
-    /// no history. `Some(n)` widens that to the client instructions, the opening
-    /// task, and the last `n` turns after it.
+    /// `None` (the default) judges the opening task and latest user follow-up.
+    /// `Some(n)` widens that to the client instructions, the opening task, and
+    /// the last `n` turns after it.
     pub recent_turn_window: Option<usize>,
     /// Prompt and verdict contract settings for the classifier judge.
     pub contract: ClassifierContractConfig,
@@ -211,9 +211,7 @@ pub struct TaskClassifierConfig {
 struct TaskClassifierConfigWire {
     base_threshold: f64,
     #[serde(default)]
-    min_confidence: f64,
-    #[serde(default)]
-    capability_elevated_floor: Option<f64>,
+    threshold_step: f64,
     #[serde(default)]
     session_affinity: bool,
     #[serde(default)]
@@ -238,8 +236,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
         }
         Ok(Self {
             base_threshold: wire.base_threshold,
-            min_confidence: wire.min_confidence,
-            capability_elevated_floor: wire.capability_elevated_floor,
+            threshold_step: wire.threshold_step,
             session_affinity: wire.session_affinity,
             message_hash_fallback: wire.message_hash_fallback,
             recent_turn_window: wire.recent_turn_window,
@@ -257,8 +254,7 @@ impl Default for TaskClassifierConfig {
     fn default() -> Self {
         Self {
             base_threshold: 0.0,
-            min_confidence: 0.0,
-            capability_elevated_floor: None,
+            threshold_step: 0.0,
             session_affinity: false,
             message_hash_fallback: false,
             recent_turn_window: None,
@@ -279,29 +275,21 @@ impl TaskClassifierConfig {
                 ),
             });
         }
-        if !(0.0..=1.0).contains(&self.min_confidence) {
+        if !self.threshold_step.is_finite() || self.threshold_step < 0.0 {
             return Err(LibsyError::AlgorithmError {
                 message: format!(
-                    "min_confidence must be between 0 and 1, got {}",
-                    self.min_confidence
+                    "threshold_step must be finite and greater than or equal to 0, got {}",
+                    self.threshold_step
                 ),
             });
         }
-        if let Some(floor) = self.capability_elevated_floor {
-            if !(0.0..=1.0).contains(&floor) {
-                return Err(LibsyError::AlgorithmError {
-                    message: format!(
-                        "capability_elevated_floor must be between 0 and 1, got {floor}"
-                    ),
-                });
-            }
-            if floor <= self.base_threshold {
-                return Err(LibsyError::AlgorithmError {
-                    message: format!(
-                        "capability_elevated_floor must be greater than base_threshold, got {floor}"
-                    ),
-                });
-            }
+        let unsupported_threshold = self.base_threshold + 2.0 * self.threshold_step;
+        if unsupported_threshold > 1.0 && unsupported_threshold - 1.0 > f64::EPSILON {
+            return Err(LibsyError::AlgorithmError {
+                message: format!(
+                    "base_threshold + 2 * threshold_step must be at most 1, got {unsupported_threshold}"
+                ),
+            });
         }
         if self.max_output_tokens == 0 {
             return Err(LibsyError::AlgorithmError {
@@ -936,16 +924,16 @@ mod tests {
         TaskClassifierPolicy::new("efficient", "capable", &test_config(TEST_THRESHOLD))
     }
 
-    /// A verdict whose non-routing fields are fixed — only the three the policy reads vary.
-    fn verdict(p_solve: f64, confidence: f64, abstain: bool) -> TaskClassifierVerdict {
+    fn verdict(
+        p_solve: f64,
+        capability_boundary: &str,
+        primary_rule: &str,
+    ) -> TaskClassifierVerdict {
         TaskClassifierVerdict {
-            _recommended_route: "efficient".to_string(),
+            crux: "test crux".to_string(),
+            primary_rule: primary_rule.to_string(),
+            capability_boundary: capability_boundary.to_string(),
             p_solve,
-            confidence,
-            abstain,
-            capability_boundary: "supported".to_string(),
-            _primary_rule: "SUP-1".to_string(),
-            _crux: "test crux".to_string(),
         }
     }
 
@@ -1004,7 +992,7 @@ mod tests {
                         .first()
                         .and_then(|message| message.text_content("\n")),
                 );
-                r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#.to_string()
+                r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
             } else {
                 format!("answer from {model}")
             };
@@ -1150,7 +1138,7 @@ mod tests {
             capable_target: target("capable"),
             config: TaskClassifierConfig {
                 contract: ClassifierContractConfig::default()
-                    .with_prompt("Custom capability rubric:\n{{RESPONSE_SCHEMA}}"),
+                    .with_prompt("Custom capability rubric."),
                 ..test_config(TEST_THRESHOLD)
             },
         })?);
@@ -1159,9 +1147,7 @@ mod tests {
 
         let prompts = client.judge_system_prompts();
         assert_eq!(prompts.len(), 1);
-        assert!(prompts[0].starts_with("Custom capability rubric:"));
-        assert!(prompts[0].contains("\"recommended_route\""));
-        assert!(!prompts[0].contains("{{RESPONSE_SCHEMA}}"));
+        assert_eq!(prompts[0], "Custom capability rubric.");
         Ok(())
     }
 
@@ -1230,8 +1216,8 @@ mod tests {
     #[test]
     fn the_threshold_boundary_is_inclusive() -> Result<()> {
         let policy = policy();
-        let at_threshold = verdict(0.5, 0.0, false);
-        let below_threshold = verdict(0.49, 1.0, false);
+        let at_threshold = verdict(0.5, "supported", "SUP-1");
+        let below_threshold = verdict(0.49, "supported", "SUP-1");
         assert_eq!(selected(&policy, Some(&at_threshold))?, "efficient");
         assert_eq!(selected(&policy, Some(&below_threshold))?, "capable");
         Ok(())
@@ -1239,7 +1225,7 @@ mod tests {
 
     #[test]
     fn the_threshold_moves_the_routing_boundary() -> Result<()> {
-        let borderline = verdict(0.5, 1.0, false);
+        let borderline = verdict(0.5, "supported", "SUP-1");
         let strict = TaskClassifierPolicy::new("efficient", "capable", &test_config(0.9));
         let lenient = TaskClassifierPolicy::new("efficient", "capable", &test_config(0.1));
         assert_eq!(selected(&strict, Some(&borderline))?, "capable");
@@ -1284,12 +1270,12 @@ mod tests {
         for config in [
             TaskClassifierConfig {
                 base_threshold: 0.5,
-                min_confidence: 1.1,
+                threshold_step: -0.1,
                 ..TaskClassifierConfig::default()
             },
             TaskClassifierConfig {
-                base_threshold: 0.5,
-                capability_elevated_floor: Some(0.5),
+                base_threshold: 0.8,
+                threshold_step: 0.11,
                 ..TaskClassifierConfig::default()
             },
             TaskClassifierConfig {
@@ -1325,19 +1311,20 @@ mod tests {
     }
 
     #[test]
-    fn an_unusable_verdict_abstains() -> Result<()> {
-        // Invalid, abstained, unintelligible, or absent: the judge could not tell,
-        // so it declines to decide and leaves the fallback to whoever composed the
-        // cascade.
+    fn an_unusable_verdict_is_ambiguous() -> Result<()> {
         let policy = policy();
-        let invalid_boundary = TaskClassifierVerdict {
-            capability_boundary: "unknown".to_string(),
-            ..verdict(1.0, 1.0, false)
+        let inconsistent_rule = TaskClassifierVerdict {
+            capability_boundary: "uncertain".to_string(),
+            ..verdict(1.0, "supported", "SUP-1")
+        };
+        let empty_crux = TaskClassifierVerdict {
+            crux: "  ".to_string(),
+            ..verdict(1.0, "supported", "SUP-1")
         };
         let unusable = [
-            Some(verdict(1.1, 1.0, false)),
-            Some(verdict(1.0, 1.0, true)),
-            Some(invalid_boundary),
+            Some(verdict(1.1, "supported", "SUP-1")),
+            Some(inconsistent_rule),
+            Some(empty_crux),
             None,
         ];
         for verdict in unusable {
@@ -1350,28 +1337,40 @@ mod tests {
     }
 
     #[test]
-    fn elevated_capability_floor_is_a_targeted_safety_brake() -> Result<()> {
+    fn capability_boundaries_apply_monotonic_threshold_steps() -> Result<()> {
         let policy = TaskClassifierPolicy::new(
             "efficient",
             "capable",
             &TaskClassifierConfig {
-                capability_elevated_floor: Some(0.45),
-                ..test_config(0.25)
+                threshold_step: 0.1,
+                ..test_config(0.4)
             },
         );
-        let supported = verdict(0.30, 1.0, false);
-        let elevated = TaskClassifierVerdict {
-            capability_boundary: "uncertain".to_string(),
-            ..verdict(0.30, 1.0, false)
-        };
-        let strong_elevated = TaskClassifierVerdict {
-            capability_boundary: "unsupported".to_string(),
-            ..verdict(0.50, 1.0, false)
-        };
 
-        assert_eq!(selected(&policy, Some(&supported))?, "efficient");
-        assert_eq!(selected(&policy, Some(&elevated))?, "capable");
-        assert_eq!(selected(&policy, Some(&strong_elevated))?, "efficient");
+        assert_eq!(
+            selected(&policy, Some(&verdict(0.4, "supported", "SUP-2")))?,
+            "efficient"
+        );
+        assert_eq!(
+            selected(&policy, Some(&verdict(0.49, "uncertain", "UNC-1")))?,
+            "capable"
+        );
+        assert_eq!(
+            selected(&policy, Some(&verdict(0.5, "uncertain", "UNC-1")))?,
+            "efficient"
+        );
+        assert_eq!(
+            selected(&policy, Some(&verdict(0.5, "unmatched", "none")))?,
+            "efficient"
+        );
+        assert_eq!(
+            selected(&policy, Some(&verdict(0.59, "unsupported", "LIM-1")))?,
+            "capable"
+        );
+        assert_eq!(
+            selected(&policy, Some(&verdict(0.6, "unsupported", "LIM-1")))?,
+            "efficient"
+        );
         Ok(())
     }
 
@@ -1459,7 +1458,7 @@ mod tests {
         let judge_request = judge.build_request(&State::default(), &request);
 
         assert_eq!(judge_request.llm_request.model, request.llm_request.model);
-        assert_eq!(judge_request.llm_request.messages.len(), 2);
+        assert_eq!(judge_request.llm_request.messages.len(), 3);
         let contents = judge_request
             .llm_request
             .messages
@@ -1467,7 +1466,7 @@ mod tests {
             .filter_map(|message| message.text_content("\n"))
             .collect::<Vec<_>>();
         assert!(contents.contains(&"recent 4".to_string()));
-        assert!(!contents.contains(&"initial task".to_string()));
+        assert!(contents.contains(&"initial task".to_string()));
         assert!(!contents.contains(&"recent 5".to_string()));
         assert!(!contents.contains(&"client instructions".to_string()));
         assert_eq!(
@@ -1532,22 +1531,29 @@ mod tests {
         let verdict = judge.parse(&text_response(None, reply))?;
 
         assert!(verdict.is_valid());
-        assert!(!verdict.abstain);
+        assert!((0.0..=1.0).contains(&verdict.p_solve));
         Ok(())
     }
 
     #[test]
-    fn prompt_includes_concrete_rules_and_schema() -> Result<()> {
+    fn packaged_prompt_keeps_the_schema_in_the_structured_request() -> Result<()> {
         let contract =
             LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?;
         let prompt = contract.system_prompt();
+        let schema_name = contract
+            .response_format()
+            .pointer("/json_schema/name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "packaged response schema has no name".to_string(),
+            })?;
+        assert_eq!(schema_name, "CapabilityClassifierDecision");
         assert!(prompt.contains("SUP-1 [supported]"));
-        assert!(!prompt.contains("{{CAPABILITY_RULES}}"));
-        assert!(!prompt.contains("{{PRIMARY_RULE_VALUES}}"));
+        assert!(prompt.contains("SUP-5 [supported]"));
         assert!(!prompt.contains("{{RESPONSE_SCHEMA}}"));
-        assert!(prompt.contains("\"type\": \"object\""));
+        assert!(!prompt.contains("\"type\": \"object\""));
         assert!(!prompt.contains("\"json_schema\""));
-        assert!(!prompt.contains("\"CapabilityClassifierDecision\""));
+        assert!(!prompt.contains(schema_name));
         let rule_values = contract
             .response_format()
             .pointer("/json_schema/schema/properties/primary_rule/enum")
@@ -1663,8 +1669,7 @@ mod tests {
             judge_target: target("judge"),
             efficient_target: target("efficient"),
             capable_target: target("capable"),
-            contract: ClassifierContractConfig::default()
-                .with_prompt("Custom trajectory rubric:\n{{RESPONSE_SCHEMA}}"),
+            contract: ClassifierContractConfig::default().with_prompt("Custom trajectory rubric."),
             config: EscalationJudgeConfig {
                 confirmations: 1,
                 ..EscalationJudgeConfig::default()
@@ -1676,9 +1681,7 @@ mod tests {
 
         let prompts = client.judge_system_prompts();
         assert_eq!(prompts.len(), 1);
-        assert!(prompts[0].starts_with("Custom trajectory rubric:"));
-        assert!(prompts[0].contains("\"escalate\""));
-        assert!(!prompts[0].contains("{{RESPONSE_SCHEMA}}"));
+        assert_eq!(prompts[0], "Custom trajectory rubric.");
         Ok(())
     }
 

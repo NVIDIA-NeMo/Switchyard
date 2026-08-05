@@ -137,7 +137,7 @@ async fn upstream_chat(
     {
         r#"{"escalate":false,"reason":"making progress"}"#
     } else if model == "model/classifier" {
-        r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#
+        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
     } else {
         "ok"
     };
@@ -787,7 +787,7 @@ mode = "custom"
 classifier_target = "classifier"
 targets = ["weak", "middle", "strong", "premium"]
 default_target = "strong"
-prompt = "CUSTOM MULTI TARGET\n{{{{RESPONSE_SCHEMA}}}}"
+prompt = "CUSTOM MULTI TARGET"
 response_schema = '''
 {{
   "type": "object",
@@ -846,8 +846,7 @@ selector = "/decision/target"
     let prompt = judge_call["messages"][0]["content"]
         .as_str()
         .ok_or("custom classifier prompt was not text")?;
-    assert!(prompt.starts_with("CUSTOM MULTI TARGET"));
-    assert!(!prompt.contains("{{RESPONSE_SCHEMA}}"));
+    assert_eq!(prompt, "CUSTOM MULTI TARGET");
     assert_eq!(judge_call["response_format"]["type"], "json_schema");
     assert_eq!(
         judge_call["response_format"]["json_schema"]["name"],
@@ -893,7 +892,7 @@ classifier_target = "classifier"
 strong_target = "strong"
 weak_target = "weak"
 base_threshold = 0.5
-prompt = "CUSTOM CAPABILITY\n{{RESPONSE_SCHEMA}}"
+prompt = "CUSTOM CAPABILITY"
 
 [routes.escalation]
 id = "switchyard/escalation"
@@ -902,7 +901,7 @@ mode = "escalation"
 classifier_target = "classifier"
 strong_target = "strong"
 weak_target = "weak"
-prompt = "CUSTOM ESCALATION\n{{RESPONSE_SCHEMA}}"
+prompt = "CUSTOM ESCALATION"
 escalation = {{ confirmations = 1 }}
 
 [routes.stage]
@@ -916,7 +915,7 @@ confidence_threshold = 1.0
 [routes.stage.classifier]
 target = "classifier"
 base_threshold = 0.5
-prompt = "CUSTOM STAGE\n{{RESPONSE_SCHEMA}}"
+prompt = "CUSTOM STAGE"
 "#,
         base_url = upstream.base_url
     ))?;
@@ -949,7 +948,6 @@ prompt = "CUSTOM STAGE\n{{RESPONSE_SCHEMA}}"
             .as_str()
             .ok_or("classifier prompt was not text")?;
         assert!(prompt.starts_with(prompt_prefix), "{route}: {prompt}");
-        assert!(!prompt.contains("{{RESPONSE_SCHEMA}}"), "{route}: {prompt}");
         assert!(
             judge_call["response_format"]["json_schema"]["schema"]["properties"]
                 .get(schema_field)

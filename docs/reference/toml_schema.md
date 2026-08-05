@@ -108,12 +108,11 @@ Capability mode classifies before serving. See
 | `strong_target` | Yes | — | Capable tier. |
 | `weak_target` | Yes | — | Efficient tier. |
 | `base_threshold` | Yes | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. |
-| `min_confidence` | No | `0.0` | Lowest judge confidence that permits weak routing. |
-| `capability_elevated_floor` | No | unset | Higher floor for uncertain tasks. Must exceed `base_threshold`. |
+| `threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
-| `recent_turn_window` | No | unset | Trailing turns the judge sees. |
-| `prompt` | No | packaged prompt | Replaces the capability prompt. `{{RESPONSE_SCHEMA}}` expands to its packaged schema. |
+| `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
 
 Escalation mode serves the weak target first and judges the completed turn. See
 [Escalation-Router Routing](../routing_algorithms/escalation_router_routing.md).
@@ -136,12 +135,15 @@ policy selector, and routes to any configured target label.
 |---|:---:|---|---|
 | `targets` | Yes | — | Two or more target names available to the policy. |
 | `default_target` | Yes | — | Target used when the judge fails or its verdict cannot be routed. |
-| `prompt` | Yes | — | Judge system prompt. `{{RESPONSE_SCHEMA}}` expands to the configured inner schema. |
+| `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
 | `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
 | `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
-| `recent_turn_window` | No | unset | Trailing turns the judge sees. |
+| `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+
+Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard sends the
+schema only through the provider's structured-output request.
 
 ### `stage_router`
 
