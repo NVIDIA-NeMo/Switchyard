@@ -246,16 +246,18 @@ impl FormatCodec for OpenAiResponsesCodec {
     fn encode_response(
         &self,
         response: &AggLlmResponse,
-        _policy: &TranslationPolicy,
+        policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) =
-            exact_preserved_response(&response.preservation, WireFormat::OpenAiResponses, _policy)
+            exact_preserved_response(&response.preservation, WireFormat::OpenAiResponses, policy)
         {
             return Ok(EncodedResponse {
                 body,
                 diagnostics: Vec::new(),
             });
         }
+        let mut diagnostics = Vec::new();
+        let output = encode_responses_output(&response.outputs, &mut diagnostics, policy)?;
         Ok(EncodedResponse {
             body: embed_preservation(
                 json!({
@@ -264,16 +266,16 @@ impl FormatCodec for OpenAiResponsesCodec {
                     "created_at": 0,
                     "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
                     "status": "completed",
-                    "output": encode_responses_output(&response.outputs),
+                    "output": output,
                     "usage": encode_responses_usage(&response.usage),
                     "parallel_tool_calls": true,
                     "tool_choice": "auto",
                     "tools": [],
                 }),
                 &response.preservation,
-                _policy,
+                policy,
             ),
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 }
@@ -1077,13 +1079,50 @@ fn decode_responses_output_item(
             content: decode_responses_reasoning_item(item),
             stop_reason: None,
         })),
-        _ => Ok(None),
+        _ => Ok(Some(ResponseOutput {
+            role: Role::Assistant,
+            // Keep the unrepresentable item in the neutral response so a
+            // cross-format encoder can diagnose the loss. Exact same-format
+            // replay comes from response preservation: `ContentBlock::Unknown`
+            // cannot distinguish this top-level item from an unknown nested
+            // message-content block.
+            content: vec![ContentBlock::Unknown {
+                provider: WireFormat::OpenAiResponses.into(),
+                raw: Value::Object(item.clone()),
+            }],
+            stop_reason: None,
+        })),
     }
 }
 
 // Encodes normalized response outputs into Responses output items.
-fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
-    Value::Array(
+fn encode_responses_output(
+    outputs: &[ResponseOutput],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Value> {
+    if outputs
+        .iter()
+        .flat_map(|output| &output.content)
+        .any(|block| {
+            matches!(
+                block,
+                ContentBlock::Image { .. }
+                    | ContentBlock::Audio { .. }
+                    | ContentBlock::Video { .. }
+                    | ContentBlock::File { .. }
+                    | ContentBlock::ToolResult(_)
+                    | ContentBlock::Unknown { .. }
+            )
+        })
+    {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Responses response encoding drops unsupported content blocks",
+        )?;
+    }
+    Ok(Value::Array(
         outputs
             .iter()
             .flat_map(|output| {
@@ -1126,7 +1165,7 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                 items
             })
             .collect(),
-    )
+    ))
 }
 
 // Encodes private reasoning as a separate Responses output item.
