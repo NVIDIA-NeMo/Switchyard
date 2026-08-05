@@ -1489,6 +1489,38 @@ async fn streaming_error_records_error_without_usage_or_latency() -> TestResult 
 }
 
 #[tokio::test]
+async fn responses_stream_error_does_not_emit_success_terminal_events() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/stream-error"])]).await?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "input": "stream-error",
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.text()?;
+    assert_in_order(body, &["before", "upstream stream failed"]);
+    for event_type in [
+        "response.content_part.done",
+        "response.output_item.done",
+        "response.completed",
+    ] {
+        assert!(
+            !body.contains(event_type),
+            "{event_type} followed an upstream stream error"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn request_and_upstream_errors_use_the_inbound_wire_format() -> TestResult {
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
