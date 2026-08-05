@@ -1047,8 +1047,14 @@ targets = ["weak"]
     // The route's picked target is OpenAI, so count_tokens (Anthropic-only) is
     // unsupported for it.
     assert_eq!(
-        response.json()?["error"]["code"],
-        "count_tokens_unsupported"
+        response.json()?,
+        json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "no target supports count_tokens (needs an Anthropic upstream)"
+            }
+        })
     );
     Ok(())
 }
