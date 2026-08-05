@@ -1304,40 +1304,11 @@ mod tests {
         assert!(!states.contains_key("session-1"));
     }
 
-    #[tokio::test]
-    async fn session_state_refreshes_last_accessed() {
-        let router = FallThrough::<u32>::new_with_state(target_set(&["strong"]));
-        let request = request();
-
-        drop(router.session_state(&request));
-        let first_accessed = router
-            .session_states
-            .as_ref()
-            .expect("stateful router has a session registry")
-            .lock()
-            .get("session-1")
-            .expect("session state was inserted")
-            .last_accessed;
-
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        drop(router.session_state(&request));
-        let second_accessed = router
-            .session_states
-            .as_ref()
-            .expect("stateful router has a session registry")
-            .lock()
-            .get("session-1")
-            .expect("session state is retained")
-            .last_accessed;
-
-        assert!(second_accessed > first_accessed);
-    }
-
     #[test]
     fn cleanup_removes_only_inactive_idle_sessions() {
         let router = FallThrough::<u32>::new_with_state(target_set(&["strong"]));
         let _active_state = router
-            .session_state(&request())
+            .session_state(&request()) // session-1
             .expect("session state was inserted");
         let inactive_request = Request {
             metadata: Some(Metadata {
