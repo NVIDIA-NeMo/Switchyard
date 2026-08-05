@@ -283,12 +283,17 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         .map(|(_, item)| item)
         .collect::<Vec<_>>();
 
+    let truncated = matches!(
+        state.stop_reason.as_deref(),
+        Some("length") | Some("max_tokens")
+    );
     out.push(json!({
-        "type": "response.completed",
+        "type": if truncated { "response.incomplete" } else { "response.completed" },
         "response": {
             "id": responses_id(state),
             "object": "response",
-            "status": "completed",
+            "status": if truncated { "incomplete" } else { "completed" },
+            "incomplete_details": truncated.then(|| json!({ "reason": "max_output_tokens" })),
             "model": target_model_or_source_model(state),
             "output": output,
             "usage": responses_usage_value(&state.usage),

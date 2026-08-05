@@ -536,3 +536,35 @@ fn openai_chat_cache_only_usage_still_emits_reasoning_details() -> TestResult {
     );
     Ok(())
 }
+
+// Verifies a token-limit stop is reported as an incomplete Responses result.
+#[test]
+fn openai_chat_length_finish_translates_to_incomplete_responses_status() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Half an ans"},
+            "finish_reason": "length"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["status"], "incomplete");
+    assert_eq!(
+        output["incomplete_details"],
+        json!({"reason": "max_output_tokens"})
+    );
+    Ok(())
+}

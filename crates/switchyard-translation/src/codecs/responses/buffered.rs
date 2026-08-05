@@ -256,6 +256,12 @@ impl FormatCodec for OpenAiResponsesCodec {
                 diagnostics: Vec::new(),
             });
         }
+        let truncated = matches!(
+            response
+                .first_output()
+                .and_then(|output| output.stop_reason),
+            Some(StopReason::MaxTokens)
+        );
         Ok(EncodedResponse {
             body: embed_preservation(
                 json!({
@@ -263,7 +269,8 @@ impl FormatCodec for OpenAiResponsesCodec {
                     "object": "response",
                     "created_at": 0,
                     "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
-                    "status": "completed",
+                    "status": if truncated { "incomplete" } else { "completed" },
+                    "incomplete_details": truncated.then(|| json!({ "reason": "max_output_tokens" })),
                     "output": encode_responses_output(&response.outputs),
                     "usage": encode_responses_usage(&response.usage),
                     "parallel_tool_calls": true,
