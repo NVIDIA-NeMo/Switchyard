@@ -764,10 +764,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#classifier-calibration" class="md-nav__link">
+  <a href="#forecast-and-policy-assumptions" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Classifier calibration
+        Forecast and policy assumptions
       
     </span>
   </a>
@@ -1205,10 +1205,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#classifier-calibration" class="md-nav__link">
+  <a href="#forecast-and-policy-assumptions" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Classifier calibration
+        Forecast and policy assumptions
       
     </span>
   </a>
@@ -1296,8 +1296,9 @@ decision for later requests in the same conversation.</p>
 </span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
 </span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
 </span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
-</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="n">session_affinity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="n">message_hash_fallback</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="n">threshold_step</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.1</span>
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="n">session_affinity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="n">message_hash_fallback</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span></code></pre></div>
 <p><code>message_hash_fallback</code> is best-effort: independent sessions with the same
 first user message share an affinity key. Prefer an explicit
@@ -1309,20 +1310,20 @@ model name clients send to Switchyard.</p>
 <p>The classifier target returns a structured verdict containing:</p>
 <ul>
 <li><code>p_solve</code>: the estimated probability that the weak model completes the task.</li>
-<li><code>confidence</code>: confidence in the assessment.</li>
 <li><code>capability_boundary</code>: <code>supported</code>, <code>uncertain</code>, <code>unsupported</code>, or <code>unmatched</code>.</li>
+<li><code>primary_rule</code>: the capability-card rule that determines the boundary.</li>
+<li><code>crux</code>: the hardest material requirement for whole-task success.</li>
 </ul>
 <p>For a usable verdict, Switchyard routes to <code>weak_target</code> when <code>p_solve</code> is
 greater than or equal to the applicable threshold. Otherwise it routes to
 <code>strong_target</code>:</p>
 <ul>
 <li><code>supported</code> uses <code>base_threshold</code>.</li>
-<li><code>uncertain</code>, <code>unsupported</code>, and <code>unmatched</code> use
-  <code>capability_elevated_floor</code> when configured, or <code>base_threshold</code> otherwise.</li>
+<li><code>uncertain</code> and <code>unmatched</code> use <code>base_threshold + threshold_step</code>.</li>
+<li><code>unsupported</code> uses <code>base_threshold + 2 * threshold_step</code>.</li>
 </ul>
-<p>An abstention, an invalid or unparseable verdict, a judge failure, or confidence
-below <code>min_confidence</code> routes to <code>strong_target</code>. Raising either threshold sends
-more traffic to the strong model.</p>
+<p>An invalid, inconsistent, or unparseable verdict, or a judge failure, routes to
+<code>strong_target</code>. Raising either knob sends more traffic to the strong model.</p>
 <h2 id="judge-model-compatibility">Judge model compatibility<a class="headerlink" href="#judge-model-compatibility" title="Permanent link">&para;</a></h2>
 <p>The judge must return complete, schema-valid JSON in normal assistant <code>content</code>.
 Switchyard does not parse provider-specific reasoning fields such as
@@ -1339,7 +1340,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/eff116eb033c9f5bf5d526a889dc6c2e0562a116/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/98769e69a137c4d0750542ac45b32edfc5401bcb/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1357,19 +1358,14 @@ for the server merge behavior.</p>
 <td>Lowest <code>p_solve</code> that routes a supported task to <code>weak_target</code>. Must be between <code>0</code> and <code>1</code>.</td>
 </tr>
 <tr>
-<td><code>min_confidence</code></td>
+<td><code>threshold_step</code></td>
 <td><code>0.0</code></td>
-<td>Lowest judge confidence that permits weak routing. Must be between <code>0</code> and <code>1</code>.</td>
-</tr>
-<tr>
-<td><code>capability_elevated_floor</code></td>
-<td>unset</td>
-<td>Higher threshold for uncertain, unsupported, and unmatched tasks. It must be between <code>0</code> and <code>1</code> and greater than <code>base_threshold</code>.</td>
+<td>Amount added for each boundary step. Must be finite and non-negative, and <code>base_threshold + 2 * threshold_step</code> must not exceed <code>1</code>.</td>
 </tr>
 <tr>
 <td><code>recent_turn_window</code></td>
 <td>unset</td>
-<td>When unset, the judge sees only the newest user message. When set to <code>N</code>, it sees client system/developer instructions, the opening user task, and the last <code>N</code> conversation messages after that task. <code>0</code> keeps only the instructions and opening task.</td>
+<td>When unset, the judge sees the opening user task and the latest user message when they differ. When set to <code>N</code>, it sees client system/developer instructions, the opening user task, and the last <code>N</code> conversation messages after that task. <code>0</code> keeps only the instructions and opening task.</td>
 </tr>
 <tr>
 <td><code>session_affinity</code></td>
@@ -1395,8 +1391,8 @@ for the server merge behavior.</p>
 </table>
 <h3 id="override-the-classifier-prompt">Override the classifier prompt<a class="headerlink" href="#override-the-classifier-prompt" title="Permanent link">&para;</a></h3>
 <p>Set <code>prompt</code> on the route when the packaged capability rubric does not describe
-your weak model. A <code>{{RESPONSE_SCHEMA}}</code> placeholder is optional. When present,
-Switchyard replaces it with the packaged capability-verdict schema.</p>
+your weak model. Switchyard sends the response schema separately through the
+provider's structured-output request; do not copy it into the prompt.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[routes.smart]</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;smart&quot;</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
@@ -1407,12 +1403,11 @@ Switchyard replaces it with the packaged capability-verdict schema.</p>
 </span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
 </span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
 </span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="s2">Estimate whether the weak target can complete the request.</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="s2">Return JSON matching this schema:</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="s2">{{RESPONSE_SCHEMA}}</span>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="s2">Return exactly one JSON object matching the response schema supplied with the request.</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="s2">&quot;&quot;&quot;</span>
 </span></code></pre></div>
 <p>The override changes the instructions only. The judge must still return the
-packaged fields such as <code>p_solve</code>, <code>confidence</code>, and <code>capability_boundary</code>.</p>
+packaged <code>crux</code>, <code>primary_rule</code>, <code>capability_boundary</code>, and <code>p_solve</code> fields.</p>
 <h2 id="custom-multi-target-routing">Custom multi-target routing<a class="headerlink" href="#custom-multi-target-routing" title="Permanent link">&para;</a></h2>
 <p>Custom mode accepts an inner JSON Schema and a policy that reads the validated
 verdict. This example routes across four configured targets:</p>
@@ -1425,48 +1420,50 @@ verdict. This example routes across four configured targets:</p>
 </span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">default_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span>
 </span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
 </span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="s2">Choose the best configured target for this request.</span>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="s2">Return JSON matching:</span>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="s2">{{RESPONSE_SCHEMA}}</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="s2">&quot;&quot;&quot;</span>
-</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="n">response_schema</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&#39;&#39;</span>
-</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="s1">{</span>
-</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="s1">  &quot;type&quot;: &quot;object&quot;,</span>
-</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="s1">  &quot;properties&quot;: {</span>
-</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="s1">    &quot;decision&quot;: {</span>
-</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="s1">      &quot;type&quot;: &quot;object&quot;,</span>
-</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="s1">      &quot;properties&quot;: {</span>
-</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="s1">        &quot;target&quot;: {</span>
-</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="s1">          &quot;type&quot;: &quot;string&quot;,</span>
-</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="s1">          &quot;enum&quot;: [&quot;fast&quot;, &quot;balanced&quot;, &quot;reasoning&quot;, &quot;premium&quot;]</span>
-</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="s1">        }</span>
-</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="s1">      },</span>
-</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="s1">      &quot;required&quot;: [&quot;target&quot;],</span>
-</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="s1">      &quot;additionalProperties&quot;: false</span>
-</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="s1">    }</span>
-</span><span id="__span-3-28"><a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a><span class="s1">  },</span>
-</span><span id="__span-3-29"><a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a><span class="s1">  &quot;required&quot;: [&quot;decision&quot;],</span>
-</span><span id="__span-3-30"><a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a><span class="s1">  &quot;additionalProperties&quot;: false</span>
-</span><span id="__span-3-31"><a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a><span class="s1">}</span>
-</span><span id="__span-3-32"><a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a><span class="s1">&#39;&#39;&#39;</span>
-</span><span id="__span-3-33"><a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a>
-</span><span id="__span-3-34"><a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a><span class="k">[routes.smart.policy]</span>
-</span><span id="__span-3-35"><a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;target_selector&quot;</span>
-</span><span id="__span-3-36"><a id="__codelineno-3-36" name="__codelineno-3-36" href="#__codelineno-3-36"></a><span class="n">selector</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/decision/target&quot;</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="s2">Return JSON matching the response schema supplied with the request.</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="n">response_schema</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&#39;&#39;</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="s1">{</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="s1">  &quot;type&quot;: &quot;object&quot;,</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="s1">  &quot;properties&quot;: {</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="s1">    &quot;decision&quot;: {</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="s1">      &quot;type&quot;: &quot;object&quot;,</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="s1">      &quot;properties&quot;: {</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="s1">        &quot;target&quot;: {</span>
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="s1">          &quot;type&quot;: &quot;string&quot;,</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="s1">          &quot;enum&quot;: [&quot;fast&quot;, &quot;balanced&quot;, &quot;reasoning&quot;, &quot;premium&quot;]</span>
+</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="s1">        }</span>
+</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="s1">      },</span>
+</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="s1">      &quot;required&quot;: [&quot;target&quot;],</span>
+</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="s1">      &quot;additionalProperties&quot;: false</span>
+</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="s1">    }</span>
+</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="s1">  },</span>
+</span><span id="__span-3-28"><a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a><span class="s1">  &quot;required&quot;: [&quot;decision&quot;],</span>
+</span><span id="__span-3-29"><a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a><span class="s1">  &quot;additionalProperties&quot;: false</span>
+</span><span id="__span-3-30"><a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a><span class="s1">}</span>
+</span><span id="__span-3-31"><a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a><span class="s1">&#39;&#39;&#39;</span>
+</span><span id="__span-3-32"><a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a>
+</span><span id="__span-3-33"><a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a><span class="k">[routes.smart.policy]</span>
+</span><span id="__span-3-34"><a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;target_selector&quot;</span>
+</span><span id="__span-3-35"><a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a><span class="n">selector</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/decision/target&quot;</span>
 </span></code></pre></div>
 <p>The names in <code>targets</code> reference existing target tables. Switchyard passes the
 schema to the provider in a strict structured-output wrapper and validates the
 returned JSON again. <code>jsonptr</code> resolves the selector against that verdict. A
 missing, non-string, or unknown target falls back to <code>default_target</code>.</p>
-<h3 id="classifier-calibration">Classifier calibration<a class="headerlink" href="#classifier-calibration" title="Permanent link">&para;</a></h3>
-<p>The packaged prompt is calibrated for one specific weak model, assumes it
-receives the initial task, and describes a sticky routing decision. It is not a
-model-neutral weak-target evaluator.</p>
-<p>Without affinity, the runtime judges every request; by default, it sends the
-newest user message rather than the initial task. The example enables affinity
-and its message-hash fallback so the first request is judged and later requests
-with the same opening task reuse that decision. If you use a different weak
-model or per-request routing, tune the thresholds before treating classifier
-decisions as production policy.</p>
+<p>This separation applies to every classifier mode. Prompts containing the legacy
+<code>{{RESPONSE_SCHEMA}}</code> placeholder are rejected during configuration validation.</p>
+<h3 id="forecast-and-policy-assumptions">Forecast and policy assumptions<a class="headerlink" href="#forecast-and-policy-assumptions" title="Permanent link">&para;</a></h3>
+<p>The packaged prompt forecasts whole-task success for a generic efficient agent.
+It produces a probability and capability boundary but does not choose a route.
+The deterministic policy applies <code>base_threshold</code> and <code>threshold_step</code> after
+generation.</p>
+<p>Without affinity, the runtime judges every request. By default, it sends the
+opening task and the latest user follow-up when they differ. Set
+<code>recent_turn_window</code> when intervening conversation context affects the forecast.
+If a client sends only a follow-up fragment without the opening task, enable
+affinity or include the task history. Threshold tuning changes routing policy;
+it cannot recover missing task context.</p>
 <h2 id="session-affinity">Session affinity<a class="headerlink" href="#session-affinity" title="Permanent link">&para;</a></h2>
 <p>With <code>session_affinity = true</code>, the first selected target is retained for the
 request's session identity. This includes <code>strong_target</code> when it was selected

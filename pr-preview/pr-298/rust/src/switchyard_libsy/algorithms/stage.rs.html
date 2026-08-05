@@ -405,7 +405,7 @@
 <a href=#405 id=405 data-nosnippet>405</a>            <span class="kw">let </span>completion = <span class="kw">if </span>target == JUDGE {
 <a href=#406 id=406 data-nosnippet>406</a>                <span class="kw">let </span>p_solve = <span class="kw-2">*</span><span class="self">self</span>.judge_p_solve.lock();
 <a href=#407 id=407 data-nosnippet>407</a>                <span class="macro">format!</span>(
-<a href=#408 id=408 data-nosnippet>408</a>                    <span class="string">r#"{{"recommended_route":"efficient","p_solve":{p_solve},"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}}"#
+<a href=#408 id=408 data-nosnippet>408</a>                    <span class="string">r#"{{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":{p_solve}}}"#
 <a href=#409 id=409 data-nosnippet>409</a>                </span>)
 <a href=#410 id=410 data-nosnippet>410</a>            } <span class="kw">else </span>{
 <a href=#411 id=411 data-nosnippet>411</a>                target
