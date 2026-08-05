@@ -248,6 +248,9 @@ pub(crate) fn encode_response_stream_event(
     target: &FormatId,
     event: crate::LlmResponseStreamEvent,
 ) -> Vec<Value> {
+    if state.errored {
+        return Vec::new();
+    }
     let (preservation, normalized) = event.into_parts();
     if let Some(preservation) = preservation {
         let (source, raw) = preservation.into_parts();

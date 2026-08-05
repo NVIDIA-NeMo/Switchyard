@@ -117,6 +117,9 @@ pub fn encode_stream(
                 );
                 yield value;
             }
+            if state.errored {
+                return;
+            }
         }
         for mut value in codec.finish(&mut state) {
             stamp_streamed_response_model(
@@ -499,6 +502,31 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    // A replayed provider error ends the stream before the encoder polls the source again.
+    #[test]
+    fn encode_stream_stops_polling_after_a_replayed_error() -> Result<(), BoxError> {
+        let error = LlmResponseStreamEvent::preserved(
+            WireFormat::OpenAiResponses,
+            json!({"type": "error", "message": "boom"}),
+            vec![LlmResponseChunk::StreamError {
+                message: "boom".to_string(),
+            }],
+        );
+        let chunks: LlmResponseStream = stream::iter([Ok(error)])
+            .chain(stream::poll_fn(|_| {
+                panic!("encode_stream polled the source after an in-band error")
+            }))
+            .boxed();
+
+        let events =
+            block_on(encode_stream(chunks, WireFormat::OpenAiResponses, None)?.collect::<Vec<_>>())
+                .into_iter()
+                .collect::<Result<Vec<Value>, BoxError>>()?;
+
+        assert_eq!(events, vec![json!({"type": "error", "message": "boom"})]);
         Ok(())
     }
 

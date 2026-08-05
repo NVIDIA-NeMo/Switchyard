@@ -63,6 +63,36 @@ fn preserved_same_format_events_replay_unknown_fields_exactly() -> TestResult {
     Ok(())
 }
 
+// A same-format error remains the last replayed event even if the source supplies more frames.
+#[test]
+fn preserved_same_format_replay_stops_after_an_error() -> TestResult {
+    let format = WireFormat::OpenAiResponses;
+    let events = [
+        json!({"type": "response.output_text.delta", "delta": "before"}),
+        json!({"type": "error", "message": "boom"}),
+        json!({"type": "response.output_text.delta", "delta": "after"}),
+        json!({"type": "response.completed", "response": {"id": "resp_1"}}),
+    ];
+    let engine = TranslationEngine::default();
+    let mut decode_state = StreamTranslationState::new(format, format);
+    let mut encode_state = StreamTranslationState::new(format, format);
+    let mut replayed = Vec::new();
+
+    for event in events {
+        let preserved = engine.decode_stream_event(&mut decode_state, format, event)?;
+        replayed.extend(engine.encode_stream_event(&mut encode_state, format, preserved)?);
+    }
+
+    assert_eq!(
+        replayed,
+        vec![
+            json!({"type": "response.output_text.delta", "delta": "before"}),
+            json!({"type": "error", "message": "boom"}),
+        ]
+    );
+    Ok(())
+}
+
 // Replay emits the preserved event without running the encoder, so the encoder never sees the
 // stop it would normally record. Replay must still leave the stream marked finished or
 // `finish_stream` synthesizes a terminal the client already received.
