@@ -23,7 +23,7 @@ use serde::Deserialize;
 use super::prompts;
 use super::tool_signals::ToolSignals;
 use crate::Result;
-use crate::core::algorithm::Driver;
+use crate::core::algorithm::{Driver, MetricAttribute};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
 use switchyard_protocol::Request;
@@ -43,6 +43,9 @@ const HARD_SEVERITY: f64 = 0.7;
 const SIGNAL_UNIT: f64 = 0.10;
 /// Critical severity forces the capable tier regardless of the scorer.
 const SEVERITY_CRITICAL: f32 = 1.0;
+const SCORE_METRIC: &str = "switchyard.stage_router.score";
+const CONFIDENCE_METRIC: &str = "switchyard.stage_router.confidence";
+const DIMENSION_METRIC: &str = "switchyard.stage_router.dimension";
 
 /// The two tiers a turn can route to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -340,6 +343,37 @@ pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f
     }
 }
 
+/// Records the router's scorer output and four bounded input dimensions.
+fn record_metrics(driver: Option<&Driver>, signal: &ToolSignals, outcome: &PickOutcome) {
+    let Some(driver) = driver else {
+        return;
+    };
+    let (score, confidence) = match outcome {
+        PickOutcome::Resolved {
+            score, confidence, ..
+        } => (*score, confidence.unwrap_or(score.abs())),
+        PickOutcome::ConsultClassifier {
+            score, confidence, ..
+        } => (*score, *confidence),
+    };
+    driver.record_histogram(SCORE_METRIC, score, []);
+    driver.record_histogram(CONFIDENCE_METRIC, confidence, []);
+
+    let dimensions = dimensions_from_signal(signal);
+    for (name, value) in [
+        ("severity", dimensions.severity),
+        ("spinning", dimensions.spinning),
+        ("exploring", dimensions.exploring),
+        ("production_intensity", dimensions.production_intensity),
+    ] {
+        driver.record_histogram(
+            DIMENSION_METRIC,
+            value,
+            [MetricAttribute::new("dimension", name)],
+        );
+    }
+}
+
 /// Build a resolved outcome (a decision made without the classifier).
 fn resolved(
     tier: Tier,
@@ -484,7 +518,7 @@ impl Classifier<State> for StageClassifier {
         &self,
         state: &mut State,
         request: &mut Request,
-        _driver: Option<&Driver>,
+        driver: Option<&Driver>,
     ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
         let tool_signals = &state.tool_signals;
         let Some(signal) = tool_signals else {
@@ -494,6 +528,7 @@ impl Classifier<State> for StageClassifier {
         };
 
         let outcome = pick_tier(signal, self.mode, self.confidence_threshold);
+        record_metrics(driver, signal, &outcome);
         match outcome {
             PickOutcome::Resolved {
                 tier,
