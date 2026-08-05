@@ -57,6 +57,9 @@ const CLAUDE_PARENT_AGENT_ID_HEADER: &str = "x-claude-code-parent-agent-id";
 // OpenCode session header — used for session_id correlation only (not a routing signal).
 const OPENCODE_SESSION_ID_HEADER: &str = "x-session-id";
 
+// Harbor benchmark proxy session header.
+const HARBOR_PROXY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
+
 // Generic Codex-compatible correlation headers.
 const SESSION_ID_HEADER: &str = "session-id";
 const THREAD_ID_HEADER: &str = "thread-id";
@@ -83,6 +86,7 @@ const HEADER_CONFIG: &HeaderConfig = &[
             RELAY_SESSION_ID_HEADER,
             OPENCODE_SESSION_ID_HEADER,
             CODEX_SESSION_ID_PATH,
+            HARBOR_PROXY_SESSION_ID_HEADER,
             SESSION_ID_HEADER,
         ],
     ),
@@ -461,6 +465,28 @@ mod tests {
         assert_eq!(root.agent_id, None);
         assert_eq!(root.parent_agent_id, None);
         assert!(!root.is_subagent);
+    }
+
+    #[test]
+    fn normalizes_harbor_proxy_session_id() {
+        let harbor = metadata(&[("proxy_x_session_id", "harbor-attempt")]);
+        assert_eq!(harbor.session_id.as_deref(), Some("harbor-attempt"));
+
+        let explicit = metadata(&[
+            ("session-id", "generic-session"),
+            ("proxy_x_session_id", "harbor-attempt"),
+            ("x-switchyard-session-id", "explicit-session"),
+        ]);
+        assert_eq!(explicit.session_id.as_deref(), Some("explicit-session"));
+
+        let harbor_over_generic = metadata(&[
+            ("session-id", "generic-session"),
+            ("proxy_x_session_id", "harbor-attempt"),
+        ]);
+        assert_eq!(
+            harbor_over_generic.session_id.as_deref(),
+            Some("harbor-attempt")
+        );
     }
 
     #[test]
