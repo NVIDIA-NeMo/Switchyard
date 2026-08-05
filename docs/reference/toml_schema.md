@@ -33,6 +33,11 @@ target = "strong"
 `schema_version` must be `1`. Table names under `llm_clients`, `targets`, and
 `routes` are local references; clients send the route's `id` as the model name.
 
+`schema_version`, `[targets]`, and `[routes]` must all be present, even when a
+route reaches no upstream. A file without a `[targets]` table is rejected with
+`missing field targets`; an empty `[targets]` table satisfies it.
+`[llm_clients]` defaults to empty and may be omitted.
+
 ## `[llm_clients.<name>]`
 
 | Key | Required | Default | Meaning |
@@ -69,6 +74,19 @@ Every route takes the common keys below, plus the keys for its type.
 
 Returns a buffered assistant response containing `OK` without calling an
 upstream model. Use it for local smoke tests.
+
+A noop-only deployment reaches no upstream but still needs the `[targets]`
+table, which can be empty:
+
+```toml
+schema_version = 1
+
+[targets]
+
+[routes.smoke]
+id = "noop-route"
+type = "noop"
+```
 
 ### `passthrough`
 
