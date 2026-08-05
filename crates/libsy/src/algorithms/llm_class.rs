@@ -26,7 +26,7 @@ use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
 use switchyard_protocol::{
-    AggLlmResponse, Context, LlmResponse, Request, Response, RoutedLlmClient,
+    AggLlmResponse, Context, LlmClientError, LlmResponse, Request, Response, RoutedLlmClient,
 };
 
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
@@ -483,7 +483,11 @@ impl Classifier<State> for EscalationClassifier {
         // `Classifier::score` takes no `ctx`, so inner calls use Context::default() and their
         // spans carry algorithm="" rather than the algorithm name. Known gap shared with the
         // task classifier's judge consultation.
-        let efficient_response = driver
+        //
+        // If the efficient model exceeds its context window, fall through to capable: returning
+        // `(decisive(capable), None)` tells FallThrough::execute to call
+        // call_llm_with_overflow_fallback with the capable target instead of surfacing the error.
+        let efficient_response = match driver
             .call_llm_target(
                 Context::default(),
                 &self.efficient,
@@ -493,7 +497,15 @@ impl Classifier<State> for EscalationClassifier {
                     reasoning: Some("escalation classifier: efficient tier".into()),
                 }),
             )
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            Err(LibsyError::ClientCall {
+                source: LlmClientError::ContextWindowExceeded { .. },
+                ..
+            }) => return Ok((decisive(&self.capable.semantic_name), None)),
+            Err(e) => return Err(e),
+        };
         let agg = efficient_response
             .llm_response
             .into_agg()
@@ -1720,6 +1732,53 @@ mod tests {
             .await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn escalation_classifier_falls_back_to_capable_when_efficient_overflows() -> Result<()> {
+        // When the efficient model exceeds its context window inside score(), the classifier
+        // must return capable rather than propagating the error — otherwise the client sees
+        // HTTP 400 instead of a response from the strong model.
+        struct OverflowClient;
+        #[async_trait]
+        impl RoutedLlmClient for OverflowClient {
+            async fn call(
+                &self,
+                _ctx: Context,
+                _request: Request,
+                decision: Arc<dyn Decision>,
+            ) -> std::result::Result<Response, LlmClientError> {
+                Err(LlmClientError::ContextWindowExceeded {
+                    model: decision.selected_model().to_string(),
+                    message: "prompt is too long".to_string(),
+                })
+            }
+        }
+
+        let target = |name: &str, c: Arc<dyn RoutedLlmClient>| LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: Some(c),
+        };
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+            judge_target: target("judge", QueuedClient::new([])), // must not be called
+            efficient_target: target("efficient", Arc::new(OverflowClient)),
+            capable_target: target("capable", QueuedClient::new(["capable answer"])),
+            contract: ClassifierContractConfig::default(),
+            config: EscalationJudgeConfig {
+                confirmations: 1,
+                ..EscalationJudgeConfig::default()
+            },
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+        })?);
+
+        let (trace, response) = router.run(Context::default(), classify_request()).await?;
+
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("capable answer".to_string())
+        );
         Ok(())
     }
 }
