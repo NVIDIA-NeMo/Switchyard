@@ -39,7 +39,13 @@ struct SessionState<S> {
 
 type SessionStates<S> = Mutex<HashMap<String, SessionState<S>>>;
 
-const SESSION_STATE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Delete sessions that have been inactive this long. Catches sessions that did not terminate
+/// cleanly.
+/// A user resuming a deleted session is not fatal. Algorithms will be missing some context
+/// so may route less well for the first turn or two.
+const SESSION_STATE_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// Run the expired session cleanup code this often.
 const SESSION_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// The decision a fall-through run produces: the selected model plus a human-readable reason.
@@ -1342,17 +1348,11 @@ mod tests {
         };
         drop(router.session_state(&inactive_request));
 
-        let now = Instant::now();
-        let stale = now
-            .checked_sub(SESSION_STATE_TTL + Duration::from_secs(1))
-            .expect("test timestamp is representable");
         let states = router
             .session_states
             .as_ref()
             .expect("stateful router has a session registry");
-        for session in states.lock().values_mut() {
-            session.last_accessed = stale;
-        }
+        let now = Instant::now() + SESSION_STATE_TTL + Duration::from_secs(1);
 
         remove_inactive_sessions(states, now, SESSION_STATE_TTL);
 
