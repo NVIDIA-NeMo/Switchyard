@@ -566,5 +566,6 @@ fn openai_chat_length_finish_translates_to_incomplete_responses_status() -> Test
         output["incomplete_details"],
         json!({"reason": "max_output_tokens"})
     );
+    assert_eq!(output["output"][0]["status"], "incomplete");
     Ok(())
 }

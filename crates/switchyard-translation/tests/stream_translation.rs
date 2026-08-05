@@ -990,5 +990,37 @@ fn openai_chat_length_finish_translates_to_responses_incomplete_event() -> TestR
         terminal["response"]["incomplete_details"],
         json!({"reason": "max_output_tokens"})
     );
+    assert_eq!(terminal["response"]["output"][0]["status"], "incomplete");
+    Ok(())
+}
+
+// Verifies an Anthropic-vocabulary token-limit stop also terminates with response.incomplete.
+#[test]
+fn anthropic_max_tokens_stop_translates_to_responses_incomplete_event() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiResponses);
+    let delta = json!({
+        "type": "message_delta",
+        "delta": {"stop_reason": "max_tokens"},
+        "usage": {"output_tokens": 1}
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &delta,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let Some(terminal) = events.last() else {
+        return Err("finish should emit a terminal Responses event".into());
+    };
+    assert_eq!(terminal["type"], "response.incomplete");
+    assert_eq!(
+        terminal["response"]["incomplete_details"],
+        json!({"reason": "max_output_tokens"})
+    );
     Ok(())
 }
