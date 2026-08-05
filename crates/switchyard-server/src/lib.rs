@@ -722,7 +722,9 @@ impl RequestLogContext {
                     requested_model = self.requested_model.as_deref().unwrap_or(""),
                     selected_model,
                     streaming = self.streaming,
-                    session_id = self.session_id.as_deref().unwrap_or(""),
+                    // Affinity keys on this field, so "the harness sent no session header" and
+                    // "it sent an empty one" are different diagnoses and must not both log as "".
+                    session_id = self.session_id.as_deref().unwrap_or("-"),
                     correlation_id = self.correlation_id.as_deref().unwrap_or(""),
                     handling_duration_ms = duration_ms,
                     error,
