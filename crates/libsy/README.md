@@ -17,20 +17,6 @@ switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
-## Quick start
-
-The runnable examples cover both ways to integrate libsy:
-
-```bash
-cargo run -p switchyard-libsy --example research_agent
-cargo run -p switchyard-libsy --example research_agent_core
-```
-
-[`research_agent.rs`](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/crates/libsy/examples/research_agent.rs)
-uses target-owned clients with [`Algorithm::run`].
-[`research_agent_core.rs`](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/crates/libsy/examples/research_agent_core.rs)
-uses [`Algorithm::run_stream`] when the host owns model transport.
-
 ## Built-in algorithms
 
 | Type | Purpose |
@@ -55,13 +41,6 @@ the host owns model transport. The provider-neutral [`Request`], [`Response`],
 [`Response`]: switchyard_protocol::Response
 [`Usage`]: switchyard_protocol::Usage
 [`LlmResponse`]: switchyard_protocol::LlmResponse
-
-## Examples
-
-- [Client-backed execution](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/crates/libsy/examples/research_agent.rs)
-- [Host-owned model calls](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/crates/libsy/examples/research_agent_core.rs)
-- [Streaming responses](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/crates/libsy/examples/streaming_agent.rs)
-- [Custom algorithm](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/crates/libsy/examples/ensemble.rs)
 
 ## License
 
