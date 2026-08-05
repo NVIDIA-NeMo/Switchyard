@@ -22,6 +22,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Catalog auto-discovery via a bare `type: passthrough` route is gone; there is
   no `type: model` equivalent, so list the model ids you want as explicit
   `type: model` routes.
+- **`switchyard configure` and `switchyard verify` CLI commands** — removed when
+  the CLI was narrowed to `serve` and `launch`. Switchyard no longer saves
+  provider credentials or deployment paths. Name the credential environment
+  variable with `api_key_env` in a native TOML deployment, export it, and pass
+  the deployment to each `switchyard launch`. Validate a deployment with
+  `./target/release/switchyard-server --config <deployment.toml> --dry-run`.
 
 ### Fixed
 

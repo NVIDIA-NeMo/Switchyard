@@ -100,10 +100,10 @@ switchyard launch claude --model my-route --config routes.toml
 ```
 
 The CLI does not save provider credentials or deployment paths.
-Use `switchyard-server --config routes.toml --dry-run` to validate a native
-deployment before starting the standalone server.
+Use `./target/release/switchyard-server --config routes.toml --dry-run` to
+validate a native deployment before starting the standalone server.
 
 ## Related Documentation
 
-- [Getting Started](getting_started.md): installation, configuration, and verification for both paths
+- [Getting Started](getting_started.md): installation, configuration, and validation for both paths
 - [`switchyard-server`](../crates/switchyard-server/README.md): complete TOML schema, TLS, and metrics
