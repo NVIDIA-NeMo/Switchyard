@@ -407,51 +407,91 @@ impl LlmTargetSet {
     }
 }
 
-/// Bounds process-local overflow history. Dropping a live session's entry costs one
-/// rediscovered overflow, so the victim choice does not need to be exact.
-const MAX_EVICTION_SESSIONS: usize = 1_024;
+/// Key for overflow history: a root request by its session, a child request by its session
+/// and agent. Keying a child finer than its session keeps one child's overflow from evicting
+/// a target for the parent or a sibling sharing the session.
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub(crate) enum RoutingIdentity {
+    /// Root request, keyed by session ID.
+    Session(String),
+    /// Child request, keyed by session and agent IDs.
+    Subagent { session: String, agent: String },
+}
 
-/// Per-session record of the targets that overflowed their context window.
+impl RoutingIdentity {
+    /// Builds a root or child identity from non-empty request metadata.
+    ///
+    /// A child request missing either ID returns `None`, so it keeps no routing history
+    /// rather than sharing the parent's.
+    pub(crate) fn from_request(request: &Request) -> Option<Self> {
+        let metadata = request.metadata.as_ref()?;
+        let session = metadata.session_id.as_deref().filter(|id| !id.is_empty())?;
+        if metadata.is_subagent {
+            let agent = metadata.agent_id.as_deref().filter(|id| !id.is_empty())?;
+            Some(Self::Subagent {
+                session: session.to_string(),
+                agent: agent.to_string(),
+            })
+        } else {
+            Some(Self::Session(session.to_string()))
+        }
+    }
+
+    /// The session this identity belongs to; shared by a session's root and its children.
+    fn session(&self) -> &str {
+        match self {
+            Self::Session(session) | Self::Subagent { session, .. } => session,
+        }
+    }
+}
+
+/// Bounds process-local overflow history. Dropping a live entry costs one rediscovered
+/// overflow, so the victim choice does not need to be exact.
+const MAX_EVICTION_IDENTITIES: usize = 1_024;
+
+/// Per-identity record of the targets that overflowed their context window.
 ///
 /// A conversation only grows, so a target that could not fit one turn will not fit a
 /// later one; remembering it lets the next turn skip a call certain to fail. Requests
-/// without a session id are not tracked — there is nothing to remember them by.
+/// without a routing identity are not tracked — there is nothing to remember them by.
 #[derive(Default)]
 pub(crate) struct SessionEvictions {
-    sessions: Mutex<HashMap<String, HashSet<String>>>,
+    by_identity: Mutex<HashMap<RoutingIdentity, HashSet<String>>>,
 }
 
 impl SessionEvictions {
-    /// Forgets overflow history for a completed session.
-    pub(crate) fn remove(&self, session: &str) {
-        self.sessions.lock().remove(session);
+    /// Forgets overflow history for a completed session, including every child of it.
+    pub(crate) fn remove_session(&self, session: &str) {
+        self.by_identity
+            .lock()
+            .retain(|identity, _| identity.session() != session);
     }
 
-    /// The targets `session` has already overflowed; empty for an untracked request.
-    fn evicted_in(&self, session: Option<&str>) -> Vec<String> {
-        let Some(session) = session else {
+    /// The targets `identity` has already overflowed; empty for an untracked request.
+    fn evicted_for(&self, identity: Option<&RoutingIdentity>) -> Vec<String> {
+        let Some(identity) = identity else {
             return Vec::new();
         };
-        self.sessions
+        self.by_identity
             .lock()
-            .get(session)
+            .get(identity)
             .map(|targets| targets.iter().cloned().collect())
             .unwrap_or_default()
     }
 
-    /// Remembers that `target` overflowed in `session`, tracking at most
-    /// [`MAX_EVICTION_SESSIONS`] sessions.
-    fn record(&self, session: Option<&str>, target: &str) {
-        let Some(session) = session else { return };
-        let mut sessions = self.sessions.lock();
-        if sessions.len() >= MAX_EVICTION_SESSIONS
-            && !sessions.contains_key(session)
-            && let Some(oldest) = sessions.keys().next().cloned()
+    /// Remembers that `target` overflowed for `identity`, tracking at most
+    /// [`MAX_EVICTION_IDENTITIES`] identities.
+    fn record(&self, identity: Option<&RoutingIdentity>, target: &str) {
+        let Some(identity) = identity else { return };
+        let mut histories = self.by_identity.lock();
+        if histories.len() >= MAX_EVICTION_IDENTITIES
+            && !histories.contains_key(identity)
+            && let Some(oldest) = histories.keys().next().cloned()
         {
-            sessions.remove(&oldest);
+            histories.remove(&oldest);
         }
-        sessions
-            .entry(session.to_string())
+        histories
+            .entry(identity.clone())
             .or_default()
             .insert(target.to_string());
     }
@@ -466,15 +506,15 @@ fn eligible_targets(targets: &LlmTargetSet, ctx: &Context) -> usize {
         .count()
 }
 
-/// Bars the targets `session` has already overflowed from this request, so routing does
+/// Bars the targets `identity` has already overflowed from this request, so routing does
 /// not select one that is certain to fail again.
 pub(crate) fn exclude_evicted(
     ctx: &mut Context,
     targets: &LlmTargetSet,
     evictions: &SessionEvictions,
-    session: Option<&str>,
+    identity: Option<&RoutingIdentity>,
 ) {
-    for target in evictions.evicted_in(session) {
+    for target in evictions.evicted_for(identity) {
         // Never seed the pool empty: a later turn may be small enough to serve, and the
         // caller should get the upstream's answer rather than a routing error.
         if eligible_targets(targets, ctx) <= 1 {
@@ -490,7 +530,7 @@ pub(crate) fn exclude_evicted(
 /// Routing is deliberately not re-run: the fallback replaces the target in place, so the
 /// caller's request-side work and retained state still see exactly one turn.
 /// `fallback_decision` builds the [`Decision`] published for a `from -> to` hop, and each
-/// overflow is recorded against `session` so later turns skip that target outright.
+/// overflow is recorded for `identity` so later turns skip that target outright.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn call_llm_with_overflow_fallback(
     mut ctx: Context,
@@ -499,7 +539,7 @@ pub(crate) async fn call_llm_with_overflow_fallback(
     mut target: LlmTarget,
     mut decision: Arc<dyn Decision>,
     request: Request,
-    session: Option<&str>,
+    identity: Option<&RoutingIdentity>,
     evictions: &SessionEvictions,
     fallback_decision: impl Fn(&LlmTarget, &LlmTarget) -> Arc<dyn Decision>,
 ) -> Result<Response> {
@@ -520,7 +560,7 @@ pub(crate) async fn call_llm_with_overflow_fallback(
         if !ctx.exclude_target(failed) {
             return Err(error);
         }
-        evictions.record(session, failed);
+        evictions.record(identity, failed);
         let Ok(next) = targets.resolve_target(&target.semantic_name, &ctx) else {
             return Err(error);
         };

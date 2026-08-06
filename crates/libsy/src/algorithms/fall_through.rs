@@ -26,7 +26,9 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::algorithm::{self, Algorithm, Driver, LlmTarget, LlmTargetSet, SessionEvictions};
+use crate::core::algorithm::{
+    self, Algorithm, Driver, LlmTarget, LlmTargetSet, RoutingIdentity, SessionEvictions,
+};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
@@ -198,9 +200,7 @@ where
             .as_ref()
             .and_then(|metadata| metadata.session_final)
             == Some(true);
-        let result = self
-            .execute_session(ctx, driver, request, session.as_deref())
-            .await;
+        let result = self.execute_session(ctx, driver, request).await;
         if session_final && let Some(session) = session.as_deref() {
             self.remove_session(session);
         }
@@ -223,13 +223,19 @@ where
         ctx: Context,
         driver: Driver,
         request: Request,
-        session: Option<&str>,
     ) -> Result<Response> {
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
         let mut ctx = ctx;
-        algorithm::exclude_evicted(&mut ctx, &self.targets, &self.session_evictions, session);
+        // Processors may rewrite the request; overflow history stays with its inbound identity.
+        let identity = RoutingIdentity::from_request(&request);
+        algorithm::exclude_evicted(
+            &mut ctx,
+            &self.targets,
+            &self.session_evictions,
+            identity.as_ref(),
+        );
         let session_state = self.session_state(&request);
         let (target, decision, served) = match session_state {
             Some(state) => {
@@ -257,7 +263,7 @@ where
                     target,
                     decision,
                     request,
-                    session,
+                    identity.as_ref(),
                     &self.session_evictions,
                     |from, to| self.fallback_decision(from, to),
                 )
@@ -271,7 +277,7 @@ where
         if let Some(states) = &self.session_states {
             states.lock().remove(session);
         }
-        self.session_evictions.remove(session);
+        self.session_evictions.remove_session(session);
     }
 
     /// The decision published when an overflow sends the request to a different target.

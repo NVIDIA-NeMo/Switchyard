@@ -90,6 +90,18 @@ async fn upstream_chat(
     }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
+    if model == "model/weak" && body["messages"][0]["content"] == "overflow" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "context_length_exceeded",
+                    "message": "request exceeds this model's context window"
+                }
+            })),
+        )
+            .into_response();
+    }
     if body["stream"].as_bool() == Some(true) {
         if body["messages"][0]["content"] == "stream-error" {
             let events = [
@@ -513,8 +525,52 @@ fn load_test_config(toml: &str) -> TestResult<ServerState> {
     Ok(load_server_state(config.path())?)
 }
 
+/// A `random` route that always selects `first` (weight 1 vs 0), so a test can drive the
+/// overflow fallback from `first` to `second` deterministically.
+fn overflow_fallback_state(base_url: &str) -> TestResult<ServerState> {
+    load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+
+[targets.first]
+id = "{first}"
+llm_client = "mock"
+
+[targets.second]
+id = "{second}"
+llm_client = "mock"
+
+[routes.random]
+id = "{ROUTE_MODEL}"
+type = "random"
+targets = ["first", "second"]
+weights = [1, 0]
+"#,
+        first = "model/weak",
+        second = "model/strong",
+    ))
+}
+
 async fn send(app: &Router, method: &str, path: &str, body: Option<Value>) -> TestResult<Response> {
+    send_with_headers(app, method, path, body, &[]).await
+}
+
+async fn send_with_headers(
+    app: &Router,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> TestResult<Response> {
     let mut builder = HttpRequest::builder().method(method).uri(path);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
     let request_body = if let Some(body) = body {
         builder = builder.header("content-type", "application/json");
         Body::from(serde_json::to_vec(&body)?)
@@ -1374,6 +1430,96 @@ async fn routing_log_exposes_session_stats() -> TestResult {
             .as_str()
             .is_some_and(|value| value.ends_with('Z'))
     );
+    Ok(())
+}
+
+// Overflow history is isolated per child, cleared with the session, and not retained when a
+// child lacks an agent ID.
+#[tokio::test]
+async fn overflow_history_is_scoped_to_agent_and_session_lifetime() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = overflow_fallback_state(&upstream.base_url)?;
+    let app = build_switchyard_router(state);
+    let child_a = [
+        ("x-switchyard-session-id", "shared-session"),
+        ("x-switchyard-agent-id", "child-a"),
+        ("x-switchyard-is-subagent", "true"),
+    ];
+    let root = [
+        ("x-switchyard-session-id", "shared-session"),
+        ("x-switchyard-agent-id", "root"),
+        ("x-switchyard-is-subagent", "false"),
+    ];
+    let child_b = [
+        ("x-switchyard-session-id", "shared-session"),
+        ("x-switchyard-agent-id", "child-b"),
+        ("x-switchyard-is-subagent", "true"),
+    ];
+    let child_without_agent_id = [
+        ("x-switchyard-session-id", "shared-session"),
+        ("x-switchyard-is-subagent", "true"),
+    ];
+    let final_root = [
+        ("x-switchyard-session-id", "shared-session"),
+        ("x-switchyard-agent-id", "root"),
+        ("x-switchyard-is-subagent", "false"),
+        ("x-switchyard-session-final", "true"),
+    ];
+    type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str]);
+    let cases: [Case<'_>; 8] = [
+        (
+            "overflow",
+            child_a.as_slice(),
+            &["model/weak", "model/strong"],
+        ),
+        ("fits", child_a.as_slice(), &["model/strong"]),
+        ("fits", root.as_slice(), &["model/weak"]),
+        ("fits", child_b.as_slice(), &["model/weak"]),
+        ("fits", final_root.as_slice(), &["model/weak"]),
+        ("fits", child_a.as_slice(), &["model/weak"]),
+        (
+            "overflow",
+            child_without_agent_id.as_slice(),
+            &["model/weak", "model/strong"],
+        ),
+        (
+            "overflow",
+            child_without_agent_id.as_slice(),
+            &["model/weak", "model/strong"],
+        ),
+    ];
+
+    for (content, headers, expected_calls) in cases {
+        let previous_call_count = upstream.calls.lock().await.len();
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": content}]
+            })),
+            headers,
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        let expected_model = expected_calls.last().copied();
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            expected_model
+        );
+        let calls = upstream.calls.lock().await;
+        assert_eq!(
+            calls[previous_call_count..]
+                .iter()
+                .map(|call| call["model"].as_str().unwrap_or(""))
+                .collect::<Vec<_>>(),
+            expected_calls
+        );
+    }
     Ok(())
 }
 
