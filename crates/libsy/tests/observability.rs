@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -344,6 +345,7 @@ struct UsageClient {
 struct ClassifierClient {
     classifier_delay: Duration,
     routed_delay: Duration,
+    judge_calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -359,6 +361,7 @@ impl RoutedLlmClient for ClassifierClient {
             tokio::time::sleep(self.routed_delay).await;
             "routed response"
         } else {
+            self.judge_calls.fetch_add(1, Ordering::Relaxed);
             tokio::time::sleep(self.classifier_delay).await;
             r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
         };
@@ -1116,6 +1119,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     let client = Arc::new(ClassifierClient {
         classifier_delay: Duration::from_millis(60),
         routed_delay: Duration::from_millis(200),
+        judge_calls: Arc::new(AtomicUsize::new(0)),
     }) as Arc<dyn RoutedLlmClient>;
     let router = classifier_router("classifier", "weak", "strong", client)?;
 
@@ -1178,6 +1182,133 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     assert!(
         (60..200).contains(&overhead),
         "expected roughly the classifier's 60ms, got {overhead}ms"
+    );
+    Ok(())
+}
+
+/// Judge upstream is down: routed calls succeed, classifier calls fail.
+struct JudgeDownClient;
+
+#[async_trait]
+impl RoutedLlmClient for JudgeDownClient {
+    async fn call(
+        &self,
+        _ctx: Context,
+        _request: Request,
+        decision: Arc<dyn Decision>,
+    ) -> Result<Response, LlmClientError> {
+        if decision.is_routed_call() {
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    Some(decision.selected_model().to_string()),
+                    "routed response",
+                )),
+                metadata: None,
+            })
+        } else {
+            Err(LlmClientError::Timeout {
+                source: Box::new(TestError("judge upstream down")),
+            })
+        }
+    }
+}
+
+#[tokio::test]
+async fn judge_unavailable_fallback_keeps_the_tier_label() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_store, exporter, provider, _, _) = telemetry();
+
+    let client = Arc::new(JudgeDownClient) as Arc<dyn RoutedLlmClient>;
+    let router = classifier_router("fb-judge", "fb-weak", "fb-strong", client)?;
+
+    let (trace, _response) = router
+        .run(
+            Context::default(),
+            Request {
+                llm_request: text_request(Some("auto".to_string()), "classify this"),
+                raw_request: None,
+                metadata: None,
+            },
+        )
+        .await?;
+
+    // The judge never produced a verdict, so the cascade's default-target
+    // fallback decided — and the decision still carries the tier of the
+    // model it selected, matching the overflow-fallback path.
+    assert_eq!(
+        trace.last().and_then(|decision| decision.routing_tier()),
+        Some("strong")
+    );
+
+    let snapshots = flushed_metrics(exporter, provider);
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.requests",
+            &[("model", "fb-strong"), ("tier", "strong")],
+        ),
+        Some(1)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn affinity_reuse_keeps_the_tier_label() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_store, exporter, provider, _, _) = telemetry();
+
+    let judge_calls = Arc::new(AtomicUsize::new(0));
+    let client = Arc::new(ClassifierClient {
+        classifier_delay: Duration::from_millis(5),
+        routed_delay: Duration::from_millis(5),
+        judge_calls: judge_calls.clone(),
+    });
+    let target = |name: &str| LlmTarget {
+        semantic_name: name.to_string(),
+        llm_client: Some(client.clone()),
+    };
+    let targets = LlmTargetSet::new(vec![target("af-weak"), target("af-strong")]);
+    // The shared helper pins the default config; session affinity is the
+    // behavior under test, so this router is built directly.
+    let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+        judge_target: target("af-judge"),
+        efficient_target: targets.get_target("af-weak")?,
+        capable_target: targets.get_target("af-strong")?,
+        config: TaskClassifierConfig {
+            base_threshold: 0.5,
+            session_affinity: true,
+            ..TaskClassifierConfig::default()
+        },
+    })?);
+
+    for _ in 0..2 {
+        let (trace, _response) = router
+            .clone()
+            .run(
+                Context::default(),
+                request_with_metadata("affinity-tier-session", "affinity-tier-corr"),
+            )
+            .await?;
+        assert_eq!(
+            trace.last().and_then(|decision| decision.routing_tier()),
+            Some("weak")
+        );
+    }
+
+    // The judge ran once: the second request reused the affinity pin
+    // instead of classifying again.
+    assert_eq!(judge_calls.load(Ordering::Relaxed), 1);
+
+    let snapshots = flushed_metrics(exporter, provider);
+    // The judged first turn and the affinity-reuse second turn land in the
+    // same labeled series instead of splitting on a missing tier.
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.requests",
+            &[("model", "af-weak"), ("tier", "weak")],
+        ),
+        Some(2)
     );
     Ok(())
 }
