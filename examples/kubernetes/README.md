@@ -14,6 +14,29 @@ Switchyard half and plain manifests for the Envoy half.
 
 ## Which topology
 
+```mermaid
+flowchart LR
+    client["Client"]
+    aeg["Envoy proxy<br/>client auth, token budgets"]
+    asy["Switchyard<br/>holds provider key"]
+    bsy["Switchyard<br/>no credential"]
+    beg["Envoy proxy<br/>injects provider key"]
+    prov["Model provider"]
+
+    client --> aeg --> asy --> prov
+    client --> bsy --> beg --> prov
+
+    classDef cred fill:#fdf0d5,stroke:#b8860b,color:#5c4400
+    classDef envoy fill:#e8e6ff,stroke:#6b5fd6,color:#2d2483
+    classDef plain fill:#eef2f7,stroke:#8899aa,color:#22303c
+    class asy,beg cred
+    class aeg,bsy envoy
+    class client,prov plain
+```
+
+The top path is Envoy in front, the bottom is Switchyard in front. Amber marks
+where the provider credential sits, which is the whole decision.
+
 | | [`envoy-ai-gateway-in-front/`](envoy-ai-gateway-in-front) | [`switchyard-in-front-of-envoy-ai-gateway/`](switchyard-in-front-of-envoy-ai-gateway) |
 |---|---|---|
 | Chain | client → Envoy AI Gateway → Switchyard → provider | client → Switchyard → Envoy AI Gateway → provider |
@@ -32,6 +55,23 @@ application pod. No provider credential is mounted into Switchyard at all.
 
 The two are not exclusive. Running both, as the manifests here do, gives Envoy
 at the edge and Envoy at the egress with Switchyard in the middle.
+
+### The namespace split
+
+Applying either example creates objects in two namespaces:
+
+| namespace | what lands there |
+|---|---|
+| `switchyard` | every Gateway API and AI Gateway object below — all *declarations* — plus the Switchyard Deployment and Service |
+| `envoy-gateway-system` | the Envoy proxy Deployment and Service that Envoy Gateway *generates*, and which traffic actually flows through |
+
+A `Gateway` declared in `switchyard` is served by a proxy pod running in
+`envoy-gateway-system`. That is why
+[`04-restrict-access.yaml`](switchyard-in-front-of-envoy-ai-gateway/04-restrict-access.yaml)
+puts its NetworkPolicy in `envoy-gateway-system` — one in `switchyard` would
+not touch the pod carrying the provider credential — and why `01-gateway.yaml`
+pins `EnvoyProxy.provider.kubernetes.envoyService.name`, since the generated
+name is otherwise hashed and changes when the Gateway is recreated.
 
 ## Client authentication
 
@@ -89,6 +129,54 @@ docker push ghcr.io/nvidia-nemo/switchyard/switchyard-server:0.2.0
 
 ## Envoy AI Gateway in front of Switchyard
 
+```mermaid
+flowchart LR
+    client["Client"]
+
+    subgraph egns["ns: envoy-gateway-system"]
+        eg["Envoy proxy"]
+    end
+
+    subgraph ns["ns: switchyard"]
+        cfg["Gateway, routes and policies"]
+        sy["Switchyard :4000"]
+        sec[("Secret")]
+    end
+
+    prov["Model provider"]
+
+    client -->|"switchyard/general<br/>x-api-key"| eg
+    cfg -.-> eg
+    eg -->|"matched on x-ai-eg-model"| sy
+    sec -.-> sy
+    sy -->|"nemotron-3-super-v3<br/>Bearer key"| prov
+
+    classDef cred fill:#fdf0d5,stroke:#b8860b,color:#5c4400
+    classDef envoy fill:#e8e6ff,stroke:#6b5fd6,color:#2d2483
+    classDef cfgc fill:#f2f0ff,stroke:#9a8fe0,color:#3b3183
+    classDef plain fill:#eef2f7,stroke:#8899aa,color:#22303c
+    class sy,sec cred
+    class eg envoy
+    class cfg cfgc
+    class client,prov plain
+```
+
+Dashed arrows are configuration rather than traffic. The objects the manifests
+create:
+
+| object | file | why |
+|---|---|---|
+| `GatewayClass`, `Gateway` `switchyard-ai-gateway` | `01-gateway.yaml` | the listener clients reach |
+| `EnvoyProxy` `switchyard-ai-gateway` | `01-gateway.yaml` | sizes the generated proxy |
+| `ClientTrafficPolicy` `switchyard-buffer-limit` | `01-gateway.yaml` | 50Mi buffer; the 32KiB default truncates AI payloads |
+| `BackendTrafficPolicy` `switchyard-timeouts` | `01-gateway.yaml` | 300s timeout; the default cuts LLM calls off |
+| `Backend` `switchyard` | `02-switchyard-backend.yaml` | points at `switchyard.switchyard.svc:4000` |
+| `AIServiceBackend` `switchyard` | `02-switchyard-backend.yaml` | declares OpenAI schema; strips `x-forwarded-host` |
+| `AIGatewayRoute` `switchyard` | `02-switchyard-backend.yaml` | one matcher per exposed route id; records token costs |
+| `EnvoyPatchPolicy` `switchyard-strip-forwarded-host` | `03-forwarded-host.yaml` | removes `x-forwarded-host` during routing, after ext-proc |
+| `SecurityPolicy` `switchyard-client-auth` | `04-client-auth.yaml` | requires `x-api-key`; `jwt` and `oidc` shown as alternatives |
+| `BackendTrafficPolicy` `switchyard-token-limit` | `04-client-auth.yaml` | per-client token budget, keyed on the authenticated identity |
+
 ```bash
 kubectl create namespace switchyard
 
@@ -142,6 +230,56 @@ Apply [`04-client-auth.yaml`](envoy-ai-gateway-in-front/04-client-auth.yaml) to
 require a client credential; requests then need `-H "x-api-key: ..."`.
 
 ## Switchyard in front of Envoy AI Gateway
+
+```mermaid
+flowchart LR
+    client["Client"]
+
+    subgraph ns["ns: switchyard"]
+        sy["Switchyard :4000<br/>no client auth"]
+        cfg["Gateway, routes and policies"]
+        sec[("Secret")]
+    end
+
+    subgraph egns["ns: envoy-gateway-system"]
+        eg["Envoy proxy<br/>svc: switchyard-upstream-gateway"]
+    end
+
+    prov["Model provider"]
+
+    client -->|"NetworkPolicy"| sy
+    sy -->|"nemotron-3-super-v3<br/>no Authorization"| eg
+    cfg -.-> eg
+    sec -.-> eg
+    eg -->|"Authorization injected<br/>TLS to provider"| prov
+
+    classDef cred fill:#fdf0d5,stroke:#b8860b,color:#5c4400
+    classDef envoy fill:#e8e6ff,stroke:#6b5fd6,color:#2d2483
+    classDef cfgc fill:#f2f0ff,stroke:#9a8fe0,color:#3b3183
+    classDef plain fill:#eef2f7,stroke:#8899aa,color:#22303c
+    class eg,sec cred
+    class sy envoy
+    class cfg cfgc
+    class client,prov plain
+```
+
+The credential reaches the proxy, never the Switchyard pod. The objects the
+manifests create:
+
+| object | file | why |
+|---|---|---|
+| `GatewayClass`, `Gateway` `switchyard-upstream` | `01-gateway.yaml` | internal egress listener, not client-facing |
+| `EnvoyProxy` `switchyard-upstream` | `01-gateway.yaml` | pins the Service name, sets it ClusterIP |
+| `ClientTrafficPolicy` `switchyard-upstream-buffer-limit` | `01-gateway.yaml` | 50Mi buffer |
+| `BackendTrafficPolicy` `switchyard-upstream-timeouts` | `01-gateway.yaml` | 300s timeout |
+| `Backend` `nvidia` | `02-provider-backend.yaml` | provider hostname, port 443 |
+| `BackendTLSPolicy` `nvidia-tls` | `02-provider-backend.yaml` | validates upstream TLS against system roots |
+| `AIServiceBackend` `nvidia` | `02-provider-backend.yaml` | OpenAI schema, `/v1` prefix |
+| `BackendSecurityPolicy` `nvidia-apikey` | `02-provider-backend.yaml` | injects `Authorization`, keeping the key out of the pod |
+| `AIGatewayRoute` `nvidia` | `02-provider-backend.yaml` | one matcher per provider model id |
+| `EnvoyPatchPolicy` `switchyard-upstream-strip-forwarded-host` | `03-forwarded-host.yaml` | `append_x_forwarded_host: false`; removal alone is too late on egress |
+| `NetworkPolicy` `switchyard-egress-ingress-restriction` | `04-restrict-access.yaml` | limits who may call Switchyard |
+| `NetworkPolicy` `switchyard-upstream-gateway-restriction` | `04-restrict-access.yaml` | limits who may reach the credential-bearing proxy |
 
 ```bash
 kubectl create namespace switchyard
