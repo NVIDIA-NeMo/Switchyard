@@ -180,24 +180,4 @@ pub trait RoutedLlmClient: Send + Sync {
         request: Request,
         decision: Arc<dyn Decision>,
     ) -> Result<Response, LlmClientError>;
-
-    /// Whether this client can serve [`count_tokens`](Self::count_tokens) — i.e.
-    /// it has an Anthropic upstream. The default is `false`.
-    fn supports_count_tokens(&self) -> bool {
-        false
-    }
-
-    /// Count the tokens `request` would use — a **direct passthrough**, not a
-    /// routed call. Forwards `request` to this client's Anthropic
-    /// `/v1/messages/count_tokens` endpoint (model restamped to the upstream
-    /// target id) and returns the JSON verbatim. Token counting is a pre-flight
-    /// estimate with no routing decision, so unlike [`call`](Self::call) it
-    /// takes no [`Decision`]. The default errors; only an Anthropic-backed
-    /// client overrides it.
-    async fn count_tokens(&self, request: Request) -> Result<serde_json::Value, LlmClientError> {
-        let _ = request;
-        Err(LlmClientError::Configuration {
-            message: "count_tokens is not supported by this client".to_string(),
-        })
-    }
 }

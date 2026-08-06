@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
 import importlib.util
 import sys
 from pathlib import Path
@@ -29,7 +27,7 @@ _SPEC.loader.exec_module(set_dev_wheel_version)
 def test_parse_dev_wheel_version(raw_version: str, normalized: str) -> None:
     version = set_dev_wheel_version.parse_dev_wheel_version(raw_version)
 
-    assert version.version == normalized
+    assert version == normalized
 
 
 @pytest.mark.parametrize(
@@ -50,18 +48,8 @@ def test_parse_dev_wheel_version_rejects_non_dev_versions(raw_version: str) -> N
 def test_metadata_file_updates(tmp_path: Path) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
-        '[build-system]\nrequires = []\n\n[project]\nname = "switchyard"\nversion = "0.1.0"\n'
+        '[build-system]\nrequires = []\n\n[project]\nname = "nemo-switchyard"\nversion = "0.1.0"\n'
     )
-    init = tmp_path / "__init__.py"
-    init.write_text('__all__ = []\n\n__version__ = "0.1.0"\n')
+    assert set_dev_wheel_version.update_pyproject(pyproject, "0.0.1.dev0")
 
-    assert set_dev_wheel_version.update_pyproject(
-        pyproject,
-        package_name="nemo-switchyard",
-        version="0.0.1.dev0",
-    )
-    assert set_dev_wheel_version.update_python_init(init, "0.0.1.dev0")
-
-    assert 'name = "nemo-switchyard"' in pyproject.read_text()
     assert 'version = "0.0.1.dev0"' in pyproject.read_text()
-    assert '__version__ = "0.0.1.dev0"' in init.read_text()

@@ -11,8 +11,8 @@ use pyo3::prelude::*;
 use serde_json::{Value, json};
 use switchyard_libsy::{
     Algorithm, ClassifierContractConfig, HandoffNoteConfig, LibsyError as RustLibsyError,
-    LlmFallback, LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, PickerMode, Random, StageRouter,
-    StageRouterConfig, TaskClassifierConfig,
+    LlmClassifierConfig, LlmFallback, LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, PickerMode,
+    Random, StageRouter, StageRouterConfig, TaskClassifierConfig,
 };
 use switchyard_protocol::{
     AggLlmResponse, Context, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
@@ -20,6 +20,7 @@ use switchyard_protocol::{
 };
 
 use crate::errors::py_libsy_error;
+use crate::interop::subagent::header_map_from_python;
 use crate::py_serde::{from_python, to_python};
 
 /// Adapts a Python object with `async call(request)` to libsy.
@@ -121,8 +122,7 @@ impl PyTaskClassifierConfig {
     #[pyo3(signature = (
         base_threshold,
         *,
-        min_confidence=0.0,
-        capability_elevated_floor=None,
+        threshold_step=0.0,
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
@@ -132,8 +132,7 @@ impl PyTaskClassifierConfig {
     #[allow(clippy::too_many_arguments)]
     fn new(
         base_threshold: f64,
-        min_confidence: f64,
-        capability_elevated_floor: Option<f64>,
+        threshold_step: f64,
         session_affinity: bool,
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
@@ -147,8 +146,7 @@ impl PyTaskClassifierConfig {
         Self {
             inner: TaskClassifierConfig {
                 base_threshold,
-                min_confidence,
-                capability_elevated_floor,
+                threshold_step,
                 session_affinity,
                 message_hash_fallback,
                 recent_turn_window,
@@ -217,9 +215,11 @@ impl PyAlgorithm {
         &self,
         py: Python<'py>,
         request: &Bound<'_, PyAny>,
-        headers: Option<std::collections::BTreeMap<String, String>>,
+        headers: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let algorithm = Arc::clone(&self.inner);
+        let headers = headers.as_ref().map(header_map_from_python).transpose()?;
+
         let request = Request {
             llm_request: from_python(request)?,
             raw_request: None,
@@ -298,12 +298,12 @@ fn llm_task_classifier_algorithm(
     capable_target: Py<PyLlmTarget>,
     config: Py<PyTaskClassifierConfig>,
 ) -> PyResult<PyAlgorithm> {
-    let algorithm = LlmTaskClassifier::new(
-        judge_target.bind(py).try_borrow()?.clone_core(py),
-        efficient_target.bind(py).try_borrow()?.clone_core(py),
-        capable_target.bind(py).try_borrow()?.clone_core(py),
-        config.bind(py).try_borrow()?.clone_core(),
-    )
+    let algorithm = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+        judge_target: judge_target.bind(py).try_borrow()?.clone_core(py),
+        efficient_target: efficient_target.bind(py).try_borrow()?.clone_core(py),
+        capable_target: capable_target.bind(py).try_borrow()?.clone_core(py),
+        config: config.bind(py).try_borrow()?.clone_core(),
+    })
     .map_err(|error| PyValueError::new_err(error.to_string()))?;
     Ok(PyAlgorithm::new(Arc::new(algorithm)))
 }

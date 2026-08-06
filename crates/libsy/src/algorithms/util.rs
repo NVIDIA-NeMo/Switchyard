@@ -8,6 +8,7 @@ pub(crate) mod llm_judge;
 pub(crate) mod prompts;
 pub(crate) mod stage;
 pub mod subagent;
+pub(crate) mod target_selector;
 pub(crate) mod tool_signals;
 
 /// Default completion budget for internal classifier and escalation judge calls.

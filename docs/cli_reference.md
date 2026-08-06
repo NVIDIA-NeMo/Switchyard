@@ -9,7 +9,7 @@ Switchyard has two command-line paths:
 
 ## Launcher Path: `switchyard launch`
 
-Install the launcher with `uv tool install "nemo-switchyard[cli,server]"`. The
+Install the launcher with `uv tool install --python 3.12 "nemo-switchyard[cli,server]"`. The
 selected coding agent must also be installed and available on `PATH`.
 
 ### Usage
@@ -69,7 +69,9 @@ When built from the repository, invoke it as
 | `--host HOST` | `0.0.0.0` | Address on which the server listens. |
 | `-p, --port PORT` | `4000` | Port on which the server listens. |
 | `--backlog BACKLOG` | `65535` | TCP listen backlog configured before accepting traffic. |
+| `--shutdown-timeout SHUTDOWN_TIMEOUT` | `30s` | Maximum time active requests may drain during shutdown. |
 | `--dry-run` | Off | Validate the deployment without binding a socket. |
+| `--routing-log-file PATH` | None | Append durable per-request routing records to this JSONL file. |
 | `--tls-cert PATH` | None | PEM certificate path; requires `--tls-key`. |
 | `--tls-key PATH` | None | PEM private-key path; requires `--tls-cert`. |
 | `-h, --help` | — | Print command help. |
@@ -83,7 +85,27 @@ Validate a deployment, then start the proxy:
   --host 127.0.0.1 --port 4000
 ```
 
+## Removed Setup Commands
+
+`switchyard configure` and `switchyard verify` are not available. Export the
+environment variable named by `api_key_env` in the native TOML deployment,
+then pass that deployment on each run. For example:
+
+```toml
+[llm_clients.provider]
+api_key_env = "PROVIDER_API_KEY"
+```
+
+```bash
+export PROVIDER_API_KEY="your-provider-key"  # pragma: allowlist secret
+switchyard launch claude --model my-route --config routes.toml
+```
+
+The CLI does not save provider credentials or deployment paths.
+Use `./target/release/switchyard-server --config routes.toml --dry-run` to
+validate a native deployment before starting the standalone server.
+
 ## Related Documentation
 
-- [Getting Started](getting_started.md): installation, configuration, and verification for both paths
+- [Getting Started](getting_started.md): installation, configuration, and validation for both paths
 - [`switchyard-server`](../crates/switchyard-server/README.md): complete TOML schema, TLS, and metrics

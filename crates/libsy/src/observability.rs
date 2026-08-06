@@ -513,6 +513,20 @@ fn record_routing_overhead(
     Some(overhead)
 }
 
+/// Records a judge failure that made the classifier route without a verdict.
+pub(crate) fn record_classifier_fail_open(judge_model: &str, reason: &'static str) {
+    meter()
+        .u64_counter("switchyard.classifier_fail_open")
+        .build()
+        .add(
+            1,
+            &[
+                KeyValue::new("judge_model", judge_model.to_string()),
+                KeyValue::new("reason", reason),
+            ],
+        );
+}
+
 /// Records the resolution of one offloaded model call: the call counter and
 /// latency histogram, the `outcome`/`error`/token fields on `span`, and a warn
 /// log when the call failed.

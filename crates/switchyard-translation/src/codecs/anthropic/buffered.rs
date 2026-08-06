@@ -39,6 +39,17 @@ impl FormatCodec for AnthropicMessagesCodec {
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
         let mut diagnostics = Vec::new();
+        let max_output_tokens = body
+            .get("max_tokens")
+            .map(|value| {
+                value
+                    .as_u64()
+                    .ok_or_else(|| TranslationError::InvalidValue {
+                        path: "$.max_tokens".to_string(),
+                        message: "expected a non-negative integer".to_string(),
+                    })
+            })
+            .transpose()?;
         let mut request = LlmRequest {
             model: body
                 .get("model")
@@ -46,7 +57,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 .filter(|model| !model.is_empty())
                 .map(ToOwned::to_owned),
             output: OutputParams {
-                max_output_tokens: body.get("max_tokens").and_then(Value::as_u64),
+                max_output_tokens,
                 response_format: None,
             },
             sampling: SamplingParams {
@@ -72,7 +83,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             ..LlmRequest::default()
         };
         if let Some(system) = body.get("system")
-            && let Some(content) = decode_anthropic_system(system, &mut diagnostics, policy)?
+            && let Some(content) = decode_anthropic_system(system)?
         {
             request.instructions.push(InstructionBlock {
                 role: Role::System,
@@ -204,7 +215,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         if let Some(max_tokens) = request.output.max_output_tokens {
             body.insert("max_tokens".to_string(), json!(max_tokens));
         } else {
-            body.insert("max_tokens".to_string(), json!(128_000));
+            body.insert("max_tokens".to_string(), json!(64_000));
         }
         if let Some(value) = request.sampling.temperature {
             body.insert("temperature".to_string(), json!(value));
@@ -221,6 +232,21 @@ impl FormatCodec for AnthropicMessagesCodec {
         if let Some(effort) = &request.reasoning.effort {
             body.insert("thinking".to_string(), json!({"type": "adaptive"}));
             body.insert("output_config".to_string(), json!({"effort": effort}));
+        }
+        if let Some(response_format) = &request.output.response_format
+            && let Some(format) =
+                encode_anthropic_output_format(response_format, &mut diagnostics, policy)?
+        {
+            let output_config = body
+                .entry("output_config".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            let Some(output_config) = output_config.as_object_mut() else {
+                return Err(TranslationError::InvalidType {
+                    path: "$.output_config".to_string(),
+                    expected: "object",
+                });
+            };
+            output_config.insert("format".to_string(), format);
         }
 
         let body = embed_preservation(Value::Object(body), &request.preservation, policy);
@@ -334,12 +360,71 @@ impl FormatCodec for AnthropicMessagesCodec {
     }
 }
 
-// Decodes Anthropic's `system` field into instruction blocks.
-fn decode_anthropic_system(
-    value: &Value,
+/// Maps the neutral OpenAI-shaped JSON schema to Anthropic's output format.
+fn encode_anthropic_output_format(
+    response_format: &Value,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
-) -> Result<Option<Vec<ContentBlock>>> {
+) -> Result<Option<Value>> {
+    let Some(json_schema) = response_format
+        .as_object()
+        .filter(|format| format.get("type").and_then(Value::as_str) == Some("json_schema"))
+        .and_then(|format| format.get("json_schema"))
+        .and_then(Value::as_object)
+    else {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output requires an OpenAI JSON schema response format",
+        )?;
+        return Ok(None);
+    };
+    let Some(schema) = json_schema.get("schema") else {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output requires json_schema.schema",
+        )?;
+        return Ok(None);
+    };
+
+    let mut schema = schema.clone();
+    if strip_anthropic_unsupported_constraints(&mut schema) {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output dropped unsupported JSON Schema constraints",
+        )?;
+    }
+    Ok(Some(json!({"type": "json_schema", "schema": schema})))
+}
+
+/// Removes constraints unsupported by Anthropic's structured-output grammar.
+fn strip_anthropic_unsupported_constraints(value: &mut Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            let mut removed = false;
+            for key in ["minimum", "maximum", "minLength", "maxLength"] {
+                removed |= object.remove(key).is_some();
+            }
+            for value in object.values_mut() {
+                removed |= strip_anthropic_unsupported_constraints(value);
+            }
+            removed
+        }
+        Value::Array(values) => {
+            let mut removed = false;
+            for value in values {
+                removed |= strip_anthropic_unsupported_constraints(value);
+            }
+            removed
+        }
+        _ => false,
+    }
+}
+
+// Decodes Anthropic's `system` field into instruction blocks.
+fn decode_anthropic_system(value: &Value) -> Result<Option<Vec<ContentBlock>>> {
     match value {
         Value::String(text) if !text.is_empty() => {
             Ok(Some(vec![ContentBlock::Text { text: text.clone() }]))
@@ -361,12 +446,10 @@ fn decode_anthropic_system(
             }
             Ok((!content.is_empty()).then_some(content))
         }
-        other => {
-            push_lossy(diagnostics, policy, "Anthropic system field was not text")?;
-            Ok(Some(vec![ContentBlock::Text {
-                text: string_value(other).unwrap_or_default(),
-            }]))
-        }
+        _ => Err(TranslationError::InvalidType {
+            path: "$.system".to_string(),
+            expected: "string or array of text blocks",
+        }),
     }
 }
 

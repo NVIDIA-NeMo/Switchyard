@@ -147,6 +147,10 @@ fn encode_anthropic_stream(
     state: &mut StreamTranslationState,
     event: LlmResponseChunk,
 ) -> Vec<Value> {
+    // An in-band error is terminal: once the error is emitted, drop every later chunk.
+    if state.errored {
+        return Vec::new();
+    }
     match event {
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
@@ -204,6 +208,9 @@ fn encode_anthropic_stream(
             Vec::new()
         }
         LlmResponseChunk::StreamError { message } | LlmResponseChunk::DecodeError { message } => {
+            // An in-band error is terminal: emit the error, then nothing further.
+            state.finished = true; // finish() adds no success events
+            state.errored = true; // the entry guard drops any later chunk
             vec![json!({"type": "error", "error": {"message": message}})]
         }
     }

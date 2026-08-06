@@ -19,7 +19,7 @@ use crate::algorithms::fall_through::{FallThrough, FallThroughDecision};
 use crate::core::algorithm::{Algorithm, Driver, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Request, Response, RoutedLlmClient};
+use switchyard_protocol::{Context, Request, Response};
 
 /// Compatibility name for the decision produced by [`Random`].
 pub type RandomDecision = FallThroughDecision;
@@ -160,10 +160,6 @@ fn random_decision_reason(_name: &str, winner: &Score) -> String {
 impl Algorithm for Random {
     fn name(&self) -> &str {
         "random"
-    }
-
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.inner.count_tokens_client()
     }
 
     async fn create_run_task(

@@ -892,7 +892,7 @@ async fn anthropic_translates_responses_requests_with_default_max_tokens() -> Re
 
     assert_eq!(ctx.inbound_format, Some(ChatRequestType::OpenAiResponses));
     assert_eq!(request.body["model"], "target-claude");
-    assert_eq!(request.body["max_tokens"], 128000);
+    assert_eq!(request.body["max_tokens"], 64000);
     assert_eq!(request.body["messages"][0]["role"], "user");
     assert_eq!(request.body["messages"][0]["content"], "translate me");
     Ok(())

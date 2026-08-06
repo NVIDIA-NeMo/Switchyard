@@ -63,6 +63,36 @@ fn preserved_same_format_events_replay_unknown_fields_exactly() -> TestResult {
     Ok(())
 }
 
+// A same-format error remains the last replayed event even if the source supplies more frames.
+#[test]
+fn preserved_same_format_replay_stops_after_an_error() -> TestResult {
+    let format = WireFormat::OpenAiResponses;
+    let events = [
+        json!({"type": "response.output_text.delta", "delta": "before"}),
+        json!({"type": "error", "message": "boom"}),
+        json!({"type": "response.output_text.delta", "delta": "after"}),
+        json!({"type": "response.completed", "response": {"id": "resp_1"}}),
+    ];
+    let engine = TranslationEngine::default();
+    let mut decode_state = StreamTranslationState::new(format, format);
+    let mut encode_state = StreamTranslationState::new(format, format);
+    let mut replayed = Vec::new();
+
+    for event in events {
+        let preserved = engine.decode_stream_event(&mut decode_state, format, event)?;
+        replayed.extend(engine.encode_stream_event(&mut encode_state, format, preserved)?);
+    }
+
+    assert_eq!(
+        replayed,
+        vec![
+            json!({"type": "response.output_text.delta", "delta": "before"}),
+            json!({"type": "error", "message": "boom"}),
+        ]
+    );
+    Ok(())
+}
+
 // Replay emits the preserved event without running the encoder, so the encoder never sees the
 // stop it would normally record. Replay must still leave the stream marked finished or
 // `finish_stream` synthesizes a terminal the client already received.
@@ -837,6 +867,64 @@ fn anthropic_message_stop_does_not_overwrite_max_tokens_stop_reason() -> TestRes
     Ok(())
 }
 
+// Equivalent buffered and streamed Responses results must normalize to the same output.
+#[test]
+fn responses_buffered_and_streamed_outputs_match() -> TestResult {
+    let engine = TranslationEngine::default();
+    let buffered = engine
+        .decode_response(
+            WireFormat::OpenAiResponses,
+            &json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "gpt-reasoning",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": "private reasoning"}]
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Visible answer"}]
+                    }
+                ]
+            }),
+            &Default::default(),
+        )?
+        .response;
+
+    let events = [
+        json!({
+            "type": "response.created",
+            "response": {"id": "resp_1", "model": "gpt-reasoning"}
+        }),
+        json!({
+            "type": "response.reasoning_summary_text.delta",
+            "output_index": 0,
+            "delta": "private reasoning"
+        }),
+        json!({
+            "type": "response.output_text.delta",
+            "output_index": 1,
+            "delta": "Visible answer"
+        }),
+        json!({"type": "response.completed", "response": {}}),
+    ];
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiResponses);
+    let mut accumulator = ResponseAccumulator::new();
+    for event in &events {
+        for chunk in decode_stream_event(&mut state, WireFormat::OpenAiResponses, event) {
+            accumulator.push(chunk);
+        }
+    }
+
+    assert_eq!(buffered.outputs, accumulator.finish().outputs);
+    Ok(())
+}
+
 // An OpenAI-shaped error frame carries no `choices`, so it must decode to a stream error
 // instead of a bare message start that silently drops the upstream message.
 #[test]
@@ -895,5 +983,100 @@ fn openai_chat_stream_usage_without_breakdowns_still_emits_responses_usage_detai
         completed["response"]["usage"]["output_tokens_details"],
         json!({"reasoning_tokens": 0})
     );
+    Ok(())
+}
+
+// Verifies a streamed token-limit stop terminates with response.incomplete.
+#[test]
+fn openai_chat_length_finish_translates_to_responses_incomplete_event() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "delta": {"content": "Half an ans"},
+            "finish_reason": "length"
+        }]
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &chunk,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let Some(terminal) = events.last() else {
+        return Err("finish should emit a terminal Responses event".into());
+    };
+    assert_eq!(terminal["type"], "response.incomplete");
+    assert_eq!(terminal["response"]["status"], "incomplete");
+    assert_eq!(
+        terminal["response"]["incomplete_details"],
+        json!({"reason": "max_output_tokens"})
+    );
+    assert_eq!(terminal["response"]["output"][0]["status"], "incomplete");
+    Ok(())
+}
+
+// Verifies an Anthropic-vocabulary token-limit stop also terminates with response.incomplete.
+#[test]
+fn anthropic_max_tokens_stop_translates_to_responses_incomplete_event() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiResponses);
+    let delta = json!({
+        "type": "message_delta",
+        "delta": {"stop_reason": "max_tokens"},
+        "usage": {"output_tokens": 1}
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &delta,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let Some(terminal) = events.last() else {
+        return Err("finish should emit a terminal Responses event".into());
+    };
+    assert_eq!(terminal["type"], "response.incomplete");
+    assert_eq!(
+        terminal["response"]["incomplete_details"],
+        json!({"reason": "max_output_tokens"})
+    );
+    Ok(())
+}
+
+// Verifies a streamed response.incomplete from a Responses upstream reaches a Chat client.
+#[test]
+fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
+    let incomplete = json!({
+        "type": "response.incomplete",
+        "response": {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &incomplete,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiChat)?);
+
+    let Some(terminal) = events.last() else {
+        return Err("finish should emit a terminal Chat chunk".into());
+    };
+    assert_eq!(terminal["choices"][0]["finish_reason"], "length");
     Ok(())
 }

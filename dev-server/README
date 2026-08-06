@@ -1,0 +1,66 @@
+# Switchyard dev server
+
+```curl --insecure -s 'https://switchyard-dev.nvidia.com/v1/chat/completions' -H 'Content-Type: application/json' -d '{"messages":[{"content":"Hello from Switchyard","role":"user"}],"model":"switchyard/passthrough","max_tokens": 4096}'```
+
+It has the following endpoints connected to Inference Hub:
+* `switchyard/noop`
+* `switchyard/passthrough` -> nvidia/openai/gpt-oss-20b
+* `switchyard/random` -> oss-20b (above) and nvidia_dynamo/deepseek-ai/deepseek-v4-flash-nvfp4-elb
+* `switchyard/stage` -> nvidia/zai-org/glm-5.2 and aws/anthropic/bedrock-claude-opus-4-8
+* `switchyard/classifier` -> same models as stage
+
+If you have an NVIDIA UNIX account and Silverfort I think you can ssh to it, ping for details. There's a `/home/README` with the infos once you're in.
+
+The network has some kind of throttling. Not good for evals, but fine for poking around. Only accessible to internal NVIDIA folks for now.
+
+## Files in this folder
+
+- `switchyard.service`. The systemd unit. Goes in `/etc/systemd/system/switchyard.service`. Remember to `systemctl daemon-reload` if you change it. REMEMBER TO ADD THE API KEY.
+- `config.toml`. The switchyard-server config. Goes in `/etc/switchyard/`.
+
+## Details
+
+This VM ping times maybe vary. `crates.io` appears throttled. Trying to `sudo` will trigger Silverfort.
+
+### Manage
+
+Switchyard is managed with systemd. Config is in `/etc/systemd/system/switchyard.service`.
+
+- `sudo systemctl restart switchyard`
+- `sudo systemctl status switchyard`
+- `sudo systemctl stop switchyard`
+
+### Logs
+
+- `sudo journalctl -f -u switchyard`
+
+### Update
+
+#### git / binary
+
+```
+cd Switchyard/
+git pull
+export RUSTFLAGS="-Ctarget-cpu=native -Cforce-frame-pointers=yes"
+cargo build --release
+sudo cp target/release/switchyard-server /usr/local/bin/
+sudo systemctl restart switchyard
+```
+
+The VM has weird network so have to retry sometimes. Check the status and logs after restarting (see 'Manage' above), because systemd won't tell you that it failed on startup.
+
+#### config
+
+Config is in `/etc/switchyard/config.toml`. Edit it in the repo though, then copy over.
+
+#### TLS
+
+Config and TLS key/cert are in `/etc/switchyard/`.
+
+Re-generate:
+```
+openssl genpkey -algorithm Ed25519 -out key.pem
+openssl req -new -x509 -key key.pem -days 1460 -out cert.pem -subj "/C=US/ST=CA/L=Santa Clara/O=LocalDev/OU=Switchyard/CN=switchyard-dev.nvidia.com"
+cp {cert,key}.pem /etc/switchyard/
+```
+

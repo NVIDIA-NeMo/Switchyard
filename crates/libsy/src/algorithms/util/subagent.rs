@@ -74,18 +74,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-    use switchyard_protocol::text_request;
+    use switchyard_protocol::{slice_to_header_map, text_request};
 
     fn request(headers: &[(&str, &str)]) -> Request {
-        let metadata = (!headers.is_empty()).then(|| {
-            Metadata::from_headers(
-                &headers
-                    .iter()
-                    .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
-                    .collect::<BTreeMap<_, _>>(),
-            )
-        });
+        let metadata =
+            (!headers.is_empty()).then(|| Metadata::from_headers(&slice_to_header_map(headers)));
         Request {
             llm_request: text_request(Some("auto".to_string()), "hi"),
             raw_request: None,

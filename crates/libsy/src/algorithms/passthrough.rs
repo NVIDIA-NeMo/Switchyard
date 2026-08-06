@@ -9,7 +9,7 @@ use switchyard_protocol::{Request, Response};
 
 use crate::Result;
 use crate::core::algorithm::{Algorithm, Driver, LlmTarget};
-use switchyard_protocol::{Context, Decision, RoutedLlmClient};
+use switchyard_protocol::{Context, Decision};
 
 /// Routing algorithm that always calls one configured target.
 pub struct Passthrough {
@@ -45,14 +45,6 @@ impl Decision for PassthroughDecision {
 impl Algorithm for Passthrough {
     fn name(&self) -> &str {
         "passthrough"
-    }
-
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.target
-            .llm_client
-            .as_ref()
-            .filter(|client| client.supports_count_tokens())
-            .cloned()
     }
 
     async fn create_run_task(

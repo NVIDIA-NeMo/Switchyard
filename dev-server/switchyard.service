@@ -1,0 +1,30 @@
+[Unit]
+Description=Switchyard Server
+
+[Service]
+ExecStart=/usr/local/bin/switchyard-server -p 443 --config /etc/switchyard/config.toml --tls-key /etc/switchyard/key.pem --tls-cert /etc/switchyard/cert.pem
+Restart=on-failure
+Environment="NVIDIA_API_KEY=<PUT-THE-KEY-HERE>"
+User=root
+Group=root
+
+# Start root, then harden/drop
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc/switchyard
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# Allow port 443
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+
+

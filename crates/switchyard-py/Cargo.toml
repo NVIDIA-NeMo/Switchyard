@@ -18,6 +18,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 async-trait.workspace = true
 futures-util.workspace = true
+http.workspace = true
 parking_lot.workspace = true
 switchyard-libsy.workspace = true
 pyo3 = { version = "0.28.3", features = ["abi3-py312", "extension-module"] }

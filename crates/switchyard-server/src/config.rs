@@ -3,14 +3,15 @@
 
 //! Typed TOML configuration and explicit construction for the Rust server.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
 use libsy::{
-    Algorithm, ClassifierContractConfig, EscalationJudgeConfig, HandoffNoteConfig, LlmFallback,
-    LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
+    Algorithm, ClassifierContractConfig, CustomClassifierConfig, CustomClassifierPolicy,
+    EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTarget,
+    LlmTargetSet, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
     StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
@@ -20,7 +21,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::RoutedLlmClient;
 
-use crate::{ServerError, ServerResult, ServerState};
+use crate::{CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState};
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIGURED_RETRIES: u32 = 10;
@@ -64,21 +65,51 @@ impl ServerConfig {
             )));
         }
 
+        // An llm client keys its models by id, so two targets that share an id on one
+        // client end up as one entry: the client keeps one target and drops the other. Warn
+        // so the drop is visible at startup instead of silent, and still build both routes.
+        // The set only tells us the pair was already seen, not whether the two targets
+        // differ, so it warns for a harmless duplicate and for one whose extra_body would be
+        // dropped alike. The same id on two different clients never collides: each client
+        // keeps its own model.
+        let mut seen_client_model_ids = HashSet::new();
+        for (target_name, target) in &self.targets {
+            validate_value("target name", target_name)?;
+            validate_value(&format!("target {target_name} id"), &target.id)?;
+            if !seen_client_model_ids.insert((target.llm_client.as_str(), target.id.as_str())) {
+                tracing::warn!(
+                    "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
+                    target.id,
+                    target.llm_client
+                );
+            }
+        }
+
         let clients = self.build_clients()?;
         let targets = self.build_targets(&clients)?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
             validate_value("route name", route_name)?;
             validate_value(&format!("route {route_name} id"), config.id())?;
+            let capabilities = config.capabilities();
+            if capabilities.context_window == Some(0) {
+                return Err(ServerError::new(format!(
+                    "route {route_name} context_window must be greater than zero"
+                )));
+            }
+            let algorithm = build_algorithm(route_name, config, &targets)?;
+            let count_tokens_target = self.build_count_tokens_target(config, &clients);
             routes.push((
                 config.id().to_string(),
-                build_algorithm(route_name, config, &targets)?,
+                algorithm,
+                capabilities,
+                count_tokens_target,
             ));
         }
-        ServerState::new(routes)
+        ServerState::new_with_capabilities(routes)
     }
 
-    fn build_clients(&self) -> ServerResult<BTreeMap<String, Arc<dyn RoutedLlmClient>>> {
+    fn build_clients(&self) -> ServerResult<BTreeMap<String, Arc<TranslatingLlmClient>>> {
         let mut models_by_client = self
             .llm_clients
             .keys()
@@ -89,8 +120,6 @@ impl ServerConfig {
             validate_value("llm client name", name)?;
         }
         for (target_name, target) in &self.targets {
-            validate_value("target name", target_name)?;
-            validate_value(&format!("target {target_name} id"), &target.id)?;
             let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
                 ServerError::new(format!(
                     "target {target_name} references unknown llm client {}",
@@ -109,7 +138,7 @@ impl ServerConfig {
 
         let mut clients = BTreeMap::new();
         for (name, model_configs) in models_by_client {
-            let client: Arc<dyn RoutedLlmClient> = Arc::new(
+            let client = Arc::new(
                 TranslatingLlmClient::new(&model_configs)
                     .map_err(|error| ServerError::new(error.to_string()))?,
             );
@@ -120,7 +149,7 @@ impl ServerConfig {
 
     fn build_targets(
         &self,
-        clients: &BTreeMap<String, Arc<dyn RoutedLlmClient>>,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
     ) -> ServerResult<BTreeMap<String, LlmTarget>> {
         self.targets
             .iter()
@@ -128,16 +157,53 @@ impl ServerConfig {
                 let client = clients.get(&config.llm_client).ok_or_else(|| {
                     ServerError::new(format!("target {name} has no constructed llm client"))
                 })?;
+                let client: Arc<dyn RoutedLlmClient> = client.clone();
                 Ok((
                     name.clone(),
                     LlmTarget {
                         semantic_name: config.id.clone(),
-                        llm_client: Some(Arc::clone(client)),
+                        llm_client: Some(client),
                     },
                 ))
             })
             .collect()
     }
+
+    fn build_count_tokens_target(
+        &self,
+        route_config: &RouteConfig,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> Option<CountTokensTarget> {
+        route_config
+            .routing_target_names()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, name)| {
+                let target = self.targets.get(name)?;
+                let client = clients.get(&target.llm_client)?;
+                client.supports_count_tokens(&target.id).then_some((
+                    count_tokens_priority(name, &target.id),
+                    index,
+                    target,
+                    client,
+                ))
+            })
+            .min_by_key(|(priority, index, _, _)| (*priority, *index))
+            .map(|(_, _, target, client)| CountTokensTarget {
+                model: target.id.clone(),
+                client: client.clone(),
+            })
+    }
+}
+
+// Prefer known Claude families, then preserve the route's target order.
+fn count_tokens_priority(target_name: &str, model_id: &str) -> usize {
+    let target_name = target_name.to_ascii_lowercase();
+    let model_id = model_id.to_ascii_lowercase();
+    ["opus", "sonnet", "haiku"]
+        .iter()
+        .position(|hint| target_name.contains(hint) || model_id.contains(hint))
+        .unwrap_or(3)
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,32 +237,123 @@ enum ClientFormat {
     AnthropicMessages,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum ClassifierPolicyConfig {
+    TargetSelector { selector: String },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ClassifierMode {
+    Capability,
+    Escalation,
+    Custom,
+}
+
+impl ClassifierPolicyConfig {
+    fn into_libsy(self) -> CustomClassifierPolicy {
+        match self {
+            Self::TargetSelector { selector } => CustomClassifierPolicy::target_selector(selector),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum LlmClassifierModeConfig {
+    Capability(CapabilityClassifierRouteConfig),
+    Escalation(EscalationClassifierRouteConfig),
+    Custom(CustomClassifierRouteConfig),
+}
+
+#[derive(Debug)]
+struct CapabilityClassifierRouteConfig {
+    strong_target: String,
+    weak_target: String,
+    base_threshold: f64,
+    threshold_step: f64,
+    session_affinity: bool,
+    message_hash_fallback: bool,
+    recent_turn_window: Option<usize>,
+    prompt: Option<String>,
+    max_output_tokens: u64,
+}
+
+#[derive(Debug)]
+struct EscalationClassifierRouteConfig {
+    strong_target: String,
+    weak_target: String,
+    prompt: Option<String>,
+    max_output_tokens: u64,
+    judge: EscalationJudgeConfig,
+}
+
+#[derive(Debug)]
+struct CustomClassifierRouteConfig {
+    targets: Vec<String>,
+    default_target: String,
+    prompt: String,
+    response_schema: String,
+    policy: ClassifierPolicyConfig,
+    session_affinity: bool,
+    message_hash_fallback: bool,
+    recent_turn_window: Option<usize>,
+    max_output_tokens: u64,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum RouteConfig {
     Noop {
         id: String,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
     },
     Random {
         id: String,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
         targets: Vec<String>,
         weights: Option<Vec<f64>>,
         seed: Option<u64>,
     },
     Passthrough {
         id: String,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
         target: String,
     },
     LlmClassifier {
         id: String,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
         classifier_target: String,
-        strong_target: String,
-        weak_target: String,
-        base_threshold: f64,
         #[serde(default)]
-        min_confidence: f64,
+        mode: Option<ClassifierMode>,
         #[serde(default)]
-        capability_elevated_floor: Option<f64>,
+        strong_target: Option<String>,
+        #[serde(default)]
+        weak_target: Option<String>,
+        #[serde(default)]
+        base_threshold: Option<f64>,
+        #[serde(default)]
+        threshold_step: Option<f64>,
         #[serde(default)]
         session_affinity: bool,
         #[serde(default)]
@@ -207,17 +364,25 @@ enum RouteConfig {
         prompt: Option<String>,
         #[serde(default = "default_classifier_max_output_tokens")]
         max_output_tokens: u64,
-        /// Present to route by escalation instead of up-front classification.
-        ///
-        /// The classifier target becomes a trajectory judge: every unlatched turn is served by
-        /// the weak tier and judged, and the session latches to the strong tier once
-        /// `confirmations` consecutive escalate verdicts accumulate. Absent, the classifier
-        /// picks a tier before the turn's call, as usual.
         #[serde(default)]
         escalation: Option<EscalationJudgeConfig>,
+        #[serde(default)]
+        targets: Option<Vec<String>>,
+        #[serde(default)]
+        default_target: Option<String>,
+        #[serde(default)]
+        response_schema: Option<String>,
+        #[serde(default)]
+        policy: Option<ClassifierPolicyConfig>,
     },
     StageRouter {
         id: String,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
         capable_target: String,
         efficient_target: String,
         /// Tier a turn falls back to when the signals are not confident.
@@ -248,9 +413,7 @@ struct StageClassifierConfig {
     target: String,
     base_threshold: f64,
     #[serde(default)]
-    min_confidence: f64,
-    #[serde(default)]
-    capability_elevated_floor: Option<f64>,
+    threshold_step: f64,
     #[serde(default)]
     session_affinity: bool,
     #[serde(default)]
@@ -267,8 +430,7 @@ impl StageClassifierConfig {
     fn task_classifier_config(&self) -> TaskClassifierConfig {
         TaskClassifierConfig {
             base_threshold: self.base_threshold,
-            min_confidence: self.min_confidence,
-            capability_elevated_floor: self.capability_elevated_floor,
+            threshold_step: self.threshold_step,
             session_affinity: self.session_affinity,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
@@ -282,13 +444,275 @@ impl RouteConfig {
     fn id(&self) -> &str {
         use RouteConfig::*;
         match self {
-            Noop { id }
+            Noop { id, .. }
             | Random { id, .. }
             | LlmClassifier { id, .. }
             | Passthrough { id, .. }
             | StageRouter { id, .. } => id,
         }
     }
+
+    // Completion targets in algorithm order; judge-only targets are excluded.
+    fn routing_target_names(&self) -> Vec<&str> {
+        match self {
+            Self::Noop { .. } => Vec::new(),
+            Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
+            Self::Passthrough { target, .. } => vec![target],
+            Self::LlmClassifier {
+                mode,
+                strong_target,
+                weak_target,
+                escalation,
+                targets,
+                ..
+            } => match mode.unwrap_or(if escalation.is_some() {
+                ClassifierMode::Escalation
+            } else {
+                ClassifierMode::Capability
+            }) {
+                ClassifierMode::Capability => weak_target
+                    .iter()
+                    .chain(strong_target)
+                    .map(String::as_str)
+                    .collect(),
+                ClassifierMode::Escalation => strong_target
+                    .iter()
+                    .chain(weak_target)
+                    .map(String::as_str)
+                    .collect(),
+                ClassifierMode::Custom => targets.iter().flatten().map(String::as_str).collect(),
+            },
+            Self::StageRouter {
+                capable_target,
+                efficient_target,
+                ..
+            } => vec![capable_target, efficient_target],
+        }
+    }
+
+    fn capabilities(&self) -> ModelCapabilities {
+        use RouteConfig::*;
+        match self {
+            Noop {
+                context_window,
+                tool_calling,
+                reasoning,
+                ..
+            }
+            | Random {
+                context_window,
+                tool_calling,
+                reasoning,
+                ..
+            }
+            | Passthrough {
+                context_window,
+                tool_calling,
+                reasoning,
+                ..
+            }
+            | LlmClassifier {
+                context_window,
+                tool_calling,
+                reasoning,
+                ..
+            }
+            | StageRouter {
+                context_window,
+                tool_calling,
+                reasoning,
+                ..
+            } => ModelCapabilities {
+                context_window: *context_window,
+                tool_calling: *tool_calling,
+                reasoning: *reasoning,
+            },
+        }
+    }
+
+    fn classifier_mode(&self, route_name: &str) -> ServerResult<LlmClassifierModeConfig> {
+        let Self::LlmClassifier {
+            mode,
+            strong_target,
+            weak_target,
+            base_threshold,
+            threshold_step,
+            session_affinity,
+            message_hash_fallback,
+            recent_turn_window,
+            prompt,
+            max_output_tokens,
+            escalation,
+            targets,
+            default_target,
+            response_schema,
+            policy,
+            ..
+        } = self
+        else {
+            return Err(ServerError::new("route is not an llm_classifier"));
+        };
+
+        let selected_mode = match (mode, escalation.is_some()) {
+            (Some(mode), _) => *mode,
+            (None, true) => ClassifierMode::Escalation,
+            (None, false) => ClassifierMode::Capability,
+        };
+
+        match selected_mode {
+            ClassifierMode::Capability => {
+                if escalation.is_some() {
+                    return Err(classifier_field_error(
+                        route_name,
+                        "escalation",
+                        "capability",
+                    ));
+                }
+                reject_custom_fields(
+                    route_name,
+                    "capability",
+                    targets,
+                    default_target,
+                    response_schema,
+                    policy,
+                )?;
+                Ok(LlmClassifierModeConfig::Capability(
+                    CapabilityClassifierRouteConfig {
+                        strong_target: required_classifier_field(
+                            route_name,
+                            "strong_target",
+                            strong_target,
+                        )?,
+                        weak_target: required_classifier_field(
+                            route_name,
+                            "weak_target",
+                            weak_target,
+                        )?,
+                        base_threshold: required_classifier_field(
+                            route_name,
+                            "base_threshold",
+                            base_threshold,
+                        )?,
+                        threshold_step: threshold_step.unwrap_or_default(),
+                        session_affinity: *session_affinity,
+                        message_hash_fallback: *message_hash_fallback,
+                        recent_turn_window: *recent_turn_window,
+                        prompt: prompt.clone(),
+                        max_output_tokens: *max_output_tokens,
+                    },
+                ))
+            }
+            ClassifierMode::Escalation => {
+                reject_custom_fields(
+                    route_name,
+                    "escalation",
+                    targets,
+                    default_target,
+                    response_schema,
+                    policy,
+                )?;
+                if mode.is_some()
+                    && (base_threshold.is_some()
+                        || threshold_step.is_some()
+                        || *session_affinity
+                        || *message_hash_fallback
+                        || recent_turn_window.is_some())
+                {
+                    return Err(ServerError::new(format!(
+                        "llm_classifier route {route_name} mode escalation cannot use capability routing settings"
+                    )));
+                }
+                Ok(LlmClassifierModeConfig::Escalation(
+                    EscalationClassifierRouteConfig {
+                        strong_target: required_classifier_field(
+                            route_name,
+                            "strong_target",
+                            strong_target,
+                        )?,
+                        weak_target: required_classifier_field(
+                            route_name,
+                            "weak_target",
+                            weak_target,
+                        )?,
+                        prompt: prompt.clone(),
+                        max_output_tokens: *max_output_tokens,
+                        judge: required_classifier_field(route_name, "escalation", escalation)?,
+                    },
+                ))
+            }
+            ClassifierMode::Custom => {
+                if strong_target.is_some()
+                    || weak_target.is_some()
+                    || base_threshold.is_some()
+                    || threshold_step.is_some()
+                    || escalation.is_some()
+                {
+                    return Err(ServerError::new(format!(
+                        "llm_classifier route {route_name} mode custom cannot use capability or escalation fields"
+                    )));
+                }
+                Ok(LlmClassifierModeConfig::Custom(
+                    CustomClassifierRouteConfig {
+                        targets: required_classifier_field(route_name, "targets", targets)?,
+                        default_target: required_classifier_field(
+                            route_name,
+                            "default_target",
+                            default_target,
+                        )?,
+                        prompt: required_classifier_field(route_name, "prompt", prompt)?,
+                        response_schema: required_classifier_field(
+                            route_name,
+                            "response_schema",
+                            response_schema,
+                        )?,
+                        policy: required_classifier_field(route_name, "policy", policy)?,
+                        session_affinity: *session_affinity,
+                        message_hash_fallback: *message_hash_fallback,
+                        recent_turn_window: *recent_turn_window,
+                        max_output_tokens: *max_output_tokens,
+                    },
+                ))
+            }
+        }
+    }
+}
+
+fn reject_custom_fields(
+    route_name: &str,
+    mode: &str,
+    targets: &Option<Vec<String>>,
+    default_target: &Option<String>,
+    response_schema: &Option<String>,
+    policy: &Option<ClassifierPolicyConfig>,
+) -> ServerResult<()> {
+    if targets.is_some()
+        || default_target.is_some()
+        || response_schema.is_some()
+        || policy.is_some()
+    {
+        return Err(ServerError::new(format!(
+            "llm_classifier route {route_name} mode {mode} cannot use custom classifier fields"
+        )));
+    }
+    Ok(())
+}
+
+fn classifier_field_error(route_name: &str, field: &str, mode: &str) -> ServerError {
+    ServerError::new(format!(
+        "llm_classifier route {route_name} mode {mode} cannot use {field}"
+    ))
+}
+
+fn required_classifier_field<T: Clone>(
+    route_name: &str,
+    field: &str,
+    value: &Option<T>,
+) -> ServerResult<T> {
+    value.clone().ok_or_else(|| {
+        ServerError::new(format!(
+            "llm_classifier route {route_name} requires {field}"
+        ))
+    })
 }
 
 fn build_backend(
@@ -371,46 +795,74 @@ fn build_algorithm(
             Ok(Arc::new(Passthrough::new(target)))
         }
         RouteConfig::LlmClassifier {
-            classifier_target,
-            strong_target,
-            weak_target,
-            base_threshold,
-            min_confidence,
-            capability_elevated_floor,
-            session_affinity,
-            message_hash_fallback,
-            recent_turn_window,
-            prompt,
-            max_output_tokens,
-            escalation,
-            ..
+            classifier_target, ..
         } => {
             let classifier = resolve_target(route_name, classifier_target, targets)?;
-            let strong = resolve_target(route_name, strong_target, targets)?;
-            let weak = resolve_target(route_name, weak_target, targets)?;
-            let classifier_config = TaskClassifierConfig {
-                base_threshold: *base_threshold,
-                min_confidence: *min_confidence,
-                capability_elevated_floor: *capability_elevated_floor,
-                session_affinity: *session_affinity,
-                message_hash_fallback: *message_hash_fallback,
-                recent_turn_window: *recent_turn_window,
-                contract: classifier_contract(prompt.as_deref()),
-                max_output_tokens: *max_output_tokens,
-            };
-            // The weak model is the efficient tier; the strong model is the capable one.
-            // With `escalation`, the classifier target judges the weak tier's reply each turn
-            // instead of picking a tier ahead of it.
-            let algorithm = match escalation {
-                Some(judge_config) => LlmTaskClassifier::new_with_escalation_contract(
-                    classifier,
-                    weak,
-                    strong,
-                    classifier_config.contract,
-                    judge_config.clone(),
-                    classifier_config.max_output_tokens,
-                ),
-                None => LlmTaskClassifier::new(classifier, weak, strong, classifier_config),
+            let mode = config.classifier_mode(route_name)?;
+            let algorithm = match mode {
+                LlmClassifierModeConfig::Capability(config) => {
+                    let strong = resolve_target(route_name, &config.strong_target, targets)?;
+                    let weak = resolve_target(route_name, &config.weak_target, targets)?;
+                    let classifier_config = TaskClassifierConfig {
+                        base_threshold: config.base_threshold,
+                        threshold_step: config.threshold_step,
+                        session_affinity: config.session_affinity,
+                        message_hash_fallback: config.message_hash_fallback,
+                        recent_turn_window: config.recent_turn_window,
+                        contract: classifier_contract(config.prompt.as_deref()),
+                        max_output_tokens: config.max_output_tokens,
+                    };
+                    LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                        judge_target: classifier,
+                        efficient_target: weak,
+                        capable_target: strong,
+                        config: classifier_config,
+                    })
+                }
+                LlmClassifierModeConfig::Escalation(config) => {
+                    let strong = resolve_target(route_name, &config.strong_target, targets)?;
+                    let weak = resolve_target(route_name, &config.weak_target, targets)?;
+                    LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+                        judge_target: classifier,
+                        efficient_target: weak,
+                        capable_target: strong,
+                        contract: classifier_contract(config.prompt.as_deref()),
+                        config: config.judge,
+                        max_output_tokens: config.max_output_tokens,
+                    })
+                }
+                LlmClassifierModeConfig::Custom(config) => {
+                    let resolved_targets = config
+                        .targets
+                        .iter()
+                        .map(|name| {
+                            resolve_target(route_name, name, targets)
+                                .map(|target| (name.clone(), target))
+                        })
+                        .collect::<ServerResult<Vec<_>>>()?;
+                    let response_schema = serde_json::from_str(&config.response_schema).map_err(
+                        |error| {
+                            ServerError::new(format!(
+                                "llm_classifier route {route_name}: response_schema is invalid JSON: {error}"
+                            ))
+                        },
+                    )?;
+                    let mut classifier_config = CustomClassifierConfig::new(
+                        config.prompt,
+                        response_schema,
+                        config.policy.into_libsy(),
+                    );
+                    classifier_config.session_affinity = config.session_affinity;
+                    classifier_config.message_hash_fallback = config.message_hash_fallback;
+                    classifier_config.recent_turn_window = config.recent_turn_window;
+                    classifier_config.max_output_tokens = config.max_output_tokens;
+                    LlmTaskClassifier::new(LlmClassifierConfig::Custom {
+                        judge_target: classifier,
+                        targets: resolved_targets,
+                        default_target: config.default_target,
+                        config: classifier_config,
+                    })
+                }
             }
             .map_err(|error| {
                 ServerError::new(format!("llm_classifier route {route_name}: {error}"))
@@ -655,7 +1107,26 @@ target = "weak"
             "base_threshold = 0.5\nprompt = \"   \"",
         );
         assert!(error_message(&empty).contains("classifier prompt must not be empty"));
+
+        let schema_placeholder = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nprompt = \"{{RESPONSE_SCHEMA}}\"",
+        );
+        assert!(error_message(&schema_placeholder).contains("schema is sent separately"));
         Ok(())
+    }
+
+    #[test]
+    fn mode_custom_rejects_capability_fields() {
+        let mixed = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "mode = \"custom\"\nbase_threshold = 0.5",
+        );
+
+        assert!(
+            error_message(&mixed)
+                .contains("mode custom cannot use capability or escalation fields")
+        );
     }
 
     #[test]
@@ -675,6 +1146,12 @@ target = "weak"
             "base_threshold = 0.5\nclassifier_magic = true",
         );
         assert!(error_message(&unknown_classifier_field).contains("unknown field"));
+
+        let target_capability = VALID_CONFIG.replace(
+            "llm_client = \"responses\"",
+            "llm_client = \"responses\"\ncontext_window = 1000000",
+        );
+        assert!(error_message(&target_capability).contains("unknown field `context_window`"));
 
         let unknown_algorithm = VALID_CONFIG.replace("type = \"noop\"", "type = \"imaginary\"");
         assert!(error_message(&unknown_algorithm).contains("unknown variant"));
@@ -750,6 +1227,20 @@ classifier_magic = true
             (
                 VALID_CONFIG.replace(
                     "base_threshold = 0.5",
+                    "base_threshold = 0.5\nthreshold_step = -0.1",
+                ),
+                "threshold_step must be finite and greater than or equal to 0",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "base_threshold = 0.5",
+                    "base_threshold = 0.8\nthreshold_step = 0.11",
+                ),
+                "base_threshold + 2 * threshold_step must be at most 1",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "base_threshold = 0.5",
                     "base_threshold = 0.5\nmax_output_tokens = 0\nescalation = { confirmations = 2 }",
                 ),
                 "max_output_tokens must be at least 1",
@@ -769,6 +1260,13 @@ classifier_magic = true
                 VALID_CONFIG.replace("[targets.strong]", "[targets.\" strong \"]"),
                 "target name must be non-empty and have no surrounding whitespace",
             ),
+            (
+                VALID_CONFIG.replace(
+                    "targets = [\"strong\", \"weak\"]",
+                    "targets = [\"strong\", \"weak\"]\ncontext_window = 0",
+                ),
+                "route random context_window must be greater than zero",
+            ),
         ];
 
         for (toml, expected) in cases {
@@ -777,6 +1275,83 @@ classifier_magic = true
                 "expected error containing {expected}"
             );
         }
+    }
+
+    #[test]
+    fn accepts_duplicate_target_model_ids_on_one_client() -> ServerResult<()> {
+        // Two targets share one model id on one client. The client keeps one and drops the
+        // other, so the build warns and still succeeds, and both routes resolve. Serving one
+        // model under two route names this way is allowed; pointing both routes at one target
+        // is the tidier form.
+        const SAME_MODEL_TWO_ROUTES: &str = r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.fast]
+id = "gpt-4o"
+llm_client = "primary"
+
+[targets.smart]
+id = "gpt-4o"
+llm_client = "primary"
+
+[routes.fast]
+id = "switchyard/fast"
+type = "passthrough"
+target = "fast"
+
+[routes.smart]
+id = "switchyard/smart"
+type = "passthrough"
+target = "smart"
+"#;
+        let state = server_state_from_toml(SAME_MODEL_TWO_ROUTES)?;
+        assert_eq!(
+            state.models().collect::<Vec<_>>(),
+            ["switchyard/fast", "switchyard/smart"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_same_model_id_on_different_llm_clients() -> ServerResult<()> {
+        // The same model id served by two llm clients never collides (each client keys its own
+        // models), so cross-provider A/B builds with no warning; only a repeat within one client
+        // warns.
+        const CROSS_PROVIDER: &str = r#"
+schema_version = 1
+
+[llm_clients.openai]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[llm_clients.azure]
+format = "openai_chat"
+base_url = "https://azure.test/v1"
+
+[targets.openai]
+id = "gpt-4o"
+llm_client = "openai"
+
+[targets.azure]
+id = "gpt-4o"
+llm_client = "azure"
+
+[routes.openai]
+id = "switchyard/openai-gpt4o"
+type = "passthrough"
+target = "openai"
+
+[routes.azure]
+id = "switchyard/azure-gpt4o"
+type = "passthrough"
+target = "azure"
+"#;
+        server_state_from_toml(CROSS_PROVIDER)?;
+        Ok(())
     }
 
     #[test]
@@ -793,7 +1368,7 @@ classifier_magic = true
     fn accepts_session_affinity_with_message_hash_fallback() -> ServerResult<()> {
         let configured = VALID_CONFIG.replace(
             "base_threshold = 0.5",
-            "base_threshold = 0.25\nmin_confidence = 0.0\ncapability_elevated_floor = 0.45\nsession_affinity = true\nmessage_hash_fallback = true",
+            "base_threshold = 0.25\nthreshold_step = 0.1\nsession_affinity = true\nmessage_hash_fallback = true",
         );
         server_state_from_toml(&configured)?;
         Ok(())

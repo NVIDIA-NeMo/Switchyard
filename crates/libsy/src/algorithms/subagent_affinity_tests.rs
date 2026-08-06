@@ -7,7 +7,6 @@
 //! *which* target delegated work belongs on, affinity decides *how long* that decision
 //! lives.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -20,7 +19,7 @@ use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
 use switchyard_protocol::{
     Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, completion_text,
-    text_request, text_response,
+    slice_to_header_map, text_request, text_response,
 };
 
 /// A client that echoes the routed target name back as the completion.
@@ -78,12 +77,7 @@ fn request(headers: &[(&str, &str)]) -> Request {
     Request {
         llm_request: text_request(Some("auto".to_string()), "hi"),
         raw_request: None,
-        metadata: Some(Metadata::from_headers(
-            &headers
-                .iter()
-                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
-                .collect::<BTreeMap<_, _>>(),
-        )),
+        metadata: Some(Metadata::from_headers(&slice_to_header_map(headers))),
     }
 }
 

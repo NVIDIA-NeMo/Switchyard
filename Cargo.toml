@@ -27,7 +27,10 @@ async-stream = "0.3"
 async-trait = "0.1"
 futures = "0.3"
 futures-util = "0.3"
+http = "1"
 httpdate = "1"
+jsonschema = { version = "0.49.4", default-features = false }
+jsonptr = { version = "0.8.1", default-features = false, features = ["std", "json", "resolve"] }
 parking_lot = "0.12"
 rand = "0.10"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }

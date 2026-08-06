@@ -18,7 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::fall_through::{DefaultTarget, FallThrough};
-use super::llm_class::{LlmTaskClassifier, TaskClassifierConfig};
+use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
@@ -29,7 +29,7 @@ use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Request, Response, RoutedLlmClient};
+use switchyard_protocol::{Context, Request, Response};
 
 /// Telemetry name for a router this module assembles.
 const STAGE_ROUTER: &str = "stage_router";
@@ -142,10 +142,6 @@ impl Algorithm for StageRouter {
         STAGE_ROUTER
     }
 
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.route.count_tokens_client()
-    }
-
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,
@@ -197,12 +193,12 @@ fn build_route(
         // The capability judge takes its tiers in the same order the capability
         // route passes them: efficient first, capable second.
         router = router.with_classifier(Arc::new(SourceStamp {
-            inner: Arc::new(LlmTaskClassifier::new(
-                fallback.judge_target,
-                efficient,
-                capable,
-                fallback.config,
-            )?),
+            inner: Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                judge_target: fallback.judge_target,
+                efficient_target: efficient,
+                capable_target: capable,
+                config: fallback.config,
+            })?),
             source: DecisionSource::LlmClassifier,
         }));
     }
@@ -405,7 +401,7 @@ mod tests {
             let completion = if target == JUDGE {
                 let p_solve = *self.judge_p_solve.lock();
                 format!(
-                    r#"{{"recommended_route":"efficient","p_solve":{p_solve},"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}}"#
+                    r#"{{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":{p_solve}}}"#
                 )
             } else {
                 target

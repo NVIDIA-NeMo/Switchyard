@@ -33,6 +33,11 @@ target = "strong"
 `schema_version` must be `1`. Table names under `llm_clients`, `targets`, and
 `routes` are local references; clients send the route's `id` as the model name.
 
+`schema_version`, `[targets]`, and `[routes]` must all be present, even when a
+route reaches no upstream. A file without a `[targets]` table is rejected with
+`missing field targets`; an empty `[targets]` table satisfies it.
+`[llm_clients]` defaults to empty and may be omitted.
+
 ## `[llm_clients.<name>]`
 
 | Key | Required | Default | Meaning |
@@ -56,12 +61,33 @@ must exist and be non-empty when the server loads.
 
 ## `[routes.<name>]`
 
-Every route takes `id` and `type`, plus the keys for that type.
+Every route takes the common keys below, plus the keys for its type.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `id` | Yes | — | Public model ID that callers send in requests. |
+| `type` | Yes | — | Routing algorithm for this route. |
+| `context_window` | No | unset | Positive token count advertised for this route by `GET /v1/models`. Unset values appear as `null`. This does not enforce a request limit. |
+| `tool_calling` | No | unset | Whether `GET /v1/models` advertises tool-calling support for this route. Unset values appear as `null`. |
+| `reasoning` | No | unset | Whether `GET /v1/models` advertises reasoning support to Codex direct-provider discovery. Unset routes are advertised as non-reasoning. |
 
 ### `noop`
 
 Returns a buffered assistant response containing `OK` without calling an
 upstream model. Use it for local smoke tests.
+
+A noop-only deployment reaches no upstream but still needs the `[targets]`
+table, which can be empty:
+
+```toml
+schema_version = 1
+
+[targets]
+
+[routes.smoke]
+id = "noop-route"
+type = "noop"
+```
 
 ### `passthrough`
 
@@ -84,38 +110,59 @@ Splits traffic across targets. See
 
 ### `llm_classifier`
 
-Classifies each task, then routes to the weak or strong target. See
-[LLM Classifier Routing](../routing_algorithms/llm_classifier_routing.md) for
-tuning.
+Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
+`classifier_target` and `max_output_tokens` apply to all three.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
+| `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Yes | — | Target the judge is called through. Not a routing destination. |
+| `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+
+Capability mode classifies before serving. See
+[LLM Classifier Routing](../routing_algorithms/llm_classifier_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
 | `strong_target` | Yes | — | Capable tier. |
 | `weak_target` | Yes | — | Efficient tier. |
 | `base_threshold` | Yes | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. |
-| `min_confidence` | No | `0.0` | Lowest judge confidence that permits weak routing. |
-| `capability_elevated_floor` | No | unset | Higher floor for uncertain tasks. Must exceed `base_threshold`. |
+| `threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
-| `recent_turn_window` | No | unset | Trailing turns the judge sees. |
-| `prompt` | No | packaged prompt | Replaces the capability prompt, or the trajectory-judge prompt when `escalation` is set. `{{RESPONSE_SCHEMA}}` expands to the active packaged schema. |
-| `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
-| `escalation` | No | unset | Switches the route to escalation judging. |
+| `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
 
-Add an `escalation` table to judge each completed turn instead of classifying up
-front. See
+Escalation mode serves the weak target first and judges the completed turn. See
 [Escalation-Router Routing](../routing_algorithms/escalation_router_routing.md).
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `confirmations` | No | `2` | Consecutive escalate verdicts required to latch. Above `1` needs a session ID. |
-| `recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
-| `window_message_chars` | No | `500` | Per-message cap inside that window. |
+| `strong_target` | Yes | — | Target used after the session latches. |
+| `weak_target` | Yes | — | Target served before the latch. |
+| `prompt` | No | packaged prompt | Replaces the trajectory-judge prompt. |
+| `escalation.confirmations` | No | `2` | Consecutive escalate verdicts required to latch. Above `1` needs a session ID. |
+| `escalation.recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
+| `escalation.window_message_chars` | No | `500` | Per-message cap inside that window. |
 
-`base_threshold` stays required, but escalation ignores the capability thresholds,
-affinity settings, and route-level `recent_turn_window`. The shared `prompt` and
-`max_output_tokens` keys still configure its judge.
+Existing configurations that contain `escalation` but omit `mode` remain valid.
+
+Custom mode validates the judge's JSON against `response_schema`, resolves the
+policy selector, and routes to any configured target label.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `targets` | Yes | — | Two or more target names available to the policy. |
+| `default_target` | Yes | — | Target used when the judge fails or its verdict cannot be routed. |
+| `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
+| `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
+| `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
+| `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
+| `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
+| `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+
+Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard sends the
+schema only through the provider's structured-output request.
 
 ### `stage_router`
 

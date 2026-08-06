@@ -254,14 +254,14 @@ that fall below the threshold:
 [routes.stage.classifier]
 target = "strong"          # target the judge is called through (not a routing destination)
 base_threshold = 0.5       # p_solve floor to route efficient; below this → capable
-min_confidence = 0.7       # judge confidence floor; below this → abstain
+threshold_step = 0.1       # adds 0.1 for uncertain and 0.2 for unsupported verdicts
 recent_turn_window = 3     # conversation span the judge sees
 prompt = "Estimate whether the efficient target can complete this request."
 ```
 
-`prompt` replaces the packaged capability-classifier prompt. Add
-`{{RESPONSE_SCHEMA}}` where the active capability schema should appear in the
-prompt. The verdict schema and routing thresholds remain unchanged.
+`prompt` replaces the packaged capability-classifier prompt. The active schema
+is sent separately through the structured-output request. The verdict schema
+and routing thresholds remain unchanged.
 
 Give the classifier its own LLM client or quota bucket where possible. Sharing
 one provider bucket with the efficient tier adds a request per classified turn
