@@ -72,6 +72,23 @@ Name of the Secret providing upstream API keys, or "" when none is configured.
 {{- end }}
 
 {{/*
+Render a probe, defaulting its scheme to HTTPS when Switchyard terminates TLS.
+
+kubelet probes default to HTTP. Against a TLS listener that fails, so the pod
+would never pass its probes when tls.enabled is set. An explicitly configured
+scheme always wins.
+*/}}
+{{- define "switchyard.probe" -}}
+{{- $probe := deepCopy .probe -}}
+{{- if and .root.Values.tls.enabled (hasKey $probe "httpGet") -}}
+{{- if not (hasKey $probe.httpGet "scheme") -}}
+{{- $_ := set $probe.httpGet "scheme" "HTTPS" -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $probe -}}
+{{- end }}
+
+{{/*
 Absolute path to the deployment TOML inside the container.
 */}}
 {{- define "switchyard.configPath" -}}

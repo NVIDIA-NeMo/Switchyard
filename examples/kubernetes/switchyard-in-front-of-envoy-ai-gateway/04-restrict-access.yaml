@@ -54,3 +54,50 @@ spec:
       ports:
         - protocol: TCP
           port: 4000
+---
+# The Gateway is the other half of the problem, and the more sensitive half.
+#
+# It is a ClusterIP Service and the BackendSecurityPolicy attaches the provider
+# credential to anything it forwards, so any pod in the cluster that can reach
+# it can spend that credential -- without ever touching Switchyard. Restricting
+# Switchyard alone leaves that path open.
+#
+# Envoy Gateway labels the pods it generates with the owning Gateway's name and
+# namespace; both are matched so this cannot select another Gateway's proxies.
+# Confirm they match your cluster before relying on it:
+#   kubectl -n envoy-gateway-system get pods \
+#     -l gateway.envoyproxy.io/owning-gateway-name=switchyard-upstream --show-labels
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: switchyard-upstream-gateway-restriction
+  namespace: envoy-gateway-system
+spec:
+  podSelector:
+    matchLabels:
+      gateway.envoyproxy.io/owning-gateway-name: switchyard-upstream
+      gateway.envoyproxy.io/owning-gateway-namespace: switchyard
+  policyTypes:
+    - Ingress
+  ingress:
+    # Switchyard is the only legitimate client of this Gateway. namespaceSelector
+    # and podSelector sit in one `from` entry, so both must match.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: switchyard
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: switchyard
+      ports:
+        - protocol: TCP
+          # Envoy listens on listener port + 10000; the Service maps 80 -> 10080.
+          port: 10080
+    # Readiness probes and metrics scraping arrive from the kubelet and the
+    # monitoring stack, not from Switchyard. Omitting these would take the
+    # Gateway out of service rather than secure it.
+    - ports:
+        - protocol: TCP
+          port: 19001
+        - protocol: TCP
+          port: 19003

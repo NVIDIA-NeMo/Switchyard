@@ -10,7 +10,10 @@ metadata:
   labels:
     {{- include "switchyard.labels" . | nindent 4 }}
 spec:
-  {{- if .Values.podDisruptionBudget.maxUnavailable }}
+  {{- /* Compare against the unset default rather than truthiness, so an
+         explicit maxUnavailable of 0 is honoured instead of falling through
+         to minAvailable. */}}
+  {{- if ne (toString .Values.podDisruptionBudget.maxUnavailable) "" }}
   maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
   {{- else }}
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}

@@ -92,8 +92,14 @@ docker push ghcr.io/nvidia-nemo/switchyard/switchyard-server:0.2.0
 ```bash
 kubectl create namespace switchyard
 
+# Provider credential, read by Switchyard.
 kubectl -n switchyard create secret generic switchyard-keys \
   --from-literal=NVIDIA_API_KEY="$NVIDIA_API_KEY"
+
+# Client credential, checked by the Gateway. Without this the Gateway accepts
+# anonymous traffic and anyone who can reach it can spend the provider key.
+kubectl -n switchyard create secret generic switchyard-client-keys \
+  --from-literal=team-a="$(openssl rand -hex 32)"
 
 helm upgrade --install switchyard deploy/helm/switchyard \
   --namespace switchyard \
@@ -102,20 +108,26 @@ helm upgrade --install switchyard deploy/helm/switchyard \
 kubectl apply -f examples/kubernetes/envoy-ai-gateway-in-front/01-gateway.yaml
 kubectl apply -f examples/kubernetes/envoy-ai-gateway-in-front/02-switchyard-backend.yaml
 kubectl apply -f examples/kubernetes/envoy-ai-gateway-in-front/03-forwarded-host.yaml
+kubectl apply -f examples/kubernetes/envoy-ai-gateway-in-front/04-client-auth.yaml
 
 kubectl -n switchyard wait --for=condition=Programmed gateway/switchyard-ai-gateway --timeout=5m
 ```
 
-Send a request naming a Switchyard route id as the model:
+Send a request naming a Switchyard route id as the model, with the client key:
 
 ```bash
 GW=$(kubectl -n switchyard get gateway switchyard-ai-gateway \
   -o jsonpath='{.status.addresses[0].value}')
+API_KEY=$(kubectl -n switchyard get secret switchyard-client-keys \
+  -o jsonpath='{.data.team-a}' | base64 -d)
 
 curl -s "http://$GW/v1/chat/completions" \
+  -H "x-api-key: $API_KEY" \
   -H 'content-type: application/json' \
   -d '{"model":"switchyard/general","messages":[{"role":"user","content":"hello"}],"max_tokens":600}'
 ```
+
+Requests without a valid `x-api-key` are rejected with 401 at the Gateway.
 
 Envoy extracts `model` from the body into the `x-ai-eg-model` header, matches
 it against the `AIGatewayRoute` rules, and forwards to the `AIServiceBackend`
