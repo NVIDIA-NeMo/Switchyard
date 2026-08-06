@@ -581,11 +581,21 @@ fn public_client_failure(prefix: &str, error: &LlmClientError) -> String {
     }
 }
 
-fn string_headers(headers: &Map<String, Json>) -> BTreeMap<String, String> {
-    headers
-        .iter()
-        .filter_map(|(name, value)| value.as_str().map(|value| (name.clone(), value.into())))
-        .collect()
+fn string_headers(headers: &Map<String, Json>) -> http::HeaderMap {
+    let mut parsed = http::HeaderMap::with_capacity(headers.len());
+    for (name, value) in headers {
+        let Some(value) = value.as_str() else {
+            continue;
+        };
+        let (Ok(name), Ok(value)) = (
+            http::HeaderName::from_bytes(name.as_bytes()),
+            http::HeaderValue::from_str(value),
+        ) else {
+            continue;
+        };
+        parsed.insert(name, value);
+    }
+    parsed
 }
 
 fn identity_metadata(metadata: Option<&Metadata>) -> Json {
@@ -912,9 +922,9 @@ mod tests {
             agent_id: Some("agent-1".into()),
             is_subagent: true,
             extra_metadata: Some(BTreeMap::from([("tenant".into(), "blue".into())])),
-            http_headers: Some(BTreeMap::from([(
-                "authorization".into(),
-                "Bearer caller-secret".into(),
+            http_headers: Some(http::HeaderMap::from_iter([(
+                http::HeaderName::from_static("authorization"),
+                http::HeaderValue::from_static("Bearer caller-secret"),
             )])),
             ..Metadata::default()
         }));

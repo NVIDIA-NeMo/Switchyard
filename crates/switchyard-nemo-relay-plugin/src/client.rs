@@ -105,14 +105,6 @@ impl RoutedLlmClient for TargetClient {
             .call_rewrite_model(ctx, request, Some(&self.provider_model))
             .await
     }
-
-    fn supports_count_tokens(&self) -> bool {
-        self.target_format == WireFormat::AnthropicMessages
-    }
-
-    async fn count_tokens(&self, request: Request) -> Result<serde_json::Value, LlmClientError> {
-        self.inner.count_tokens(self.prepare_request(request)).await
-    }
 }
 
 #[cfg(test)]
@@ -142,9 +134,15 @@ mod tests {
             metadata: Some(Metadata {
                 correlation_id: Some("request-123".into()),
                 wire_format: Some(WireFormat::OpenAiChat),
-                http_headers: Some(BTreeMap::from([
-                    ("authorization".into(), "Bearer caller-secret".into()),
-                    ("x-caller-only".into(), "must-not-forward".into()),
+                http_headers: Some(http::HeaderMap::from_iter([
+                    (
+                        http::HeaderName::from_static("authorization"),
+                        http::HeaderValue::from_static("Bearer caller-secret"),
+                    ),
+                    (
+                        http::HeaderName::from_static("x-caller-only"),
+                        http::HeaderValue::from_static("must-not-forward"),
+                    ),
                 ])),
                 ..Metadata::default()
             }),
@@ -166,13 +164,6 @@ mod tests {
             prepared.metadata.and_then(|metadata| metadata.wire_format),
             Some(WireFormat::OpenAiResponses)
         );
-    }
-
-    #[test]
-    fn only_anthropic_targets_advertise_count_tokens() {
-        assert!(client(WireFormat::AnthropicMessages).supports_count_tokens());
-        assert!(!client(WireFormat::OpenAiChat).supports_count_tokens());
-        assert!(!client(WireFormat::OpenAiResponses).supports_count_tokens());
     }
 
     #[test]

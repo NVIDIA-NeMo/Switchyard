@@ -8,7 +8,8 @@ use http::Uri;
 use http::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
 use switchyard_libsy::{
-    Algorithm, LlmTarget, LlmTargetSet, LlmTaskClassifier, Random, TaskClassifierConfig,
+    Algorithm, LlmClassifierConfig, LlmTarget, LlmTargetSet, LlmTaskClassifier, Random,
+    TaskClassifierConfig,
 };
 use switchyard_protocol::{RoutedLlmClient, WireFormat};
 
@@ -297,12 +298,12 @@ impl SwitchyardConfig {
                         "classifier target {classifier_target:?} uses anthropic_messages, which cannot encode the required JSON-schema response format without loss; use an openai_chat or openai_responses target"
                     ));
                 }
-                LlmTaskClassifier::new(
-                    target(classifier_target)?,
-                    target(weak_target)?,
-                    target(strong_target)?,
-                    config.clone(),
-                )
+                LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                    judge_target: target(classifier_target)?,
+                    efficient_target: target(weak_target)?,
+                    capable_target: target(strong_target)?,
+                    config: config.clone(),
+                })
                 .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
                 .map_err(|error| error.to_string())
             }
