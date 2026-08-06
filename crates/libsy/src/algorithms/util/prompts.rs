@@ -14,6 +14,14 @@
 //!
 //! Which text, and when, is the caller's policy; this module only knows how to
 //! place it so the provider accepts it and the prompt cache survives.
+//!
+//! **Anything added here must call [`drop_exact_replay`].** Both shapes above
+//! mutate the normalized request, and a codec asked to encode for the format the
+//! request arrived in replays the body captured at decode instead of reading that
+//! request — so an addition that leaves exact replay in place never reaches the
+//! model. This is not enforced: a future processor that mutates the request and
+//! forgets the call reintroduces SWITCH-1224, silently and without a failing
+//! test.
 
 use std::collections::BTreeMap;
 
@@ -41,6 +49,25 @@ pub fn append_note(request: &mut Request, note: &str) {
             .messages
             .push(Message::text(Role::User, note)),
     }
+    drop_exact_replay(request);
+}
+
+/// Gives up exact same-format replay for this turn.
+///
+/// A codec replays the preserved inbound body verbatim when the target format
+/// matches the source, which is what keeps a same-format hop lossless. That body
+/// predates anything added here, so leaving it in place would encode the request
+/// as it arrived and silently drop the addition. Dropping it sends the codec down
+/// its normal path, which encodes from the request itself.
+///
+/// Every stored body goes, not just the one for the inbound format: preservation
+/// also carries bodies embedded by earlier hops, and the addition is missing from
+/// all of them equally.
+///
+/// Call this from any new code that mutates the request. Nothing checks that you
+/// have.
+fn drop_exact_replay(request: &mut Request) {
+    request.llm_request.preservation.requests.clear();
 }
 
 /// System prompts keyed by routing target. A target left unset is routed
@@ -104,6 +131,7 @@ impl<S: Send> Processor<S> for SystemPromptProcessor {
                 }],
             },
         );
+        drop_exact_replay(request);
         Ok(())
     }
 }
@@ -117,15 +145,31 @@ mod tests {
     const STRONG_PROMPT: &str = "diagnose before you edit";
     const WEAK_PROMPT: &str = "follow the settled plan";
 
+    /// Every test request carries the exact inbound body a codec keeps for
+    /// same-format replay, so each assertion below also says what happens to it.
     fn request_with(messages: Vec<Message>) -> Request {
         Request {
             llm_request: LlmRequest {
                 messages,
+                preservation: preserved_body(),
                 ..LlmRequest::default()
             },
             raw_request: None,
             metadata: None,
         }
+    }
+
+    fn preserved_body() -> switchyard_protocol::PreservationMetadata {
+        let mut preservation = switchyard_protocol::PreservationMetadata::default();
+        preservation.requests.insert(
+            "openai_chat".into(),
+            serde_json::json!({"model": "weak", "messages": [{"role": "user", "content": "hi"}]}),
+        );
+        preservation
+    }
+
+    fn replays_exactly(request: &Request) -> bool {
+        !request.llm_request.preservation.requests.is_empty()
     }
 
     #[test]
@@ -174,7 +218,10 @@ mod tests {
     #[test]
     fn a_note_leaves_the_rest_of_the_conversation_untouched() {
         let mut request = Request {
-            llm_request: text_request(Some("auto".to_string()), "fix the build"),
+            llm_request: LlmRequest {
+                preservation: preserved_body(),
+                ..text_request(Some("auto".to_string()), "fix the build")
+            },
             raw_request: None,
             metadata: None,
         };
@@ -188,6 +235,10 @@ mod tests {
             .filter_map(|message| message.text_content("|"))
             .collect();
         assert_eq!(trail, vec![format!("fix the build|{NOTE}")]);
+        assert!(
+            !replays_exactly(&request),
+            "a same-format hop would replay the body captured before the note"
+        );
     }
 
     /// A decision routed to `target`.
@@ -221,7 +272,13 @@ mod tests {
 
     /// Runs one outbound request routed to `target` through `processor`.
     async fn run(processor: &SystemPromptProcessor, target: &'static str) -> Result<Request> {
-        let mut request = Request::default();
+        let mut request = Request {
+            llm_request: LlmRequest {
+                preservation: preserved_body(),
+                ..LlmRequest::default()
+            },
+            ..Request::default()
+        };
         processor
             .process(
                 &mut (),
@@ -244,9 +301,11 @@ mod tests {
     async fn each_target_gets_its_own_prompt() -> Result<()> {
         let processor = SystemPromptProcessor::new(prompts());
         for (target, expected) in [("strong", STRONG_PROMPT), ("weak", WEAK_PROMPT)] {
-            assert_eq!(
-                instructions(&run(&processor, target).await?),
-                vec![expected]
+            let request = run(&processor, target).await?;
+            assert_eq!(instructions(&request), vec![expected]);
+            assert!(
+                !replays_exactly(&request),
+                "{target}: a same-format hop would replay the body captured before the prompt"
             );
         }
         Ok(())
@@ -261,7 +320,12 @@ mod tests {
             instructions(&run(&processor, "strong").await?),
             vec![STRONG_PROMPT]
         );
-        assert!(instructions(&run(&processor, "weak").await?).is_empty());
+        let untouched = run(&processor, "weak").await?;
+        assert!(instructions(&untouched).is_empty());
+        assert!(
+            replays_exactly(&untouched),
+            "an untouched request must keep its lossless same-format replay"
+        );
         Ok(())
     }
 
