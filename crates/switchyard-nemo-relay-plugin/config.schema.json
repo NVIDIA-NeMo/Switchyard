@@ -53,12 +53,7 @@
             "weak_target": { "type": "string", "minLength": 1 },
             "strong_target": { "type": "string", "minLength": 1 },
             "base_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
-            "min_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-            "capability_elevated_floor": {
-              "type": ["number", "null"],
-              "minimum": 0,
-              "maximum": 1
-            },
+            "threshold_step": { "type": "number", "minimum": 0, "default": 0 },
             "recent_turn_window": {
               "type": ["integer", "null"],
               "minimum": 0
@@ -68,6 +63,7 @@
               "minimum": 1,
               "default": 4096
             },
+            "prompt": { "type": "string" },
             "session_affinity": { "type": "boolean", "default": false },
             "message_hash_fallback": { "type": "boolean", "default": false }
           }
