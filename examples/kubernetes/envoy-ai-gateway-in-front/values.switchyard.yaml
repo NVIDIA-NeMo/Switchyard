@@ -33,6 +33,21 @@ config:
     api_key_env = "NVIDIA_API_KEY"
     max_retries = 2
 
+    # A second client onto the same endpoint, so the judge target has a
+    # distinct (model id, client) key.
+    #
+    # Switchyard deduplicates targets by that pair and drops one of any
+    # collision, warning "only one target per id is kept and the other is
+    # dropped". The judge and the weak tier are the same model here, so without
+    # this they collapse into one target and whichever definition loses is
+    # discarded -- silently changing what you deployed. Check the startup log
+    # for that warning whenever two targets share a model.
+    [llm_clients.nvidia_judge]
+    format = "openai_chat"
+    base_url = "https://inference-api.nvidia.com/v1"
+    api_key_env = "NVIDIA_API_KEY"
+    max_retries = 2
+
     # Three tiers of the same model family. The point of the classifier route
     # below is to spend `ultra` tokens only on the requests that need them.
     [targets.nano]
@@ -47,20 +62,29 @@ config:
     id = "nvidia/nvidia/nemotron-3-ultra"
     llm_client = "nvidia"
 
-    # The classifier judge must return a JSON verdict. A reasoning model spends
-    # its output budget on reasoning_content first and the JSON is truncated,
-    # which Switchyard records as
+    # The classifier judge must return a JSON verdict. A reasoning model can
+    # spend its output budget on reasoning_content and leave the JSON
+    # truncated, which Switchyard records as
     # `switchyard_classifier_fail_open_total{reason="parse_error"}` and routes
     # to strong_target -- so every judge failure silently spends the expensive
-    # tier. Measured on this deployment before suppressing reasoning: 21 of 25
-    # escalations were fail-opens rather than decisions; after: zero.
+    # tier. On this deployment that metric was non-zero throughout, and most
+    # escalations were fail-opens rather than decisions.
     #
-    # `extra_body` is shallow-merged into the upstream request, so this applies
-    # to the judge only and the serving targets keep full reasoning. Use a
-    # genuinely non-reasoning model here where one is available.
+    # Prefer a genuinely non-reasoning judge where one is available; upstream's
+    # reference config uses google/gemini-3.5-flash for exactly this role.
+    #
+    # `extra_body` is shallow-merged into the upstream request, so the hint
+    # below applies to the judge only and the serving targets keep full
+    # reasoning. Treat it as a hint, not a guarantee: whether it suppresses
+    # reasoning is model- and prompt-dependent, and it did nothing on some
+    # prompts here. `session_affinity` on the route is the more reliable lever,
+    # because it runs the judge once per session instead of once per turn.
+    #
+    # Whatever you configure, alert on classifier_fail_open_total rather than
+    # assuming the judge is deciding.
     [targets.judge]
     id = "nvidia/nvidia/nemotron-3-nano-30b-a3b"
-    llm_client = "nvidia"
+    llm_client = "nvidia_judge"
     extra_body = { chat_template_kwargs = { thinking = false } }
 
     # Single-tier routes, useful as cost and accuracy baselines.
