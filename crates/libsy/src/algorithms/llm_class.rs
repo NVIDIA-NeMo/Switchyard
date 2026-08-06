@@ -566,6 +566,10 @@ impl Classifier<State> for EscalationClassifier {
             // De-latch: spend the session's one recovery, clear both streaks, and fall
             // through to the ordinary efficient-first path below, which judges this turn's
             // fresh reply and can re-escalate as usual.
+            tracing::info!(
+                recovery_confirmations = self.recovery_confirmations,
+                "escalation recovery: session handed back to the efficient tier"
+            );
             state
                 .extra
                 .insert(RECOVERY_SPENT_KEY.to_string(), StateValue::Count(1));
@@ -601,7 +605,23 @@ impl Classifier<State> for EscalationClassifier {
             Err(LibsyError::ClientCall {
                 source: LlmClientError::ContextWindowExceeded { .. },
                 ..
-            }) => return Ok((decisive(&self.capable.semantic_name), None)),
+            }) => {
+                // A handed-back conversation that has outgrown the efficient tier's context
+                // window can never be served weak again, and this arm skips the judge, so
+                // probation would otherwise never fire: re-latch permanently instead of
+                // paying a doomed efficient call plus a capable fallback on every turn.
+                if recovery_spent(state) {
+                    tracing::info!(
+                        "escalation recovery: efficient tier overflowed after hand-back, \
+                         re-latching permanently"
+                    );
+                    state.extra.insert(
+                        STREAK_KEY.to_string(),
+                        StateValue::Count(self.confirmations),
+                    );
+                }
+                return Ok((decisive(&self.capable.semantic_name), None));
+            }
             Err(e) => return Err(e),
         };
         let agg = efficient_response
@@ -651,6 +671,9 @@ impl Classifier<State> for EscalationClassifier {
             self.confirmations
         };
         if escalate && pending >= required {
+            if required < self.confirmations {
+                tracing::info!("escalation recovery: probation re-latch, latch is now permanent");
+            }
             // Record a full streak so the latched check above recognizes the latch even when
             // probation confirmed it early. Drop the efficient response, caller serves capable.
             state.extra.insert(
@@ -2133,6 +2156,84 @@ mod tests {
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("capable t4".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn escalation_relatches_permanently_when_efficient_overflows_after_hand_back()
+    -> Result<()> {
+        // Turn 1: trouble judge escalates; capable serves (first latch).
+        // Turn 2: hand-back judge clears and the session de-latches, but the efficient call
+        // overflows its context window — the turn falls through to capable and the session
+        // re-latches permanently, because a conversation the efficient tier cannot even read
+        // will overflow on every future turn and this arm never reaches the judge.
+        // Turn 3: capable serves with no judge call; a clear verdict is queued as a tripwire.
+        struct OverflowMarkerClient {
+            replies: Mutex<VecDeque<String>>,
+        }
+        #[async_trait]
+        impl RoutedLlmClient for OverflowMarkerClient {
+            async fn call(
+                &self,
+                _ctx: Context,
+                request: Request,
+                decision: Arc<dyn Decision>,
+            ) -> std::result::Result<Response, ClientError> {
+                let reply = self.replies.lock().pop_front().expect("queued reply");
+                if reply == "OVERFLOW" {
+                    return Err(ClientError::ContextWindowExceeded {
+                        model: decision.selected_model().to_string(),
+                        message: "prompt is too long".to_string(),
+                    });
+                }
+                Ok(Response {
+                    llm_response: LlmResponse::Agg(text_response(None, reply)),
+                    metadata: request.metadata,
+                })
+            }
+        }
+        let model_client = Arc::new(OverflowMarkerClient {
+            replies: Mutex::new(
+                [
+                    "efficient d1",
+                    "capable t1",
+                    "OVERFLOW",
+                    "capable t2",
+                    "capable t3",
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            ),
+        });
+        let judge_client = QueuedClient::new([
+            r#"{"escalate":true,"reason":"stuck"}"#,
+            r#"{"escalate":false,"reason":"remaining work is routine"}"#,
+            r#"{"escalate":false,"reason":"tripwire: must never be consumed"}"#,
+        ]);
+        let router = escalation_router_with_recovery(model_client, judge_client, 1, 1)?;
+
+        let session_request = classify_session_request();
+        let (trace, _) = router
+            .clone()
+            .run(Context::default(), session_request.clone())
+            .await?;
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
+        let (trace, response) = router
+            .clone()
+            .run(Context::default(), session_request.clone())
+            .await?;
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("capable t2".to_string())
+        );
+        let (trace, response) = router.run(Context::default(), session_request).await?;
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("capable t3".to_string())
         );
         Ok(())
     }

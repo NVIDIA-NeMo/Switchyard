@@ -68,7 +68,8 @@ For each turn on an unlatched session, Switchyard:
    streak reaches `confirmations`. That turn is billed for a weak call, a judge
    call, and a strong call.
 
-A latched session routes straight to the strong target with no judge call:
+With recovery disabled (the default), a latched session routes straight to the
+strong target with no judge call:
 
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
@@ -190,6 +191,10 @@ When the server runs with a routing log, successful judge calls also appear in
 per-session routing stats under the judge's model id, tagged with the
 `classifier` tier — so per-session token accounting includes judge overhead
 alongside the tiers the session was served by.
+
+Recovery transitions are logged at `info` level: one event when a session is
+handed back to the weak tier, and one when it re-latches (via probation or a
+weak-tier context overflow) and the latch becomes permanent.
 
 ## When not to use escalation routing
 

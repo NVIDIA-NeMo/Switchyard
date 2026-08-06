@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trajectory-judge components for the escalation router — the judge, its verdict policy, and
-//! the transcript condenser they read.
+//! Trajectory-judge components for the escalation router — the judges, their shared verdict
+//! policy, and the transcript condenser they read.
 //!
-//! [`build_judge`] is the whole surface; the confirmation policy that consumes its verdicts
-//! lives with the assembled algorithm in [`crate::algorithms::escalation`].
+//! [`build_judge`] (the trouble judge) and [`build_recovery_judge`] (the hand-back judge
+//! consulted on latched turns) are the whole surface; the confirmation policy that consumes
+//! their verdicts lives with the assembled algorithm in [`crate::algorithms::escalation`].
 
 use serde::Deserialize;
 use switchyard_protocol::{ContentBlock, Message, Role};
@@ -159,19 +160,16 @@ pub(crate) fn build_judge(
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
-    config.validate()?;
     let contract =
         ClassifierContract::from_config(contract_config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
-    Ok(JudgeClassifier::new(
-        StructuredJudge::new(
-            EscalationInput { config },
-            contract,
-            SerdeDecoder::new(),
-            JudgeRuntimeConfig::new(max_output_tokens)?,
-        ),
+    assemble_judge(
         judge_target,
-        EscalationPolicy { capable, efficient },
-    ))
+        capable,
+        efficient,
+        contract,
+        config,
+        max_output_tokens,
+    )
 }
 
 /// Builds the hand-back judge consulted on latched turns when recovery is enabled.
@@ -189,12 +187,31 @@ pub(crate) fn build_recovery_judge(
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
-    config.validate()?;
     let contract = ClassifierContract::from_config(
         &ClassifierContractConfig::default(),
         RECOVERY_PROMPT_TEMPLATE,
         SCHEMA_TEMPLATE,
     )?;
+    assemble_judge(
+        judge_target,
+        capable,
+        efficient,
+        contract,
+        config,
+        max_output_tokens,
+    )
+}
+
+/// Validates `config` and assembles a structured judge over the rendered `contract`.
+fn assemble_judge(
+    judge_target: LlmTarget,
+    capable: String,
+    efficient: String,
+    contract: ClassifierContract,
+    config: EscalationJudgeConfig,
+    max_output_tokens: u64,
+) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
+    config.validate()?;
     Ok(JudgeClassifier::new(
         StructuredJudge::new(
             EscalationInput { config },
