@@ -103,6 +103,7 @@ configuration, so a bare `escalation = {}` is a valid, tuned route:
 | Key | Default | Meaning |
 |---|---|---|
 | `confirmations` | `2` | Consecutive escalate verdicts required before the session latches to strong. Must be at least `1`. |
+| `recovery_confirmations` | `0` | Consecutive clear verdicts, while latched, before the session de-latches back to weak. `0` keeps the latch permanent and skips the judge on latched turns. |
 | `recent_turn_window` | `28` | Trailing messages shown to the judge on top of the anchors. Must be at least `1`. |
 | `window_message_chars` | `500` | Per-message truncation cap inside that trailing window. Must be at least `50`. |
 
@@ -114,6 +115,22 @@ never latches. Clients supply it with `x-switchyard-session-id`.
 Anchor and transcript caps remain fixed. Set the route-level
 `max_output_tokens` key to change the judge's reply budget. Any decline still
 resets the streak to zero.
+
+## Recovery (de-escalation)
+
+By default a latch is permanent: latched turns skip the judge and the strong
+tier serves the session's remainder, including long stretches of routine work
+after the original trouble is fixed. Setting `recovery_confirmations` above
+`0` keeps the judge reading the trajectory on latched turns. Once it rules
+clear for that many consecutive turns, the session de-latches back to the weak
+tier; the de-latching turn itself runs the ordinary weak-first path, so a
+fresh escalate verdict can immediately re-latch. Any escalate verdict while
+latched clears the recovery streak. The asymmetry is deliberate: escalate
+eagerly (`confirmations = 2`), hand back conservatively (for example
+`recovery_confirmations = 4`), so the route does not flap around transient
+quiet spells. If a de-latched conversation has outgrown the weak model's
+context window, the [context-window fallback](../operations/context_window.md)
+returns it to strong on the next turn.
 
 ## Run the route
 

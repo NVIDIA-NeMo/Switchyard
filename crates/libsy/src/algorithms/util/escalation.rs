@@ -52,6 +52,11 @@ pub struct EscalationJudgeConfig {
     /// `1` escalates on the first verdict; the router's main cost dial.
     /// `2` or higher needs a session id, since the streak is retained per session.
     pub confirmations: u32,
+    /// Consecutive clear verdicts required, while latched, before the session de-latches back
+    /// to the efficient tier. `0` (the default) disables recovery: a latch is permanent for
+    /// the session's remainder and latched turns skip the judge entirely. Any escalate verdict
+    /// clears the recovery streak, and a de-latched session can re-escalate as usual.
+    pub recovery_confirmations: u32,
     /// Trailing messages shown on top of the anchors. A loop longer than this is invisible.
     pub recent_turn_window: usize,
     /// Per-message cap inside the trailing window.
@@ -82,6 +87,7 @@ impl Default for EscalationJudgeConfig {
     fn default() -> Self {
         Self {
             confirmations: 2,
+            recovery_confirmations: 0,
             recent_turn_window: 28,
             window_message_chars: 500,
         }

@@ -444,8 +444,18 @@ struct TaskClassifier {
 /// Session-state key holding the consecutive-escalate streak.
 const STREAK_KEY: &str = "escalation_streak";
 
+/// Session-state key holding the consecutive-clear streak while latched.
+const RECOVERY_STREAK_KEY: &str = "escalation_recovery_streak";
+
 fn streak(state: &State) -> u32 {
     match state.extra.get(STREAK_KEY) {
+        Some(StateValue::Count(n)) => *n,
+        _ => 0,
+    }
+}
+
+fn recovery_streak(state: &State) -> u32 {
+    match state.extra.get(RECOVERY_STREAK_KEY) {
         Some(StateValue::Count(n)) => *n,
         _ => 0,
     }
@@ -477,6 +487,8 @@ struct EscalationClassifier {
     efficient: LlmTarget,
     /// Consecutive escalate verdicts required to latch.
     confirmations: u32,
+    /// Consecutive clear verdicts, while latched, required to de-latch. `0` disables recovery.
+    recovery_confirmations: u32,
 }
 
 #[async_trait]
@@ -505,9 +517,43 @@ impl Classifier<State> for EscalationClassifier {
             });
         };
 
-        // A confirmed session stays capable without a judge call.
+        // A confirmed session stays capable. Without recovery the latch is permanent and
+        // latched turns skip the judge; with it, the judge keeps reading the trajectory and
+        // hands the session back to efficient once the trouble has stayed clear long enough.
         if streak(state) >= self.confirmations {
-            return Ok((decisive(&self.capable.semantic_name), None));
+            if self.recovery_confirmations == 0 {
+                return Ok((decisive(&self.capable.semantic_name), None));
+            }
+            // Judge the trajectory as it stands; the capable tier's prior replies are already
+            // in the history. A clear verdict scores the efficient target.
+            let mut judge_request = request.clone();
+            let (classification, _) = self
+                .judge
+                .score(state, &mut judge_request, Some(driver))
+                .await?;
+            let recovered = match &classification.argmax(false)? {
+                Some(score) if score.target == self.efficient.semantic_name => {
+                    recovery_streak(state) + 1
+                }
+                Some(_) => 0,
+                // Judge outage: hold the latch and the streak — recovery needs live verdicts.
+                None => recovery_streak(state),
+            };
+            if recovered < self.recovery_confirmations {
+                state.extra.insert(
+                    RECOVERY_STREAK_KEY.to_string(),
+                    StateValue::Count(recovered),
+                );
+                return Ok((decisive(&self.capable.semantic_name), None));
+            }
+            // De-latch: clear both streaks and fall through to the ordinary efficient-first
+            // path below, which judges this turn's fresh reply and can re-escalate as usual.
+            state
+                .extra
+                .insert(STREAK_KEY.to_string(), StateValue::Count(0));
+            state
+                .extra
+                .insert(RECOVERY_STREAK_KEY.to_string(), StateValue::Count(0));
         }
 
         // Call efficient model and buffer the response so the judge can read it.
@@ -824,6 +870,7 @@ impl LlmTaskClassifier {
         let capable_name = capable_target.semantic_name.clone();
         let efficient_name = efficient_target.semantic_name.clone();
         let confirmations = config.confirmations;
+        let recovery_confirmations = config.recovery_confirmations;
         let esc = Arc::new(EscalationClassifier {
             judge: escalation::build_judge(
                 judge_target,
@@ -836,6 +883,7 @@ impl LlmTaskClassifier {
             capable: capable_target.clone(),
             efficient: efficient_target.clone(),
             confirmations,
+            recovery_confirmations,
         });
         let inner: Arc<dyn Classifier<State>> = esc.clone();
         let targets = LlmTargetSet::new(vec![capable_target, efficient_target]);
@@ -1908,6 +1956,84 @@ mod tests {
             .clone()
             .run(Context::default(), session_request)
             .await?;
+
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
+        Ok(())
+    }
+
+    /// Builds an escalation router that latches on the first verdict and de-latches after
+    /// `recovery_confirmations` clear verdicts.
+    fn escalation_router_with_recovery(
+        client: Arc<dyn RoutedLlmClient>,
+        judge_client: Arc<dyn RoutedLlmClient>,
+        recovery_confirmations: u32,
+    ) -> Result<Arc<LlmTaskClassifier>> {
+        let target = |name: &str, c: Arc<dyn RoutedLlmClient>| LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: Some(c),
+        };
+        Ok(Arc::new(LlmTaskClassifier::new(
+            LlmClassifierConfig::Escalation {
+                judge_target: target("judge", judge_client),
+                efficient_target: target("efficient", client.clone()),
+                capable_target: target("capable", client),
+                contract: ClassifierContractConfig::default(),
+                config: EscalationJudgeConfig {
+                    confirmations: 1,
+                    recovery_confirmations,
+                    ..EscalationJudgeConfig::default()
+                },
+                max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            },
+        )?))
+    }
+
+    #[tokio::test]
+    async fn escalation_router_delatches_after_recovery_streak() -> Result<()> {
+        // Turn 1: judge escalates and the session latches.
+        // Turn 2: the latched-turn judge rules clear, the recovery streak confirms, and the
+        // turn falls through to the efficient-first path (whose own judge also rules clear),
+        // so efficient is served again.
+        let judge_client = QueuedClient::new([
+            r#"{"escalate":true,"reason":"stuck"}"#,
+            r#"{"escalate":false,"reason":"blocker resolved"}"#,
+            r#"{"escalate":false,"reason":"progressing"}"#,
+        ]);
+        let model_client = QueuedClient::new(["efficient draft", "capable t1", "efficient t2"]);
+        let router = escalation_router_with_recovery(model_client, judge_client, 1)?;
+
+        let session_request = classify_session_request();
+        router
+            .clone()
+            .run(Context::default(), session_request.clone())
+            .await?;
+        let (trace, response) = router.run(Context::default(), session_request).await?;
+
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("efficient"));
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("efficient t2".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn escalation_router_holds_latch_until_recovery_confirms() -> Result<()> {
+        // With recovery_confirmations=2, one clear verdict while latched is not enough:
+        // the session stays capable and the streak carries to the next turn.
+        let judge_client = QueuedClient::new([
+            r#"{"escalate":true,"reason":"stuck"}"#,
+            r#"{"escalate":false,"reason":"looks better"}"#,
+        ]);
+        let model_client = QueuedClient::new(["efficient draft", "capable t1", "capable t2"]);
+        let router = escalation_router_with_recovery(model_client, judge_client, 2)?;
+
+        let session_request = classify_session_request();
+        router
+            .clone()
+            .run(Context::default(), session_request.clone())
+            .await?;
+        let (trace, _) = router.run(Context::default(), session_request).await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         Ok(())
