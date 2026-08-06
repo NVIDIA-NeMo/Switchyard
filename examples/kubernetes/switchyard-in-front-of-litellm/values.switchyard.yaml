@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Helm values for Switchyard routing across LiteLLM aliases.
+#
+#   helm upgrade --install switchyard deploy/helm/switchyard \
+#     --namespace switchyard --create-namespace \
+#     -f examples/kubernetes/switchyard-in-front-of-litellm/values.switchyard.yaml
+
+image:
+  repository: ghcr.io/nvidia-nemo/switchyard/switchyard-server
+  tag: "0.2.0"
+
+# No provider credential here: LiteLLM holds it. `api_key_env` is omitted from
+# the llm_client below, so Switchyard sends no Authorization header on the
+# in-cluster hop. Set a LiteLLM master key and add it here if you want the
+# gateway to authenticate its callers.
+service:
+  type: ClusterIP
+
+config:
+  routes: |
+    schema_version = 1
+
+    [llm_clients.litellm]
+    format = "openai_chat"
+    base_url = "http://litellm.switchyard.svc.cluster.local:4000/v1"
+    max_retries = 2
+
+    # Target ids are LiteLLM *aliases*, not provider model ids. Repointing an
+    # alias in the LiteLLM ConfigMap swaps the underlying model without
+    # touching this file.
+    [targets.fast]
+    id = "fast"
+    llm_client = "litellm"
+
+    [targets.strong]
+    id = "strong"
+    llm_client = "litellm"
+
+    # Mirrors the stage router in examples/experimental/litellm: an initial or
+    # ambiguous turn falls open to the efficient tier, and decisive
+    # error-recovery signals move a turn to the capable one.
+    #
+    # This router reads tool-result and agent-progress signals from recent
+    # turns, so it is aimed at coding agents. On single-turn traffic there are
+    # no such signals and every turn takes the picker default.
+    [routes.stage]
+    id = "switchyard/stage"
+    type = "stage_router"
+    capable_target = "strong"
+    efficient_target = "fast"
+    picker = "efficient_first"
+    confidence_threshold = 0.5
+
+    # Straight passthrough to each alias, useful for smoke tests and as
+    # cost/accuracy baselines.
+    [routes.fast]
+    id = "switchyard/fast"
+    type = "passthrough"
+    target = "fast"
+
+    [routes.strong]
+    id = "switchyard/strong"
+    type = "passthrough"
+    target = "strong"

@@ -3,16 +3,31 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Switchyard with Envoy AI Gateway
+# Switchyard on Kubernetes
 
-Two ways to combine Switchyard with [Envoy AI Gateway](https://aigateway.envoyproxy.io/),
-depending on which component you want to own ingress and which you want to own
-provider credentials.
+Three worked deployments, differing in which component owns ingress and which
+owns provider credentials:
 
-Both use the [Switchyard Helm chart](../../deploy/helm/switchyard) for the
-Switchyard half and plain manifests for the Envoy half.
+| directory | chain |
+|---|---|
+| [`envoy-ai-gateway-in-front/`](envoy-ai-gateway-in-front) | client → Envoy AI Gateway → Switchyard → provider |
+| [`switchyard-in-front-of-envoy-ai-gateway/`](switchyard-in-front-of-envoy-ai-gateway) | client → Switchyard → Envoy AI Gateway → provider |
+| [`switchyard-in-front-of-litellm/`](switchyard-in-front-of-litellm) | client → Switchyard → LiteLLM → provider |
 
-## Which topology
+All three use the [Switchyard Helm chart](../../deploy/helm/switchyard) for the
+Switchyard half and plain manifests for the gateway half.
+
+The first two are covered together below, since they are the same components in
+opposite order. The LiteLLM variant is the Kubernetes form of
+[`examples/experimental/litellm`](../experimental/litellm), where the gateway
+owns model aliases rather than Gateway API routing.
+
+## Which Envoy topology
+
+Both Envoy examples use the same components in opposite order. The choice is
+about where the provider credential ends up. (For the LiteLLM variant, see
+[its section](#switchyard-in-front-of-litellm) — there the gateway is always
+downstream and always holds the credential.)
 
 ```mermaid
 flowchart LR
@@ -79,7 +94,7 @@ name is otherwise hashed and changes when the Gateway is recreated.
 that reaches its port — there is no API-key check, no JWT validation, no mTLS.
 Whatever sits in front of it owns client identity.
 
-That makes the two topologies differ in an important way:
+That makes the topologies differ in an important way:
 
 - **Envoy AI Gateway in front** — solved by the Gateway.
   [`04-client-auth.yaml`](envoy-ai-gateway-in-front/04-client-auth.yaml) shows a
@@ -94,8 +109,15 @@ That makes the two topologies differ in an important way:
   NetworkPolicy, or put a Gateway in front of it too, making a sandwich —
   Gateway (client auth) → Switchyard (routing) → Gateway (provider auth).
 
+- **Switchyard in front of LiteLLM** — also *not* solved, and for the same
+  reason. LiteLLM holds the provider key but sits downstream, so it does not
+  see the client. `01-litellm.yaml` restricts who may reach LiteLLM; nothing
+  there restricts who may reach Switchyard. Set a LiteLLM master key if you
+  want the gateway to authenticate its callers, and front Switchyard itself if
+  it is reachable from outside the cluster.
+
 Note that the provider credential is not the whole risk. Even when the key
-lives safely in the Gateway, an unauthenticated caller can still spend it.
+lives safely in the gateway, an unauthenticated caller can still spend it.
 
 For machine clients prefer `jwt` over `oidc`: the OIDC flow needs a browser
 redirect an SDK client cannot complete.
@@ -319,6 +341,96 @@ recreated — and `base_url` has to be stable.
 Envoy matches on **provider** model ids here, so the values in
 [`02-provider-backend.yaml`](switchyard-in-front-of-envoy-ai-gateway/02-provider-backend.yaml)
 must match the `id` field of each `[targets.*]` table, not the route ids.
+
+## Switchyard in front of LiteLLM
+
+The Kubernetes form of [`examples/experimental/litellm`](../experimental/litellm).
+LiteLLM owns provider access, credentials and model aliases; Switchyard owns the
+routing policy and addresses aliases rather than provider model ids.
+
+```mermaid
+flowchart LR
+    client["Client"]
+
+    subgraph ns["ns: switchyard"]
+        sy["Switchyard :4000<br/>stage router"]
+        np{{"NetworkPolicy<br/>only Switchyard may connect"}}
+        ll["LiteLLM :4000<br/>aliases: fast, strong"]
+        cfg["ConfigMap<br/>model_list"]
+        sec[("Secret<br/>NVIDIA_API_KEY")]
+    end
+
+    prov["Model provider"]
+
+    client --> sy
+    sy -->|"model: fast or strong"| np
+    np --> ll
+    cfg -.-> ll
+    sec -.-> ll
+    ll -->|"resolved model<br/>Authorization added"| prov
+
+    classDef cred fill:#fdf0d5,stroke:#b8860b,color:#5c4400
+    classDef envoy fill:#e8e6ff,stroke:#6b5fd6,color:#2d2483
+    classDef cfgc fill:#f2f0ff,stroke:#9a8fe0,color:#3b3183
+    classDef plain fill:#eef2f7,stroke:#8899aa,color:#22303c
+    classDef warn fill:#ffe8e8,stroke:#c04a4a,color:#7a1f1f
+    class ll,sec cred
+    class sy envoy
+    class cfg cfgc
+    class np warn
+    class client,prov plain
+```
+
+**Aliases are the contract between the two.** Switchyard's `[targets.*].id`
+values match `model_name` in the LiteLLM `model_list`, so repointing an alias at
+a different provider or model is a change to the ConfigMap alone — the
+Switchyard deployment TOML never mentions a provider model id.
+
+| object | file | why |
+|---|---|---|
+| `ConfigMap` `litellm-config` | `01-litellm.yaml` | the `model_list`; aliases `fast` and `strong` |
+| `Deployment` `litellm` | `01-litellm.yaml` | the gateway; probes `/health/liveliness` and `/health/readiness` |
+| `Service` `litellm` | `01-litellm.yaml` | ClusterIP on 4000, what Switchyard's `base_url` points at |
+| `NetworkPolicy` `litellm-ingress-restriction` | `01-litellm.yaml` | limits who may reach the credential-bearing gateway |
+| `Secret` `litellm-provider-keys` | created below | resolved by `os.environ/NVIDIA_API_KEY` in the ConfigMap |
+
+```bash
+kubectl create namespace switchyard
+
+# LiteLLM holds the provider credential; Switchyard gets none.
+kubectl -n switchyard create secret generic litellm-provider-keys \
+  --from-literal=NVIDIA_API_KEY="$NVIDIA_API_KEY"
+
+kubectl apply -f examples/kubernetes/switchyard-in-front-of-litellm/01-litellm.yaml
+kubectl -n switchyard rollout status deploy/litellm --timeout=15m
+
+helm upgrade --install switchyard deploy/helm/switchyard \
+  --namespace switchyard \
+  -f examples/kubernetes/switchyard-in-front-of-litellm/values.switchyard.yaml
+```
+
+```bash
+kubectl -n switchyard port-forward svc/switchyard 4000:4000 &
+
+curl -s localhost:4000/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"switchyard/stage","messages":[{"role":"user","content":"hello"}],"max_tokens":600}'
+```
+
+Two things that cost time on a first run:
+
+- **The image is 350MB and took 7m33s to pull** on a cold node, so the first
+  `rollout status` can look like a hang. The 15m timeout above is deliberate.
+- **LiteLLM needs real memory.** At a 1Gi limit it was `OOMKilled` nine seconds
+  into startup, crash-looping with no log output at all — the manifest looks
+  fine and the pod simply dies. The example sets 3Gi.
+
+`switchyard/stage` uses the same stage router as the Compose example: an initial
+or ambiguous turn falls open to `fast`, and error-recovery signals move a turn to
+`strong`. Those signals come from recent tool results, so on single-turn traffic
+every turn takes the picker default — see the note on `stage_router` below.
+`switchyard/fast` and `switchyard/strong` are passthrough routes to each alias,
+useful as smoke tests and as cost baselines.
 
 ## Notes
 
