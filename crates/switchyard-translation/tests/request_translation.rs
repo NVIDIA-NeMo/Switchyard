@@ -1551,3 +1551,50 @@ fn same_format_encoding_drops_exact_replay_once_the_ir_gains_an_instruction() ->
     }
     Ok(())
 }
+
+/// The same guarantee across formats: a routed request that picked up an
+/// instruction must carry it to any target, whether or not the target shares the
+/// inbound format. Cross-format never had the same-format shortcut available, so
+/// this pins the behaviour rather than fixing it.
+#[test]
+fn a_router_added_instruction_reaches_every_target_format() -> TestResult {
+    const PROMPT: &str = "stay on the settled plan";
+    let engine = TranslationEngine::default();
+    let formats = [
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+    ];
+    let inbound = |format: &WireFormat| match format {
+        WireFormat::AnthropicMessages => json!({
+            "model": "m", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]}),
+        WireFormat::OpenAiResponses => json!({"model": "m", "input": "hi"}),
+        _ => json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]}),
+    };
+
+    for source in &formats {
+        for target in &formats {
+            let policy = TranslationPolicy::default();
+            let mut request = engine
+                .decode_request(source.clone(), &inbound(source), &policy)?
+                .request;
+            request.instructions.insert(
+                0,
+                InstructionBlock {
+                    role: Role::System,
+                    content: vec![ContentBlock::Text {
+                        text: PROMPT.to_string(),
+                    }],
+                },
+            );
+            let encoded = engine.encode_request(target.clone(), &request, &policy)?;
+            assert!(
+                encoded.body.to_string().contains(PROMPT),
+                "{source} -> {target}: instruction missing from the wire body: {}",
+                encoded.body
+            );
+        }
+    }
+    Ok(())
+}

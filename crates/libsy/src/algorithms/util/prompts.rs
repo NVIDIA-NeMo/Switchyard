@@ -320,28 +320,31 @@ mod tests {
         Ok(())
     }
 
-    /// A configured tier prompt must survive a same-format hop. The codec replays
-    /// the preserved inbound body verbatim when it is present, so the processor has
-    /// to give up exact replay once it has added an instruction the body lacks.
+    /// Both tier prompts must survive a same-format hop — capable and efficient
+    /// alike, and whatever else an algorithm wires in. The codec replays the
+    /// preserved inbound body verbatim when it is still current, so adding an
+    /// instruction has to stop it being current.
     #[tokio::test]
-    async fn tier_prompt_drops_preserved_body_so_same_format_targets_see_it() -> Result<()> {
+    async fn any_tier_prompt_invalidates_exact_replay() -> Result<()> {
         let processor = SystemPromptProcessor::new(prompts());
-        let mut request = request_with_preserved_body();
-        processor
-            .process(
-                &mut (),
-                Event::Decision {
-                    request: &mut request,
-                    decision: &RoutedTo("weak"),
-                },
-            )
-            .await?;
+        for (target, expected) in [("strong", STRONG_PROMPT), ("weak", WEAK_PROMPT)] {
+            let mut request = request_with_preserved_body();
+            processor
+                .process(
+                    &mut (),
+                    Event::Decision {
+                        request: &mut request,
+                        decision: &RoutedTo(target),
+                    },
+                )
+                .await?;
 
-        assert_eq!(instructions(&request), vec![WEAK_PROMPT]);
-        assert!(
-            !request.llm_request.preserved_request_is_current(),
-            "preserved inbound body would replay without the tier prompt"
-        );
+            assert_eq!(instructions(&request), vec![expected]);
+            assert!(
+                !request.llm_request.preserved_request_is_current(),
+                "{target}: preserved inbound body would replay without the tier prompt"
+            );
+        }
         Ok(())
     }
 
