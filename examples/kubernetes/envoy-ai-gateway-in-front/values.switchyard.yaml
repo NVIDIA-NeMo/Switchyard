@@ -47,6 +47,22 @@ config:
     id = "nvidia/nvidia/nemotron-3-ultra"
     llm_client = "nvidia"
 
+    # The classifier judge must return a JSON verdict. A reasoning model spends
+    # its output budget on reasoning_content first and the JSON is truncated,
+    # which Switchyard records as
+    # `switchyard_classifier_fail_open_total{reason="parse_error"}` and routes
+    # to strong_target -- so every judge failure silently spends the expensive
+    # tier. Measured on this deployment before suppressing reasoning: 21 of 25
+    # escalations were fail-opens rather than decisions; after: zero.
+    #
+    # `extra_body` is shallow-merged into the upstream request, so this applies
+    # to the judge only and the serving targets keep full reasoning. Use a
+    # genuinely non-reasoning model here where one is available.
+    [targets.judge]
+    id = "nvidia/nvidia/nemotron-3-nano-30b-a3b"
+    llm_client = "nvidia"
+    extra_body = { chat_template_kwargs = { thinking = false } }
+
     # Single-tier routes, useful as cost and accuracy baselines.
     [routes.nano]
     id = "switchyard/nano"
@@ -64,19 +80,24 @@ config:
     target = "ultra"
 
     # Sends each task to `classifier_target` for a capability verdict, then
-    # serves it from `weak_target` or `strong_target`. Using the cheap tier as
-    # its own judge keeps the routing decision inexpensive.
+    # serves it from `weak_target` or `strong_target`.
     #
     # Raise base_threshold to send less traffic to the weak tier. Anything the
-    # judge cannot decide goes to strong_target.
+    # judge cannot decide goes to strong_target -- which is why the judge is a
+    # dedicated target with reasoning suppressed; see [targets.judge] above.
     [routes.classified]
     id = "switchyard/classified"
     type = "llm_classifier"
     mode = "capability"
-    classifier_target = "nano"
+    classifier_target = "judge"
     weak_target = "nano"
     strong_target = "ultra"
     base_threshold = 0.5
+    # The judge otherwise runs on every turn, which is most of the routing
+    # cost. Both flags match the reference config in
+    # benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml.
+    session_affinity = true
+    message_hash_fallback = true
 
     # Even split across tiers, for A/B comparison rather than cost control.
     [routes.general]
