@@ -4,9 +4,8 @@ Stage-router routing sends each request to either a **capable** model or a
 cheaper **efficient** one, depending on where the agent is in its run. The goal
 is to spend the capable model on the turns that need it (exploration, error
 recovery, hard reasoning) and let the efficient model carry the routine,
-mechanical work. Which tier a turn defaults to depends on the picker you choose
-(`capable_first` or `efficient_first`); the signals then move individual turns
-off that default. Two knobs shape that behaviour — `confidence_threshold` (how
+mechanical work. Turns default to the efficient tier (`picker = "efficient_first"`);
+the signals then move individual turns off that default. Two knobs shape that behaviour — `confidence_threshold` (how
 much evidence it takes to leave the default tier) and `recent_turn_window` (how
 much history the signals see) — plus an optional LLM classifier.
 
@@ -84,24 +83,23 @@ flowchart TB
 A turn with no tool-result history yet has no stage to estimate, so it takes the
 default tier.
 
-## Pickers
+## Picker
 
-The picker name says which tier is the **default**: the tier used when the
-signals are ambiguous and no classifier verdict is available.
+The picker names the **default** tier: the one used when the signals are
+ambiguous and no classifier verdict is available.
 
-- **`capable_first`**: capable is the default; drop to efficient only when the
-  signals (or the classifier) clearly say so. Quality-first.
 - **`efficient_first`**: efficient is the default; escalate to capable only when
   the signals (or the classifier) clearly say so. Cost-first.
 
-Both pickers read the same signals; only the default tier differs.
+A quality-first `capable_first` picker — capable as the default, dropping to
+efficient only on a confident signal — is implemented but not yet benchmarked, so
+it is undocumented for now. Expect it in a future release once there are numbers
+behind it.
 
 ## Tuning `confidence_threshold`
 
 Scores live on `[-1, +1]`. The threshold `t` carves that line into three bands,
-and the picker decides who owns the middle one.
-
-**`efficient_first`** — the middle band falls to efficient:
+and the low-confidence middle falls to the default tier:
 
 ```text
         efficient                              │   capable
@@ -110,21 +108,9 @@ and the picker decides who owns the middle one.
         (confident efficient + fall_open)      │ (confident escalation)
 ```
 
-**`capable_first`** — the middle band falls to capable:
-
-```text
-   efficient  │                    capable
-  ├───────────┼───────────────────────────────────────────┤
- -1          -t                                           +1
- (confident   │      (fall_open + confident capable)
-  drop)       │
-```
-
-So for `efficient_first`, `[-1, t)` routes efficient and `[t, +1]` routes
-capable. For `capable_first`, `[-1, -t]` routes efficient and `(-t, +1]` routes
-capable. Both pickers read the same scores; only the ownership of the
-low-confidence middle differs. (With a classifier configured, the middle band
-goes to the classifier instead of straight to the default tier.)
+So `[-1, t)` routes efficient and `[t, +1]` routes capable. (With a classifier
+configured, the middle band goes to the classifier instead of straight to the
+default tier.)
 
 Because the score is `tanh(5 × raw)`, the threshold translates directly into
 "how many maxed signals must agree":
