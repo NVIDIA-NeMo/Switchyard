@@ -382,9 +382,21 @@ async fn serve_until_shutdown(
 #[derive(Clone, Copy)]
 struct RequestStart(Instant);
 
+/// Tier recorded for classifier and judge calls in the routing log, distinguishing
+/// routing overhead from the routed tiers a session was served by.
+const CLASSIFIER_TIER: &str = "classifier";
+
 /// Maps routed call observations to backend stats, non-routed calls to classifier/judge
 /// stats, and records routing overhead once the algorithm run completes.
-fn stats_observer(stats: StatsAccumulator) -> RunObserver {
+///
+/// Successful classifier/judge calls are also appended to `classifier_log` when one is
+/// configured, so per-session routing snapshots account for judge token overhead. Routed
+/// calls stay off this path: the served call is logged with its terminal usage in
+/// [`usage_metrics::observe`], which would make a second append here a double count.
+fn stats_observer(
+    stats: StatsAccumulator,
+    classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
+) -> RunObserver {
     Arc::new(move |observation| match observation {
         RunObservation::LlmCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
@@ -395,6 +407,16 @@ fn stats_observer(stats: StatsAccumulator) -> RunObserver {
                     stats.record_error(&call.selected_model, call.tier.as_deref());
                 }
             } else if call.is_success {
+                if let (Some((log, context)), Some(usage)) =
+                    (classifier_log.as_ref(), call.usage.as_ref())
+                {
+                    log.append(
+                        context.clone(),
+                        &call.selected_model,
+                        Some(CLASSIFIER_TIER),
+                        usage,
+                    );
+                }
                 stats.record_classifier_success(
                     call.selected_model,
                     call.usage.as_ref().map(usage_metrics::token_usage),
@@ -656,7 +678,10 @@ async fn handle_llm_request(
         Err(response) => return response,
     };
     let algorithm = Arc::clone(&route.algorithm);
-    let observer = stats_observer(state.stats.clone());
+    let observer = stats_observer(
+        state.stats.clone(),
+        state.routing_log.clone().zip(routing_log_context.clone()),
+    );
     let (trace, response) = match algorithm
         .run_observed(Context::default(), request, Some(observer))
         .await
@@ -1266,10 +1291,52 @@ fn endpoint_listing(has_routing_log: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    use libsy::LlmCallObservation;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::{Notify, oneshot};
 
     use super::*;
+
+    /// A successful judge call lands in the per-session routing snapshot under its
+    /// model id with the classifier tier, while routed calls stay off the observer's
+    /// log path — they are logged with terminal usage when the served response is
+    /// observed, so an append here would double count them.
+    #[test]
+    fn stats_observer_logs_judge_calls_to_the_routing_log() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let log = SharedRoutingLog::new(dir.path().join("routing.jsonl")).expect("routing log");
+        let mut headers = HeaderMap::new();
+        headers.insert("proxy_x_session_id", "session-1".parse().expect("header"));
+        let context = routing_log::RoutingLogContext::from_headers(&headers);
+        let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
+
+        let call = |model: &str, is_routed: bool| {
+            RunObservation::LlmCall(LlmCallObservation {
+                selected_model: model.to_string(),
+                tier: None,
+                is_routed,
+                is_success: true,
+                duration: Duration::from_millis(3),
+                usage: Some(Usage {
+                    input_tokens: Some(100),
+                    output_tokens: Some(7),
+                    ..Usage::default()
+                }),
+            })
+        };
+        observer(call("judge-model", false));
+        observer(call("routed-model", true));
+
+        let snapshot = log
+            .snapshot_session("session-1")
+            .expect("read log")
+            .expect("session recorded");
+        let snapshot = serde_json::to_value(&snapshot).expect("serializable snapshot");
+        assert_eq!(snapshot["models"]["judge-model"]["calls"], 1);
+        assert_eq!(snapshot["models"]["judge-model"]["prompt_tokens"], 100);
+        assert_eq!(snapshot["models"]["judge-model"]["completion_tokens"], 7);
+        assert!(snapshot["models"].get("routed-model").is_none());
+    }
 
     #[derive(Clone)]
     struct ShutdownTestState {

@@ -96,6 +96,7 @@ pub(crate) fn snapshot(
 }
 
 /// Request headers retained until terminal usage is available.
+#[derive(Clone)]
 pub(crate) struct RoutingLogContext {
     task: Option<String>,
     trial_id: Option<String>,
