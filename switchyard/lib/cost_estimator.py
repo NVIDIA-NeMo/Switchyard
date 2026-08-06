@@ -124,27 +124,17 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
         input=0.60, output=2.50, cached=0.15, cache_write=0.60,
     ),
     # Z.ai GLM-5.2 — REFERENCE pricing only. Switchyard reaches this model as
-    # ``glm-5.2-fp8`` on a self-hosted vLLM deployment (also as
-    # ``zai-org/glm-5.2`` on the NVIDIA hub), neither of which has per-token
-    # billing: the real cost is GPU-hours. These rates are the benchmark
-    # pricing catalog's ``zai-org/glm-5.2`` entry (verified 2026-08-05),
-    # carried so benchmark arms can be compared against commercial models on
-    # a common basis — "what this traffic would have cost at market rates",
-    # not what we are billed — and so cost numbers computed here agree with
-    # the benchmark dashboards. Provider list prices vary about 2x
-    # (SiliconFlow's serverless tier is $1.40/$4.40), so treat the absolute
-    # number as indicative, not exact. OpenAI wire format and no documented
-    # cache-write premium, so cache_write = input.
+    # ``glm-5.2-fp8`` on a self-hosted vLLM deployment, which has no per-token
+    # billing at all: the real cost is GPU-hours. These rates are the benchmark
+    # pricing catalog's GLM-5.2 entry (verified 2026-08-05), carried so
+    # benchmark arms can be compared against commercial models on a common
+    # basis — "what this traffic would have cost at market rates", not what we
+    # are billed — and so cost numbers computed here agree with the benchmark
+    # dashboards. Provider list prices vary about 2x (SiliconFlow's serverless
+    # tier is $1.40/$4.40), so treat the absolute number as indicative, not
+    # exact. OpenAI wire format and no documented cache-write premium, so
+    # cache_write = input.
     "glm-5.2-fp8": ModelPriceData(
-        input=0.805, output=2.53, cached=0.1495, cache_write=0.805,
-    ),
-    "zai-org/glm-5.2": ModelPriceData(
-        input=0.805, output=2.53, cached=0.1495, cache_write=0.805,
-    ),
-    "nvidia/zai-org/glm-5.2": ModelPriceData(
-        input=0.805, output=2.53, cached=0.1495, cache_write=0.805,
-    ),
-    "openai/nvidia/zai-org/glm-5.2": ModelPriceData(
         input=0.805, output=2.53, cached=0.1495, cache_write=0.805,
     ),
     # DeepSeek V4 Flash — official api-docs.deepseek.com standard list
