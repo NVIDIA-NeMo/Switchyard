@@ -22,6 +22,7 @@ use crate::{LibsyError, Result};
 use switchyard_protocol::Request;
 
 const PROMPT_TEMPLATE: &str = include_str!("../../prompts/escalation/prompt.md");
+const RECOVERY_PROMPT_TEMPLATE: &str = include_str!("../../prompts/escalation/recovery_prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../../prompts/escalation/schema.json");
 
 /// Separator marking where [`truncate_middle`] dropped a message's interior.
@@ -161,6 +162,39 @@ pub(crate) fn build_judge(
     config.validate()?;
     let contract =
         ClassifierContract::from_config(contract_config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+    Ok(JudgeClassifier::new(
+        StructuredJudge::new(
+            EscalationInput { config },
+            contract,
+            SerdeDecoder::new(),
+            JudgeRuntimeConfig::new(max_output_tokens)?,
+        ),
+        judge_target,
+        EscalationPolicy { capable, efficient },
+    ))
+}
+
+/// Builds the hand-back judge consulted on latched turns when recovery is enabled.
+///
+/// The recovery question — could the efficient tier carry the *remaining* work — is
+/// different from the trouble question the trajectory judge answers, and the latched
+/// transcript it reads is the capable tier's own (usually healthy-looking) work. It
+/// therefore always uses the packaged recovery prompt: the route-level `prompt` override
+/// replaces the trouble rubric only. Same verdict schema, so `escalate: true` keeps the
+/// session on the capable tier.
+pub(crate) fn build_recovery_judge(
+    judge_target: LlmTarget,
+    capable: String,
+    efficient: String,
+    config: EscalationJudgeConfig,
+    max_output_tokens: u64,
+) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
+    config.validate()?;
+    let contract = ClassifierContract::from_config(
+        &ClassifierContractConfig::default(),
+        RECOVERY_PROMPT_TEMPLATE,
+        SCHEMA_TEMPLATE,
+    )?;
     Ok(JudgeClassifier::new(
         StructuredJudge::new(
             EscalationInput { config },

@@ -121,16 +121,32 @@ resets the streak to zero.
 By default a latch is permanent: latched turns skip the judge and the strong
 tier serves the session's remainder, including long stretches of routine work
 after the original trouble is fixed. Setting `recovery_confirmations` above
-`0` keeps the judge reading the trajectory on latched turns. Once it rules
-clear for that many consecutive turns, the session de-latches back to the weak
-tier; the de-latching turn itself runs the ordinary weak-first path, so a
-fresh escalate verdict can immediately re-latch. Any escalate verdict while
-latched clears the recovery streak. The asymmetry is deliberate: escalate
-eagerly (`confirmations = 2`), hand back conservatively (for example
-`recovery_confirmations = 4`), so the route does not flap around transient
-quiet spells. If a de-latched conversation has outgrown the weak model's
-context window, the [context-window fallback](../operations/context_window.md)
-returns it to strong on the next turn.
+`0` consults a hand-back judge on latched turns. Once it rules clear for that
+many consecutive turns, the session de-latches back to the weak tier; the
+de-latching turn itself runs the ordinary weak-first path, so a fresh
+escalate verdict can immediately re-latch. Any stay-strong verdict while
+latched clears the recovery streak.
+
+The hand-back judge answers a different question than the trajectory judge.
+The latched transcript is the strong tier's own work and usually looks
+healthy, so "is there trouble?" would hand sessions back exactly when the
+strong tier is cruising through the hard part. The packaged recovery prompt
+instead asks whether the *remaining* work could be carried by the weak tier,
+and defaults to staying strong when the evidence is thin. The route-level
+`prompt` key overrides the trajectory-judge rubric only; the recovery prompt
+is not configurable.
+
+Two guards keep a wrong hand-back cheap:
+
+- **Probation.** After a de-latch, a single escalate verdict re-latches the
+  session — the weak tier does not get a full `confirmations`-length streak
+  of turns to prove itself a second time.
+- **One recovery per session.** The re-latch is permanent: latched turns stop
+  consulting the judge again, so a session cannot oscillate between tiers.
+
+If a de-latched conversation has outgrown the weak model's context window,
+the [context-window fallback](../operations/context_window.md) returns it to
+strong on the next turn.
 
 ## Run the route
 
