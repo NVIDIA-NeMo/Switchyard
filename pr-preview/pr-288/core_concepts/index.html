@@ -1265,7 +1265,10 @@ inside the TOML file. Their <code>id</code> fields have different external meani
 </ul>
 <p>The server lists route IDs on <code>GET /v1/models</code>. A request selects a route by
 putting that ID in its <code>model</code> field. The native Rust server does not discover
-or register additional provider models automatically.</p>
+or register additional provider models automatically. The same response also
+carries a Codex-compatible <code>models</code> array so Codex can use the server as a direct
+provider; each entry reflects the route's declared context window, tool support,
+and reasoning.</p>
 <h2 id="routing-algorithms">Routing Algorithms<a class="headerlink" href="#routing-algorithms" title="Permanent link">&para;</a></h2>
 <p>An algorithm receives the normalized request, publishes a routing decision,
 and serves the selected target. The standalone server supports these primary
@@ -1318,8 +1321,8 @@ selected target uses a different upstream protocol.</p>
 <li><a href="../cli_reference/">CLI Reference</a>: launcher and standalone server arguments.</li>
 <li><a href="../routing_algorithms/llm_classifier_routing/">LLM Classifier Routing</a>: configure classifier routing.</li>
 <li><a href="../architecture/">Architecture</a>: follow a request through the server and Rust crates.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e87b43c4bd3c221e239f10dbaddca0bc57121ca2/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, endpoints, and metrics.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e87b43c4bd3c221e239f10dbaddca0bc57121ca2/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed and extend routing algorithms in Rust.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e721211b58fc5d13b6e202be24517572f754bccf/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, endpoints, and metrics.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e721211b58fc5d13b6e202be24517572f754bccf/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed and extend routing algorithms in Rust.</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol documentation.</li>
 </ul>
 
