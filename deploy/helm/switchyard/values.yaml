@@ -1,0 +1,221 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Default values for the switchyard chart.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/nvidia-nemo/switchyard/switchyard-server
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Deployment TOML defining llm_clients, targets and routes.
+#
+# The schema is documented in crates/switchyard-server/README.md. Secrets never
+# appear here: `api_key_env` names an environment variable, which this chart
+# supplies from `apiKeySecret` or `envFrom`.
+config:
+  # Render `config.routes` into a ConfigMap owned by this release. Set to false
+  # and populate `config.existingConfigMap` to manage the TOML out of band.
+  create: true
+  existingConfigMap: ""
+  # Key within the ConfigMap holding the TOML document.
+  key: routes.toml
+  # Directory the ConfigMap is mounted at inside the container.
+  mountPath: /etc/switchyard
+  routes: |
+    schema_version = 1
+
+    [llm_clients.upstream]
+    format = "openai_chat"
+    base_url = "https://openrouter.ai/api/v1"
+    api_key_env = "OPENROUTER_API_KEY"
+    max_retries = 2
+
+    [targets.primary]
+    id = "openai/gpt-4o-mini"
+    llm_client = "upstream"
+
+    [routes.default]
+    id = "switchyard/default"
+    type = "passthrough"
+    target = "primary"
+
+# -- Upstream credentials.
+#
+# Every `api_key_env` named in the deployment TOML must resolve to an
+# environment variable in the container.
+apiKeySecret:
+  # Create a Secret from `apiKeySecret.data`. Convenient for development; in
+  # production leave this false and point `apiKeySecret.name` at a Secret
+  # managed by your secret store (External Secrets, Vault, SOPS, ...).
+  create: false
+  # Name of the Secret to load with `envFrom`. Defaults to the release
+  # fullname when `create` is true.
+  name: ""
+  # Plain-text key/value pairs, only read when `create` is true.
+  # e.g. OPENROUTER_API_KEY: sk-or-...
+  data: {}
+
+# Additional environment variables.
+env: []
+#  - name: RUST_LOG
+#    value: switchyard_server=debug,libsy=debug
+
+# Additional envFrom sources (ConfigMaps or Secrets).
+envFrom: []
+#  - secretRef:
+#      name: my-provider-keys
+
+# Extra flags appended to the switchyard-server command line.
+# See docs/cli_reference.md for the full list.
+extraArgs: []
+#  - --shutdown-timeout=45s
+
+service:
+  type: ClusterIP
+  port: 4000
+  annotations: {}
+
+# The server listens on a single port that serves the LLM API, /health and
+# /metrics alike.
+containerPort: 4000
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+# Switchyard holds no state on disk unless routingLog is enabled, so it runs
+# unprivileged on a read-only root filesystem.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# The binary is compiled with `-C target-cpu=x86-64-v3`, so it needs an
+# AVX2-class x86_64 CPU or a Neoverse-N1-class arm64 CPU. Pin nodeSelector
+# accordingly on heterogeneous clusters.
+resources:
+  requests:
+    cpu: 200m
+    memory: 128Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi
+
+# /health is a liveness endpoint: it reports that the process is serving, not
+# that upstreams are reachable.
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 20
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 3
+  failureThreshold: 20
+
+# Must exceed --shutdown-timeout (30s by default) so in-flight LLM requests
+# drain instead of being cut off. Streaming completions can be long-lived.
+terminationGracePeriodSeconds: 60
+
+# -- Durable per-request routing records (--routing-log-file).
+#
+# Enabling this also registers GET /v1/routing/session-stats.
+routingLog:
+  enabled: false
+  path: /var/log/switchyard/routing.jsonl
+  # emptyDir is scoped to the pod lifetime. Supply `existingClaim` for
+  # records that must outlive a restart.
+  existingClaim: ""
+  sizeLimit: 1Gi
+
+# -- Terminate TLS at Switchyard itself (--tls-cert / --tls-key).
+#
+# Leave disabled when a gateway or service mesh terminates TLS in front.
+tls:
+  enabled: false
+  # Secret of type kubernetes.io/tls.
+  secretName: ""
+  mountPath: /etc/switchyard/tls
+
+metrics:
+  # Prometheus scrape annotations on the pod.
+  podAnnotations: true
+  # Requires the Prometheus Operator CRDs.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+    relabelings: []
+    metricRelabelings: []
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: ""
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: ""
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+dnsPolicy: ""
+dnsConfig: {}
+
+# Extra volumes and mounts, e.g. a CA bundle for a private upstream.
+extraVolumes: []
+extraVolumeMounts: []
+
+# Extra objects rendered verbatim, e.g. an Envoy AI Gateway AIServiceBackend.
+# See examples/kubernetes/ for a complete integration.
+extraObjects: []

@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Who authenticates the client in this topology?
+#
+# Nothing in this directory does, and that is the point to be deliberate about.
+# `switchyard-server` serves every request that reaches its port -- it has no
+# API-key check, no JWT validation, no mTLS. In this topology the Gateway sits
+# *behind* Switchyard, so it authenticates Switchyard to the provider, not the
+# client to Switchyard.
+#
+# That leaves three honest options:
+#
+#  1. Keep Switchyard cluster-internal. The Service is ClusterIP and callers
+#     are trusted in-cluster workloads. The NetworkPolicy below makes that a
+#     property of the cluster rather than an assumption.
+#
+#  2. Put an Envoy Gateway in front of Switchyard as well, giving a sandwich:
+#     Gateway (client auth) -> Switchyard (routing) -> Gateway (provider auth).
+#     Take 01-gateway.yaml and 04-client-auth.yaml from
+#     ../envoy-ai-gateway-in-front/ and point them at this release. This is the
+#     right answer whenever Switchyard is reachable from outside the cluster.
+#
+#  3. Terminate auth in a sidecar in front of the Switchyard container.
+#     Equivalent to 2 with more moving parts and no gateway features; only
+#     worth it if a gateway is not an option.
+#
+# Do not expose this Service through an Ingress or a LoadBalancer without one
+# of the above. The provider credential is safe -- it lives in the Gateway --
+# but an unauthenticated caller can still spend it.
+#
+# Note: NetworkPolicy is only enforced if the cluster's CNI implements it.
+# k3s does so through its bundled kube-router policy controller; plain flannel
+# does not.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: switchyard-egress-ingress-restriction
+  namespace: switchyard
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: switchyard
+      app.kubernetes.io/instance: switchyard-egress
+  policyTypes:
+    - Ingress
+  ingress:
+    # Only workloads explicitly labelled as Switchyard clients may call it.
+    # Label them with `switchyard.nvidia.com/client: "true"`.
+    - from:
+        - podSelector:
+            matchLabels:
+              switchyard.nvidia.com/client: "true"
+      ports:
+        - protocol: TCP
+          port: 4000

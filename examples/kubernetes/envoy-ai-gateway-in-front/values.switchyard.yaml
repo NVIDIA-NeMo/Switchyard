@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Helm values for Switchyard when Envoy AI Gateway sits in front.
+#
+#   helm upgrade --install switchyard deploy/helm/switchyard \
+#     --namespace switchyard --create-namespace \
+#     -f examples/kubernetes/envoy-ai-gateway-in-front/values.switchyard.yaml
+
+image:
+  repository: ghcr.io/nvidia-nemo/switchyard/switchyard-server
+  tag: "0.2.0"
+
+# Secret holding NVIDIA_API_KEY. Create it before installing:
+#   kubectl -n switchyard create secret generic switchyard-keys \
+#     --from-literal=NVIDIA_API_KEY="$NVIDIA_API_KEY"
+#
+# switchyard-server exits non-zero when an `api_key_env` named below is missing
+# from the environment, so a misnamed key surfaces as a crash-looping pod
+# rather than as unauthenticated upstream calls.
+apiKeySecret:
+  name: switchyard-keys
+
+# Switchyard owns provider credentials in this topology and reaches the
+# provider directly. The Gateway in front handles ingress concerns only.
+config:
+  routes: |
+    schema_version = 1
+
+    [llm_clients.nvidia]
+    format = "openai_chat"
+    base_url = "https://inference-api.nvidia.com/v1"
+    api_key_env = "NVIDIA_API_KEY"
+    max_retries = 2
+
+    # Three tiers of the same model family. The point of the classifier route
+    # below is to spend `ultra` tokens only on the requests that need them.
+    [targets.nano]
+    id = "nvidia/nvidia/nemotron-3-nano-30b-a3b"
+    llm_client = "nvidia"
+
+    [targets.super]
+    id = "nvidia/nvidia/nemotron-3-super-v3"
+    llm_client = "nvidia"
+
+    [targets.ultra]
+    id = "nvidia/nvidia/nemotron-3-ultra"
+    llm_client = "nvidia"
+
+    # Single-tier routes, useful as cost and accuracy baselines.
+    [routes.nano]
+    id = "switchyard/nano"
+    type = "passthrough"
+    target = "nano"
+
+    [routes.super]
+    id = "switchyard/super"
+    type = "passthrough"
+    target = "super"
+
+    [routes.ultra]
+    id = "switchyard/ultra"
+    type = "passthrough"
+    target = "ultra"
+
+    # Sends each task to `classifier_target` for a capability verdict, then
+    # serves it from `weak_target` or `strong_target`. Using the cheap tier as
+    # its own judge keeps the routing decision inexpensive.
+    #
+    # Raise base_threshold to send less traffic to the weak tier. Anything the
+    # judge cannot decide goes to strong_target.
+    [routes.classified]
+    id = "switchyard/classified"
+    type = "llm_classifier"
+    mode = "capability"
+    classifier_target = "nano"
+    weak_target = "nano"
+    strong_target = "ultra"
+    base_threshold = 0.5
+
+    # Even split across tiers, for A/B comparison rather than cost control.
+    [routes.general]
+    id = "switchyard/general"
+    type = "random"
+    targets = ["nano", "super", "ultra"]
+    weights = [1, 1, 1]

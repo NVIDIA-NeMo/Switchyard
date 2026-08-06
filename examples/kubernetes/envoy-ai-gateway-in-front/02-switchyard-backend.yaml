@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Registers Switchyard as an AI service backend and routes model names to it.
+#
+# The model names matched here are Switchyard *route ids* -- the `id` field of
+# each `[routes.*]` table in the deployment TOML. A client asking for
+# "switchyard/general" reaches this Gateway, which forwards to Switchyard,
+# which runs the `general` algorithm and picks a target.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: switchyard
+  namespace: switchyard
+spec:
+  endpoints:
+    # Service and port created by the switchyard Helm chart.
+    - fqdn:
+        hostname: switchyard.switchyard.svc.cluster.local
+        port: 4000
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIServiceBackend
+metadata:
+  name: switchyard
+  namespace: switchyard
+spec:
+  # Switchyard accepts OpenAI Chat Completions, so the gateway needs no
+  # translation on this hop. Switchyard does its own translation downstream if
+  # a target speaks Anthropic Messages or OpenAI Responses.
+  schema:
+    name: OpenAI
+  backendRef:
+    name: switchyard
+    kind: Backend
+    group: gateway.envoyproxy.io
+  # Switchyard forwards inbound request headers to the provider it selects, so
+  # the proxy headers Envoy adds on this hop would travel all the way upstream.
+  # Providers that route on `x-forwarded-host` then resolve the wrong virtual
+  # host and reject the call. Drop it here rather than at the provider, since
+  # the header carries no meaning past this hop.
+  headerMutation:
+    remove:
+      - x-forwarded-host
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIGatewayRoute
+metadata:
+  name: switchyard
+  namespace: switchyard
+spec:
+  parentRefs:
+    - name: switchyard-ai-gateway
+      kind: Gateway
+      group: gateway.networking.k8s.io
+  rules:
+    # x-ai-eg-model is set by the AI Gateway from the request body's `model`
+    # field. One matcher per Switchyard route id you expose; a model with no
+    # matching rule gets a 404 here and never reaches Switchyard.
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model
+              value: switchyard/classified
+      backendRefs:
+        - name: switchyard
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model
+              value: switchyard/general
+      backendRefs:
+        - name: switchyard
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model
+              value: switchyard/nano
+      backendRefs:
+        - name: switchyard
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model
+              value: switchyard/super
+      backendRefs:
+        - name: switchyard
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model
+              value: switchyard/ultra
+      backendRefs:
+        - name: switchyard
+  # Token accounting for gateway-level rate limiting. Switchyard reports usage
+  # in the OpenAI-standard `usage` object, so the gateway can meter it.
+  llmRequestCosts:
+    - metadataKey: llm_input_token
+      type: InputToken
+    - metadataKey: llm_output_token
+      type: OutputToken
+    - metadataKey: llm_total_token
+      type: TotalToken

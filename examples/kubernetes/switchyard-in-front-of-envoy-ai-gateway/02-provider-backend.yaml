@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The upstream provider, fronted by Envoy AI Gateway.
+#
+# Switchyard sends OpenAI Chat Completions to the Gateway with the *provider's*
+# model id. The Gateway matches on that id, terminates upstream TLS, and
+# injects the API key from a Secret -- so the key stays in the gateway's trust
+# boundary rather than in the Switchyard pod's environment.
+#
+# Swap the hostname and model ids below for your own provider.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: nvidia
+  namespace: switchyard
+spec:
+  endpoints:
+    - fqdn:
+        hostname: inference-api.nvidia.com
+        port: 443
+---
+apiVersion: gateway.networking.k8s.io/v1alpha3
+kind: BackendTLSPolicy
+metadata:
+  name: nvidia-tls
+  namespace: switchyard
+spec:
+  targetRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: nvidia
+  validation:
+    wellKnownCACertificates: System
+    hostname: inference-api.nvidia.com
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIServiceBackend
+metadata:
+  name: nvidia
+  namespace: switchyard
+spec:
+  schema:
+    name: OpenAI
+    # This endpoint serves the OpenAI API at /v1. Set `/api/v1` for OpenRouter,
+    # or drop the field entirely when the provider uses the default.
+    prefix: /v1
+  backendRef:
+    name: nvidia
+    kind: Backend
+    group: gateway.envoyproxy.io
+---
+# Injects `Authorization: Bearer <apiKey>` on the way to the provider.
+# The Secret's key must literally be `apiKey`:
+#   kubectl -n switchyard create secret generic nvidia-apikey \
+#     --from-literal=apiKey="$NVIDIA_API_KEY"
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: BackendSecurityPolicy
+metadata:
+  name: nvidia-apikey
+  namespace: switchyard
+spec:
+  type: APIKey
+  apiKey:
+    secretRef:
+      name: nvidia-apikey
+  targetRefs:
+    - group: aigateway.envoyproxy.io
+      kind: AIServiceBackend
+      name: nvidia
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIGatewayRoute
+metadata:
+  name: nvidia
+  namespace: switchyard
+spec:
+  parentRefs:
+    - name: switchyard-upstream
+      kind: Gateway
+      group: gateway.networking.k8s.io
+  rules:
+    # One rule per provider model id. These are the `id` fields of the
+    # `[targets.*]` tables in the deployment TOML, not Switchyard route ids.
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model
+              value: nvidia/nvidia/nemotron-3-super-v3
+      backendRefs:
+        - name: nvidia
+  llmRequestCosts:
+    - metadataKey: llm_input_token
+      type: InputToken
+    - metadataKey: llm_output_token
+      type: OutputToken
+    - metadataKey: llm_total_token
+      type: TotalToken

@@ -1,0 +1,183 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "switchyard.fullname" . }}
+  labels:
+    {{- include "switchyard.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "switchyard.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- if .Values.config.create }}
+        # Roll the pods whenever the deployment TOML changes.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.apiKeySecret.create }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.metrics.podAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.containerPort | quote }}
+        prometheus.io/path: /metrics
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "switchyard.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "switchyard.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.dnsPolicy }}
+      dnsPolicy: {{ . }}
+      {{- end }}
+      {{- with .Values.dnsConfig }}
+      dnsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: switchyard
+          image: {{ include "switchyard.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            - --config
+            - {{ include "switchyard.configPath" . }}
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ .Values.containerPort | quote }}
+            {{- if .Values.routingLog.enabled }}
+            - --routing-log-file
+            - {{ .Values.routingLog.path }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - --tls-cert
+            - {{ printf "%s/tls.crt" (trimSuffix "/" .Values.tls.mountPath) }}
+            - --tls-key
+            - {{ printf "%s/tls.key" (trimSuffix "/" .Values.tls.mountPath) }}
+            {{- end }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          {{- $apiKeySecret := include "switchyard.apiKeySecretName" . }}
+          {{- if or $apiKeySecret .Values.envFrom }}
+          envFrom:
+            {{- if $apiKeySecret }}
+            - secretRef:
+                name: {{ $apiKeySecret }}
+            {{- end }}
+            {{- with .Values.envFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- with .Values.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: {{ .Values.config.mountPath }}
+              readOnly: true
+            # readOnlyRootFilesystem is on and the image sets HOME=/tmp.
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.routingLog.enabled }}
+            - name: routing-log
+              mountPath: {{ dir .Values.routingLog.path }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: {{ .Values.tls.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "switchyard.configMapName" . }}
+            items:
+              - key: {{ .Values.config.key }}
+                path: {{ .Values.config.key }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.routingLog.enabled }}
+        - name: routing-log
+          {{- if .Values.routingLog.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.routingLog.existingClaim }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.routingLog.sizeLimit }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ required "tls.secretName is required when tls.enabled is true" .Values.tls.secretName }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,39 @@
+Switchyard {{ .Chart.AppVersion }} is installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Service: {{ include "switchyard.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+Routes served by this deployment:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "switchyard.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl -s localhost:{{ .Values.service.port }}/v1/models | jq
+
+Send a completion, naming a route id from your deployment TOML as the model:
+
+  curl -s localhost:{{ .Values.service.port }}/v1/chat/completions \
+    -H 'content-type: application/json' \
+    -d '{"model":"<route-id>","messages":[{"role":"user","content":"hello"}]}' | jq
+
+Liveness and Prometheus metrics:
+
+  curl -s localhost:{{ .Values.service.port }}/health
+  curl -s localhost:{{ .Values.service.port }}/metrics
+
+{{ if not (include "switchyard.apiKeySecretName" .) -}}
+WARNING: no API-key Secret is configured. Every `api_key_env` named in your
+deployment TOML must resolve to an environment variable, or upstream calls will
+be sent unauthenticated. Set `apiKeySecret.name` to an existing Secret, or
+`envFrom`, and reinstall.
+{{- end }}
+{{- if .Values.apiKeySecret.create }}
+
+NOTE: apiKeySecret.create is true, so provider keys are stored in values. That
+is fine for a test cluster; for production point `apiKeySecret.name` at a Secret
+managed by your secret store instead.
+{{- end }}
+{{- if .Values.config.create }}
+
+The deployment TOML is held in ConfigMap {{ include "switchyard.configMapName" . }}.
+Validate changes before rolling them out:
+
+  switchyard-server --config routes.toml --dry-run
+{{- end }}
