@@ -284,9 +284,15 @@ pub struct ProviderExtensions {
 /// Exact source payloads retained for lossless same-format round trips.
 ///
 /// Translation's default preservation policy prefers a stored same-format body
-/// over reconstructing one from normalized fields. A caller that mutates the IR
-/// must clear the corresponding entry or use a policy with preservation disabled
-/// when those mutations must be encoded.
+/// over reconstructing one from normalized fields, which is what makes a
+/// same-format hop lossless.
+///
+/// A stored body is only a faithful stand-in while the IR still matches it.
+/// [`LlmRequest::seal_preservation`] records what the IR looked like when the
+/// body was captured, and [`LlmRequest::preserved_request_is_current`] reports
+/// whether it still does. Callers that mutate the IR — adding a system prompt,
+/// appending a handoff note — need do nothing: the seal stops matching and
+/// codecs re-encode from normalized fields on their own.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PreservationMetadata {
@@ -294,6 +300,9 @@ pub struct PreservationMetadata {
     pub requests: BTreeMap<FormatId, Value>,
     /// Original response bodies keyed by source format.
     pub responses: BTreeMap<FormatId, Value>,
+    /// Fingerprint of the request IR at the moment the bodies above were
+    /// captured. `None` means unsealed, which reads as "not current".
+    pub request_seal: Option<u64>,
 }
 
 /// Normalized request representation shared by Switchyard components.
@@ -324,6 +333,49 @@ pub struct LlmRequest {
     /// This is separate from a host's optional
     /// [`Request::raw_request`](crate::Request::raw_request).
     pub preservation: PreservationMetadata,
+}
+
+impl LlmRequest {
+    /// Records the current shape of this request against its preserved bodies.
+    ///
+    /// Codecs call this once decoding is complete. Until it is called the
+    /// preserved bodies are treated as stale, so an un-sealed request always
+    /// re-encodes from normalized fields.
+    pub fn seal_preservation(&mut self) {
+        self.preservation.request_seal = None;
+        self.preservation.request_seal = Some(self.shape_fingerprint());
+    }
+
+    /// Whether the preserved bodies still describe this request.
+    ///
+    /// Returns `false` once anything has changed since [`Self::seal_preservation`]
+    /// — a routing algorithm inserting a tier system prompt, appending a handoff
+    /// note, rewriting the model — which is what stops a same-format hop from
+    /// replaying a body that predates the change.
+    pub fn preserved_request_is_current(&self) -> bool {
+        self.preservation.request_seal == Some(self.shape_fingerprint())
+    }
+
+    /// Hashes everything except the seal itself, so sealing is idempotent.
+    ///
+    /// `model` is deliberately excluded. Routing rewrites it on every hop and the
+    /// client stamps the resolved name onto the encoded body afterwards, so a
+    /// replayed body is never wrong about the model — unlike a prompt or a note,
+    /// which only exist in the IR.
+    fn shape_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut unsealed = self.clone();
+        unsealed.preservation.request_seal = None;
+        unsealed.model = None;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // Serialization gives a total order over the IR without requiring `Hash`
+        // on every nested provider value; `Value` maps are ordered.
+        serde_json::to_string(&unsealed)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 /// Normalized token usage counts.

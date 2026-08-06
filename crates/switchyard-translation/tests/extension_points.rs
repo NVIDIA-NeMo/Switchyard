@@ -154,21 +154,23 @@ impl FormatCodec for MinimalCustomCodec {
         body: &Value,
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<DecodedRequest> {
-        Ok(DecodedRequest {
-            request: LlmRequest {
-                model: body
-                    .get("model")
+        let mut request = LlmRequest {
+            model: body
+                .get("model")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            messages: vec![Message::text(
+                Role::User,
+                body.get("prompt")
                     .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                messages: vec![Message::text(
-                    Role::User,
-                    body.get("prompt")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default(),
-                )],
-                preservation: capture_request_preservation(self.format(), body, policy),
-                ..LlmRequest::default()
-            },
+                    .unwrap_or_default(),
+            )],
+            preservation: capture_request_preservation(self.format(), body, policy),
+            ..LlmRequest::default()
+        };
+        request.seal_preservation();
+        Ok(DecodedRequest {
+            request,
             diagnostics: Vec::new(),
         })
     }
@@ -178,7 +180,7 @@ impl FormatCodec for MinimalCustomCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<EncodedRequest> {
-        if let Some(body) = exact_preserved_request(&request.preservation, self.format(), policy) {
+        if let Some(body) = exact_preserved_request(request, self.format(), policy) {
             return Ok(EncodedRequest {
                 body,
                 diagnostics: Vec::new(),

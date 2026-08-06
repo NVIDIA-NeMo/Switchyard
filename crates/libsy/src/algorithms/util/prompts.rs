@@ -234,6 +234,21 @@ mod tests {
         Ok(request)
     }
 
+    /// A request that already carries an exact inbound body for same-format replay.
+    fn request_with_preserved_body() -> Request {
+        let mut request = Request::default();
+        request.llm_request.preservation.requests.insert(
+            "openai_chat".into(),
+            serde_json::json!({
+                "model": "weak-model",
+                "messages": [{"role": "user", "content": "hi"}],
+            }),
+        );
+        // A codec seals once decoding is done; without that the body reads as stale.
+        request.llm_request.seal_preservation();
+        request
+    }
+
     fn prompts() -> TargetPrompts {
         TargetPrompts::default()
             .with("strong", STRONG_PROMPT)
@@ -302,6 +317,64 @@ mod tests {
             .process(&mut (), Event::Request(&mut request))
             .await?;
         assert!(instructions(&request).is_empty());
+        Ok(())
+    }
+
+    /// A configured tier prompt must survive a same-format hop. The codec replays
+    /// the preserved inbound body verbatim when it is present, so the processor has
+    /// to give up exact replay once it has added an instruction the body lacks.
+    #[tokio::test]
+    async fn tier_prompt_drops_preserved_body_so_same_format_targets_see_it() -> Result<()> {
+        let processor = SystemPromptProcessor::new(prompts());
+        let mut request = request_with_preserved_body();
+        processor
+            .process(
+                &mut (),
+                Event::Decision {
+                    request: &mut request,
+                    decision: &RoutedTo("weak"),
+                },
+            )
+            .await?;
+
+        assert_eq!(instructions(&request), vec![WEAK_PROMPT]);
+        assert!(
+            !request.llm_request.preserved_request_is_current(),
+            "preserved inbound body would replay without the tier prompt"
+        );
+        Ok(())
+    }
+
+    /// Same contract for the one-off note: it is added to the conversation, so a
+    /// replayed body would drop it too.
+    #[test]
+    fn note_drops_preserved_body() {
+        let mut request = request_with_preserved_body();
+        append_note(&mut request, NOTE);
+        assert!(
+            !request.llm_request.preserved_request_is_current(),
+            "preserved inbound body would replay without the note"
+        );
+    }
+
+    /// A target with no configured prompt is routed untouched, so exact replay stays.
+    #[tokio::test]
+    async fn unprompted_target_keeps_preserved_body() -> Result<()> {
+        let processor = SystemPromptProcessor::new(prompts());
+        let mut request = request_with_preserved_body();
+        processor
+            .process(
+                &mut (),
+                Event::Decision {
+                    request: &mut request,
+                    decision: &RoutedTo("unconfigured"),
+                },
+            )
+            .await?;
+        assert!(
+            request.llm_request.preserved_request_is_current(),
+            "an untouched request keeps exact replay"
+        );
         Ok(())
     }
 }

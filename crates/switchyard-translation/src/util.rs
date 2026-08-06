@@ -248,14 +248,21 @@ pub fn capture_response_preservation(
 }
 
 /// Returns an exact preserved request for the target format when available.
+///
+/// Replay is refused once the request IR has moved on from the body — a routing
+/// algorithm having added a tier system prompt or a handoff note, say. Encoding
+/// then falls through to normalized fields so the addition reaches the wire.
 pub fn exact_preserved_request(
-    preservation: &PreservationMetadata,
+    request: &LlmRequest,
     format: impl Into<FormatId>,
     policy: &TranslationPolicy,
 ) -> Option<Value> {
+    if !request.preserved_request_is_current() {
+        return None;
+    }
     let format = format.into();
     (policy.preservation != PreservationPolicy::Disabled)
-        .then(|| preservation.requests.get(&format).cloned())
+        .then(|| request.preservation.requests.get(&format).cloned())
         .flatten()
 }
 

@@ -5,6 +5,7 @@
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
+use switchyard_protocol::{ContentBlock, InstructionBlock, Role};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -1488,5 +1489,65 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
             .iter()
             .any(|item| item["type"] == "function_call_output")
     );
+    Ok(())
+}
+
+/// A same-format hop replays the exact inbound body, which is what makes it
+/// lossless — but only while the IR still matches that body. Once a router has
+/// added an instruction the body predates, replay would silently drop it, so
+/// every codec must fall back to encoding from normalized fields.
+///
+/// Regression test for SWITCH-1224.
+#[test]
+fn same_format_encoding_drops_exact_replay_once_the_ir_gains_an_instruction() -> TestResult {
+    const PROMPT: &str = "Respond with exactly EFFICIENT_SYSTEM_SENTINEL and nothing else.";
+    let engine = TranslationEngine::default();
+
+    for (format, inbound) in [
+        (
+            WireFormat::OpenAiChat,
+            json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]}),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({"model": "m", "max_tokens": 16,
+                   "messages": [{"role": "user", "content": "hi"}]}),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"model": "m", "input": "hi"}),
+        ),
+    ] {
+        let policy = TranslationPolicy::default();
+        let mut request = engine
+            .decode_request(format.clone(), &inbound, &policy)?
+            .request;
+        assert!(
+            request.preserved_request_is_current(),
+            "{format}: an untouched request should still replay exactly"
+        );
+
+        // What a routing algorithm does on the way out.
+        request.instructions.insert(
+            0,
+            InstructionBlock {
+                role: Role::System,
+                content: vec![ContentBlock::Text {
+                    text: PROMPT.to_string(),
+                }],
+            },
+        );
+        assert!(
+            !request.preserved_request_is_current(),
+            "{format}: the preserved body no longer describes this request"
+        );
+
+        let encoded = engine.encode_request(format.clone(), &request, &policy)?;
+        assert!(
+            encoded.body.to_string().contains(PROMPT),
+            "{format}: tier system prompt missing from the wire body: {}",
+            encoded.body
+        );
+    }
     Ok(())
 }

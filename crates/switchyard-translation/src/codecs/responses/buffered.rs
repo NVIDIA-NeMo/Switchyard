@@ -107,6 +107,10 @@ impl FormatCodec for OpenAiResponsesCodec {
                 "stream",
             ],
         );
+        // Record the shape the preserved body describes. Anything that mutates the
+        // IR after this point invalidates exact replay, so a tier prompt or a
+        // handoff note cannot be silently dropped on a same-format hop.
+        request.seal_preservation();
         Ok(DecodedRequest {
             request,
             diagnostics,
@@ -118,9 +122,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         request: &LlmRequest,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
-        if let Some(body) =
-            exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, _policy)
-        {
+        if let Some(body) = exact_preserved_request(request, WireFormat::OpenAiResponses, _policy) {
             return Ok(EncodedRequest {
                 body,
                 diagnostics: Vec::new(),

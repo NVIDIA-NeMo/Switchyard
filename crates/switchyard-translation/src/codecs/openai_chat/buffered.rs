@@ -165,6 +165,10 @@ impl FormatCodec for OpenAiChatCodec {
             ],
         );
 
+        // Record the shape the preserved body describes. Anything that mutates the
+        // IR after this point invalidates exact replay, so a tier prompt or a
+        // handoff note cannot be silently dropped on a same-format hop.
+        request.seal_preservation();
         Ok(DecodedRequest {
             request,
             diagnostics,
@@ -176,9 +180,7 @@ impl FormatCodec for OpenAiChatCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
-        if let Some(body) =
-            exact_preserved_request(&request.preservation, WireFormat::OpenAiChat, policy)
-        {
+        if let Some(body) = exact_preserved_request(request, WireFormat::OpenAiChat, policy) {
             return Ok(EncodedRequest {
                 body,
                 diagnostics: Vec::new(),
