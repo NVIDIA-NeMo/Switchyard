@@ -1340,7 +1340,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/aa055a53ed6256628cb62ca156893f718c4c090b/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/64e3593fabe62ead2972b67b8183be7230dc3ad8/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1365,7 +1365,7 @@ for the server merge behavior.</p>
 <tr>
 <td><code>recent_turn_window</code></td>
 <td>unset</td>
-<td>When unset, the judge sees the opening user task and the latest user message when they differ. When set to <code>N</code>, it sees client system/developer instructions, the opening user task, and the last <code>N</code> conversation messages after that task. <code>0</code> keeps only the instructions and opening task.</td>
+<td>When unset, the judge sees the opening user task and the latest user message when they differ. When set to <code>N</code>, it sees the opening user task and the last <code>N</code> conversation messages after that task. <code>0</code> keeps only the opening task. Client system and developer instructions are not shown to the judge.</td>
 </tr>
 <tr>
 <td><code>session_affinity</code></td>
