@@ -9,17 +9,16 @@ Responses API clients simultaneously — the chain handles format
 translation internally.
 """
 
-from __future__ import annotations
-
 import inspect
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from fastapi import FastAPI, Request
-from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from switchyard.lib.endpoints import outcome_metrics
 from switchyard.lib.endpoints.anthropic_messages_endpoint import (
@@ -27,6 +26,7 @@ from switchyard.lib.endpoints.anthropic_messages_endpoint import (
 )
 from switchyard.lib.endpoints.base import Endpoint
 from switchyard.lib.endpoints.dispatch import invalid_request_response
+from switchyard.lib.endpoints.error_envelope import ERROR_SOURCE_HEADER, error_response
 from switchyard.lib.endpoints.models_endpoint import ModelsEndpoint
 from switchyard.lib.endpoints.openai_chat_endpoint import (
     OpenAIChatEndpoint,
@@ -34,6 +34,8 @@ from switchyard.lib.endpoints.openai_chat_endpoint import (
 from switchyard.lib.endpoints.responses_endpoint import (
     ResponsesEndpoint,
 )
+from switchyard.lib.proxy_context import ERROR_SOURCE_SWITCHYARD
+from switchyard.lib.route_table import SwitchyardApp
 from switchyard_rust.core import SwitchyardInvalidRequestError
 
 #: Inbound LLM-serving paths whose response status codes feed the
@@ -46,8 +48,21 @@ _LLM_ROUTES: frozenset[str] = frozenset({
     "/v1/responses",
 })
 
-if TYPE_CHECKING:
-    from switchyard.lib.route_table import SwitchyardApp
+
+def _request_error_response(request: Request, message: str, code: str) -> Response:
+    if request.url.path == "/v1/messages":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": message,
+                },
+            },
+            headers={ERROR_SOURCE_HEADER: ERROR_SOURCE_SWITCHYARD},
+        )
+    return invalid_request_response(message, code=code)
 
 
 async def _run_lifecycle_method(component: object, method_name: str) -> None:
@@ -113,6 +128,19 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
 
     app = FastAPI(title="Switchyard", lifespan=_lifespan)
 
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error_handler(
+        request: Request, exc: StarletteHTTPException
+    ) -> Response:
+        if exc.status_code == 404 and "endpoint" not in request.scope:
+            return error_response(
+                404,
+                "Not Found",
+                error_type="not_found",
+                code="endpoint_not_found",
+            )
+        return await http_exception_handler(request, exc)
+
     @app.exception_handler(RequestValidationError)
     async def _request_validation_error_handler(
         request: Request, exc: RequestValidationError
@@ -133,12 +161,12 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
                     if is_json_parse
                     else "Request body must be a JSON object"
                 )
-                return invalid_request_response(message, code="invalid_body")
+                return _request_error_response(request, message, "invalid_body")
         return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(SwitchyardInvalidRequestError)
     async def _invalid_request_handler(
-        _request: Request, exc: SwitchyardInvalidRequestError
+        request: Request, exc: SwitchyardInvalidRequestError
     ) -> Response:
         """Map request validation failures to the 400 envelope.
 
@@ -148,7 +176,7 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
         ``messages`` array, so the envelope uses ``code="empty_messages"``;
         revisit if more validations start sharing this error.
         """
-        return invalid_request_response(str(exc), code="empty_messages")
+        return _request_error_response(request, str(exc), "empty_messages")
 
     app.state.switchyard = switchyard
 
