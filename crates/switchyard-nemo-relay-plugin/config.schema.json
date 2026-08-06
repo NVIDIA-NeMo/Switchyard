@@ -96,6 +96,11 @@
             "pattern": "^https?://"
           },
           "weight": { "type": "number", "minimum": 0, "default": 1 },
+          "drop_caller_extra_body": {
+            "type": "boolean",
+            "default": false,
+            "description": "Drop an intercepted OpenAI SDK extra_body wrapper instead of forwarding it to targets that reject caller-specific extensions."
+          },
           "header_env": {
             "type": "object",
             "description": "Sole custom provider-header source. Maps header names to environment-variable names resolved by the plugin process so literal values are never stored in configuration.",

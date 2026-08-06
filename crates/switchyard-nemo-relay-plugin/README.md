@@ -214,6 +214,7 @@ protocol = "openai_chat"
 endpoint = "/v1/chat/completions"
 base_url = "https://provider.example.com"
 weight = 1
+drop_caller_extra_body = true
 
 [plugins.dynamic.config.targets.fast.header_env]
 authorization = "PROVIDER_AUTHORIZATION"
@@ -232,6 +233,13 @@ managed calls. Each variable supplies the complete header value, so an
 `authorization` value must include its scheme, such as `Bearer`. Literal
 `headers` configuration is rejected; non-secret routing or tenancy headers must
 also use `header_env`.
+
+Relay may intercept an OpenAI SDK call before the SDK materializes its
+`extra_body` option into a provider request. Targets that reject this
+caller-specific wrapper can set `drop_caller_extra_body = true`. The plugin
+then drops the wrapper and its contents; it does not promote those values to
+top-level provider fields. The default is `false` so lossless same-format
+forwarding remains unchanged for targets that consume the extension.
 
 For `kind = "llm_classifier"`, the classifier target must use `openai_chat` or
 `openai_responses`; libsy's judge request uses a JSON-schema response format

@@ -42,6 +42,8 @@ struct TargetBinding {
     #[serde(default = "default_weight")]
     weight: f64,
     #[serde(default)]
+    drop_caller_extra_body: bool,
+    #[serde(default)]
     header_env: BTreeMap<String, String>,
 }
 
@@ -115,8 +117,14 @@ impl TargetBinding {
             headers.insert(name.clone(), value);
         }
         let dispatch_url = self.dispatch_url();
-        let client = TargetClient::new(self.model.clone(), self.protocol, dispatch_url, headers)
-            .map_err(|error| format!("failed to create target HTTP client: {error}"))?;
+        let client = TargetClient::new(
+            self.model.clone(),
+            self.protocol,
+            dispatch_url,
+            headers,
+            self.drop_caller_extra_body,
+        )
+        .map_err(|error| format!("failed to create target HTTP client: {error}"))?;
         Ok(PreparedTargetBinding {
             client: Arc::new(client),
         })
@@ -404,6 +412,7 @@ mod tests {
             endpoint: String::new(),
             base_url: "https://provider.example/v1".into(),
             weight: 1.0,
+            drop_caller_extra_body: false,
             header_env: BTreeMap::new(),
         }
     }

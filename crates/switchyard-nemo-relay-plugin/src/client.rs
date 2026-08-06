@@ -24,6 +24,7 @@ use crate::translation;
 pub(crate) struct TargetClient {
     provider_model: String,
     target_format: WireFormat,
+    drop_caller_extra_body: bool,
     inner: TranslatingLlmClient,
     translation: TranslationEngine,
 }
@@ -34,6 +35,7 @@ impl TargetClient {
         target_format: WireFormat,
         dispatch_url: String,
         headers: BTreeMap<String, String>,
+        drop_caller_extra_body: bool,
     ) -> Result<Self, LlmClientError> {
         let backend_config = HttpBackendConfig {
             // `dispatch_url` is already resolved by configuration. Backend URL
@@ -57,6 +59,7 @@ impl TargetClient {
         Ok(Self {
             provider_model,
             target_format,
+            drop_caller_extra_body,
             inner,
             translation: TranslationEngine::default(),
         })
@@ -71,6 +74,14 @@ impl TargetClient {
         let metadata = request.metadata.get_or_insert_default();
         metadata.wire_format = Some(self.target_format);
         metadata.http_headers = None;
+        if self.drop_caller_extra_body {
+            request.llm_request.extensions.fields.remove("extra_body");
+            for preserved in request.llm_request.preservation.requests.values_mut() {
+                if let Some(body) = preserved.as_object_mut() {
+                    body.remove("extra_body");
+                }
+            }
+        }
         request
     }
 }
@@ -119,6 +130,7 @@ mod tests {
                 WireFormat::AnthropicMessages => "https://provider.example/v1/messages".into(),
             },
             BTreeMap::new(),
+            false,
         )
         .unwrap()
     }
@@ -161,5 +173,63 @@ mod tests {
         assert!(client(WireFormat::AnthropicMessages).supports_count_tokens());
         assert!(!client(WireFormat::OpenAiChat).supports_count_tokens());
         assert!(!client(WireFormat::OpenAiResponses).supports_count_tokens());
+    }
+
+    #[test]
+    fn configured_target_drops_intercepted_caller_extra_body() {
+        use serde_json::json;
+        use switchyard_protocol::{LlmRequest, PreservationMetadata, ProviderExtensions};
+
+        let client = TargetClient::new(
+            "provider/model".into(),
+            WireFormat::OpenAiChat,
+            "https://provider.example/v1/chat/completions".into(),
+            BTreeMap::new(),
+            true,
+        )
+        .unwrap();
+        let request = Request {
+            llm_request: LlmRequest {
+                extensions: ProviderExtensions {
+                    fields: serde_json::Map::from_iter([(
+                        "extra_body".into(),
+                        json!({"reasoning": {"effort": "medium"}}),
+                    )]),
+                },
+                preservation: PreservationMetadata {
+                    requests: BTreeMap::from([(
+                        WireFormat::OpenAiChat.into(),
+                        json!({
+                            "model": "route",
+                            "messages": [{"role": "user", "content": "hello"}],
+                            "extra_body": {
+                                "reasoning": {"effort": "medium"},
+                                "session_id": "hermes-session"
+                            }
+                        }),
+                    )]),
+                    ..PreservationMetadata::default()
+                },
+                ..LlmRequest::default()
+            },
+            ..Request::default()
+        };
+
+        let prepared = client.prepare_request(request);
+        assert!(
+            !prepared
+                .llm_request
+                .extensions
+                .fields
+                .contains_key("extra_body")
+        );
+        assert!(
+            prepared
+                .llm_request
+                .preservation
+                .requests
+                .values()
+                .all(|body| body.get("extra_body").is_none())
+        );
     }
 }
