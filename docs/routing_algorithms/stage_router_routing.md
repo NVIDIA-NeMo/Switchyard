@@ -65,18 +65,20 @@ The routing decision for one turn:
 flowchart TB
     t["turn"] --> h{"critical error<br/>or compaction?"}
     h -->|yes| cap["capable (override)"]
-    h -->|no| dz{"tests passed<br/>+ recent write?"}
+    h -->|no| dz{"tests passed<br/>+ recent write or edit<br/>+ no windowed error?"}
     dz -->|yes| eff["efficient (tests_passed)"]
     dz -->|no| sc["raw = 0.10 × (severity/0.7 + spinning + exploring − production)<br/>score = tanh(5 × raw)"]
     sc --> g{"|score| >= threshold?"}
     g -->|"yes, score > 0"| cap2["capable (dimensions)"]
     g -->|"yes, score < 0"| eff2["efficient (dimensions)"]
     g -->|no| c{"classifier set?"}
-    c -->|yes| k["classifier picks tier"]
-    c -->|no| d["picker default tier (fall_open)"]
+    c -->|yes| k{"classifier<br/>picks a tier?"}
+    k -->|yes| kt["that tier (llm-classifier)"]
+    k -->|no| d["picker default tier (fall_open)"]
+    c -->|no| d
 
     classDef box font-family:monospace,fill:none,stroke:#9aa0a6,stroke-width:1px;
-    class t,h,dz,sc,g,c,cap,eff,cap2,eff2,k,d box;
+    class t,h,dz,sc,g,c,cap,eff,cap2,eff2,k,kt,d box;
 ```
 
 A turn with no tool-result history yet has no stage to estimate, so it takes the
@@ -198,10 +200,12 @@ escalate, which cuts flapping at the cost of reacting late. Sweep it alongside
 `t`; they are not independent.
 
 **Caveat on efficient outcomes.** In stage-router the efficient model inherits
-conversation history up to the escalation point, whereas a pure-efficient run
-starts fresh. So efficient performs at least as well inside stage-router as it
-does alone, and any comparison against a standalone efficient run is a
-conservative lower bound.
+conversation history up to the point it takes the turn, whereas a standalone
+efficient run starts fresh. That history can help — the work so far is already
+done — or hurt, when a long or confused transcript is harder to continue than a
+clean start. Treat the two as different conditions rather than as a bound in
+either direction: a comparison against a standalone efficient run says how the
+pairing does, not how the efficient model does.
 
 ## Route configuration
 
@@ -255,11 +259,15 @@ Save as `routes.toml` and start the server:
 switchyard-server --config routes.toml --port 4000
 ```
 
-Add `--routing-log-file /var/lib/switchyard/routing_requests.jsonl` to record
-per-request routing decisions for later analysis.
+Add `--routing-log-file ./routing_requests.jsonl` to record per-request routing
+decisions for later analysis. The server creates missing parent directories but
+does not adjust ownership, so point this at a path the server user can already
+write to — a system location such as `/var/lib/switchyard/` needs that directory
+to belong to the server user first.
 
 Keep the route `id` aligned with whatever model alias your agent sends — that
-string is what selects this route.
+string is what selects this route. With the config above, requests must send
+`"model": "switchyard"`.
 
 This is the recommended default: routing on tool signals alone, no classifier.
 
