@@ -8,8 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 This crate builds the external `nvidia.switchyard` native plugin. It embeds
 `switchyard-libsy`, drives `Algorithm::run_stream`, and uses
 `switchyard-llm-client` for provider HTTP calls. Managed calls use Relay's
-public Rust LLM execution-intercept SDK and do not require a targeted provider
-continuation from Relay.
+completion-based asynchronous middleware hooks and do not require a targeted
+provider continuation from Relay.
 
 The plugin uses NeMo Relay native API v1. It depends on the small
 `nemo-relay-plugin` authoring SDK, not the Relay runtime, and does not start
@@ -59,85 +59,39 @@ This boundary has two important consequences:
   transport activity is therefore not represented as nested Relay LLM
   lifecycle events. Relay records the outer managed call and the plugin emits
   Switchyard routing marks; bridging Switchyard transport spans into Relay is
-  future work. Routing marks are delivered through the public SDK while Relay
-  is polling the active execution callback or stream, so they remain attached
-  to the current Relay scope stack.
+  future work. The adapter captures the active Relay scope before returning
+  `Pending`, so asynchronous routing marks retain their event parent.
 - Switchyard owns provider URLs, credentials, HTTP retry behavior, and
   translation for managed calls. Relay neither validates nor transports those
   target details.
 
-## Native API v1 and the public Rust SDK
+## Native API v1 and asynchronous execution
 
-The manifest uses `compat.native_api = "1"`. The implementation registers with
-`PluginContext::register_llm_execution_intercept` and
-`PluginContext::register_llm_stream_execution_intercept`, receives typed
-`LlmRequest`, `LlmNext`, and `LlmStreamNext` values, and returns the SDK's JSON
-result or `LlmJsonStream`. The `nemo-relay-plugin` SDK owns the C callback
-trampolines, host strings, continuation handles, panic containment, and native
-stream lifecycle. Switchyard contains no raw C callback or host-table adapter.
+The manifest remains `compat.native_api = "1"`, but the plugin requires the
+generic host-table v3 extension shipped by Relay 0.7. It registers through
+v3's completion-based buffered and incremental streaming hooks, returns
+`Pending` immediately, and performs libsy and provider HTTP work on a
+plugin-owned Tokio runtime. Relay workers therefore do not wait synchronously
+for provider I/O.
 
-Switchyard performs libsy and provider I/O on a plugin-owned Tokio runtime. A
-buffered SDK callback waits for that executor to finish. A managed streaming
-callback returns a pull-based Rust iterator backed by a bounded 32-message
-channel; the async producer waits when the consumer is slow. Dropping that
-iterator closes the channel and aborts its in-flight routing task.
+The stream adapter forwards the plugin's bounded 32-message channel into
+Relay's bounded output queue. It retries a logical event when the host queue is
+full and checks cancellation between attempts. Managed HTTP work is selected
+against Relay caller cancellation, so cancelling a buffered or streaming call
+drops its in-flight provider future.
 
-The public native API v1 callback shapes do not provide full in-flight caller
-cancellation. A buffered callback has no cancellation token, so a provider
-request already in progress continues until it responds or reaches the client
-timeout after the caller disconnects. Relay can cancel a streaming iterator
-between pulls, but its synchronous `Iterator::next` call cannot be interrupted
-while it is waiting for the next provider event. Supporting prompt disconnect
-propagation would require an asynchronous public SDK callback or stream-polling
-contract; the plugin does not bypass the SDK to recover that behavior.
+Unmanaged profiles use the same v3 continuation hooks for pass-through. V3's
+downstream stream callback has continue/cancel control but no asynchronous
+acknowledgement, so the adapter uses a nonblocking bridge capped at 8 MiB of
+queued encoded payloads and 256 events. A pass-through stream that outruns
+either bound is rejected rather than consuming unbounded memory.
 
-### Relay runtime capacity
-
-In Relay 0.7, the safe native LLM callbacks run directly in Relay's asynchronous
-middleware future; Relay does not move them to Tokio's separate blocking pool.
-Consequently, each active buffered Switchyard call occupies a normal Relay
-Tokio worker while it waits for the plugin executor, and a streaming call
-occupies a worker while its synchronous `Iterator::next` waits for the next
-provider event. Exhausting those workers can delay unrelated Relay work.
-
-The Relay CLI constructs a Tokio multi-thread runtime without setting an
-explicit worker count. Tokio therefore defaults to the number of CPU cores
-available to the process and honors its `TOKIO_WORKER_THREADS` environment
-variable. Operators can provide additional capacity while using this native API
-v1 integration, for example:
-
-```bash
-TOKIO_WORKER_THREADS=32 nemo-relay ...
-```
-
-This adjusts the normal asynchronous worker pool, not Tokio's blocking pool;
-increasing `max_blocking_threads` does not address this integration. There is no
-universal recommended value. Size the pool with headroom above the expected
-number of concurrent managed calls and Relay's other work, then validate it
-under representative provider latency and streaming concurrency. Increasing
-the worker count mitigates starvation but does not restore cancellation or make
-the synchronous boundary non-blocking.
-
-Embedded Relay hosts own their Tokio runtime and should configure the same
-capacity explicitly:
-
-```rust
-let runtime = tokio::runtime::Builder::new_multi_thread()
-    .worker_threads(32)
-    .enable_all()
-    .build()?;
-```
-
-The durable resolution is a public Relay SDK callback and stream-polling
-contract that can yield while provider I/O is pending and receive caller
-cancellation. Until that exists, provision worker capacity and load-test the
-intended concurrency rather than relying on thread-pool growth alone.
-
-Unmanaged profiles call the typed `LlmNext` or `LlmStreamNext` continuation and
-return its result directly. Managed streams use the bounded Switchyard channel;
-unmanaged streams use Relay's SDK-owned pull iterator without an additional
-bridge. None of the managed HTTP or routing operations requires a targeted LLM
-continuation or direct access to Relay's C ABI.
+This is a raw C boundary: Switchyard contains a small ownership adapter for
+host strings, completion and stream handles, continuation handles, and captured
+scope handles because Relay 0.7 does not expose a safe Rust facade for its
+generic asynchronous surface. The HTTP, routing, and translation behavior
+remains in Switchyard. The adapter can be replaced with the safe typed surface
+when Relay exposes equivalent asynchronous callbacks and cancellation.
 
 ## Supported routers
 
@@ -183,10 +137,10 @@ per-event preservation envelope.
 
 The manifest declares `compat.native_api = "1"` and Relay `>=0.7.0,<0.8`, and
 the Rust SDK uses the exact published `0.7.0` crate. The manifest API value
-selects Relay's released native plugin contract; plugin authors use its safe
-Rust SDK rather than the underlying C table directly. Rebuild the bundle when
-changing SDK versions rather than assuming Rust dynamic-library compatibility
-from the manifest value alone.
+selects Relay's released native plugin contract; the binary also requires the
+v3 C host table shipped on the Relay 0.7 line. Rebuild the bundle when changing
+SDK versions rather than assuming Rust dynamic-library compatibility from the
+manifest value alone.
 
 A Relay project can configure a seeded weighted-random router as follows:
 

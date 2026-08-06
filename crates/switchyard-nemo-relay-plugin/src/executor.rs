@@ -74,20 +74,6 @@ impl PluginExecutor {
     {
         self.inner.handle.spawn(future).abort_handle()
     }
-
-    pub(crate) fn run<F>(&self, future: F) -> Result<F::Output, String>
-    where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
-    {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        self.inner.handle.spawn(async move {
-            let _ = sender.send(future.await);
-        });
-        receiver
-            .recv()
-            .map_err(|_| "Switchyard HTTP runtime stopped before completing work".to_string())
-    }
 }
 
 impl Drop for ExecutorInner {
@@ -125,9 +111,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn executor_runs_buffered_and_spawned_work() {
+    fn executor_spawns_work() {
         let executor = PluginExecutor::new().unwrap();
-        assert_eq!(executor.run(async { 42 }).unwrap(), 42);
         let (sender, receiver) = mpsc::sync_channel(1);
         executor.spawn(async move {
             sender.send("done").unwrap();

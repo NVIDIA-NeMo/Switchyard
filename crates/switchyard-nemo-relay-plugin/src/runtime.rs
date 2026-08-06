@@ -32,7 +32,6 @@ pub(crate) struct RoutingMark {
 pub(crate) enum StreamMessage {
     Mark(RoutingMark),
     Event(Json),
-    Error(String),
 }
 
 pub(crate) struct SwitchyardRuntime {
