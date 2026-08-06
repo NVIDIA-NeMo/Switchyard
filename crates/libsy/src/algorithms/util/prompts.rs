@@ -41,6 +41,18 @@ pub fn append_note(request: &mut Request, note: &str) {
             .messages
             .push(Message::text(Role::User, note)),
     }
+    drop_exact_replay(request);
+}
+
+/// Gives up exact same-format replay for this turn.
+///
+/// A codec replays the preserved inbound body verbatim when the target format
+/// matches the source, which is what keeps a same-format hop lossless. That body
+/// predates anything added here, so leaving it in place would encode the request
+/// as it arrived and silently drop the addition. Dropping it sends the codec down
+/// its normal path, which encodes from the request itself.
+fn drop_exact_replay(request: &mut Request) {
+    request.llm_request.preservation.requests.clear();
 }
 
 /// System prompts keyed by routing target. A target left unset is routed
@@ -104,6 +116,7 @@ impl<S: Send> Processor<S> for SystemPromptProcessor {
                 }],
             },
         );
+        drop_exact_replay(request);
         Ok(())
     }
 }
@@ -234,6 +247,19 @@ mod tests {
         Ok(request)
     }
 
+    /// A request carrying the exact inbound body a codec keeps for same-format replay.
+    fn request_with_preserved_body() -> Request {
+        let mut request = Request::default();
+        request.llm_request.preservation.requests.insert(
+            "openai_chat".into(),
+            serde_json::json!({
+                "model": "weak-model",
+                "messages": [{"role": "user", "content": "hi"}],
+            }),
+        );
+        request
+    }
+
     fn prompts() -> TargetPrompts {
         TargetPrompts::default()
             .with("strong", STRONG_PROMPT)
@@ -302,6 +328,64 @@ mod tests {
             .process(&mut (), Event::Request(&mut request))
             .await?;
         assert!(instructions(&request).is_empty());
+        Ok(())
+    }
+
+    /// Every configured tier prompt has to reach the model, including on a
+    /// same-format hop where the codec would otherwise replay the body captured
+    /// before the prompt existed.
+    #[tokio::test]
+    async fn a_tier_prompt_gives_up_exact_replay() -> Result<()> {
+        let processor = SystemPromptProcessor::new(prompts());
+        for (target, expected) in [("strong", STRONG_PROMPT), ("weak", WEAK_PROMPT)] {
+            let mut request = request_with_preserved_body();
+            processor
+                .process(
+                    &mut (),
+                    Event::Decision {
+                        request: &mut request,
+                        decision: &RoutedTo(target),
+                    },
+                )
+                .await?;
+
+            assert_eq!(instructions(&request), vec![expected]);
+            assert!(
+                request.llm_request.preservation.requests.is_empty(),
+                "{target}: the preserved body would replay without the tier prompt"
+            );
+        }
+        Ok(())
+    }
+
+    /// Same for the one-off note, which lands in the conversation rather than the
+    /// instructions but would be dropped by the same replay.
+    #[test]
+    fn a_note_gives_up_exact_replay() {
+        let mut request = request_with_preserved_body();
+        append_note(&mut request, NOTE);
+        assert!(
+            request.llm_request.preservation.requests.is_empty(),
+            "the preserved body would replay without the note"
+        );
+    }
+
+    /// A target with no configured prompt is routed untouched, so the hop stays
+    /// lossless — the fix must not cost exact replay when nothing was added.
+    #[tokio::test]
+    async fn an_unprompted_target_keeps_exact_replay() -> Result<()> {
+        let processor = SystemPromptProcessor::new(prompts());
+        let mut request = request_with_preserved_body();
+        processor
+            .process(
+                &mut (),
+                Event::Decision {
+                    request: &mut request,
+                    decision: &RoutedTo("unconfigured"),
+                },
+            )
+            .await?;
+        assert_eq!(request.llm_request.preservation.requests.len(), 1);
         Ok(())
     }
 }
