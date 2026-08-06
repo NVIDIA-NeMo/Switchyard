@@ -125,15 +125,15 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     ),
     # Z.ai GLM-5.2 — REFERENCE pricing only. Switchyard reaches this model as
     # ``glm-5.2-fp8`` on a self-hosted vLLM deployment, which has no per-token
-    # billing at all: the real cost is GPU-hours. These rates are the benchmark
-    # pricing catalog's GLM-5.2 entry (verified 2026-08-05), carried so
-    # benchmark arms can be compared against commercial models on a common
-    # basis — "what this traffic would have cost at market rates", not what we
-    # are billed — and so cost numbers computed here agree with the benchmark
-    # dashboards. Provider list prices vary about 2x (SiliconFlow's serverless
-    # tier is $1.40/$4.40), so treat the absolute number as indicative, not
-    # exact. OpenAI wire format and no documented cache-write premium, so
-    # cache_write = input.
+    # billing at all: the real cost is GPU-hours. These rates are an average of
+    # OpenRouter provider rates captured in late July 2026, not a first-party
+    # Z.ai quote. Keeping the same snapshot across benchmark calculations makes
+    # estimates comparable; it represents "what this traffic would have cost at
+    # market rates", not what NVIDIA is billed. The snapshot provides input,
+    # output, and cache-read prices but no cache-creation price, and the Hub does
+    # not report a separate cache-write bucket for this deployment. Use the base
+    # input rate as the fallback so any reported cache-write tokens are not
+    # accidentally zero-rated.
     "glm-5.2-fp8": ModelPriceData(
         input=0.805, output=2.53, cached=0.1495, cache_write=0.805,
     ),
