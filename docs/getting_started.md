@@ -1,11 +1,13 @@
 # Getting Started with Switchyard
 
-Switchyard has two native Rust execution paths:
+Switchyard has three native Rust execution paths:
 
 - **Launcher path:** install the Python-distributed CLI and launch Claude Code,
   Codex, or OpenClaw through the packaged Rust server binding.
 - **Server path:** build and run the standalone Rust server for API clients and
   custom deployments.
+- **Library path:** embed the routing algorithms directly in your own Rust
+  application with `switchyard-libsy`.
 
 ## Launcher Path
 
@@ -233,7 +235,50 @@ export SWITCHYARD_TELEMETRY_OPT_OUT=1
 
 ---
 
-### Next steps
+## Library Path
+
+Use this path when you want routing inside your own Rust application rather than
+behind a proxy. `switchyard-libsy` never calls a model itself: an algorithm
+picks a target and hands the model call back to you.
+
+### Add the dependencies
+
+```toml
+[dependencies]
+async-trait = "0.1"
+futures = "0.3"
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+tokio = { version = "1", features = ["macros", "rt"] }
+```
+
+### Choose an algorithm
+
+| Type | Purpose |
+|---|---|
+| `LlmTaskClassifier` | Ask a judge model to choose an efficient or capable target. |
+| `StageRouter` | Route from signals already in the conversation, such as tool results and errors, with an optional judge fallback. |
+| `LlmTaskClassifier` with escalation | Every turn runs on the efficient target first, and a judge reads that answer to decide whether to send the same request to the capable target. |
+| `Random` | Select among any number of targets, uniform or weighted. |
+
+These are the same strategies the server exposes as route types, so a deployment
+can move between the server and library paths without changing routing
+behaviour.
+
+### Drive the algorithm
+
+An algorithm yields a stream of steps. Each `Step::CallLlm` is a model call your
+host performs over its own transport, and the run ends with
+`Step::ReturnToAgent` carrying the final response. Serving those calls yourself
+is what lets libsy embed in a host that already owns its HTTP stack, retries,
+and credentials.
+
+For the request, response, and streaming types the steps carry, see
+[`switchyard-protocol`](../crates/protocol/README.md).
+
+---
+
+## Next steps
 
 - [Core Concepts](core_concepts.md): LLM clients, targets, and routes
 - [`switchyard-server`](../crates/switchyard-server/README.md): server configuration,
