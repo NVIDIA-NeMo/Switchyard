@@ -7,7 +7,7 @@ Switchyard has three native Rust execution paths:
 - **Server path:** build and run the standalone Rust server for API clients and
   custom deployments.
 - **Library path:** embed the routing algorithms directly in your own Rust
-  application with `switchyard-libsy`, with no server process.
+  application with `switchyard-libsy`.
 
 ## Launcher Path
 
@@ -238,8 +238,8 @@ export SWITCHYARD_TELEMETRY_OPT_OUT=1
 ## Library Path
 
 Use this path when you want routing inside your own Rust application rather than
-behind a proxy. `switchyard-libsy` makes no network calls of its own: an
-algorithm picks a target and hands the model call back to you.
+behind a proxy. `switchyard-libsy` never calls a model itself: an algorithm
+picks a target and hands the model call back to you.
 
 ### Add the dependencies
 
@@ -257,8 +257,8 @@ tokio = { version = "1", features = ["macros", "rt"] }
 | Type | Purpose |
 |---|---|
 | `LlmTaskClassifier` | Ask a judge model to choose an efficient or capable target. |
-| `StageRouter` | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
-| `LlmTaskClassifier` with escalation | Start every task on the efficient target and escalate when a judge detects trouble. |
+| `StageRouter` | Route from signals already in the conversation, such as tool results and errors, with an optional judge fallback. |
+| `LlmTaskClassifier` with escalation | Every turn runs on the efficient target first, and a judge reads that answer to decide whether to send the same request to the capable target. |
 | `Random` | Select among any number of targets, uniform or weighted. |
 
 These are the same strategies the server exposes as route types, so a deployment
