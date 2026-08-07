@@ -1,5 +1,6 @@
 .git
 .mypy_cache
+target
 .pytest_cache
 .ruff_cache
 .venv

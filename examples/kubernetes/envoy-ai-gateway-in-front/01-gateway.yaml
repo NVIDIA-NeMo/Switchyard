@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Envoy AI Gateway in front of Switchyard: the Gateway itself.
+#
+# Clients reach this Gateway, which applies gateway-level concerns (routing by
+# model, token rate limiting, upstream authentication) and forwards to
+# Switchyard, which then translates and routes to model backends.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: switchyard-ai-gateway
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: switchyard-ai-gateway
+  namespace: switchyard
+spec:
+  gatewayClassName: switchyard-ai-gateway
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: switchyard-ai-gateway
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: switchyard-ai-gateway
+  namespace: switchyard
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        container:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+# Envoy Gateway defaults the client buffer limit to 32KiB, which truncates
+# large chat payloads. AI workloads routinely exceed it.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: switchyard-buffer-limit
+  namespace: switchyard
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: switchyard-ai-gateway
+  connection:
+    bufferLimit: 50Mi
+---
+# LLM calls are slow, and Switchyard's llm_classifier routes add a classifier
+# call in front of the served call. The Envoy Gateway default route timeout
+# would cut those off.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: switchyard-timeouts
+  namespace: switchyard
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: switchyard-ai-gateway
+  timeout:
+    http:
+      requestTimeout: 300s

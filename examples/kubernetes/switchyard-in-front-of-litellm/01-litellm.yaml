@@ -1,0 +1,145 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# LiteLLM as the model gateway behind Switchyard.
+#
+# The Kubernetes equivalent of examples/experimental/litellm/compose.yaml:
+# LiteLLM owns provider access, credentials and model aliases; Switchyard owns
+# the routing policy and addresses the aliases rather than provider model ids.
+#
+# Aliases are the contract between the two. Switchyard's `[targets.*].id`
+# values must match `model_name` here, so a provider swap is a change to this
+# ConfigMap alone and the Switchyard deployment TOML stays untouched.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: switchyard
+data:
+  config.yaml: |
+    model_list:
+      - model_name: fast
+        litellm_params:
+          model: openai/nvidia/nvidia/nemotron-3-nano-30b-a3b
+          api_base: https://inference-api.nvidia.com/v1
+          api_key: os.environ/NVIDIA_API_KEY
+      - model_name: strong
+        litellm_params:
+          model: openai/nvidia/nvidia/nemotron-3-ultra
+          api_base: https://inference-api.nvidia.com/v1
+          api_key: os.environ/NVIDIA_API_KEY
+
+    litellm_settings:
+      # Switchyard forwards the client's parameters as-is; dropping unsupported
+      # ones here keeps a provider from rejecting the whole request.
+      drop_params: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: switchyard
+  labels:
+    app.kubernetes.io/name: litellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: litellm
+      annotations:
+        # Roll the pod when the alias list changes.
+        checksum/config: "replace-with-a-hash-or-let-your-tooling-manage-it"
+    spec:
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:v1.92.0
+          args: ["--config", "/app/config.yaml", "--port", "4000"]
+          ports:
+            - name: http
+              containerPort: 4000
+          env:
+            # Provider credential. LiteLLM resolves `os.environ/NVIDIA_API_KEY`
+            # from this, so the key lives here rather than in the ConfigMap.
+            - name: NVIDIA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-provider-keys
+                  key: NVIDIA_API_KEY
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+              readOnly: true
+          # LiteLLM separates liveliness from readiness: /health/readiness also
+          # reports on the configured providers.
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # LiteLLM's proxy imports a large dependency tree at boot and was
+          # OOMKilled (exit 137) about nine seconds in at a 1Gi limit, before
+          # writing any log line. Give it real headroom; this is a Python
+          # gateway, not a Rust proxy like Switchyard next door.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+      volumes:
+        - name: config
+          configMap:
+            name: litellm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  namespace: switchyard
+  labels:
+    app.kubernetes.io/name: litellm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: litellm
+  ports:
+    - name: http
+      port: 4000
+      targetPort: http
+---
+# LiteLLM holds the provider credential, so restrict who may reach it. Without
+# this any pod in the cluster can spend the key by calling the gateway.
+#
+# NetworkPolicy is only enforced if the cluster's CNI implements it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: litellm-ingress-restriction
+  namespace: switchyard
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: switchyard
+      ports:
+        - protocol: TCP
+          port: 4000

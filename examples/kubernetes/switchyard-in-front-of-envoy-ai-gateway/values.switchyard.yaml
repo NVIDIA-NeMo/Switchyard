@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Helm values for Switchyard when it sits in front of Envoy AI Gateway.
+#
+#   helm upgrade --install switchyard-egress deploy/helm/switchyard \
+#     --namespace switchyard --create-namespace \
+#     -f examples/kubernetes/switchyard-in-front-of-envoy-ai-gateway/values.switchyard.yaml
+
+image:
+  repository: ghcr.io/nvidia-nemo/switchyard/switchyard-server
+  tag: "0.2.0"
+
+# No apiKeySecret: the Gateway injects provider credentials downstream, so the
+# Switchyard pod holds none. `api_key_env` is therefore omitted from the
+# llm_client below, which makes Switchyard send no Authorization header.
+
+# Switchyard authenticates no one. Keep this ClusterIP and read
+# 04-restrict-access.yaml before exposing it.
+service:
+  type: ClusterIP
+
+config:
+  routes: |
+    schema_version = 1
+
+    [llm_clients.gateway]
+    format = "openai_chat"
+    # The ClusterIP Service pinned by EnvoyProxy.provider.kubernetes.envoyService
+    # in 01-gateway.yaml. Plain HTTP: the hop is in-cluster and the Gateway
+    # terminates TLS to the provider.
+    base_url = "http://switchyard-upstream-gateway.envoy-gateway-system.svc.cluster.local/v1"
+    max_retries = 2
+
+    # Target ids are provider model ids. The Gateway matches on them via
+    # x-ai-eg-model and picks the provider backend.
+    [targets.nemotron]
+    id = "nvidia/nvidia/nemotron-3-super-v3"
+    llm_client = "gateway"
+
+    [routes.general]
+    id = "switchyard/general"
+    type = "random"
+    targets = ["nemotron"]
+
+    # See the note in the sibling example: two distinct tiers are needed for a
+    # classifier route to change any outcome.
+    [routes.classified]
+    id = "switchyard/classified"
+    type = "llm_classifier"
+    mode = "capability"
+    classifier_target = "nemotron"
+    strong_target = "nemotron"
+    weak_target = "nemotron"
+    base_threshold = 0.5

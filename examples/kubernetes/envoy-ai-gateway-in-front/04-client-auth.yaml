@@ -1,0 +1,101 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Client authentication at the Gateway.
+#
+# Switchyard has no authentication of its own: `switchyard-server` serves every
+# request that reaches its port. In this topology the Gateway is the front
+# door, so client identity is established here, before anything reaches
+# Switchyard.
+#
+# API-key auth is shown because it is the least infrastructure. Swap in the
+# `jwt` or `oidc` blocks below for an identity provider.
+#
+#   kubectl -n switchyard create secret generic switchyard-client-keys \
+#     --from-literal=team-a="$(openssl rand -hex 32)" \
+#     --from-literal=team-b="$(openssl rand -hex 32)"
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: switchyard-client-auth
+  namespace: switchyard
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: switchyard-ai-gateway
+  apiKeyAuth:
+    credentialRefs:
+      - name: switchyard-client-keys
+    extractFrom:
+      - headers:
+          - x-api-key
+    # Strip the client key so it never reaches Switchyard or the provider.
+    sanitize: true
+    # Surfaces the matched credential name downstream, which is what the token
+    # rate-limit policy buckets on.
+    forwardClientIDHeader: x-client-id
+
+# --- OIDC alternative -------------------------------------------------------
+# Replace the apiKeyAuth block above with this to authenticate humans through
+# an identity provider. Machine clients should use `jwt` instead: OIDC runs a
+# browser redirect flow, which an SDK client cannot complete.
+#
+#  oidc:
+#    provider:
+#      issuer: "https://accounts.example.com"
+#    clientID: "switchyard-gateway"
+#    clientSecret:
+#      name: switchyard-oidc-client-secret
+#    scopes: ["openid", "email"]
+#    redirectURL: "http://switchyard.example.com/oauth2/callback"
+#    logoutPath: "/logout"
+#
+# --- JWT alternative, for machine clients -----------------------------------
+#
+#  jwt:
+#    providers:
+#      - name: corp-idp
+#        issuer: "https://accounts.example.com"
+#        remoteJWKS:
+#          uri: "https://accounts.example.com/.well-known/jwks.json"
+#        claimToHeaders:
+#          - claim: sub
+#            header: x-client-id
+---
+# Per-client token budgets, keyed on the identity established above.
+#
+# The AIGatewayRoute records token usage into `llm_input_token` and friends;
+# this turns those counters into an enforced quota. Without a client identity
+# the only available bucket is the source IP, which is why authentication and
+# rate limiting are configured together.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: switchyard-token-limit
+  namespace: switchyard
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: switchyard-ai-gateway
+  rateLimit:
+    type: Global
+    global:
+      rules:
+        - clientSelectors:
+            - headers:
+                - name: x-client-id
+                  type: Distinct
+          limit:
+            requests: 100000
+            unit: Hour
+          cost:
+            request:
+              from: Number
+              number: 0
+            response:
+              from: Metadata
+              metadata:
+                namespace: io.envoy.ai_gateway
+                key: llm_total_token

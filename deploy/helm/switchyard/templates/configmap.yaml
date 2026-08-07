@@ -1,0 +1,15 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if .Values.config.create }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "switchyard.fullname" . }}
+  labels:
+    {{- include "switchyard.labels" . | nindent 4 }}
+data:
+  {{ .Values.config.key }}: |
+    {{- required "config.routes must define the deployment TOML" .Values.config.routes | nindent 4 }}
+{{- end }}

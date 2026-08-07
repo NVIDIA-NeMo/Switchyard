@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Who authenticates the client in this topology?
+#
+# Nothing in this directory does, and that is the point to be deliberate about.
+# `switchyard-server` serves every request that reaches its port -- it has no
+# API-key check, no JWT validation, no mTLS. In this topology the Gateway sits
+# *behind* Switchyard, so it authenticates Switchyard to the provider, not the
+# client to Switchyard.
+#
+# That leaves three honest options:
+#
+#  1. Keep Switchyard cluster-internal. The Service is ClusterIP and callers
+#     are trusted in-cluster workloads. The NetworkPolicy below makes that a
+#     property of the cluster rather than an assumption.
+#
+#  2. Put an Envoy Gateway in front of Switchyard as well, giving a sandwich:
+#     Gateway (client auth) -> Switchyard (routing) -> Gateway (provider auth).
+#     Take 01-gateway.yaml and 04-client-auth.yaml from
+#     ../envoy-ai-gateway-in-front/ and point them at this release. This is the
+#     right answer whenever Switchyard is reachable from outside the cluster.
+#
+#  3. Terminate auth in a sidecar in front of the Switchyard container.
+#     Equivalent to 2 with more moving parts and no gateway features; only
+#     worth it if a gateway is not an option.
+#
+# Do not expose this Service through an Ingress or a LoadBalancer without one
+# of the above. The provider credential is safe -- it lives in the Gateway --
+# but an unauthenticated caller can still spend it.
+#
+# Note: NetworkPolicy is only enforced if the cluster's CNI implements it.
+# k3s does so through its bundled kube-router policy controller; plain flannel
+# does not.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: switchyard-egress-ingress-restriction
+  namespace: switchyard
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: switchyard
+      app.kubernetes.io/instance: switchyard-egress
+  policyTypes:
+    - Ingress
+  ingress:
+    # Only workloads explicitly labelled as Switchyard clients may call it.
+    # Label them with `switchyard.nvidia.com/client: "true"`.
+    - from:
+        - podSelector:
+            matchLabels:
+              switchyard.nvidia.com/client: "true"
+      ports:
+        - protocol: TCP
+          port: 4000
+---
+# The Gateway is the other half of the problem, and the more sensitive half.
+#
+# It is a ClusterIP Service and the BackendSecurityPolicy attaches the provider
+# credential to anything it forwards, so any pod in the cluster that can reach
+# it can spend that credential -- without ever touching Switchyard. Restricting
+# Switchyard alone leaves that path open.
+#
+# Envoy Gateway labels the pods it generates with the owning Gateway's name and
+# namespace; both are matched so this cannot select another Gateway's proxies.
+# Confirm they match your cluster before relying on it:
+#   kubectl -n envoy-gateway-system get pods \
+#     -l gateway.envoyproxy.io/owning-gateway-name=switchyard-upstream --show-labels
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: switchyard-upstream-gateway-restriction
+  namespace: envoy-gateway-system
+spec:
+  podSelector:
+    matchLabels:
+      gateway.envoyproxy.io/owning-gateway-name: switchyard-upstream
+      gateway.envoyproxy.io/owning-gateway-namespace: switchyard
+  policyTypes:
+    - Ingress
+  ingress:
+    # Switchyard is the only legitimate client of this Gateway. namespaceSelector
+    # and podSelector sit in one `from` entry, so both must match.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: switchyard
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: switchyard
+      ports:
+        - protocol: TCP
+          # Envoy listens on listener port + 10000; the Service maps 80 -> 10080.
+          port: 10080
+    # Readiness probes and metrics scraping arrive from the kubelet and the
+    # monitoring stack, not from Switchyard. Omitting these would take the
+    # Gateway out of service rather than secure it.
+    - ports:
+        - protocol: TCP
+          port: 19001
+        - protocol: TCP
+          port: 19003

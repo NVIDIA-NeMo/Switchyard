@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Stops `x-forwarded-host` from reaching the model provider.
+#
+# Same underlying issue as the ingress case, but this Gateway is the last hop
+# before the provider, so `request_headers_to_remove` alone does not help:
+# Envoy sets `x-forwarded-host` in the router filter, which runs after header
+# removal. `append_x_forwarded_host` is the switch that puts it there at all,
+# and Envoy Gateway turns it on for Backend-backed routes.
+#
+# Both patches are applied: the flag stops the header being added, and the
+# removal covers any route the flag patch does not reach.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: switchyard-upstream-strip-forwarded-host
+  namespace: switchyard
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: switchyard-upstream
+  type: JSONPatch
+  jsonPatches:
+    # The route index is positional. Re-check it after changing the rules in
+    # the AIGatewayRoute, via the Envoy admin endpoint on an envoy pod:
+    #   kubectl -n envoy-gateway-system port-forward pod/<envoy-pod> 19000:19000
+    #   curl -s 'localhost:19000/config_dump?resource=dynamic_route_configs'
+    - type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+      name: switchyard/switchyard-upstream/http
+      operation:
+        op: replace
+        path: /virtual_hosts/0/routes/0/route/append_x_forwarded_host
+        value: false
+    - type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+      name: switchyard/switchyard-upstream/http
+      operation:
+        op: add
+        path: /request_headers_to_remove
+        value:
+          - x-forwarded-host

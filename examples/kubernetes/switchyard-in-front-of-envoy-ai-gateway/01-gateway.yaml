@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Switchyard in front of Envoy AI Gateway: the Gateway itself.
+#
+# Here the Gateway is an internal egress hop. Clients talk to Switchyard, which
+# runs its algorithm, picks a target, and sends the call to this Gateway. The
+# Gateway owns provider credentials and upstream TLS, so no provider key ever
+# reaches the Switchyard pod.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: switchyard-upstream-gateway
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: switchyard-upstream
+  namespace: switchyard
+spec:
+  gatewayClassName: switchyard-upstream-gateway
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: switchyard-upstream
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: switchyard-upstream
+  namespace: switchyard
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        # Pinning the name gives Switchyard a stable base_url. Without this,
+        # Envoy Gateway generates a hashed service name that changes if the
+        # Gateway is recreated.
+        name: switchyard-upstream-gateway
+        # This Gateway is reachable only from inside the cluster.
+        type: ClusterIP
+      envoyDeployment:
+        container:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: switchyard-upstream-buffer-limit
+  namespace: switchyard
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: switchyard-upstream
+  connection:
+    bufferLimit: 50Mi
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: switchyard-upstream-timeouts
+  namespace: switchyard
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: switchyard-upstream
+  timeout:
+    http:
+      requestTimeout: 300s

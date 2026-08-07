@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Stops `x-forwarded-host` from reaching the model provider.
+#
+# Envoy preserves the client's original Host in `x-forwarded-host` when it
+# rewrites Host for the backend. Switchyard forwards inbound request headers to
+# the provider it selects, so a header added on this hop travels all the way
+# upstream. Providers that route on `x-forwarded-host` then resolve the wrong
+# virtual host and reject the call -- the NVIDIA inference endpoint answers
+# with a model-group 404 even when the header holds its own hostname.
+#
+# `AIServiceBackend.headerMutation` is not sufficient on its own: the AI
+# Gateway's ext-proc mutation runs before Envoy sets the header, so it is
+# re-added afterwards. Removing it on the RouteConfiguration happens during
+# routing, after ext-proc.
+#
+# Requires `extensionApis.enableEnvoyPatchPolicy: true` in the Envoy Gateway
+# Helm values, which the AI Gateway base values already set.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: switchyard-strip-forwarded-host
+  namespace: switchyard
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: switchyard-ai-gateway
+  type: JSONPatch
+  jsonPatches:
+    # Name is "<gateway-namespace>/<gateway-name>/<listener-name>".
+    - type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+      name: switchyard/switchyard-ai-gateway/http
+      operation:
+        op: add
+        path: /request_headers_to_remove
+        value:
+          - x-forwarded-host
