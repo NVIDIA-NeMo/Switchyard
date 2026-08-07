@@ -269,7 +269,9 @@ behaviour.
 
 An algorithm yields a stream of steps. Each `Step::CallLlm` is a model call your
 host performs over its own transport, and the run ends with
-`Step::ReturnToAgent` carrying the final response.
+`Step::ReturnToAgent` carrying the final response. Serving those calls yourself
+is what lets libsy embed in a host that already owns its HTTP stack, retries,
+and credentials.
 
 For the request, response, and streaming types the steps carry, see
 [`switchyard-protocol`](../crates/protocol/README.md).
