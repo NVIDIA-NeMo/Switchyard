@@ -157,6 +157,9 @@ class _ExecTurn:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
+    #: Reasoning-model internal text (OpenAI ``reasoning_content``); the
+    #: fallback evidence when a gated turn has no visible content at all.
+    reasoning_text: str | None = None
 
 
 class AdvisorLoopBackend(LLMBackend):
@@ -339,8 +342,16 @@ class AdvisorLoopBackend(LLMBackend):
         # if the consult itself failed — a fail-open error is not a review.
         if stall and not triggered:
             self._stall_fired.add(session)
+        # A reasoning-only turn (no visible text) still triggers; hand the
+        # advisor the reasoning as labeled evidence instead of "(no text)".
+        review_tail = turn.content
+        if review_tail is None and turn.reasoning_text:
+            review_tail = (
+                "(the executor produced no visible text this turn; its "
+                "internal reasoning follows)\n" + turn.reasoning_text
+            )
         self._reviews_by_scope[scope] = self._reviews_by_scope.get(scope, 0) + 1
-        verdict, plan, consulted = await self._review(messages, turn.content, ctx)
+        verdict, plan, consulted = await self._review(messages, review_tail, ctx)
         if not consulted:
             self._reviews_by_scope[scope] -= 1
             self._failed_consults_by_scope[scope] = (
@@ -360,9 +371,13 @@ class AdvisorLoopBackend(LLMBackend):
         # cost output prices it, mirroring the tool_call strategy's handling
         # of proxy-internal turns.
         await self._record_discarded_turn(ctx, turn)
+        # The assistant echo prefers visible text, then the model's own
+        # reasoning (its generated tokens, upstream-only), then "" — an empty
+        # echo both risks strict-endpoint rejection and gives the executor a
+        # void to continue from.
         redo_messages = [
             *messages,
-            {"role": "assistant", "content": turn.content or ""},
+            {"role": "assistant", "content": turn.content or turn.reasoning_text or ""},
             {"role": "user", "content": self._config.redo_feedback_prefix + plan},
         ]
         redo_body = {**body, "messages": redo_messages}
@@ -422,10 +437,13 @@ class AdvisorLoopBackend(LLMBackend):
                 input_tokens=usage["input_tokens"],
                 output_tokens=usage["output_tokens"],
                 cached_tokens=usage["cached_tokens"],
+                reasoning_text=message.get("reasoning_content") or None,
             )
         body = response.to_body()
+        reasoning_text = None
         if self._is_openai:
             has_tool_use, content = _openai_completion_tool_use(body)
+            reasoning_text = _openai_completion_reasoning(body)
         else:
             has_tool_use, content = _completion_tool_use(body)
         usage = _completion_usage(body, is_openai=self._is_openai)
@@ -437,6 +455,7 @@ class AdvisorLoopBackend(LLMBackend):
             input_tokens=usage["input_tokens"],
             output_tokens=usage["output_tokens"],
             cached_tokens=usage["cached_tokens"],
+            reasoning_text=reasoning_text,
         )
 
     async def _passthrough(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
@@ -531,6 +550,7 @@ class AdvisorLoopBackend(LLMBackend):
         # escalation judge — its cost rolls into ``cost_estimate.total_cost``)
         # AND into the routing log, so per-session stats
         # (``/v1/routing/session-stats``) attribute it to the caller's session.
+        # Recorded even for an unparseable reply — the tokens were spent.
         tokens = _advisor_usage(usage)
         if self._stats is not None:
             await self._stats.record_classifier_usage(
@@ -549,6 +569,14 @@ class AdvisorLoopBackend(LLMBackend):
             cached_tokens=tokens["cached_tokens"],
             cache_creation_tokens=tokens["cache_creation_tokens"],
         )
+        if verdict == "":
+            # No leading APPROVE/REDO in the reply: treat as a failed consult
+            # (caller refunds the budget) and pass the turn through unchanged.
+            _audit_review(
+                verdict="UNPARSEABLE", error=None, usage=usage,
+                latency_ms=latency_ms, reply_head=text,
+            )
+            return "APPROVE", "", False
         _audit_review(
             verdict=verdict, error=None, usage=usage, latency_ms=latency_ms,
             reply_head=text,
@@ -785,6 +813,16 @@ def _openai_completion_tool_use(body: Any) -> tuple[bool, str | None]:
     return has_tool_use, (message.get("content") or None)
 
 
+def _openai_completion_reasoning(body: Any) -> str | None:
+    """Read ``reasoning_content`` from an OpenAI chat.completion body, if any."""
+    if not isinstance(body, dict):
+        return None
+    choices = body.get("choices") or [{}]
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message") or {}
+    return message.get("reasoning_content") or None
+
+
 def _gate_request_type(fmt: BackendFormat) -> str:
     """Map a resolved executor format to its ``request_with_type`` discriminator."""
     if fmt == BackendFormat.ANTHROPIC:
@@ -819,6 +857,7 @@ async def _consume_openai_stream(
     """
     events: list[Any] = []
     text_parts: list[str] = []
+    reasoning_parts: list[str] = []
     slots: dict[int, dict[str, str]] = {}
     usage = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
     async for event in stream:
@@ -836,6 +875,12 @@ async def _consume_openai_stream(
         piece = _ev(delta, "content")
         if isinstance(piece, str):
             text_parts.append(piece)
+        # Reasoning models (nemotron on vLLM/NIM) can emit turns whose ONLY
+        # output is reasoning_content; keep it so the review gate has
+        # something to show the advisor when visible content is empty.
+        reasoning_piece = _ev(delta, "reasoning_content")
+        if isinstance(reasoning_piece, str):
+            reasoning_parts.append(reasoning_piece)
         for fragment in _ev(delta, "tool_calls") or []:
             index = int(_ev(fragment, "index") or 0)
             slot = slots.setdefault(index, {"id": "", "name": "", "arguments": ""})
@@ -854,6 +899,8 @@ async def _consume_openai_stream(
         "role": "assistant",
         "content": "".join(text_parts) or None,
     }
+    if reasoning_parts:
+        message["reasoning_content"] = "".join(reasoning_parts)
     if slots:
         message["tool_calls"] = [
             {
@@ -1085,19 +1132,29 @@ def _blocks_text(content: Any) -> str:
     return ""
 
 
-#: First APPROVE/REDO token in the reply's head decides the verdict. A window
-#: (rather than a strict first-word match) tolerates the wrappers reviewers
-#: actually produce — "**REDO**", "Verdict: REDO", a leading pleasantry —
-#: which a startswith parser silently turned into APPROVE.
-_VERDICT_RE = re.compile(r"\b(APPROVE|REDO)\b", re.IGNORECASE)
-_VERDICT_WINDOW = 64
+#: Anchored verdict match: markdown/quote wrappers and a "Verdict:"-style
+#: label may precede the verdict word, but PROSE may not — an unanchored
+#: window turned "I cannot approve this — REDO: run the tests" into APPROVE
+#: (first case-insensitive token wins). Tolerated prefixes: whitespace,
+#: ``*_#>"'([`` characters, and a short label ending in ``:``.
+_VERDICT_RE = re.compile(
+    r"^[\s*_#>\"'\(\[`]*(?:(?:final\s+)?verdict\s*:\s*[\s*_#>\"'\(\[`]*)?(APPROVE|REDO)\b",
+    re.IGNORECASE,
+)
 
 
 def _parse_verdict(text: str) -> tuple[str, str]:
-    """Parse the reviewer reply into (verdict, plan). Unclear → APPROVE."""
+    """Parse the reviewer reply into (verdict, plan).
+
+    Returns ``("", "")`` when no leading verdict is found — the caller treats
+    that as a failed consult (budget refunded) rather than a silent APPROVE,
+    so a hedged or malformed reply cannot burn the review budget.
+    """
     stripped = (text or "").strip()
-    match = _VERDICT_RE.search(stripped[:_VERDICT_WINDOW])
-    if match is None or match.group(1).upper() == "APPROVE":
+    match = _VERDICT_RE.match(stripped)
+    if match is None:
+        return "", ""
+    if match.group(1).upper() == "APPROVE":
         return "APPROVE", ""
     plan = stripped[match.end():].lstrip(" *_:\n-").strip()
     return "REDO", plan or stripped

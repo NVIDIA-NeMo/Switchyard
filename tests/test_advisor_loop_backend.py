@@ -494,7 +494,7 @@ def test_parse_verdict() -> None:
     assert _parse_verdict("approve, looks complete")[0] == "APPROVE"
     v, plan = _parse_verdict("REDO: add a guard for empty input and re-run tests")
     assert v == "REDO" and "add a guard" in plan
-    assert _parse_verdict("hmm not sure")[0] == "APPROVE"  # unclear → approve
+    assert _parse_verdict("hmm not sure") == ("", "")  # unclear → unparseable
 
 
 def test_session_key_stable_across_turns() -> None:
@@ -901,16 +901,73 @@ def test_advisor_usage_folds_gateway_cache_buckets() -> None:
 
 
 def test_parse_verdict_tolerates_wrappers() -> None:
-    """Markdown/prefix wrappers around the verdict must not silently APPROVE."""
+    """Markdown/label wrappers parse; prose before the verdict does not."""
     assert _parse_verdict("**REDO** add error handling")[0] == "REDO"
     assert _parse_verdict("Verdict: REDO — cover the empty-input case")[0] == "REDO"
     verdict, plan = _parse_verdict("redo:\n- fix the regex")
     assert verdict == "REDO"
     assert "fix the regex" in plan
     assert _parse_verdict("**APPROVE**") == ("APPROVE", "")
-    assert _parse_verdict("")[0] == "APPROVE"
-    # The token must appear in the head window, not buried in later prose.
-    assert _parse_verdict("x" * 100 + " REDO")[0] == "APPROVE"
+    # Anything without a LEADING verdict is unparseable — not a silent APPROVE,
+    # and crucially not an inverted one ("cannot approve ... REDO" used to
+    # parse as APPROVE under the first-match window).
+    assert _parse_verdict("") == ("", "")
+    assert _parse_verdict("x" * 100 + " REDO") == ("", "")
+    assert _parse_verdict("I cannot approve this — REDO: run the tests") == ("", "")
+
+
+async def test_unparseable_reply_refunds_budget() -> None:
+    """A hedged/malformed reviewer reply must not burn max_reviews."""
+    exec_b = _exec_backend(
+        _completion_resp(text="done"), _completion_resp(text="done again"),
+    )
+    adv = _reviewer("The transcript is truncated; I cannot evaluate this.", "APPROVE")
+    backend = _backend(_config(max_reviews=1), exec_b, adv)
+    resp = await backend.call(_ctx("ev_a"), _request())
+    assert _anthropic_text(resp.to_body()) == "done"  # turn passed through
+    await backend.call(_ctx("ev_a"), _request())      # real review still happens
+    assert adv.advise.await_count == 2
+
+
+async def test_reasoning_only_turn_reviews_reasoning_and_echoes_it_on_redo() -> None:
+    """A reasoning-only executor turn is reviewable and its redo echo is non-empty."""
+    reasoning = "I believe the task is finished because all files were written."
+    exec_b = _exec_backend(
+        ChatResponse.openai_completion({
+            "id": "chatcmpl-1", "object": "chat.completion", "model": "exec-model",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": None,
+                                     "reasoning_content": reasoning}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 3},
+        }),
+        ChatResponse.openai_completion({
+            "id": "chatcmpl-2", "object": "chat.completion", "model": "exec-model",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "resumed"}}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 2},
+        }),
+    )
+    adv = _reviewer("REDO state your results visibly and verify them")
+    config = _config(executor={
+        "model": "exec-model", "base_url": "http://exec.test", "api_key": "k",
+        "format": "openai",
+    })
+    backend = _backend(config, exec_b, adv)
+    await backend.call(
+        _ctx("ev_a"),
+        ChatRequest.openai_chat({  # type: ignore[arg-type]
+            "model": "incoming",
+            "messages": [{"role": "user", "content": "build X"}],
+        }),
+    )
+    transcript = adv.advise.await_args.kwargs["transcript"]
+    assert "internal reasoning follows" in transcript
+    assert reasoning in transcript
+    redo_body = exec_b.call.await_args_list[1].args[1].to_body()
+    assert redo_body["messages"][-2] == {"role": "assistant", "content": reasoning}
+    assert redo_body["messages"][-1]["content"].endswith(
+        "state your results visibly and verify them"
+    )
 
 
 def test_transcript_truncation_keeps_task_head_and_recent_tail() -> None:
