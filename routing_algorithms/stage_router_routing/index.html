@@ -1539,7 +1539,7 @@ quadrant candidates identified from those capable results.</p>
 <p>Replay your runs through the real Rust scorer and picker with
 <code>benchmark/score_staged_run.py</code> (the <code>switchyard-stage-router-scorer</code> skill). It emits
 per-turn scores and per-task routing splits at a given threshold and window —
-the actual <code>pick_capable_first</code> / <code>pick_efficient_first</code> decisions, not a
+the actual <code>capable_first</code> / <code>efficient_first</code> picker decisions, not a
 counterfactual:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Score a probe run at a candidate threshold</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>benchmark/score_staged_run.py<span class="w"> </span>--run<span class="w"> </span>benchmark/tb_runs/&lt;your_run&gt;<span class="w"> </span><span class="se">\</span>
