@@ -1295,14 +1295,11 @@ selected coding agent must also be installed and available on <code>PATH</code>.
 <p>The launcher owns the server lifecycle and stops it when the coding agent exits.
 This command does not install or run the standalone <code>switchyard-server</code> binary.</p>
 <h2 id="server-path-switchyard-server">Server Path: <code>switchyard-server</code><a class="headerlink" href="#server-path-switchyard-server" title="Permanent link">&para;</a></h2>
-<p>Build the standalone binary with
-<code>cargo build --locked --release -p switchyard-server</code>. It reads the same native
-TOML deployment schema accepted by the launcher.</p>
+<p>Install the standalone binary with <code>cargo install --locked switchyard-server</code>.
+It reads the same native TOML deployment schema accepted by the launcher.</p>
 <h3 id="usage_1">Usage<a class="headerlink" href="#usage_1" title="Permanent link">&para;</a></h3>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>&lt;deployment.toml&gt;<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
 </span></code></pre></div>
-<p>When built from the repository, invoke it as
-<code>./target/release/switchyard-server</code>.</p>
 <table>
 <thead>
 <tr>
@@ -1370,8 +1367,8 @@ TOML deployment schema accepted by the launcher.</p>
 </tbody>
 </table>
 <p>Validate a deployment, then start the proxy:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
 <h2 id="removed-setup-commands">Removed Setup Commands<a class="headerlink" href="#removed-setup-commands" title="Permanent link">&para;</a></h2>
@@ -1385,12 +1382,12 @@ then pass that deployment on each run. For example:</p>
 </span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>my-route<span class="w"> </span>--config<span class="w"> </span>routes.toml
 </span></code></pre></div>
 <p>The CLI does not save provider credentials or deployment paths.
-Use <code>./target/release/switchyard-server --config routes.toml --dry-run</code> to
+Use <code>switchyard-server --config routes.toml --dry-run</code> to
 validate a native deployment before starting the standalone server.</p>
 <h2 id="related-documentation">Related Documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../getting_started/">Getting Started</a>: installation, configuration, and validation for both paths</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/981ca62036391c7b8025c050643b55e08ce09e7d/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, TLS, and metrics</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5111678100650042e0ad5ffd1cb28e9d0821082f/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, TLS, and metrics</li>
 </ul>
 
 

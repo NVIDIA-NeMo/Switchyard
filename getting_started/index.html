@@ -478,10 +478,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#build-the-server" class="md-nav__link">
+  <a href="#install-the-server" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Build the server
+        Install the server
       
     </span>
   </a>
@@ -1305,10 +1305,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#build-the-server" class="md-nav__link">
+  <a href="#install-the-server" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Build the server
+        Install the server
       
     </span>
   </a>
@@ -1537,16 +1537,12 @@ continuing. Verify the tools:</p>
 </span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>cargo<span class="w"> </span>--version
 </span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>uv<span class="w"> </span>--version
 </span></code></pre></div>
-<h3 id="build-the-server">Build the server<a class="headerlink" href="#build-the-server" title="Permanent link">&para;</a></h3>
-<p>Build the Rust server from source:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/NVIDIA-NeMo/Switchyard.git
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nb">cd</span><span class="w"> </span>Switchyard
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>cargo<span class="w"> </span>build<span class="w"> </span>--locked<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-server
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>./target/release/switchyard-server<span class="w"> </span>--help
+<h3 id="install-the-server">Install the server<a class="headerlink" href="#install-the-server" title="Permanent link">&para;</a></h3>
+<p>Install the Rust server from crates.io:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>switchyard-server
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>switchyard-server<span class="w"> </span>--help
 </span></code></pre></div>
-<p>The repository pins Rust <code>1.96.1</code> in <code>rust-toolchain.toml</code>; <code>rustup</code> selects and
-installs it automatically when Cargo runs from the repository. Prebuilt Rust
-binaries are not published yet.</p>
+<p>Cargo builds the release binary and installs it into <code>~/.cargo/bin</code> by default.</p>
 <h3 id="configure">Configure<a class="headerlink" href="#configure" title="Permanent link">&para;</a></h3>
 <p>The Rust server reads an explicit TOML file. It does not use the legacy Python
 CLI's saved configuration or YAML routing profiles.</p>
@@ -1582,8 +1578,8 @@ variable the server reads; the secret does not belong in the TOML file.</p>
 <p>Export the provider credential, validate the configuration without binding a
 socket, then start the release binary:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
 <p>Any client that speaks OpenAI Chat Completions, Anthropic Messages, or OpenAI
@@ -1629,12 +1625,12 @@ request should use the weak or strong target. The Rust server also supports:</p>
 <code>routes.smart</code>, is a local configuration name; each route's <code>id</code> is exposed as a
 model on <code>GET /v1/models</code>.</p>
 <p>See <a href="../routing_algorithms/overview/">Routing Overview</a> to compare strategies,
-and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/981ca62036391c7b8025c050643b55e08ce09e7d/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
+and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5111678100650042e0ad5ffd1cb28e9d0821082f/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
 the complete TOML schema, route options, TLS, and metrics.</p>
 <h3 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h3>
 <p><strong>No API key / auth error</strong></p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nb">test</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;key is set&quot;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;key is missing&quot;</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
 </span></code></pre></div>
 <p>Confirm that <code>api_key_env</code> in <code>routes.toml</code> names the environment variable you
 exported. The dry run validates the schema, environment lookup, target
@@ -1696,16 +1692,16 @@ host performs over its own transport, and the run ends with
 is what lets libsy embed in a host that already owns its HTTP stack, retries,
 and credentials.</p>
 <p>For the request, response, and streaming types the steps carry, see
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/981ca62036391c7b8025c050643b55e08ce09e7d/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5111678100650042e0ad5ffd1cb28e9d0821082f/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
 <hr />
 <h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../core_concepts/">Core Concepts</a>: LLM clients, targets, and routes</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/981ca62036391c7b8025c050643b55e08ce09e7d/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5111678100650042e0ad5ffd1cb28e9d0821082f/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
   routing algorithms, TLS, and metrics</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol
   documentation, crate setup, and API boundaries</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/981ca62036391c7b8025c050643b55e08ce09e7d/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5111678100650042e0ad5ffd1cb28e9d0821082f/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
   request, response, and stream translation</li>
 </ul>
 
