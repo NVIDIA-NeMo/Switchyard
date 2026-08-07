@@ -22,6 +22,13 @@ algorithm you write yourself.
 - **Multi-Backend Routing**: random routing, LLM-as-classifier routing, signal-driven stage-router, or your own algorithm
 - **Operational Metrics**: Prometheus metrics cover requests, errors, latency, tokens, and routing overhead
 
+## Maturity
+
+Switchyard is pre-alpha software that is evolving rapidly. The API and algorithms are expected to change significantly before we reach v1.0.
+
+> [!WARNING]
+> Experimental software. Not for production use.
+
 ## Quick Start
 
 Choose the launcher path to run Claude Code, Codex CLI, or OpenClaw through
