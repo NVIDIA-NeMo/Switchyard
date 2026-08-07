@@ -6,6 +6,8 @@
 //! pump in [`driver`]. Algorithm implementations live in [`crate::algorithms`].
 
 mod driver;
+#[cfg(test)]
+pub(crate) mod testing;
 
 pub mod algorithm;
 pub mod classifier;

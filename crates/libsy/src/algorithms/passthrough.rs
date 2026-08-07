@@ -8,8 +8,8 @@ use std::sync::Arc;
 use switchyard_protocol::{Request, Response};
 
 use crate::Result;
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget};
-use switchyard_protocol::{Context, Decision, RoutedLlmClient};
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget, RoutedRequest};
+use switchyard_protocol::{Context, Decision};
 
 /// Routing algorithm that always calls one configured target.
 pub struct Passthrough {
@@ -47,14 +47,6 @@ impl Algorithm for Passthrough {
         "passthrough"
     }
 
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.target
-            .llm_client
-            .as_ref()
-            .filter(|client| client.supports_count_tokens())
-            .cloned()
-    }
-
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,
@@ -66,7 +58,11 @@ impl Algorithm for Passthrough {
         });
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
-            .call_llm_target(ctx, &self.target, request, decision)
+            .call_llm(RoutedRequest {
+                request,
+                decision,
+                ctx,
+            })
             .await
     }
 }
@@ -77,29 +73,8 @@ mod tests {
 
     use super::Passthrough;
     use crate::core::algorithm::{Algorithm, LlmTarget};
-    use switchyard_protocol::{
-        Context, Decision, LlmResponse, Request, Response, RoutedLlmClient, completion_text,
-        text_request, text_response,
-    };
-
-    /// Echoes the selected target so tests can inspect which target was called.
-    /// TODO: Duplicated from rand.rs
-    struct EchoClient;
-
-    #[async_trait::async_trait]
-    impl RoutedLlmClient for EchoClient {
-        async fn call(
-            &self,
-            _ctx: Context,
-            _request: Request,
-            decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
-            Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(None, decision.selected_model())),
-                metadata: None,
-            })
-        }
-    }
+    use crate::core::testing::{echo, test_drive};
+    use switchyard_protocol::{Context, Request, completion_text, text_request};
 
     #[tokio::test]
     async fn test_passthrough() -> crate::Result<()> {
@@ -111,9 +86,8 @@ mod tests {
         };
         let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(LlmTarget {
             semantic_name: MODEL_ID.to_string(),
-            llm_client: Some(Arc::new(EchoClient)),
         }));
-        let (trace, response) = algorithm.run(Context::default(), request).await?;
+        let (trace, response) = test_drive(algorithm, Context::default(), request, echo()).await?;
 
         assert_eq!(
             response

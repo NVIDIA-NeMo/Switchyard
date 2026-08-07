@@ -32,13 +32,6 @@ pub enum LibsyError {
         message: String,
     },
 
-    /// A routed target had no default client for [`crate::Algorithm::run`].
-    #[error("target {target:?} has no client to serve the call")]
-    MissingClient {
-        /// Target that could not be served.
-        target: String,
-    },
-
     /// The type-erased offload driver could not complete an operation.
     #[error(transparent)]
     Driver(#[from] DriverError),

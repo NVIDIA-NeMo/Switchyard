@@ -110,6 +110,25 @@ pub enum LlmClientError {
     General(String),
 }
 
+/// Why routing replaced a selected target with another eligible target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoutingFallbackReason {
+    /// The selected target rejected the request because its context window was too small.
+    ContextWindow,
+    /// The selected target was unavailable after its client retries finished.
+    Unavailable,
+}
+
+impl RoutingFallbackReason {
+    /// Stable value used by logs and statistics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ContextWindow => "context_window",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// A decision/trace object produced by an algorithm.
 ///
 /// Carried as a trait object (not a generic parameter) so a stream consumer can
@@ -126,6 +145,10 @@ pub trait Decision: Send + Sync {
     /// Whether this is the final call selected to serve the request.
     fn is_routed_call(&self) -> bool {
         true
+    }
+    /// Why this decision replaced an earlier selected target, when it did.
+    fn fallback_reason(&self) -> Option<RoutingFallbackReason> {
+        None
     }
     /// A human-readable explanation of the decision, for logs and traces.
     fn reasoning(&self) -> Option<&str>;
@@ -180,24 +203,4 @@ pub trait RoutedLlmClient: Send + Sync {
         request: Request,
         decision: Arc<dyn Decision>,
     ) -> Result<Response, LlmClientError>;
-
-    /// Whether this client can serve [`count_tokens`](Self::count_tokens) — i.e.
-    /// it has an Anthropic upstream. The default is `false`.
-    fn supports_count_tokens(&self) -> bool {
-        false
-    }
-
-    /// Count the tokens `request` would use — a **direct passthrough**, not a
-    /// routed call. Forwards `request` to this client's Anthropic
-    /// `/v1/messages/count_tokens` endpoint (model restamped to the upstream
-    /// target id) and returns the JSON verbatim. Token counting is a pre-flight
-    /// estimate with no routing decision, so unlike [`call`](Self::call) it
-    /// takes no [`Decision`]. The default errors; only an Anthropic-backed
-    /// client overrides it.
-    async fn count_tokens(&self, request: Request) -> Result<serde_json::Value, LlmClientError> {
-        let _ = request;
-        Err(LlmClientError::Configuration {
-            message: "count_tokens is not supported by this client".to_string(),
-        })
-    }
 }

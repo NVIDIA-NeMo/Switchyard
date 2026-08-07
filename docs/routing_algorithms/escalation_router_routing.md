@@ -35,18 +35,21 @@ llm_client = "openrouter"
 [routes.agent]
 id = "agent"
 type = "llm_classifier"
+mode = "escalation"
 classifier_target = "judge"
 strong_target = "strong"
 weak_target = "weak"
-base_threshold = 0.5
+prompt = "Judge whether the weak model is stuck. Return the required structured verdict."
 escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars = 500 }
 ```
 
 `classifier_target` is the judge. The route's `id`, `agent`, is the model name
 clients send; the judge is not exposed as a client-selectable model.
 
-`base_threshold` is still required, but escalation ignores it, along with
-`min_confidence`, `capability_elevated_floor`, and `session_affinity`.
+The route-level `prompt` key replaces the packaged trajectory-judge prompt. It
+uses the escalation verdict schema rather than the capability verdict schema.
+Switchyard sends that schema separately through the provider's structured-output
+request rather than copying it into the prompt.
 
 ## How the decision works
 
@@ -86,6 +89,12 @@ A judge that times out, errors, or returns an unparseable verdict fails open: th
 turn serves the buffered weak reply and the existing streak is held rather than
 cleared. A judge failure never creates a strong-tier latch.
 
+## Judge model compatibility
+
+The trajectory judge uses the same response contract and provider/model
+compatibility guidance as the LLM classifier judge. See
+[Judge model compatibility](llm_classifier_routing.md#judge-model-compatibility).
+
 ## Tuning options
 
 The judge exposes three settings. Their defaults are the benchmarked
@@ -102,19 +111,20 @@ strong tier. `2` or higher requires a session identity, because the streak is
 retained per session — without one, every turn starts from zero and the route
 never latches. Clients supply it with `x-switchyard-session-id`.
 
-Everything else is fixed: anchor and transcript caps, the judge's reply budget,
-and the streak rule that any decline resets to zero.
+Anchor and transcript caps remain fixed. Set the route-level
+`max_output_tokens` key to change the judge's reply budget. Any decline still
+resets the streak to zero.
 
 ## Run the route
 
-After building the Rust server, as described in
-[Getting Started](../getting_started.md#build-the-server), export the provider
+After installing the Rust server, as described in
+[Getting Started](../getting_started.md#install-the-server), export the provider
 credential, validate the configuration, and start the binary:
 
 ```bash
 export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-./target/release/switchyard-server --config routes.toml --dry-run
-./target/release/switchyard-server --config routes.toml \
+switchyard-server --config routes.toml --dry-run
+switchyard-server --config routes.toml \
   --host 127.0.0.1 --port 4000
 ```
 
@@ -143,11 +153,15 @@ The snapshot reports per-model calls, tokens, latency, and cost for the strong
 and weak tiers. Judge calls are recorded in the classifier stats bucket, so their
 token cost and latency remain visible as routing overhead.
 
+When the server runs with a routing log, successful judge calls also appear in
+per-session routing stats under the judge's model id, tagged with the
+`classifier` tier — so per-session token accounting includes judge overhead
+alongside the tiers the session was served by.
+
 ## When not to use escalation routing
 
 - **One-shot requests.** No trajectory to judge. Use
-  [LLM Classifier Routing](llm_classifier_routing.md) without the `escalation`
-  table.
+  [LLM Classifier Routing](llm_classifier_routing.md) in `capability` mode.
 - **Traffic without session identity.** With `confirmations` above `1`, the route
   cannot accumulate a streak and never latches.
 - **Fixed traffic experiments.** Use [Random Routing](random_routing.md).

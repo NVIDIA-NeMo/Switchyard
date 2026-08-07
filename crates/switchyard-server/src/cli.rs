@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use clap::Parser;
 use switchyard_server::config::load_server_state;
 use switchyard_server::{
-    DEFAULT_LISTEN_BACKLOG, ServerError, ServerResult, ServerRunOptions, ServerState, TlsOptions,
-    run_server,
+    DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT, DEFAULT_LISTEN_BACKLOG, ServerError, ServerResult,
+    ServerRunOptions, ServerState, TlsOptions, run_server,
 };
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
@@ -39,6 +39,10 @@ pub(crate) struct ServerArgs {
     /// TCP listen backlog passed to the socket before Axum accepts traffic.
     #[arg(long, default_value_t = DEFAULT_LISTEN_BACKLOG)]
     backlog: u32,
+
+    /// Maximum time active requests may drain during shutdown.
+    #[arg(long, default_value_t = humantime::Duration::from(DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT))]
+    shutdown_timeout: humantime::Duration,
 
     /// Validate the algorithm and client configuration without binding a socket.
     #[arg(long)]
@@ -85,6 +89,7 @@ impl ServerArgs {
             addr: SocketAddr::new(self.host, self.port),
             backlog: self.backlog,
             dry_run: self.dry_run,
+            shutdown_timeout: self.shutdown_timeout.into(),
             tls,
         };
         Ok((state, options))

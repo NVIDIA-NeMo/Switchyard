@@ -111,14 +111,14 @@ the configured endpoint.
 
 ## Run a deployment
 
-After building the Rust server, as described in
-[Getting Started](../getting_started.md#build-the-server), export the provider
+After installing the Rust server, as described in
+[Getting Started](../getting_started.md#install-the-server), export the provider
 credential, validate the configuration, and start the binary:
 
 ```bash
 export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-./target/release/switchyard-server --config routes.toml --dry-run
-./target/release/switchyard-server --config routes.toml \
+switchyard-server --config routes.toml --dry-run
+switchyard-server --config routes.toml \
   --host 127.0.0.1 --port 4000
 ```
 

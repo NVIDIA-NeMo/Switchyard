@@ -19,7 +19,9 @@ use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, Random};
 use serde_json::{Value, json};
-use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+use switchyard_llm_client::{
+    Backend, ClientRouter, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
+};
 use switchyard_protocol::RoutedLlmClient;
 use switchyard_server::config::load_server_state;
 use switchyard_server::{ServerState, build_switchyard_router};
@@ -61,6 +63,16 @@ impl MockUpstream {
             task,
         })
     }
+
+    /// The upstream model id of every request this upstream received, in order.
+    async fn models(&self) -> Vec<String> {
+        self.calls
+            .lock()
+            .await
+            .iter()
+            .filter_map(|call| call.get("model")?.as_str().map(str::to_string))
+            .collect()
+    }
 }
 
 impl Drop for MockUpstream {
@@ -81,8 +93,35 @@ async fn upstream_chat(
         )
             .into_response();
     }
+    if body["messages"][0]["content"] == "auth-fail" {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "upstream authentication failed"}})),
+        )
+            .into_response();
+    }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
+    let prompt = body["messages"][0]["content"].as_str().unwrap_or("");
+    if (model == "model/weak" && prompt == "unavailable") || prompt == "all-unavailable" {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": {"message": "upstream is unavailable"}})),
+        )
+            .into_response();
+    }
+    if model == "model/weak" && body["messages"][0]["content"] == "overflow" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "context_length_exceeded",
+                    "message": "request exceeds this model's context window"
+                }
+            })),
+        )
+            .into_response();
+    }
     if body["stream"].as_bool() == Some(true) {
         if body["messages"][0]["content"] == "stream-error" {
             let events = [
@@ -114,8 +153,30 @@ async fn upstream_chat(
         return Sse::new(stream).into_response();
     }
 
-    let content = if model == "model/classifier" {
-        r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#
+    let custom_target_schema = body
+        .pointer("/response_format/json_schema/schema/properties/decision/properties/target")
+        .is_some();
+    let requests_invalid_verdict = body["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("invalid verdict"))
+        })
+    });
+    let content = if model == "model/classifier" && custom_target_schema {
+        if requests_invalid_verdict {
+            r#"{"decision":{"target":"unknown"}}"#
+        } else {
+            r#"{"decision":{"target":"premium"}}"#
+        }
+    } else if model == "model/classifier"
+        && body
+            .pointer("/response_format/json_schema/schema/properties/escalate")
+            .is_some()
+    {
+        r#"{"escalate":false,"reason":"making progress"}"#
+    } else if model == "model/classifier" {
+        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
     } else {
         "ok"
     };
@@ -171,12 +232,15 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
                     .iter()
                     .map(|model| LlmTarget {
                         semantic_name: (*model).to_string(),
-                        llm_client: Some(Arc::clone(&client)),
                     })
                     .collect(),
             );
             let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
-            Ok(((*route_model).to_string(), algorithm))
+            Ok((
+                (*route_model).to_string(),
+                algorithm,
+                ClientRouter::single(Arc::clone(&client)),
+            ))
         })
         .collect::<TestResult<Vec<_>>>()?;
     Ok(ServerState::new(entries)?)
@@ -220,6 +284,10 @@ async fn stats_exposes_the_exact_empty_schema_and_no_legacy_alias() -> TestResul
                 "avg_ms": 0.0,
                 "p50_ms": 0.0,
                 "p99_ms": 0.0
+            },
+            "routing_fallbacks": {
+                "context_window": 0,
+                "unavailable": 0
             },
             "classifier": {
                 "total_requests": 0,
@@ -484,8 +552,51 @@ fn load_test_config(toml: &str) -> TestResult<ServerState> {
     Ok(load_server_state(config.path())?)
 }
 
+/// A `random` route that selects `first` before any request-local fallback.
+fn fallback_state(base_url: &str) -> TestResult<ServerState> {
+    load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+
+[targets.first]
+id = "{first}"
+llm_client = "mock"
+
+[targets.second]
+id = "{second}"
+llm_client = "mock"
+
+[routes.random]
+id = "{ROUTE_MODEL}"
+type = "random"
+targets = ["first", "second"]
+weights = [1, 0]
+"#,
+        first = "model/weak",
+        second = "model/strong",
+    ))
+}
+
 async fn send(app: &Router, method: &str, path: &str, body: Option<Value>) -> TestResult<Response> {
+    send_with_headers(app, method, path, body, &[]).await
+}
+
+async fn send_with_headers(
+    app: &Router,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> TestResult<Response> {
     let mut builder = HttpRequest::builder().method(method).uri(path);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
     let request_body = if let Some(body) = body {
         builder = builder.header("content-type", "application/json");
         Body::from(serde_json::to_vec(&body)?)
@@ -549,6 +660,84 @@ fn assert_in_order(haystack: &str, needles: &[&str]) {
             .unwrap_or_else(|| panic!("missing {needle:?} after prior events in:\n{haystack}"));
         remainder = &remainder[offset + needle.len()..];
     }
+}
+
+/// A route is a synthetic model (`switchyard/classify`) with no upstream of its own; its
+/// algorithm picks real targets, and *those* name the client. One request can emit several
+/// `Step::CallLlm` for different targets, and two targets may sit on different
+/// `[llm_clients.*]` sections — here the judge is on one provider and the serving models on
+/// another. Pin that each call reaches its own target's upstream, rather than one client
+/// chosen per route serving all of them.
+#[tokio::test]
+async fn each_target_in_one_request_is_served_by_its_own_client() -> TestResult {
+    let judge_upstream = MockUpstream::start().await?;
+    let model_upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.judge_provider]
+format = "openai_chat"
+base_url = "{judge_url}"
+
+[llm_clients.model_provider]
+format = "openai_chat"
+base_url = "{model_url}"
+
+[targets.judge]
+id = "model/judge"
+llm_client = "judge_provider"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "model_provider"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "model_provider"
+
+[routes.classify]
+id = "switchyard/classify"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+"#,
+        judge_url = judge_upstream.base_url,
+        model_url = model_upstream.base_url,
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/classify",
+            "messages": [{"role": "user", "content": "hi"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    // The judge call went to the judge's provider and nowhere else; the serving call went to
+    // the models' provider. A single per-route client would have sent both to one upstream.
+    assert_eq!(
+        judge_upstream.models().await,
+        vec!["model/judge".to_string()]
+    );
+    let served = model_upstream.models().await;
+    assert_eq!(
+        served.len(),
+        1,
+        "expected exactly one routed call: {served:?}"
+    );
+    assert!(
+        served[0] == "model/weak" || served[0] == "model/strong",
+        "routed call went to {served:?}"
+    );
+    Ok(())
 }
 
 /// A critical tool error must reach the stage router's signal scorer, which reads
@@ -727,6 +916,216 @@ base_threshold = 0.5
 }
 
 #[tokio::test]
+async fn custom_classifier_routes_four_targets_and_falls_back_on_an_invalid_verdict() -> TestResult
+{
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.middle]
+id = "model/middle"
+llm_client = "upstream"
+
+[targets.premium]
+id = "model/premium"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.custom]
+id = "switchyard/custom"
+type = "llm_classifier"
+mode = "custom"
+classifier_target = "classifier"
+targets = ["weak", "middle", "strong", "premium"]
+default_target = "strong"
+prompt = "CUSTOM MULTI TARGET"
+response_schema = '''
+{{
+  "type": "object",
+  "properties": {{
+    "decision": {{
+      "type": "object",
+      "properties": {{
+        "target": {{"type": "string", "enum": ["weak", "middle", "strong", "premium"]}}
+      }},
+      "required": ["target"],
+      "additionalProperties": false
+    }}
+  }},
+  "required": ["decision"],
+  "additionalProperties": false
+}}
+'''
+
+[routes.custom.policy]
+type = "target_selector"
+selector = "/decision/target"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    for (task, selected) in [
+        ("route this task", "model/premium"),
+        ("return an invalid verdict", "model/strong"),
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/custom",
+                "messages": [{"role": "user", "content": task}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(selected)
+        );
+    }
+
+    let calls = upstream.calls.lock().await;
+    let judge_call = calls
+        .iter()
+        .find(|call| call["model"] == "model/classifier")
+        .ok_or("custom classifier target was not called")?;
+    let prompt = judge_call["messages"][0]["content"]
+        .as_str()
+        .ok_or("custom classifier prompt was not text")?;
+    assert_eq!(prompt, "CUSTOM MULTI TARGET");
+    assert_eq!(judge_call["response_format"]["type"], "json_schema");
+    assert_eq!(
+        judge_call["response_format"]["json_schema"]["name"],
+        "switchyard_classifier_response"
+    );
+    assert_eq!(judge_call["response_format"]["json_schema"]["strict"], true);
+    assert_eq!(
+        judge_call["response_format"]["json_schema"]["schema"]["properties"]["decision"]["properties"]
+            ["target"]["enum"],
+        json!(["weak", "middle", "strong", "premium"])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn classifier_prompt_overrides_reach_every_server_mode() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.capability]
+id = "switchyard/capability"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+prompt = "CUSTOM CAPABILITY"
+
+[routes.escalation]
+id = "switchyard/escalation"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+prompt = "CUSTOM ESCALATION"
+escalation = {{ confirmations = 1 }}
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 1.0
+
+[routes.stage.classifier]
+target = "classifier"
+base_threshold = 0.5
+prompt = "CUSTOM STAGE"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    for (route, prompt_prefix, schema_field) in [
+        ("switchyard/capability", "CUSTOM CAPABILITY", "p_solve"),
+        ("switchyard/escalation", "CUSTOM ESCALATION", "escalate"),
+        ("switchyard/stage", "CUSTOM STAGE", "p_solve"),
+    ] {
+        upstream.calls.lock().await.clear();
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": route,
+                "messages": [{"role": "user", "content": "bounded task"}]
+            })),
+        )
+        .await?;
+
+        assert_eq!(response.status, StatusCode::OK);
+        let calls = upstream.calls.lock().await;
+        let judge_call = calls
+            .iter()
+            .find(|call| call["model"] == "model/classifier")
+            .ok_or("classifier target was not called")?;
+        let prompt = judge_call["messages"][0]["content"]
+            .as_str()
+            .ok_or("classifier prompt was not text")?;
+        assert!(prompt.starts_with(prompt_prefix), "{route}: {prompt}");
+        assert!(
+            judge_call["response_format"]["json_schema"]["schema"]["properties"]
+                .get(schema_field)
+                .is_some(),
+            "{route}: missing {schema_field} in {judge_call}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn count_tokens_forwards_to_configured_anthropic_target() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
@@ -741,10 +1140,14 @@ base_url = "{base_url}"
 id = "real/opus"
 llm_client = "claude"
 
+[targets.other]
+id = "real/sonnet"
+llm_client = "claude"
+
 [routes.random]
 id = "switchyard/random"
 type = "random"
-targets = ["strong"]
+targets = ["other", "strong"]
 "#,
         base_url = upstream.base_url
     ))?;
@@ -805,11 +1208,16 @@ targets = ["weak"]
     )
     .await?;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
-    // The route's picked target is OpenAI, so count_tokens (Anthropic-only) is
-    // unsupported for it.
+    // This route has no Anthropic-format target.
     assert_eq!(
-        response.json()?["error"]["code"],
-        "count_tokens_unsupported"
+        response.json()?,
+        json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "route has no Anthropic target for token counting"
+            }
+        })
     );
     Ok(())
 }
@@ -864,6 +1272,147 @@ async fn routes_dispatch_and_discovery_endpoints_are_stable() -> TestResult {
     let calls = upstream.calls.lock().await;
     assert_eq!(calls[0]["model"], "model/general");
     assert_eq!(calls[1]["model"], "model/code");
+    Ok(())
+}
+
+#[tokio::test]
+async fn models_endpoint_reports_declared_route_capabilities_and_null_when_undeclared() -> TestResult
+{
+    const CONFIG: &str = r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.shared]
+id = "nvidia/deepseek-ai/deepseek-v4-pro"
+llm_client = "primary"
+
+[routes.declared]
+id = "declared"
+type = "passthrough"
+target = "shared"
+context_window = 1000000
+tool_calling = true
+
+[routes.restricted]
+id = "restricted"
+type = "passthrough"
+target = "shared"
+context_window = 262000
+tool_calling = false
+
+[routes.reasoning]
+id = "reasoning"
+type = "passthrough"
+target = "shared"
+reasoning = true
+
+[routes.undeclared]
+id = "undeclared"
+type = "passthrough"
+target = "shared"
+"#;
+    let app = build_switchyard_router(load_test_config(CONFIG)?);
+    let models = send(&app, "GET", "/v1/models", None).await?;
+    assert_eq!(models.status, StatusCode::OK);
+    let body = models.json()?;
+    let data = body["data"].as_array().cloned().unwrap_or_default();
+    let capabilities = data
+        .iter()
+        .filter_map(|entry| entry["id"].as_str().map(|id| (id, &entry["capabilities"])))
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(capabilities["declared"]["context_window"], json!(1_000_000));
+    assert_eq!(capabilities["declared"]["tool_calling"], json!(true));
+    assert_eq!(capabilities["restricted"]["context_window"], json!(262_000));
+    assert_eq!(capabilities["restricted"]["tool_calling"], json!(false));
+    assert_eq!(capabilities["undeclared"]["context_window"], json!(null));
+    assert_eq!(capabilities["undeclared"]["tool_calling"], json!(null));
+
+    let codex_models = body["models"].as_array().cloned().unwrap_or_default();
+    let codex_metadata = codex_models
+        .iter()
+        .filter_map(|entry| entry["slug"].as_str().map(|slug| (slug, entry)))
+        .collect::<BTreeMap<_, _>>();
+    // This checks the shape the server emits. That Codex 0.144.5 actually decodes it
+    // (context_window: null included) is verified by a live Codex run in SWITCH-1225.
+    assert_eq!(codex_metadata.len(), 4);
+    assert_eq!(
+        codex_metadata["declared"]["context_window"],
+        json!(1_000_000)
+    );
+    assert_eq!(codex_metadata["declared"]["shell_type"], "shell_command");
+    assert_eq!(
+        codex_metadata["declared"]["apply_patch_tool_type"],
+        "freeform"
+    );
+    // Constant fields Codex requires: a typo here would fail its decode, so pin them.
+    assert_eq!(codex_metadata["declared"]["visibility"], "list");
+    assert_eq!(codex_metadata["declared"]["supported_in_api"], json!(true));
+    assert_eq!(codex_metadata["declared"]["web_search_tool_type"], "text");
+    assert_eq!(
+        codex_metadata["declared"]["input_modalities"],
+        json!(["text"])
+    );
+    assert_eq!(
+        codex_metadata["declared"]["truncation_policy"],
+        json!({"mode": "tokens", "limit": 10_000})
+    );
+    assert_eq!(
+        codex_metadata["restricted"]["context_window"],
+        json!(262_000)
+    );
+    assert_eq!(codex_metadata["restricted"]["shell_type"], "disabled");
+    assert_eq!(
+        codex_metadata["restricted"]["apply_patch_tool_type"],
+        json!(null)
+    );
+    // A reasoning route advertises the effort presets and reasoning controls.
+    assert_eq!(
+        codex_metadata["reasoning"]["default_reasoning_level"],
+        "xhigh"
+    );
+    assert_eq!(
+        codex_metadata["reasoning"]["supported_reasoning_levels"]
+            .as_array()
+            .map(Vec::len),
+        Some(4)
+    );
+    assert_eq!(
+        codex_metadata["reasoning"]["supports_reasoning_summaries"],
+        json!(true)
+    );
+    assert_eq!(
+        codex_metadata["reasoning"]["support_verbosity"],
+        json!(true)
+    );
+    assert_eq!(codex_metadata["reasoning"]["default_verbosity"], "low");
+    // An undeclared route: null context window, non-reasoning, but tools default on
+    // so `switchyard launch codex` stays usable out of the box.
+    assert_eq!(codex_metadata["undeclared"]["context_window"], json!(null));
+    assert_eq!(
+        codex_metadata["undeclared"]["supported_reasoning_levels"],
+        json!([])
+    );
+    assert_eq!(
+        codex_metadata["undeclared"]["default_reasoning_level"],
+        json!(null)
+    );
+    assert_eq!(
+        codex_metadata["undeclared"]["supports_reasoning_summaries"],
+        json!(false)
+    );
+    assert_eq!(codex_metadata["undeclared"]["shell_type"], "shell_command");
+    assert_eq!(
+        codex_metadata["undeclared"]["apply_patch_tool_type"],
+        "freeform"
+    );
+    assert_eq!(
+        codex_metadata["undeclared"]["supports_parallel_tool_calls"],
+        json!(true)
+    );
     Ok(())
 }
 
@@ -984,6 +1533,193 @@ async fn routing_log_exposes_session_stats() -> TestResult {
         first["ts"]
             .as_str()
             .is_some_and(|value| value.ends_with('Z'))
+    );
+    Ok(())
+}
+
+// Overflow history is isolated per child, cleared with the session, and not retained when a
+// child lacks an agent ID.
+#[tokio::test]
+async fn overflow_history_is_scoped_to_agent_and_session_lifetime() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = fallback_state(&upstream.base_url)?;
+    let app = build_switchyard_router(state);
+    let child_a = [
+        ("x-switchyard-session-id", "shared-session"),
+        ("x-switchyard-agent-id", "child-a"),
+        ("x-switchyard-is-subagent", "true"),
+    ];
+    let root = [
+        ("x-switchyard-session-id", "shared-session"),
+        ("x-switchyard-agent-id", "root"),
+        ("x-switchyard-is-subagent", "false"),
+    ];
+    let child_b = [
+        ("x-switchyard-session-id", "shared-session"),
+        ("x-switchyard-agent-id", "child-b"),
+        ("x-switchyard-is-subagent", "true"),
+    ];
+    let child_without_agent_id = [
+        ("x-switchyard-session-id", "shared-session"),
+        ("x-switchyard-is-subagent", "true"),
+    ];
+    let final_root = [
+        ("x-switchyard-session-id", "shared-session"),
+        ("x-switchyard-agent-id", "root"),
+        ("x-switchyard-is-subagent", "false"),
+        ("x-switchyard-session-final", "true"),
+    ];
+    type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str]);
+    let cases: [Case<'_>; 8] = [
+        (
+            "overflow",
+            child_a.as_slice(),
+            &["model/weak", "model/strong"],
+        ),
+        ("fits", child_a.as_slice(), &["model/strong"]),
+        ("fits", root.as_slice(), &["model/weak"]),
+        ("fits", child_b.as_slice(), &["model/weak"]),
+        ("fits", final_root.as_slice(), &["model/weak"]),
+        ("fits", child_a.as_slice(), &["model/weak"]),
+        (
+            "overflow",
+            child_without_agent_id.as_slice(),
+            &["model/weak", "model/strong"],
+        ),
+        (
+            "overflow",
+            child_without_agent_id.as_slice(),
+            &["model/weak", "model/strong"],
+        ),
+    ];
+
+    for (content, headers, expected_calls) in cases {
+        let previous_call_count = upstream.calls.lock().await.len();
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": content}]
+            })),
+            headers,
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        let expected_model = expected_calls.last().copied();
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            expected_model
+        );
+        let calls = upstream.calls.lock().await;
+        assert_eq!(
+            calls[previous_call_count..]
+                .iter()
+                .map(|call| call["model"].as_str().unwrap_or(""))
+                .collect::<Vec<_>>(),
+            expected_calls
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let log_path = temp_dir.path().join("routing.jsonl");
+    let state = fallback_state(&upstream.base_url)?.with_routing_log(&log_path)?;
+    let app = build_switchyard_router(state);
+    let cases = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "unavailable"}]
+            }),
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "unavailable"}]
+            }),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "unavailable"}),
+        ),
+    ];
+
+    for (path, body) in cases {
+        let previous_call_count = upstream.calls.lock().await.len();
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some("model/strong")
+        );
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-rationale")
+                .and_then(|value| value.to_str().ok()),
+            Some("model/weak was unavailable; fell back to model/strong")
+        );
+        let calls = upstream.calls.lock().await;
+        assert_eq!(
+            calls[previous_call_count..]
+                .iter()
+                .map(|call| call["model"].as_str().unwrap_or(""))
+                .collect::<Vec<_>>(),
+            ["model/weak", "model/strong"]
+        );
+    }
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["routing_fallbacks"]["unavailable"], 3);
+    assert_eq!(stats["routing_fallbacks"]["context_window"], 0);
+
+    let records = std::fs::read_to_string(&log_path)?;
+    let records = records
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(records.len(), 3);
+    assert!(records.iter().all(|record| {
+        record["model"] == "model/strong" && record["fallback_reason"] == "unavailable"
+    }));
+
+    let previous_call_count = upstream.calls.lock().await.len();
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "all-unavailable"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    let error = response.json()?;
+    assert_eq!(error["error"]["type"], "upstream_error");
+    assert_eq!(error["error"]["code"], "upstream_error");
+    let calls = upstream.calls.lock().await;
+    assert_eq!(
+        calls[previous_call_count..]
+            .iter()
+            .map(|call| call["model"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>(),
+        ["model/weak", "model/strong"]
     );
     Ok(())
 }
@@ -1192,7 +1928,110 @@ async fn streaming_error_records_error_without_usage_or_latency() -> TestResult 
 }
 
 #[tokio::test]
-async fn request_and_upstream_errors_use_the_canonical_envelope() -> TestResult {
+async fn responses_stream_error_does_not_emit_success_terminal_events() -> TestResult {
+    // A distinct target keeps this test's error-counter increments off the shared
+    // model/stream-error metric that streaming_error_records_... asserts an exact delta on.
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/responses-stream-error"])]).await?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "input": "stream-error",
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.text()?;
+    assert_in_order(body, &["before", "upstream stream failed"]);
+    for event_type in [
+        "response.content_part.done",
+        "response.output_item.done",
+        "response.completed",
+    ] {
+        assert!(
+            !body.contains(event_type),
+            "{event_type} followed an upstream stream error"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn chat_stream_error_does_not_emit_success_terminal_chunk() -> TestResult {
+    // A distinct target keeps this test's error-counter increments off the shared
+    // model/stream-error metric that streaming_error_records_... asserts an exact delta on.
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/chat-stream-error"])]).await?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "stream-error"}],
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.text()?;
+    assert_in_order(body, &["before", "still here", "upstream stream failed"]);
+    // The finalizer must not synthesize a `finish_reason: stop` completion chunk after the error.
+    let after_error = body
+        .split_once("upstream stream failed")
+        .map(|(_, rest)| rest)
+        .unwrap_or_default();
+    assert!(
+        !after_error.contains(r#""finish_reason":"stop""#),
+        "a finish_reason=stop chunk followed an upstream stream error:\n{body}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn anthropic_stream_error_does_not_emit_success_terminal_events() -> TestResult {
+    // A distinct target keeps this test's error-counter increments off the shared
+    // model/stream-error metric that streaming_error_records_... asserts an exact delta on.
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/anthropic-stream-error"])]).await?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/messages",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "stream-error"}],
+            "max_tokens": 16,
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.text()?;
+    assert_in_order(body, &["before", "upstream stream failed"]);
+    // The finalizer must not close the turn with message_delta/message_stop after the error.
+    let after_error = body
+        .split_once("upstream stream failed")
+        .map(|(_, rest)| rest)
+        .unwrap_or_default();
+    for event_type in ["message_delta", "message_stop"] {
+        assert!(
+            !after_error.contains(event_type),
+            "{event_type} followed an upstream stream error:\n{body}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_and_upstream_errors_use_the_inbound_wire_format() -> TestResult {
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
     let unknown = send(
@@ -1221,17 +2060,75 @@ async fn request_and_upstream_errors_use_the_canonical_envelope() -> TestResult 
         "invalid_request_error"
     );
 
-    let upstream_error = send(
+    let upstream_cases = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "auth-fail"}]
+            }),
+            json!({
+                "error": {
+                    "message": "upstream authentication failed",
+                    "type": "upstream_error",
+                    "code": "upstream_error"
+                }
+            }),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "auth-fail"}),
+            json!({
+                "error": {
+                    "message": "upstream authentication failed",
+                    "type": "upstream_error",
+                    "code": "upstream_error"
+                }
+            }),
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL,
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "auth-fail"}]
+            }),
+            json!({
+                "type": "error",
+                "error": {
+                    "type": "authentication_error",
+                    "message": "upstream authentication failed"
+                }
+            }),
+        ),
+    ];
+    for (path, body, expected) in upstream_cases {
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{path}");
+        assert_eq!(response.json()?, expected, "{path}");
+    }
+
+    let anthropic_unknown = send(
         &app,
         "POST",
-        "/v1/chat/completions",
+        "/v1/messages",
         Some(json!({
-            "model": ROUTE_MODEL,
-            "messages": [{"role": "user", "content": "fail"}]
+            "model": "other",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}]
         })),
     )
     .await?;
-    assert_eq!(upstream_error.status, StatusCode::IM_A_TEAPOT);
-    assert_eq!(upstream_error.json()?["error"]["code"], "upstream_error");
+    assert_eq!(anthropic_unknown.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        anthropic_unknown.json()?,
+        json!({
+            "type": "error",
+            "error": {
+                "type": "not_found_error",
+                "message": "No route registered for model other"
+            }
+        })
+    );
     Ok(())
 }

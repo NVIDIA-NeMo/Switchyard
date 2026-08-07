@@ -979,11 +979,9 @@ class TestRequestEngineEdgeCases:
     def test_openai_to_anthropic_default_max_tokens(self, req_engine):
         """When ``max_tokens`` is omitted, Anthropic requires a default.
 
-        The translation layer injects ``128_000`` (generous on purpose —
-        see ``convert_openai_request_to_anthropic``'s docstring).  Anthropic
-        clamps this to the model's real output ceiling server-side, so
-        oversizing is harmless and a small default would silently
-        truncate long coding outputs.
+        The translation layer injects ``64_000`` to provide room for long
+        coding outputs without defaulting every request to the model's
+        absolute output ceiling.
         """
         body = {
             "model": "gpt-4o",
@@ -991,7 +989,7 @@ class TestRequestEngineEdgeCases:
         }
         req = ChatRequest.openai_chat(body)
         result = req_engine.request_to(ChatRequestType.ANTHROPIC, req)
-        assert result.body["max_tokens"] == 128_000
+        assert result.body["max_tokens"] == 64_000
 
     def test_openai_to_anthropic_system_extraction(self, req_engine):
         """System messages should be extracted into the Anthropic system param."""

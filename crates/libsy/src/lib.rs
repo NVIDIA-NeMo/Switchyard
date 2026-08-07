@@ -6,8 +6,8 @@
 
 mod core;
 pub use core::algorithm::{
-    Algorithm, CallLlmRequest, Driver, LlmCallObservation, LlmTarget, LlmTargetSet, RoutedRequest,
-    RunObservation, RunObserver, Step, StepStream,
+    Algorithm, CallLlmRequest, Driver, LlmTarget, LlmTargetSet, RoutedRequest, Step, StepStream,
+    drive,
 };
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::processor::{Event, Processor};
@@ -17,12 +17,16 @@ mod error;
 pub use error::{DriverError, LibsyError, Result};
 
 mod algorithms;
-pub use algorithms::llm_class::{LlmTaskClassifier, TaskClassifierConfig};
+pub use algorithms::llm_class::{
+    CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
+    TaskClassifierConfig,
+};
 pub use algorithms::noop::{Noop, NoopDecision};
 pub use algorithms::passthrough::{Passthrough, PassthroughDecision};
 pub use algorithms::rand::{Random, RandomClassifier, RandomDecision};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::util::affinity::AffinityRouter;
+pub use algorithms::util::classifier_contract::ClassifierContractConfig;
 pub use algorithms::util::escalation::EscalationJudgeConfig;
 pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
 pub use algorithms::util::subagent::SubagentOverride;
@@ -37,6 +41,7 @@ pub use algorithms::util::stage::{
 };
 
 mod observability;
+pub use observability::algorithm_label;
 
 /// Registers process-wide compatibility gauges with the global meter provider.
 ///

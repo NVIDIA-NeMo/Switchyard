@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from switchyard.libsy import LibsyError, LlmTarget, algorithms
+from switchyard.libsy import LibsyError, LlmTarget, TaskClassifierConfig, algorithms
 
 
 def request_body() -> dict[str, Any]:
@@ -60,6 +60,54 @@ async def test_random_runs_with_a_python_client() -> None:
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "fast"}]
 
 
+async def test_classifier_config_accepts_a_prompt_override() -> None:
+    """Verify that a configured classifier prompt is rendered for the judge."""
+
+    class JudgeClient(EchoClient):
+        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(request)
+            return {
+                "model": self.model,
+                "outputs": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    '{"crux":"bounded task","primary_rule":"SUP-1",'
+                                    '"capability_boundary":"supported","p_solve":0.9}'
+                                ),
+                            }
+                        ],
+                        "stop_reason": "end_turn",
+                    }
+                ],
+            }
+
+    judge = JudgeClient("judge")
+    weak = EchoClient("weak")
+    algorithm = algorithms.llm_task_classifier(
+        LlmTarget("judge", judge),
+        LlmTarget("weak", weak),
+        LlmTarget("strong", EchoClient("strong")),
+        config=TaskClassifierConfig(
+            0.5,
+            threshold_step=0.1,
+            prompt="Custom capability rubric.",
+        ),
+    )
+
+    _, response = await algorithm.run(request_body())
+
+    prompt = judge.calls[0]["instructions"][0]["content"][0]["text"]
+    assert prompt == "Custom capability rubric."
+    assert judge.calls[0]["output"]["response_format"]["json_schema"]["schema"][
+        "properties"
+    ]["p_solve"]
+    assert response["model"] == "weak"
+
+
 async def test_random_weights_and_seed_are_reproducible() -> None:
     def algorithm():
         return algorithms.random(
@@ -95,6 +143,33 @@ async def test_noop_needs_no_client() -> None:
 
     assert decisions[0]["selected_model"] == "auto"
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "OK"}]
+
+
+@pytest.mark.parametrize(
+    ("headers", "message"),
+    [
+        ({"invalid header": "value"}, "invalid HTTP header name"),
+        ({"x-valid": "invalid\nvalue"}, "failed to parse header value"),
+    ],
+)
+def test_algorithm_rejects_invalid_headers(headers: dict[str, str], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        algorithms.noop().run(request_body(), headers=headers)
+
+
+async def test_algorithm_accepts_case_insensitive_duplicate_names() -> None:
+    decisions, _ = await algorithms.noop().run(
+        request_body(), headers={"X-Unused": "first", "x-unused": "second"}
+    )
+
+    assert decisions[0]["selected_model"] == "auto"
+
+
+def test_algorithm_rejects_header_map_capacity_overflow() -> None:
+    headers = {f"x-header-{index}": "value" for index in range(32_769)}
+
+    with pytest.raises(ValueError, match="max size reached"):
+        algorithms.noop().run(request_body(), headers=headers)
 
 
 def test_algorithm_exposes_only_managed_execution() -> None:

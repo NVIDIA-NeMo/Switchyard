@@ -27,7 +27,10 @@ async-stream = "0.3"
 async-trait = "0.1"
 futures = "0.3"
 futures-util = "0.3"
+http = "1"
 httpdate = "1"
+jsonschema = { version = "0.49.4", default-features = false }
+jsonptr = { version = "0.8.1", default-features = false, features = ["std", "json", "resolve"] }
 parking_lot = "0.12"
 rand = "0.10"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
@@ -42,3 +45,5 @@ switchyard-translation = { path = "crates/switchyard-translation", version = "0.
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "std"] }
+tracing-opentelemetry = "0.33"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

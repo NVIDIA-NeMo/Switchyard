@@ -21,6 +21,8 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 futures.workspace = true
+jsonschema.workspace = true
+jsonptr.workspace = true
 # Metrics-only OTel API: instruments record through the host-installed global
 # meter provider. Pinned to the 0.32 line used across the workspace.
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
@@ -31,11 +33,10 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-stream = "0.1"
 tracing.workspace = true
-tracing-opentelemetry = "0.33"
+tracing-opentelemetry.workspace = true
 
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.
 opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
-switchyard-llm-client.workspace = true
 tokio.workspace = true
-tracing-subscriber = "0.3"
+tracing-subscriber.workspace = true

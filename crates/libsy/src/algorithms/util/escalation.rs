@@ -8,9 +8,13 @@
 //! lives with the assembled algorithm in [`crate::algorithms::escalation`].
 
 use serde::Deserialize;
-use switchyard_protocol::{ContentBlock, LlmRequest, Message, OutputParams, Role};
+use switchyard_protocol::{ContentBlock, Message, Role};
 
-use super::llm_judge::{self, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
+use super::classifier_contract::{ClassifierContract, ClassifierContractConfig};
+use super::llm_judge::{
+    ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
+    StructuredJudge,
+};
 use crate::core::algorithm::LlmTarget;
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
@@ -92,38 +96,21 @@ pub(crate) struct EscalationVerdict {
     escalate: bool,
 }
 
-/// Builds the judge request from the conversation so far.
-pub(crate) struct EscalationJudge {
-    rubric: JudgeConfig,
+/// Builds the condensed trajectory presented to the escalation judge.
+pub(crate) struct EscalationInput {
     config: EscalationJudgeConfig,
 }
 
-impl Judge for EscalationJudge {
-    type Verdict = EscalationVerdict;
-
-    /// Renders the rubric as the system message and the condensed trajectory as the user
-    /// message. `state` is unused: the judge reads only the live request.
-    fn build_request(&self, _state: &State, request: &Request) -> Request {
+impl ClassifierInput for EscalationInput {
+    fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
         let messages = &request.llm_request.messages;
         let summary = summarize_for_judge(messages, conversation_turn(request), &self.config);
-        Request {
-            llm_request: LlmRequest {
-                model: request.llm_request.model.clone(),
-                messages: vec![
-                    Message::text(Role::System, self.rubric.system_prompt.clone()),
-                    Message::text(Role::User, summary),
-                ],
-                output: OutputParams {
-                    response_format: self.rubric.response_schema.clone(),
-                    max_output_tokens: Some(self.rubric.max_output_tokens),
-                },
-                ..LlmRequest::default()
-            },
-            raw_request: None,
-            metadata: request.metadata.clone(),
-        }
+        vec![Message::text(Role::User, summary)]
     }
 }
+
+/// Structured trajectory judge with a typed escalation verdict.
+pub(crate) type EscalationJudge = StructuredJudge<EscalationInput, SerdeDecoder<EscalationVerdict>>;
 
 /// Maps the judge's verdict to a classification. A verdict names the tier to serve — capable
 /// on escalate, efficient on decline — so the caller reads it straight off the winning score.
@@ -161,19 +148,20 @@ pub(crate) fn build_judge(
     judge_target: LlmTarget,
     capable: String,
     efficient: String,
+    contract_config: &ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
     config.validate()?;
-    if max_output_tokens == 0 {
-        return Err(LibsyError::AlgorithmError {
-            message: "max_output_tokens must be at least 1".to_string(),
-        });
-    }
-    let mut rubric = llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
-    rubric.max_output_tokens = max_output_tokens;
+    let contract =
+        ClassifierContract::from_config(contract_config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
     Ok(JudgeClassifier::new(
-        EscalationJudge { rubric, config },
+        StructuredJudge::new(
+            EscalationInput { config },
+            contract,
+            SerdeDecoder::new(),
+            JudgeRuntimeConfig::new(max_output_tokens)?,
+        ),
         judge_target,
         EscalationPolicy { capable, efficient },
     ))
@@ -331,7 +319,7 @@ fn role_label(role: Role) -> &'static str {
 /// Shared with the assembled router's tests, which drive the same conversation shape.
 #[cfg(test)]
 pub(crate) fn request_at_turn(session_id: Option<&str>, turn: usize) -> Request {
-    use switchyard_protocol::Metadata;
+    use switchyard_protocol::{LlmRequest, Metadata};
 
     let mut messages = vec![Message::text(Role::User, "What is 2+2?")];
     for attempt in 1..turn {
@@ -358,13 +346,26 @@ mod tests {
     use switchyard_protocol::{ContentBlock, Message, Role, ToolCall, ToolResult};
 
     use super::*;
+    use crate::algorithms::util::llm_judge::Judge;
+
+    fn escalation_judge(max_output_tokens: u64) -> Result<EscalationJudge> {
+        Ok(StructuredJudge::new(
+            EscalationInput {
+                config: EscalationJudgeConfig::default(),
+            },
+            ClassifierContract::from_config(
+                &ClassifierContractConfig::default(),
+                PROMPT_TEMPLATE,
+                SCHEMA_TEMPLATE,
+            )?,
+            SerdeDecoder::new(),
+            JudgeRuntimeConfig::new(max_output_tokens)?,
+        ))
+    }
 
     #[test]
     fn judge_request_is_rubric_plus_summary_under_a_completion_cap() -> Result<()> {
-        let judge = EscalationJudge {
-            rubric: llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?,
-            config: EscalationJudgeConfig::default(),
-        };
+        let judge = escalation_judge(super::super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?;
 
         // As the classifier calls it: the turn's reply is already on the transcript.
         let mut judged = request_at_turn(None, 4);
@@ -374,12 +375,13 @@ mod tests {
             .push(Message::text(Role::Assistant, "this turn's reply"));
         let built = judge.build_request(&State::default(), &judged);
 
-        // Two messages: the rubric as system, the condensed trajectory as user.
-        assert_eq!(built.llm_request.messages.len(), 2);
-        assert_eq!(built.llm_request.messages[0].role, Role::System);
-        assert_eq!(built.llm_request.messages[1].role, Role::User);
+        // Rubric in instructions, condensed trajectory as the sole user message.
+        assert_eq!(built.llm_request.instructions.len(), 1);
+        assert_eq!(built.llm_request.instructions[0].role, Role::System);
+        assert_eq!(built.llm_request.messages.len(), 1);
+        assert_eq!(built.llm_request.messages[0].role, Role::User);
         assert!(
-            built.llm_request.messages[1]
+            built.llm_request.messages[0]
                 .text_content("")
                 .is_some_and(|text| text.contains("Conversation turn 4"))
         );
@@ -394,12 +396,7 @@ mod tests {
 
     #[test]
     fn judge_request_uses_the_configured_completion_cap() -> Result<()> {
-        let mut rubric = llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
-        rubric.max_output_tokens = 512;
-        let judge = EscalationJudge {
-            rubric,
-            config: EscalationJudgeConfig::default(),
-        };
+        let judge = escalation_judge(512)?;
 
         let built = judge.build_request(&State::default(), &request_at_turn(None, 1));
 

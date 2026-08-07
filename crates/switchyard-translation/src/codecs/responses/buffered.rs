@@ -182,24 +182,48 @@ impl FormatCodec for OpenAiResponsesCodec {
     fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let body = crate::util::object(body, "$")?;
         let mut diagnostics = Vec::new();
-        let mut outputs = Vec::new();
+        let mut content = Vec::new();
+        let mut role = Role::Assistant;
+        let mut stop_reason = None;
+        let mut has_output = false;
         if let Some(items) = body.get("output").and_then(Value::as_array) {
             for item in items {
                 if let Some(output) = decode_responses_output_item(item, &mut diagnostics, policy)?
                 {
-                    outputs.push(output);
+                    has_output = true;
+                    role = output.role;
+                    content.extend(output.content);
+                    if output.stop_reason.is_some() {
+                        stop_reason = output.stop_reason;
+                    }
                 }
             }
         }
-        if outputs.is_empty() {
-            outputs.push(ResponseOutput {
+        // The truncation signal is on the response, not the output items.
+        if body.get("status").and_then(Value::as_str) == Some("incomplete")
+            && body
+                .get("incomplete_details")
+                .and_then(|details| details.get("reason"))
+                .and_then(Value::as_str)
+                == Some("max_output_tokens")
+        {
+            stop_reason = Some(StopReason::MaxTokens);
+        }
+        let outputs = vec![if has_output {
+            ResponseOutput {
+                role,
+                content,
+                stop_reason,
+            }
+        } else {
+            ResponseOutput {
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text {
                     text: String::new(),
                 }],
                 stop_reason: Some(StopReason::EndTurn),
-            });
-        }
+            }
+        }];
         let response = AggLlmResponse {
             id: body
                 .get("id")
@@ -242,6 +266,18 @@ impl FormatCodec for OpenAiResponsesCodec {
                 diagnostics: Vec::new(),
             });
         }
+        let is_truncated = matches!(
+            response
+                .first_output()
+                .and_then(|output| output.stop_reason),
+            Some(StopReason::MaxTokens)
+        );
+        let status = if is_truncated {
+            "incomplete"
+        } else {
+            "completed"
+        };
+        let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
         Ok(EncodedResponse {
             body: embed_preservation(
                 json!({
@@ -249,7 +285,8 @@ impl FormatCodec for OpenAiResponsesCodec {
                     "object": "response",
                     "created_at": 0,
                     "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
-                    "status": "completed",
+                    "status": status,
+                    "incomplete_details": incomplete_details,
                     "output": encode_responses_output(&response.outputs),
                     "usage": encode_responses_usage(&response.usage),
                     "parallel_tool_calls": true,
@@ -428,10 +465,10 @@ fn decode_responses_input(
             }
             Ok(messages)
         }
-        other => Ok(vec![Message::text(
-            Role::User,
-            string_value(other).unwrap_or_default(),
-        )]),
+        _ => Err(TranslationError::InvalidType {
+            path: "$.input".to_string(),
+            expected: "string or array",
+        }),
     }
 }
 
@@ -1079,6 +1116,11 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     .any(|block| matches!(block, ContentBlock::ToolCall(_)));
                 let text = text_from_blocks(&output.content, "");
                 let reasoning = reasoning_text_from_blocks(&output.content, "\n");
+                let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
+                    "incomplete"
+                } else {
+                    "completed"
+                };
                 let mut items = Vec::new();
 
                 if !reasoning.is_empty() {
@@ -1089,7 +1131,7 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     items.push(json!({
                         "type": "message",
                         "id": "msg_switchyard",
-                        "status": "completed",
+                        "status": status,
                         "role": role_to_responses(output.role),
                         "content": [{
                             "type": "output_text",

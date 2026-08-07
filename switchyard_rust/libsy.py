@@ -57,11 +57,12 @@ if TYPE_CHECKING:
             self,
             base_threshold: float,
             *,
-            min_confidence: float = 0.0,
-            capability_elevated_floor: float | None = None,
+            threshold_step: float = 0.0,
             session_affinity: bool = False,
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
+            max_output_tokens: int = 4096,
+            prompt: str | None = None,
         ) -> None: ...
 
     @final

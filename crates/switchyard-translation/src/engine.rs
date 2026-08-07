@@ -8,11 +8,14 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::LlmResponseStreamEvent;
 use crate::codecs::FormatCodec;
 use crate::codecs::anthropic::AnthropicMessagesCodec;
 use crate::codecs::openai_chat::OpenAiChatCodec;
 use crate::codecs::responses::OpenAiResponsesCodec;
-use crate::codecs::stream::{StreamCodecRegistry, StreamTranslationState};
+use crate::codecs::stream::{
+    StreamCodecRegistry, StreamTranslationState, encode_response_stream_event,
+};
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
@@ -241,6 +244,45 @@ impl TranslationEngine {
             .into_iter()
             .flat_map(|event| target_codec.encode_event(state, event))
             .collect())
+    }
+
+    /// Decodes one provider event while retaining its parsed source JSON value.
+    ///
+    /// Takes ownership of `event` so preservation does not deep-copy provider JSON
+    /// on the per-event streaming path.
+    pub fn decode_stream_event(
+        &self,
+        state: &mut StreamTranslationState,
+        source: impl Into<FormatId>,
+        event: Value,
+    ) -> Result<LlmResponseStreamEvent> {
+        let source = source.into();
+        let source_codec = self.stream_registry.codec(source.clone())?;
+        state.source = Some(source.clone());
+        let normalized = source_codec.decode_event(state, &event);
+        Ok(LlmResponseStreamEvent::preserved(source, event, normalized))
+    }
+
+    /// Encodes one neutral or preserved stream event for a target provider.
+    ///
+    /// A preserved event replays its retained JSON value unchanged when its
+    /// source and target formats match. Cross-format encoding intentionally
+    /// uses only its normalized events.
+    pub fn encode_stream_event(
+        &self,
+        state: &mut StreamTranslationState,
+        target: impl Into<FormatId>,
+        event: LlmResponseStreamEvent,
+    ) -> Result<Vec<Value>> {
+        let target = target.into();
+        let target_codec = self.stream_registry.codec(target.clone())?;
+        state.target = Some(target.clone());
+        Ok(encode_response_stream_event(
+            state,
+            target_codec.as_ref(),
+            &target,
+            event,
+        ))
     }
 
     /// Finishes target-provider stream emission after the source stream closes.

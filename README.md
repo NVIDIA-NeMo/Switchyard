@@ -22,10 +22,18 @@ algorithm you write yourself.
 - **Multi-Backend Routing**: random routing, LLM-as-classifier routing, signal-driven stage-router, or your own algorithm
 - **Operational Metrics**: Prometheus metrics cover requests, errors, latency, tokens, and routing overhead
 
+## Maturity
+
+Switchyard is pre-alpha software that is evolving rapidly. The API and algorithms are expected to change significantly before we reach v1.0.
+
+> [!WARNING]
+> Experimental software. Not for production use.
+
 ## Quick Start
 
 Choose the launcher path to run Claude Code, Codex CLI, or OpenClaw through
 Switchyard. Choose the server path to run Switchyard as a standalone proxy.
+Choose the library path to embed routing in your own Rust application.
 
 ### Launcher Path
 
@@ -35,7 +43,7 @@ not already available, then install the published Switchyard tool:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source "$HOME/.local/bin/env"
-uv tool install "nemo-switchyard[cli,server]"
+uv tool install --python 3.12 "nemo-switchyard[cli,server]"
 ```
 
 The coding agent you launch must also be installed and on your `PATH`. This does
@@ -59,19 +67,16 @@ switchyard launch claude --model my-route --config routes.toml
 
 ### Server Path
 
-Use this path to build and run the standalone Rust proxy. Install
-[Rust with Cargo](https://rust-lang.org/tools/install/), then build the release
-binary from source:
+Use this path to install and run the standalone Rust proxy. Install
+[Rust with Cargo](https://rust-lang.org/tools/install/), then install the
+published binary:
 
 ```bash
-git clone https://github.com/NVIDIA-NeMo/Switchyard.git
-cd Switchyard
-cargo build --locked --release -p switchyard-server
-./target/release/switchyard-server --help
+cargo install --locked switchyard-server
+switchyard-server --help
 ```
 
-Prebuilt binaries are not published yet. `rustup` installs the pinned toolchain
-automatically when you run Cargo from the repository.
+Cargo builds the release binary and installs it into `~/.cargo/bin` by default.
 
 Create `routes.toml` using the
 [Getting Started guide](docs/getting_started.md#server-path), then validate it
@@ -79,8 +84,8 @@ and start the server:
 
 ```bash
 export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-./target/release/switchyard-server --config routes.toml --dry-run
-./target/release/switchyard-server --config routes.toml --host 127.0.0.1 --port 4000
+switchyard-server --config routes.toml --dry-run
+switchyard-server --config routes.toml --host 127.0.0.1 --port 4000
 ```
 
 Verify the proxy in another terminal:
@@ -91,6 +96,36 @@ curl http://localhost:4000/health
 
 For a complete configuration and a test request, follow
 [Getting Started](docs/getting_started.md).
+
+### Library Path
+
+`switchyard-libsy` embeds the routing algorithms in your own Rust application.
+It never calls a model itself: an algorithm decides which target to use and
+hands every model call back to you, so it drops into an existing proxy, gateway,
+or agent runtime without owning an HTTP stack. Pair it with
+`switchyard-llm-client` when you want the calls made for you.
+
+```toml
+[dependencies]
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+```
+
+See [Getting Started](docs/getting_started.md#library-path) for setup and the
+algorithm list, or the [`switchyard-libsy`](crates/libsy/README.md) crate docs.
+
+## Routing Strategies
+
+| Strategy | Use it when | Route `type` |
+|---|---|---|
+| [LLM Classifier](docs/routing_algorithms/llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
+| [Stage Router](docs/routing_algorithms/stage_router_routing.md) | Signals already in the conversation, such as tool results and errors, should route most turns without an extra model call. | `stage_router` |
+| [Escalation Router](docs/routing_algorithms/escalation_router_routing.md) | Every turn runs on the weak tier first, and a judge reads that answer to decide whether to send the same request to the strong tier. | `llm_classifier` with `mode = "escalation"` |
+| [Random](docs/routing_algorithms/random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
+
+A `passthrough` route registers one target under one model ID with no routing
+decision. See the [Routing Overview](docs/routing_algorithms/overview.md) for
+the common route shape and self-hosted targets.
 
 ## Architecture
 

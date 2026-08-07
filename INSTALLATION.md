@@ -4,6 +4,8 @@ Switchyard supports modular installation based on your use case. Install only th
 
 ## System Requirements
 
+- Python 3.12 or newer. If the active interpreter is older, run
+  `uv pip install --python 3.12 nemo-switchyard`.
 - Linux x86_64 wheels require an x86-64-v3 / AVX2-class CPU (post 2013).
 - Linux aarch64 wheels require a Neoverse N1-class CPU (post 2020).
 

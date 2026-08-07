@@ -7,7 +7,7 @@
 //! response. [`Metadata::from_headers`] normalizes host-specific HTTP headers into
 //! that neutral shape.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, str::FromStr as _};
 
 use crate::WireFormat;
 
@@ -188,25 +188,14 @@ pub struct Metadata {
     /// Arbitrary host-defined key/value metadata.
     pub extra_metadata: Option<BTreeMap<String, String>>,
     /// HTTP headers to attach when forwarding the request/response, if any.
-    pub http_headers: Option<BTreeMap<String, String>>,
+    pub http_headers: Option<http::HeaderMap>,
     /// The wire format the request/response was originally encoded in, if known.
     pub wire_format: Option<WireFormat>,
 }
 
 impl Metadata {
-    /// Normalizes harness-specific request headers into correlation metadata.
-    ///
-    /// Explicit `x-switchyard-*` headers win. Compatible host headers can populate
-    /// correlation and session metadata, but do not by themselves mark a request as
-    /// delegated work. Structured turn metadata is preferred over compatibility
-    /// projections. A request with a non-empty `x-claude-code-agent-id` is treated
-    /// as a child agent (its parent
-    /// inferred from the session when not stated). Sub-agent routing status is taken
-    /// from an explicit `x-switchyard-is-subagent` header when present, and otherwise
-    /// inferred from native agent lineage or structured harness signals.
-    pub fn from_headers(headers: &BTreeMap<String, String>) -> Self {
-        let headers = &normalize_headers(headers);
-
+    /// Create Metadata
+    pub fn from_headers(headers: &http::HeaderMap) -> Self {
         let (parent_agent_id, is_subagent, is_delegated_work) = parse_sub_agent(headers);
 
         Metadata {
@@ -247,7 +236,7 @@ impl Metadata {
 ///
 /// `is_delegated_work` is computed from raw harness signals, not from `agent_kind`,
 /// which may be set by an unrelated operator label (`x-switchyard-agent-kind`).
-fn parse_sub_agent(headers: &BTreeMap<String, String>) -> (Option<String>, bool, bool) {
+fn parse_sub_agent(headers: &http::HeaderMap) -> (Option<String>, bool, bool) {
     let explicit = header(headers, SWITCHYARD_IS_SUBAGENT_HEADER).and_then(parse_bool);
 
     let (claude_parent, claude_subagent) = claude_lineage(headers);
@@ -287,7 +276,7 @@ fn parse_sub_agent(headers: &BTreeMap<String, String>) -> (Option<String>, bool,
 /// teammates; root agents omit it. Any non-empty value is therefore a
 /// sub-agent signal. The parent is the explicit parent-agent header when
 /// present, else the session the child was spawned under.
-fn claude_lineage(headers: &BTreeMap<String, String>) -> (Option<&str>, bool) {
+fn claude_lineage(headers: &http::HeaderMap) -> (Option<&str>, bool) {
     let session = header(headers, CLAUDE_SESSION_ID_HEADER);
     let agent = header(headers, CLAUDE_AGENT_ID_HEADER);
     let is_subagent = agent.is_some();
@@ -306,26 +295,12 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-/// Lowercases header names and keeps the first non-empty, trimmed value per name.
-fn normalize_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    let mut normalized = BTreeMap::new();
-    for (key, value) in headers {
-        let lower_key = key.to_ascii_lowercase();
-        let trimmed_value = value.trim();
-        if !normalized.contains_key(&lower_key) && !trimmed_value.is_empty() {
-            normalized.insert(lower_key, trimmed_value.to_string());
-        }
-    }
-
-    normalized
-}
-
 /// Resolves the logical field `key` against `headers` using [`HEADER_CONFIG`]'s paths.
 ///
 /// Returns the value of the first configured path that resolves, or `None` when the
 /// field is absent from [`HEADER_CONFIG`] or nothing resolves. Descending into JSON
 /// yields owned values, so the result is a `String` rather than a borrow of `headers`.
-fn sy_header(headers: &BTreeMap<String, String>, key: &str) -> Option<String> {
+fn sy_header(headers: &http::HeaderMap, key: &str) -> Option<String> {
     let (_, paths) = HEADER_CONFIG
         .iter()
         .find(|(field, _)| field.eq_ignore_ascii_case(key))?;
@@ -333,16 +308,20 @@ fn sy_header(headers: &BTreeMap<String, String>, key: &str) -> Option<String> {
 }
 
 /// Follows one dotted path, descending through a JSON-object header value.
-fn resolve_path(headers: &BTreeMap<String, String>, path: &str) -> Option<String> {
+/// Do not use if you expect multiple values for this header.
+fn resolve_path(headers: &http::HeaderMap, path: &str) -> Option<String> {
     let (header_name, nested) = match path.split_once('.') {
         Some((name, rest)) => (name, Some(rest)),
         None => (path, None),
     };
-    let raw = headers.get(&header_name.to_ascii_lowercase())?;
+    let raw = headers.get(header_name)?.to_str().ok().map(|s| s.trim())?;
+    if raw.is_empty() {
+        return None;
+    }
 
     // A bare header name resolves to its value verbatim; no JSON parsing needed.
     let Some(nested) = nested else {
-        return Some(raw.clone());
+        return Some(raw.to_string());
     };
 
     // Nested path: parse the header value as JSON and descend key by key.
@@ -358,9 +337,24 @@ fn resolve_path(headers: &BTreeMap<String, String>, path: &str) -> Option<String
     }
 }
 
-fn header<'a>(headers: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
-    let lower_key = key.to_ascii_lowercase();
-    headers.get(&lower_key).map(|s| s.as_str())
+fn header<'a>(headers: &'a http::HeaderMap, key: &str) -> Option<&'a str> {
+    headers
+        .get(key)
+        .and_then(|s| s.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Utility to convert a slice of string pairs into an `http::HeaderMap`.
+pub fn slice_to_header_map(sl: &[(&str, &str)]) -> http::HeaderMap {
+    let mut m = http::HeaderMap::with_capacity(sl.len());
+    for (k, v) in sl {
+        m.insert(
+            http::HeaderName::from_str(k).unwrap(),
+            (*v).try_into().unwrap(),
+        );
+    }
+    m
 }
 
 #[cfg(test)]
@@ -370,275 +364,168 @@ mod tests {
     /// Header carrying Codex's structured turn metadata as a JSON object.
     const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 
-    #[test]
-    fn normalizes_codex_child_metadata() {
-        let headers = BTreeMap::from([(
-            CODEX_TURN_METADATA_HEADER.to_string(),
-            serde_json::json!({
-                "session_id": "root-session",
-                "thread_id": "child-agent",
-                "parent_thread_id": "root-agent",
-                "turn_id": "turn-7",
-                "subagent_kind": "collab_spawn",
-            })
-            .to_string(),
-        )]);
-
-        let metadata = Metadata::from_headers(&headers);
-        assert_eq!(metadata.session_id.as_deref(), Some("root-session"));
-        assert_eq!(metadata.agent_id.as_deref(), Some("child-agent"));
-        assert!(metadata.is_subagent);
-        assert_eq!(metadata.parent_agent_id.as_deref(), Some("root-agent"));
+    fn metadata(headers: &[(&str, &str)]) -> Metadata {
+        Metadata::from_headers(&slice_to_header_map(headers))
     }
 
     #[test]
-    fn root_codex_metadata_is_not_inferred_as_a_subagent() {
-        let headers = BTreeMap::from([(
-            CODEX_TURN_METADATA_HEADER.to_string(),
-            serde_json::json!({
-                "session_id": "root-session",
-                "thread_id": "root-agent",
-                "turn_id": "turn-1",
-            })
-            .to_string(),
-        )]);
+    fn normalizes_codex_metadata_and_lineage() {
+        let child_body = serde_json::json!({
+            "session_id": "root-session",
+            "thread_id": "child-agent",
+            "parent_thread_id": "root-agent",
+            "turn_id": "turn-7",
+            "subagent_kind": "collab_spawn",
+        })
+        .to_string();
+        let child = metadata(&[(CODEX_TURN_METADATA_HEADER, child_body.as_str())]);
+        assert_eq!(child.session_id.as_deref(), Some("root-session"));
+        assert_eq!(child.agent_id.as_deref(), Some("child-agent"));
+        assert_eq!(child.parent_agent_id.as_deref(), Some("root-agent"));
+        assert!(child.is_subagent);
 
-        let metadata = Metadata::from_headers(&headers);
-        assert!(!metadata.is_subagent);
-    }
+        let root_body = serde_json::json!({
+            "session_id": "root-session",
+            "thread_id": "root-agent",
+            "turn_id": "turn-1",
+        })
+        .to_string();
+        let root = metadata(&[(CODEX_TURN_METADATA_HEADER, root_body.as_str())]);
+        assert!(!root.is_subagent);
 
-    #[test]
-    fn codex_parent_thread_id_alone_is_not_a_subagent_signal() {
         // Parent-thread-id is correlation data, not a routing signal. A Codex
         // turn that carries a parent thread id but no `x-openai-subagent` must
         // not be treated as sub-agent work.
-        let headers = BTreeMap::from([(
-            CODEX_TURN_METADATA_HEADER.to_string(),
-            serde_json::json!({
-                "session_id": "root-session",
-                "thread_id": "child-thread",
-                "parent_thread_id": "root-thread",
-                "turn_id": "turn-3",
-                // no subagent_kind
-            })
-            .to_string(),
-        )]);
-
-        let metadata = Metadata::from_headers(&headers);
-        // Parent id is still captured for observability.
-        assert_eq!(metadata.parent_agent_id.as_deref(), Some("root-thread"));
-        // But it must not drive routing.
-        assert!(!metadata.is_subagent);
-        assert!(!metadata.is_subagent_work());
+        let correlated_body = serde_json::json!({
+            "session_id": "root-session",
+            "thread_id": "child-thread",
+            "parent_thread_id": "root-thread",
+            "turn_id": "turn-3",
+        })
+        .to_string();
+        let correlated = metadata(&[(CODEX_TURN_METADATA_HEADER, correlated_body.as_str())]);
+        assert_eq!(correlated.parent_agent_id.as_deref(), Some("root-thread"));
+        assert!(!correlated.is_subagent);
+        assert!(!correlated.is_subagent_work());
     }
 
     #[test]
-    fn explicit_switchyard_subagent_flag_overrides_inference() {
-        let headers = BTreeMap::from([
-            ("x-switchyard-is-subagent".to_string(), "false".to_string()),
-            (
-                "x-switchyard-parent-agent-id".to_string(),
-                "parent".to_string(),
-            ),
-        ]);
-
-        let metadata = Metadata::from_headers(&headers);
-        assert!(!metadata.is_subagent);
-    }
-
-    #[test]
-    fn normalizes_claude_code_session_header() {
+    fn normalizes_claude_code_metadata_and_lineage() {
         // Claude Code identifies a session with `x-claude-code-session-id`; session
         // affinity keys on it so a whole CLI session pins to one tier.
-        let headers = BTreeMap::from([(
-            "x-claude-code-session-id".to_string(),
-            "fb46caae-eac6-4f5f-83fd-8fc8f5743abb".to_string(),
+        let session = metadata(&[(
+            "x-claude-code-session-id",
+            "fb46caae-eac6-4f5f-83fd-8fc8f5743abb",
         )]);
-
-        let metadata = Metadata::from_headers(&headers);
         assert_eq!(
-            metadata.session_id.as_deref(),
+            session.session_id.as_deref(),
             Some("fb46caae-eac6-4f5f-83fd-8fc8f5743abb")
         );
-    }
 
-    #[test]
-    fn normalizes_relay_and_dynamo_child_headers() {
-        // Integrating-host headers are correlation data, not routing signals.
-        // They populate observability fields but must not trigger sub-agent routing.
-        let headers = BTreeMap::from([
-            (
-                "x-nemo-relay-session-id".to_string(),
-                "relay-session".to_string(),
-            ),
-            (
-                "x-nemo-relay-subagent-id".to_string(),
-                "relay-child".to_string(),
-            ),
-            (
-                "x-dynamo-parent-session-id".to_string(),
-                "relay-parent".to_string(),
-            ),
-        ]);
-
-        let metadata = Metadata::from_headers(&headers);
-        assert_eq!(metadata.session_id.as_deref(), Some("relay-session"));
-        assert_eq!(metadata.agent_id.as_deref(), Some("relay-child"));
-        assert_eq!(metadata.parent_agent_id.as_deref(), Some("relay-parent"));
-        assert!(!metadata.is_subagent);
-        assert!(!metadata.is_subagent_work());
-    }
-
-    #[test]
-    fn claude_code_agent_lineage_marks_subagent_and_infers_parent() {
         // Any non-empty agent id is a child agent. Without an explicit parent
         // header the parent is inferred to be the session it was spawned under.
-        let metadata = Metadata::from_headers(&BTreeMap::from([
-            (
-                "x-claude-code-session-id".to_string(),
-                "claude-session".to_string(),
-            ),
-            (
-                "x-claude-code-agent-id".to_string(),
-                "claude-agent".to_string(),
-            ),
-        ]));
-        assert_eq!(metadata.session_id.as_deref(), Some("claude-session"));
-        assert_eq!(metadata.agent_id.as_deref(), Some("claude-agent"));
-        assert!(metadata.is_subagent);
-        assert_eq!(metadata.parent_agent_id.as_deref(), Some("claude-session"));
-    }
+        let child = metadata(&[
+            ("x-claude-code-session-id", "claude-session"),
+            ("x-claude-code-agent-id", "claude-agent"),
+        ]);
+        assert_eq!(child.session_id.as_deref(), Some("claude-session"));
+        assert_eq!(child.agent_id.as_deref(), Some("claude-agent"));
+        assert_eq!(child.parent_agent_id.as_deref(), Some("claude-session"));
+        assert!(child.is_subagent);
 
-    #[test]
-    fn claude_code_agent_id_alone_marks_subagent() {
-        // The agent-id header is the detection predicate; the session header is
-        // correlation data. A request with only agent-id is still a child agent.
-        let metadata = Metadata::from_headers(&BTreeMap::from([(
-            "x-claude-code-agent-id".to_string(),
-            "claude-agent".to_string(),
-        )]));
-        assert!(metadata.is_subagent);
-        assert_eq!(metadata.agent_id.as_deref(), Some("claude-agent"));
-        assert_eq!(metadata.parent_agent_id, None);
-    }
-
-    #[test]
-    fn explicit_claude_parent_agent_overrides_inferred_session() {
-        let metadata = Metadata::from_headers(&BTreeMap::from([
-            (
-                "x-claude-code-session-id".to_string(),
-                "claude-session".to_string(),
-            ),
-            (
-                "x-claude-code-agent-id".to_string(),
-                "claude-agent".to_string(),
-            ),
-            (
-                "x-claude-code-parent-agent-id".to_string(),
-                "claude-parent-agent".to_string(),
-            ),
-        ]));
+        let child_without_session = metadata(&[("x-claude-code-agent-id", "claude-agent")]);
         assert_eq!(
-            metadata.parent_agent_id.as_deref(),
+            child_without_session.agent_id.as_deref(),
+            Some("claude-agent")
+        );
+        assert_eq!(child_without_session.parent_agent_id, None);
+        assert!(child_without_session.is_subagent);
+
+        let explicit_parent = metadata(&[
+            ("x-claude-code-session-id", "claude-session"),
+            ("x-claude-code-agent-id", "claude-agent"),
+            ("x-claude-code-parent-agent-id", "claude-parent-agent"),
+        ]);
+        assert_eq!(
+            explicit_parent.parent_agent_id.as_deref(),
             Some("claude-parent-agent")
         );
-    }
 
-    #[test]
-    fn claude_root_agent_without_agent_id_is_not_a_subagent() {
         // Root agents omit x-claude-code-agent-id entirely. A stray parent-agent
         // header without an agent-id must not mark the request as a child.
-        let metadata = Metadata::from_headers(&BTreeMap::from([
-            (
-                "x-claude-code-session-id".to_string(),
-                "claude-session".to_string(),
-            ),
-            (
-                "x-claude-code-parent-agent-id".to_string(),
-                "claude-parent-agent".to_string(),
-            ),
-        ]));
-        assert_eq!(metadata.session_id.as_deref(), Some("claude-session"));
-        assert_eq!(metadata.agent_id, None);
-        assert!(!metadata.is_subagent);
-        assert_eq!(metadata.parent_agent_id, None);
+        let root = metadata(&[
+            ("x-claude-code-session-id", "claude-session"),
+            ("x-claude-code-parent-agent-id", "claude-parent-agent"),
+        ]);
+        assert_eq!(root.session_id.as_deref(), Some("claude-session"));
+        assert_eq!(root.agent_id, None);
+        assert_eq!(root.parent_agent_id, None);
+        assert!(!root.is_subagent);
     }
 
     #[test]
-    fn opencode_session_headers_are_correlation_only() {
-        // OpenCode's x-session-id / x-parent-session-id are correlation headers;
-        // they populate session_id for observability but do not trigger routing.
-        let metadata = Metadata::from_headers(&BTreeMap::from([
-            ("x-session-id".to_string(), "opencode-run".to_string()),
-            (
-                "x-parent-session-id".to_string(),
-                "opencode-parent".to_string(),
-            ),
-        ]));
-        assert_eq!(metadata.session_id.as_deref(), Some("opencode-run"));
-        assert!(!metadata.is_subagent);
-        assert_eq!(metadata.parent_agent_id, None);
-    }
+    fn normalizes_correlation_and_session_headers_without_routing() {
+        // Integrating-host headers are correlation data, not routing signals.
+        let relay = metadata(&[
+            ("x-nemo-relay-session-id", "relay-session"),
+            ("x-nemo-relay-subagent-id", "relay-child"),
+            ("x-dynamo-parent-session-id", "relay-parent"),
+        ]);
+        assert_eq!(relay.session_id.as_deref(), Some("relay-session"));
+        assert_eq!(relay.agent_id.as_deref(), Some("relay-child"));
+        assert_eq!(relay.parent_agent_id.as_deref(), Some("relay-parent"));
+        assert!(!relay.is_subagent);
+        assert!(!relay.is_subagent_work());
 
-    #[test]
-    fn opencode_parent_header_is_not_a_parent_agent_id_source() {
-        // x-parent-session-id is not listed in HEADER_CONFIG for parent_agent_id;
-        // it must not surface as a parent regardless of adjacent session headers.
-        let metadata = Metadata::from_headers(&BTreeMap::from([
-            ("session-id".to_string(), "codex-run".to_string()),
-            (
-                "x-parent-session-id".to_string(),
-                "stray-parent".to_string(),
-            ),
-        ]));
-        assert_eq!(metadata.session_id.as_deref(), Some("codex-run"));
-        assert!(!metadata.is_subagent);
-        assert_eq!(metadata.parent_agent_id, None);
-    }
+        let opencode = metadata(&[
+            ("x-session-id", "opencode-run"),
+            ("x-parent-session-id", "opencode-parent"),
+        ]);
+        assert_eq!(opencode.session_id.as_deref(), Some("opencode-run"));
+        assert_eq!(opencode.parent_agent_id, None);
+        assert!(!opencode.is_subagent);
 
-    #[test]
-    fn dynamo_session_final_is_captured() {
-        let metadata = Metadata::from_headers(&BTreeMap::from([
-            ("x-dynamo-session-id".to_string(), "generic-run".to_string()),
-            (
-                "x-dynamo-parent-session-id".to_string(),
-                "generic-parent".to_string(),
-            ),
-            ("x-dynamo-session-final".to_string(), "true".to_string()),
-        ]));
-        assert_eq!(metadata.agent_id.as_deref(), Some("generic-run"));
-        assert_eq!(metadata.parent_agent_id.as_deref(), Some("generic-parent"));
-        assert_eq!(metadata.session_final, Some(true));
+        let codex_session = metadata(&[
+            ("session-id", "codex-run"),
+            ("x-parent-session-id", "stray-parent"),
+        ]);
+        assert_eq!(codex_session.session_id.as_deref(), Some("codex-run"));
+        assert_eq!(codex_session.parent_agent_id, None);
+        assert!(!codex_session.is_subagent);
 
-        let not_final = Metadata::from_headers(&BTreeMap::from([
-            ("x-dynamo-session-id".to_string(), "generic-run".to_string()),
-            ("x-dynamo-session-final".to_string(), "false".to_string()),
-        ]));
-        assert_eq!(not_final.session_final, Some(false));
+        let final_session = metadata(&[
+            ("x-dynamo-session-id", "generic-run"),
+            ("x-dynamo-parent-session-id", "generic-parent"),
+            ("x-dynamo-session-final", "true"),
+        ]);
+        assert_eq!(final_session.agent_id.as_deref(), Some("generic-run"));
+        assert_eq!(
+            final_session.parent_agent_id.as_deref(),
+            Some("generic-parent")
+        );
+        assert_eq!(final_session.session_final, Some(true));
+
+        let active_session = metadata(&[
+            ("x-dynamo-session-id", "generic-run"),
+            ("x-dynamo-session-final", "false"),
+        ]);
+        assert_eq!(active_session.session_final, Some(false));
     }
 
     #[test]
     fn sy_header_resolves_paths_in_order_and_descends_into_json() {
         // Only the JSON-nested Codex path is present, so descent supplies the value.
-        let headers = BTreeMap::from([(
-            CODEX_TURN_METADATA_HEADER.to_string(),
-            serde_json::json!({ "session_id": "codex-session" }).to_string(),
-        )]);
+        let body = serde_json::json!({ "session_id": "codex-session" }).to_string();
+        let headers = slice_to_header_map(&[(CODEX_TURN_METADATA_HEADER, body.as_str())]);
         assert_eq!(
             sy_header(&headers, SWITCHYARD_SESSION_ID_HEADER).as_deref(),
             Some("codex-session")
         );
 
         // The explicit Switchyard header outranks the Codex path when both resolve.
-        let headers = BTreeMap::from([
-            (
-                SWITCHYARD_SESSION_ID_HEADER.to_string(),
-                "explicit".to_string(),
-            ),
-            (
-                CODEX_TURN_METADATA_HEADER.to_string(),
-                serde_json::json!({ "session_id": "codex-session" }).to_string(),
-            ),
+        let headers = slice_to_header_map(&[
+            (SWITCHYARD_SESSION_ID_HEADER, "explicit"),
+            (CODEX_TURN_METADATA_HEADER, body.as_str()),
         ]);
         assert_eq!(
             sy_header(&headers, SWITCHYARD_SESSION_ID_HEADER).as_deref(),
@@ -647,88 +534,63 @@ mod tests {
 
         // Nothing resolves for an empty header set or an unknown field.
         assert_eq!(
-            sy_header(&BTreeMap::new(), SWITCHYARD_SESSION_ID_HEADER),
+            sy_header(&http::HeaderMap::new(), SWITCHYARD_SESSION_ID_HEADER),
             None
         );
         assert_eq!(sy_header(&headers, "x-not-a-field"), None);
     }
 
     #[test]
-    fn codex_session_header_is_case_insensitive() {
-        let metadata = Metadata::from_headers(&BTreeMap::from([(
-            "Session-ID".to_string(),
-            "codex-run".to_string(),
-        )]));
-        assert_eq!(metadata.session_id.as_deref(), Some("codex-run"));
-    }
-
-    #[test]
-    fn explicit_subagent_flag_decides_without_a_parent_header() {
+    fn subagent_routing_honors_explicit_signals_and_delegated_work_kinds() {
         // Explicit `false` wins over presence-based inference even when no
         // parent id accompanies it; the flag decides in both directions.
-        let metadata = Metadata::from_headers(&BTreeMap::from([
-            ("x-switchyard-is-subagent".to_string(), "false".to_string()),
-            ("x-openai-subagent".to_string(), "review".to_string()),
-        ]));
-        assert!(!metadata.is_subagent);
+        let explicitly_root = metadata(&[
+            ("x-switchyard-is-subagent", "false"),
+            ("x-openai-subagent", "review"),
+        ]);
+        assert!(!explicitly_root.is_subagent);
 
-        let metadata = Metadata::from_headers(&BTreeMap::from([(
-            "x-switchyard-is-subagent".to_string(),
-            "true".to_string(),
-        )]));
-        assert!(metadata.is_subagent);
-    }
+        let explicitly_child = metadata(&[("x-switchyard-is-subagent", "true")]);
+        assert!(explicitly_child.is_subagent);
 
-    #[test]
-    fn operator_agent_kind_does_not_suppress_harness_subagent_routing() {
-        // x-switchyard-agent-kind is an operator semantic label and must not filter
-        // routing signals from the harness (x-openai-subagent, x-switchyard-is-subagent).
-        let with_openai = Metadata::from_headers(&BTreeMap::from([
-            ("x-openai-subagent".to_string(), "review".to_string()),
-            (
-                "x-switchyard-agent-kind".to_string(),
-                "researcher".to_string(),
-            ),
-        ]));
+        let child_with_parent = metadata(&[
+            ("x-switchyard-is-subagent", "false"),
+            ("x-switchyard-parent-agent-id", "parent"),
+        ]);
+        assert!(!child_with_parent.is_subagent);
+
+        // Operator labels do not filter routing signals from the harness.
+        let with_openai = metadata(&[
+            ("x-openai-subagent", "review"),
+            ("x-switchyard-agent-kind", "researcher"),
+        ]);
         assert!(with_openai.is_subagent);
         assert!(with_openai.is_subagent_work());
 
-        let with_explicit = Metadata::from_headers(&BTreeMap::from([
-            ("x-switchyard-is-subagent".to_string(), "true".to_string()),
-            (
-                "x-switchyard-agent-kind".to_string(),
-                "researcher".to_string(),
-            ),
-        ]));
+        let with_explicit = metadata(&[
+            ("x-switchyard-is-subagent", "true"),
+            ("x-switchyard-agent-kind", "researcher"),
+        ]);
         assert!(with_explicit.is_subagent);
         assert!(with_explicit.is_subagent_work());
-    }
 
-    #[test]
-    fn subagent_work_requires_a_delegated_work_kind_when_kinded() {
         // Kindless lineage (Claude Code child agent) counts as delegated work.
-        let claude_child = Metadata::from_headers(&BTreeMap::from([
-            ("x-claude-code-session-id".to_string(), "root".to_string()),
-            ("x-claude-code-agent-id".to_string(), "worker".to_string()),
-        ]));
+        let claude_child = metadata(&[
+            ("x-claude-code-session-id", "root"),
+            ("x-claude-code-agent-id", "worker"),
+        ]);
         assert!(claude_child.is_subagent_work());
 
         // Codex delegated-work kinds route as sub-agent work.
-        let review = Metadata::from_headers(&BTreeMap::from([(
-            "x-openai-subagent".to_string(),
-            "review".to_string(),
-        )]));
+        let review = metadata(&[("x-openai-subagent", "review")]);
         assert!(review.is_subagent_work());
 
         // Harness maintenance and unknown kinds stay on normal routing even
         // though the lineage fact still marks them as child-agent requests.
         for kind in ["compact", "memory_consolidation", "brand_new_kind"] {
-            let metadata = Metadata::from_headers(&BTreeMap::from([(
-                "x-openai-subagent".to_string(),
-                kind.to_string(),
-            )]));
-            assert!(metadata.is_subagent, "{kind} keeps the lineage fact");
-            assert!(!metadata.is_subagent_work(), "{kind} is not routed as work");
+            let request = metadata(&[("x-openai-subagent", kind)]);
+            assert!(request.is_subagent, "{kind} keeps the lineage fact");
+            assert!(!request.is_subagent_work(), "{kind} is not routed as work");
         }
 
         // A non-subagent request is never work, whatever its kind says.

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, MutexGuard};
 use serde::Serialize;
+use switchyard_protocol::RoutingFallbackReason;
 
 use super::cache_eligibility::PrefixProbe;
 
@@ -103,6 +104,19 @@ impl StatsAccumulator {
         self.lock().routing_overhead.record(routing_overhead_ms);
     }
 
+    /// Records one target replacement by its route-level cause.
+    pub(crate) fn record_routing_fallback(&self, reason: RoutingFallbackReason) {
+        let fallbacks = &mut self.lock().routing_fallbacks;
+        match reason {
+            RoutingFallbackReason::ContextWindow => {
+                fallbacks.context_window = fallbacks.context_window.saturating_add(1);
+            }
+            RoutingFallbackReason::Unavailable => {
+                fallbacks.unavailable = fallbacks.unavailable.saturating_add(1);
+            }
+        }
+    }
+
     /// Records one successful classifier or judge call.
     pub(crate) fn record_classifier_success(
         &self,
@@ -168,6 +182,7 @@ struct StatsAccumulatorInner {
     total_requests: u64,
     total_errors: u64,
     routing_overhead: LatencyHistogram,
+    routing_fallbacks: RoutingFallbackStats,
     by_classifier: BTreeMap<String, ModelStats>,
     classifier_requests: u64,
     classifier_errors: u64,
@@ -202,6 +217,7 @@ impl StatsAccumulatorInner {
             models,
             tiers: tier_snapshots(&self.by_tier, total_tokens.total, self.total_requests),
             routing_overhead: self.routing_overhead.snapshot(),
+            routing_fallbacks: self.routing_fallbacks,
             classifier,
         }
     }
@@ -330,7 +346,15 @@ pub(crate) struct StatsSnapshot {
     pub models: BTreeMap<String, ModelStatsSnapshot>,
     pub tiers: BTreeMap<String, TierStatsSnapshot>,
     pub routing_overhead: LatencyHistogramSnapshot,
+    pub routing_fallbacks: RoutingFallbackStats,
     pub classifier: ClassifierStatsSnapshot,
+}
+
+/// Route-level target replacements grouped by their fixed, low-cardinality cause.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub(crate) struct RoutingFallbackStats {
+    pub context_window: u64,
+    pub unavailable: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]

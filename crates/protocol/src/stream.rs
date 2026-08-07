@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Streaming half of the neutral IR: incremental response chunks ([`LlmResponseChunk`])
-//! and the streamed response ([`LlmResponse`]) that carries either a live stream of them
-//! or the terminal [`AggLlmResponse`].
+//! Streaming half of the neutral IR: incremental response chunks ([`LlmResponseChunk`]),
+//! their stream envelope ([`LlmResponseStreamEvent`]), and the streamed response
+//! ([`LlmResponse`]) that carries either a live stream or the terminal [`AggLlmResponse`].
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
@@ -14,6 +14,7 @@ use serde_json::Value;
 
 use crate::{
     LlmClientError,
+    format::FormatId,
     llm::{AggLlmResponse, ContentBlock, ResponseOutput, Role, StopReason, ToolCall, Usage},
 };
 
@@ -22,12 +23,96 @@ use crate::{
 /// code to propagate; 502 matches how a failed upstream call surfaces elsewhere.
 const MID_STREAM_UPSTREAM_STATUS: u16 = 502;
 
-/// A boxed, `Send` stream of [`LlmResponseChunk`]s — the token-by-token output of a
-/// streaming backend. Each item may fail independently mid-stream.
+/// A boxed, `Send` stream of response events. Each item may fail independently mid-stream.
 pub type LlmResponseStream =
-    Pin<Box<dyn Stream<Item = Result<LlmResponseChunk, LlmClientError>> + Send>>;
+    Pin<Box<dyn Stream<Item = Result<LlmResponseStreamEvent, LlmClientError>> + Send>>;
 
-/// A model response: either a live [`Stream`](LlmResponse::Stream) of chunks or a
+/// Parsed provider event retained for same-format replay.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProviderStreamEvent {
+    source: FormatId,
+    raw: Value,
+}
+
+impl ProviderStreamEvent {
+    /// Source wire format of the retained event.
+    pub fn source(&self) -> &FormatId {
+        &self.source
+    }
+
+    /// Parsed provider JSON retained for replay.
+    pub fn raw(&self) -> &Value {
+        &self.raw
+    }
+
+    /// Consumes the preservation value into its source format and parsed JSON.
+    pub fn into_parts(self) -> (FormatId, Value) {
+        (self.source, self.raw)
+    }
+}
+
+/// One streaming item crossing the host/algorithm boundary.
+///
+/// `normalized` contains only provider-neutral chunks. `preservation` is opaque to
+/// algorithms and is interpreted by `switchyard-translation` for same-format replay.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LlmResponseStreamEvent {
+    preservation: Option<ProviderStreamEvent>,
+    normalized: Vec<LlmResponseChunk>,
+}
+
+impl LlmResponseStreamEvent {
+    /// Creates an event containing only normalized chunks.
+    pub fn new(normalized: Vec<LlmResponseChunk>) -> Self {
+        Self {
+            preservation: None,
+            normalized,
+        }
+    }
+
+    /// Creates an event with parsed provider JSON retained for replay.
+    pub fn preserved(
+        source: impl Into<FormatId>,
+        raw: Value,
+        normalized: Vec<LlmResponseChunk>,
+    ) -> Self {
+        Self {
+            preservation: Some(ProviderStreamEvent {
+                source: source.into(),
+                raw,
+            }),
+            normalized,
+        }
+    }
+
+    /// Retained provider event, when this event came directly from a provider.
+    pub fn preservation(&self) -> Option<&ProviderStreamEvent> {
+        self.preservation.as_ref()
+    }
+
+    /// Provider-neutral chunks carried by this event.
+    pub fn normalized(&self) -> &[LlmResponseChunk] {
+        &self.normalized
+    }
+
+    /// Consumes the event into its preservation and normalized content.
+    pub fn into_parts(self) -> (Option<ProviderStreamEvent>, Vec<LlmResponseChunk>) {
+        (self.preservation, self.normalized)
+    }
+
+    /// Replaces semantic content and drops raw replay data that no longer describes it.
+    pub fn replace_normalized(self, normalized: Vec<LlmResponseChunk>) -> Self {
+        Self::new(normalized)
+    }
+}
+
+impl From<LlmResponseChunk> for LlmResponseStreamEvent {
+    fn from(chunk: LlmResponseChunk) -> Self {
+        Self::new(vec![chunk])
+    }
+}
+
+/// A model response: either a live [`Stream`](LlmResponse::Stream) of events or a
 /// terminal buffered [`LlmResponse::Agg`] response.
 ///
 /// Not `Clone` — the `Stream` variant owns a single-consumption stream. A buffered
@@ -50,7 +135,7 @@ impl LlmResponse {
     }
 
     /// Reduce to the buffered aggregate: return an `Agg` unchanged, or drive a `Stream`
-    /// to completion, folding its chunks into an [`AggLlmResponse`] via
+    /// to completion, folding its normalized chunks into an [`AggLlmResponse`] via
     /// [`ResponseAccumulator`]. A stream item error aborts with `Err`, as does an
     /// in-band [`LlmResponseChunk::DecodeError`] (as `ResponseTranslation`) or
     /// [`LlmResponseChunk::StreamError`] (as `UpstreamHttp`).
@@ -60,20 +145,8 @@ impl LlmResponse {
             LlmResponse::Stream(mut stream) => {
                 let mut accumulator = ResponseAccumulator::new();
                 while let Some(item) = stream.next().await {
-                    match item? {
-                        LlmResponseChunk::DecodeError { message } => {
-                            return Err(LlmClientError::ResponseTranslation(message));
-                        }
-                        LlmResponseChunk::StreamError { message } => {
-                            // The upstream reported the failure inside the response body, so
-                            // there is no real status line to carry; 502 stands in for "the
-                            // upstream failed" the same way a failed non-streaming call would.
-                            return Err(LlmClientError::UpstreamHttp {
-                                status: MID_STREAM_UPSTREAM_STATUS,
-                                body: message,
-                            });
-                        }
-                        chunk => accumulator.push(chunk),
+                    for chunk in item?.normalized {
+                        push_checked_chunk(&mut accumulator, chunk)?;
                     }
                 }
                 Ok(accumulator.finish())
@@ -150,12 +223,32 @@ impl AggLlmResponse {
             });
         }
         chunks.push(LlmResponseChunk::Usage(self.usage));
-        Box::pin(futures::stream::iter(chunks.into_iter().map(Ok)))
+        Box::pin(futures::stream::iter(
+            chunks.into_iter().map(|chunk| Ok(chunk.into())),
+        ))
     }
 }
 
-/// One provider-neutral streaming event — the normalized counterpart to
-/// [`AggLlmResponse`], sitting between stream decoders and encoders.
+fn push_checked_chunk(
+    accumulator: &mut ResponseAccumulator,
+    chunk: LlmResponseChunk,
+) -> Result<(), LlmClientError> {
+    match chunk {
+        LlmResponseChunk::DecodeError { message } => {
+            Err(LlmClientError::ResponseTranslation(message))
+        }
+        LlmResponseChunk::StreamError { message } => Err(LlmClientError::UpstreamHttp {
+            status: MID_STREAM_UPSTREAM_STATUS,
+            body: message,
+        }),
+        chunk => {
+            accumulator.push(chunk);
+            Ok(())
+        }
+    }
+}
+
+/// One provider-neutral streaming response chunk.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LlmResponseChunk {
     /// Starts a response message.
@@ -395,6 +488,78 @@ mod tests {
                 text: "Hello".to_string()
             }]
         );
+    }
+
+    #[test]
+    fn aggregates_normalized_chunks_inside_stream_event() {
+        let response = LlmResponse::Stream(Box::pin(stream::iter([Ok(
+            LlmResponseStreamEvent::preserved(
+                crate::WireFormat::OpenAiChat,
+                json!({
+                "choices": [{"delta": {"content": "hello"}}],
+                "system_fingerprint": "fp_exact"
+                }),
+                vec![LlmResponseChunk::TextDelta {
+                    index: 0,
+                    text: "hello".to_string(),
+                }],
+            ),
+        )])));
+        let aggregate = block_on(response.into_agg()).expect("stream event should aggregate");
+
+        assert_eq!(
+            aggregate.outputs[0].content,
+            vec![ContentBlock::Text {
+                text: "hello".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn replacing_normalized_content_drops_preservation() {
+        let event = LlmResponseStreamEvent::preserved(
+            crate::WireFormat::OpenAiChat,
+            json!({"choices": [{"delta": {"content": "old"}}]}),
+            vec![LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "old".to_string(),
+            }],
+        )
+        .replace_normalized(vec![LlmResponseChunk::TextDelta {
+            index: 0,
+            text: "new".to_string(),
+        }]);
+
+        assert!(event.preservation().is_none());
+        assert_eq!(
+            event.normalized(),
+            &[LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "new".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn stream_errors_inside_preserved_events_remain_typed() {
+        let response = LlmResponse::Stream(Box::pin(stream::iter([Ok(
+            LlmResponseStreamEvent::preserved(
+                crate::WireFormat::OpenAiChat,
+                json!({"error": {"message": "provider failed"}}),
+                vec![LlmResponseChunk::StreamError {
+                    message: "provider failed".to_string(),
+                }],
+            ),
+        )])));
+
+        let error = block_on(response.into_agg()).err();
+        assert!(matches!(
+            error,
+            Some(LlmClientError::UpstreamHttp {
+                status: MID_STREAM_UPSTREAM_STATUS,
+                ..
+            })
+        ));
     }
 
     #[test]

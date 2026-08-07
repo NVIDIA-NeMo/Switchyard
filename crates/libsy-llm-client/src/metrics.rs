@@ -3,6 +3,8 @@
 
 //! Metric labelling inherited from Python
 
+use std::time::Duration;
+
 use opentelemetry::{KeyValue, global};
 
 pub(crate) const fn is_retryable_http_status(status: u16) -> bool {
@@ -57,6 +59,26 @@ pub(crate) fn record_upstream_attempt(status: Option<u16>) {
                 KeyValue::new("code", http_status_code_label(status)),
             ],
         );
+}
+
+/// Records what routing cost on top of the call that served the run: classifier
+/// calls, target resolution, and decision publishing.
+pub(crate) fn record_routing_overhead(
+    algorithm: &str,
+    run: Duration,
+    call_duration: Duration,
+) -> Duration {
+    // Saturating: the two clocks start a moment apart, so a run that is all
+    // routed call can come out fractionally negative.
+    let overhead = run.saturating_sub(call_duration);
+    global::meter("switchyard")
+        .f64_histogram("switchyard.routing_overhead_ms")
+        .build()
+        .record(
+            overhead.as_secs_f64() * 1000.0,
+            &[KeyValue::new("algorithm", algorithm.to_string())],
+        );
+    overhead
 }
 
 #[cfg(test)]

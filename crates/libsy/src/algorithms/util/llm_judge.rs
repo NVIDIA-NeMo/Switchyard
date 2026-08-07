@@ -7,39 +7,166 @@
 //! [`JudgeClassifier`] owns the judge model call and hands its verdict to a policy that chooses
 //! the route.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use switchyard_protocol::{AggLlmResponse, completion_text};
+use switchyard_protocol::{
+    AggLlmResponse, InstructionBlock, LlmRequest, Message, OutputParams, Role, completion_text,
+};
 
-use crate::core::algorithm::{Driver, LlmTarget};
+use super::classifier_contract::ClassifierContract;
+use crate::core::algorithm::{Driver, LlmTarget, RoutedRequest};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Decision, Request, Response};
+use switchyard_protocol::{Context, Decision, LlmClientError, Request, Response};
 
-use super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
-
-#[derive(Clone, Debug)]
-/// Prompt and structured-output contract for one judge.
-pub struct JudgeConfig {
-    /// Prepended instructions that define what the judge evaluates.
-    pub system_prompt: String,
-    /// Optional provider response format that constrains the judge verdict.
-    pub response_schema: Option<Value>,
-    /// Maximum completion tokens available to the judge verdict.
-    pub max_output_tokens: u64,
+/// Builds the classifier-specific message view presented to a structured judge.
+pub(crate) trait ClassifierInput: Send + Sync {
+    fn build_messages(&self, state: &State, request: &Request) -> Vec<Message>;
 }
 
-impl Default for JudgeConfig {
-    fn default() -> Self {
+/// Converts one structured model response into the verdict type consumed by a policy.
+pub(crate) trait VerdictDecoder: Send + Sync {
+    type Verdict: DeserializeOwned + Send + Sync;
+
+    fn decode(
+        &self,
+        response: &AggLlmResponse,
+        contract: &ClassifierContract,
+    ) -> Result<Self::Verdict>;
+}
+
+/// Deserializes a structured response directly into a typed verdict.
+pub(crate) struct SerdeDecoder<V> {
+    verdict: PhantomData<fn() -> V>,
+}
+
+impl<V> SerdeDecoder<V> {
+    pub(crate) const fn new() -> Self {
         Self {
-            system_prompt: String::new(),
-            response_schema: None,
-            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            verdict: PhantomData,
         }
+    }
+}
+
+impl<V> VerdictDecoder for SerdeDecoder<V>
+where
+    V: DeserializeOwned + Send + Sync,
+{
+    type Verdict = V;
+
+    fn decode(
+        &self,
+        response: &AggLlmResponse,
+        _contract: &ClassifierContract,
+    ) -> Result<Self::Verdict> {
+        parse_json_verdict(response)
+    }
+}
+
+/// Parses a JSON value and enforces the custom contract's compiled response schema.
+pub(crate) struct JsonSchemaDecoder;
+
+impl JsonSchemaDecoder {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+}
+
+impl VerdictDecoder for JsonSchemaDecoder {
+    type Verdict = Value;
+
+    fn decode(
+        &self,
+        response: &AggLlmResponse,
+        contract: &ClassifierContract,
+    ) -> Result<Self::Verdict> {
+        let verdict = parse_json_verdict(response)?;
+        contract.validate_verdict(&verdict)?;
+        Ok(verdict)
+    }
+}
+
+/// Runtime limits shared by structured classifier judges.
+pub(crate) struct JudgeRuntimeConfig {
+    max_output_tokens: u64,
+}
+
+impl JudgeRuntimeConfig {
+    pub(crate) fn new(max_output_tokens: u64) -> Result<Self> {
+        if max_output_tokens == 0 {
+            return Err(LibsyError::AlgorithmError {
+                message: "max_output_tokens must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { max_output_tokens })
+    }
+}
+
+/// Reusable structured judge assembled from an input view, contract, and verdict decoder.
+pub(crate) struct StructuredJudge<I, D> {
+    input: I,
+    contract: ClassifierContract,
+    decoder: D,
+    runtime: JudgeRuntimeConfig,
+}
+
+impl<I, D> StructuredJudge<I, D> {
+    pub(crate) fn new(
+        input: I,
+        contract: ClassifierContract,
+        decoder: D,
+        runtime: JudgeRuntimeConfig,
+    ) -> Self {
+        Self {
+            input,
+            contract,
+            decoder,
+            runtime,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contract(&self) -> &ClassifierContract {
+        &self.contract
+    }
+}
+
+impl<I, D> Judge for StructuredJudge<I, D>
+where
+    I: ClassifierInput,
+    D: VerdictDecoder,
+{
+    type Verdict = D::Verdict;
+
+    fn build_request(&self, state: &State, request: &Request) -> Request {
+        let messages = self.input.build_messages(state, request);
+        Request {
+            llm_request: LlmRequest {
+                model: request.llm_request.model.clone(),
+                instructions: vec![InstructionBlock {
+                    role: Role::System,
+                    content: Message::text(Role::System, self.contract.system_prompt().to_string())
+                        .content,
+                }],
+                messages,
+                output: OutputParams {
+                    max_output_tokens: Some(self.runtime.max_output_tokens),
+                    response_format: Some(self.contract.response_format().clone()),
+                },
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: request.metadata.clone(),
+        }
+    }
+
+    fn parse(&self, response: &AggLlmResponse) -> Result<Self::Verdict> {
+        self.decoder.decode(response, &self.contract)
     }
 }
 
@@ -89,7 +216,7 @@ where
     /// A judge is an optimization, not a dependency: failing the caller's request because the
     /// judge is down would be worse than routing without it, so every failure — transport,
     /// mid-stream, or unparseable reply — is logged and folded into `None` for the policy's
-    /// fail-closed branch. A closed driver stream is folded too; the algorithm's next driver
+    /// fallback branch. A closed driver stream is folded too; the algorithm's next driver
     /// call surfaces it, so nothing is masked.
     async fn verdict(
         &self,
@@ -98,37 +225,64 @@ where
         driver: &Driver,
     ) -> Option<J::Verdict> {
         let judge_model = self.target.semantic_name.as_str();
-        let warn = |error: &dyn std::fmt::Display| {
-            tracing::warn!(
-                target: "libsy",
-                judge_model,
-                error = %error,
-                "judge verdict unavailable; routing without one"
-            );
-        };
 
         let response = driver
-            .call_llm_target(
-                Context::default(),
-                &self.target,
-                self.judge.build_request(state, request),
-                Arc::new(JudgeDecision {
+            .call_llm(RoutedRequest {
+                request: self.judge.build_request(state, request),
+                decision: Arc::new(JudgeDecision {
                     model: self.target.semantic_name.to_string(),
                 }),
-            )
+                ctx: Context::default(),
+            })
             .await
-            .inspect_err(|error| warn(error))
+            .inspect_err(|error| report_fail_open(judge_model, error, libsy_error_reason(error)))
             .ok()?;
         let aggregate = response
             .llm_response
             .into_agg()
             .await
-            .inspect_err(|error| warn(error))
+            .inspect_err(|error| report_fail_open(judge_model, error, client_error_reason(error)))
             .ok()?;
         self.judge
             .parse(&aggregate)
-            .inspect_err(|error| warn(error))
+            .inspect_err(|error| report_fail_open(judge_model, error, "parse_error"))
             .ok()
+    }
+}
+
+/// Logs and counts a judge failure with a bounded label that excludes message content.
+fn report_fail_open(judge_model: &str, error: &dyn std::fmt::Display, reason: &'static str) {
+    tracing::warn!(
+        target: "libsy",
+        judge_model,
+        reason,
+        error = %error,
+        "judge verdict unavailable; routing without one"
+    );
+    crate::observability::record_classifier_fail_open(judge_model, reason);
+}
+
+/// Returns a bounded reason for a judge call that failed at the libsy layer.
+fn libsy_error_reason(error: &LibsyError) -> &'static str {
+    match error {
+        LibsyError::ClientCall { source, .. } => client_error_reason(source),
+        _ => "call_error",
+    }
+}
+
+/// Returns a bounded reason from the error kind and HTTP status only.
+fn client_error_reason(error: &LlmClientError) -> &'static str {
+    match error {
+        LlmClientError::Timeout { .. } => "timeout",
+        LlmClientError::Transport { .. } => "transport",
+        LlmClientError::UpstreamHttp { status, .. } if (500..=599).contains(status) => {
+            "upstream_5xx"
+        }
+        LlmClientError::UpstreamHttp { .. } => "upstream_non_5xx",
+        LlmClientError::InvalidResponse { .. } | LlmClientError::ResponseTranslation(_) => {
+            "invalid_response"
+        }
+        _ => "client_error",
     }
 }
 
@@ -157,36 +311,6 @@ where
         // A judge consultation is a side call, never the turn's answer.
         Ok((self.policy.to_classification(verdict.as_ref()), None))
     }
-}
-
-/// Builds a [`JudgeConfig`] from a prompt template and a JSON schema template.
-///
-/// `schema_template` must be a `{ "type": "json_schema", "json_schema": { "schema": ... } }`
-/// object; the inner `schema` is substituted into the `{{RESPONSE_SCHEMA}}` placeholder in
-/// `prompt_template`.
-pub(crate) fn load_judge_config(
-    prompt_template: &str,
-    schema_template: &str,
-) -> Result<JudgeConfig> {
-    let response_schema: Value =
-        serde_json::from_str(schema_template).map_err(|error| LibsyError::AlgorithmError {
-            message: format!("response schema is invalid: {error}"),
-        })?;
-    let prompt_schema = response_schema
-        .pointer("/json_schema/schema")
-        .ok_or_else(|| LibsyError::AlgorithmError {
-            message: "response schema has no json_schema.schema".to_string(),
-        })?;
-    let prompt_schema = serde_json::to_string_pretty(prompt_schema).map_err(|error| {
-        LibsyError::AlgorithmError {
-            message: format!("prompt schema could not be rendered: {error}"),
-        }
-    })?;
-    Ok(JudgeConfig {
-        system_prompt: prompt_template.replace("{{RESPONSE_SCHEMA}}", &prompt_schema),
-        response_schema: Some(response_schema),
-        max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-    })
 }
 
 fn parse_json_verdict<T: DeserializeOwned>(response: &AggLlmResponse) -> Result<T> {
@@ -284,7 +408,6 @@ mod tests {
             TestJudge,
             LlmTarget {
                 semantic_name: "judge".to_string(),
-                llm_client: None,
             },
             TestPolicy,
         )
@@ -330,7 +453,7 @@ mod tests {
     fn streamed(chunks: Vec<LlmResponseChunk>) -> Response {
         Response {
             llm_response: LlmResponse::Stream(
-                futures::stream::iter(chunks.into_iter().map(Ok)).boxed(),
+                futures::stream::iter(chunks.into_iter().map(|chunk| Ok(chunk.into()))).boxed(),
             ),
             metadata: None,
         }
@@ -338,7 +461,7 @@ mod tests {
 
     fn streamed_then_failing(chunk: LlmResponseChunk) -> Response {
         let items = futures::stream::iter([
-            Ok(chunk),
+            Ok(chunk.into()),
             Err(LlmClientError::Timeout {
                 source: Box::new(std::io::Error::other("stream died")),
             }),
@@ -446,6 +569,56 @@ mod tests {
         );
         assert_eq!(score_served_with(Err(error)).await?, "no-verdict");
         Ok(())
+    }
+
+    #[test]
+    fn client_errors_map_to_bounded_fail_open_reasons() {
+        let cases = vec![
+            (
+                LlmClientError::Timeout {
+                    source: "deadline exceeded".into(),
+                },
+                "timeout",
+            ),
+            (
+                LlmClientError::Transport {
+                    source: "connection refused".into(),
+                },
+                "transport",
+            ),
+            (
+                LlmClientError::UpstreamHttp {
+                    status: 500,
+                    body: "server error".to_string(),
+                },
+                "upstream_5xx",
+            ),
+            (
+                LlmClientError::UpstreamHttp {
+                    status: 302,
+                    body: "redirect".to_string(),
+                },
+                "upstream_non_5xx",
+            ),
+            (
+                LlmClientError::InvalidResponse {
+                    source: "invalid JSON".into(),
+                },
+                "invalid_response",
+            ),
+            (
+                LlmClientError::General("unexpected client failure".to_string()),
+                "client_error",
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(client_error_reason(&error), expected);
+        }
+
+        let error = LibsyError::AlgorithmError {
+            message: "driver failed".to_string(),
+        };
+        assert_eq!(libsy_error_reason(&error), "call_error");
     }
 
     #[tokio::test]

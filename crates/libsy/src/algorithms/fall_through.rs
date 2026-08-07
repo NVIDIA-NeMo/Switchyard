@@ -15,20 +15,41 @@
 //!
 //! Every composition retains one thing regardless: a target that overflows its context window is
 //! remembered for the rest of its session and skipped on later turns.
+//! An unavailable target is skipped only for the current request.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Once, Weak},
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::algorithm::{self, Algorithm, Driver, LlmTarget, LlmTargetSet, SessionEvictions};
+use crate::core::algorithm::{
+    self, Algorithm, Driver, LlmTarget, LlmTargetSet, RoutingIdentity, SessionEvictions,
+};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Decision, Request, Response, RoutedLlmClient};
+use switchyard_protocol::{Context, Decision, Request, Response, RoutingFallbackReason};
 
-type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
+struct SessionState<S> {
+    state: Arc<AsyncMutex<S>>,
+    last_accessed: Instant,
+}
+
+type SessionStates<S> = Mutex<HashMap<String, SessionState<S>>>;
+
+/// Delete sessions that have been inactive this long. Catches sessions that did not terminate
+/// cleanly.
+/// A user resuming a deleted session is not fatal. Algorithms will be missing some context
+/// so may route less well for the first turn or two.
+const SESSION_STATE_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// Run the expired session cleanup code this often.
+const SESSION_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// The decision a fall-through run produces: the selected model plus a human-readable reason.
 pub struct FallThroughDecision {
@@ -37,6 +58,7 @@ pub struct FallThroughDecision {
     /// Human-readable explanation of the selection.
     pub reasoning: String,
     tier: Option<&'static str>,
+    fallback_reason: Option<RoutingFallbackReason>,
 }
 
 impl Decision for FallThroughDecision {
@@ -46,6 +68,10 @@ impl Decision for FallThroughDecision {
 
     fn routing_tier(&self) -> Option<&str> {
         self.tier
+    }
+
+    fn fallback_reason(&self) -> Option<RoutingFallbackReason> {
+        self.fallback_reason
     }
 
     fn reasoning(&self) -> Option<&str> {
@@ -104,7 +130,8 @@ pub struct FallThrough<S = ()> {
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: LlmTargetSet,
-    session_states: Option<SessionStates<S>>,
+    session_states: Option<Arc<SessionStates<S>>>,
+    cleanup_started: Once,
     session_evictions: SessionEvictions,
 }
 
@@ -118,6 +145,7 @@ impl FallThrough<()> {
             classifiers: Vec::new(),
             targets,
             session_states: None,
+            cleanup_started: Once::new(),
             session_evictions: SessionEvictions::default(),
         }
     }
@@ -135,7 +163,8 @@ where
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
-            session_states: Some(Mutex::new(HashMap::new())),
+            session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
+            cleanup_started: Once::new(),
             session_evictions: SessionEvictions::default(),
         }
     }
@@ -170,19 +199,51 @@ where
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
+        self.start_cleanup_task();
+        let session = session_id(&request);
+        let session_final = request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.session_final)
+            == Some(true);
+        let result = self.execute_session(ctx, driver, request).await;
+        if session_final && let Some(session) = session.as_deref() {
+            self.remove_session(session);
+        }
+        result
+    }
+
+    /// Starts one cleanup task on the first request handled by a stateful router.
+    fn start_cleanup_task(&self) {
+        let Some(states) = &self.session_states else {
+            return;
+        };
+        let states = Arc::downgrade(states);
+        self.cleanup_started.call_once(move || {
+            drop(tokio::spawn(cleanup_inactive_sessions(states)));
+        });
+    }
+
+    async fn execute_session(
+        &self,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Response> {
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
-        let session = session_id(&request);
         let mut ctx = ctx;
+        // Processors may rewrite the request; overflow history stays with its inbound identity.
+        let identity = RoutingIdentity::from_request(&request);
         algorithm::exclude_evicted(
             &mut ctx,
             &self.targets,
             &self.session_evictions,
-            session.as_deref(),
+            identity.as_ref(),
         );
         let session_state = self.session_state(&request);
-        let (target, decision, served) = match session_state {
+        let (target, decision, served, deciding) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
                 self.route(&mut state, &ctx, &driver, &mut request).await?
@@ -201,34 +262,55 @@ where
         match served {
             Some(response) => Ok(response),
             None => {
-                algorithm::call_llm_with_overflow_fallback(
+                algorithm::call_llm_with_fallback(
                     ctx,
                     &driver,
                     &self.targets,
                     target,
                     decision,
                     request,
-                    session.as_deref(),
+                    identity.as_ref(),
                     &self.session_evictions,
-                    |from, to| self.fallback_decision(from, to),
+                    |request, target| {
+                        for classifier in &self.classifiers {
+                            classifier.target_unavailable(request, target);
+                        }
+                    },
+                    |from, to, reason| self.fallback_decision(deciding.as_ref(), from, to, reason),
                 )
                 .await
             }
         }
     }
 
-    /// The decision published when an overflow sends the request to a different target.
-    fn fallback_decision(&self, from: &LlmTarget, to: &LlmTarget) -> Arc<dyn Decision> {
+    /// Drops retained routing state once the host marks a session complete.
+    fn remove_session(&self, session: &str) {
+        if let Some(states) = &self.session_states {
+            states.lock().remove(session);
+        }
+        self.session_evictions.remove_session(session);
+    }
+
+    /// The decision published when a route-level failure selects a different target.
+    fn fallback_decision(
+        &self,
+        deciding: &dyn Classifier<S>,
+        from: &LlmTarget,
+        to: &LlmTarget,
+        reason: RoutingFallbackReason,
+    ) -> Arc<dyn Decision> {
+        let failure = match reason {
+            RoutingFallbackReason::ContextWindow => "exceeded its context window",
+            RoutingFallbackReason::Unavailable => "was unavailable",
+        };
         Arc::new(FallThroughDecision {
             selected_model: to.semantic_name.clone(),
             reasoning: format!(
-                "{} exceeded its context window; fell back to {}",
-                from.semantic_name, to.semantic_name
+                "{} {failure}; fell back to {}",
+                from.semantic_name, to.semantic_name,
             ),
-            tier: self
-                .classifiers
-                .iter()
-                .find_map(|c| c.routing_tier(&to.semantic_name)),
+            tier: deciding.routing_tier(&to.semantic_name),
+            fallback_reason: Some(reason),
         })
     }
 
@@ -237,10 +319,13 @@ where
         let states = self.session_states.as_ref()?;
         let session_id = session_id(request)?;
         let mut states = states.lock();
-        let state = states
-            .entry(session_id)
-            .or_insert_with(|| Arc::new(AsyncMutex::new(S::default())));
-        Some(Arc::clone(state))
+        let now = Instant::now();
+        let session = states.entry(session_id).or_insert_with(|| SessionState {
+            state: Arc::new(AsyncMutex::new(S::default())),
+            last_accessed: now,
+        });
+        session.last_accessed = now;
+        Some(Arc::clone(&session.state))
     }
 
     async fn route(
@@ -249,7 +334,12 @@ where
         ctx: &Context,
         driver: &Driver,
         request: &mut Request,
-    ) -> Result<(LlmTarget, Arc<dyn Decision>, Option<Response>)> {
+    ) -> Result<(
+        LlmTarget,
+        Arc<dyn Decision>,
+        Option<Response>,
+        Arc<dyn Classifier<S>>,
+    )> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
         for processor in &self.processors {
             processor.process(state, Event::Request(request)).await?;
@@ -257,21 +347,17 @@ where
 
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
         //    per-request driver is offered to each — driver-backed classifiers use it.
-        let mut maybe_score: Option<Score> = None;
-        let mut deciding: Option<&Arc<dyn Classifier<S>>> = None;
-        let mut served: Option<Response> = None;
+        let mut routed = None;
         for classifier in &self.classifiers {
             let (scores, response) = classifier.score(state, request, Some(driver)).await?;
-            maybe_score = scores.argmax(false)?;
-            if maybe_score.is_some() {
-                deciding = Some(classifier);
+            if let Some(score) = scores.argmax(false)? {
                 // Only the deciding classifier's response answers the turn; an abstaining
                 // classifier selected nothing for it to be the answer to.
-                served = response;
+                routed = Some((score, Arc::clone(classifier), response));
                 break;
             }
         }
-        let Some(score) = maybe_score else {
+        let Some((score, deciding, served)) = routed else {
             return Err(LibsyError::AlgorithmError {
                 message: "every classifier abstained".to_string(),
             });
@@ -291,7 +377,8 @@ where
         let decision: Arc<dyn Decision> = Arc::new(FallThroughDecision {
             selected_model: target.semantic_name.clone(),
             reasoning,
-            tier: deciding.and_then(|c| c.routing_tier(&target.semantic_name)),
+            tier: deciding.routing_tier(&target.semantic_name),
+            fallback_reason: None,
         });
         driver.info(ctx.clone(), decision.clone()).await?;
 
@@ -305,8 +392,33 @@ where
             processor.process(state, event).await?;
         }
 
-        Ok((target, decision, served))
+        Ok((target, decision, served, deciding))
     }
+}
+
+async fn cleanup_inactive_sessions<S>(states: Weak<SessionStates<S>>)
+where
+    S: Send + 'static,
+{
+    let start = tokio::time::Instant::now() + SESSION_CLEANUP_INTERVAL;
+    let mut interval = tokio::time::interval_at(start, SESSION_CLEANUP_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        let Some(states) = states.upgrade() else {
+            break;
+        };
+        remove_inactive_sessions(&states, Instant::now(), SESSION_STATE_TTL);
+    }
+}
+
+fn remove_inactive_sessions<S>(states: &SessionStates<S>, now: Instant, ttl: Duration) {
+    states.lock().retain(|_, session| {
+        // The registry owns one strong reference. Any others belong to active requests,
+        // which must keep sharing this state until their routing work finishes.
+        Arc::strong_count(&session.state) > 1
+            || now.saturating_duration_since(session.last_accessed) < ttl
+    });
 }
 
 fn session_id(request: &Request) -> Option<String> {
@@ -335,10 +447,6 @@ where
         &self.name
     }
 
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.targets.count_tokens_client()
-    }
-
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,
@@ -353,11 +461,11 @@ mod tests {
     use super::*;
     use crate::algorithms::util::prompts;
     use crate::core::classifier::Classification;
-    use crate::{SystemPromptProcessor, TargetPrompts};
+    use crate::{AffinityRouter, SystemPromptProcessor, TargetPrompts};
 
+    use crate::core::testing::{Serve, echo, reply, test_drive};
     use switchyard_protocol::{
-        LlmClientError, LlmRequest, LlmResponse, Message, Metadata, Role, completion_text,
-        text_request, text_response,
+        LlmClientError, LlmRequest, Message, Metadata, Role, completion_text, text_request,
     };
 
     #[derive(Debug, thiserror::Error)]
@@ -370,47 +478,15 @@ mod tests {
 
     // --- fixtures ----------------------------------------------------------------------
 
-    /// A client that echoes the routed model name back as the completion.
-    struct EchoClient;
-
-    #[async_trait]
-    impl RoutedLlmClient for EchoClient {
-        async fn call(
-            &self,
-            _ctx: Context,
-            _request: Request,
-            decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
-            Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(
-                    None,
-                    decision.selected_model().to_string(),
-                )),
-                metadata: None,
-            })
-        }
-    }
-
-    /// A client that captures the request it was handed, so a test can assert on what
-    /// actually reached the model.
-    struct CapturingClient(Arc<parking_lot::Mutex<Option<Request>>>);
-
-    #[async_trait]
-    impl RoutedLlmClient for CapturingClient {
-        async fn call(
-            &self,
-            _ctx: Context,
-            request: Request,
-            decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
-            *self.0.lock() = Some(request);
-            Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(
-                    None,
-                    decision.selected_model().to_string(),
-                )),
-                metadata: None,
-            })
+    /// Echoes the routed model name, capturing the request it was handed so a test can
+    /// assert on what actually reached the model.
+    fn capturing(into: Arc<Mutex<Option<Request>>>) -> impl Serve {
+        move |decision: Arc<dyn Decision>, request: Request| {
+            let into = Arc::clone(&into);
+            async move {
+                *into.lock() = Some(request);
+                Ok(reply(decision.selected_model()))
+            }
         }
     }
 
@@ -428,35 +504,32 @@ mod tests {
 
     /// Captures the prompt-bearing request that reached the selected target.
     #[derive(Default)]
-    struct RecordingPromptClient(Mutex<Option<RecordedCall>>);
+    struct PromptRecorder(Mutex<Option<RecordedCall>>);
 
-    #[async_trait]
-    impl RoutedLlmClient for RecordingPromptClient {
-        async fn call(
-            &self,
-            _ctx: Context,
-            request: Request,
-            decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
-            *self.0.lock() = Some(RecordedCall {
-                target: decision.selected_model().to_string(),
-                messages: request
-                    .llm_request
-                    .messages
-                    .iter()
-                    .filter_map(|message| message.text_content("|"))
-                    .collect(),
-                instructions: request
-                    .llm_request
-                    .instructions
-                    .iter()
-                    .filter_map(|block| block.content.iter().find_map(text_of))
-                    .collect(),
-            });
-            Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(None, decision.selected_model())),
-                metadata: None,
-            })
+    impl PromptRecorder {
+        fn serve(self: &Arc<Self>) -> impl Serve {
+            let recorder = Arc::clone(self);
+            move |decision: Arc<dyn Decision>, request: Request| {
+                let recorder = Arc::clone(&recorder);
+                async move {
+                    *recorder.0.lock() = Some(RecordedCall {
+                        target: decision.selected_model().to_string(),
+                        messages: request
+                            .llm_request
+                            .messages
+                            .iter()
+                            .filter_map(|message| message.text_content("|"))
+                            .collect(),
+                        instructions: request
+                            .llm_request
+                            .instructions
+                            .iter()
+                            .filter_map(|block| block.content.iter().find_map(text_of))
+                            .collect(),
+                    });
+                    Ok(reply(decision.selected_model()))
+                }
+            }
         }
     }
 
@@ -467,26 +540,12 @@ mod tests {
         }
     }
 
-    /// A target set whose targets all serve via [`EchoClient`].
     fn target_set(names: &[&str]) -> LlmTargetSet {
         LlmTargetSet::new(
             names
                 .iter()
                 .map(|name| LlmTarget {
                     semantic_name: name.to_string(),
-                    llm_client: Some(Arc::new(EchoClient) as Arc<dyn RoutedLlmClient>),
-                })
-                .collect(),
-        )
-    }
-
-    fn prompt_targets(client: &Arc<RecordingPromptClient>, names: &[&str]) -> LlmTargetSet {
-        LlmTargetSet::new(
-            names
-                .iter()
-                .map(|name| LlmTarget {
-                    semantic_name: (*name).to_string(),
-                    llm_client: Some(client.clone() as Arc<dyn RoutedLlmClient>),
                 })
                 .collect(),
         )
@@ -500,20 +559,21 @@ mod tests {
 
     /// Routes one turn on a prompt test cascade and returns the recorded model call.
     async fn routed_prompt_call(
-        client: &Arc<RecordingPromptClient>,
+        recorder: &Arc<PromptRecorder>,
         router: FallThrough,
     ) -> Result<RecordedCall> {
-        Arc::new(router)
-            .run(
-                Context::default(),
-                Request {
-                    llm_request: text_request(Some("auto".to_string()), "fix the build"),
-                    raw_request: None,
-                    metadata: None,
-                },
-            )
-            .await?;
-        let call = client.0.lock().take();
+        test_drive(
+            Arc::new(router),
+            Context::default(),
+            Request {
+                llm_request: text_request(Some("auto".to_string()), "fix the build"),
+                raw_request: None,
+                metadata: None,
+            },
+            recorder.serve(),
+        )
+        .await?;
+        let call = recorder.0.lock().take();
         match call {
             Some(call) => Ok(call),
             None => panic!("the model was never called"),
@@ -521,12 +581,8 @@ mod tests {
     }
 
     /// A prompt cascade that always routes to `target`.
-    fn prompt_router(
-        client: &Arc<RecordingPromptClient>,
-        target: &str,
-        prompts: TargetPrompts,
-    ) -> FallThrough {
-        FallThrough::new(prompt_targets(client, &["capable", "efficient"]))
+    fn prompt_router(target: &str, prompts: TargetPrompts) -> FallThrough {
+        FallThrough::new(target_set(&["capable", "efficient"]))
             .with_processor(Arc::new(SystemPromptProcessor::new(prompts)))
             .with_classifier(Arc::new(DefaultTarget::new(target)))
     }
@@ -587,11 +643,13 @@ mod tests {
     async fn run_request<S>(
         router: &Arc<FallThrough<S>>,
         request: Request,
+        serve: impl Serve,
     ) -> Result<(String, Vec<Arc<dyn Decision>>)>
     where
         S: Default + Send + 'static,
     {
-        let (trace, response) = router.clone().run(Context::default(), request).await?;
+        let (trace, response) =
+            test_drive(router.clone(), Context::default(), request, serve).await?;
         let text = response
             .llm_response
             .into_agg()
@@ -602,16 +660,71 @@ mod tests {
     }
 
     /// Drives a shared router through one turn in the default test session.
-    async fn run_turn<S>(router: &Arc<FallThrough<S>>) -> Result<(String, Vec<Arc<dyn Decision>>)>
+    async fn run_turn<S>(
+        router: &Arc<FallThrough<S>>,
+        serve: impl Serve,
+    ) -> Result<(String, Vec<Arc<dyn Decision>>)>
     where
         S: Default + Send + 'static,
     {
-        run_request(router, request()).await
+        run_request(router, request(), serve).await
     }
 
-    /// Drives a fresh router through one turn.
-    async fn run(router: FallThrough) -> Result<(String, Vec<Arc<dyn Decision>>)> {
-        run_turn(&Arc::new(router)).await
+    /// Drives a fresh router through one turn with a specific `serve`.
+    async fn run_with(
+        router: FallThrough,
+        serve: impl Serve,
+    ) -> Result<(String, Vec<Arc<dyn Decision>>)> {
+        run_turn(&Arc::new(router), serve).await
+    }
+
+    /// Discards the recorded calls; the overflow tests that don't assert on them.
+    fn overflows(targets: &'static [&'static str]) -> impl Serve {
+        overflowing(targets, Arc::new(Mutex::new(Vec::new())))
+    }
+
+    /// Rejects the named `overflowing` targets with a context-window error and echoes for
+    /// the rest, so the retry path can be driven. Every call is recorded in `calls`.
+    fn overflowing(
+        overflowing: &'static [&'static str],
+        calls: Arc<Mutex<Vec<String>>>,
+    ) -> impl Serve {
+        move |decision: Arc<dyn Decision>, _request: Request| {
+            let calls = Arc::clone(&calls);
+            async move {
+                let model = decision.selected_model().to_string();
+                calls.lock().push(model.clone());
+                if overflowing.contains(&model.as_str()) {
+                    return Err(LlmClientError::ContextWindowExceeded {
+                        model,
+                        message: "prompt is too long".to_string(),
+                    });
+                }
+                Ok(reply(model))
+            }
+        }
+    }
+
+    /// Rejects the named `unavailable` targets with a 503 and echoes for the rest.
+    /// Every call is recorded in `calls`.
+    fn unavailable(
+        unavailable: &'static [&'static str],
+        calls: Arc<Mutex<Vec<String>>>,
+    ) -> impl Serve {
+        move |decision: Arc<dyn Decision>, _request: Request| {
+            let calls = Arc::clone(&calls);
+            async move {
+                let model = decision.selected_model().to_string();
+                calls.lock().push(model.clone());
+                if unavailable.contains(&model.as_str()) {
+                    return Err(LlmClientError::UpstreamHttp {
+                        status: 503,
+                        body: "unavailable".to_string(),
+                    });
+                }
+                Ok(reply(model))
+            }
+        }
     }
 
     // --- tests -------------------------------------------------------------------------
@@ -619,10 +732,9 @@ mod tests {
     #[tokio::test]
     async fn each_target_gets_its_own_prompt() -> Result<()> {
         for (target, expected) in [("capable", CAPABLE_PROMPT), ("efficient", EFFICIENT_PROMPT)] {
-            let client = Arc::new(RecordingPromptClient::default());
+            let recorder = Arc::new(PromptRecorder::default());
             let call =
-                routed_prompt_call(&client, prompt_router(&client, target, target_prompts()))
-                    .await?;
+                routed_prompt_call(&recorder, prompt_router(target, target_prompts())).await?;
             assert_eq!(call.target, target);
             assert_eq!(call.instructions, vec![expected.to_string()]);
         }
@@ -631,11 +743,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_target_with_no_prompt_is_left_untouched() -> Result<()> {
-        let client = Arc::new(RecordingPromptClient::default());
+        let recorder = Arc::new(PromptRecorder::default());
         let only_capable = TargetPrompts::default().with("capable", CAPABLE_PROMPT);
 
-        let call =
-            routed_prompt_call(&client, prompt_router(&client, "efficient", only_capable)).await?;
+        let call = routed_prompt_call(&recorder, prompt_router("efficient", only_capable)).await?;
 
         assert!(
             call.instructions.is_empty(),
@@ -663,13 +774,13 @@ mod tests {
             }
         }
 
-        let client = Arc::new(RecordingPromptClient::default());
-        let router = FallThrough::new(prompt_targets(&client, &["capable", "efficient"]))
+        let recorder = Arc::new(PromptRecorder::default());
+        let router = FallThrough::new(target_set(&["capable", "efficient"]))
             .with_processor(Arc::new(SystemPromptProcessor::new(target_prompts())))
             .with_classifier(Arc::new(Abstains))
             .with_classifier(Arc::new(DefaultTarget::new("capable")));
 
-        let call = routed_prompt_call(&client, router).await?;
+        let call = routed_prompt_call(&recorder, router).await?;
 
         assert_eq!(call.target, "capable");
         assert_eq!(call.instructions, vec![CAPABLE_PROMPT.to_string()]);
@@ -692,98 +803,28 @@ mod tests {
             }
         }
 
-        let client = Arc::new(RecordingPromptClient::default());
-        let router = FallThrough::new(prompt_targets(&client, &["capable", "efficient"]))
+        let recorder = Arc::new(PromptRecorder::default());
+        let router = FallThrough::new(target_set(&["capable", "efficient"]))
             .with_processor(Arc::new(Noting))
             .with_classifier(Arc::new(DefaultTarget::new("capable")));
 
-        let call = routed_prompt_call(&client, router).await?;
+        let call = routed_prompt_call(&recorder, router).await?;
 
         assert_eq!(call.messages, vec![format!("fix the build|{NOTE}")]);
         assert!(call.instructions.is_empty(), "a note is not an instruction");
         Ok(())
     }
 
-    /// Overflows for the named targets and echoes for the rest, recording every call.
-    struct OverflowClient {
-        overflowing: Vec<&'static str>,
-        calls: Option<Arc<Mutex<Vec<String>>>>,
-    }
-
-    #[async_trait]
-    impl RoutedLlmClient for OverflowClient {
-        async fn call(
-            &self,
-            _ctx: Context,
-            _request: Request,
-            decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, LlmClientError> {
-            let model = decision.selected_model().to_string();
-            if let Some(calls) = &self.calls {
-                calls.lock().push(model.clone());
-            }
-            if self.overflowing.contains(&model.as_str()) {
-                return Err(LlmClientError::ContextWindowExceeded {
-                    model,
-                    message: "prompt is too long".to_string(),
-                });
-            }
-            Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(None, model)),
-                metadata: None,
-            })
-        }
-    }
-
-    /// `target_set`, but the named `overflowing` targets reject every call with a
-    /// context-window error so the retry path can be driven.
-    fn target_set_with_overflow(names: &[&str], overflowing: &[&'static str]) -> LlmTargetSet {
-        LlmTargetSet::new(
-            names
-                .iter()
-                .map(|name| LlmTarget {
-                    semantic_name: name.to_string(),
-                    llm_client: Some(Arc::new(OverflowClient {
-                        overflowing: overflowing.to_vec(),
-                        calls: None,
-                    }) as Arc<dyn RoutedLlmClient>),
-                })
-                .collect(),
-        )
-    }
-
-    fn counting_overflow_targets(
-        names: &[&str],
-        overflowing: &[&'static str],
-        calls: Arc<Mutex<Vec<String>>>,
-    ) -> LlmTargetSet {
-        LlmTargetSet::new(
-            names
-                .iter()
-                .map(|name| LlmTarget {
-                    semantic_name: name.to_string(),
-                    llm_client: Some(Arc::new(OverflowClient {
-                        overflowing: overflowing.to_vec(),
-                        calls: Some(calls.clone()),
-                    }) as Arc<dyn RoutedLlmClient>),
-                })
-                .collect(),
-        )
-    }
-
     #[tokio::test]
     async fn a_target_that_overflowed_is_skipped_for_the_rest_of_the_session() -> Result<()> {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let router = Arc::new(
-            FallThrough::<()>::new(counting_overflow_targets(
-                &["weak", "strong"],
-                &["weak"],
-                calls.clone(),
-            ))
-            .with_classifier(fixed(vec![score("weak", 0.9)])),
+            FallThrough::<()>::new(target_set(&["weak", "strong"]))
+                .with_classifier(fixed(vec![score("weak", 0.9)])),
         );
         for _ in 0..3 {
-            assert_eq!(run_turn(&router).await?.0, "strong");
+            let serve = overflowing(&["weak"], calls.clone());
+            assert_eq!(run_turn(&router, serve).await?.0, "strong");
         }
         assert_eq!(calls.lock().iter().filter(|m| *m == "weak").count(), 1);
         Ok(())
@@ -793,20 +834,16 @@ mod tests {
     async fn a_different_session_starts_with_an_empty_eviction_set() -> Result<()> {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let router = Arc::new(
-            FallThrough::<()>::new(counting_overflow_targets(
-                &["weak", "strong"],
-                &["weak"],
-                calls.clone(),
-            ))
-            .with_classifier(fixed(vec![score("weak", 0.9)])),
+            FallThrough::<()>::new(target_set(&["weak", "strong"]))
+                .with_classifier(fixed(vec![score("weak", 0.9)])),
         );
-        run_turn(&router).await?;
+        run_turn(&router, overflowing(&["weak"], calls.clone())).await?;
         let mut other = request();
         other.metadata = Some(Metadata {
             session_id: Some("session-2".to_string()),
             ..Metadata::default()
         });
-        run_request(&router, other).await?;
+        run_request(&router, other, overflowing(&["weak"], calls.clone())).await?;
         assert_eq!(calls.lock().iter().filter(|m| *m == "weak").count(), 2);
         Ok(())
     }
@@ -815,17 +852,13 @@ mod tests {
     async fn second_turn_after_full_exhaustion_still_reaches_upstream() -> Result<()> {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let router = Arc::new(
-            FallThrough::<()>::new(counting_overflow_targets(
-                &["weak", "strong"],
-                &["weak", "strong"],
-                calls.clone(),
-            ))
-            .with_classifier(fixed(vec![score("weak", 0.9)])),
+            FallThrough::<()>::new(target_set(&["weak", "strong"]))
+                .with_classifier(fixed(vec![score("weak", 0.9)])),
         );
-        let first = run_turn(&router).await;
+        let first = run_turn(&router, overflowing(&["weak", "strong"], calls.clone())).await;
         assert!(first.is_err());
         calls.lock().clear();
-        match run_turn(&router).await {
+        match run_turn(&router, overflowing(&["weak", "strong"], calls.clone())).await {
             Err(LibsyError::ClientCall { .. }) => {}
             Err(other) => panic!("turn 2 gave {other:?}, calls={:?}", calls.lock()),
             Ok(_) => panic!("expected an error"),
@@ -835,22 +868,40 @@ mod tests {
 
     #[tokio::test]
     async fn an_overflowing_target_is_retried_on_one_that_fits() -> Result<()> {
-        let router =
-            FallThrough::<()>::new(target_set_with_overflow(&["weak", "strong"], &["weak"]))
-                .with_classifier(fixed(vec![score("weak", 0.9)]));
-        let (model, _) = run(router).await?;
+        let router = FallThrough::<()>::new(target_set(&["weak", "strong"]))
+            .with_classifier(fixed(vec![score("weak", 0.9)]));
+        let (model, _) = run_with(router, overflows(&["weak"])).await?;
         assert_eq!(model, "strong");
         Ok(())
     }
 
     #[tokio::test]
+    async fn unavailable_target_clears_matching_affinity_before_the_next_turn() -> Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let affinity = Arc::new(AffinityRouter::new());
+        let router = Arc::new(
+            FallThrough::<()>::new(target_set(&["weak", "strong"]))
+                .with_processor(affinity.clone())
+                .with_classifier(affinity)
+                .with_classifier(Arc::new(DefaultTarget::new("weak"))),
+        );
+        for _ in 0..2 {
+            let (model, trace) = run_turn(&router, unavailable(&["weak"], calls.clone())).await?;
+            assert_eq!(model, "strong");
+            assert_eq!(
+                trace.last().and_then(|decision| decision.fallback_reason()),
+                Some(RoutingFallbackReason::Unavailable)
+            );
+        }
+        assert_eq!(&*calls.lock(), &["weak", "strong", "weak", "strong"]);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn overflowing_targets_are_retried_until_one_fits() -> Result<()> {
-        let router = FallThrough::<()>::new(target_set_with_overflow(
-            &["weak", "mid", "strong"],
-            &["weak", "mid"],
-        ))
-        .with_classifier(fixed(vec![score("weak", 0.9)]));
-        let (model, _) = run(router).await?;
+        let router = FallThrough::<()>::new(target_set(&["weak", "mid", "strong"]))
+            .with_classifier(fixed(vec![score("weak", 0.9)]));
+        let (model, _) = run_with(router, overflows(&["weak", "mid"])).await?;
         assert_eq!(model, "strong");
         Ok(())
     }
@@ -858,12 +909,9 @@ mod tests {
     #[tokio::test]
     async fn exhausting_every_target_surfaces_the_client_overflow() -> Result<()> {
         // Only the client error maps to a 400 upstream, so it must survive exhaustion.
-        let router = FallThrough::<()>::new(target_set_with_overflow(
-            &["weak", "strong"],
-            &["weak", "strong"],
-        ))
-        .with_classifier(fixed(vec![score("weak", 0.9)]));
-        match run(router).await {
+        let router = FallThrough::<()>::new(target_set(&["weak", "strong"]))
+            .with_classifier(fixed(vec![score("weak", 0.9)]));
+        match run_with(router, overflows(&["weak", "strong"])).await {
             Ok(_) => panic!("expected an overflow error, got a response"),
             Err(LibsyError::ClientCall {
                 source: LlmClientError::ContextWindowExceeded { .. },
@@ -892,11 +940,10 @@ mod tests {
         }
 
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let router =
-            FallThrough::<()>::new(target_set_with_overflow(&["weak", "strong"], &["weak"]))
-                .with_classifier(fixed(vec![score("weak", 0.9)]))
-                .with_processor(Arc::new(CountingProcessor(seen.clone())));
-        let (model, _) = run(router).await?;
+        let router = FallThrough::<()>::new(target_set(&["weak", "strong"]))
+            .with_classifier(fixed(vec![score("weak", 0.9)]))
+            .with_processor(Arc::new(CountingProcessor(seen.clone())));
+        let (model, _) = run_with(router, overflows(&["weak"])).await?;
         assert_eq!(model, "strong");
         assert_eq!(seen.lock().iter().filter(|e| **e == "request").count(), 1);
         assert_eq!(seen.lock().iter().filter(|e| **e == "decision").count(), 1);
@@ -912,7 +959,7 @@ mod tests {
         );
         let mut ctx = Context::default();
         ctx.exclude_target("weak");
-        let (trace, response) = router.run(ctx, request()).await?;
+        let (trace, response) = test_drive(router, ctx, request(), echo()).await?;
         let text = response
             .llm_response
             .into_agg()
@@ -934,7 +981,7 @@ mod tests {
     async fn argmax_picks_the_highest_confidence_target() -> Result<()> {
         let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_classifier(fixed(vec![score("weak", 0.2), score("strong", 0.9)]));
-        let (model, trace) = run(router).await?;
+        let (model, trace) = run_with(router, echo()).await?;
         assert_eq!(model, "strong");
         assert_eq!(trace.len(), 1);
         assert_eq!(trace[0].selected_model(), "strong");
@@ -947,7 +994,7 @@ mod tests {
         let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_classifier(fixed(vec![]))
             .with_classifier(fixed(vec![score("weak", 1.0)]));
-        let (model, _) = run(router).await?;
+        let (model, _) = run_with(router, echo()).await?;
         assert_eq!(model, "weak");
         Ok(())
     }
@@ -958,7 +1005,7 @@ mod tests {
         let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_classifier(fixed(vec![score("strong", 0.6)]))
             .with_classifier(fixed(vec![score("weak", 1.0)]));
-        let (model, _) = run(router).await?;
+        let (model, _) = run_with(router, echo()).await?;
         assert_eq!(model, "strong");
         Ok(())
     }
@@ -967,7 +1014,7 @@ mod tests {
     async fn all_abstaining_is_an_error() -> Result<()> {
         let router =
             FallThrough::<()>::new(target_set(&["strong", "weak"])).with_classifier(fixed(vec![]));
-        let error = run(router)
+        let error = run_with(router, echo())
             .await
             .err()
             .ok_or_else(|| test_error("expected classifiers to abstain"))?;
@@ -1001,7 +1048,7 @@ mod tests {
 
         let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_classifier(Arc::new(NeedsDriver));
-        let (model, _) = run(router).await?;
+        let (model, _) = run_with(router, echo()).await?;
         assert_eq!(model, "strong");
         Ok(())
     }
@@ -1031,7 +1078,7 @@ mod tests {
         let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_processor(Arc::new(RecordingProcessor(seen.clone())))
             .with_classifier(fixed(vec![score("strong", 1.0)]));
-        run(router).await?;
+        run_with(router, echo()).await?;
 
         assert_eq!(*seen.lock(), vec!["request", "decision"]);
         Ok(())
@@ -1085,16 +1132,13 @@ mod tests {
 
         let seen_by_classifier = Arc::new(Mutex::new(Vec::new()));
         let seen_by_model = Arc::new(Mutex::new(None));
-        let targets = LlmTargetSet::new(vec![LlmTarget {
-            semantic_name: "strong".to_string(),
-            llm_client: Some(Arc::new(CapturingClient(seen_by_model.clone()))),
-        }]);
+        let targets = target_set(&["strong"]);
         let router = FallThrough::new(targets)
             .with_processor(Arc::new(Appender("first")))
             .with_processor(Arc::new(Appender("second")))
             .with_classifier(Arc::new(TrailClassifier(seen_by_classifier.clone())));
 
-        run_turn(&Arc::new(router)).await?;
+        run_turn(&Arc::new(router), capturing(seen_by_model.clone())).await?;
 
         // The classifier saw both processors' edits, in chain order, on top of the original.
         assert_eq!(*seen_by_classifier.lock(), vec!["hi", "first", "second"]);
@@ -1156,8 +1200,18 @@ mod tests {
                 .with_classifier(Arc::new(ThresholdClassifier)),
         );
 
-        let (turn1, _) = run_turn(&router).await?;
-        let (turn2, _) = run_turn(&router).await?;
+        let (turn1, _) = run_turn(&router, echo()).await?;
+        let (turn2, _) = run_turn(&router, echo()).await?;
+        let final_request = Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                session_final: Some(true),
+                ..Metadata::default()
+            }),
+            ..request()
+        };
+        let (final_turn, _) = run_request(&router, final_request, echo()).await?;
+        let (restarted_session, _) = run_turn(&router, echo()).await?;
         let (second_session, _) = run_request(
             &router,
             Request {
@@ -1167,20 +1221,74 @@ mod tests {
                 }),
                 ..request()
             },
+            echo(),
         )
         .await?;
         let anonymous = Request {
             metadata: None,
             ..request()
         };
-        let (anonymous1, _) = run_request(&router, anonymous.clone()).await?;
-        let (anonymous2, _) = run_request(&router, anonymous).await?;
+        let (anonymous1, _) = run_request(&router, anonymous.clone(), echo()).await?;
+        let (anonymous2, _) = run_request(&router, anonymous, echo()).await?;
 
         assert_eq!(turn1, "weak");
         assert_eq!(turn2, "strong");
+        assert_eq!(final_turn, "strong");
+        assert_eq!(restarted_session, "weak");
         assert_eq!(second_session, "weak");
         assert_eq!(anonymous1, "weak");
         assert_eq!(anonymous2, "weak");
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn final_session_is_removed_when_routing_fails() {
+        let router = Arc::new(FallThrough::<u32>::new_with_state(target_set(&["strong"])));
+        let final_request = Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                session_final: Some(true),
+                ..Metadata::default()
+            }),
+            ..request()
+        };
+
+        let result = test_drive(router.clone(), Context::default(), final_request, echo()).await;
+
+        assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
+        let states = router
+            .session_states
+            .as_ref()
+            .expect("stateful router has a session registry")
+            .lock();
+        assert!(!states.contains_key("session-1"));
+    }
+
+    #[test]
+    fn cleanup_removes_only_inactive_idle_sessions() {
+        let router = FallThrough::<u32>::new_with_state(target_set(&["strong"]));
+        let _active_state = router
+            .session_state(&request()) // session-1
+            .expect("session state was inserted");
+        let inactive_request = Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-2".to_string()),
+                ..Metadata::default()
+            }),
+            ..request()
+        };
+        drop(router.session_state(&inactive_request));
+
+        let states = router
+            .session_states
+            .as_ref()
+            .expect("stateful router has a session registry");
+        let now = Instant::now() + SESSION_STATE_TTL + Duration::from_secs(1);
+
+        remove_inactive_sessions(states, now, SESSION_STATE_TTL);
+
+        let states = states.lock();
+        assert!(states.contains_key("session-1"));
+        assert!(!states.contains_key("session-2"));
     }
 }

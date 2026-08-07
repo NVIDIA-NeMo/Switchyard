@@ -528,6 +528,7 @@ const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
     "context window",
     "context length is only",
     "please reduce the length of the input",
+    "exceeds the maximum allowed input length",
 ];
 
 fn is_context_overflow(body: &str) -> bool {
@@ -757,6 +758,14 @@ mod tests {
     fn context_overflow_unrelated_400_does_not_match() {
         let body = r#"{"error":{"code":"invalid_api_key","message":"bad key"}}"#;
         assert!(!is_context_overflow(body));
+    }
+
+    #[test]
+    fn context_overflow_hub_glm_matches() {
+        // Hub GLM error via LiteLLM: code is "400" (not context_length_exceeded),
+        // so detection relies on phrase matching.
+        let body = r#"{"error":{"message":"Input length 877338 exceeds the maximum allowed input length of 639968 tokens","code":"400"}}"#;
+        assert!(is_context_overflow(body));
     }
 
     #[test]

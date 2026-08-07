@@ -23,7 +23,7 @@ use tracing::Instrument;
 
 use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
-use crate::metrics::{is_retryable_http_status, record_upstream_attempt};
+use crate::metrics;
 use crate::raw::RawResponse;
 
 // TODO: Why is this here? What does it do?
@@ -111,23 +111,6 @@ impl TranslatingLlmClient {
         })
     }
 
-    /// A configured Anthropic backend to forward a direct `count_tokens` call to,
-    /// paired with its upstream model id (the id the inbound route name is
-    /// restamped to). `None` when this client has no Anthropic backend;
-    /// `count_tokens` is Anthropic-only.
-    fn anthropic_backend(&self) -> Option<(&str, &Backend)> {
-        self.model_to_config.values().find_map(|config| {
-            if config.default_backend.is_anthropic() {
-                return Some((config.model_name.as_str(), &config.default_backend));
-            }
-            config
-                .other_backends
-                .as_ref()
-                .and_then(|backends| backends.iter().find(|backend| backend.is_anthropic()))
-                .map(|backend| (config.model_name.as_str(), backend))
-        })
-    }
-
     /// The backend serving `model` over `format` — the default backend when its
     /// format matches, otherwise a matching entry in `other_backends`; `None` when
     /// the model is unknown or has no backend for `format`.
@@ -144,6 +127,50 @@ impl TranslatingLlmClient {
         })
     }
 
+    /// Whether `model` has an Anthropic backend that supports token counting.
+    pub fn supports_count_tokens(&self, model: &str) -> bool {
+        self.backend_for(model, WireFormat::AnthropicMessages)
+            .is_some()
+    }
+
+    /// Counts input tokens with `model`'s Anthropic backend.
+    ///
+    /// Returns an error when the model has no Anthropic backend or the upstream
+    /// request fails or returns invalid JSON.
+    pub async fn count_tokens(&self, model: &str, request: Request) -> Result<Value> {
+        let backend = self
+            .backend_for(model, WireFormat::AnthropicMessages)
+            .ok_or_else(|| LlmClientError::Configuration {
+                message: format!("model {model} has no Anthropic backend for count_tokens"),
+            })?;
+        let Request {
+            llm_request,
+            metadata,
+            ..
+        } = request;
+        let http_response = self
+            .send_encoded(
+                backend,
+                WireFormat::AnthropicMessages,
+                llm_request,
+                metadata.as_ref(),
+                model,
+                UpstreamEndpoint::CountTokens,
+            )
+            .await?;
+        let body = match http_response {
+            EncodedResponse::Buffered { body, .. } => body,
+            EncodedResponse::Streaming(_) => {
+                return Err(LlmClientError::InvalidRequest {
+                    message: "count_tokens does not support streaming requests".to_string(),
+                });
+            }
+        };
+        serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
+            source: Box::new(error),
+        })
+    }
+
     /// Encode `llm_request` (its model restamped to `model`) for `wire_format`,
     /// POST it to `url` with the request's forwarded headers plus the backend's
     /// static headers and auth, and return the successful upstream response. A
@@ -153,8 +180,8 @@ impl TranslatingLlmClient {
     /// overflow via the backend's provider rules. Shared by
     /// [`call_rewrite_model`](Self::call_rewrite_model) (which POSTs to the
     /// backend's completion URL and decodes a response) and
-    /// [`count_tokens`](RoutedLlmClient::count_tokens) (which POSTs to the
-    /// `count_tokens` URL and returns the raw JSON).
+    /// [`count_tokens`](Self::count_tokens) (which POSTs to the `count_tokens`
+    /// URL and returns the raw JSON).
     async fn send_encoded(
         &self,
         backend: &Backend,
@@ -176,8 +203,12 @@ impl TranslatingLlmClient {
         // deliberately via `extra_body`.
         if matches!(backend, Backend::Anthropic(_)) {
             strip_anthropic_incompatible_fields(&mut body);
+            strip_unsigned_thinking_blocks(&mut body);
         }
         merge_extra_body(&mut body, backend.extra_body());
+        if matches!(backend, Backend::Anthropic(_)) {
+            enable_anthropic_prompt_caching(&mut body);
+        }
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
         }
@@ -256,7 +287,7 @@ impl TranslatingLlmClient {
         let response = match builder.send().await {
             Ok(response) => response,
             Err(error) => {
-                record_upstream_attempt(None);
+                metrics::record_upstream_attempt(None);
                 return Err(AttemptFailure {
                     error: convert_reqwest_error(error),
                     status: None,
@@ -268,13 +299,13 @@ impl TranslatingLlmClient {
         if status.is_success() {
             if streaming {
                 // Streaming body failures happen after the retry boundary.
-                record_upstream_attempt(Some(status.as_u16()));
+                metrics::record_upstream_attempt(Some(status.as_u16()));
                 return Ok(EncodedResponse::Streaming(response));
             }
             let body = match response.bytes().await {
                 Ok(body) => body,
                 Err(error) => {
-                    record_upstream_attempt(None);
+                    metrics::record_upstream_attempt(None);
                     return Err(AttemptFailure {
                         error: convert_reqwest_error(error),
                         status: Some(status.as_u16()),
@@ -282,7 +313,7 @@ impl TranslatingLlmClient {
                     });
                 }
             };
-            record_upstream_attempt(Some(status.as_u16()));
+            metrics::record_upstream_attempt(Some(status.as_u16()));
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
                 body: body.to_vec(),
@@ -293,7 +324,7 @@ impl TranslatingLlmClient {
         let body = match response.text().await {
             Ok(body) => body,
             Err(error) => {
-                record_upstream_attempt(None);
+                metrics::record_upstream_attempt(None);
                 return Err(AttemptFailure {
                     error: convert_reqwest_error(error),
                     status: Some(status.as_u16()),
@@ -301,7 +332,7 @@ impl TranslatingLlmClient {
                 });
             }
         };
-        record_upstream_attempt(Some(status.as_u16()));
+        metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
                 LlmClientError::ContextWindowExceeded {
@@ -430,7 +461,7 @@ impl TranslatingLlmClient {
         &self,
         ctx: Context,
         raw_http_request: Value,
-        http_headers: Option<BTreeMap<String, String>>,
+        http_headers: Option<http::HeaderMap>,
         model: Option<&str>,
         wire_format: WireFormat,
     ) -> Result<RawResponse> {
@@ -485,49 +516,6 @@ impl RoutedLlmClient for TranslatingLlmClient {
         let model_name = Some(decision.selected_model());
         self.call_rewrite_model(ctx, request, model_name).await
     }
-
-    fn supports_count_tokens(&self) -> bool {
-        self.anthropic_backend().is_some()
-    }
-
-    async fn count_tokens(&self, request: Request) -> Result<Value> {
-        // Direct passthrough: forward straight to this client's Anthropic
-        // backend's count_tokens endpoint. Not routed — no decision.
-        let (model, backend) =
-            self.anthropic_backend()
-                .ok_or_else(|| LlmClientError::Configuration {
-                    message: "count_tokens is anthropic-only; this client has no anthropic backend"
-                        .to_string(),
-                })?;
-        // Same encode-and-forward path as the completion call, only to the
-        // `count_tokens` URL; the response is the raw `{"input_tokens": N}` JSON.
-        let Request {
-            llm_request,
-            metadata,
-            ..
-        } = request;
-        let http_response = self
-            .send_encoded(
-                backend,
-                WireFormat::AnthropicMessages,
-                llm_request,
-                metadata.as_ref(),
-                model,
-                UpstreamEndpoint::CountTokens,
-            )
-            .await?;
-        let body = match http_response {
-            EncodedResponse::Buffered { body, .. } => body,
-            EncodedResponse::Streaming(_) => {
-                return Err(LlmClientError::InvalidRequest {
-                    message: "count_tokens does not support streaming requests".to_string(),
-                });
-            }
-        };
-        serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
-            source: Box::new(error),
-        })
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -575,7 +563,9 @@ impl AttemptFailure {
     fn is_retryable(&self) -> bool {
         match &self.error {
             LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
-            LlmClientError::UpstreamHttp { status, .. } => is_retryable_http_status(*status),
+            LlmClientError::UpstreamHttp { status, .. } => {
+                metrics::is_retryable_http_status(*status)
+            }
             _ => false,
         }
     }
@@ -652,7 +642,7 @@ fn forward_metadata_headers(
         return builder;
     };
     for (name, value) in headers {
-        if is_reserved_header(name) {
+        if is_reserved_header(name.as_str()) {
             continue;
         }
         builder = builder.header(name, value);
@@ -690,6 +680,58 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
     }
 }
 
+// Removes replayed `thinking` blocks that carry no signature.
+//
+// Anthropic requires signed thinking blocks on replay. A router can serve earlier
+// turns of a session from an OpenAI-format target whose thinking blocks are
+// unsigned, so the Anthropic leg must drop them or the upstream rejects the
+// request. Bedrock enforces this (surfacing as a SigV4 signature mismatch) where
+// Azure-hosted Anthropic currently does not. Mirrors `switchyard-components`'
+// `strip_unsigned_thinking_blocks`.
+fn strip_unsigned_thinking_blocks(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    let Some(Value::Array(messages)) = object.get_mut("messages") else {
+        return;
+    };
+    for message in messages {
+        strip_unsigned_thinking_from_message(message);
+    }
+}
+
+// Drops unsigned thinking blocks from one message, collapsing content that ends
+// up empty to an empty string so the message stays valid.
+fn strip_unsigned_thinking_from_message(message: &mut Value) {
+    let Value::Object(message) = message else {
+        return;
+    };
+    let Some(Value::Array(blocks)) = message.get("content") else {
+        return;
+    };
+    if !blocks.iter().any(is_unsigned_thinking_block) {
+        return;
+    }
+    let Some(Value::Array(blocks)) = message.get_mut("content") else {
+        return;
+    };
+    blocks.retain(|block| !is_unsigned_thinking_block(block));
+    if blocks.is_empty() {
+        message.insert("content".to_string(), Value::String(String::new()));
+    }
+}
+
+// A thinking block is unsigned when `signature` is absent or empty.
+fn is_unsigned_thinking_block(block: &Value) -> bool {
+    if block.get("type").and_then(Value::as_str) != Some("thinking") {
+        return false;
+    }
+    !matches!(
+        block.get("signature").and_then(Value::as_str),
+        Some(signature) if !signature.is_empty()
+    )
+}
+
 // Applies target defaults without overriding fields supplied by the caller.
 fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     let Value::Object(object) = body else {
@@ -697,6 +739,35 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     };
     for (key, value) in extra_body {
         object.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+}
+
+// Marks the final message content block as the Anthropic prompt-cache breakpoint.
+fn enable_anthropic_prompt_caching(body: &mut Value) {
+    let Some(content) = body
+        .get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .and_then(|messages| messages.last_mut())
+        .and_then(|message| message.get_mut("content"))
+    else {
+        return;
+    };
+    match content {
+        Value::String(text) => {
+            *content = serde_json::json!([{
+                "type": "text",
+                "text": std::mem::take(text),
+                "cache_control": {"type": "ephemeral"}
+            }]);
+        }
+        Value::Array(blocks) => {
+            if let Some(block) = blocks.last_mut().and_then(Value::as_object_mut) {
+                block
+                    .entry("cache_control".to_string())
+                    .or_insert_with(|| serde_json::json!({"type": "ephemeral"}));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -861,6 +932,20 @@ mod tests {
             raw_request: None,
             metadata: None,
         }
+    }
+
+    #[test]
+    fn anthropic_prompt_caching_marks_final_message() {
+        let mut body = json!({
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+
+        enable_anthropic_prompt_caching(&mut body);
+
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
     }
 
     // A request that pins `format` in its metadata, so the client resolves that
@@ -1193,6 +1278,81 @@ mod tests {
                 None,
                 Some("gpt"),
                 WireFormat::OpenAiChat,
+            )
+            .await?;
+        Ok(())
+    }
+
+    // A weak OpenAI-format tier emits thinking blocks with no signature. Replaying
+    // them to Anthropic is rejected (Bedrock reports it as a SigV4 mismatch), so
+    // the Anthropic leg must drop them while keeping signed ones.
+    #[tokio::test]
+    async fn anthropic_requests_drop_unsigned_thinking_blocks()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let messages = body.get("messages").and_then(Value::as_array).cloned();
+                let Some(messages) = messages else {
+                    return false;
+                };
+                // The unsigned block is gone, the signed one survives, and the
+                // message whose only block was unsigned is not left with an empty
+                // content array.
+                let blocks: Vec<&Value> = messages
+                    .iter()
+                    .filter_map(|message| message.get("content"))
+                    .filter_map(Value::as_array)
+                    .flatten()
+                    .collect();
+                let thinking: Vec<&&Value> = blocks
+                    .iter()
+                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("thinking"))
+                    .collect();
+                thinking.len() == 1
+                    && thinking[0].get("signature").and_then(Value::as_str) == Some("sig-abc")
+                    && messages
+                        .iter()
+                        .all(|message| message.get("content") != Some(&json!([])))
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&anthropic_map(&server.uri()))?;
+        let raw = json!({
+            "model": "client-facing",
+            "max_tokens": 7,
+            "messages": [
+                {"role": "user", "content": "fix the build"},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "weak tier reasoning", "signature": ""}
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "signed reasoning", "signature": "sig-abc"},
+                    {"type": "text", "text": "here goes"}
+                ]},
+                {"role": "user", "content": "continue"}
+            ]
+        });
+
+        client
+            .call_rewrite_model_raw(
+                Context::default(),
+                raw,
+                None,
+                Some("claude"),
+                WireFormat::AnthropicMessages,
             )
             .await?;
         Ok(())
@@ -1621,10 +1781,16 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut headers = BTreeMap::new();
-        headers.insert("x-request-id".to_string(), "abc".to_string());
-        headers.insert("authorization".to_string(), "Bearer client-key".to_string());
-        headers.insert("accept-encoding".to_string(), "gzip, br".to_string());
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-request-id", http::HeaderValue::from_static("abc"));
+        headers.insert(
+            "authorization",
+            http::HeaderValue::from_static("Bearer client-key"),
+        );
+        headers.insert(
+            "accept-encoding",
+            http::HeaderValue::from_static("gzip, br"),
+        );
         let request = Request {
             llm_request: LlmRequest {
                 model: Some("gpt".to_string()),
@@ -1841,9 +2007,12 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut headers = BTreeMap::new();
-        headers.insert("x-request-id".to_string(), "abc".to_string());
-        headers.insert("authorization".to_string(), "Bearer client-key".to_string());
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-request-id", http::HeaderValue::from_static("abc"));
+        headers.insert(
+            "authorization",
+            http::HeaderValue::from_static("Bearer client-key"),
+        );
 
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
         let raw = json!({"model": "gpt", "messages": [{"role": "user", "content": "hi"}]});

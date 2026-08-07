@@ -137,6 +137,10 @@ fn decode_responses_stream(
             out.push(LlmResponseChunk::MessageStop { reason: None });
             out
         }
+        // Carries the Anthropic spelling because every encoder already maps it.
+        Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
+            reason: Some("max_tokens".to_string()),
+        }],
         Some("error") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("message")
@@ -153,6 +157,10 @@ fn encode_responses_stream(
     state: &mut StreamTranslationState,
     event: LlmResponseChunk,
 ) -> Vec<Value> {
+    // An in-band error is terminal: once the error is emitted, drop every later chunk.
+    if state.errored {
+        return Vec::new();
+    }
     match event {
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
@@ -178,6 +186,9 @@ fn encode_responses_stream(
             Vec::new()
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
+            // An in-band error is terminal: emit the error, then nothing further.
+            state.finished = true; // finish() adds no success events
+            state.errored = true; // the entry guard drops any later chunk
             vec![json!({"type": "error", "message": message})]
         }
     }
@@ -185,6 +196,19 @@ fn encode_responses_stream(
 
 // Emits final OpenAI Responses completion events from accumulated state.
 fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
+    if state.finished {
+        return Vec::new();
+    }
+    let is_truncated = matches!(
+        state.stop_reason.as_deref(),
+        Some("length") | Some("max_tokens")
+    );
+    let (event_type, status) = if is_truncated {
+        ("response.incomplete", "incomplete")
+    } else {
+        ("response.completed", "completed")
+    };
+    let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
     let mut out = ensure_responses_created(state);
     if state.response_text_started
         && let Some(output_index) = state.response_text_output_index
@@ -201,7 +225,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "item": {
                 "type": "message",
                 "role": "assistant",
-                "status": "completed",
+                "status": status,
                 "content": [{"type": "output_text", "text": state.response_text}],
             },
         }));
@@ -242,7 +266,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             json!({
                 "type": "message",
                 "role": "assistant",
-                "status": "completed",
+                "status": status,
                 "content": [{"type": "output_text", "text": state.response_text}],
             }),
         ));
@@ -281,11 +305,12 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         .collect::<Vec<_>>();
 
     out.push(json!({
-        "type": "response.completed",
+        "type": event_type,
         "response": {
             "id": responses_id(state),
             "object": "response",
-            "status": "completed",
+            "status": status,
+            "incomplete_details": incomplete_details,
             "model": target_model_or_source_model(state),
             "output": output,
             "usage": responses_usage_value(&state.usage),

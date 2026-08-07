@@ -153,9 +153,16 @@ fn encode_openai_chat_stream(
     state: &mut StreamTranslationState,
     event: LlmResponseChunk,
 ) -> Vec<Value> {
+    // An in-band error is terminal: once the error is emitted, drop every later chunk.
+    if state.errored {
+        return Vec::new();
+    }
     match event {
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
+            // `finish_openai_chat_stream` uses this flag to decide whether a clean EOF needs a
+            // synthesized terminal chunk. Set it on the encode path as well as the decode path.
+            state.saw_message_start = true;
             if state.emitted_message_start
                 || (!state_source_is(state, WireFormat::AnthropicMessages)
                     && !state_source_is(state, WireFormat::OpenAiResponses))
@@ -221,6 +228,9 @@ fn encode_openai_chat_stream(
             )]
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
+            // An in-band error is terminal: emit the error, then nothing further.
+            state.finished = true; // finish() adds no success events
+            state.errored = true; // the entry guard drops any later chunk
             vec![json!({"error": {"message": message}})]
         }
     }

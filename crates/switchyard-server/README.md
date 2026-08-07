@@ -33,6 +33,7 @@ seed = 42
 [routes.classified]
 id = "switchyard/classified"
 type = "llm_classifier"
+mode = "capability"
 classifier_target = "model_a"
 strong_target = "model_a"
 weak_target = "model_b"
@@ -54,8 +55,12 @@ confidence_threshold = 0.5
 
 ```bash
 export API_KEY="..."
-cargo run -p switchyard-server -- --config routes.toml
+cargo install --locked switchyard-server
+switchyard-server --config routes.toml
 ```
+
+Ctrl+C and Unix `SIGTERM` stop new connections and allow active requests to drain for up to
+`--shutdown-timeout` (30 seconds by default) before they are terminated.
 
 The server logs exactly one structured terminal event per LLM request: successful responses at
 `INFO`, 4xx responses at `WARN`, and 5xx responses at `ERROR`. Set
@@ -93,8 +98,7 @@ routes to `weak_target` or `strong_target`. Beyond the three targets it accepts 
 | Key | Default | Meaning |
 |---|---|---|
 | `base_threshold` | *required* | Lowest solve probability that routes a task to `weak_target`. Raise it to send less traffic to the weak model. |
-| `min_confidence` | `0.0` | Lowest judge confidence that permits weak routing. `0.0` disables the gate. |
-| `capability_elevated_floor` | unset | Higher solve-probability floor applied only to tasks the judge marks uncertain, unsupported, or unmatched. Unset reuses `base_threshold`. |
+| `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `session_affinity` | `false` | Reuses a session's first routing decision on later turns, so the judge is called once per session rather than once per turn. |
 | `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `session_affinity = true`. |
 
@@ -116,7 +120,7 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions |
 | `POST` | `/v1/messages` | Anthropic Messages |
 | `POST` | `/v1/responses` | OpenAI Responses |
-| `POST` | `/v1/messages/count_tokens` | Anthropic token count |
+| `POST` | `/v1/messages/count_tokens` | Token count from a route's Anthropic target |
 | `GET` | `/v1/models` | Routes served by this deployment |
 | `GET` | `/v1/stats` | Per-model request, token, and cost totals |
 | `POST` | `/v1/stats/reset` | Clear accumulated stats |
@@ -126,6 +130,9 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 Requests name a route by its `id`, so `POST /v1/chat/completions` with `"model": "switchyard/general"`
 routes through the `[routes.general]` entry above. Any of the three request formats can address any
 route, and the server translates between them.
+
+Token counting selects an Anthropic-format completion target, preferring target names or model IDs
+containing `opus`, `sonnet`, then `haiku`. Other ties preserve the route's target order.
 
 ## Metrics
 
@@ -147,12 +154,17 @@ Routed-call compatibility metrics are:
 | `switchyard_reasoning_tokens_total` | counter | `model`, optional `tier` | Reasoning output tokens |
 | `switchyard_total_latency_ms` | histogram | `model`, optional `tier` | Full-turn latency for successful routed responses |
 | `switchyard_routing_overhead_ms` | histogram | `algorithm` | Algorithm run time minus the call that served it |
+| `switchyard_classifier_fail_open_total` | counter | `judge_model`, `reason` | Judge failures that made a classifier route without a verdict |
 | `switchyard_client_responses_total` | counter | `outcome` | Final LLM-route responses |
 | `switchyard_upstream_attempts_total` | counter | `outcome`, `code` | Actual upstream HTTP attempts |
 | `switchyard_router_retry_recovered_total` | counter | none | Retry recoveries (currently always zero) |
 
 The `tier` label is `strong` or `weak` for a distinguishable built-in LLM-classifier decision and
 is omitted for untiered algorithms. Classifier calls are excluded from these families.
+
+`switchyard_classifier_fail_open_total` counts requests that still reached a target after the
+judge call failed. `judge_model` names the configured judge target, and `reason` is one of eight
+fixed error categories.
 
 `switchyard_total_latency_ms` observes an aggregate when it becomes available or a stream when it
 ends cleanly. Its clock starts in a router-wide middleware, before the request body is read and

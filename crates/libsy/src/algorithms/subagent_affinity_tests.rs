@@ -7,7 +7,6 @@
 //! *which* target delegated work belongs on, affinity decides *how long* that decision
 //! lives.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -16,30 +15,12 @@ use super::fall_through::FallThrough;
 use super::util::affinity::AffinityRouter;
 use super::util::subagent::SubagentOverride;
 use crate::Result;
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
+use crate::core::algorithm::{Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::testing::{echo, test_drive};
 use switchyard_protocol::{
-    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, completion_text,
-    text_request, text_response,
+    Context, Metadata, Request, Response, completion_text, slice_to_header_map, text_request,
 };
-
-/// A client that echoes the routed target name back as the completion.
-struct EchoClient;
-
-#[async_trait]
-impl RoutedLlmClient for EchoClient {
-    async fn call(
-        &self,
-        _ctx: Context,
-        _request: Request,
-        decision: Arc<dyn Decision>,
-    ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
-        Ok(Response {
-            llm_response: LlmResponse::Agg(text_response(None, decision.selected_model())),
-            metadata: None,
-        })
-    }
-}
 
 /// The cascade's terminal classifier: always picks the orchestrator.
 struct AlwaysOrchestrator;
@@ -68,7 +49,6 @@ fn targets() -> LlmTargetSet {
             .iter()
             .map(|name| LlmTarget {
                 semantic_name: (*name).to_string(),
-                llm_client: Some(Arc::new(EchoClient) as Arc<dyn RoutedLlmClient>),
             })
             .collect(),
     )
@@ -78,12 +58,7 @@ fn request(headers: &[(&str, &str)]) -> Request {
     Request {
         llm_request: text_request(Some("auto".to_string()), "hi"),
         raw_request: None,
-        metadata: Some(Metadata::from_headers(
-            &headers
-                .iter()
-                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
-                .collect::<BTreeMap<_, _>>(),
-        )),
+        metadata: Some(Metadata::from_headers(&slice_to_header_map(headers))),
     }
 }
 
@@ -102,10 +77,8 @@ fn router() -> Arc<FallThrough> {
 
 /// Runs one turn, returning the target that served it.
 async fn turn(router: &Arc<FallThrough>, headers: &[(&str, &str)]) -> Result<String> {
-    let (_, response) = router
-        .clone()
-        .run(Context::default(), request(headers))
-        .await?;
+    let (_, response) =
+        test_drive(router.clone(), Context::default(), request(headers), echo()).await?;
     Ok(response
         .llm_response
         .as_agg()

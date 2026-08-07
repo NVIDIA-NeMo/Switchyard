@@ -7,22 +7,35 @@ version.workspace = true
 description = "HTTP LLM client speaking Switchyard's neutral IR directly"
 authors.workspace = true
 edition.workspace = true
+homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
 license.workspace = true
+readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
+documentation = "https://docs.rs/switchyard-llm-client"
+keywords = ["llm", "client", "openai", "anthropic"]
+publish = ["crates-io"]
 
 [dependencies]
+switchyard-libsy.workspace = true
 switchyard-protocol.workspace = true
 switchyard-translation.workspace = true
 reqwest.workspace = true
 async-trait.workspace = true
+futures.workspace = true
 futures-util.workspace = true
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+parking_lot.workspace = true
+http.workspace = true
 httpdate.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
 
 [dev-dependencies]
-futures.workspace = true
+# SDK + in-memory exporter to assert what the observability layer records.
+opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
+thiserror.workspace = true
+tracing-subscriber.workspace = true
 wiremock = "0.6"

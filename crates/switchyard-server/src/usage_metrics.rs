@@ -52,16 +52,22 @@ pub(crate) fn observe(
             let wrapped = async_stream::stream! {
                 let mut latest_usage = None;
                 while let Some(item) = stream.next().await {
-                    let failed = matches!(
-                        &item,
-                        Err(_)
-                            | Ok(
+                    let failed = match &item {
+                        Err(_) => true,
+                        Ok(event) => event.normalized().iter().any(|chunk| {
+                            matches!(
+                                chunk,
                                 LlmResponseChunk::StreamError { .. }
                                     | LlmResponseChunk::DecodeError { .. }
                             )
-                    );
-                    if let Ok(LlmResponseChunk::Usage(usage)) = &item {
-                        latest_usage = Some(usage.clone());
+                        }),
+                    };
+                    if let Ok(event) = &item {
+                        for chunk in event.normalized() {
+                            if let LlmResponseChunk::Usage(usage) = chunk {
+                                latest_usage = Some(usage.clone());
+                            }
+                        }
                     }
                     if failed {
                         record_stream_error(&stats, &model, tier.as_deref());

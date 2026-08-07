@@ -19,7 +19,7 @@ use crate::algorithms::fall_through::{FallThrough, FallThroughDecision};
 use crate::core::algorithm::{Algorithm, Driver, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Request, Response, RoutedLlmClient};
+use switchyard_protocol::{Context, Request, Response};
 
 /// Compatibility name for the decision produced by [`Random`].
 pub type RandomDecision = FallThroughDecision;
@@ -162,10 +162,6 @@ impl Algorithm for Random {
         "random"
     }
 
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.inner.count_tokens_client()
-    }
-
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,
@@ -181,30 +177,13 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use switchyard_protocol::{Metadata, completion_text, text_request, text_response};
+    use switchyard_protocol::{Metadata, completion_text, text_request};
 
     use crate::DriverError;
     use crate::algorithms::util::affinity::AffinityRouter;
     use crate::core::algorithm::LlmTarget;
-    use switchyard_protocol::{Decision, LlmResponse, Request, RoutedLlmClient, Signals};
-
-    /// Echoes the selected target so tests can inspect which target was called.
-    struct EchoClient;
-
-    #[async_trait]
-    impl RoutedLlmClient for EchoClient {
-        async fn call(
-            &self,
-            _ctx: Context,
-            _request: Request,
-            decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
-            Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(None, decision.selected_model())),
-                metadata: None,
-            })
-        }
-    }
+    use crate::core::testing::{echo, test_drive};
+    use switchyard_protocol::{Request, Signals};
 
     fn request() -> Request {
         Request {
@@ -229,13 +208,11 @@ mod tests {
             .iter()
             .map(|name| LlmTarget {
                 semantic_name: (*name).to_string(),
-                llm_client: Some(Arc::new(EchoClient)),
             })
             .collect();
         LlmTargetSet::new(targets)
     }
 
-    /// Builds a random router whose targets all share an echo client.
     fn algorithm(names: &[&str], weights: Option<Vec<f64>>, seed: Option<u64>) -> Result<Random> {
         Random::new(target_set(names), weights, seed)
     }
@@ -247,7 +224,8 @@ mod tests {
     async fn selected_models(algorithm: Arc<dyn Algorithm>, count: usize) -> Result<Vec<String>> {
         let mut selected = Vec::with_capacity(count);
         for _ in 0..count {
-            let (_, response) = algorithm.clone().run(Context::default(), request()).await?;
+            let (_, response) =
+                test_drive(algorithm.clone(), Context::default(), request(), echo()).await?;
             selected.push(
                 response
                     .llm_response
@@ -262,7 +240,8 @@ mod tests {
     #[tokio::test]
     async fn single_target_is_always_selected_and_called() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"])?;
-        let (trace, response) = algorithm.run(Context::default(), request()).await?;
+        let (trace, response) =
+            test_drive(algorithm, Context::default(), request(), echo()).await?;
 
         assert_eq!(
             response
@@ -283,7 +262,8 @@ mod tests {
         let algorithm = shared_algorithm(&names)?;
 
         for _ in 0..50 {
-            let (trace, response) = algorithm.clone().run(Context::default(), request()).await?;
+            let (trace, response) =
+                test_drive(algorithm.clone(), Context::default(), request(), echo()).await?;
             let selected = response
                 .llm_response
                 .as_agg()
@@ -304,7 +284,8 @@ mod tests {
         let mut seen = HashSet::new();
 
         for _ in 0..100 {
-            let (_, response) = algorithm.clone().run(Context::default(), request()).await?;
+            let (_, response) =
+                test_drive(algorithm.clone(), Context::default(), request(), echo()).await?;
             seen.insert(
                 response
                     .llm_response
@@ -368,10 +349,13 @@ mod tests {
                 .with_classifier(random),
         );
 
-        let (_, first) = algorithm
-            .clone()
-            .run(Context::default(), request_for_session("session-1"))
-            .await?;
+        let (_, first) = test_drive(
+            algorithm.clone(),
+            Context::default(),
+            request_for_session("session-1"),
+            echo(),
+        )
+        .await?;
         let selected = first
             .llm_response
             .as_agg()
@@ -390,9 +374,13 @@ mod tests {
             Some(selected.to_string())
         );
 
-        let (_, second) = algorithm
-            .run(Context::default(), request_for_session("session-1"))
-            .await?;
+        let (_, second) = test_drive(
+            algorithm,
+            Context::default(),
+            request_for_session("session-1"),
+            echo(),
+        )
+        .await?;
         assert_eq!(
             second
                 .llm_response
@@ -444,7 +432,7 @@ mod tests {
     #[tokio::test]
     async fn decision_is_inspectable_and_downcasts() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"])?;
-        let (trace, _) = algorithm.run(Context::default(), request()).await?;
+        let (trace, _) = test_drive(algorithm, Context::default(), request(), echo()).await?;
         let decision = &trace[0];
 
         assert_eq!(decision.selected_model(), "only/model");

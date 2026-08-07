@@ -19,7 +19,7 @@ serde_json = "1"
 | Conversation | [`LlmRequest`], [`Message`], [`InstructionBlock`], [`ContentBlock`] |
 | Tools | [`ToolDefinition`], [`ToolChoice`], [`ToolCall`], [`ToolResult`] |
 | Response | [`AggLlmResponse`], [`ResponseOutput`], [`Usage`], [`StopReason`] |
-| Streaming | [`LlmResponse`], [`LlmResponseChunk`], [`LlmResponseStream`] |
+| Streaming | [`LlmResponse`], [`LlmResponseStream`], [`LlmResponseStreamEvent`], [`LlmResponseChunk`], [`ProviderStreamEvent`] |
 | Envelope | [`Context`], [`Request`], [`Response`], [`Metadata`] |
 | Routing I/O | [`Decision`], [`RoutedLlmClient`], [`LlmClientError`] |
 | Wire identity | [`WireFormat`], [`FormatId`] |
@@ -102,7 +102,9 @@ assert_eq!(request.llm_request.tools[0].name, "lookup_metric");
 ## Response forms
 
 [`LlmResponse`] contains either a completed [`AggLlmResponse`] or a
-single-consumption [`LlmResponseStream`] of [`LlmResponseChunk`] values. See
+single-consumption [`LlmResponseStream`] of [`LlmResponseStreamEvent`] values.
+Each event carries provider-neutral [`LlmResponseChunk`] values and may retain
+one opaque [`ProviderStreamEvent`] for same-format parsed-JSON-value replay. See
 [`LlmResponse::into_agg`] for aggregation and [`PreservationMetadata`],
 [`Usage`], and [`Metadata`] for the data retained around a response.
 

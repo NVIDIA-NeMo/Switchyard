@@ -122,6 +122,60 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
     Ok(())
 }
 
+// Verifies Responses reasoning and its following message remain one semantic assistant output.
+#[test]
+fn responses_reasoning_and_message_preserve_the_final_answer() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp_test",
+        "object": "response",
+        "model": "gpt-reasoning",
+        "status": "completed",
+        "output": [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "private reasoning"}]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Visible answer"}]
+            }
+        ]
+    });
+
+    let anthropic = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(
+        anthropic["content"],
+        json!([
+            {"type": "thinking", "thinking": "private reasoning", "signature": ""},
+            {"type": "text", "text": "Visible answer"}
+        ])
+    );
+
+    let chat = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(chat["choices"][0]["message"]["content"], "Visible answer");
+    assert_eq!(
+        chat["choices"][0]["message"]["reasoning_content"],
+        "private reasoning"
+    );
+    Ok(())
+}
+
 // Verifies OpenAI cache usage survives the Chat-to-Responses translation used by Codex.
 #[test]
 fn openai_chat_cache_usage_translates_to_responses_usage_details() -> TestResult {
@@ -480,5 +534,69 @@ fn openai_chat_cache_only_usage_still_emits_reasoning_details() -> TestResult {
         output["usage"]["output_tokens_details"],
         json!({"reasoning_tokens": 0})
     );
+    Ok(())
+}
+
+// Verifies a token-limit stop is reported as an incomplete Responses result.
+#[test]
+fn openai_chat_length_finish_translates_to_incomplete_responses_status() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Half an ans"},
+            "finish_reason": "length"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["status"], "incomplete");
+    assert_eq!(
+        output["incomplete_details"],
+        json!({"reason": "max_output_tokens"})
+    );
+    assert_eq!(output["output"][0]["status"], "incomplete");
+    Ok(())
+}
+
+// Verifies a truncated Responses source keeps its stop reason when re-encoded.
+#[test]
+fn incomplete_responses_source_survives_translation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp_1",
+        "object": "response",
+        "model": "gpt-4o",
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Half an ans"}]
+        }],
+        "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["choices"][0]["finish_reason"], "length");
     Ok(())
 }

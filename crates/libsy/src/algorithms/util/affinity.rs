@@ -24,25 +24,13 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use switchyard_protocol::{Request, Role};
 
-use crate::core::algorithm::Driver;
+use crate::core::algorithm::{Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 
 /// Upper bound on retained assignments, keeping the process-local map from growing
 /// without limit; the oldest entry is evicted once the bound is reached.
 const MAX_ASSIGNMENTS: usize = 4096;
-
-/// The stable identity a model assignment is retained against.
-///
-/// A sub-agent request is keyed by `session + agent` and a root request by session alone,
-/// so a sub-agent's assignment is scoped within — but distinct from — its session's.
-#[derive(Clone, Hash, PartialEq, Eq)]
-enum AffinityKey {
-    /// One model per session, for root-agent traffic.
-    Session(String),
-    /// One model per identified child agent within a session.
-    Subagent { session: String, agent: String },
-}
 
 /// Retains a model per request identity and forces it on later matching requests.
 ///
@@ -66,7 +54,7 @@ pub struct AffinityRouter {
     ///
     /// Held on the instance so the two roles share one process-local map through a
     /// single registered [`Arc`](std::sync::Arc); bounded by [`MAX_ASSIGNMENTS`].
-    assignments: Mutex<HashMap<AffinityKey, String>>,
+    assignments: Mutex<HashMap<RoutingIdentity, String>>,
 }
 
 impl AffinityRouter {
@@ -106,19 +94,11 @@ impl AffinityRouter {
     }
 
     /// Derives the stable identity this router should retain for `request`.
-    fn affinity_key(&self, request: &Request) -> Option<AffinityKey> {
-        if let Some(metadata) = request.metadata.as_ref()
-            && let Some(session) = metadata.session_id.clone()
-        {
-            return if metadata.is_subagent {
-                metadata
-                    .agent_id
-                    .clone()
-                    .map(|agent| AffinityKey::Subagent { session, agent })
-            } else if self.subagents_only {
-                None
-            } else {
-                Some(AffinityKey::Session(session))
+    fn affinity_key(&self, request: &Request) -> Option<RoutingIdentity> {
+        if let Some(identity) = RoutingIdentity::from_request(request) {
+            return match identity {
+                RoutingIdentity::Session(_) if self.subagents_only => None,
+                identity => Some(identity),
             };
         }
 
@@ -131,7 +111,7 @@ impl AffinityRouter {
             .then(|| {
                 first_user_message_hash(request).map(|hash| {
                     tracing::debug!(affinity_key = %hash, "affinity using message hash fallback");
-                    AffinityKey::Session(hash)
+                    RoutingIdentity::Session(hash)
                 })
             })
             .flatten()
@@ -177,6 +157,19 @@ impl<S> Classifier<S> for AffinityRouter
 where
     S: Send + 'static,
 {
+    fn target_unavailable(&self, request: &Request, target: &str) {
+        let Some(key) = self.affinity_key(request) else {
+            return;
+        };
+        let mut assignments = self.assignments.lock();
+        if assignments
+            .get(&key)
+            .is_some_and(|assigned| assigned == target)
+        {
+            assignments.remove(&key);
+        }
+    }
+
     async fn score(
         &self,
         _state: &mut S,
@@ -201,7 +194,7 @@ where
 }
 
 /// Evicts one arbitrary assignment when the map has reached [`MAX_ASSIGNMENTS`].
-fn evict_if_full(assignments: &mut HashMap<AffinityKey, String>) {
+fn evict_if_full(assignments: &mut HashMap<RoutingIdentity, String>) {
     if assignments.len() >= MAX_ASSIGNMENTS
         && let Some(evicted) = assignments.keys().next().cloned()
     {
