@@ -256,10 +256,10 @@ tokio = { version = "1", features = ["macros", "rt"] }
 
 | Type | Purpose |
 |---|---|
-| `Passthrough` | Always call one configured target. |
-| `Random` | Select among any number of targets, uniform or weighted. |
 | `LlmTaskClassifier` | Ask a judge model to choose an efficient or capable target. |
 | `StageRouter` | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
+| `Passthrough` | Always call one configured target. |
+| `Random` | Select among any number of targets, uniform or weighted. |
 
 These are the same strategies the server exposes as route types, so a deployment
 can move between the server and library paths without changing routing

@@ -114,10 +114,10 @@ example, or the [`switchyard-libsy`](crates/libsy/README.md) crate docs.
 
 | Strategy | Use it when | Route `type` |
 |---|---|---|
-| [Random](docs/routing_algorithms/random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
 | [LLM Classifier](docs/routing_algorithms/llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
 | [Stage Router](docs/routing_algorithms/stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
 | [Escalation Router](docs/routing_algorithms/escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `llm_classifier` with `escalation` |
+| [Random](docs/routing_algorithms/random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
 
 A `passthrough` route registers one target under one model ID with no routing
 decision. See the [Routing Overview](docs/routing_algorithms/overview.md) for
