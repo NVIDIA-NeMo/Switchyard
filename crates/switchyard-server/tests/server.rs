@@ -90,6 +90,14 @@ async fn upstream_chat(
     }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
+    let prompt = body["messages"][0]["content"].as_str().unwrap_or("");
+    if (model == "model/weak" && prompt == "unavailable") || prompt == "all-unavailable" {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": {"message": "upstream is unavailable"}})),
+        )
+            .into_response();
+    }
     if model == "model/weak" && body["messages"][0]["content"] == "overflow" {
         return (
             StatusCode::BAD_REQUEST,
@@ -261,6 +269,10 @@ async fn stats_exposes_the_exact_empty_schema_and_no_legacy_alias() -> TestResul
                 "avg_ms": 0.0,
                 "p50_ms": 0.0,
                 "p99_ms": 0.0
+            },
+            "routing_fallbacks": {
+                "context_window": 0,
+                "unavailable": 0
             },
             "classifier": {
                 "total_requests": 0,
@@ -525,9 +537,8 @@ fn load_test_config(toml: &str) -> TestResult<ServerState> {
     Ok(load_server_state(config.path())?)
 }
 
-/// A `random` route that always selects `first` (weight 1 vs 0), so a test can drive the
-/// overflow fallback from `first` to `second` deterministically.
-fn overflow_fallback_state(base_url: &str) -> TestResult<ServerState> {
+/// A `random` route that selects `first` before any request-local fallback.
+fn fallback_state(base_url: &str) -> TestResult<ServerState> {
     load_test_config(&format!(
         r#"
 schema_version = 1
@@ -1438,7 +1449,7 @@ async fn routing_log_exposes_session_stats() -> TestResult {
 #[tokio::test]
 async fn overflow_history_is_scoped_to_agent_and_session_lifetime() -> TestResult {
     let upstream = MockUpstream::start().await?;
-    let state = overflow_fallback_state(&upstream.base_url)?;
+    let state = fallback_state(&upstream.base_url)?;
     let app = build_switchyard_router(state);
     let child_a = [
         ("x-switchyard-session-id", "shared-session"),
@@ -1520,6 +1531,103 @@ async fn overflow_history_is_scoped_to_agent_and_session_lifetime() -> TestResul
             expected_calls
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let log_path = temp_dir.path().join("routing.jsonl");
+    let state = fallback_state(&upstream.base_url)?.with_routing_log(&log_path)?;
+    let app = build_switchyard_router(state);
+    let cases = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "unavailable"}]
+            }),
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "unavailable"}]
+            }),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "unavailable"}),
+        ),
+    ];
+
+    for (path, body) in cases {
+        let previous_call_count = upstream.calls.lock().await.len();
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some("model/strong")
+        );
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-rationale")
+                .and_then(|value| value.to_str().ok()),
+            Some("model/weak was unavailable; fell back to model/strong")
+        );
+        let calls = upstream.calls.lock().await;
+        assert_eq!(
+            calls[previous_call_count..]
+                .iter()
+                .map(|call| call["model"].as_str().unwrap_or(""))
+                .collect::<Vec<_>>(),
+            ["model/weak", "model/strong"]
+        );
+    }
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["routing_fallbacks"]["unavailable"], 3);
+    assert_eq!(stats["routing_fallbacks"]["context_window"], 0);
+
+    let records = std::fs::read_to_string(&log_path)?;
+    let records = records
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(records.len(), 3);
+    assert!(records.iter().all(|record| {
+        record["model"] == "model/strong" && record["fallback_reason"] == "unavailable"
+    }));
+
+    let previous_call_count = upstream.calls.lock().await.len();
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "all-unavailable"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    let error = response.json()?;
+    assert_eq!(error["error"]["type"], "upstream_error");
+    assert_eq!(error["error"]["code"], "upstream_error");
+    let calls = upstream.calls.lock().await;
+    assert_eq!(
+        calls[previous_call_count..]
+            .iter()
+            .map(|call| call["model"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>(),
+        ["model/weak", "model/strong"]
+    );
     Ok(())
 }
 

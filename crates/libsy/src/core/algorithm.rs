@@ -25,7 +25,8 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
 use switchyard_protocol::{
-    Context, Decision, LlmClientError, Request, Response, RoutedLlmClient, Signals, Usage,
+    Context, Decision, LlmClientError, Request, Response, RoutedLlmClient, RoutingFallbackReason,
+    Signals, Usage,
 };
 
 use super::driver::{DriverRequest, DriverStep, TypeErasedDriver};
@@ -524,15 +525,35 @@ pub(crate) fn exclude_evicted(
     }
 }
 
-/// Calls `target`, falling back to the next eligible target in `targets` whenever one
-/// overflows its context window, until a call succeeds or every target has been tried.
+/// Returns the failed target and routing fallback policy for a terminal client error.
+fn classify_fallback(error: &LibsyError) -> Option<(&str, RoutingFallbackReason)> {
+    let LibsyError::ClientCall { target, source } = error else {
+        return None;
+    };
+    let reason = match source {
+        LlmClientError::ContextWindowExceeded { .. } => RoutingFallbackReason::ContextWindow,
+        LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => {
+            RoutingFallbackReason::Unavailable
+        }
+        LlmClientError::UpstreamHttp { status, .. }
+            if matches!(*status, 403 | 408 | 429) || (500..=599).contains(status) =>
+        {
+            RoutingFallbackReason::Unavailable
+        }
+        _ => return None,
+    };
+    Some((target, reason))
+}
+
+/// Calls `target`, falling back to the next eligible target after a route-level failure,
+/// until a call succeeds or every target has been tried.
 ///
 /// Routing is deliberately not re-run: the fallback replaces the target in place, so the
 /// caller's request-side work and retained state still see exactly one turn.
-/// `fallback_decision` builds the [`Decision`] published for a `from -> to` hop, and each
-/// overflow is recorded for `identity` so later turns skip that target outright.
+/// `fallback_decision` builds the [`Decision`] published for a `from -> to` hop. Context
+/// overflows are recorded for `identity`; unavailable targets remain request-local.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn call_llm_with_overflow_fallback(
+pub(crate) async fn call_llm_with_fallback(
     mut ctx: Context,
     driver: &Driver,
     targets: &LlmTargetSet,
@@ -541,30 +562,30 @@ pub(crate) async fn call_llm_with_overflow_fallback(
     request: Request,
     identity: Option<&RoutingIdentity>,
     evictions: &SessionEvictions,
-    fallback_decision: impl Fn(&LlmTarget, &LlmTarget) -> Arc<dyn Decision>,
+    target_unavailable: impl Fn(&Request, &str),
+    fallback_decision: impl Fn(&LlmTarget, &LlmTarget, RoutingFallbackReason) -> Arc<dyn Decision>,
 ) -> Result<Response> {
     loop {
         let result = driver
             .call_llm_target(ctx.clone(), &target, request.clone(), decision.clone())
             .await;
         let Err(error) = result else { return result };
-        let LibsyError::ClientCall {
-            target: failed,
-            source: LlmClientError::ContextWindowExceeded { .. },
-        } = &error
-        else {
+        let Some((failed, reason)) = classify_fallback(&error) else {
             return Err(error);
         };
         // A target already excluded means the pool is spent; surface the client error
-        // so the caller still sees a context overflow rather than an internal failure.
+        // so the caller still sees the concrete upstream failure.
         if !ctx.exclude_target(failed) {
             return Err(error);
         }
-        evictions.record(identity, failed);
+        match reason {
+            RoutingFallbackReason::ContextWindow => evictions.record(identity, failed),
+            RoutingFallbackReason::Unavailable => target_unavailable(&request, failed),
+        }
         let Ok(next) = targets.resolve_target(&target.semantic_name, &ctx) else {
             return Err(error);
         };
-        decision = fallback_decision(&target, &next);
+        decision = fallback_decision(&target, &next, reason);
         target = next;
         driver.info(ctx.clone(), decision.clone()).await?;
     }
@@ -823,6 +844,61 @@ mod tests {
 
     fn test_error(message: &'static str) -> LibsyError {
         LibsyError::external("test", TestError(message))
+    }
+
+    fn classified_client_error(source: LlmClientError) -> Option<RoutingFallbackReason> {
+        classify_fallback(&LibsyError::client_call("target", source)).map(|(_, reason)| reason)
+    }
+
+    #[test]
+    fn route_fallback_only_accepts_context_and_unavailable_failures() {
+        assert_eq!(
+            classified_client_error(LlmClientError::ContextWindowExceeded {
+                model: "target".to_string(),
+                message: "too long".to_string(),
+            }),
+            Some(RoutingFallbackReason::ContextWindow)
+        );
+        for source in [
+            LlmClientError::Transport {
+                source: Box::new(std::io::Error::other("connection failed")),
+            },
+            LlmClientError::Timeout {
+                source: Box::new(std::io::Error::other("request timed out")),
+            },
+        ] {
+            assert_eq!(
+                classified_client_error(source),
+                Some(RoutingFallbackReason::Unavailable)
+            );
+        }
+        for (status, expected) in [
+            (400, None),
+            (401, None),
+            (403, Some(RoutingFallbackReason::Unavailable)),
+            (404, None),
+            (408, Some(RoutingFallbackReason::Unavailable)),
+            (409, None),
+            (429, Some(RoutingFallbackReason::Unavailable)),
+            (499, None),
+            (500, Some(RoutingFallbackReason::Unavailable)),
+            (599, Some(RoutingFallbackReason::Unavailable)),
+            (600, None),
+        ] {
+            assert_eq!(
+                classified_client_error(LlmClientError::UpstreamHttp {
+                    status,
+                    body: "failed".to_string(),
+                }),
+                expected
+            );
+        }
+        assert_eq!(
+            classified_client_error(LlmClientError::InvalidResponse {
+                source: Box::new(std::io::Error::other("invalid response")),
+            }),
+            None
+        );
     }
 
     /// Mock client that echoes back the target name it was called with.

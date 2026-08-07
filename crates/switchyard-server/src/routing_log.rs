@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
-use switchyard_protocol::Usage;
+use switchyard_protocol::{RoutingFallbackReason, Usage};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
@@ -56,6 +56,7 @@ impl RoutingLog {
             session_id: context.session_id.map(Cow::Owned),
             model: model.into(),
             tier: tier.unwrap_or("").into(),
+            fallback_reason: context.fallback_reason.map(Cow::Borrowed),
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
@@ -95,12 +96,13 @@ pub(crate) fn snapshot(
     Ok((snapshot.total_calls > 0).then_some(snapshot))
 }
 
-/// Request headers retained until terminal usage is available.
+/// Request fields retained until terminal usage and routing are available.
 #[derive(Clone)]
 pub(crate) struct RoutingLogContext {
     task: Option<String>,
     trial_id: Option<String>,
     session_id: Option<String>,
+    fallback_reason: Option<&'static str>,
 }
 
 impl RoutingLogContext {
@@ -109,7 +111,13 @@ impl RoutingLogContext {
             task: nonempty_header(headers, TASK_HEADER).map(|s| s.to_string()),
             trial_id: nonempty_header(headers, TRIAL_ID_HEADER).map(|s| s.to_string()),
             session_id: nonempty_header(headers, SESSION_ID_HEADER).map(|s| s.to_string()),
+            fallback_reason: None,
         }
+    }
+
+    pub(crate) fn with_fallback_reason(mut self, reason: Option<RoutingFallbackReason>) -> Self {
+        self.fallback_reason = reason.map(RoutingFallbackReason::as_str);
+        self
     }
 }
 
@@ -128,6 +136,8 @@ struct RoutingRecord<'a> {
     session_id: Option<Cow<'a, str>>,
     model: Cow<'a, str>,
     tier: Cow<'a, str>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    fallback_reason: Option<Cow<'a, str>>,
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,

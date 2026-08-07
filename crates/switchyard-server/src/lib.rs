@@ -689,12 +689,20 @@ async fn handle_llm_request(
         Ok(result) => result,
         Err(error) => return algorithm_error(error),
     };
+    for reason in trace
+        .iter()
+        .filter_map(|decision| decision.fallback_reason())
+    {
+        state.stats.record_routing_fallback(reason);
+    }
 
     // Metrics, response body, and routing header all read the same decision, so
     // the model they name can never disagree. An empty trace leaves the body with
     // the id the upstream reported.
     let decision = trace.last();
     let response = if let Some(decision) = decision {
+        let routing_log_context = routing_log_context
+            .map(|context| context.with_fallback_reason(decision.fallback_reason()));
         let cache_eligible = cache_probe
             .as_ref()
             .map(|probe| {

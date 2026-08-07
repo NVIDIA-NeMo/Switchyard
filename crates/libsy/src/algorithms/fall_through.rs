@@ -15,6 +15,7 @@
 //!
 //! Every composition retains one thing regardless: a target that overflows its context window is
 //! remembered for the rest of its session and skipped on later turns.
+//! An unavailable target is skipped only for the current request.
 
 use std::{
     collections::HashMap,
@@ -32,7 +33,7 @@ use crate::core::algorithm::{
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Decision, Request, Response};
+use switchyard_protocol::{Context, Decision, Request, Response, RoutingFallbackReason};
 
 struct SessionState<S> {
     state: Arc<AsyncMutex<S>>,
@@ -57,6 +58,7 @@ pub struct FallThroughDecision {
     /// Human-readable explanation of the selection.
     pub reasoning: String,
     tier: Option<&'static str>,
+    fallback_reason: Option<RoutingFallbackReason>,
 }
 
 impl Decision for FallThroughDecision {
@@ -66,6 +68,10 @@ impl Decision for FallThroughDecision {
 
     fn routing_tier(&self) -> Option<&str> {
         self.tier
+    }
+
+    fn fallback_reason(&self) -> Option<RoutingFallbackReason> {
+        self.fallback_reason
     }
 
     fn reasoning(&self) -> Option<&str> {
@@ -237,7 +243,7 @@ where
             identity.as_ref(),
         );
         let session_state = self.session_state(&request);
-        let (target, decision, served) = match session_state {
+        let (target, decision, served, deciding) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
                 self.route(&mut state, &ctx, &driver, &mut request).await?
@@ -256,7 +262,7 @@ where
         match served {
             Some(response) => Ok(response),
             None => {
-                algorithm::call_llm_with_overflow_fallback(
+                algorithm::call_llm_with_fallback(
                     ctx,
                     &driver,
                     &self.targets,
@@ -265,7 +271,12 @@ where
                     request,
                     identity.as_ref(),
                     &self.session_evictions,
-                    |from, to| self.fallback_decision(from, to),
+                    |request, target| {
+                        for classifier in &self.classifiers {
+                            classifier.target_unavailable(request, target);
+                        }
+                    },
+                    |from, to, reason| self.fallback_decision(deciding.as_ref(), from, to, reason),
                 )
                 .await
             }
@@ -280,18 +291,26 @@ where
         self.session_evictions.remove_session(session);
     }
 
-    /// The decision published when an overflow sends the request to a different target.
-    fn fallback_decision(&self, from: &LlmTarget, to: &LlmTarget) -> Arc<dyn Decision> {
+    /// The decision published when a route-level failure selects a different target.
+    fn fallback_decision(
+        &self,
+        deciding: &dyn Classifier<S>,
+        from: &LlmTarget,
+        to: &LlmTarget,
+        reason: RoutingFallbackReason,
+    ) -> Arc<dyn Decision> {
+        let failure = match reason {
+            RoutingFallbackReason::ContextWindow => "exceeded its context window",
+            RoutingFallbackReason::Unavailable => "was unavailable",
+        };
         Arc::new(FallThroughDecision {
             selected_model: to.semantic_name.clone(),
             reasoning: format!(
-                "{} exceeded its context window; fell back to {}",
-                from.semantic_name, to.semantic_name
+                "{} {failure}; fell back to {}",
+                from.semantic_name, to.semantic_name,
             ),
-            tier: self
-                .classifiers
-                .iter()
-                .find_map(|c| c.routing_tier(&to.semantic_name)),
+            tier: deciding.routing_tier(&to.semantic_name),
+            fallback_reason: Some(reason),
         })
     }
 
@@ -315,7 +334,12 @@ where
         ctx: &Context,
         driver: &Driver,
         request: &mut Request,
-    ) -> Result<(LlmTarget, Arc<dyn Decision>, Option<Response>)> {
+    ) -> Result<(
+        LlmTarget,
+        Arc<dyn Decision>,
+        Option<Response>,
+        Arc<dyn Classifier<S>>,
+    )> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
         for processor in &self.processors {
             processor.process(state, Event::Request(request)).await?;
@@ -323,21 +347,17 @@ where
 
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
         //    per-request driver is offered to each — driver-backed classifiers use it.
-        let mut maybe_score: Option<Score> = None;
-        let mut deciding: Option<&Arc<dyn Classifier<S>>> = None;
-        let mut served: Option<Response> = None;
+        let mut routed = None;
         for classifier in &self.classifiers {
             let (scores, response) = classifier.score(state, request, Some(driver)).await?;
-            maybe_score = scores.argmax(false)?;
-            if maybe_score.is_some() {
-                deciding = Some(classifier);
+            if let Some(score) = scores.argmax(false)? {
                 // Only the deciding classifier's response answers the turn; an abstaining
                 // classifier selected nothing for it to be the answer to.
-                served = response;
+                routed = Some((score, Arc::clone(classifier), response));
                 break;
             }
         }
-        let Some(score) = maybe_score else {
+        let Some((score, deciding, served)) = routed else {
             return Err(LibsyError::AlgorithmError {
                 message: "every classifier abstained".to_string(),
             });
@@ -357,7 +377,8 @@ where
         let decision: Arc<dyn Decision> = Arc::new(FallThroughDecision {
             selected_model: target.semantic_name.clone(),
             reasoning,
-            tier: deciding.and_then(|c| c.routing_tier(&target.semantic_name)),
+            tier: deciding.routing_tier(&target.semantic_name),
+            fallback_reason: None,
         });
         driver.info(ctx.clone(), decision.clone()).await?;
 
@@ -371,7 +392,7 @@ where
             processor.process(state, event).await?;
         }
 
-        Ok((target, decision, served))
+        Ok((target, decision, served, deciding))
     }
 }
 
@@ -440,7 +461,7 @@ mod tests {
     use super::*;
     use crate::algorithms::util::prompts;
     use crate::core::classifier::Classification;
-    use crate::{SystemPromptProcessor, TargetPrompts};
+    use crate::{AffinityRouter, SystemPromptProcessor, TargetPrompts};
 
     use switchyard_protocol::{
         LlmClientError, LlmRequest, LlmResponse, Message, Metadata, Role, RoutedLlmClient,
@@ -797,6 +818,45 @@ mod tests {
         calls: Option<Arc<Mutex<Vec<String>>>>,
     }
 
+    /// Returns 503 for `weak` and records every routed call.
+    struct UnavailableClient(Arc<Mutex<Vec<String>>>);
+
+    #[async_trait]
+    impl RoutedLlmClient for UnavailableClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            _request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, LlmClientError> {
+            let model = decision.selected_model().to_string();
+            self.0.lock().push(model.clone());
+            if model == "weak" {
+                return Err(LlmClientError::UpstreamHttp {
+                    status: 503,
+                    body: "unavailable".to_string(),
+                });
+            }
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(None, model)),
+                metadata: None,
+            })
+        }
+    }
+
+    fn unavailable_targets(calls: Arc<Mutex<Vec<String>>>) -> LlmTargetSet {
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(UnavailableClient(calls));
+        LlmTargetSet::new(
+            ["weak", "strong"]
+                .into_iter()
+                .map(|name| LlmTarget {
+                    semantic_name: name.to_string(),
+                    llm_client: Some(Arc::clone(&client)),
+                })
+                .collect(),
+        )
+    }
+
     #[async_trait]
     impl RoutedLlmClient for OverflowClient {
         async fn call(
@@ -927,6 +987,29 @@ mod tests {
                 .with_classifier(fixed(vec![score("weak", 0.9)]));
         let (model, _) = run(router).await?;
         assert_eq!(model, "strong");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unavailable_target_clears_matching_affinity_before_the_next_turn() -> Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let affinity = Arc::new(AffinityRouter::new());
+        let router = Arc::new(
+            FallThrough::<()>::new(unavailable_targets(Arc::clone(&calls)))
+                .with_processor(affinity.clone())
+                .with_classifier(affinity)
+                .with_classifier(Arc::new(DefaultTarget::new("weak"))),
+        );
+
+        for _ in 0..2 {
+            let (model, trace) = run_turn(&router).await?;
+            assert_eq!(model, "strong");
+            assert_eq!(
+                trace.last().and_then(|decision| decision.fallback_reason()),
+                Some(RoutingFallbackReason::Unavailable)
+            );
+        }
+        assert_eq!(&*calls.lock(), &["weak", "strong", "weak", "strong"]);
         Ok(())
     }
 
