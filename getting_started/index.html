@@ -549,11 +549,50 @@
   
 </li>
         
-          <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#library-path" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Next steps
+        Library Path
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Library Path">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#add-the-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Add the dependencies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#choose-an-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose an algorithm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#drive-the-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drive the algorithm
       
     </span>
   </a>
@@ -562,6 +601,17 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next steps
+      
+    </span>
+  </a>
   
 </li>
       
@@ -1326,11 +1376,50 @@
   
 </li>
         
-          <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#library-path" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Next steps
+        Library Path
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Library Path">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#add-the-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Add the dependencies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#choose-an-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose an algorithm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#drive-the-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drive the algorithm
       
     </span>
   </a>
@@ -1339,6 +1428,17 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next steps
+      
+    </span>
+  </a>
   
 </li>
       
@@ -1363,12 +1463,14 @@
 
 
 <h1 id="getting-started-with-switchyard">Getting Started with Switchyard<a class="headerlink" href="#getting-started-with-switchyard" title="Permanent link">&para;</a></h1>
-<p>Switchyard has two native Rust execution paths:</p>
+<p>Switchyard has three native Rust execution paths:</p>
 <ul>
 <li><strong>Launcher path:</strong> install the Python-distributed CLI and launch Claude Code,
   Codex, or OpenClaw through the packaged Rust server binding.</li>
 <li><strong>Server path:</strong> build and run the standalone Rust server for API clients and
   custom deployments.</li>
+<li><strong>Library path:</strong> embed the routing algorithms directly in your own Rust
+  application with <code>switchyard-libsy</code>.</li>
 </ul>
 <h2 id="launcher-path">Launcher Path<a class="headerlink" href="#launcher-path" title="Permanent link">&para;</a></h2>
 <p>Use this path when you want Switchyard to start and configure a supported coding
@@ -1527,7 +1629,7 @@ request should use the weak or strong target. The Rust server also supports:</p>
 <code>routes.smart</code>, is a local configuration name; each route's <code>id</code> is exposed as a
 model on <code>GET /v1/models</code>.</p>
 <p>See <a href="../routing_algorithms/overview/">Routing Overview</a> to compare strategies,
-and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/74b8990543935670763331c64df293c85be93be7/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
+and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/981ca62036391c7b8025c050643b55e08ce09e7d/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
 the complete TOML schema, route options, TLS, and metrics.</p>
 <h3 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h3>
 <p><strong>No API key / auth error</strong></p>
@@ -1545,14 +1647,65 @@ release attribution. No request or response content is included. To disable:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_TELEMETRY_OPT_OUT</span><span class="o">=</span><span class="m">1</span>
 </span></code></pre></div>
 <hr />
-<h3 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h3>
+<h2 id="library-path">Library Path<a class="headerlink" href="#library-path" title="Permanent link">&para;</a></h2>
+<p>Use this path when you want routing inside your own Rust application rather than
+behind a proxy. <code>switchyard-libsy</code> never calls a model itself: an algorithm
+picks a target and hands the model call back to you.</p>
+<h3 id="add-the-dependencies">Add the dependencies<a class="headerlink" href="#add-the-dependencies" title="Permanent link">&para;</a></h3>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">[dependencies]</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="n">async-trait</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;0.1&quot;</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="n">futures</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;0.3&quot;</span>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="n">switchyard-libsy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="n">switchyard-protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="n">tokio</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;macros&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;rt&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+</span></code></pre></div>
+<h3 id="choose-an-algorithm">Choose an algorithm<a class="headerlink" href="#choose-an-algorithm" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LlmTaskClassifier</code></td>
+<td>Ask a judge model to choose an efficient or capable target.</td>
+</tr>
+<tr>
+<td><code>StageRouter</code></td>
+<td>Route from signals already in the conversation, such as tool results and errors, with an optional judge fallback.</td>
+</tr>
+<tr>
+<td><code>LlmTaskClassifier</code> with escalation</td>
+<td>Every turn runs on the efficient target first, and a judge reads that answer to decide whether to send the same request to the capable target.</td>
+</tr>
+<tr>
+<td><code>Random</code></td>
+<td>Select among any number of targets, uniform or weighted.</td>
+</tr>
+</tbody>
+</table>
+<p>These are the same strategies the server exposes as route types, so a deployment
+can move between the server and library paths without changing routing
+behaviour.</p>
+<h3 id="drive-the-algorithm">Drive the algorithm<a class="headerlink" href="#drive-the-algorithm" title="Permanent link">&para;</a></h3>
+<p>An algorithm yields a stream of steps. Each <code>Step::CallLlm</code> is a model call your
+host performs over its own transport, and the run ends with
+<code>Step::ReturnToAgent</code> carrying the final response. Serving those calls yourself
+is what lets libsy embed in a host that already owns its HTTP stack, retries,
+and credentials.</p>
+<p>For the request, response, and streaming types the steps carry, see
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/981ca62036391c7b8025c050643b55e08ce09e7d/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
+<hr />
+<h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../core_concepts/">Core Concepts</a>: LLM clients, targets, and routes</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/74b8990543935670763331c64df293c85be93be7/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/981ca62036391c7b8025c050643b55e08ce09e7d/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
   routing algorithms, TLS, and metrics</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol
   documentation, crate setup, and API boundaries</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/74b8990543935670763331c64df293c85be93be7/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/981ca62036391c7b8025c050643b55e08ce09e7d/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
   request, response, and stream translation</li>
 </ul>
 
