@@ -1334,8 +1334,8 @@ never latches. Clients supply it with <code>x-switchyard-session-id</code>.</p>
 <code>max_output_tokens</code> key to change the judge's reply budget. Any decline still
 resets the streak to zero.</p>
 <h2 id="run-the-route">Run the route<a class="headerlink" href="#run-the-route" title="Permanent link">&para;</a></h2>
-<p>After building the Rust server, as described in
-<a href="../../getting_started/#build-the-server">Getting Started</a>, export the provider
+<p>After installing the Rust server, as described in
+<a href="../../getting_started/#install-the-server">Getting Started</a>, export the provider
 credential, validate the configuration, and start the binary:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run

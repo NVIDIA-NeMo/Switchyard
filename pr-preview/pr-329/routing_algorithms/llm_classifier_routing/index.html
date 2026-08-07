@@ -1340,7 +1340,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7c7317b22ec13c3c2c5237408664a7707e822dd0/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/aee7ed193d9905666efc6f15701676dd4206d4eb/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1474,7 +1474,7 @@ classification, so the judge call is skipped.</p>
 <code>message_hash_fallback</code> to key requests without session metadata from the first
 user-message text.</p>
 <h2 id="run-the-route">Run the route<a class="headerlink" href="#run-the-route" title="Permanent link">&para;</a></h2>
-<p>After <a href="../../getting_started/#build-the-server">building the Rust server</a>, export
+<p>After <a href="../../getting_started/#install-the-server">installing the Rust server</a>, export
 the provider credential, validate the configuration, and start the release
 binary:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
