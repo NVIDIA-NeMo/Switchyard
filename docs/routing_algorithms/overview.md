@@ -111,8 +111,8 @@ the configured endpoint.
 
 ## Run a deployment
 
-After building the Rust server, as described in
-[Getting Started](../getting_started.md#build-the-server), export the provider
+After installing the Rust server, as described in
+[Getting Started](../getting_started.md#install-the-server), export the provider
 credential, validate the configuration, and start the binary:
 
 ```bash
