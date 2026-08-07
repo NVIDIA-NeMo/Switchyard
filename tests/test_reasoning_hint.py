@@ -18,6 +18,9 @@ from switchyard.lib.processors.reasoning_hint import model_accepts_reasoning_hin
         "azure/anthropic/claude-opus-4-6",
         "anthropic/claude-3-5-sonnet",
         "Bedrock-Claude-Whatever",  # case-insensitive
+        "accounts/fireworks/models/deepseek-v4-flash",
+        "accounts/fireworks/models/deepseek-v4-pro",
+        "accounts/fireworks/models/glm-5p2",
     ],
 )
 def test_claude_family_rejects_hint(model: str) -> None:
