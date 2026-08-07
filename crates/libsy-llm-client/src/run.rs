@@ -178,9 +178,10 @@ async fn serve(
         Err(error) => Err(error),
     }
     .map_err(|source| LibsyError::client_call(target, source));
-    let result = observability::observe_client_call(result);
     let ended = Instant::now();
     let duration = ended - started;
+
+    let result = observability::observe_client_call(result);
     if let Some(observer) = observer {
         observer(RunObservation::LlmCall(LlmCallObservation {
             selected_model: call.get_decision().selected_model().to_string(),
@@ -198,6 +199,7 @@ async fn serve(
     if is_routed && result.is_ok() {
         routed_calls.lock().record(started, ended);
     }
+
     call.respond(result)
 }
 
