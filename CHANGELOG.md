@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **NeMo Relay native plugin** — a dynamically loaded integration that runs
+  libsy's weighted-random and LLM-classifier algorithms in process while
+  Switchyard owns provider HTTP dispatch, credentials, translation, retries,
+  and fallback. Managed calls require NeMo Relay 0.7 or newer and do not depend
+  on `switchyard-server`.
+
 ### Removed
 
 - **Latency-aware router** — the `latency_service` route type and its

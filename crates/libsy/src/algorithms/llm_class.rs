@@ -1284,6 +1284,37 @@ mod tests {
     }
 
     #[test]
+    fn capability_schema_leaves_numeric_bounds_to_local_verdict_validation() -> Result<()> {
+        let response_format: Value =
+            serde_json::from_str(SCHEMA_TEMPLATE).map_err(|error| LibsyError::AlgorithmError {
+                message: format!("capability classifier schema is invalid: {error}"),
+            })?;
+        let p_solve = response_format
+            .pointer("/json_schema/schema/properties/p_solve")
+            .and_then(Value::as_object)
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "capability classifier p_solve schema is missing".to_string(),
+            })?;
+        assert_eq!(
+            p_solve.get("type"),
+            Some(&Value::String("number".to_string()))
+        );
+        assert!(!p_solve.contains_key("minimum"));
+        assert!(!p_solve.contains_key("maximum"));
+
+        // Provider structured-output dialects need not support numeric JSON Schema
+        // constraints. The typed policy remains the authoritative range check.
+        let policy = policy();
+        for out_of_range in [-0.01, 1.01] {
+            assert!(matches!(
+                policy.to_classification(Some(&verdict(out_of_range, "supported", "SUP-1"))),
+                Classification::Ambiguous(_)
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn the_threshold_moves_the_routing_boundary() -> Result<()> {
         let borderline = verdict(0.5, "supported", "SUP-1");
         let strict = TaskClassifierPolicy::new("efficient", "capable", &test_config(0.9));
