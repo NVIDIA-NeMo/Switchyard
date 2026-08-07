@@ -110,95 +110,98 @@
 <a href=#110 id=110 data-nosnippet>110</a>    </span>General(String),
 <a href=#111 id=111 data-nosnippet>111</a>}
 <a href=#112 id=112 data-nosnippet>112</a>
-<a href=#113 id=113 data-nosnippet>113</a><span class="doccomment">/// A decision/trace object produced by an algorithm.
-<a href=#114 id=114 data-nosnippet>114</a>///
-<a href=#115 id=115 data-nosnippet>115</a>/// Carried as a trait object (not a generic parameter) so a stream consumer can
-<a href=#116 id=116 data-nosnippet>116</a>/// inspect any algorithm's decision through this common interface without
-<a href=#117 id=117 data-nosnippet>117</a>/// knowing the concrete type. `as_any` is the escape hatch for a consumer that
-<a href=#118 id=118 data-nosnippet>118</a>/// *does* know the algo and wants to downcast to the concrete decision.
-<a href=#119 id=119 data-nosnippet>119</a></span><span class="kw">pub trait </span>Decision: Send + Sync {
-<a href=#120 id=120 data-nosnippet>120</a>    <span class="doccomment">/// The model this decision selected (e.g. the routed target's name).
-<a href=#121 id=121 data-nosnippet>121</a>    </span><span class="kw">fn </span>selected_model(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str;
-<a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Stable routing tier for the selected model, when the algorithm provides one.
-<a href=#123 id=123 data-nosnippet>123</a>    </span><span class="kw">fn </span>routing_tier(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
-<a href=#124 id=124 data-nosnippet>124</a>        <span class="prelude-val">None
-<a href=#125 id=125 data-nosnippet>125</a>    </span>}
-<a href=#126 id=126 data-nosnippet>126</a>    <span class="doccomment">/// Whether this is the final call selected to serve the request.
-<a href=#127 id=127 data-nosnippet>127</a>    </span><span class="kw">fn </span>is_routed_call(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
-<a href=#128 id=128 data-nosnippet>128</a>        <span class="bool-val">true
-<a href=#129 id=129 data-nosnippet>129</a>    </span>}
-<a href=#130 id=130 data-nosnippet>130</a>    <span class="doccomment">/// A human-readable explanation of the decision, for logs and traces.
-<a href=#131 id=131 data-nosnippet>131</a>    </span><span class="kw">fn </span>reasoning(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;;
-<a href=#132 id=132 data-nosnippet>132</a>    <span class="doccomment">/// Downcast handle: a consumer that knows the algorithm can recover the
-<a href=#133 id=133 data-nosnippet>133</a>    /// concrete decision type via `as_any().downcast_ref::&lt;ConcreteDecision&gt;()`.
-<a href=#134 id=134 data-nosnippet>134</a>    </span><span class="kw">fn </span>as_any(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="kw">dyn </span>std::any::Any;
-<a href=#135 id=135 data-nosnippet>135</a>}
-<a href=#136 id=136 data-nosnippet>136</a>
-<a href=#137 id=137 data-nosnippet>137</a><span class="doccomment">/// A minimal [`Decision`] implementation for one-off calls that don't belong to a
-<a href=#138 id=138 data-nosnippet>138</a>/// named algorithm step — judge side calls, classifier side calls, etc.
-<a href=#139 id=139 data-nosnippet>139</a></span><span class="kw">pub struct </span>SimpleDecision {
-<a href=#140 id=140 data-nosnippet>140</a>    <span class="doccomment">/// Model or semantic target selected for the call.
-<a href=#141 id=141 data-nosnippet>141</a>    </span><span class="kw">pub </span>selected_model: String,
-<a href=#142 id=142 data-nosnippet>142</a>    <span class="doccomment">/// Optional explanation recorded with the call.
-<a href=#143 id=143 data-nosnippet>143</a>    </span><span class="kw">pub </span>reasoning: <span class="prelude-ty">Option</span>&lt;String&gt;,
-<a href=#144 id=144 data-nosnippet>144</a>}
-<a href=#145 id=145 data-nosnippet>145</a>
-<a href=#146 id=146 data-nosnippet>146</a><span class="kw">impl </span>Decision <span class="kw">for </span>SimpleDecision {
-<a href=#147 id=147 data-nosnippet>147</a>    <span class="kw">fn </span>selected_model(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#148 id=148 data-nosnippet>148</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.selected_model
-<a href=#149 id=149 data-nosnippet>149</a>    }
-<a href=#150 id=150 data-nosnippet>150</a>
-<a href=#151 id=151 data-nosnippet>151</a>    <span class="kw">fn </span>reasoning(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
-<a href=#152 id=152 data-nosnippet>152</a>        <span class="self">self</span>.reasoning.as_deref()
-<a href=#153 id=153 data-nosnippet>153</a>    }
-<a href=#154 id=154 data-nosnippet>154</a>
-<a href=#155 id=155 data-nosnippet>155</a>    <span class="kw">fn </span>as_any(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="kw">dyn </span>std::any::Any {
-<a href=#156 id=156 data-nosnippet>156</a>        <span class="self">self
-<a href=#157 id=157 data-nosnippet>157</a>    </span>}
+<a href=#113 id=113 data-nosnippet>113</a><span class="doccomment">/// Why routing replaced a selected target with another eligible target.
+<a href=#114 id=114 data-nosnippet>114</a></span><span class="attr">#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+<a href=#115 id=115 data-nosnippet>115</a></span><span class="kw">pub enum </span>RoutingFallbackReason {
+<a href=#116 id=116 data-nosnippet>116</a>    <span class="doccomment">/// The selected target rejected the request because its context window was too small.
+<a href=#117 id=117 data-nosnippet>117</a>    </span>ContextWindow,
+<a href=#118 id=118 data-nosnippet>118</a>    <span class="doccomment">/// The selected target was unavailable after its client retries finished.
+<a href=#119 id=119 data-nosnippet>119</a>    </span>Unavailable,
+<a href=#120 id=120 data-nosnippet>120</a>}
+<a href=#121 id=121 data-nosnippet>121</a>
+<a href=#122 id=122 data-nosnippet>122</a><span class="kw">impl </span>RoutingFallbackReason {
+<a href=#123 id=123 data-nosnippet>123</a>    <span class="doccomment">/// Stable value used by logs and statistics.
+<a href=#124 id=124 data-nosnippet>124</a>    </span><span class="kw">pub const fn </span>as_str(<span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+<a href=#125 id=125 data-nosnippet>125</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#126 id=126 data-nosnippet>126</a>            <span class="self">Self</span>::ContextWindow =&gt; <span class="string">"context_window"</span>,
+<a href=#127 id=127 data-nosnippet>127</a>            <span class="self">Self</span>::Unavailable =&gt; <span class="string">"unavailable"</span>,
+<a href=#128 id=128 data-nosnippet>128</a>        }
+<a href=#129 id=129 data-nosnippet>129</a>    }
+<a href=#130 id=130 data-nosnippet>130</a>}
+<a href=#131 id=131 data-nosnippet>131</a>
+<a href=#132 id=132 data-nosnippet>132</a><span class="doccomment">/// A decision/trace object produced by an algorithm.
+<a href=#133 id=133 data-nosnippet>133</a>///
+<a href=#134 id=134 data-nosnippet>134</a>/// Carried as a trait object (not a generic parameter) so a stream consumer can
+<a href=#135 id=135 data-nosnippet>135</a>/// inspect any algorithm's decision through this common interface without
+<a href=#136 id=136 data-nosnippet>136</a>/// knowing the concrete type. `as_any` is the escape hatch for a consumer that
+<a href=#137 id=137 data-nosnippet>137</a>/// *does* know the algo and wants to downcast to the concrete decision.
+<a href=#138 id=138 data-nosnippet>138</a></span><span class="kw">pub trait </span>Decision: Send + Sync {
+<a href=#139 id=139 data-nosnippet>139</a>    <span class="doccomment">/// The model this decision selected (e.g. the routed target's name).
+<a href=#140 id=140 data-nosnippet>140</a>    </span><span class="kw">fn </span>selected_model(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str;
+<a href=#141 id=141 data-nosnippet>141</a>    <span class="doccomment">/// Stable routing tier for the selected model, when the algorithm provides one.
+<a href=#142 id=142 data-nosnippet>142</a>    </span><span class="kw">fn </span>routing_tier(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
+<a href=#143 id=143 data-nosnippet>143</a>        <span class="prelude-val">None
+<a href=#144 id=144 data-nosnippet>144</a>    </span>}
+<a href=#145 id=145 data-nosnippet>145</a>    <span class="doccomment">/// Whether this is the final call selected to serve the request.
+<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">fn </span>is_routed_call(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#147 id=147 data-nosnippet>147</a>        <span class="bool-val">true
+<a href=#148 id=148 data-nosnippet>148</a>    </span>}
+<a href=#149 id=149 data-nosnippet>149</a>    <span class="doccomment">/// Why this decision replaced an earlier selected target, when it did.
+<a href=#150 id=150 data-nosnippet>150</a>    </span><span class="kw">fn </span>fallback_reason(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;RoutingFallbackReason&gt; {
+<a href=#151 id=151 data-nosnippet>151</a>        <span class="prelude-val">None
+<a href=#152 id=152 data-nosnippet>152</a>    </span>}
+<a href=#153 id=153 data-nosnippet>153</a>    <span class="doccomment">/// A human-readable explanation of the decision, for logs and traces.
+<a href=#154 id=154 data-nosnippet>154</a>    </span><span class="kw">fn </span>reasoning(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;;
+<a href=#155 id=155 data-nosnippet>155</a>    <span class="doccomment">/// Downcast handle: a consumer that knows the algorithm can recover the
+<a href=#156 id=156 data-nosnippet>156</a>    /// concrete decision type via `as_any().downcast_ref::&lt;ConcreteDecision&gt;()`.
+<a href=#157 id=157 data-nosnippet>157</a>    </span><span class="kw">fn </span>as_any(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="kw">dyn </span>std::any::Any;
 <a href=#158 id=158 data-nosnippet>158</a>}
 <a href=#159 id=159 data-nosnippet>159</a>
-<a href=#160 id=160 data-nosnippet>160</a><span class="doccomment">/// Performs the actual model call for a target. This is the one piece of I/O the
-<a href=#161 id=161 data-nosnippet>161</a>/// library does not own — a host implements it over its own transport (HTTP SDK,
-<a href=#162 id=162 data-nosnippet>162</a>/// in-process model, mock). It serves a call the stream consumer chose not to
-<a href=#163 id=163 data-nosnippet>163</a>/// override, reached as a routed request's `default_client`.
-<a href=#164 id=164 data-nosnippet>164</a>///
-<a href=#165 id=165 data-nosnippet>165</a>/// # Concurrency
-<a href=#166 id=166 data-nosnippet>166</a>///
-<a href=#167 id=167 data-nosnippet>167</a>/// A client may be shared by many targets and concurrent algorithm runs. Calls may
-<a href=#168 id=168 data-nosnippet>168</a>/// overlap, so implementations must synchronize mutable state internally and should
-<a href=#169 id=169 data-nosnippet>169</a>/// not serialize requests unless their transport requires it.
-<a href=#170 id=170 data-nosnippet>170</a></span><span class="attr">#[async_trait]
-<a href=#171 id=171 data-nosnippet>171</a></span><span class="kw">pub trait </span>RoutedLlmClient: Send + Sync {
-<a href=#172 id=172 data-nosnippet>172</a>    <span class="doccomment">/// Serve the call, returning the model's response. Call the model named by
-<a href=#173 id=173 data-nosnippet>173</a>    /// [`decision.selected_model()`](Decision::selected_model) — the target the algorithm
-<a href=#174 id=174 data-nosnippet>174</a>    /// routed to — mapping it to whatever provider model id this client hits.
-<a href=#175 id=175 data-nosnippet>175</a>    /// `request.llm_request.model` is the agent's original name, carried through for
-<a href=#176 id=176 data-nosnippet>176</a>    /// reference, not a call target. `ctx` carries the request's cross-cutting state.
-<a href=#177 id=177 data-nosnippet>177</a>    </span><span class="kw">async fn </span>call(
-<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#179 id=179 data-nosnippet>179</a>        ctx: Context,
-<a href=#180 id=180 data-nosnippet>180</a>        request: Request,
-<a href=#181 id=181 data-nosnippet>181</a>        decision: Arc&lt;<span class="kw">dyn </span>Decision&gt;,
-<a href=#182 id=182 data-nosnippet>182</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;Response, LlmClientError&gt;;
-<a href=#183 id=183 data-nosnippet>183</a>
-<a href=#184 id=184 data-nosnippet>184</a>    <span class="doccomment">/// Whether this client can serve [`count_tokens`](Self::count_tokens) — i.e.
-<a href=#185 id=185 data-nosnippet>185</a>    /// it has an Anthropic upstream. The default is `false`.
-<a href=#186 id=186 data-nosnippet>186</a>    </span><span class="kw">fn </span>supports_count_tokens(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
-<a href=#187 id=187 data-nosnippet>187</a>        <span class="bool-val">false
-<a href=#188 id=188 data-nosnippet>188</a>    </span>}
-<a href=#189 id=189 data-nosnippet>189</a>
-<a href=#190 id=190 data-nosnippet>190</a>    <span class="doccomment">/// Count the tokens `request` would use — a **direct passthrough**, not a
-<a href=#191 id=191 data-nosnippet>191</a>    /// routed call. Forwards `request` to this client's Anthropic
-<a href=#192 id=192 data-nosnippet>192</a>    /// `/v1/messages/count_tokens` endpoint (model restamped to the upstream
-<a href=#193 id=193 data-nosnippet>193</a>    /// target id) and returns the JSON verbatim. Token counting is a pre-flight
-<a href=#194 id=194 data-nosnippet>194</a>    /// estimate with no routing decision, so unlike [`call`](Self::call) it
-<a href=#195 id=195 data-nosnippet>195</a>    /// takes no [`Decision`]. The default errors; only an Anthropic-backed
-<a href=#196 id=196 data-nosnippet>196</a>    /// client overrides it.
-<a href=#197 id=197 data-nosnippet>197</a>    </span><span class="kw">async fn </span>count_tokens(<span class="kw-2">&amp;</span><span class="self">self</span>, request: Request) -&gt; <span class="prelude-ty">Result</span>&lt;serde_json::Value, LlmClientError&gt; {
-<a href=#198 id=198 data-nosnippet>198</a>        <span class="kw">let _ </span>= request;
-<a href=#199 id=199 data-nosnippet>199</a>        <span class="prelude-val">Err</span>(LlmClientError::Configuration {
-<a href=#200 id=200 data-nosnippet>200</a>            message: <span class="string">"count_tokens is not supported by this client"</span>.to_string(),
-<a href=#201 id=201 data-nosnippet>201</a>        })
-<a href=#202 id=202 data-nosnippet>202</a>    }
-<a href=#203 id=203 data-nosnippet>203</a>}
+<a href=#160 id=160 data-nosnippet>160</a><span class="doccomment">/// A minimal [`Decision`] implementation for one-off calls that don't belong to a
+<a href=#161 id=161 data-nosnippet>161</a>/// named algorithm step — judge side calls, classifier side calls, etc.
+<a href=#162 id=162 data-nosnippet>162</a></span><span class="kw">pub struct </span>SimpleDecision {
+<a href=#163 id=163 data-nosnippet>163</a>    <span class="doccomment">/// Model or semantic target selected for the call.
+<a href=#164 id=164 data-nosnippet>164</a>    </span><span class="kw">pub </span>selected_model: String,
+<a href=#165 id=165 data-nosnippet>165</a>    <span class="doccomment">/// Optional explanation recorded with the call.
+<a href=#166 id=166 data-nosnippet>166</a>    </span><span class="kw">pub </span>reasoning: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#167 id=167 data-nosnippet>167</a>}
+<a href=#168 id=168 data-nosnippet>168</a>
+<a href=#169 id=169 data-nosnippet>169</a><span class="kw">impl </span>Decision <span class="kw">for </span>SimpleDecision {
+<a href=#170 id=170 data-nosnippet>170</a>    <span class="kw">fn </span>selected_model(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#171 id=171 data-nosnippet>171</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.selected_model
+<a href=#172 id=172 data-nosnippet>172</a>    }
+<a href=#173 id=173 data-nosnippet>173</a>
+<a href=#174 id=174 data-nosnippet>174</a>    <span class="kw">fn </span>reasoning(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="self">self</span>.reasoning.as_deref()
+<a href=#176 id=176 data-nosnippet>176</a>    }
+<a href=#177 id=177 data-nosnippet>177</a>
+<a href=#178 id=178 data-nosnippet>178</a>    <span class="kw">fn </span>as_any(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="kw">dyn </span>std::any::Any {
+<a href=#179 id=179 data-nosnippet>179</a>        <span class="self">self
+<a href=#180 id=180 data-nosnippet>180</a>    </span>}
+<a href=#181 id=181 data-nosnippet>181</a>}
+<a href=#182 id=182 data-nosnippet>182</a>
+<a href=#183 id=183 data-nosnippet>183</a><span class="doccomment">/// Performs the actual model call for a target. This is the one piece of I/O the
+<a href=#184 id=184 data-nosnippet>184</a>/// library does not own — a host implements it over its own transport (HTTP SDK,
+<a href=#185 id=185 data-nosnippet>185</a>/// in-process model, mock). It serves a call the stream consumer chose not to
+<a href=#186 id=186 data-nosnippet>186</a>/// override, reached as a routed request's `default_client`.
+<a href=#187 id=187 data-nosnippet>187</a>///
+<a href=#188 id=188 data-nosnippet>188</a>/// # Concurrency
+<a href=#189 id=189 data-nosnippet>189</a>///
+<a href=#190 id=190 data-nosnippet>190</a>/// A client may be shared by many targets and concurrent algorithm runs. Calls may
+<a href=#191 id=191 data-nosnippet>191</a>/// overlap, so implementations must synchronize mutable state internally and should
+<a href=#192 id=192 data-nosnippet>192</a>/// not serialize requests unless their transport requires it.
+<a href=#193 id=193 data-nosnippet>193</a></span><span class="attr">#[async_trait]
+<a href=#194 id=194 data-nosnippet>194</a></span><span class="kw">pub trait </span>RoutedLlmClient: Send + Sync {
+<a href=#195 id=195 data-nosnippet>195</a>    <span class="doccomment">/// Serve the call, returning the model's response. Call the model named by
+<a href=#196 id=196 data-nosnippet>196</a>    /// [`decision.selected_model()`](Decision::selected_model) — the target the algorithm
+<a href=#197 id=197 data-nosnippet>197</a>    /// routed to — mapping it to whatever provider model id this client hits.
+<a href=#198 id=198 data-nosnippet>198</a>    /// `request.llm_request.model` is the agent's original name, carried through for
+<a href=#199 id=199 data-nosnippet>199</a>    /// reference, not a call target. `ctx` carries the request's cross-cutting state.
+<a href=#200 id=200 data-nosnippet>200</a>    </span><span class="kw">async fn </span>call(
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#202 id=202 data-nosnippet>202</a>        ctx: Context,
+<a href=#203 id=203 data-nosnippet>203</a>        request: Request,
+<a href=#204 id=204 data-nosnippet>204</a>        decision: Arc&lt;<span class="kw">dyn </span>Decision&gt;,
+<a href=#205 id=205 data-nosnippet>205</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;Response, LlmClientError&gt;;
+<a href=#206 id=206 data-nosnippet>206</a>}
 </code></pre></div></section></main></body></html>
