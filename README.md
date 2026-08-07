@@ -60,19 +60,16 @@ switchyard launch claude --model my-route --config routes.toml
 
 ### Server Path
 
-Use this path to build and run the standalone Rust proxy. Install
-[Rust with Cargo](https://rust-lang.org/tools/install/), then build the release
-binary from source:
+Use this path to install and run the standalone Rust proxy. Install
+[Rust with Cargo](https://rust-lang.org/tools/install/), then install the
+published binary:
 
 ```bash
-git clone https://github.com/NVIDIA-NeMo/Switchyard.git
-cd Switchyard
-cargo build --locked --release -p switchyard-server
-./target/release/switchyard-server --help
+cargo install --locked switchyard-server
+switchyard-server --help
 ```
 
-Prebuilt binaries are not published yet. `rustup` installs the pinned toolchain
-automatically when you run Cargo from the repository.
+Cargo builds the release binary and installs it into `~/.cargo/bin` by default.
 
 Create `routes.toml` using the
 [Getting Started guide](docs/getting_started.md#server-path), then validate it
@@ -80,8 +77,8 @@ and start the server:
 
 ```bash
 export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-./target/release/switchyard-server --config routes.toml --dry-run
-./target/release/switchyard-server --config routes.toml --host 127.0.0.1 --port 4000
+switchyard-server --config routes.toml --dry-run
+switchyard-server --config routes.toml --host 127.0.0.1 --port 4000
 ```
 
 Verify the proxy in another terminal:

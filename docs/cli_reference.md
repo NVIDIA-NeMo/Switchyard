@@ -50,18 +50,14 @@ This command does not install or run the standalone `switchyard-server` binary.
 
 ## Server Path: `switchyard-server`
 
-Build the standalone binary with
-`cargo build --locked --release -p switchyard-server`. It reads the same native
-TOML deployment schema accepted by the launcher.
+Install the standalone binary with `cargo install --locked switchyard-server`.
+It reads the same native TOML deployment schema accepted by the launcher.
 
 ### Usage
 
 ```bash
 switchyard-server --config <deployment.toml> [options]
 ```
-
-When built from the repository, invoke it as
-`./target/release/switchyard-server`.
 
 | Option | Default | Purpose |
 |---|---|---|
@@ -80,8 +76,8 @@ When built from the repository, invoke it as
 Validate a deployment, then start the proxy:
 
 ```bash
-./target/release/switchyard-server --config routes.toml --dry-run
-./target/release/switchyard-server --config routes.toml \
+switchyard-server --config routes.toml --dry-run
+switchyard-server --config routes.toml \
   --host 127.0.0.1 --port 4000
 ```
 
@@ -102,7 +98,7 @@ switchyard launch claude --model my-route --config routes.toml
 ```
 
 The CLI does not save provider credentials or deployment paths.
-Use `./target/release/switchyard-server --config routes.toml --dry-run` to
+Use `switchyard-server --config routes.toml --dry-run` to
 validate a native deployment before starting the standalone server.
 
 ## Related Documentation

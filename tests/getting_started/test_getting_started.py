@@ -14,8 +14,8 @@ def test_getting_started_documents_current_paths() -> None:
     assert guide.index("## Launcher Path") < guide.index("## Server Path")
     assert 'uv tool install --python 3.12 "nemo-switchyard[cli,server]"' in guide
     assert "switchyard launch claude --model switchyard" in guide
-    assert "cargo build --locked --release -p switchyard-server" in guide
-    assert "./target/release/switchyard-server --config routes.toml --dry-run" in guide
+    assert "cargo install --locked switchyard-server" in guide
+    assert "switchyard-server --config routes.toml --dry-run" in guide
 
     for legacy_command in (
         "switchyard configure",

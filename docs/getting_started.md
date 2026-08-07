@@ -109,20 +109,16 @@ cargo --version
 uv --version
 ```
 
-### Build the server
+### Install the server
 
-Build the Rust server from source:
+Install the Rust server from crates.io:
 
 ```bash
-git clone https://github.com/NVIDIA-NeMo/Switchyard.git
-cd Switchyard
-cargo build --locked --release -p switchyard-server
-./target/release/switchyard-server --help
+cargo install --locked switchyard-server
+switchyard-server --help
 ```
 
-The repository pins Rust `1.96.1` in `rust-toolchain.toml`; `rustup` selects and
-installs it automatically when Cargo runs from the repository. Prebuilt Rust
-binaries are not published yet.
+Cargo builds the release binary and installs it into `~/.cargo/bin` by default.
 
 ### Configure
 
@@ -168,8 +164,8 @@ socket, then start the release binary:
 
 ```bash
 export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-./target/release/switchyard-server --config routes.toml --dry-run
-./target/release/switchyard-server --config routes.toml \
+switchyard-server --config routes.toml --dry-run
+switchyard-server --config routes.toml \
   --host 127.0.0.1 --port 4000
 ```
 
@@ -213,7 +209,7 @@ the complete TOML schema, route options, TLS, and metrics.
 
 ```bash
 test -n "$OPENROUTER_API_KEY" && echo "key is set" || echo "key is missing"
-./target/release/switchyard-server --config routes.toml --dry-run
+switchyard-server --config routes.toml --dry-run
 ```
 
 Confirm that `api_key_env` in `routes.toml` names the environment variable you

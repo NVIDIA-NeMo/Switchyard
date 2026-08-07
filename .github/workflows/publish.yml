@@ -59,13 +59,24 @@ jobs:
 
           with open("pyproject.toml", "rb") as file:
               pyproject = tomllib.load(file)
+          with open("Cargo.toml", "rb") as file:
+              cargo = tomllib.load(file)
+
           package_version = pyproject["project"]["version"]
+          workspace_version = cargo["workspace"]["package"]["version"]
+          if workspace_version != package_version:
+              raise SystemExit(
+                  "Python package version "
+                  f"{package_version!r} does not match Rust workspace version "
+                  f"{workspace_version!r}"
+              )
+
           expected = f"v{package_version}"
           if tag != expected:
               raise SystemExit(
                   f"release tag {tag!r} does not match pyproject version {package_version!r}"
               )
-          print(f"release tag {tag} matches pyproject version {package_version}")
+          print(f"release tag {tag} matches Python and Rust version {package_version}")
           PY
 
   python-release-checks:
@@ -417,7 +428,7 @@ jobs:
   publish:
     name: Publish distributions
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [source-dist, wheels]
+    needs: [source-dist, wheels, publish-rust-server]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -438,3 +449,100 @@ jobs:
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
+
+  publish-rust-protocol:
+    name: Publish switchyard-protocol
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [source-dist, wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked --package switchyard-protocol
+
+  publish-rust-foundations:
+    name: Publish ${{ matrix.crate }}
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [publish-rust-protocol]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [switchyard-libsy, switchyard-translation]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for registry dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in {1..30}; do
+            cargo info --registry crates-io "switchyard-protocol@${version}" >/dev/null 2>&1 \
+              && exit 0
+            echo "Waiting for switchyard-protocol ${version} (${attempt}/30)"
+            sleep 10
+          done
+          echo "switchyard-protocol ${version} did not reach the crates.io index" >&2
+          exit 1
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked --package "${{ matrix.crate }}"
+
+  publish-rust-client:
+    name: Publish switchyard-llm-client
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [publish-rust-foundations]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for registry dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in {1..30}; do
+            ready=true
+            for crate in switchyard-libsy switchyard-translation; do
+              cargo info --registry crates-io "${crate}@${version}" >/dev/null 2>&1 \
+                || ready=false
+            done
+            if [[ "${ready}" == true ]]; then
+              exit 0
+            fi
+            echo "Waiting for Rust foundation crates ${version} (${attempt}/30)"
+            sleep 10
+          done
+          echo "Rust foundation crates ${version} did not reach the crates.io index" >&2
+          exit 1
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked --package switchyard-llm-client
+
+  publish-rust-server:
+    name: Publish switchyard-server
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [publish-rust-client]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for registry dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in {1..30}; do
+            cargo info --registry crates-io "switchyard-llm-client@${version}" >/dev/null 2>&1 \
+              && exit 0
+            echo "Waiting for switchyard-llm-client ${version} (${attempt}/30)"
+            sleep 10
+          done
+          echo "switchyard-llm-client ${version} did not reach the crates.io index" >&2
+          exit 1
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked --package switchyard-server

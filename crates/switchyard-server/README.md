@@ -55,7 +55,8 @@ confidence_threshold = 0.5
 
 ```bash
 export API_KEY="..."
-cargo run -p switchyard-server -- --config routes.toml
+cargo install --locked switchyard-server
+switchyard-server --config routes.toml
 ```
 
 Ctrl+C and Unix `SIGTERM` stop new connections and allow active requests to drain for up to
