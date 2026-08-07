@@ -22,6 +22,7 @@ import respx
 from switchyard.lib.backends.advisor_loop_backend import (
     _MAX_FAILED_CONSULTS_PER_SCOPE,
     AdvisorLoopBackend,
+    _advisor_usage,
     _anthropic_text,
     _AnthropicAdvisorCaller,
     _build_advisor_caller,
@@ -876,6 +877,27 @@ async def test_repeated_consult_failures_stop_attempts() -> None:
     for _ in range(5):
         await backend.call(_ctx("ev_a"), _request())
     assert adv.advise.await_count == _MAX_FAILED_CONSULTS_PER_SCOPE
+
+
+def test_advisor_usage_folds_gateway_cache_buckets() -> None:
+    """Hub bedrock routes auto-cache server-side: real input lands in cache_creation."""
+    hub = {"input_tokens": 2, "output_tokens": 7,
+           "cache_creation_input_tokens": 3031, "cache_read_input_tokens": 0}
+    assert _advisor_usage(hub) == {
+        "prompt_tokens": 3033, "cached_tokens": 0,
+        "cache_creation_tokens": 3031, "completion_tokens": 7,
+    }
+    warm = {"input_tokens": 14, "output_tokens": 4,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 15403}
+    tokens = _advisor_usage(warm)
+    assert tokens["prompt_tokens"] == 15417
+    assert tokens["cached_tokens"] == 15403
+    openai_shape = {"prompt_tokens": 900, "completion_tokens": 30,
+                    "prompt_tokens_details": {"cached_tokens": 512}}
+    assert _advisor_usage(openai_shape) == {
+        "prompt_tokens": 900, "cached_tokens": 512,
+        "cache_creation_tokens": 0, "completion_tokens": 30,
+    }
 
 
 def test_parse_verdict_tolerates_wrappers() -> None:

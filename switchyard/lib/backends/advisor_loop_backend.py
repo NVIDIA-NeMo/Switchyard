@@ -531,21 +531,23 @@ class AdvisorLoopBackend(LLMBackend):
         # escalation judge — its cost rolls into ``cost_estimate.total_cost``)
         # AND into the routing log, so per-session stats
         # (``/v1/routing/session-stats``) attribute it to the caller's session.
-        prompt_tokens, completion_tokens = _usage_tokens(usage)
+        tokens = _advisor_usage(usage)
         if self._stats is not None:
             await self._stats.record_classifier_usage(
                 model=self._config.advisor.model,
-                prompt_tokens=prompt_tokens or 0,
-                completion_tokens=completion_tokens or 0,
-                cached_tokens=0,
+                prompt_tokens=tokens["prompt_tokens"],
+                completion_tokens=tokens["completion_tokens"],
+                cached_tokens=tokens["cached_tokens"],
                 latency_ms=latency_ms,
             )
         _emit_routing_usage(
             ctx,
             model=self._config.advisor.model,
             tier="advisor_review",
-            prompt_tokens=prompt_tokens or 0,
-            completion_tokens=completion_tokens or 0,
+            prompt_tokens=tokens["prompt_tokens"],
+            completion_tokens=tokens["completion_tokens"],
+            cached_tokens=tokens["cached_tokens"],
+            cache_creation_tokens=tokens["cache_creation_tokens"],
         )
         _audit_review(
             verdict=verdict, error=None, usage=usage, latency_ms=latency_ms,
@@ -976,13 +978,13 @@ async def _fetch_seed_advice(
                     latency_ms=(time.monotonic() - started) * 1000.0)
         return ""
     latency_ms = (time.monotonic() - started) * 1000.0
-    prompt_tokens, completion_tokens = _usage_tokens(usage)
+    tokens = _advisor_usage(usage)
     if stats is not None:
         await stats.record_classifier_usage(
             model=config.advisor.model,
-            prompt_tokens=prompt_tokens or 0,
-            completion_tokens=completion_tokens or 0,
-            cached_tokens=0,
+            prompt_tokens=tokens["prompt_tokens"],
+            completion_tokens=tokens["completion_tokens"],
+            cached_tokens=tokens["cached_tokens"],
             latency_ms=latency_ms,
         )
     if ctx is not None:
@@ -990,8 +992,10 @@ async def _fetch_seed_advice(
             ctx,
             model=config.advisor.model,
             tier="advisor_seed",
-            prompt_tokens=prompt_tokens or 0,
-            completion_tokens=completion_tokens or 0,
+            prompt_tokens=tokens["prompt_tokens"],
+            completion_tokens=tokens["completion_tokens"],
+            cached_tokens=tokens["cached_tokens"],
+            cache_creation_tokens=tokens["cache_creation_tokens"],
         )
     _audit_seed(error=None, usage=usage, latency_ms=latency_ms)
     return advice.strip()
@@ -1004,11 +1008,7 @@ def _audit_seed(*, error: str | None, usage: Any, latency_ms: float) -> None:
         "error": error,
         "latency_ms": round(latency_ms, 1),
     }
-    prompt_tokens, completion_tokens = _usage_tokens(usage)
-    if prompt_tokens is not None:
-        payload["prompt_tokens"] = prompt_tokens
-    if completion_tokens is not None:
-        payload["completion_tokens"] = completion_tokens
+    _merge_audit_tokens(payload, usage)
     sys.stderr.write(f"advisor_seed={json.dumps(payload, sort_keys=True)}\n")
     sys.stderr.flush()
 
@@ -1137,6 +1137,46 @@ def _usage_tokens(usage: Any) -> tuple[int | None, int | None]:
     return get("input_tokens", "prompt_tokens"), get("output_tokens", "completion_tokens")
 
 
+def _advisor_usage(usage: Any) -> dict[str, int]:
+    """Token fields for an advisor consult, with cache buckets folded in.
+
+    Anthropic-shaped usage reports cache reads/writes as SIBLINGS of
+    ``input_tokens`` — and some gateways (NVIDIA Inference Hub's bedrock
+    routes) auto-cache large prompts server-side even when the caller set no
+    ``cache_control``, so a consult's real input lands almost entirely in
+    ``cache_creation_input_tokens`` while ``input_tokens`` reads as ~2.
+    ``prompt_tokens`` here is the inclusive total, matching the routing-log
+    processor's accounting; OpenAI ``prompt_tokens`` are already inclusive.
+    """
+
+    def get(container: Any, name: str) -> int:
+        value = (
+            container.get(name) if isinstance(container, dict)
+            else getattr(container, name, None)
+        )
+        return int(value) if value is not None else 0
+
+    input_tokens, output_tokens = _usage_tokens(usage)
+    cache_read = get(usage, "cache_read_input_tokens")
+    cache_creation = get(usage, "cache_creation_input_tokens")
+    if cache_read or cache_creation:
+        prompt = (input_tokens or 0) + cache_read + cache_creation
+        cached = cache_read
+    else:
+        prompt = input_tokens or 0
+        details = (
+            usage.get("prompt_tokens_details") if isinstance(usage, dict)
+            else getattr(usage, "prompt_tokens_details", None)
+        )
+        cached = get(details, "cached_tokens") if details is not None else 0
+    return {
+        "prompt_tokens": prompt,
+        "cached_tokens": cached,
+        "cache_creation_tokens": cache_creation,
+        "completion_tokens": output_tokens or 0,
+    }
+
+
 def _audit_review(
     *,
     verdict: str,
@@ -1159,13 +1199,22 @@ def _audit_review(
     }
     if reply_head is not None:
         payload["reply_head"] = reply_head.strip()[:160]
-    prompt_tokens, completion_tokens = _usage_tokens(usage)
-    if prompt_tokens is not None:
-        payload["prompt_tokens"] = prompt_tokens
-    if completion_tokens is not None:
-        payload["completion_tokens"] = completion_tokens
+    _merge_audit_tokens(payload, usage)
     sys.stderr.write(f"advisor_review={json.dumps(payload, sort_keys=True)}\n")
     sys.stderr.flush()
+
+
+def _merge_audit_tokens(payload: dict[str, Any], usage: Any) -> None:
+    """Add cache-inclusive token fields to an audit payload (no-op when None)."""
+    if usage is None:
+        return
+    tokens = _advisor_usage(usage)
+    payload["prompt_tokens"] = tokens["prompt_tokens"]
+    payload["completion_tokens"] = tokens["completion_tokens"]
+    if tokens["cache_creation_tokens"]:
+        payload["cache_creation_tokens"] = tokens["cache_creation_tokens"]
+    if tokens["cached_tokens"]:
+        payload["cached_tokens"] = tokens["cached_tokens"]
 
 
 def _emit_routing_usage(
@@ -1176,6 +1225,7 @@ def _emit_routing_usage(
     prompt_tokens: int,
     completion_tokens: int,
     cached_tokens: int = 0,
+    cache_creation_tokens: int = 0,
 ) -> None:
     """Append a proxy-internal usage record to the routing log, if one is active.
 
@@ -1196,6 +1246,7 @@ def _emit_routing_usage(
         tier=tier,
         prompt_tokens=prompt_tokens,
         cached_tokens=cached_tokens,
+        cache_creation_tokens=cache_creation_tokens,
         completion_tokens=completion_tokens,
     )
 

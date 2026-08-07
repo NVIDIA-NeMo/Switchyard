@@ -88,11 +88,13 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from switchyard.lib.backends.advisor_loop_backend import (
     AdvisorCaller,
+    _advisor_usage,
     _blocks_text,
     _build_advisor_caller,
     _consume_openai_stream,
     _emit_routing_usage,
     _ev,
+    _merge_audit_tokens,
     _replay_events,
     _seed_advice_for,
     _session_key,
@@ -653,21 +655,23 @@ class AdvisorToolCallBackend(LLMBackend):
             return f"[advisor unavailable: {type(exc).__name__}]"
 
         latency_ms = (time.monotonic() - started) * 1000.0
-        prompt_tokens, completion_tokens = _usage_tokens(usage)
+        tokens = _advisor_usage(usage)
         if self._stats is not None:
             await self._stats.record_classifier_usage(
                 model=self._config.advisor.model,
-                prompt_tokens=prompt_tokens or 0,
-                completion_tokens=completion_tokens or 0,
-                cached_tokens=0,
+                prompt_tokens=tokens["prompt_tokens"],
+                completion_tokens=tokens["completion_tokens"],
+                cached_tokens=tokens["cached_tokens"],
                 latency_ms=latency_ms,
             )
         _emit_routing_usage(
             ctx,
             model=self._config.advisor.model,
             tier="advisor_consult",
-            prompt_tokens=prompt_tokens or 0,
-            completion_tokens=completion_tokens or 0,
+            prompt_tokens=tokens["prompt_tokens"],
+            completion_tokens=tokens["completion_tokens"],
+            cached_tokens=tokens["cached_tokens"],
+            cache_creation_tokens=tokens["cache_creation_tokens"],
         )
         _audit_advisor(error=None, usage=usage, latency_ms=latency_ms)
         return advice
@@ -872,11 +876,7 @@ def _audit_advisor(*, error: str | None, usage: Any, latency_ms: float) -> None:
         "error": error,
         "latency_ms": round(latency_ms, 1),
     }
-    prompt_tokens, completion_tokens = _usage_tokens(usage)
-    if prompt_tokens is not None:
-        payload["prompt_tokens"] = prompt_tokens
-    if completion_tokens is not None:
-        payload["completion_tokens"] = completion_tokens
+    _merge_audit_tokens(payload, usage)
     sys.stderr.write(f"advisor_call={json.dumps(payload, sort_keys=True)}\n")
     sys.stderr.flush()
 
