@@ -228,7 +228,9 @@ mod tests {
 
     use super::*;
     use crate::algorithms::util::stage::DECISION_SOURCE_KEY;
-    use crate::core::algorithm::{Algorithm, LlmTarget};
+    use crate::core::algorithm::{
+        Algorithm, AlgorithmMetricValue, LlmTarget, RunObservation, RunObserver,
+    };
     use crate::core::classifier::Score;
     use crate::core::state::StateValue;
     use switchyard_protocol::{
@@ -505,9 +507,14 @@ mod tests {
         let client = Arc::new(RecordingClient::default());
         let router = recording_router(client.clone(), config_with_notes())?;
         let ctx = Context::default();
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let observed = observations.clone();
+        let observer: RunObserver = Arc::new(move |observation| observed.lock().push(observation));
 
         router.clone().run(ctx.clone(), turn_request(false)).await?;
-        router.run(ctx, turn_request(true)).await?;
+        router
+            .run_observed(ctx, turn_request(true), Some(observer))
+            .await?;
 
         let calls = client.routed();
         assert_eq!(calls[0].target, "weak");
@@ -524,6 +531,49 @@ mod tests {
                 .is_some_and(|t| t.ends_with(ESCALATION)),
             "escalating turn should carry the note last: {:?}",
             calls[1].messages
+        );
+
+        let metrics = observations
+            .lock()
+            .iter()
+            .filter_map(|observation| match observation {
+                RunObservation::AlgorithmMetric(metric) => Some(metric.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(metrics.len(), 6);
+        assert!(metrics.iter().all(|metric| {
+            metric.algorithm == STAGE_ROUTER
+                && matches!(metric.value, AlgorithmMetricValue::Histogram(_))
+        }));
+        assert_eq!(
+            metrics
+                .iter()
+                .filter(|metric| metric.name == "switchyard.stage_router.score")
+                .count(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .iter()
+                .filter(|metric| metric.name == "switchyard.stage_router.confidence")
+                .count(),
+            1
+        );
+        let mut dimensions = metrics
+            .iter()
+            .filter(|metric| metric.name == "switchyard.stage_router.dimension")
+            .filter_map(|metric| {
+                metric
+                    .attributes
+                    .first()
+                    .map(|attribute| attribute.value.clone())
+            })
+            .collect::<Vec<_>>();
+        dimensions.sort();
+        assert_eq!(
+            dimensions,
+            ["exploring", "production_intensity", "severity", "spinning"]
         );
         Ok(())
     }

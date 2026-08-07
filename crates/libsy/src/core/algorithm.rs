@@ -54,6 +54,47 @@ pub struct LlmCallObservation {
     pub usage: Option<Usage>,
 }
 
+/// One bounded attribute attached to an algorithm-defined metric.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetricAttribute {
+    /// Stable, low-cardinality attribute name.
+    pub key: &'static str,
+    /// Stable, low-cardinality attribute value.
+    pub value: String,
+}
+
+impl MetricAttribute {
+    /// Build an attribute from a static key and owned or borrowed value.
+    pub fn new(key: &'static str, value: impl Into<String>) -> Self {
+        Self {
+            key,
+            value: value.into(),
+        }
+    }
+}
+
+/// The value and aggregation kind of an algorithm-defined metric.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AlgorithmMetricValue {
+    /// A non-negative delta added to a cumulative counter.
+    Counter(u64),
+    /// One sample recorded in a histogram.
+    Histogram(f64),
+}
+
+/// One algorithm-defined metric emitted to OpenTelemetry and the run observer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlgorithmMetricObservation {
+    /// Algorithm that emitted the metric.
+    pub algorithm: String,
+    /// Stable OpenTelemetry metric name. One name must always use the same value kind.
+    pub name: &'static str,
+    /// Counter delta or histogram sample.
+    pub value: AlgorithmMetricValue,
+    /// Bounded dimensions for grouping the metric.
+    pub attributes: Vec<MetricAttribute>,
+}
+
 /// One request-scoped observation emitted by the algorithm runner.
 #[derive(Clone, Debug)]
 pub enum RunObservation {
@@ -61,6 +102,8 @@ pub enum RunObservation {
     LlmCall(LlmCallObservation),
     /// Routing time recorded by the `switchyard.routing_overhead_ms` metric.
     RoutingOverhead(Duration),
+    /// An algorithm-defined counter delta or histogram sample.
+    AlgorithmMetric(AlgorithmMetricObservation),
 }
 
 /// Request-scoped callback for algorithm-run observations.
@@ -153,6 +196,7 @@ impl CallLlmRequest {
 #[derive(Clone)]
 pub struct Driver {
     driver: TypeErasedDriver,
+    algorithm: Arc<str>,
     // How long the call that served this run took. We need this to calculate routing overhead.
     routed_call: Arc<Mutex<Option<Duration>>>,
     observer: Option<RunObserver>,
@@ -162,12 +206,13 @@ impl Driver {
     /// Build an empty driver with its step channel ready. Created per call by
     /// [`run_stream`](Algorithm::run_stream).
     pub(crate) fn new() -> Self {
-        Self::with_observer(None)
+        Self::with_observer("", None)
     }
 
-    fn with_observer(observer: Option<RunObserver>) -> Self {
+    fn with_observer(algorithm: &str, observer: Option<RunObserver>) -> Self {
         Self {
             driver: TypeErasedDriver::new(),
+            algorithm: Arc::from(algorithm),
             routed_call: Arc::new(Mutex::new(None)),
             observer,
         }
@@ -183,6 +228,64 @@ impl Driver {
     pub(crate) fn observe_routing_overhead(&self, duration: Duration) {
         if let Some(observer) = &self.observer {
             observer(RunObservation::RoutingOverhead(duration));
+        }
+    }
+
+    /// Add a delta to an algorithm-defined OpenTelemetry counter and report the
+    /// same event to this run's observer. Names and attributes must be stable and
+    /// low-cardinality; never include request or session data.
+    pub fn record_counter(
+        &self,
+        name: &'static str,
+        delta: u64,
+        attributes: impl IntoIterator<Item = MetricAttribute>,
+    ) {
+        self.record_algorithm_metric(
+            name,
+            AlgorithmMetricValue::Counter(delta),
+            attributes.into_iter().collect(),
+        );
+    }
+
+    /// Record one sample in an algorithm-defined OpenTelemetry histogram and
+    /// report the same event to this run's observer. Non-finite samples are dropped.
+    pub fn record_histogram(
+        &self,
+        name: &'static str,
+        sample: f64,
+        attributes: impl IntoIterator<Item = MetricAttribute>,
+    ) {
+        if !sample.is_finite() {
+            tracing::debug!(
+                metric = name,
+                sample,
+                "dropping non-finite histogram sample"
+            );
+            return;
+        }
+        self.record_algorithm_metric(
+            name,
+            AlgorithmMetricValue::Histogram(sample),
+            attributes.into_iter().collect(),
+        );
+    }
+
+    fn record_algorithm_metric(
+        &self,
+        name: &'static str,
+        value: AlgorithmMetricValue,
+        mut attributes: Vec<MetricAttribute>,
+    ) {
+        attributes.retain(|attribute| attribute.key != "algorithm");
+        let observation = AlgorithmMetricObservation {
+            algorithm: self.algorithm.to_string(),
+            name,
+            value,
+            attributes,
+        };
+        observability::record_algorithm_metric(&observation);
+        if let Some(observer) = &self.observer {
+            observer(RunObservation::AlgorithmMetric(observation));
         }
     }
 
@@ -646,7 +749,8 @@ pub trait Algorithm: Send + Sync + 'static {
     /// emitted as an `Err` item. Dropping the stream aborts the spawned algorithm task.
     ///
     /// Every invocation owns a separate [`Driver`]. `observer`, when present, receives
-    /// each completed model call and, after a successful routed run, its routing overhead.
+    /// completed model calls, algorithm-defined metrics, and, after a successful routed
+    /// run, its routing overhead.
     fn run_stream(
         self: Arc<Self>,
         ctx: Context,
@@ -660,7 +764,7 @@ pub trait Algorithm: Send + Sync + 'static {
             observability::ALGORITHM_KEY.to_string(),
             self.name().to_string(),
         );
-        let driver = Driver::with_observer(observer);
+        let driver = Driver::with_observer(self.name(), observer);
         let task_driver = driver.clone();
         let task_ctx = ctx.clone();
         let stream = task_driver.stream();
@@ -715,7 +819,7 @@ pub trait Algorithm: Send + Sync + 'static {
         self.run_observed(ctx, request, None).await
     }
 
-    /// Process a request to completion while reporting each model call to `observer`.
+    /// Process a request to completion while reporting run observations to `observer`.
     async fn run_observed(
         self: Arc<Self>,
         ctx: Context,

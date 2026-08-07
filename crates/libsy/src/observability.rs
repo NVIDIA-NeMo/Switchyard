@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! OpenTelemetry metrics plus `tracing` spans and structured logs for the
-//! algorithm layer.
+//! algorithm layer, including algorithm-defined metrics emitted through the
+//! [`Driver`](crate::Driver).
 //!
-//! The crate's provided run methods call these helpers around the [`Decision`]
-//! hook and the offload boundary, so every algorithm is instrumented from the
-//! outside and carries no telemetry code of its own. Metrics record through the
+//! The crate's provided run methods instrument the [`Decision`] hook and offload
+//! boundary from the outside. Algorithms emit domain-specific counters and
+//! histograms through the [`Driver`](crate::Driver). Metrics record through the
 //! OpenTelemetry **global** meter provider under the `switchyard` scope — the host
 //! installs an SDK provider and exporters; with none installed, recording is a
 //! no-op. Spans and logs use the `tracing` facade (the async-native surface the
@@ -21,9 +22,10 @@
 //! Instrument names use the OTel dotted form with the unit baked into the name
 //! (`switchyard.run_duration_ms`), matching the switchyard metric surface; a
 //! Prometheus exporter sanitizes them to `switchyard_run_duration_ms`. Attribute
-//! cardinality is bounded: `algorithm` and `selected_model` are small
-//! configured sets and `outcome` is `ok`/`error`. Nothing per-request becomes a
-//! metric attribute — correlation ids ride on the `libsy.run` span instead.
+//! cardinality is bounded: `algorithm` and `selected_model` are small configured
+//! sets and `outcome` is `ok`/`error`. Algorithm-defined metric attributes follow
+//! the same contract. Nothing per-request becomes a metric attribute — correlation
+//! ids ride on the `libsy.run` span instead.
 //!
 //! Instruments are resolved from the global provider on every record (an
 //! instrument-cache lookup inside the SDK) so recording follows a meter
@@ -45,6 +47,7 @@ use switchyard_protocol::StopReason;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use crate::core::algorithm::{AlgorithmMetricObservation, AlgorithmMetricValue};
 use crate::{Driver, LibsyError, Result};
 use switchyard_protocol::{
     AggLlmResponse, Context, Decision, LlmClientError, LlmRequest, LlmResponse, LlmResponseChunk,
@@ -513,18 +516,28 @@ fn record_routing_overhead(
     Some(overhead)
 }
 
-/// Records a judge failure that made the classifier route without a verdict.
-pub(crate) fn record_classifier_fail_open(judge_model: &str, reason: &'static str) {
-    meter()
-        .u64_counter("switchyard.classifier_fail_open")
-        .build()
-        .add(
-            1,
-            &[
-                KeyValue::new("judge_model", judge_model.to_string()),
-                KeyValue::new("reason", reason),
-            ],
-        );
+/// Records an algorithm metric after adding its algorithm dimension.
+pub(crate) fn record_algorithm_metric(metric: &AlgorithmMetricObservation) {
+    let mut attributes = Vec::with_capacity(metric.attributes.len() + 1);
+    attributes.push(KeyValue::new("algorithm", metric.algorithm.clone()));
+    attributes.extend(
+        metric
+            .attributes
+            .iter()
+            .map(|attribute| KeyValue::new(attribute.key, attribute.value.clone())),
+    );
+
+    let meter = meter();
+    match metric.value {
+        AlgorithmMetricValue::Counter(delta) => meter
+            .u64_counter(metric.name)
+            .build()
+            .add(delta, &attributes),
+        AlgorithmMetricValue::Histogram(sample) => meter
+            .f64_histogram(metric.name)
+            .build()
+            .record(sample, &attributes),
+    }
 }
 
 /// Records the resolution of one offloaded model call: the call counter and

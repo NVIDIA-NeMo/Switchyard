@@ -33,8 +33,9 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    Algorithm, Driver, LibsyError, LlmClassifierConfig, LlmTarget, LlmTargetSet, LlmTaskClassifier,
-    Step, TaskClassifierConfig,
+    Algorithm, AlgorithmMetricValue, Driver, LibsyError, LlmClassifierConfig, LlmTarget,
+    LlmTargetSet, LlmTaskClassifier, MetricAttribute, RunObservation, RunObserver, Step,
+    TaskClassifierConfig,
 };
 use switchyard_protocol::{
     Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
@@ -290,8 +291,8 @@ fn f64_histogram_count(
     })
 }
 
-/// Latest cumulative sample sum of an `f64` histogram, in whole milliseconds.
-fn f64_histogram_sum_ms(
+/// Latest cumulative sample sum of an `f64` histogram, truncated to a `u64`.
+fn f64_histogram_sum(
     snapshots: &[ResourceMetrics],
     name: &str,
     wanted: &[(&str, &str)],
@@ -476,6 +477,47 @@ impl Algorithm for SingleCallAlgo {
         driver
             .call_llm_target(ctx, &target, request, decision)
             .await
+    }
+}
+
+/// Emits two batches of custom metrics so the observer can aggregate across runs.
+struct AlgorithmMetricsAlgo;
+
+#[async_trait]
+impl Algorithm for AlgorithmMetricsAlgo {
+    fn name(&self) -> &str {
+        "obs-algorithm-metrics"
+    }
+
+    async fn create_run_task(
+        self: Arc<Self>,
+        _ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> switchyard_libsy::Result<Response> {
+        let (counter_delta, samples) = match request.llm_request.model.as_deref() {
+            Some("metrics-first") => (2, [10.0, 20.0]),
+            _ => (3, [30.0, 40.0]),
+        };
+        let attributes = || {
+            [
+                MetricAttribute::new("source", "test-classifier"),
+                MetricAttribute::new("algorithm", "spoofed"),
+            ]
+        };
+        driver.record_counter(
+            "switchyard.test.algorithm_decisions",
+            counter_delta,
+            attributes(),
+        );
+        for sample in samples {
+            driver.record_histogram("switchyard.test.algorithm_score", sample, attributes());
+        }
+        driver.record_histogram("switchyard.test.algorithm_score", f64::NAN, attributes());
+        Ok(Response {
+            llm_response: LlmResponse::Agg(text_response(None, "metrics recorded")),
+            metadata: None,
+        })
     }
 }
 
@@ -1169,7 +1211,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     );
     // The classifier call is the router's own work but the routed call is not,
     // so overhead lands near the classifier's 60ms, not their 260ms sum.
-    let overhead = f64_histogram_sum_ms(
+    let overhead = f64_histogram_sum(
         &snapshots,
         "switchyard.routing_overhead_ms",
         &[("algorithm", "llm_task_classifier")],
@@ -1236,5 +1278,102 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
             ),
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn algorithm_metrics_preserve_accumulator_aggregates_for_observer_and_otel()
+-> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_store, exporter, provider, _, _) = telemetry();
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let observed = observations.clone();
+    let observer: RunObserver = Arc::new(move |observation| observed.lock().push(observation));
+    let algorithm = Arc::new(AlgorithmMetricsAlgo) as Arc<dyn Algorithm>;
+
+    for model in ["metrics-first", "metrics-second"] {
+        let request = Request {
+            llm_request: text_request(Some(model.to_string()), "record metrics"),
+            raw_request: None,
+            metadata: None,
+        };
+        algorithm
+            .clone()
+            .run_observed(Context::default(), request, Some(observer.clone()))
+            .await?;
+    }
+
+    let observations = observations.lock();
+    let metrics = observations
+        .iter()
+        .filter_map(|observation| match observation {
+            RunObservation::AlgorithmMetric(metric) => Some(metric),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(metrics.len(), 6);
+    assert!(metrics.iter().all(|metric| {
+        metric.algorithm == "obs-algorithm-metrics"
+            && metric.attributes == [MetricAttribute::new("source", "test-classifier")]
+    }));
+
+    let counter_total = metrics
+        .iter()
+        .filter_map(|metric| match metric.value {
+            AlgorithmMetricValue::Counter(delta)
+                if metric.name == "switchyard.test.algorithm_decisions" =>
+            {
+                Some(delta)
+            }
+            _ => None,
+        })
+        .sum::<u64>();
+    assert_eq!(counter_total, 5);
+
+    let mut samples = metrics
+        .iter()
+        .filter_map(|metric| match metric.value {
+            AlgorithmMetricValue::Histogram(sample)
+                if metric.name == "switchyard.test.algorithm_score" =>
+            {
+                Some(sample)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    samples.sort_by(f64::total_cmp);
+    let count = samples.len() as u64;
+    let total = samples.iter().sum::<f64>();
+    let min = samples.first().copied().unwrap_or_default();
+    let max = samples.last().copied().unwrap_or_default();
+    let average = total / count as f64;
+    let p50 = samples[samples.len() / 2];
+    let p99 = samples[(samples.len() - 1).min((samples.len() as f64 * 0.99) as usize)];
+    assert_eq!(
+        (count, total, min, max, average, p50, p99),
+        (4, 100.0, 10.0, 40.0, 25.0, 30.0, 40.0)
+    );
+
+    let snapshots = flushed_metrics(exporter, provider);
+    let attributes = [
+        ("algorithm", "obs-algorithm-metrics"),
+        ("source", "test-classifier"),
+    ];
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.test.algorithm_decisions",
+            &attributes,
+        ),
+        Some(5)
+    );
+    assert_eq!(
+        f64_histogram_count(&snapshots, "switchyard.test.algorithm_score", &attributes,),
+        Some(4)
+    );
+    assert_eq!(
+        f64_histogram_sum(&snapshots, "switchyard.test.algorithm_score", &attributes,),
+        Some(100)
+    );
     Ok(())
 }
