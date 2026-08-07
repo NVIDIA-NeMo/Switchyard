@@ -31,6 +31,7 @@ nav:
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
   - Operations:
       - Context-Window Handling: operations/context_window.md
+      - Soak Testing: operations/soak_test.md
   - Reference:
       - CLI Reference: cli_reference.md
       - TOML Schema: reference/toml_schema.md
