@@ -959,7 +959,7 @@
 <a href=#959 id=959 data-nosnippet>959</a>    };
 <a href=#960 id=960 data-nosnippet>960</a>
 <a href=#961 id=961 data-nosnippet>961</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::util::llm_judge::Judge;
-<a href=#962 id=962 data-nosnippet>962</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, drive, reply};
+<a href=#962 id=962 data-nosnippet>962</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, reply, test_drive};
 <a href=#963 id=963 data-nosnippet>963</a>    <span class="kw">use </span>switchyard_protocol::{Context, LlmResponse, Response};
 <a href=#964 id=964 data-nosnippet>964</a>
 <a href=#965 id=965 data-nosnippet>965</a>    <span class="kw">const </span>TEST_THRESHOLD: f64 = <span class="number">0.5</span>;
@@ -1128,7 +1128,7 @@
 <a href=#1128 id=1128 data-nosnippet>1128</a>    </span><span class="kw">async fn </span>an_unreachable_judge_routes_capable_instead_of_failing_the_request() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
 <a href=#1129 id=1129 data-nosnippet>1129</a>        <span class="kw">let </span>router = router()<span class="question-mark">?</span>;
 <a href=#1130 id=1130 data-nosnippet>1130</a>
-<a href=#1131 id=1131 data-nosnippet>1131</a>        <span class="kw">let </span>(trace, response) = drive(
+<a href=#1131 id=1131 data-nosnippet>1131</a>        <span class="kw">let </span>(trace, response) = test_drive(
 <a href=#1132 id=1132 data-nosnippet>1132</a>            router,
 <a href=#1133 id=1133 data-nosnippet>1133</a>            Context::default(),
 <a href=#1134 id=1134 data-nosnippet>1134</a>            classify_request(),
@@ -1150,14 +1150,14 @@
 <a href=#1150 id=1150 data-nosnippet>1150</a>        <span class="kw">let </span>router = router()<span class="question-mark">?</span>;
 <a href=#1151 id=1151 data-nosnippet>1151</a>        <span class="kw">let </span>request = classify_request;
 <a href=#1152 id=1152 data-nosnippet>1152</a>
-<a href=#1153 id=1153 data-nosnippet>1153</a>        drive(
+<a href=#1153 id=1153 data-nosnippet>1153</a>        test_drive(
 <a href=#1154 id=1154 data-nosnippet>1154</a>            router.clone(),
 <a href=#1155 id=1155 data-nosnippet>1155</a>            Context::default(),
 <a href=#1156 id=1156 data-nosnippet>1156</a>            request(),
 <a href=#1157 id=1157 data-nosnippet>1157</a>            recorder.serve(),
 <a href=#1158 id=1158 data-nosnippet>1158</a>        )
 <a href=#1159 id=1159 data-nosnippet>1159</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#1160 id=1160 data-nosnippet>1160</a>        drive(
+<a href=#1160 id=1160 data-nosnippet>1160</a>        test_drive(
 <a href=#1161 id=1161 data-nosnippet>1161</a>            router.clone(),
 <a href=#1162 id=1162 data-nosnippet>1162</a>            Context::default(),
 <a href=#1163 id=1163 data-nosnippet>1163</a>            request(),
@@ -1188,7 +1188,7 @@
 <a href=#1188 id=1188 data-nosnippet>1188</a>            },
 <a href=#1189 id=1189 data-nosnippet>1189</a>        })<span class="question-mark">?</span>);
 <a href=#1190 id=1190 data-nosnippet>1190</a>
-<a href=#1191 id=1191 data-nosnippet>1191</a>        drive(
+<a href=#1191 id=1191 data-nosnippet>1191</a>        test_drive(
 <a href=#1192 id=1192 data-nosnippet>1192</a>            router,
 <a href=#1193 id=1193 data-nosnippet>1193</a>            Context::default(),
 <a href=#1194 id=1194 data-nosnippet>1194</a>            classify_request(),
@@ -1217,7 +1217,7 @@
 <a href=#1217 id=1217 data-nosnippet>1217</a>            },
 <a href=#1218 id=1218 data-nosnippet>1218</a>        })<span class="question-mark">?</span>);
 <a href=#1219 id=1219 data-nosnippet>1219</a>
-<a href=#1220 id=1220 data-nosnippet>1220</a>        drive(
+<a href=#1220 id=1220 data-nosnippet>1220</a>        test_drive(
 <a href=#1221 id=1221 data-nosnippet>1221</a>            router,
 <a href=#1222 id=1222 data-nosnippet>1222</a>            Context::default(),
 <a href=#1223 id=1223 data-nosnippet>1223</a>            classify_request(),
@@ -1248,14 +1248,14 @@
 <a href=#1248 id=1248 data-nosnippet>1248</a>        })<span class="question-mark">?</span>);
 <a href=#1249 id=1249 data-nosnippet>1249</a>
 <a href=#1250 id=1250 data-nosnippet>1250</a>        <span class="kw">let </span>session_request = classify_session_request;
-<a href=#1251 id=1251 data-nosnippet>1251</a>        drive(
+<a href=#1251 id=1251 data-nosnippet>1251</a>        test_drive(
 <a href=#1252 id=1252 data-nosnippet>1252</a>            router.clone(),
 <a href=#1253 id=1253 data-nosnippet>1253</a>            Context::default(),
 <a href=#1254 id=1254 data-nosnippet>1254</a>            session_request(),
 <a href=#1255 id=1255 data-nosnippet>1255</a>            recorder.serve(),
 <a href=#1256 id=1256 data-nosnippet>1256</a>        )
 <a href=#1257 id=1257 data-nosnippet>1257</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#1258 id=1258 data-nosnippet>1258</a>        drive(
+<a href=#1258 id=1258 data-nosnippet>1258</a>        test_drive(
 <a href=#1259 id=1259 data-nosnippet>1259</a>            router.clone(),
 <a href=#1260 id=1260 data-nosnippet>1260</a>            Context::default(),
 <a href=#1261 id=1261 data-nosnippet>1261</a>            session_request(),
@@ -1285,14 +1285,14 @@
 <a href=#1285 id=1285 data-nosnippet>1285</a>            },
 <a href=#1286 id=1286 data-nosnippet>1286</a>        })<span class="question-mark">?</span>);
 <a href=#1287 id=1287 data-nosnippet>1287</a>
-<a href=#1288 id=1288 data-nosnippet>1288</a>        drive(
+<a href=#1288 id=1288 data-nosnippet>1288</a>        test_drive(
 <a href=#1289 id=1289 data-nosnippet>1289</a>            router.clone(),
 <a href=#1290 id=1290 data-nosnippet>1290</a>            Context::default(),
 <a href=#1291 id=1291 data-nosnippet>1291</a>            classify_request(),
 <a href=#1292 id=1292 data-nosnippet>1292</a>            recorder.serve(),
 <a href=#1293 id=1293 data-nosnippet>1293</a>        )
 <a href=#1294 id=1294 data-nosnippet>1294</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#1295 id=1295 data-nosnippet>1295</a>        drive(
+<a href=#1295 id=1295 data-nosnippet>1295</a>        test_drive(
 <a href=#1296 id=1296 data-nosnippet>1296</a>            router.clone(),
 <a href=#1297 id=1297 data-nosnippet>1297</a>            Context::default(),
 <a href=#1298 id=1298 data-nosnippet>1298</a>            classify_follow_up_request(),
@@ -1860,7 +1860,7 @@
 <a href=#1860 id=1860 data-nosnippet>1860</a>        <span class="kw">let </span>model = Queue::new([<span class="string">"efficient answer"</span>]);
 <a href=#1861 id=1861 data-nosnippet>1861</a>        <span class="kw">let </span>router = escalation_router()<span class="question-mark">?</span>;
 <a href=#1862 id=1862 data-nosnippet>1862</a>
-<a href=#1863 id=1863 data-nosnippet>1863</a>        <span class="kw">let </span>(trace, response) = drive(
+<a href=#1863 id=1863 data-nosnippet>1863</a>        <span class="kw">let </span>(trace, response) = test_drive(
 <a href=#1864 id=1864 data-nosnippet>1864</a>            router,
 <a href=#1865 id=1865 data-nosnippet>1865</a>            Context::default(),
 <a href=#1866 id=1866 data-nosnippet>1866</a>            classify_request(),
@@ -1895,7 +1895,7 @@
 <a href=#1895 id=1895 data-nosnippet>1895</a>            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
 <a href=#1896 id=1896 data-nosnippet>1896</a>        })<span class="question-mark">?</span>);
 <a href=#1897 id=1897 data-nosnippet>1897</a>
-<a href=#1898 id=1898 data-nosnippet>1898</a>        drive(
+<a href=#1898 id=1898 data-nosnippet>1898</a>        test_drive(
 <a href=#1899 id=1899 data-nosnippet>1899</a>            router,
 <a href=#1900 id=1900 data-nosnippet>1900</a>            Context::default(),
 <a href=#1901 id=1901 data-nosnippet>1901</a>            classify_request(),
@@ -1917,7 +1917,7 @@
 <a href=#1917 id=1917 data-nosnippet>1917</a>        </span><span class="kw">let </span>model = Queue::new([<span class="string">"efficient draft"</span>, <span class="string">"capable answer"</span>]);
 <a href=#1918 id=1918 data-nosnippet>1918</a>        <span class="kw">let </span>router = escalation_router()<span class="question-mark">?</span>;
 <a href=#1919 id=1919 data-nosnippet>1919</a>
-<a href=#1920 id=1920 data-nosnippet>1920</a>        <span class="kw">let </span>(trace, response) = drive(
+<a href=#1920 id=1920 data-nosnippet>1920</a>        <span class="kw">let </span>(trace, response) = test_drive(
 <a href=#1921 id=1921 data-nosnippet>1921</a>            router,
 <a href=#1922 id=1922 data-nosnippet>1922</a>            Context::default(),
 <a href=#1923 id=1923 data-nosnippet>1923</a>            classify_request(),
@@ -1942,14 +1942,14 @@
 <a href=#1942 id=1942 data-nosnippet>1942</a>        <span class="kw">let </span>router = escalation_router()<span class="question-mark">?</span>;
 <a href=#1943 id=1943 data-nosnippet>1943</a>
 <a href=#1944 id=1944 data-nosnippet>1944</a>        <span class="kw">let </span>session_request = classify_session_request();
-<a href=#1945 id=1945 data-nosnippet>1945</a>        drive(
+<a href=#1945 id=1945 data-nosnippet>1945</a>        test_drive(
 <a href=#1946 id=1946 data-nosnippet>1946</a>            router.clone(),
 <a href=#1947 id=1947 data-nosnippet>1947</a>            Context::default(),
 <a href=#1948 id=1948 data-nosnippet>1948</a>            session_request.clone(),
 <a href=#1949 id=1949 data-nosnippet>1949</a>            queued(Arc::clone(<span class="kw-2">&amp;</span>model), Arc::clone(<span class="kw-2">&amp;</span>judge)),
 <a href=#1950 id=1950 data-nosnippet>1950</a>        )
 <a href=#1951 id=1951 data-nosnippet>1951</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#1952 id=1952 data-nosnippet>1952</a>        <span class="kw">let </span>(trace, <span class="kw">_</span>) = drive(
+<a href=#1952 id=1952 data-nosnippet>1952</a>        <span class="kw">let </span>(trace, <span class="kw">_</span>) = test_drive(
 <a href=#1953 id=1953 data-nosnippet>1953</a>            router.clone(),
 <a href=#1954 id=1954 data-nosnippet>1954</a>            Context::default(),
 <a href=#1955 id=1955 data-nosnippet>1955</a>            session_request,
@@ -1981,7 +1981,7 @@
 <a href=#1981 id=1981 data-nosnippet>1981</a>        };
 <a href=#1982 id=1982 data-nosnippet>1982</a>
 <a href=#1983 id=1983 data-nosnippet>1983</a>        <span class="kw">let </span>(trace, response) =
-<a href=#1984 id=1984 data-nosnippet>1984</a>            drive(router, Context::default(), classify_request(), serve).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#1984 id=1984 data-nosnippet>1984</a>            test_drive(router, Context::default(), classify_request(), serve).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#1985 id=1985 data-nosnippet>1985</a>
 <a href=#1986 id=1986 data-nosnippet>1986</a>        <span class="macro">assert_eq!</span>(trace.last().map(|d| d.selected_model()), <span class="prelude-val">Some</span>(<span class="string">"capable"</span>));
 <a href=#1987 id=1987 data-nosnippet>1987</a>        <span class="macro">assert_eq!</span>(

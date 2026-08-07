@@ -73,7 +73,7 @@
 <a href=#73 id=73 data-nosnippet>73</a>
 <a href=#74 id=74 data-nosnippet>74</a>    <span class="kw">use </span><span class="kw">super</span>::Passthrough;
 <a href=#75 id=75 data-nosnippet>75</a>    <span class="kw">use </span><span class="kw">crate</span>::core::algorithm::{Algorithm, LlmTarget};
-<a href=#76 id=76 data-nosnippet>76</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{drive, echo};
+<a href=#76 id=76 data-nosnippet>76</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{echo, test_drive};
 <a href=#77 id=77 data-nosnippet>77</a>    <span class="kw">use </span>switchyard_protocol::{Context, Request, completion_text, text_request};
 <a href=#78 id=78 data-nosnippet>78</a>
 <a href=#79 id=79 data-nosnippet>79</a>    <span class="attr">#[tokio::test]
@@ -87,7 +87,7 @@
 <a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">let </span>algorithm: Arc&lt;<span class="kw">dyn </span>Algorithm&gt; = Arc::new(Passthrough::new(LlmTarget {
 <a href=#88 id=88 data-nosnippet>88</a>            semantic_name: MODEL_ID.to_string(),
 <a href=#89 id=89 data-nosnippet>89</a>        }));
-<a href=#90 id=90 data-nosnippet>90</a>        <span class="kw">let </span>(trace, response) = drive(algorithm, Context::default(), request, echo()).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#90 id=90 data-nosnippet>90</a>        <span class="kw">let </span>(trace, response) = test_drive(algorithm, Context::default(), request, echo()).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#91 id=91 data-nosnippet>91</a>
 <a href=#92 id=92 data-nosnippet>92</a>        <span class="macro">assert_eq!</span>(
 <a href=#93 id=93 data-nosnippet>93</a>            response

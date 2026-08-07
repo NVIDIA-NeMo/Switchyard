@@ -231,7 +231,7 @@
 <a href=#231 id=231 data-nosnippet>231</a>    <span class="kw">use </span><span class="kw">crate</span>::core::algorithm::LlmTarget;
 <a href=#232 id=232 data-nosnippet>232</a>    <span class="kw">use </span><span class="kw">crate</span>::core::classifier::Score;
 <a href=#233 id=233 data-nosnippet>233</a>    <span class="kw">use </span><span class="kw">crate</span>::core::state::StateValue;
-<a href=#234 id=234 data-nosnippet>234</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, drive, reply};
+<a href=#234 id=234 data-nosnippet>234</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, reply, test_drive};
 <a href=#235 id=235 data-nosnippet>235</a>    <span class="kw">use </span>switchyard_protocol::{Context, Decision, Metadata, Response};
 <a href=#236 id=236 data-nosnippet>236</a>
 <a href=#237 id=237 data-nosnippet>237</a>    <span class="kw">fn </span>tier_target(name: <span class="kw-2">&amp;</span>str) -&gt; LlmTarget {
@@ -494,14 +494,14 @@
 <a href=#494 id=494 data-nosnippet>494</a>        <span class="kw">let </span>router = recording_router(config_with_notes())<span class="question-mark">?</span>;
 <a href=#495 id=495 data-nosnippet>495</a>        <span class="kw">let </span>ctx = Context::default();
 <a href=#496 id=496 data-nosnippet>496</a>
-<a href=#497 id=497 data-nosnippet>497</a>        drive(
+<a href=#497 id=497 data-nosnippet>497</a>        test_drive(
 <a href=#498 id=498 data-nosnippet>498</a>            router.clone(),
 <a href=#499 id=499 data-nosnippet>499</a>            ctx.clone(),
 <a href=#500 id=500 data-nosnippet>500</a>            turn_request(<span class="bool-val">false</span>),
 <a href=#501 id=501 data-nosnippet>501</a>            recorder.serve(),
 <a href=#502 id=502 data-nosnippet>502</a>        )
 <a href=#503 id=503 data-nosnippet>503</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#504 id=504 data-nosnippet>504</a>        drive(router.clone(), ctx, turn_request(<span class="bool-val">true</span>), recorder.serve()).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#504 id=504 data-nosnippet>504</a>        test_drive(router.clone(), ctx, turn_request(<span class="bool-val">true</span>), recorder.serve()).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#505 id=505 data-nosnippet>505</a>
 <a href=#506 id=506 data-nosnippet>506</a>        <span class="kw">let </span>calls = recorder.routed();
 <a href=#507 id=507 data-nosnippet>507</a>        <span class="macro">assert_eq!</span>(calls[<span class="number">0</span>].target, <span class="string">"weak"</span>);
@@ -527,7 +527,7 @@
 <a href=#527 id=527 data-nosnippet>527</a>        <span class="kw">let </span>recorder = Arc::new(Recorder::default());
 <a href=#528 id=528 data-nosnippet>528</a>        <span class="kw">let </span>router = recording_router(config_with_judge(<span class="kw-2">&amp;</span>recorder, <span class="number">0.1</span>))<span class="question-mark">?</span>;
 <a href=#529 id=529 data-nosnippet>529</a>
-<a href=#530 id=530 data-nosnippet>530</a>        drive(
+<a href=#530 id=530 data-nosnippet>530</a>        test_drive(
 <a href=#531 id=531 data-nosnippet>531</a>            router.clone(),
 <a href=#532 id=532 data-nosnippet>532</a>            Context::default(),
 <a href=#533 id=533 data-nosnippet>533</a>            turn_request(<span class="bool-val">false</span>),
@@ -548,7 +548,7 @@
 <a href=#548 id=548 data-nosnippet>548</a>        <span class="kw">let </span>recorder = Arc::new(Recorder::default());
 <a href=#549 id=549 data-nosnippet>549</a>        <span class="kw">let </span>router = recording_router(config_with_judge(<span class="kw-2">&amp;</span>recorder, <span class="number">0.9</span>))<span class="question-mark">?</span>;
 <a href=#550 id=550 data-nosnippet>550</a>
-<a href=#551 id=551 data-nosnippet>551</a>        drive(
+<a href=#551 id=551 data-nosnippet>551</a>        test_drive(
 <a href=#552 id=552 data-nosnippet>552</a>            router.clone(),
 <a href=#553 id=553 data-nosnippet>553</a>            Context::default(),
 <a href=#554 id=554 data-nosnippet>554</a>            turn_request(<span class="bool-val">true</span>),
@@ -570,7 +570,7 @@
 <a href=#570 id=570 data-nosnippet>570</a>        <span class="kw">let </span>router = recording_router(config_with_judge(<span class="kw-2">&amp;</span>recorder, <span class="number">0.1</span>))<span class="question-mark">?</span>;
 <a href=#571 id=571 data-nosnippet>571</a>        <span class="kw">let </span>ctx = Context::default();
 <a href=#572 id=572 data-nosnippet>572</a>
-<a href=#573 id=573 data-nosnippet>573</a>        drive(
+<a href=#573 id=573 data-nosnippet>573</a>        test_drive(
 <a href=#574 id=574 data-nosnippet>574</a>            router.clone(),
 <a href=#575 id=575 data-nosnippet>575</a>            ctx.clone(),
 <a href=#576 id=576 data-nosnippet>576</a>            turn_request(<span class="bool-val">false</span>),
@@ -578,7 +578,7 @@
 <a href=#578 id=578 data-nosnippet>578</a>        )
 <a href=#579 id=579 data-nosnippet>579</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#580 id=580 data-nosnippet>580</a>        <span class="kw-2">*</span>recorder.judge_p_solve.lock() = <span class="number">0.9</span>;
-<a href=#581 id=581 data-nosnippet>581</a>        drive(router.clone(), ctx, turn_request(<span class="bool-val">false</span>), recorder.serve()).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#581 id=581 data-nosnippet>581</a>        test_drive(router.clone(), ctx, turn_request(<span class="bool-val">false</span>), recorder.serve()).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#582 id=582 data-nosnippet>582</a>
 <a href=#583 id=583 data-nosnippet>583</a>        <span class="kw">let </span>routed = recorder.routed();
 <a href=#584 id=584 data-nosnippet>584</a>        <span class="macro">assert_eq!</span>(routed[<span class="number">0</span>].target, <span class="string">"strong"</span>);
@@ -601,7 +601,7 @@
 <a href=#601 id=601 data-nosnippet>601</a>        <span class="kw">let </span>recorder = Arc::new(Recorder::default());
 <a href=#602 id=602 data-nosnippet>602</a>        <span class="kw">let </span>router = recording_router(config_with_judge(<span class="kw-2">&amp;</span>recorder, <span class="number">42.0</span>))<span class="question-mark">?</span>;
 <a href=#603 id=603 data-nosnippet>603</a>
-<a href=#604 id=604 data-nosnippet>604</a>        drive(
+<a href=#604 id=604 data-nosnippet>604</a>        test_drive(
 <a href=#605 id=605 data-nosnippet>605</a>            router.clone(),
 <a href=#606 id=606 data-nosnippet>606</a>            Context::default(),
 <a href=#607 id=607 data-nosnippet>607</a>            turn_request(<span class="bool-val">false</span>),
@@ -618,7 +618,7 @@
 <a href=#618 id=618 data-nosnippet>618</a>        <span class="kw">let </span>recorder = Arc::new(Recorder::default());
 <a href=#619 id=619 data-nosnippet>619</a>        <span class="kw">let </span>router = recording_router(config_with_judge(<span class="kw-2">&amp;</span>recorder, <span class="number">0.9</span>))<span class="question-mark">?</span>;
 <a href=#620 id=620 data-nosnippet>620</a>
-<a href=#621 id=621 data-nosnippet>621</a>        drive(
+<a href=#621 id=621 data-nosnippet>621</a>        test_drive(
 <a href=#622 id=622 data-nosnippet>622</a>            router.clone(),
 <a href=#623 id=623 data-nosnippet>623</a>            Context::default(),
 <a href=#624 id=624 data-nosnippet>624</a>            turn_request(<span class="bool-val">false</span>),
