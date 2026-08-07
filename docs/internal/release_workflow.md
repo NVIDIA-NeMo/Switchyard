@@ -8,7 +8,8 @@ Switchyard currently follows the OSS-style NeMo path for GitHub builds:
 - manual dev builds create one Linux x86_64 wheel as a one-day GitHub Actions artifact;
 - manual dev matrix builds create the full sdist and wheel set as GitHub Actions artifacts;
 - root `vMAJOR.MINOR.PATCH` tags run the complete release validation and wheel matrix;
-- public PyPI/GitHub publishing happens only from approved `vMAJOR.MINOR.PATCH` tag releases.
+- public PyPI, crates.io, and GitHub publishing happens only from approved
+  `vMAJOR.MINOR.PATCH` tag releases.
 
 Wheel metadata uses the public distribution name `nemo-switchyard`, while the Python import and CLI
 stay `switchyard`.
@@ -69,7 +70,8 @@ Create a root `vMAJOR.MINOR.PATCH` tag only when a real release has been approve
 - native wheel smoke installs where the runner can execute the artifact.
 
 The workflow rejects release tags that do not exactly match `pyproject.toml`'s package version. For
-example, package version `0.0.1` must be released with the `v0.0.1` tag.
+example, package version `0.2.0` must be released with the `v0.2.0` tag. The Rust workspace and
+Python package versions must also match.
 
 The official `publish` job uses `uv publish --trusted-publishing always`, so PyPI project creation
 and uploads require a matching pending trusted publisher:
@@ -84,6 +86,19 @@ and uploads require a matching pending trusted publisher:
 
 Do not create a root release tag until the PyPI pending publisher and GitHub `pypi` environment are
 ready.
+
+The same tag publishes these crates to crates.io in dependency order:
+
+1. `switchyard-protocol`
+2. `switchyard-libsy`
+3. `switchyard-translation`
+4. `switchyard-llm-client`
+5. `switchyard-server`
+
+Add a repository Actions secret named `CARGO_REGISTRY_TOKEN` containing a crates.io API token that
+can publish all five crates and create new crates. The job waits for each version to reach the
+crates.io index before publishing its dependents. If publication stops partway through, use
+GitHub's **Re-run failed jobs** action so successful crate jobs are not repeated.
 
 ## Local Metadata Helper
 

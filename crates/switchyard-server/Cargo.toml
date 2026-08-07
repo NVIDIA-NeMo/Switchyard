@@ -7,9 +7,14 @@ version.workspace = true
 description = "Rust HTTP server surface for libsy algorithms"
 authors.workspace = true
 edition.workspace = true
+homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
 license.workspace = true
+readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
+documentation = "https://docs.rs/switchyard-server"
+keywords = ["llm", "proxy", "routing", "openai", "anthropic"]
+publish = ["crates-io"]
 
 [dependencies]
 async-stream.workspace = true
@@ -20,7 +25,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", 
 clap = { version = "4", features = ["derive", "env"] }
 futures-util.workspace = true
 http.workspace = true
-libsy = { package = "switchyard-libsy", path = "../libsy" }
+libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.2.0" }
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "metrics", "reqwest-blocking-client", "reqwest-rustls", "trace"] }
 opentelemetry-prometheus = "0.32"
