@@ -36,9 +36,14 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     if args.routing_log_file:
         from switchyard.lib.processors.routing_log_response_processor import (
             RoutingLogResponseProcessor,
+            register_routing_log_sink,
         )
 
-        response_processors.append(RoutingLogResponseProcessor(args.routing_log_file))
+        routing_log = RoutingLogResponseProcessor(args.routing_log_file)
+        response_processors.append(routing_log)
+        # Multi-call backends (advisor strategies) emit their proxy-internal
+        # usage (consults, discarded turns) into the same log via this sink.
+        register_routing_log_sink(routing_log)
 
     table = load_route_bundle_table(
         args.routing_profiles,

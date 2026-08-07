@@ -158,6 +158,23 @@ Direct Rust bindings for migrated concrete processors/backends are exposed from
 | Response component | Plain Python/Rust object | `async process(ctx, response) -> ChatResponse` | Post-process (logging, stats) |
 | `TranslationEngine` | `switchyard_rust.translation` | `async translate(ctx, request, response) -> Any` | Convert to client's wire format |
 
+### Multi-call backends
+
+`AdvisorProfileConfig` (`switchyard/lib/profiles/advisor.py`) dispatches on `AdvisorConfig.strategy`
+to one of two backends. `AdvisorToolCallBackend` (`tool_call`, default) offers the executor a
+proxy-intercepted `advisor` tool; `AdvisorLoopBackend` (`review_gate`) injects no tool and instead
+reviews the executor's first no-tool-call turn, because front-loaded advice suppressed the
+executor's own test-and-iterate loop — its trigger is proxy-side, so prefer it for executors that
+rarely call tools. Advisor text goes into the system prompt and the first user message, never the
+newest turn, so the upstream cache prefix stays stable across a session. Both are multi-call — one
+`call(...)` issues several upstream requests before returning one `ChatResponse`, so "exactly one
+per chain" holds at the chain level only — and both do their own stats accounting into the
+classifier bucket, so they must not be wrapped in `StatsLlmBackend`, which rejects Python-only
+backends; `with_runtime_components` attaches the accumulator instead. Executor and advisor targets
+dispatch independently on `LlmTarget.format`; `responses` is rejected at `AdvisorConfig` validation.
+Compose with a `type: advisor` route (`switchyard/cli/route_bundle.py`) or an `AdvisorPresets`
+helper.
+
 ## Project Structure
 
 ```
@@ -183,6 +200,8 @@ switchyard/
 │   │   ├── openai_llm_backend.py           # OpenAiPassthroughBackend
 │   │   ├── openai_native_backend.py        # OpenAiNativeBackend
 │   │   ├── anthropic_native_llm_backend.py # AnthropicNativeBackend
+│   │   ├── advisor_tool_call_backend.py    # AdvisorToolCallBackend (advisor tool_call strategy)
+│   │   ├── advisor_loop_backend.py         # AdvisorLoopBackend (advisor review_gate strategy)
 │   │   ├── llm_target.py                   # LlmTarget, BackendFormat
 │   │   ├── multi_llm_backend.py            # MultiLlmBackend helpers
 │   │   ├── stats_llm_backend.py            # StatsLlmBackend

@@ -35,11 +35,13 @@ from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
 from switchyard.lib.processors.llm_classifier import DEFAULT_MAX_REQUEST_CHARS
 from switchyard.lib.processors.llm_classifier.presets import PROFILE_FACTORIES
 from switchyard.lib.profiles import (
+    AdvisorProfileConfig,
     DeterministicRoutingProfileConfig,
     EscalationRouterProfileConfig,
     ProfileSwitchyard,
     StageRouterProfileConfig,
 )
+from switchyard.lib.profiles.advisor_config import AdvisorConfig
 from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
 from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
@@ -247,6 +249,37 @@ _ESCALATION_JUDGE_KEYS = frozenset({
     "prompt_path",
     "max_request_chars",
 })
+
+_ADVISOR_ROUTE_KEYS = (
+    _ROUTE_METADATA_KEYS
+    | _TARGET_DEFAULT_ROUTE_KEYS
+    | frozenset({
+        "executor",
+        "advisor",
+        "strategy",
+        "advisor_tool_name",
+        "max_uses",
+        "inject_steering",
+        "executor_steering",
+        "advisor_length_line",
+        "advisor_system_prompt",
+        "advisor_tool_description",
+        "reviewer_system_prompt",
+        "redo_feedback_prefix",
+        "gate_trigger",
+        "gate_trigger_pattern",
+        "max_reviews",
+        "gate_stall_turns",
+        "gate_min_tool_results",
+        "seed_plan_advice",
+        "seed_advice_prefix",
+        "advisor_max_tokens",
+        "advisor_temperature",
+        "transcript_max_chars",
+        "fail_open",
+        "enable_stats",
+    })
+)
 _DETERMINISTIC_CLASSIFIER_KEYS = frozenset({
     "model",
     "api_key",
@@ -279,6 +312,7 @@ _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "deterministic": _DETERMINISTIC_ROUTE_KEYS,
     "escalation_router": _ESCALATION_ROUTE_KEYS,
     "stage_router": _STAGE_ROUTER_ROUTE_KEYS,
+    "advisor": _ADVISOR_ROUTE_KEYS,
 }
 _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _TARGET_DEFAULT_KEYS,
@@ -286,6 +320,7 @@ _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "deterministic": _TARGET_DEFAULT_KEYS,
     "escalation_router": _TARGET_DEFAULT_KEYS,
     "stage_router": _TARGET_DEFAULT_KEYS,
+    "advisor": _TARGET_DEFAULT_KEYS,
 }
 
 def _deterministic_profile_factories() -> dict[
@@ -720,6 +755,16 @@ def _build_route_chain(
             extra_response_processors=extra_response_processors,
         )
 
+    if route_type == "advisor":
+        return _advisor_switchyard(
+            model_id,
+            route,
+            target_defaults=target_defaults,
+            stats=stats,
+            pre_routing_request_processors=pre_routing_request_processors,
+            extra_response_processors=extra_response_processors,
+        )
+
     raise RouteBundleConfigError(f"unsupported route type {route_type!r}")
 
 
@@ -1079,6 +1124,44 @@ def _stage_router_switchyard(
     )
 
 
+def _advisor_switchyard(
+    model_id: str,  # noqa: ARG001 - kept for dispatch-call symmetry with siblings
+    route: Mapping[str, object],
+    *,
+    target_defaults: Mapping[str, object],
+    stats: StatsAccumulator,
+    pre_routing_request_processors: Sequence[Any] = (),
+    extra_response_processors: Sequence[Any] = (),
+) -> ChainRuntime:
+    """Build an executor + advisor chain from a ``type: advisor`` route.
+
+    Mirrors :func:`_stage_router_switchyard`: the ``executor`` / ``advisor``
+    tiers and scalar fields go through the shared ``_route_config`` →
+    :meth:`AdvisorConfig.model_validate` path. Both tiers are required, and
+    each tier's ``format`` selects its wire independently — ``anthropic``
+    (native ``/v1/messages``; the executor passthrough preserves prompt
+    caching) or ``openai`` (``/chat/completions``; Qwen/DeepSeek/vLLM/NIM/
+    OpenAI endpoints). ``responses`` targets are rejected at validation.
+    ``strategy`` selects the advisor mode: ``tool_call`` (default) offers the
+    executor a proxy-intercepted ``advisor`` tool; ``review_gate`` gates the
+    executor with a once-per-session advisor review. Both strategies work on
+    either wire.
+    """
+    config = AdvisorConfig.model_validate(
+        _route_config(route, target_defaults, ("executor", "advisor"))
+    )
+    return ProfileSwitchyard(
+        AdvisorProfileConfig.from_config(config)
+        .build()
+        .with_runtime_components(
+            stats_accumulator=stats,
+            enable_stats=config.enable_stats,
+            pre_request_processors=pre_routing_request_processors,
+            response_processors=extra_response_processors,
+        )
+    )
+
+
 def _passthrough_target(
     model_id: str,
     route: Mapping[str, object],
@@ -1227,6 +1310,7 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "escalation_router": "escalation_router",
         "stage_router": "stage_router",
         "stage_router_routing": "stage_router",
+        "advisor": "advisor",
     }
     try:
         return aliases[normalized]

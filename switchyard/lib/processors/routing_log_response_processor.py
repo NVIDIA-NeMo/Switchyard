@@ -73,6 +73,10 @@ class RoutingLogResponseProcessor:
             "tier": ctx.metadata.get("_random_routing_tier", "") or (ctx.selected_target or ""),
             **_usage_tokens(response.body),
         }
+        self._append(record)
+
+    def _append(self, record: dict[str, Any]) -> None:
+        """Append one record as a JSON line; write failures never propagate."""
         try:
             line = json.dumps(record, separators=(",", ":"))
             with self._lock, self._log_file.open("a", encoding="utf-8") as handle:
@@ -150,6 +154,56 @@ class RoutingLogResponseProcessor:
         )
 
         return RoutingLogStatsEndpoint(self)
+
+
+#: Process-global sink for proxy-internal usage records (advisor consults,
+#: REDO-discarded executor turns). Multi-call backends issue upstream requests
+#: beneath the chain, so this response processor never sees them; the backends
+#: emit records here instead. Registered by the serving entry point that owns
+#: the routing log; None (the default) makes emission a no-op.
+_AUX_SINK: RoutingLogResponseProcessor | None = None
+
+
+def register_routing_log_sink(processor: RoutingLogResponseProcessor | None) -> None:
+    """Register (or clear) the routing log that receives auxiliary records."""
+    global _AUX_SINK
+    _AUX_SINK = processor
+
+
+def emit_auxiliary_record(
+    *,
+    session_id: str | None,
+    task: str | None,
+    model: str,
+    tier: str,
+    prompt_tokens: int = 0,
+    cached_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    completion_tokens: int = 0,
+) -> None:
+    """Append a proxy-internal usage record to the registered routing log.
+
+    The record shape matches ``_write_record`` exactly, so
+    ``snapshot_session`` (and with it ``/v1/routing/session-stats``)
+    aggregates chain-terminal and proxy-internal usage alike.
+    """
+    sink = _AUX_SINK
+    if sink is None:
+        return
+    sink._append({
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "task": task,
+        "trial_id": None,
+        "session_id": session_id,
+        "model": model,
+        "tier": tier,
+        "prompt_tokens": prompt_tokens,
+        "cached_tokens": cached_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "completion_tokens": completion_tokens,
+        "reasoning_tokens": 0,
+        "total_tokens": prompt_tokens + completion_tokens,
+    })
 
 
 def _usage_tokens(body: object) -> dict[str, int]:
