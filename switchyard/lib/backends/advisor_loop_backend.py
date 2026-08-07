@@ -62,16 +62,20 @@ streamed and buffered while detecting whether it has tool calls; a passed-throug
 / approved turn's buffered events are replayed verbatim, so the turn is generated
 once. After the review fires, the session is pure passthrough (the upstream
 stream is returned directly — true streaming, full caching, zero overhead).
-The review budget is enforced at two levels. ``max_reviews`` caps reviews per
-backend instance — one instance serves one run, so that is the per-task ceiling
-and the authoritative bound on advisor spend. Beneath it, the same value caps
-reviews per conversation, keyed by a hash of the conversation's stable prefix
-(the client's ``cache_control``-marked system prefix plus the first user
-message; see ``_session_key``). The instance ceiling exists because that hash is
-not reliably stable: harnesses compact history, spawn sub-conversations, and
-re-render system context, each of which mints a fresh key and would otherwise
-refill a purely per-session budget. A pod restart mid-run resets both (rare,
-harmless).
+The review budget (``max_reviews``) is keyed by the caller-declared session
+identity: the ``proxy_x_session_id`` header (parsed into
+``RequestMetadata.session_id`` by the endpoints) when present, else a single
+instance-wide scope. Benchmark harnesses stamp that header with the evaluation
+id on every request — including sub-agent conversations — so on a gateway
+shared by many tasks each task gets its own budget, exactly the "reviews for
+*this* task" semantics ``max_reviews`` is meant to have. The content hash of
+the conversation prefix (``_session_key``) is NOT used for budgeting — it is
+not reliably stable (harnesses compact history, spawn sub-conversations, and
+re-render system context) — and only keys the seed-advice cache and the stall
+checkpoint. Failed advisor consults do not consume budget; after
+``_MAX_FAILED_CONSULTS_PER_SCOPE`` failures a scope stops consulting entirely,
+bounding latency against a down advisor. A pod restart mid-run resets the
+budget (rare, harmless).
 """
 
 from __future__ import annotations
@@ -95,6 +99,7 @@ from switchyard.lib.backends.multi_llm_backend import (
 from switchyard.lib.chat_response.anthropic import AnthropicResponseStream
 from switchyard.lib.chat_response.openai_chat import ResponseStream
 from switchyard.lib.profiles.advisor_config import AdvisorConfig
+from switchyard.lib.request_metadata import CTX_REQUEST_METADATA
 from switchyard.lib.roles import LLMBackend
 from switchyard_rust.core import (
     ChatRequestType,
@@ -120,6 +125,13 @@ _ANTHROPIC_VERSION = "2023-06-01"
 #: agent run legitimately opens a handful of conversations (the main thread plus
 #: any sub-agents); dozens means the key is churning per turn.
 _SESSION_CHURN_WARN_AT = 12
+#: Budget scope for callers that send no ``proxy_x_session_id`` header.
+_INSTANCE_SCOPE = "__instance__"
+#: Failed (fail-open) consults tolerated per budget scope before the gate stops
+#: consulting. Failures refund the review budget — a transient advisor error
+#: must not silently exhaust ``max_reviews`` with zero real reviews — so this
+#: separate cap is what bounds per-turn consult latency against a down advisor.
+_MAX_FAILED_CONSULTS_PER_SCOPE = 3
 
 
 class AdvisorCaller(Protocol):
@@ -131,13 +143,20 @@ class AdvisorCaller(Protocol):
 
 @dataclass
 class _ExecTurn:
-    """One executor turn, normalized across the buffered streaming / completion paths."""
+    """One executor turn, normalized across the buffered streaming / completion paths.
+
+    Token counts let a REDO-discarded turn (which the client never sees, so the
+    outer stats processor never prices it) be recorded explicitly.
+    """
 
     has_tool_use: bool
     content: str | None
     latency_ms: float
     completion_body: Any | None = None
     stream_events: list[Any] | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
 
 
 class AdvisorLoopBackend(LLMBackend):
@@ -154,30 +173,26 @@ class AdvisorLoopBackend(LLMBackend):
         self._config = config
         self._stats = stats_accumulator if config.enable_stats else None
         self._translation = TranslationEngine()
-        # Reviews already spent per session (budgeted by ``max_reviews``),
-        # keyed by conversation prefix hash. In-process; a task's turns share
-        # one switchyard pod.
-        self._review_counts: dict[str, int] = {}
         # Sessions whose stall checkpoint (gate_stall_turns) already fired.
         self._stall_fired: set[str] = set()
         # Per-session seed advice cache for seed_plan_advice ("" = unseeded).
         self._seed_advice: dict[str, str] = {}
-        # Guard against session-key instability: a harness that mutates the
-        # hashed prefix mints a fresh key per turn, silently resetting the
-        # ``max_reviews`` budget. That failure is otherwise invisible — it only
-        # shows up as unexplained advisor spend — so warn once past a threshold
-        # no legitimate single-agent run should reach. Tracked over *every*
-        # request, not just reviewed ones: a gate that never fires still churns
-        # keys, and that must stay observable.
+        # Session-key churn observability: the hashed conversation prefix keys
+        # the seed cache and stall checkpoint, so instability there degrades
+        # those features (it no longer affects the review budget, which keys on
+        # the caller's session header). Tracked over *every* request so churn
+        # stays observable even when the gate never fires.
         self._sessions_seen: set[str] = set()
         self._session_churn_warned = False
-        # Reviews spent across the whole backend instance. One instance serves
-        # one run, so this is the per-task ceiling and the authoritative bound
-        # on advisor spend; ``_review_counts`` remains the per-conversation
-        # bound beneath it. See the budget check in ``call`` for why a
-        # session-keyed budget alone is not sufficient.
-        self._reviews_this_instance = 0
-        self._instance_budget_logged = False
+        # Review budget, keyed by ``_budget_scope``: the caller's
+        # ``proxy_x_session_id`` header when present (one evaluation/task on
+        # benchmark harnesses, shared by its sub-agents), else one
+        # instance-wide scope. On a gateway shared by many tasks this gives
+        # each task its own ``max_reviews`` budget. Failed consults refund the
+        # budget and count separately (``_MAX_FAILED_CONSULTS_PER_SCOPE``).
+        self._reviews_by_scope: dict[str, int] = {}
+        self._failed_consults_by_scope: dict[str, int] = {}
+        self._budget_logged_scopes: set[str] = set()
         # Resolve format: auto before wire selection; injected fakes must pin
         # a concrete format (probing a fake's endpoint makes no sense).
         executor_target = (
@@ -227,9 +242,8 @@ class AdvisorLoopBackend(LLMBackend):
         if session not in self._sessions_seen:
             self._sessions_seen.add(session)
             log.info(
-                "AdvisorLoopBackend: new session key (%d distinct seen, %d reviewed)",
+                "AdvisorLoopBackend: new session key (%d distinct seen)",
                 len(self._sessions_seen),
-                len(self._review_counts),
             )
             if (
                 not self._session_churn_warned
@@ -239,10 +253,10 @@ class AdvisorLoopBackend(LLMBackend):
                 log.warning(
                     "AdvisorLoopBackend: %d distinct session keys seen on one backend "
                     "instance; the hashed conversation prefix is unstable for this "
-                    "client, so the max_reviews=%d budget is resetting per turn and "
-                    "the advisor may be consulted far more than configured",
+                    "client, so seed-advice caching and stall checkpoints may misfire "
+                    "(the review budget is unaffected — it keys on the caller's "
+                    "session header)",
                     len(self._sessions_seen),
-                    self._config.max_reviews,
                 )
 
         # Seed the session with upfront advisor advice (consulted once at the
@@ -252,6 +266,7 @@ class AdvisorLoopBackend(LLMBackend):
             advice = await _seed_advice_for(
                 self._seed_advice, session, messages,
                 caller=self._advisor_caller, config=self._config, stats=self._stats,
+                ctx=ctx,
             )
             if advice:
                 messages = _with_length_line(
@@ -264,27 +279,30 @@ class AdvisorLoopBackend(LLMBackend):
         # return the upstream stream directly (true streaming, caching intact,
         # no buffering).
         #
-        # The budget is enforced at TWO levels, and the instance level is the
-        # one that actually bounds spend. Session identity is a content hash and
-        # is not reliably stable: agent harnesses compact history, spawn
-        # sub-conversations, and re-render system context, each of which mints a
-        # fresh key and silently refills a purely per-session budget. Measured on
+        # The budget keys on the caller's declared session identity
+        # (``proxy_x_session_id`` header), NOT on the conversation content hash:
+        # content hashes are unstable (harnesses compact history, spawn
+        # sub-conversations, re-render system context — measured on
         # Terminal-Bench, one task minted up to 194 keys and drew 107 reviews
-        # against a configured ``max_reviews`` of 2. A backend instance serves a
-        # single run, so capping per instance expresses what ``max_reviews``
-        # is meant to mean — reviews for *this task* — regardless of how the
-        # client slices the conversation.
-        if self._reviews_this_instance >= self._config.max_reviews:
-            if not self._instance_budget_logged:
-                self._instance_budget_logged = True
+        # against a configured ``max_reviews`` of 2), and an instance-wide cap
+        # breaks the other way on a gateway shared by many tasks, where it
+        # would bound reviews for the whole run instead of per task. The header
+        # is stamped per evaluation by benchmark harnesses (sub-agents
+        # included), so it expresses exactly "reviews for *this* task"; callers
+        # that send no header fall back to one instance-wide scope.
+        scope = self._budget_scope(ctx)
+        if self._scope_exhausted(scope):
+            if scope not in self._budget_logged_scopes:
+                self._budget_logged_scopes.add(scope)
                 log.info(
-                    "AdvisorLoopBackend: instance review budget (max_reviews=%d) "
-                    "spent across %d session key(s); remaining turns pass through",
+                    "AdvisorLoopBackend: review budget spent for scope %s "
+                    "(max_reviews=%d, reviews=%d, failed consults=%d); "
+                    "remaining turns pass through",
+                    scope,
                     self._config.max_reviews,
-                    len(self._sessions_seen),
+                    self._reviews_by_scope.get(scope, 0),
+                    self._failed_consults_by_scope.get(scope, 0),
                 )
-            return await self._passthrough(ctx, normalized)
-        if self._review_counts.get(session, 0) >= self._config.max_reviews:
             return await self._passthrough(ctx, normalized)
 
         # Budget remains: run the executor and inspect its turn.
@@ -316,12 +334,18 @@ class AdvisorLoopBackend(LLMBackend):
             return await self._finish(ctx, turn)
 
         # Trigger fired: a plan, a "done", the marker, or a stall checkpoint.
-        # Gate it, spending review budget.
+        # Gate it. Budget is reserved before the consult (so concurrent
+        # requests in one scope cannot overdraw across the await) and refunded
+        # if the consult itself failed — a fail-open error is not a review.
         if stall and not triggered:
             self._stall_fired.add(session)
-        self._review_counts[session] = self._review_counts.get(session, 0) + 1
-        self._reviews_this_instance += 1
-        verdict, plan = await self._review(messages, turn.content)
+        self._reviews_by_scope[scope] = self._reviews_by_scope.get(scope, 0) + 1
+        verdict, plan, consulted = await self._review(messages, turn.content, ctx)
+        if not consulted:
+            self._reviews_by_scope[scope] -= 1
+            self._failed_consults_by_scope[scope] = (
+                self._failed_consults_by_scope.get(scope, 0) + 1
+            )
         if verdict != "REDO":
             return await self._finish(ctx, turn)
 
@@ -331,6 +355,11 @@ class AdvisorLoopBackend(LLMBackend):
         # Plain-string assistant/user turns are valid on both wires, so the
         # feedback shape needs no dialect. The prefix is config-tunable
         # (``redo_feedback_prefix``) for per-executor-family steering.
+        # The gated turn is discarded (the client never sees it) — record its
+        # usage into the classifier bucket and the routing log so the run's
+        # cost output prices it, mirroring the tool_call strategy's handling
+        # of proxy-internal turns.
+        await self._record_discarded_turn(ctx, turn)
         redo_messages = [
             *messages,
             {"role": "assistant", "content": turn.content or ""},
@@ -339,6 +368,20 @@ class AdvisorLoopBackend(LLMBackend):
         redo_body = {**body, "messages": redo_messages}
         redo_request = request_with_type(self._request_type_name, redo_body)
         return await self._passthrough(ctx, redo_request)
+
+    def _budget_scope(self, ctx: ProxyContext) -> str:
+        """Review-budget key: the caller's session header, else instance-wide."""
+        metadata = ctx.metadata.get(CTX_REQUEST_METADATA)
+        session_id = getattr(metadata, "session_id", None)
+        return f"client:{session_id}" if session_id else _INSTANCE_SCOPE
+
+    def _scope_exhausted(self, scope: str) -> bool:
+        """True when a scope has no review budget or too many failed consults."""
+        return (
+            self._reviews_by_scope.get(scope, 0) >= self._config.max_reviews
+            or self._failed_consults_by_scope.get(scope, 0)
+            >= _MAX_FAILED_CONSULTS_PER_SCOPE
+        )
 
     # ------------------------------------------------------------------
     # Executor turn
@@ -357,31 +400,43 @@ class AdvisorLoopBackend(LLMBackend):
 
         latency_ms = (time.monotonic() - started) * 1000.0
         if response.response_type == ChatResponseType.ANTHROPIC_STREAM:
-            events, has_tool_use, content = await _consume_anthropic_stream(response.stream)
+            events, has_tool_use, content, usage = await _consume_anthropic_stream(
+                response.stream
+            )
             return _ExecTurn(
                 has_tool_use=has_tool_use,
                 content=content,
                 latency_ms=latency_ms,
                 stream_events=events,
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+                cached_tokens=usage["cached_tokens"],
             )
         if response.response_type == ChatResponseType.OPENAI_STREAM:
-            events, message, _usage = await _consume_openai_stream(response.stream)
+            events, message, usage = await _consume_openai_stream(response.stream)
             return _ExecTurn(
                 has_tool_use=bool(message.get("tool_calls")),
                 content=message.get("content") or None,
                 latency_ms=latency_ms,
                 stream_events=events,
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+                cached_tokens=usage["cached_tokens"],
             )
         body = response.to_body()
         if self._is_openai:
             has_tool_use, content = _openai_completion_tool_use(body)
         else:
             has_tool_use, content = _completion_tool_use(body)
+        usage = _completion_usage(body, is_openai=self._is_openai)
         return _ExecTurn(
             has_tool_use=has_tool_use,
             content=content,
             latency_ms=latency_ms,
             completion_body=body,
+            input_tokens=usage["input_tokens"],
+            output_tokens=usage["output_tokens"],
+            cached_tokens=usage["cached_tokens"],
         )
 
     async def _passthrough(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
@@ -417,18 +472,41 @@ class AdvisorLoopBackend(LLMBackend):
         if self._stats is not None:
             await self._stats.record_success(self._config.executor.model, latency_ms)
 
+    async def _record_discarded_turn(self, ctx: ProxyContext, turn: _ExecTurn) -> None:
+        """Price a REDO-discarded executor turn into the classifier bucket + routing log."""
+        if self._stats is not None:
+            await self._stats.record_classifier_usage(
+                model=self._config.executor.model,
+                prompt_tokens=turn.input_tokens,
+                completion_tokens=turn.output_tokens,
+                cached_tokens=turn.cached_tokens,
+                latency_ms=turn.latency_ms,
+            )
+        _emit_routing_usage(
+            ctx,
+            model=self._config.executor.model,
+            tier="review_gate_discarded",
+            prompt_tokens=turn.input_tokens,
+            completion_tokens=turn.output_tokens,
+            cached_tokens=turn.cached_tokens,
+        )
+
     # ------------------------------------------------------------------
     # Advisor review
     # ------------------------------------------------------------------
 
     async def _review(
-        self, messages: list[dict[str, Any]], terminal_content: str | None,
-    ) -> tuple[str, str]:
-        """Consult the advisor once; return ``(verdict, plan)``.
+        self,
+        messages: list[dict[str, Any]],
+        terminal_content: str | None,
+        ctx: ProxyContext,
+    ) -> tuple[str, str, bool]:
+        """Consult the advisor once; return ``(verdict, plan, consulted)``.
 
         ``verdict`` is ``"APPROVE"`` or ``"REDO"``. On a fail-open advisor error
         or an unparseable reply, defaults to ``APPROVE`` (do not disrupt a
-        possibly-correct turn).
+        possibly-correct turn). ``consulted`` is False when the advisor call
+        itself failed, so the caller can refund the review budget.
         """
         transcript = self._serialize_transcript(messages, terminal_content)
         started = time.monotonic()
@@ -444,16 +522,17 @@ class AdvisorLoopBackend(LLMBackend):
                 await self._stats.record_classifier_error(self._config.advisor.model)
             _audit_review(verdict="APPROVE", error=str(exc), usage=None,
                           latency_ms=(time.monotonic() - started) * 1000.0)
-            return "APPROVE", ""
+            return "APPROVE", "", False
         latency_ms = (time.monotonic() - started) * 1000.0
         verdict, plan = _parse_verdict(text)
         # Record the advisor review's token usage so the run's own cost output
-        # (``routing_stats_final.json``) accounts for the advisor, not just the
-        # executor. Recorded into the classifier bucket — the advisor review is
-        # a secondary-model consult, like the escalation judge — so its cost
-        # rolls into ``cost_estimate.total_cost``.
+        # accounts for the advisor, not just the executor: into the classifier
+        # bucket (the advisor review is a secondary-model consult, like the
+        # escalation judge — its cost rolls into ``cost_estimate.total_cost``)
+        # AND into the routing log, so per-session stats
+        # (``/v1/routing/session-stats``) attribute it to the caller's session.
+        prompt_tokens, completion_tokens = _usage_tokens(usage)
         if self._stats is not None:
-            prompt_tokens, completion_tokens = _usage_tokens(usage)
             await self._stats.record_classifier_usage(
                 model=self._config.advisor.model,
                 prompt_tokens=prompt_tokens or 0,
@@ -461,21 +540,44 @@ class AdvisorLoopBackend(LLMBackend):
                 cached_tokens=0,
                 latency_ms=latency_ms,
             )
-        _audit_review(verdict=verdict, error=None, usage=usage, latency_ms=latency_ms)
-        return verdict, plan
+        _emit_routing_usage(
+            ctx,
+            model=self._config.advisor.model,
+            tier="advisor_review",
+            prompt_tokens=prompt_tokens or 0,
+            completion_tokens=completion_tokens or 0,
+        )
+        _audit_review(
+            verdict=verdict, error=None, usage=usage, latency_ms=latency_ms,
+            reply_head=text,
+        )
+        return verdict, plan, True
 
     def _serialize_transcript(
         self, messages: list[dict[str, Any]], terminal_content: str | None,
     ) -> str:
-        """Serialize the conversation + the executor's terminal turn for review."""
+        """Serialize the conversation + the executor's terminal turn for review.
+
+        Over ``transcript_max_chars``, the MIDDLE is dropped: the head keeps
+        the task statement, the tail keeps the executor's most recent work —
+        the part a completeness review is actually about. (Head-only
+        truncation left the reviewer judging "genuinely done?" without ever
+        seeing the recent evidence.)
+        """
         text = json.dumps(messages, default=str, ensure_ascii=False)
         cap = self._config.transcript_max_chars
         if len(text) > cap:
-            text = text[: cap - 16] + "...<truncated>"
-        tail = terminal_content or "(no text)"
+            head = cap // 4
+            tail = cap - head
+            text = (
+                text[:head]
+                + "\n...<middle of the conversation truncated>...\n"
+                + text[-tail:]
+            )
+        tail_turn = terminal_content or "(no text)"
         return (
             f"Conversation so far (JSON):\n\n{text}\n\n"
-            f"The executor's latest turn (a plan, or its claim the task is done):\n{tail}"
+            f"The executor's latest turn (a plan, or its claim the task is done):\n{tail_turn}"
         )
 
 
@@ -601,15 +703,22 @@ class _OpenAiAdvisorCaller:
 # ----------------------------------------------------------------------
 
 
-async def _consume_anthropic_stream(stream: Any) -> tuple[list[Any], bool, str | None]:
-    """Buffer an Anthropic stream; return (events, has_tool_use, assistant_text)."""
+async def _consume_anthropic_stream(
+    stream: Any,
+) -> tuple[list[Any], bool, str | None, dict[str, int]]:
+    """Buffer an Anthropic stream; return (events, has_tool_use, assistant_text, usage)."""
     events: list[Any] = []
     has_tool_use = False
     text_parts: list[str] = []
+    usage = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
     async for event in stream:
         events.append(event)
         etype = _ev(event, "type")
-        if etype == "content_block_start":
+        if etype == "message_start":
+            start_usage = _ev(_ev(event, "message"), "usage") or {}
+            usage["input_tokens"] = int(start_usage.get("input_tokens") or 0)
+            usage["cached_tokens"] = int(start_usage.get("cache_read_input_tokens") or 0)
+        elif etype == "content_block_start":
             if _ev(_ev(event, "content_block"), "type") == "tool_use":
                 has_tool_use = True
         elif etype == "content_block_delta":
@@ -621,7 +730,25 @@ async def _consume_anthropic_stream(stream: Any) -> tuple[list[Any], bool, str |
         elif etype == "message_delta":
             if _ev(_ev(event, "delta"), "stop_reason") == "tool_use":
                 has_tool_use = True
-    return events, has_tool_use, ("".join(text_parts) or None)
+            delta_usage = _ev(event, "usage") or {}
+            usage["output_tokens"] = int(delta_usage.get("output_tokens") or 0)
+    return events, has_tool_use, ("".join(text_parts) or None), usage
+
+
+def _completion_usage(body: Any, *, is_openai: bool) -> dict[str, int]:
+    """Read ``_ExecTurn`` token counts from a non-streamed completion body."""
+    usage = body.get("usage") if isinstance(body, dict) else None
+    prompt_tokens, completion_tokens = _usage_tokens(usage)
+    details = usage if isinstance(usage, dict) else {}
+    if is_openai:
+        cached = (details.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+    else:
+        cached = details.get("cache_read_input_tokens") or 0
+    return {
+        "input_tokens": prompt_tokens or 0,
+        "output_tokens": completion_tokens or 0,
+        "cached_tokens": int(cached),
+    }
 
 
 async def _replay_events(events: list[Any]) -> Any:
@@ -800,6 +927,7 @@ async def _seed_advice_for(
     caller: AdvisorCaller,
     config: AdvisorConfig,
     stats: StatsAccumulator | None,
+    ctx: ProxyContext | None = None,
 ) -> str:
     """Per-session seed advice for ``seed_plan_advice`` (both strategies).
 
@@ -817,7 +945,7 @@ async def _seed_advice_for(
         cache[session] = ""
         return ""
     advice = await _fetch_seed_advice(
-        caller=caller, config=config, messages=messages, stats=stats,
+        caller=caller, config=config, messages=messages, stats=stats, ctx=ctx,
     )
     cache[session] = advice
     return advice
@@ -829,6 +957,7 @@ async def _fetch_seed_advice(
     config: AdvisorConfig,
     messages: list[dict[str, Any]],
     stats: StatsAccumulator | None,
+    ctx: ProxyContext | None = None,
 ) -> str:
     """Consult the advisor for an upfront plan; "" on fail-open failure."""
     transcript = _seed_transcript(messages, config.transcript_max_chars)
@@ -847,14 +976,22 @@ async def _fetch_seed_advice(
                     latency_ms=(time.monotonic() - started) * 1000.0)
         return ""
     latency_ms = (time.monotonic() - started) * 1000.0
+    prompt_tokens, completion_tokens = _usage_tokens(usage)
     if stats is not None:
-        prompt_tokens, completion_tokens = _usage_tokens(usage)
         await stats.record_classifier_usage(
             model=config.advisor.model,
             prompt_tokens=prompt_tokens or 0,
             completion_tokens=completion_tokens or 0,
             cached_tokens=0,
             latency_ms=latency_ms,
+        )
+    if ctx is not None:
+        _emit_routing_usage(
+            ctx,
+            model=config.advisor.model,
+            tier="advisor_seed",
+            prompt_tokens=prompt_tokens or 0,
+            completion_tokens=completion_tokens or 0,
         )
     _audit_seed(error=None, usage=usage, latency_ms=latency_ms)
     return advice.strip()
@@ -948,16 +1085,22 @@ def _blocks_text(content: Any) -> str:
     return ""
 
 
+#: First APPROVE/REDO token in the reply's head decides the verdict. A window
+#: (rather than a strict first-word match) tolerates the wrappers reviewers
+#: actually produce — "**REDO**", "Verdict: REDO", a leading pleasantry —
+#: which a startswith parser silently turned into APPROVE.
+_VERDICT_RE = re.compile(r"\b(APPROVE|REDO)\b", re.IGNORECASE)
+_VERDICT_WINDOW = 64
+
+
 def _parse_verdict(text: str) -> tuple[str, str]:
     """Parse the reviewer reply into (verdict, plan). Unclear → APPROVE."""
     stripped = (text or "").strip()
-    head = stripped[:16].upper()
-    if head.startswith("APPROVE"):
+    match = _VERDICT_RE.search(stripped[:_VERDICT_WINDOW])
+    if match is None or match.group(1).upper() == "APPROVE":
         return "APPROVE", ""
-    if head.startswith("REDO"):
-        plan = stripped[4:].lstrip(" :\n-").strip()
-        return "REDO", plan or stripped
-    return "APPROVE", ""
+    plan = stripped[match.end():].lstrip(" *_:\n-").strip()
+    return "REDO", plan or stripped
 
 
 def _messages_url(base_url: str | None) -> str:
@@ -994,14 +1137,28 @@ def _usage_tokens(usage: Any) -> tuple[int | None, int | None]:
     return get("input_tokens", "prompt_tokens"), get("output_tokens", "completion_tokens")
 
 
-def _audit_review(*, verdict: str, error: str | None, usage: Any, latency_ms: float) -> None:
-    """Emit a one-line ``advisor_review=...`` audit record to stderr."""
+def _audit_review(
+    *,
+    verdict: str,
+    error: str | None,
+    usage: Any,
+    latency_ms: float,
+    reply_head: str | None = None,
+) -> None:
+    """Emit a one-line ``advisor_review=...`` audit record to stderr.
+
+    ``reply_head`` carries the raw reply's first characters so a verdict the
+    parser read differently than the reviewer intended is visible in the logs
+    (the parsed verdict alone hides misparses).
+    """
     payload: dict[str, Any] = {
         "advisor_review": True,
         "verdict": verdict,
         "error": error,
         "latency_ms": round(latency_ms, 1),
     }
+    if reply_head is not None:
+        payload["reply_head"] = reply_head.strip()[:160]
     prompt_tokens, completion_tokens = _usage_tokens(usage)
     if prompt_tokens is not None:
         payload["prompt_tokens"] = prompt_tokens
@@ -1009,6 +1166,38 @@ def _audit_review(*, verdict: str, error: str | None, usage: Any, latency_ms: fl
         payload["completion_tokens"] = completion_tokens
     sys.stderr.write(f"advisor_review={json.dumps(payload, sort_keys=True)}\n")
     sys.stderr.flush()
+
+
+def _emit_routing_usage(
+    ctx: ProxyContext,
+    *,
+    model: str,
+    tier: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int = 0,
+) -> None:
+    """Append a proxy-internal usage record to the routing log, if one is active.
+
+    The routing-log response processor only sees the chain's terminal
+    response; advisor consults and REDO-discarded executor turns happen inside
+    the backend and would otherwise be invisible to
+    ``/v1/routing/session-stats`` — and with it, per-model cost attribution.
+    """
+    from switchyard.lib.processors.routing_log_response_processor import (
+        emit_auxiliary_record,
+    )
+
+    metadata = ctx.metadata.get(CTX_REQUEST_METADATA)
+    emit_auxiliary_record(
+        session_id=getattr(metadata, "session_id", None),
+        task=getattr(metadata, "task", None),
+        model=model,
+        tier=tier,
+        prompt_tokens=prompt_tokens,
+        cached_tokens=cached_tokens,
+        completion_tokens=completion_tokens,
+    )
 
 
 __all__ = ["AdvisorCaller", "AdvisorLoopBackend"]

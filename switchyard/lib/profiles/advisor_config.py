@@ -102,11 +102,15 @@ class AdvisorConfig(BaseModel):
         gate_trigger_pattern: (review_gate) Regex searched against the
             executor turn's text when ``gate_trigger`` is ``"pattern"``
             (e.g. ``task_complete["\\s>:]*true`` for terminus).
-        max_reviews: (review_gate) Per-session budget of advisor reviews.
-            The default (1) preserves the original once-per-session gate;
-            higher values re-review later trigger turns (e.g. a re-declared
+        max_reviews: (review_gate) Budget of advisor reviews per budget
+            scope: the caller's ``proxy_x_session_id`` header when present
+            (one evaluation/task on benchmark harnesses, sub-agents
+            included), else one scope for the whole backend instance. The
+            default (1) preserves the original once-per-task gate; higher
+            values re-review later trigger turns (e.g. a re-declared
             completion after a REDO), making the gate a sequential
-            best-of-(N+1) with the advisor as judge.
+            best-of-(N+1) with the advisor as judge. Failed advisor consults
+            do not consume the budget.
         gate_stall_turns: (review_gate) When > 0, additionally trigger a
             review (once per session, consuming review budget) at the first
             request whose conversation already carries at least this many
@@ -137,6 +141,10 @@ class AdvisorConfig(BaseModel):
             reject ``temperature``.
         transcript_max_chars: Cap on the serialized transcript handed to the
             advisor, so a long agent conversation can't blow its context.
+            The default (200k chars ≈ 50k tokens) fits comfortably in a
+            frontier advisor's window; review_gate drops the middle of an
+            over-cap conversation (task head + recent tail survive),
+            tool_call drops the oldest messages.
         fail_open: When ``True`` (default), an advisor-call failure degrades
             gracefully — the executor proceeds unadvised (tool_call) or the
             turn passes through as APPROVE (review_gate). When ``False``, the
@@ -175,7 +183,7 @@ class AdvisorConfig(BaseModel):
     seed_advice_prefix: str = SEED_ADVICE_PREFIX
     advisor_max_tokens: int = Field(default=2048, ge=1)
     advisor_temperature: float | None = None
-    transcript_max_chars: int = Field(default=24_000, ge=256)
+    transcript_max_chars: int = Field(default=200_000, ge=256)
     fail_open: bool = True
     enable_stats: bool = True
     preset: str | None = None

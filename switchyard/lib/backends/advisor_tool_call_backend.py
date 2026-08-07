@@ -91,6 +91,7 @@ from switchyard.lib.backends.advisor_loop_backend import (
     _blocks_text,
     _build_advisor_caller,
     _consume_openai_stream,
+    _emit_routing_usage,
     _ev,
     _replay_events,
     _seed_advice_for,
@@ -510,6 +511,7 @@ class AdvisorToolCallBackend(LLMBackend):
             advice = await _seed_advice_for(
                 self._seed_advice, session, messages,
                 caller=self._advisor_caller, config=self._config, stats=self._stats,
+                ctx=ctx,
             )
             if advice:
                 messages = _with_length_line(
@@ -545,11 +547,13 @@ class AdvisorToolCallBackend(LLMBackend):
 
             # This turn stays proxy-internal — price it into the classifier bucket
             # (under the executor model) so the run's cost output sees it.
-            await self._record_internal_turn(turn)
+            await self._record_internal_turn(ctx, turn)
 
             if advisor_uses < self._config.max_uses:
                 advisor_uses += 1
-                advice = await self._consult_advisor(messages, turn.text, tool_summaries)
+                advice = await self._consult_advisor(
+                    ctx, messages, turn.text, tool_summaries,
+                )
             else:
                 advice = _MAX_USES_RESULT
 
@@ -594,16 +598,23 @@ class AdvisorToolCallBackend(LLMBackend):
             await self._stats.record_success(self._config.executor.model, turn.latency_ms)
         return self._dialect.replay(turn)
 
-    async def _record_internal_turn(self, turn: _ToolCallTurn) -> None:
-        """Price a proxy-internal executor turn into the classifier bucket."""
-        if self._stats is None:
-            return
-        await self._stats.record_classifier_usage(
+    async def _record_internal_turn(self, ctx: ProxyContext, turn: _ToolCallTurn) -> None:
+        """Price a proxy-internal executor turn into the classifier bucket + routing log."""
+        if self._stats is not None:
+            await self._stats.record_classifier_usage(
+                model=self._config.executor.model,
+                prompt_tokens=turn.input_tokens,
+                completion_tokens=turn.output_tokens,
+                cached_tokens=turn.cached_tokens,
+                latency_ms=turn.latency_ms,
+            )
+        _emit_routing_usage(
+            ctx,
             model=self._config.executor.model,
+            tier="advisor_internal_turn",
             prompt_tokens=turn.input_tokens,
             completion_tokens=turn.output_tokens,
             cached_tokens=turn.cached_tokens,
-            latency_ms=turn.latency_ms,
         )
 
     # ------------------------------------------------------------------
@@ -612,6 +623,7 @@ class AdvisorToolCallBackend(LLMBackend):
 
     async def _consult_advisor(
         self,
+        ctx: ProxyContext,
         messages: list[dict[str, Any]],
         current_turn_text: str,
         tool_summaries: list[tuple[str, str]],
@@ -641,8 +653,8 @@ class AdvisorToolCallBackend(LLMBackend):
             return f"[advisor unavailable: {type(exc).__name__}]"
 
         latency_ms = (time.monotonic() - started) * 1000.0
+        prompt_tokens, completion_tokens = _usage_tokens(usage)
         if self._stats is not None:
-            prompt_tokens, completion_tokens = _usage_tokens(usage)
             await self._stats.record_classifier_usage(
                 model=self._config.advisor.model,
                 prompt_tokens=prompt_tokens or 0,
@@ -650,6 +662,13 @@ class AdvisorToolCallBackend(LLMBackend):
                 cached_tokens=0,
                 latency_ms=latency_ms,
             )
+        _emit_routing_usage(
+            ctx,
+            model=self._config.advisor.model,
+            tier="advisor_consult",
+            prompt_tokens=prompt_tokens or 0,
+            completion_tokens=completion_tokens or 0,
+        )
         _audit_advisor(error=None, usage=usage, latency_ms=latency_ms)
         return advice
 

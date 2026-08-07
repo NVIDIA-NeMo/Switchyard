@@ -20,6 +20,7 @@ import pytest
 import respx
 
 from switchyard.lib.backends.advisor_loop_backend import (
+    _MAX_FAILED_CONSULTS_PER_SCOPE,
     AdvisorLoopBackend,
     _anthropic_text,
     _AnthropicAdvisorCaller,
@@ -35,6 +36,7 @@ from switchyard.lib.chat_response.anthropic import AnthropicResponseStream
 from switchyard.lib.chat_response.openai_chat import ResponseStream as OpenAIResponseStream
 from switchyard.lib.profiles.advisor_config import AdvisorConfig
 from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.request_metadata import CTX_REQUEST_METADATA, RequestMetadata
 from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import (
     ChatRequest,
@@ -808,3 +810,132 @@ async def test_min_tool_results_skips_early_commentary() -> None:
     ]
     await backend.call(ProxyContext(), _request(messages=worked))
     assert adv.advise.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Budget scoping (proxy_x_session_id) and consult failures
+# ---------------------------------------------------------------------------
+
+
+def _ctx(session_id: str | None = None) -> ProxyContext:
+    """A ProxyContext optionally carrying the caller's session header identity."""
+    ctx = ProxyContext()
+    if session_id:
+        ctx.metadata[CTX_REQUEST_METADATA] = RequestMetadata(session_id=session_id)
+    return ctx
+
+
+async def test_budget_is_per_client_session_scope() -> None:
+    """Each proxy_x_session_id gets its own max_reviews budget on one instance.
+
+    On a gateway shared by many tasks (benchmark campaign topology), an
+    instance-wide cap would bound reviews for the whole run; the header scope
+    is what makes max_reviews mean "reviews for this task".
+    """
+    exec_b = _exec_backend(*[_completion_resp(text=f"done{i}") for i in range(4)])
+    adv = _reviewer(*["APPROVE"] * 4)
+    backend = _backend(_config(max_reviews=1), exec_b, adv)
+    await backend.call(_ctx("ev_a"), _request())
+    await backend.call(_ctx("ev_b"), _request())  # different task -> own budget
+    assert adv.advise.await_count == 2
+    await backend.call(_ctx("ev_a"), _request())  # ev_a spent -> passthrough
+    assert adv.advise.await_count == 2
+
+
+async def test_no_session_header_falls_back_to_instance_scope() -> None:
+    """Callers without the header share one instance-wide budget (old behavior)."""
+    exec_b = _exec_backend(*[_completion_resp(text=f"done{i}") for i in range(3)])
+    adv = _reviewer(*["APPROVE"] * 3)
+    backend = _backend(_config(max_reviews=1), exec_b, adv)
+    for i in range(3):
+        await backend.call(
+            ProxyContext(),
+            _request(messages=[{"role": "user", "content": f"distinct task {i}"}]),
+        )
+    assert adv.advise.await_count == 1
+
+
+async def test_failed_consult_refunds_budget() -> None:
+    """A fail-open advisor error is not a review — the budget must survive it."""
+    exec_b = _exec_backend(
+        _completion_resp(text="done"), _completion_resp(text="done again"),
+    )
+    adv = MagicMock()
+    adv.advise = AsyncMock(side_effect=[RuntimeError("blip"), ("APPROVE", None)])
+    backend = _backend(_config(max_reviews=1), exec_b, adv)
+    await backend.call(_ctx("ev_a"), _request())  # consult fails; budget refunded
+    await backend.call(_ctx("ev_a"), _request())  # the real review still happens
+    assert adv.advise.await_count == 2
+
+
+async def test_repeated_consult_failures_stop_attempts() -> None:
+    """A down advisor stops being consulted after the per-scope failure cap."""
+    exec_b = _exec_backend(*[_completion_resp(text=f"d{i}") for i in range(5)])
+    adv = _failing_reviewer(RuntimeError("advisor down"))
+    backend = _backend(_config(max_reviews=1), exec_b, adv)
+    for _ in range(5):
+        await backend.call(_ctx("ev_a"), _request())
+    assert adv.advise.await_count == _MAX_FAILED_CONSULTS_PER_SCOPE
+
+
+def test_parse_verdict_tolerates_wrappers() -> None:
+    """Markdown/prefix wrappers around the verdict must not silently APPROVE."""
+    assert _parse_verdict("**REDO** add error handling")[0] == "REDO"
+    assert _parse_verdict("Verdict: REDO — cover the empty-input case")[0] == "REDO"
+    verdict, plan = _parse_verdict("redo:\n- fix the regex")
+    assert verdict == "REDO"
+    assert "fix the regex" in plan
+    assert _parse_verdict("**APPROVE**") == ("APPROVE", "")
+    assert _parse_verdict("")[0] == "APPROVE"
+    # The token must appear in the head window, not buried in later prose.
+    assert _parse_verdict("x" * 100 + " REDO")[0] == "APPROVE"
+
+
+def test_transcript_truncation_keeps_task_head_and_recent_tail() -> None:
+    """Over the cap, the middle drops — the task and the newest work survive."""
+    backend = _backend(_config(transcript_max_chars=400), _exec_backend(), _reviewer())
+    messages = [{"role": "user", "content": "TASK-STATEMENT"}]
+    messages += [{"role": "assistant", "content": f"turn-{i} " + "x" * 40} for i in range(30)]
+    messages += [{"role": "assistant", "content": "NEWEST-EVIDENCE"}]
+    transcript = backend._serialize_transcript(messages, "done")
+    assert "TASK-STATEMENT" in transcript
+    assert "NEWEST-EVIDENCE" in transcript
+    assert "<middle of the conversation truncated>" in transcript
+
+
+async def test_redo_records_advisor_and_discarded_turn_in_routing_log(tmp_path) -> None:
+    """Advisor consults and the REDO-discarded executor turn reach session-stats."""
+    from switchyard.lib.processors.routing_log_response_processor import (
+        RoutingLogResponseProcessor,
+        register_routing_log_sink,
+    )
+
+    log_file = tmp_path / "routing.jsonl"
+    register_routing_log_sink(RoutingLogResponseProcessor(log_file))
+    try:
+        exec_b = _exec_backend(
+            _completion_resp(text="done"), _completion_resp(text="kept"),
+        )
+        adv = MagicMock()
+        adv.advise = AsyncMock(
+            return_value=("REDO fix it", {"input_tokens": 7, "output_tokens": 2}),
+        )
+        backend = _backend(_config(max_reviews=1), exec_b, adv)
+        await backend.call(_ctx("ev_a"), _request())
+        records = [json.loads(line) for line in log_file.read_text().splitlines()]
+        by_tier = {r["tier"]: r for r in records}
+        review = by_tier["advisor_review"]
+        assert review["model"] == "adv-model"
+        assert review["session_id"] == "ev_a"
+        assert review["prompt_tokens"] == 7
+        assert review["completion_tokens"] == 2
+        discarded = by_tier["review_gate_discarded"]
+        assert discarded["model"] == "exec-model"
+        assert discarded["session_id"] == "ev_a"
+        assert discarded["prompt_tokens"] == 10  # _completion_resp usage
+        assert discarded["completion_tokens"] == 3
+        snapshot = RoutingLogResponseProcessor(log_file).snapshot_session("ev_a")
+        assert snapshot is not None
+        assert set(snapshot["models"]) == {"adv-model", "exec-model"}
+    finally:
+        register_routing_log_sink(None)
