@@ -2,9 +2,9 @@
 
 Provider-neutral orchestration for multi-LLM optimization. A libsy
 [`Algorithm`] decides which model targets to call, in what order, and how to
-combine their results. It can use target-owned clients or hand each call back to
-the host, allowing it to embed in proxies, gateways, and agent runtimes without
-owning an HTTP stack.
+combine their results. It hands every call back to the host rather than making
+it, allowing it to embed in proxies, gateways, and agent runtimes without owning
+an HTTP stack.
 
 ## Setup
 
@@ -30,12 +30,15 @@ tokio = { version = "1", features = ["macros", "rt"] }
 
 ## How it fits together
 
-[`LlmTarget`] pairs a semantic routing name with an optional
-[`RoutedLlmClient`](switchyard_protocol::RoutedLlmClient). An [`Algorithm`]
-selects targets and records [`Decision`](switchyard_protocol::Decision)s. Use
-[`Algorithm::run`] with target-owned clients, or [`Algorithm::run_stream`] when
-the host owns model transport. The provider-neutral [`Request`], [`Response`],
-[`Usage`], and [`LlmResponse`] contracts come from `switchyard-protocol`.
+[`LlmTarget`] names a routing destination. An [`Algorithm`] selects targets and
+records [`Decision`](switchyard_protocol::Decision)s, offloading every model call
+to its caller: [`Algorithm::run_stream`] yields a [`Step`] stream whose
+[`Step::CallLlm`] items the host serves over its own transport. libsy makes no
+network calls itself — `switchyard-llm-client`'s `run` is a ready-made consumer
+that drives the stream and performs the calls over HTTP.
+
+The provider-neutral [`Request`], [`Response`], [`Usage`], and [`LlmResponse`]
+contracts come from `switchyard-protocol`.
 
 [`Request`]: switchyard_protocol::Request
 [`Response`]: switchyard_protocol::Response

@@ -45,3 +45,5 @@ switchyard-translation = { path = "crates/switchyard-translation", version = "0.
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "std"] }
+tracing-opentelemetry = "0.33"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

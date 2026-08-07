@@ -21,6 +21,7 @@ futures-util.workspace = true
 http.workspace = true
 parking_lot.workspace = true
 switchyard-libsy.workspace = true
+switchyard-llm-client.workspace = true
 pyo3 = { version = "0.28.3", features = ["abi3-py312", "extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 pythonize = "0.28.0"

@@ -18,7 +18,7 @@ use switchyard_protocol::{
 };
 
 use super::classifier_contract::ClassifierContract;
-use crate::core::algorithm::{Driver, LlmTarget};
+use crate::core::algorithm::{Driver, LlmTarget, RoutedRequest};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
@@ -227,14 +227,13 @@ where
         let judge_model = self.target.semantic_name.as_str();
 
         let response = driver
-            .call_llm_target(
-                Context::default(),
-                &self.target,
-                self.judge.build_request(state, request),
-                Arc::new(JudgeDecision {
+            .call_llm(RoutedRequest {
+                request: self.judge.build_request(state, request),
+                decision: Arc::new(JudgeDecision {
                     model: self.target.semantic_name.to_string(),
                 }),
-            )
+                ctx: Context::default(),
+            })
             .await
             .inspect_err(|error| report_fail_open(judge_model, error, libsy_error_reason(error)))
             .ok()?;
@@ -409,7 +408,6 @@ mod tests {
             TestJudge,
             LlmTarget {
                 semantic_name: "judge".to_string(),
-                llm_client: None,
             },
             TestPolicy,
         )

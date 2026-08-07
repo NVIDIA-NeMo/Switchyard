@@ -19,7 +19,9 @@ use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, Random};
 use serde_json::{Value, json};
-use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+use switchyard_llm_client::{
+    Backend, ClientRouter, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
+};
 use switchyard_protocol::RoutedLlmClient;
 use switchyard_server::config::load_server_state;
 use switchyard_server::{ServerState, build_switchyard_router};
@@ -60,6 +62,16 @@ impl MockUpstream {
             calls,
             task,
         })
+    }
+
+    /// The upstream model id of every request this upstream received, in order.
+    async fn models(&self) -> Vec<String> {
+        self.calls
+            .lock()
+            .await
+            .iter()
+            .filter_map(|call| call.get("model")?.as_str().map(str::to_string))
+            .collect()
     }
 }
 
@@ -220,12 +232,15 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
                     .iter()
                     .map(|model| LlmTarget {
                         semantic_name: (*model).to_string(),
-                        llm_client: Some(Arc::clone(&client)),
                     })
                     .collect(),
             );
             let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
-            Ok(((*route_model).to_string(), algorithm))
+            Ok((
+                (*route_model).to_string(),
+                algorithm,
+                ClientRouter::single(Arc::clone(&client)),
+            ))
         })
         .collect::<TestResult<Vec<_>>>()?;
     Ok(ServerState::new(entries)?)
@@ -645,6 +660,84 @@ fn assert_in_order(haystack: &str, needles: &[&str]) {
             .unwrap_or_else(|| panic!("missing {needle:?} after prior events in:\n{haystack}"));
         remainder = &remainder[offset + needle.len()..];
     }
+}
+
+/// A route is a synthetic model (`switchyard/classify`) with no upstream of its own; its
+/// algorithm picks real targets, and *those* name the client. One request can emit several
+/// `Step::CallLlm` for different targets, and two targets may sit on different
+/// `[llm_clients.*]` sections — here the judge is on one provider and the serving models on
+/// another. Pin that each call reaches its own target's upstream, rather than one client
+/// chosen per route serving all of them.
+#[tokio::test]
+async fn each_target_in_one_request_is_served_by_its_own_client() -> TestResult {
+    let judge_upstream = MockUpstream::start().await?;
+    let model_upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.judge_provider]
+format = "openai_chat"
+base_url = "{judge_url}"
+
+[llm_clients.model_provider]
+format = "openai_chat"
+base_url = "{model_url}"
+
+[targets.judge]
+id = "model/judge"
+llm_client = "judge_provider"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "model_provider"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "model_provider"
+
+[routes.classify]
+id = "switchyard/classify"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+"#,
+        judge_url = judge_upstream.base_url,
+        model_url = model_upstream.base_url,
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/classify",
+            "messages": [{"role": "user", "content": "hi"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    // The judge call went to the judge's provider and nowhere else; the serving call went to
+    // the models' provider. A single per-route client would have sent both to one upstream.
+    assert_eq!(
+        judge_upstream.models().await,
+        vec!["model/judge".to_string()]
+    );
+    let served = model_upstream.models().await;
+    assert_eq!(
+        served.len(),
+        1,
+        "expected exactly one routed call: {served:?}"
+    );
+    assert!(
+        served[0] == "model/weak" || served[0] == "model/strong",
+        "routed call went to {served:?}"
+    );
+    Ok(())
 }
 
 /// A critical tool error must reach the stage router's signal scorer, which reads

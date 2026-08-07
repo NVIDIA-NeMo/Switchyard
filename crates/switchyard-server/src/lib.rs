@@ -36,7 +36,7 @@ use libsy::{Algorithm, LibsyError, RunObservation, RunObserver};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use switchyard_llm_client::TranslatingLlmClient;
+use switchyard_llm_client::{ClientRouter, TranslatingLlmClient};
 use switchyard_protocol::{Context, Decision, LlmClientError, Metadata, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
@@ -106,6 +106,10 @@ struct ModelCapabilities {
 /// A registered algorithm route and its server-owned endpoint metadata.
 struct RouteEntry {
     algorithm: Arc<dyn Algorithm>,
+    /// Resolves each offloaded call to the client configured for the target the algorithm
+    /// selected. A route is a synthetic model with no upstream of its own, so this is a
+    /// per-target lookup, never one client serving the whole route.
+    target_clients: ClientRouter,
     capabilities: ModelCapabilities,
     count_tokens_target: Option<CountTokensTarget>,
 }
@@ -168,15 +172,20 @@ impl SharedRoutingLog {
 }
 
 impl ServerState {
-    /// Creates server state from route model IDs and their libsy algorithms.
+    /// Creates server state from route model IDs, their libsy algorithms, and the
+    /// per-target client routing each route's calls are resolved through.
     pub fn new(
-        routes: impl IntoIterator<Item = (String, Arc<dyn Algorithm>)>,
+        routes: impl IntoIterator<Item = (String, Arc<dyn Algorithm>, ClientRouter)>,
     ) -> ServerResult<Self> {
-        Self::new_with_capabilities(
-            routes
-                .into_iter()
-                .map(|(model, algorithm)| (model, algorithm, ModelCapabilities::default(), None)),
-        )
+        Self::new_with_capabilities(routes.into_iter().map(|(model, algorithm, clients)| {
+            (
+                model,
+                algorithm,
+                clients,
+                ModelCapabilities::default(),
+                None,
+            )
+        }))
     }
 
     fn new_with_capabilities(
@@ -184,19 +193,21 @@ impl ServerState {
             Item = (
                 String,
                 Arc<dyn Algorithm>,
+                ClientRouter,
                 ModelCapabilities,
                 Option<CountTokensTarget>,
             ),
         >,
     ) -> ServerResult<Self> {
         let mut entries = BTreeMap::new();
-        for (model, algorithm, capabilities, count_tokens_target) in routes {
+        for (model, algorithm, target_clients, capabilities, count_tokens_target) in routes {
             let model = model.trim();
             if model.is_empty() {
                 return Err(ServerError::new("route model must not be empty"));
             }
             let entry = RouteEntry {
                 algorithm,
+                target_clients,
                 capabilities,
                 count_tokens_target,
             };
@@ -678,13 +689,21 @@ async fn handle_llm_request(
         Err(response) => return response,
     };
     let algorithm = Arc::clone(&route.algorithm);
+    // Not one client for the route: a router that resolves each offloaded call to the
+    // client configured for the target the algorithm selected.
+    let target_clients = route.target_clients.clone();
     let observer = stats_observer(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
     );
-    let (trace, response) = match algorithm
-        .run_observed(Context::default(), request, Some(observer))
-        .await
+    let (trace, response) = match switchyard_llm_client::run(
+        algorithm,
+        target_clients,
+        Context::default(),
+        request,
+        Some(observer),
+    )
+    .await
     {
         Ok(result) => result,
         Err(error) => return algorithm_error(error),

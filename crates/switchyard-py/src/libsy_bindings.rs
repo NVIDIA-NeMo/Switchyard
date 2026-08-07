@@ -14,6 +14,7 @@ use switchyard_libsy::{
     LlmClassifierConfig, LlmFallback, LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, PickerMode,
     Random, StageRouter, StageRouterConfig, TaskClassifierConfig,
 };
+use switchyard_llm_client::ClientRouter;
 use switchyard_protocol::{
     AggLlmResponse, Context, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
     RoutedLlmClient,
@@ -62,13 +63,22 @@ struct PyLlmTarget {
 }
 
 impl PyLlmTarget {
-    fn clone_core(&self, py: Python<'_>) -> LlmTarget {
+    fn clone_core(&self, _py: Python<'_>) -> LlmTarget {
         LlmTarget {
             semantic_name: self.name.clone(),
-            llm_client: Some(Arc::new(PythonLlmClient {
-                inner: self.client.clone_ref(py),
-            })),
         }
+    }
+
+    /// The `selected_model -> client` entry this target contributes to the algorithm's
+    /// [`ClientRouter`]. libsy no longer carries the client, so the bindings keep the
+    /// mapping and serve the calls themselves.
+    fn client_entry(&self, py: Python<'_>) -> ClientEntry {
+        (
+            self.name.clone(),
+            Arc::new(PythonLlmClient {
+                inner: self.client.clone_ref(py),
+            }),
+        )
     }
 }
 
@@ -170,6 +180,11 @@ struct PyLlmFallback {
 }
 
 impl PyLlmFallback {
+    /// The judge's client entry, so the caller can register it with the algorithm's router.
+    fn judge_client_entry(&self, py: Python<'_>) -> PyResult<ClientEntry> {
+        Ok(self.judge_target.bind(py).try_borrow()?.client_entry(py))
+    }
+
     fn clone_core(&self, py: Python<'_>) -> PyResult<LlmFallback> {
         Ok(LlmFallback {
             judge_target: self.judge_target.bind(py).try_borrow()?.clone_core(py),
@@ -194,11 +209,19 @@ impl PyLlmFallback {
 #[pyclass(name = "Algorithm", module = "switchyard.libsy", frozen)]
 struct PyAlgorithm {
     inner: Arc<dyn Algorithm>,
+    /// Resolves the calls `inner` offloads to each target's Python client.
+    client_router: ClientRouter,
 }
 
+/// One target's `selected_model -> client` mapping for an algorithm's router.
+type ClientEntry = (String, Arc<dyn RoutedLlmClient>);
+
 impl PyAlgorithm {
-    fn new(inner: Arc<dyn Algorithm>) -> Self {
-        Self { inner }
+    fn new(inner: Arc<dyn Algorithm>, clients: impl IntoIterator<Item = ClientEntry>) -> Self {
+        Self {
+            inner,
+            client_router: clients.into_iter().collect(),
+        }
     }
 }
 
@@ -218,6 +241,7 @@ impl PyAlgorithm {
         headers: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let algorithm = Arc::clone(&self.inner);
+        let client_router = self.client_router.clone();
         let headers = headers.as_ref().map(header_map_from_python).transpose()?;
 
         let request = Request {
@@ -226,10 +250,15 @@ impl PyAlgorithm {
             metadata: headers.map(|headers| Metadata::from_headers(&headers)),
         };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (decisions, response) = algorithm
-                .run(Context::default(), request)
-                .await
-                .map_err(py_libsy_error)?;
+            let (decisions, response) = switchyard_llm_client::run(
+                algorithm,
+                client_router,
+                Context::default(),
+                request,
+                None,
+            )
+            .await
+            .map_err(py_libsy_error)?;
             let response = response
                 .llm_response
                 .into_agg()
@@ -256,7 +285,8 @@ impl PyAlgorithm {
 /// Construct the no-op reference algorithm.
 #[pyfunction(name = "noop")]
 fn noop_algorithm() -> PyAlgorithm {
-    PyAlgorithm::new(Arc::new(Noop {}))
+    // `Noop` synthesizes its own response and never offloads a call, so it needs no clients.
+    PyAlgorithm::new(Arc::new(Noop {}), [])
 }
 
 /// Construct random routing over targets with optional relative weights and seed.
@@ -268,18 +298,31 @@ fn random_algorithm(
     weights: Option<Vec<f64>>,
     seed: Option<u64>,
 ) -> PyResult<PyAlgorithm> {
-    let targets = targets
-        .iter()
-        .map(|target| Ok(target.bind(py).try_borrow()?.clone_core(py)))
-        .collect::<PyResult<Vec<_>>>()?;
+    let (cores, clients) = target_cores(py, &targets)?;
     let algorithm =
-        Random::new(LlmTargetSet::new(targets), weights, seed).map_err(|error| match error {
+        Random::new(LlmTargetSet::new(cores), weights, seed).map_err(|error| match error {
             RustLibsyError::NoTargets => {
                 PyValueError::new_err("random requires at least one target")
             }
             other => PyValueError::new_err(other.to_string()),
         })?;
-    Ok(PyAlgorithm::new(Arc::new(algorithm)))
+    Ok(PyAlgorithm::new(Arc::new(algorithm), clients))
+}
+
+/// Splits a list of Python targets into libsy's client-free targets and the client entries
+/// the bindings keep for the algorithm's router.
+fn target_cores(
+    py: Python<'_>,
+    targets: &[Py<PyLlmTarget>],
+) -> PyResult<(Vec<LlmTarget>, Vec<ClientEntry>)> {
+    let mut cores = Vec::with_capacity(targets.len());
+    let mut clients = Vec::with_capacity(targets.len());
+    for target in targets {
+        let target = target.bind(py).try_borrow()?;
+        cores.push(target.clone_core(py));
+        clients.push(target.client_entry(py));
+    }
+    Ok((cores, clients))
 }
 
 /// Construct task-level LLM classifier routing.
@@ -298,14 +341,21 @@ fn llm_task_classifier_algorithm(
     capable_target: Py<PyLlmTarget>,
     config: Py<PyTaskClassifierConfig>,
 ) -> PyResult<PyAlgorithm> {
+    let (cores, clients) = target_cores(
+        py,
+        &[judge_target.clone_ref(py), efficient_target, capable_target],
+    )?;
+    let [judge, efficient, capable] = cores
+        .try_into()
+        .map_err(|_| PyValueError::new_err("expected three targets"))?;
     let algorithm = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
-        judge_target: judge_target.bind(py).try_borrow()?.clone_core(py),
-        efficient_target: efficient_target.bind(py).try_borrow()?.clone_core(py),
-        capable_target: capable_target.bind(py).try_borrow()?.clone_core(py),
+        judge_target: judge,
+        efficient_target: efficient,
+        capable_target: capable,
         config: config.bind(py).try_borrow()?.clone_core(),
     })
     .map_err(|error| PyValueError::new_err(error.to_string()))?;
-    Ok(PyAlgorithm::new(Arc::new(algorithm)))
+    Ok(PyAlgorithm::new(Arc::new(algorithm), clients))
 }
 
 /// Construct signal-driven stage routing with an optional LLM classifier fallback.
@@ -348,8 +398,10 @@ fn stage_router_algorithm(
             )));
         }
     };
-    let capable = capable_target.bind(py).try_borrow()?.clone_core(py);
-    let efficient = efficient_target.bind(py).try_borrow()?.clone_core(py);
+    let (cores, mut clients) = target_cores(py, &[capable_target, efficient_target])?;
+    let [capable, efficient] = cores
+        .try_into()
+        .map_err(|_| PyValueError::new_err("expected two targets"))?;
     let mut config = StageRouterConfig::new(mode, confidence_threshold);
     config.recent_window = recent_window;
     config.handoff_notes = match (escalation_note, deescalation_note) {
@@ -375,13 +427,18 @@ fn stage_router_algorithm(
             .tier_prompts
             .with(efficient.semantic_name.clone(), prompt);
     }
+    // The judge is only reachable through the optional classifier fallback, so its client
+    // joins the router only when a fallback is configured.
+    if let Some(classifier) = &classifier {
+        clients.push(classifier.bind(py).try_borrow()?.judge_client_entry(py)?);
+    }
     config.llm_fallback = classifier
         .map(|classifier| classifier.bind(py).try_borrow()?.clone_core(py))
         .transpose()?;
 
     let algorithm = StageRouter::new(capable, efficient, config)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
-    Ok(PyAlgorithm::new(Arc::new(algorithm)))
+    Ok(PyAlgorithm::new(Arc::new(algorithm), clients))
 }
 
 fn other_python_error(error: PyErr) -> LlmClientError {

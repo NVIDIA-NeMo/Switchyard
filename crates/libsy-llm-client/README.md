@@ -11,8 +11,12 @@ encodes the request to that backend's wire format, adds auth and forwards your
 headers, makes the call with a shared `reqwest::Client`, and decodes the reply
 back into a [`switchyard_protocol::Response`] — buffered or streamed.
 
-It depends only on `switchyard-protocol` and `switchyard-translation`; no server, no
-provider SDK.
+It also pairs the client with a libsy algorithm: [`run`] drives
+[`Algorithm::run_stream`] and serves every model call the algorithm offloads, so a
+host that just wants the answer never has to drive the step stream itself.
+
+It depends on `switchyard-libsy`, `switchyard-protocol`, and
+`switchyard-translation`; no server, no provider SDK.
 
 ## Concepts
 
@@ -131,6 +135,42 @@ async fn stream(
     Ok(())
 }
 ```
+
+### Routing an algorithm
+
+[`run`] takes a libsy algorithm and a [`ClientRouter`], and returns the final response plus
+the trace of decisions the algorithm published. The router resolves each offloaded call to
+the client for the target the algorithm selected; `ClientRouter::single` is the
+single-provider case:
+
+```rust
+use std::sync::Arc;
+use switchyard_libsy::Algorithm;
+use switchyard_llm_client::{ClientRouter, TranslatingLlmClient};
+use switchyard_protocol::{Context, Request};
+
+async fn route(
+    algorithm: Arc<dyn Algorithm>,
+    client: Arc<TranslatingLlmClient>,
+    request: Request,
+) -> switchyard_libsy::Result<String> {
+    let clients = ClientRouter::single(client);
+    let (trace, _response) =
+        switchyard_llm_client::run(algorithm, clients, Context::default(), request, None).await?;
+    Ok(trace
+        .last()
+        .map(|decision| decision.selected_model().to_string())
+        .unwrap_or_default())
+}
+```
+
+When targets are served by different clients — a judge on one provider and the serving
+models on another, say — build the router from `model name -> client` with
+[`ClientRouter::new`] instead. A model missing from that map fails with
+`LlmClientError::Configuration` rather than silently going to another provider.
+
+A router is not itself a client: [`ClientRouter::route`] hands back a
+[`switchyard_protocol::RoutedLlmClient`] and the caller makes the call.
 
 ## Cross-format translation
 

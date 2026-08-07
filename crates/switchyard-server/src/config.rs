@@ -17,7 +17,8 @@ use libsy::{
 use serde::Deserialize;
 use serde_json::Value;
 use switchyard_llm_client::{
-    Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
+    Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
+    TranslatingLlmClient,
 };
 use switchyard_protocol::RoutedLlmClient;
 
@@ -86,7 +87,7 @@ impl ServerConfig {
         }
 
         let clients = self.build_clients()?;
-        let targets = self.build_targets(&clients)?;
+        let targets = self.build_targets()?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
             validate_value("route name", route_name)?;
@@ -98,10 +99,12 @@ impl ServerConfig {
                 )));
             }
             let algorithm = build_algorithm(route_name, config, &targets)?;
+            let client = self.build_client_router(config, &clients)?;
             let count_tokens_target = self.build_count_tokens_target(config, &clients);
             routes.push((
                 config.id().to_string(),
                 algorithm,
+                client,
                 capabilities,
                 count_tokens_target,
             ));
@@ -147,26 +150,51 @@ impl ServerConfig {
         Ok(clients)
     }
 
-    fn build_targets(
-        &self,
-        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
-    ) -> ServerResult<BTreeMap<String, LlmTarget>> {
-        self.targets
+    fn build_targets(&self) -> ServerResult<BTreeMap<String, LlmTarget>> {
+        Ok(self
+            .targets
             .iter()
             .map(|(name, config)| {
-                let client = clients.get(&config.llm_client).ok_or_else(|| {
-                    ServerError::new(format!("target {name} has no constructed llm client"))
-                })?;
-                let client: Arc<dyn RoutedLlmClient> = client.clone();
-                Ok((
+                (
                     name.clone(),
                     LlmTarget {
                         semantic_name: config.id.clone(),
-                        llm_client: Some(client),
                     },
-                ))
+                )
             })
-            .collect()
+            .collect())
+    }
+
+    /// Maps every model this route can select to the client configured for that target.
+    ///
+    /// A route is a synthetic model (`switchyard/random`) with no upstream of its own — the
+    /// algorithm picks a real target, and the *target* names the `[llm_clients.*]` section
+    /// that serves it. Two targets in one route may therefore sit on different clients, and
+    /// one request can emit calls for both.
+    ///
+    /// The map is built per route because targets are only reachable through the routes that
+    /// name them, so the same model id may resolve to different clients in two routes without
+    /// colliding.
+    fn build_client_router(
+        &self,
+        route: &RouteConfig,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> ServerResult<ClientRouter> {
+        let by_model = route
+            .callable_target_names()
+            .into_iter()
+            .map(|name| {
+                let target = self.targets.get(name).ok_or_else(|| {
+                    ServerError::new(format!("route references unknown target {name}"))
+                })?;
+                let client = clients.get(&target.llm_client).ok_or_else(|| {
+                    ServerError::new(format!("target {name} has no constructed llm client"))
+                })?;
+                let client: Arc<dyn RoutedLlmClient> = client.clone();
+                Ok((target.id.clone(), client))
+            })
+            .collect::<ServerResult<_>>()?;
+        Ok(ClientRouter::new(by_model))
     }
 
     fn build_count_tokens_target(
@@ -488,6 +516,25 @@ impl RouteConfig {
                 ..
             } => vec![capable_target, efficient_target],
         }
+    }
+
+    /// Every target the algorithm may call, including judge-only targets.
+    ///
+    /// [`routing_target_names`](Self::routing_target_names) covers completion destinations;
+    /// a classifier also calls its judge, and that call needs a client too.
+    fn callable_target_names(&self) -> Vec<&str> {
+        let mut names = self.routing_target_names();
+        match self {
+            Self::LlmClassifier {
+                classifier_target, ..
+            } => names.push(classifier_target),
+            Self::StageRouter {
+                classifier: Some(classifier),
+                ..
+            } => names.push(&classifier.target),
+            _ => {}
+        }
+        names
     }
 
     fn capabilities(&self) -> ModelCapabilities {

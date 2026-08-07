@@ -21,7 +21,7 @@ use super::util::llm_judge::{
     SerdeDecoder, StructuredJudge,
 };
 use super::util::target_selector::TargetSelectorPolicy;
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet, RoutedRequest};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
@@ -519,15 +519,14 @@ impl Classifier<State> for EscalationClassifier {
         // `(decisive(capable), None)` tells FallThrough::execute to call
         // call_llm_with_fallback with the capable target instead of surfacing the error.
         let efficient_response = match driver
-            .call_llm_target(
-                Context::default(),
-                &self.efficient,
-                request.clone(),
-                Arc::new(SimpleDecision {
+            .call_llm(RoutedRequest {
+                request: request.clone(),
+                decision: Arc::new(SimpleDecision {
                     selected_model: self.efficient.semantic_name.clone(),
                     reasoning: Some("escalation classifier: efficient tier".into()),
                 }),
-            )
+                ctx: Context::default(),
+            })
             .await
         {
             Ok(r) => r,
@@ -960,8 +959,8 @@ mod tests {
     };
 
     use crate::algorithms::util::llm_judge::Judge;
-    use crate::core::algorithm::Algorithm;
-    use switchyard_protocol::{Context, LlmResponse, Response, RoutedLlmClient};
+    use crate::core::testing::{Serve, drive, reply};
+    use switchyard_protocol::{Context, LlmResponse, Response};
 
     const TEST_THRESHOLD: f64 = 0.5;
 
@@ -1002,14 +1001,16 @@ mod tests {
             })
     }
 
+    /// Records what each target received; answers the judge with a supported verdict and
+    /// every other target with a plain completion.
     #[derive(Default)]
-    struct PerRequestClient {
+    struct Recorder {
         calls: Mutex<Vec<String>>,
         judge_max_output_tokens: Mutex<Vec<Option<u64>>>,
         judge_system_prompts: Mutex<Vec<String>>,
     }
 
-    impl PerRequestClient {
+    impl Recorder {
         fn calls(&self) -> Vec<String> {
             self.calls.lock().clone()
         }
@@ -1021,58 +1022,50 @@ mod tests {
         fn judge_system_prompts(&self) -> Vec<String> {
             self.judge_system_prompts.lock().clone()
         }
-    }
 
-    #[async_trait]
-    impl RoutedLlmClient for PerRequestClient {
-        async fn call(
-            &self,
-            _ctx: Context,
-            request: Request,
-            decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, LlmClientError> {
-            let model = decision.selected_model().to_string();
-            self.calls.lock().push(model.clone());
-            let completion = if model == "judge" {
-                self.judge_max_output_tokens
-                    .lock()
-                    .push(request.llm_request.output.max_output_tokens);
-                self.judge_system_prompts.lock().extend(
-                    request
-                        .llm_request
-                        .instructions
-                        .first()
-                        .and_then(|instruction| {
-                            instruction.content.iter().find_map(|b| {
-                                if let ContentBlock::Text { text } = b {
-                                    Some(text.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                        }),
-                );
-                r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
-            } else {
-                format!("answer from {model}")
-            };
-            Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(None, completion)),
-                metadata: request.metadata,
-            })
+        fn serve(self: &Arc<Self>) -> impl Serve {
+            let recorder = Arc::clone(self);
+            move |decision: Arc<dyn Decision>, request: Request| {
+                let recorder = Arc::clone(&recorder);
+                async move {
+                    let model = decision.selected_model().to_string();
+                    recorder.calls.lock().push(model.clone());
+                    let completion = if model == "judge" {
+                        recorder
+                            .judge_max_output_tokens
+                            .lock()
+                            .push(request.llm_request.output.max_output_tokens);
+                        recorder.judge_system_prompts.lock().extend(
+                            request
+                                .llm_request
+                                .instructions
+                                .first()
+                                .and_then(|instruction| {
+                                    instruction.content.iter().find_map(|b| {
+                                        if let ContentBlock::Text { text } = b {
+                                            Some(text.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                }),
+                        );
+                        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
+                    } else {
+                        format!("answer from {model}")
+                    };
+                    Ok(Response {
+                        llm_response: LlmResponse::Agg(text_response(None, completion)),
+                        metadata: request.metadata,
+                    })
+                }
+            }
         }
     }
 
-    struct UnreachableJudgeClient;
-
-    #[async_trait]
-    impl RoutedLlmClient for UnreachableJudgeClient {
-        async fn call(
-            &self,
-            _ctx: Context,
-            request: Request,
-            decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, LlmClientError> {
+    /// The judge times out; every other target answers normally.
+    fn unreachable_judge() -> impl Serve {
+        |decision: Arc<dyn Decision>, request: Request| async move {
             let model = decision.selected_model().to_string();
             if model == "judge" {
                 return Err(LlmClientError::Timeout {
@@ -1086,10 +1079,9 @@ mod tests {
         }
     }
 
-    fn router(client: Arc<dyn RoutedLlmClient>) -> Result<Arc<LlmTaskClassifier>> {
+    fn router() -> Result<Arc<LlmTaskClassifier>> {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: Some(client.clone()),
         };
         Ok(Arc::new(LlmTaskClassifier::new(
             LlmClassifierConfig::Capability {
@@ -1134,9 +1126,15 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_judge_routes_capable_instead_of_failing_the_request() -> Result<()> {
-        let router = router(Arc::new(UnreachableJudgeClient))?;
+        let router = router()?;
 
-        let (trace, response) = router.run(Context::default(), classify_request()).await?;
+        let (trace, response) = drive(
+            router,
+            Context::default(),
+            classify_request(),
+            unreachable_judge(),
+        )
+        .await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         assert_eq!(
@@ -1148,15 +1146,27 @@ mod tests {
 
     #[tokio::test]
     async fn classifier_judges_each_request_without_affinity() -> Result<()> {
-        let client = Arc::new(PerRequestClient::default());
-        let router = router(client.clone())?;
+        let recorder = Arc::new(Recorder::default());
+        let router = router()?;
         let request = classify_request;
 
-        router.clone().run(Context::default(), request()).await?;
-        router.clone().run(Context::default(), request()).await?;
+        drive(
+            router.clone(),
+            Context::default(),
+            request(),
+            recorder.serve(),
+        )
+        .await?;
+        drive(
+            router.clone(),
+            Context::default(),
+            request(),
+            recorder.serve(),
+        )
+        .await?;
 
         assert_eq!(
-            client.calls(),
+            recorder.calls(),
             vec!["judge", "efficient", "judge", "efficient"]
         );
         Ok(())
@@ -1164,10 +1174,9 @@ mod tests {
 
     #[tokio::test]
     async fn classifier_config_sets_the_judge_completion_cap() -> Result<()> {
-        let client = Arc::new(PerRequestClient::default());
+        let recorder = Arc::new(Recorder::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: Some(client.clone()),
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: target("judge"),
@@ -1179,18 +1188,23 @@ mod tests {
             },
         })?);
 
-        router.run(Context::default(), classify_request()).await?;
+        drive(
+            router,
+            Context::default(),
+            classify_request(),
+            recorder.serve(),
+        )
+        .await?;
 
-        assert_eq!(client.judge_max_output_tokens(), vec![Some(512)]);
+        assert_eq!(recorder.judge_max_output_tokens(), vec![Some(512)]);
         Ok(())
     }
 
     #[tokio::test]
     async fn classifier_config_overrides_the_packaged_prompt() -> Result<()> {
-        let client = Arc::new(PerRequestClient::default());
+        let recorder = Arc::new(Recorder::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: Some(client.clone()),
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: target("judge"),
@@ -1203,9 +1217,15 @@ mod tests {
             },
         })?);
 
-        router.run(Context::default(), classify_request()).await?;
+        drive(
+            router,
+            Context::default(),
+            classify_request(),
+            recorder.serve(),
+        )
+        .await?;
 
-        let prompts = client.judge_system_prompts();
+        let prompts = recorder.judge_system_prompts();
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0], "Custom capability rubric.");
         Ok(())
@@ -1213,10 +1233,9 @@ mod tests {
 
     #[tokio::test]
     async fn classifier_config_enables_session_affinity() -> Result<()> {
-        let client = Arc::new(PerRequestClient::default());
+        let recorder = Arc::new(Recorder::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: Some(client.clone()),
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: target("judge"),
@@ -1228,25 +1247,31 @@ mod tests {
             },
         })?);
 
-        router
-            .clone()
-            .run(Context::default(), classify_session_request())
-            .await?;
-        router
-            .clone()
-            .run(Context::default(), classify_session_request())
-            .await?;
+        let session_request = classify_session_request;
+        drive(
+            router.clone(),
+            Context::default(),
+            session_request(),
+            recorder.serve(),
+        )
+        .await?;
+        drive(
+            router.clone(),
+            Context::default(),
+            session_request(),
+            recorder.serve(),
+        )
+        .await?;
 
-        assert_eq!(client.calls(), vec!["judge", "efficient", "efficient"]);
+        assert_eq!(recorder.calls(), vec!["judge", "efficient", "efficient"]);
         Ok(())
     }
 
     #[tokio::test]
     async fn classifier_config_reuses_message_hash_affinity_for_a_follow_up() -> Result<()> {
-        let client = Arc::new(PerRequestClient::default());
+        let recorder = Arc::new(Recorder::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: Some(client.clone()),
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: target("judge"),
@@ -1260,16 +1285,22 @@ mod tests {
             },
         })?);
 
-        router
-            .clone()
-            .run(Context::default(), classify_request())
-            .await?;
-        router
-            .clone()
-            .run(Context::default(), classify_follow_up_request())
-            .await?;
+        drive(
+            router.clone(),
+            Context::default(),
+            classify_request(),
+            recorder.serve(),
+        )
+        .await?;
+        drive(
+            router.clone(),
+            Context::default(),
+            classify_follow_up_request(),
+            recorder.serve(),
+        )
+        .await?;
 
-        assert_eq!(client.calls(), vec!["judge", "efficient", "efficient"]);
+        assert_eq!(recorder.calls(), vec!["judge", "efficient", "efficient"]);
         Ok(())
     }
 
@@ -1313,7 +1344,6 @@ mod tests {
     fn invalid_classifier_config_is_rejected() -> Result<()> {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: None,
         };
         for bad in [1.5, -0.1, f64::NAN, f64::INFINITY] {
             assert!(
@@ -1765,57 +1795,54 @@ mod tests {
 
     use std::collections::VecDeque;
 
-    use switchyard_protocol::LlmClientError as ClientError;
-
     use switchyard_protocol::Decision;
 
-    /// Serves each call with the next queued reply.
-    struct QueuedClient {
-        replies: Mutex<VecDeque<String>>,
-    }
+    /// A queue of replies, drained in order.
+    struct Queue(Mutex<VecDeque<String>>);
 
-    impl QueuedClient {
+    impl Queue {
         fn new(replies: impl IntoIterator<Item = &'static str>) -> Arc<Self> {
-            Arc::new(Self {
-                replies: Mutex::new(replies.into_iter().map(String::from).collect()),
-            })
+            Arc::new(Self(Mutex::new(
+                replies.into_iter().map(String::from).collect(),
+            )))
+        }
+
+        fn take(&self) -> String {
+            self.0
+                .lock()
+                .pop_front()
+                .unwrap_or_else(|| "unexpected call".to_string())
         }
     }
 
-    #[async_trait]
-    impl RoutedLlmClient for QueuedClient {
-        async fn call(
-            &self,
-            _ctx: Context,
-            request: Request,
-            _decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, ClientError> {
-            let reply = self
-                .replies
-                .lock()
-                .pop_front()
-                .unwrap_or_else(|| "unexpected call".to_string());
-            Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(None, reply)),
-                metadata: request.metadata,
-            })
+    /// Serves the judge target from `judge` and every other target from `model`, each with
+    /// its next queued reply.
+    fn queued(model: Arc<Queue>, judge: Arc<Queue>) -> impl Serve {
+        move |decision: Arc<dyn Decision>, request: Request| {
+            let queue = if decision.selected_model() == "judge" {
+                Arc::clone(&judge)
+            } else {
+                Arc::clone(&model)
+            };
+            async move {
+                Ok(Response {
+                    llm_response: LlmResponse::Agg(text_response(None, queue.take())),
+                    metadata: request.metadata,
+                })
+            }
         }
     }
 
     /// Builds a router with escalation enabled (`confirmations=1` latches on the first verdict).
-    fn escalation_router(
-        client: Arc<dyn RoutedLlmClient>,
-        judge_client: Arc<dyn RoutedLlmClient>,
-    ) -> Result<Arc<LlmTaskClassifier>> {
-        let target = |name: &str, c: Arc<dyn RoutedLlmClient>| LlmTarget {
+    fn escalation_router() -> Result<Arc<LlmTaskClassifier>> {
+        let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: Some(c),
         };
         Ok(Arc::new(LlmTaskClassifier::new(
             LlmClassifierConfig::Escalation {
-                judge_target: target("judge", judge_client),
-                efficient_target: target("efficient", client.clone()),
-                capable_target: target("capable", client),
+                judge_target: target("judge"),
+                efficient_target: target("efficient"),
+                capable_target: target("capable"),
                 contract: ClassifierContractConfig::default(),
                 config: EscalationJudgeConfig {
                     confirmations: 1,
@@ -1829,12 +1856,17 @@ mod tests {
     #[tokio::test]
     async fn escalation_router_serves_efficient_when_judge_declines() -> Result<()> {
         // Judge: no escalation. Expect the efficient response to be returned directly.
-        let judge_client = QueuedClient::new([r#"{"escalate":false,"reason":"progressing"}"#]);
-        let model_client = QueuedClient::new(["efficient answer"]);
-        let router = escalation_router(model_client, judge_client)?;
-        let request = classify_request();
+        let judge = Queue::new([r#"{"escalate":false,"reason":"progressing"}"#]);
+        let model = Queue::new(["efficient answer"]);
+        let router = escalation_router()?;
 
-        let (trace, response) = router.run(Context::default(), request).await?;
+        let (trace, response) = drive(
+            router,
+            Context::default(),
+            classify_request(),
+            queued(model, judge),
+        )
+        .await?;
 
         // The efficient model is the serving target, and the response comes from its call.
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("efficient"));
@@ -1847,10 +1879,9 @@ mod tests {
 
     #[tokio::test]
     async fn escalation_config_overrides_the_packaged_prompt() -> Result<()> {
-        let client = Arc::new(PerRequestClient::default());
+        let recorder = Arc::new(Recorder::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: Some(client.clone()),
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
             judge_target: target("judge"),
@@ -1864,9 +1895,15 @@ mod tests {
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         })?);
 
-        router.run(Context::default(), classify_request()).await?;
+        drive(
+            router,
+            Context::default(),
+            classify_request(),
+            recorder.serve(),
+        )
+        .await?;
 
-        let prompts = client.judge_system_prompts();
+        let prompts = recorder.judge_system_prompts();
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0], "Custom trajectory rubric.");
         Ok(())
@@ -1875,13 +1912,18 @@ mod tests {
     #[tokio::test]
     async fn escalation_router_upgrades_to_capable_when_judge_escalates() -> Result<()> {
         // Judge: escalate. After the efficient call, the streak confirms and capable is served.
-        let judge_client = QueuedClient::new([r#"{"escalate":true,"reason":"stuck in a loop"}"#]);
+        let judge = Queue::new([r#"{"escalate":true,"reason":"stuck in a loop"}"#]);
         // Efficient is called first (by the classifier), then capable is called by FallThrough.
-        let model_client = QueuedClient::new(["efficient draft", "capable answer"]);
-        let router = escalation_router(model_client, judge_client)?;
-        let request = classify_request();
+        let model = Queue::new(["efficient draft", "capable answer"]);
+        let router = escalation_router()?;
 
-        let (trace, response) = router.run(Context::default(), request).await?;
+        let (trace, response) = drive(
+            router,
+            Context::default(),
+            classify_request(),
+            queued(model, judge),
+        )
+        .await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         assert_eq!(
@@ -1895,19 +1937,25 @@ mod tests {
     async fn escalation_router_stays_capable_after_latch() -> Result<()> {
         // First turn: judge escalates and the streak latches.
         // Second turn: judge is not called again; capable is served directly.
-        let judge_client = QueuedClient::new([r#"{"escalate":true,"reason":"stuck"}"#]);
-        let model_client = QueuedClient::new(["efficient draft", "capable t1", "capable t2"]);
-        let router = escalation_router(model_client, judge_client)?;
+        let judge = Queue::new([r#"{"escalate":true,"reason":"stuck"}"#]);
+        let model = Queue::new(["efficient draft", "capable t1", "capable t2"]);
+        let router = escalation_router()?;
 
         let session_request = classify_session_request();
-        router
-            .clone()
-            .run(Context::default(), session_request.clone())
-            .await?;
-        let (trace, _) = router
-            .clone()
-            .run(Context::default(), session_request)
-            .await?;
+        drive(
+            router.clone(),
+            Context::default(),
+            session_request.clone(),
+            queued(Arc::clone(&model), Arc::clone(&judge)),
+        )
+        .await?;
+        let (trace, _) = drive(
+            router.clone(),
+            Context::default(),
+            session_request,
+            queued(model, judge),
+        )
+        .await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         Ok(())
@@ -1918,39 +1966,22 @@ mod tests {
         // When the efficient model exceeds its context window inside score(), the classifier
         // must return capable rather than propagating the error — otherwise the client sees
         // HTTP 400 instead of a response from the strong model.
-        struct OverflowClient;
-        #[async_trait]
-        impl RoutedLlmClient for OverflowClient {
-            async fn call(
-                &self,
-                _ctx: Context,
-                _request: Request,
-                decision: Arc<dyn Decision>,
-            ) -> std::result::Result<Response, LlmClientError> {
-                Err(LlmClientError::ContextWindowExceeded {
+        let router = escalation_router()?;
+
+        // Efficient overflows, capable answers, and the judge must never be called.
+        let serve = |decision: Arc<dyn Decision>, _request: Request| async move {
+            match decision.selected_model() {
+                "efficient" => Err(LlmClientError::ContextWindowExceeded {
                     model: decision.selected_model().to_string(),
                     message: "prompt is too long".to_string(),
-                })
+                }),
+                "judge" => panic!("the judge must not be consulted when efficient overflows"),
+                _ => Ok(reply("capable answer")),
             }
-        }
-
-        let target = |name: &str, c: Arc<dyn RoutedLlmClient>| LlmTarget {
-            semantic_name: name.to_string(),
-            llm_client: Some(c),
         };
-        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
-            judge_target: target("judge", QueuedClient::new([])), // must not be called
-            efficient_target: target("efficient", Arc::new(OverflowClient)),
-            capable_target: target("capable", QueuedClient::new(["capable answer"])),
-            contract: ClassifierContractConfig::default(),
-            config: EscalationJudgeConfig {
-                confirmations: 1,
-                ..EscalationJudgeConfig::default()
-            },
-            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-        })?);
 
-        let (trace, response) = router.run(Context::default(), classify_request()).await?;
+        let (trace, response) =
+            drive(router, Context::default(), classify_request(), serve).await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         assert_eq!(

@@ -34,8 +34,9 @@ use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
     Algorithm, Driver, LibsyError, LlmClassifierConfig, LlmTarget, LlmTargetSet, LlmTaskClassifier,
-    Step, TaskClassifierConfig,
+    RoutedRequest, Step, TaskClassifierConfig,
 };
+use switchyard_llm_client::ClientRouter;
 use switchyard_protocol::{
     Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
 };
@@ -474,7 +475,11 @@ impl Algorithm for SingleCallAlgo {
         });
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
-            .call_llm_target(ctx, &target, request, decision)
+            .call_llm(RoutedRequest {
+                request,
+                decision,
+                ctx,
+            })
             .await
     }
 }
@@ -495,25 +500,39 @@ fn request_with_metadata(session_id: &str, correlation_id: &str) -> Request {
     }
 }
 
-fn algo(name: &str, model: &str, client: Option<Arc<dyn RoutedLlmClient>>) -> Arc<dyn Algorithm> {
+fn algo(name: &str, model: &str) -> Arc<dyn Algorithm> {
     Arc::new(SingleCallAlgo {
         name: name.to_string(),
         target_set: LlmTargetSet::new(vec![LlmTarget {
             semantic_name: model.to_string(),
-            llm_client: client,
         }]),
     })
+}
+
+/// Drives `algorithm` to completion with `client` serving every target, the way a
+/// single-provider host does.
+async fn run(
+    algorithm: Arc<dyn Algorithm>,
+    client: Arc<dyn RoutedLlmClient>,
+    request: Request,
+) -> switchyard_libsy::Result<(Vec<Arc<dyn Decision>>, Response)> {
+    switchyard_llm_client::run(
+        algorithm,
+        ClientRouter::single(client),
+        Context::default(),
+        request,
+        None,
+    )
+    .await
 }
 
 fn classifier_router(
     judge_model: &str,
     efficient_model: &str,
     capable_model: &str,
-    client: Arc<dyn RoutedLlmClient>,
 ) -> switchyard_libsy::Result<Arc<dyn Algorithm>> {
     let target = |name: &str| LlmTarget {
         semantic_name: name.to_string(),
-        llm_client: Some(client.clone()),
     };
     let targets = LlmTargetSet::new(vec![target(efficient_model), target(capable_model)]);
     Ok(Arc::new(LlmTaskClassifier::new(
@@ -612,9 +631,7 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     request.llm_request.output.max_output_tokens = Some(512);
     request.llm_request.output.response_format = Some(json!({"type": "json_schema"}));
     request.llm_request.reasoning.effort = Some("high".to_string());
-    let (trace, _response) = algo(ALGO, MODEL, Some(client))
-        .run(Context::default(), request)
-        .await?;
+    let (trace, _response) = run(algo(ALGO, MODEL), client, request).await?;
     assert_eq!(trace.len(), 1);
 
     // Metrics: run/call counters and latency histograms keyed by algorithm,
@@ -885,9 +902,7 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
     let client = Arc::new(StreamingUsageClient) as Arc<dyn RoutedLlmClient>;
     let mut request = request_with_metadata("obs-stream-session", "obs-stream-corr");
     request.llm_request.stream = true;
-    let (_, response) = algo(ALGO, MODEL, Some(client))
-        .run(Context::default(), request)
-        .await?;
+    let (_, response) = run(algo(ALGO, MODEL), client, request).await?;
     let LlmResponse::Stream(mut stream) = response.llm_response else {
         return Err(test_error("expected a streamed response"));
     };
@@ -932,9 +947,7 @@ async fn dropped_stream_records_cancelled_outcome() -> switchyard_libsy::Result<
     let client = Arc::new(StreamingUsageClient) as Arc<dyn RoutedLlmClient>;
     let mut request = request_with_metadata("obs-cancelled-session", "obs-cancelled-corr");
     request.llm_request.stream = true;
-    let (_, response) = algo(ALGO, MODEL, Some(client))
-        .run(Context::default(), request)
-        .await?;
+    let (_, response) = run(algo(ALGO, MODEL), client, request).await?;
     let LlmResponse::Stream(stream) = response.llm_response else {
         return Err(test_error("expected a streamed response"));
     };
@@ -955,13 +968,9 @@ async fn typed_client_failure_records_semantic_error_type() {
     let (store, _, _, _, _) = telemetry();
     const ALGO: &str = "obs-timeout-algo";
     const MODEL: &str = "obs-timeout-model";
-    let result = algo(
-        ALGO,
-        MODEL,
-        Some(Arc::new(TimeoutClient) as Arc<dyn RoutedLlmClient>),
-    )
-    .run(
-        Context::default(),
+    let result = run(
+        algo(ALGO, MODEL),
+        Arc::new(TimeoutClient),
         request_with_metadata("obs-timeout-session", "obs-timeout-corr"),
     )
     .await;
@@ -993,8 +1002,8 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
     let total_errors_before =
         u64_gauge_value(&before, "switchyard.total_errors").unwrap_or_default();
 
-    // Client-less target: the call is offloaded and we fail it by hand.
-    let stream = algo(ALGO, MODEL, None).run_stream(
+    // The call is offloaded and we fail it by hand, without a client.
+    let stream = algo(ALGO, MODEL).run_stream(
         Context::default(),
         request_with_metadata("obs-session-2", "obs-corr-2"),
         None,
@@ -1117,9 +1126,9 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
         classifier_delay: Duration::from_millis(60),
         routed_delay: Duration::from_millis(200),
     }) as Arc<dyn RoutedLlmClient>;
-    let router = classifier_router("classifier", "weak", "strong", client)?;
+    let router = classifier_router("classifier", "weak", "strong")?;
 
-    let (trace, _response) = router.run(Context::default(), classifier_request()).await?;
+    let (trace, _response) = run(router, client, classifier_request()).await?;
 
     assert_eq!(
         trace.last().and_then(|decision| decision.routing_tier()),
@@ -1210,9 +1219,12 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
 
     for (judge_model, outcome, expected_reason) in cases {
         let client = Arc::new(JudgeClient { outcome }) as Arc<dyn RoutedLlmClient>;
-        classifier_router(judge_model, "fo-weak", "fo-strong", client)?
-            .run(Context::default(), classifier_request())
-            .await?;
+        run(
+            classifier_router(judge_model, "fo-weak", "fo-strong")?,
+            client,
+            classifier_request(),
+        )
+        .await?;
 
         let snapshots = flushed_metrics(exporter, provider);
         match expected_reason {

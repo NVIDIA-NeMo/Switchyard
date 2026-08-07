@@ -223,22 +223,20 @@ mod tests {
     use parking_lot::Mutex;
     use serde_json::json;
     use switchyard_protocol::{
-        ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult, WireFormat, text_response,
+        ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult, WireFormat,
     };
 
     use super::*;
     use crate::algorithms::util::stage::DECISION_SOURCE_KEY;
-    use crate::core::algorithm::{Algorithm, LlmTarget};
+    use crate::core::algorithm::LlmTarget;
     use crate::core::classifier::Score;
     use crate::core::state::StateValue;
-    use switchyard_protocol::{
-        Context, Decision, LlmResponse, Metadata, Response, RoutedLlmClient,
-    };
+    use crate::core::testing::{Serve, drive, reply};
+    use switchyard_protocol::{Context, Decision, Metadata, Response};
 
     fn tier_target(name: &str) -> LlmTarget {
         LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: None,
         }
     }
 
@@ -329,7 +327,6 @@ mod tests {
         config.llm_fallback = Some(LlmFallback {
             judge_target: LlmTarget {
                 semantic_name: "judge".to_string(),
-                llm_client: None,
             },
             config: TaskClassifierConfig {
                 base_threshold: -0.1,
@@ -360,16 +357,14 @@ mod tests {
         messages: Vec<String>,
     }
 
-    /// Records what each target receives. When called as the judge target it
-    /// replies with a structured verdict so the fallback classifier gets an answer
-    /// without a real model.
+    /// Records what each target receives.
     #[derive(Default)]
-    struct RecordingClient {
+    struct Recorder {
         calls: Mutex<Vec<Call>>,
         judge_p_solve: Mutex<f64>,
     }
 
-    impl RecordingClient {
+    impl Recorder {
         fn routed(&self) -> Vec<Call> {
             self.calls
                 .lock()
@@ -378,55 +373,48 @@ mod tests {
                 .cloned()
                 .collect()
         }
-    }
 
-    #[async_trait]
-    impl RoutedLlmClient for RecordingClient {
-        async fn call(
-            &self,
-            _ctx: Context,
-            request: Request,
-            decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
-            let target = decision.selected_model().to_string();
-            self.calls.lock().push(Call {
-                target: target.clone(),
-                messages: request
-                    .llm_request
-                    .messages
-                    .iter()
-                    .filter_map(|message| message.text_content("|"))
-                    .collect(),
-            });
-            let completion = if target == JUDGE {
-                let p_solve = *self.judge_p_solve.lock();
-                format!(
-                    r#"{{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":{p_solve}}}"#
-                )
-            } else {
-                target
-            };
-            Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(None, completion)),
-                metadata: None,
-            })
+        /// Serves every call, recording it. The judge target gets a structured verdict
+        /// back so the fallback classifier has an answer without a real model.
+        fn serve(self: &Arc<Self>) -> impl Serve {
+            let recorder = Arc::clone(self);
+            move |decision: Arc<dyn Decision>, request: Request| {
+                let recorder = Arc::clone(&recorder);
+                async move {
+                    let target = decision.selected_model().to_string();
+                    recorder.calls.lock().push(Call {
+                        target: target.clone(),
+                        messages: request
+                            .llm_request
+                            .messages
+                            .iter()
+                            .filter_map(|message| message.text_content("|"))
+                            .collect(),
+                    });
+                    let completion = if target == JUDGE {
+                        let p_solve = *recorder.judge_p_solve.lock();
+                        format!(
+                            r#"{{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":{p_solve}}}"#
+                        )
+                    } else {
+                        target
+                    };
+                    Ok(reply(completion))
+                }
+            }
         }
     }
 
-    fn recording_target(client: &Arc<RecordingClient>, name: &str) -> LlmTarget {
+    fn recording_target(name: &str) -> LlmTarget {
         LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: Some(client.clone() as Arc<dyn RoutedLlmClient>),
         }
     }
 
-    fn recording_router(
-        client: Arc<RecordingClient>,
-        config: StageRouterConfig,
-    ) -> Result<Arc<StageRouter>> {
+    fn recording_router(config: StageRouterConfig) -> Result<Arc<StageRouter>> {
         Ok(Arc::new(StageRouter::new(
-            recording_target(&client, "strong"),
-            recording_target(&client, "weak"),
+            recording_target("strong"),
+            recording_target("weak"),
             config,
         )?))
     }
@@ -437,11 +425,11 @@ mod tests {
         c
     }
 
-    fn config_with_judge(client: &Arc<RecordingClient>, p_solve: f64) -> StageRouterConfig {
-        *client.judge_p_solve.lock() = p_solve;
+    fn config_with_judge(recorder: &Arc<Recorder>, p_solve: f64) -> StageRouterConfig {
+        *recorder.judge_p_solve.lock() = p_solve;
         let mut c = config();
         c.llm_fallback = Some(LlmFallback {
-            judge_target: recording_target(client, JUDGE),
+            judge_target: recording_target(JUDGE),
             config: TaskClassifierConfig {
                 base_threshold: 0.5,
                 recent_turn_window: Some(3),
@@ -502,14 +490,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_signal_driven_escalation_hands_the_note_to_the_model() -> Result<()> {
-        let client = Arc::new(RecordingClient::default());
-        let router = recording_router(client.clone(), config_with_notes())?;
+        let recorder = Arc::new(Recorder::default());
+        let router = recording_router(config_with_notes())?;
         let ctx = Context::default();
 
-        router.clone().run(ctx.clone(), turn_request(false)).await?;
-        router.run(ctx, turn_request(true)).await?;
+        drive(
+            router.clone(),
+            ctx.clone(),
+            turn_request(false),
+            recorder.serve(),
+        )
+        .await?;
+        drive(router.clone(), ctx, turn_request(true), recorder.serve()).await?;
 
-        let calls = client.routed();
+        let calls = recorder.routed();
         assert_eq!(calls[0].target, "weak");
         assert_eq!(calls[1].target, "strong");
         assert!(
@@ -530,49 +524,67 @@ mod tests {
 
     #[tokio::test]
     async fn the_judge_decides_a_turn_the_signals_leave_undecided() -> Result<()> {
-        let client = Arc::new(RecordingClient::default());
-        let router = recording_router(client.clone(), config_with_judge(&client, 0.1))?;
+        let recorder = Arc::new(Recorder::default());
+        let router = recording_router(config_with_judge(&recorder, 0.1))?;
 
-        router.run(Context::default(), turn_request(false)).await?;
+        drive(
+            router.clone(),
+            Context::default(),
+            turn_request(false),
+            recorder.serve(),
+        )
+        .await?;
 
         assert!(
-            client.calls.lock().iter().any(|c| c.target == JUDGE),
+            recorder.calls.lock().iter().any(|c| c.target == JUDGE),
             "the judge should be consulted on an undecided turn"
         );
-        assert_eq!(client.routed()[0].target, "strong");
+        assert_eq!(recorder.routed()[0].target, "strong");
         Ok(())
     }
 
     #[tokio::test]
     async fn a_decisive_signal_never_reaches_the_judge() -> Result<()> {
-        let client = Arc::new(RecordingClient::default());
-        let router = recording_router(client.clone(), config_with_judge(&client, 0.9))?;
+        let recorder = Arc::new(Recorder::default());
+        let router = recording_router(config_with_judge(&recorder, 0.9))?;
 
-        router.run(Context::default(), turn_request(true)).await?;
+        drive(
+            router.clone(),
+            Context::default(),
+            turn_request(true),
+            recorder.serve(),
+        )
+        .await?;
 
         assert!(
-            !client.calls.lock().iter().any(|c| c.target == JUDGE),
+            !recorder.calls.lock().iter().any(|c| c.target == JUDGE),
             "a resolved turn should not pay for a judge call"
         );
-        assert_eq!(client.routed()[0].target, "strong");
+        assert_eq!(recorder.routed()[0].target, "strong");
         Ok(())
     }
 
     #[tokio::test]
     async fn the_judges_verdict_is_not_pinned_to_the_session() -> Result<()> {
-        let client = Arc::new(RecordingClient::default());
-        let router = recording_router(client.clone(), config_with_judge(&client, 0.1))?;
+        let recorder = Arc::new(Recorder::default());
+        let router = recording_router(config_with_judge(&recorder, 0.1))?;
         let ctx = Context::default();
 
-        router.clone().run(ctx.clone(), turn_request(false)).await?;
-        *client.judge_p_solve.lock() = 0.9;
-        router.run(ctx, turn_request(false)).await?;
+        drive(
+            router.clone(),
+            ctx.clone(),
+            turn_request(false),
+            recorder.serve(),
+        )
+        .await?;
+        *recorder.judge_p_solve.lock() = 0.9;
+        drive(router.clone(), ctx, turn_request(false), recorder.serve()).await?;
 
-        let routed = client.routed();
+        let routed = recorder.routed();
         assert_eq!(routed[0].target, "strong");
         assert_eq!(routed[1].target, "weak");
         assert_eq!(
-            client
+            recorder
                 .calls
                 .lock()
                 .iter()
@@ -586,23 +598,35 @@ mod tests {
 
     #[tokio::test]
     async fn a_judge_that_cannot_tell_lands_on_the_picker_default() -> Result<()> {
-        let client = Arc::new(RecordingClient::default());
-        let router = recording_router(client.clone(), config_with_judge(&client, 42.0))?;
+        let recorder = Arc::new(Recorder::default());
+        let router = recording_router(config_with_judge(&recorder, 42.0))?;
 
-        router.run(Context::default(), turn_request(false)).await?;
+        drive(
+            router.clone(),
+            Context::default(),
+            turn_request(false),
+            recorder.serve(),
+        )
+        .await?;
 
-        assert_eq!(client.routed()[0].target, "weak");
+        assert_eq!(recorder.routed()[0].target, "weak");
         Ok(())
     }
 
     #[tokio::test]
     async fn the_judge_reads_the_window_it_was_configured_with() -> Result<()> {
-        let client = Arc::new(RecordingClient::default());
-        let router = recording_router(client.clone(), config_with_judge(&client, 0.9))?;
+        let recorder = Arc::new(Recorder::default());
+        let router = recording_router(config_with_judge(&recorder, 0.9))?;
 
-        router.run(Context::default(), turn_request(false)).await?;
+        drive(
+            router.clone(),
+            Context::default(),
+            turn_request(false),
+            recorder.serve(),
+        )
+        .await?;
 
-        let judged = client
+        let judged = recorder
             .calls
             .lock()
             .iter()

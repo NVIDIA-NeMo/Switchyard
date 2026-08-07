@@ -36,8 +36,8 @@ switchyard-translation.workspace = true
 humantime = "2.4"
 tokio.workspace = true
 tracing.workspace = true
-tracing-opentelemetry = "0.33"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

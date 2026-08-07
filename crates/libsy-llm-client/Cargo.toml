@@ -12,10 +12,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+switchyard-libsy.workspace = true
 switchyard-protocol.workspace = true
 switchyard-translation.workspace = true
 reqwest.workspace = true
 async-trait.workspace = true
+futures.workspace = true
 futures-util.workspace = true
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
 http.workspace = true
@@ -23,7 +25,12 @@ httpdate.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
 
 [dev-dependencies]
-futures.workspace = true
+# SDK + in-memory exporter to assert what the observability layer records.
+opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing-subscriber.workspace = true
 wiremock = "0.6"
