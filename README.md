@@ -107,8 +107,8 @@ switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
 switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
 ```
 
-See [Getting Started](docs/getting_started.md#library-path) for a worked
-example, or the [`switchyard-libsy`](crates/libsy/README.md) crate docs.
+See [Getting Started](docs/getting_started.md#library-path) for setup and the
+algorithm list, or the [`switchyard-libsy`](crates/libsy/README.md) crate docs.
 
 ## Routing Strategies
 
@@ -116,7 +116,7 @@ example, or the [`switchyard-libsy`](crates/libsy/README.md) crate docs.
 |---|---|---|
 | [LLM Classifier](docs/routing_algorithms/llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
 | [Stage Router](docs/routing_algorithms/stage_router_routing.md) | Signals already in the conversation, such as tool results and errors, should route most turns without an extra model call. | `stage_router` |
-| [Escalation Router](docs/routing_algorithms/escalation_router_routing.md) | Every turn runs on the weak tier first, and a judge reads that answer to decide whether to send the same request to the strong tier. | `llm_classifier` with `escalation` |
+| [Escalation Router](docs/routing_algorithms/escalation_router_routing.md) | Every turn runs on the weak tier first, and a judge reads that answer to decide whether to send the same request to the strong tier. | `llm_classifier` with `mode = "escalation"` |
 | [Random](docs/routing_algorithms/random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
 
 A `passthrough` route registers one target under one model ID with no routing
