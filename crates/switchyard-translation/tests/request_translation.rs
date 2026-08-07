@@ -623,9 +623,9 @@ fn responses_function_call_arguments_parse_for_anthropic_tool_use() -> TestResul
     Ok(())
 }
 
-// Verifies malformed Responses arguments still produce object-shaped Anthropic input.
+// Verifies non-object JSON arguments still produce object-shaped Anthropic input.
 #[test]
-fn responses_function_call_arguments_wrap_non_object_values_for_anthropic() -> TestResult {
+fn responses_function_call_arguments_wrap_non_object_json_for_anthropic() -> TestResult {
     let engine = TranslationEngine::default();
     let body = json!({
         "model": "gpt-4",
@@ -647,7 +647,7 @@ fn responses_function_call_arguments_wrap_non_object_values_for_anthropic() -> T
                 "type": "function_call",
                 "name": "object_value",
                 "call_id": "call_object",
-                "arguments": {"already": "object"}
+                "arguments": "{\"already\":\"object\"}"
             }
         ]
     });
@@ -1181,54 +1181,356 @@ fn malformed_request_fields_are_rejected() {
     let engine = TranslationEngine::default();
     let cases = [
         (
-            "Anthropic object system",
-            WireFormat::AnthropicMessages,
-            json!({"model": "claude", "max_tokens": 8, "system": {}, "messages": []}),
-            "expected string or array of text blocks at $.system",
+            "Chat model type",
+            WireFormat::OpenAiChat,
+            json!({"model": false, "messages": []}),
+            "InvalidType",
+            "expected string at $.model",
         ),
         (
-            "Anthropic boolean system",
-            WireFormat::AnthropicMessages,
-            json!({"model": "claude", "max_tokens": 8, "system": true, "messages": []}),
-            "expected string or array of text blocks at $.system",
+            "Chat stream type",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [], "stream": "yes"}),
+            "InvalidType",
+            "expected boolean at $.stream",
         ),
         (
-            "Anthropic negative max_tokens",
-            WireFormat::AnthropicMessages,
-            json!({"model": "claude", "max_tokens": -1, "messages": []}),
-            "invalid value at $.max_tokens: expected a non-negative integer",
+            "Chat token value",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [], "max_completion_tokens": -1}),
+            "InvalidValue",
+            "invalid value at $.max_completion_tokens: expected a non-negative integer",
         ),
         (
-            "Anthropic string max_tokens",
-            WireFormat::AnthropicMessages,
-            json!({"model": "claude", "max_tokens": "8", "messages": []}),
-            "invalid value at $.max_tokens: expected a non-negative integer",
+            "Chat reasoning effort value",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [], "reasoning_effort": "extreme"}),
+            "InvalidValue",
+            "invalid value at $.reasoning_effort: unsupported value \"extreme\"; expected one of none, minimal, low, medium, high, xhigh, max",
+        ),
+        (
+            "Chat messages type",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": {}}),
+            "InvalidType",
+            "expected array at $.messages",
+        ),
+        (
+            "Chat message type",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [false]}),
+            "InvalidType",
+            "expected object at $.messages[0]",
+        ),
+        (
+            "Chat role type",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [{"role": false}]}),
+            "InvalidType",
+            "expected string at $.messages[0].role",
+        ),
+        (
+            "Chat role value",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [{"role": "api"}]}),
+            "InvalidValue",
+            "invalid value at $.messages[0].role: unsupported value \"api\"; expected one of system, developer, user, assistant, tool, function",
+        ),
+        (
+            "Chat content type",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [{"role": "user", "content": false}]}),
+            "InvalidType",
+            "expected string or array at $.messages[0].content",
+        ),
+        (
+            "Chat content block field",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [{"role": "user", "content": [{"type": "text", "text": false}]}]}),
+            "InvalidType",
+            "expected string at $.messages[0].content[0].text",
+        ),
+        (
+            "Chat tool calls type",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [{"role": "assistant", "tool_calls": {}}]}),
+            "InvalidType",
+            "expected array at $.messages[0].tool_calls",
+        ),
+        (
+            "Chat tool call arguments type",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [{"role": "assistant", "tool_calls": [{"type": "function", "function": {"arguments": {}}}]}]}),
+            "InvalidType",
+            "expected string at $.messages[0].tool_calls[0].function.arguments",
+        ),
+        (
+            "Chat tools type",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [], "tools": {}}),
+            "InvalidType",
+            "expected array at $.tools",
+        ),
+        (
+            "Chat function strict type",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [], "tools": [{"type": "function", "function": {"strict": "yes"}}]}),
+            "InvalidType",
+            "expected boolean at $.tools[0].function.strict",
+        ),
+        (
+            "Chat tool choice type",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [], "tool_choice": false}),
+            "InvalidType",
+            "expected string or object at $.tool_choice",
         ),
         (
             "Responses boolean input",
             WireFormat::OpenAiResponses,
             json!({"model": "gpt", "input": true}),
+            "InvalidType",
             "expected string or array at $.input",
         ),
         (
             "Responses null input",
             WireFormat::OpenAiResponses,
             json!({"model": "gpt", "input": null}),
+            "InvalidType",
             "expected string or array at $.input",
+        ),
+        (
+            "Responses input item type",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": [1]}),
+            "InvalidType",
+            "expected object at $.input[0]",
+        ),
+        (
+            "Responses instructions type",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "instructions": [], "input": "ok"}),
+            "InvalidType",
+            "expected string at $.instructions",
+        ),
+        (
+            "Responses role value",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": [{"type": "message", "role": "tool", "content": "ok"}]}),
+            "InvalidValue",
+            "invalid value at $.input[0].role: unsupported value \"tool\"; expected one of user, assistant, system, developer",
+        ),
+        (
+            "Responses content type",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": [{"type": "message", "role": "user", "content": {}}]}),
+            "InvalidType",
+            "expected string or array at $.input[0].content",
+        ),
+        (
+            "Responses image URL type",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": [{"type": "message", "role": "user", "content": [{"type": "input_image", "image_url": {}}]}]}),
+            "InvalidType",
+            "expected string at $.input[0].content[0].image_url",
+        ),
+        (
+            "Responses function arguments type",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": [{"type": "function_call", "arguments": {}}]}),
+            "InvalidType",
+            "expected string at $.input[0].arguments",
+        ),
+        (
+            "Responses function output type",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": [{"type": "function_call_output", "output": {}}]}),
+            "InvalidType",
+            "expected string or array at $.input[0].output",
+        ),
+        (
+            "Responses tools type",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": "ok", "tools": {}}),
+            "InvalidType",
+            "expected array at $.tools",
+        ),
+        (
+            "Responses custom tool schema type",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": "ok", "tools": [{"type": "custom", "inputSchema": []}]}),
+            "InvalidType",
+            "expected object at $.tools[0].inputSchema",
+        ),
+        (
+            "Responses tool choice type",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": "ok", "tool_choice": false}),
+            "InvalidType",
+            "expected string or object at $.tool_choice",
+        ),
+        (
+            "Responses token value",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": "ok", "max_output_tokens": 1.5}),
+            "InvalidValue",
+            "invalid value at $.max_output_tokens: expected a non-negative integer",
+        ),
+        (
+            "Responses reasoning effort value",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": "ok", "reasoning": {"effort": "extreme"}}),
+            "InvalidValue",
+            "invalid value at $.reasoning.effort: unsupported value \"extreme\"; expected one of none, minimal, low, medium, high, xhigh, max",
+        ),
+        (
+            "Anthropic null system",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "system": null, "messages": []}),
+            "InvalidType",
+            "expected string or array of text blocks at $.system",
+        ),
+        (
+            "Anthropic system block type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "system": [false], "messages": []}),
+            "InvalidType",
+            "expected object at $.system[0]",
+        ),
+        (
+            "Anthropic system text type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "system": [{"type": "text", "text": false}], "messages": []}),
+            "InvalidType",
+            "expected string at $.system[0].text",
+        ),
+        (
+            "Anthropic negative max_tokens",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": -1, "messages": []}),
+            "InvalidValue",
+            "invalid value at $.max_tokens: expected a non-negative integer",
+        ),
+        (
+            "Anthropic string max_tokens",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": "8", "messages": []}),
+            "InvalidType",
+            "expected non-negative integer at $.max_tokens",
+        ),
+        (
+            "Anthropic messages type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": {}}),
+            "InvalidType",
+            "expected array at $.messages",
+        ),
+        (
+            "Anthropic message type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [false]}),
+            "InvalidType",
+            "expected object at $.messages[0]",
+        ),
+        (
+            "Anthropic role value",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [{"role": "system", "content": "no"}]}),
+            "InvalidValue",
+            "invalid value at $.messages[0].role: unsupported value \"system\"; expected one of user, assistant",
+        ),
+        (
+            "Anthropic content type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [{"role": "user", "content": null}]}),
+            "InvalidType",
+            "expected string or array at $.messages[0].content",
+        ),
+        (
+            "Anthropic content block type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [{"role": "user", "content": [false]}]}),
+            "InvalidType",
+            "expected object at $.messages[0].content[0]",
+        ),
+        (
+            "Anthropic tool input type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [{"role": "assistant", "content": [{"type": "tool_use", "input": []}]}]}),
+            "InvalidType",
+            "expected object at $.messages[0].content[0].input",
+        ),
+        (
+            "Anthropic tool result error type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [{"role": "user", "content": [{"type": "tool_result", "is_error": "false"}]}]}),
+            "InvalidType",
+            "expected boolean at $.messages[0].content[0].is_error",
+        ),
+        (
+            "Anthropic tools type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [], "tools": {}}),
+            "InvalidType",
+            "expected array at $.tools",
+        ),
+        (
+            "Anthropic tool schema type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [], "tools": [{"name": "lookup", "input_schema": []}]}),
+            "InvalidType",
+            "expected object at $.tools[0].input_schema",
+        ),
+        (
+            "Anthropic tool choice type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [], "tool_choice": "auto"}),
+            "InvalidType",
+            "expected object at $.tool_choice",
+        ),
+        (
+            "Anthropic thinking type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [], "thinking": []}),
+            "InvalidType",
+            "expected object at $.thinking",
+        ),
+        (
+            "Anthropic thinking budget value",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [], "thinking": {"budget_tokens": -1}}),
+            "InvalidValue",
+            "invalid value at $.thinking.budget_tokens: expected a non-negative integer",
+        ),
+        (
+            "Anthropic output config type",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [], "output_config": []}),
+            "InvalidType",
+            "expected object at $.output_config",
+        ),
+        (
+            "Anthropic effort value",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": [], "output_config": {"effort": "extreme"}}),
+            "InvalidValue",
+            "invalid value at $.output_config.effort: unsupported value \"extreme\"; expected one of low, medium, high, xhigh, max",
         ),
     ];
 
-    for (case, format, body, expected) in cases {
+    for (case, format, body, expected_kind, expected_message) in cases {
         match engine.decode_request(format, &body, &TranslationPolicy::default()) {
             Ok(_) => panic!("{case} should be rejected"),
-            Err(error) => assert_eq!(error.to_string(), expected, "{case}"),
+            Err(error) => {
+                assert_eq!(error.kind(), expected_kind, "{case}");
+                assert_eq!(error.to_string(), expected_message, "{case}");
+            }
         }
     }
 
     let valid_empty_output = json!({
         "model": "claude",
         "max_tokens": 0,
-        "system": null,
         "messages": []
     });
     if let Err(error) = engine.decode_request(
@@ -1236,7 +1538,7 @@ fn malformed_request_fields_are_rejected() {
         &valid_empty_output,
         &TranslationPolicy::default(),
     ) {
-        panic!("Anthropic null system and zero max_tokens should be accepted: {error}");
+        panic!("Anthropic omitted system and zero max_tokens should be accepted: {error}");
     }
 }
 

@@ -7,10 +7,10 @@ use std::collections::HashSet;
 
 use serde_json::{Map, Value, json};
 
-use crate::codecs::common::{
-    is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
+use crate::codecs::common::{provider_extensions, reasoning_text_from_blocks, text_from_blocks};
+use crate::codecs::openai_chat::{
+    decode_file_source, decode_image_source, validate_function_definition,
 };
-use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -18,15 +18,16 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    AggLlmResponse, ContentBlock, LlmRequest, MediaSource, Message, OutputParams,
-    ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
-    ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    AggLlmResponse, ContentBlock, FileSource, ImageSource, LlmRequest, MediaSource, Message,
+    OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams,
+    StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response, json_string, push_lossy, stable_id,
-    string_value, validate_request_capabilities,
+    array, boolean, capture_request_preservation, capture_response_preservation,
+    embed_preservation, exact_preserved_request, exact_preserved_response, json_string,
+    non_negative_integer, number, object, push_lossy, stable_id, string, string_enum, string_value,
+    validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Responses payloads.
@@ -38,7 +39,8 @@ impl FormatCodec for OpenAiResponsesCodec {
     }
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
-        let body = crate::util::object(body, "$")?;
+        let body = object(body, "$")?;
+        validate_responses_request(body)?;
         let mut diagnostics = Vec::new();
         let mut request = LlmRequest {
             model: body
@@ -299,6 +301,239 @@ impl FormatCodec for OpenAiResponsesCodec {
             diagnostics: Vec::new(),
         })
     }
+}
+
+// Validates source fields before normalization can replace malformed values with defaults.
+fn validate_responses_request(body: &Map<String, Value>) -> Result<()> {
+    if let Some(value) = body.get("model") {
+        string(value, "$.model")?;
+    }
+    if let Some(value) = body.get("stream").filter(|value| !value.is_null()) {
+        boolean(value, "$.stream")?;
+    }
+    for field in ["temperature", "top_p"] {
+        if let Some(value) = body.get(field).filter(|value| !value.is_null()) {
+            number(value, &format!("$.{field}"))?;
+        }
+    }
+    if let Some(value) = body
+        .get("max_output_tokens")
+        .filter(|value| !value.is_null())
+    {
+        non_negative_integer(value, "$.max_output_tokens")?;
+    }
+    if let Some(value) = body.get("text").filter(|value| !value.is_null()) {
+        let text = object(value, "$.text")?;
+        if let Some(format) = text.get("format").filter(|value| !value.is_null()) {
+            let format = object(format, "$.text.format")?;
+            if let Some(value) = format.get("type") {
+                string(value, "$.text.format.type")?;
+            }
+        }
+    }
+    if let Some(value) = body.get("reasoning").filter(|value| !value.is_null()) {
+        let reasoning = object(value, "$.reasoning")?;
+        if let Some(value) = reasoning.get("effort").filter(|value| !value.is_null()) {
+            string_enum(
+                value,
+                "$.reasoning.effort",
+                &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            )?;
+        }
+    }
+    if let Some(value) = body.get("instructions").filter(|value| !value.is_null()) {
+        string(value, "$.instructions")?;
+    }
+    if let Some(value) = body.get("input") {
+        validate_responses_input_container(value, "$.input")?;
+    }
+    if let Some(value) = body.get("tools").filter(|value| !value.is_null()) {
+        validate_responses_tools(value)?;
+    }
+    if let Some(value) = body.get("tool_choice").filter(|value| !value.is_null()) {
+        validate_responses_tool_choice(value)?;
+    }
+    Ok(())
+}
+
+fn validate_responses_input_container(value: &Value, path: &str) -> Result<()> {
+    match value {
+        Value::String(_) => Ok(()),
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                validate_responses_input_item(item, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        _ => Err(TranslationError::InvalidType {
+            path: path.to_string(),
+            expected: "string or array",
+        }),
+    }
+}
+
+fn validate_responses_input_item(value: &Value, path: &str) -> Result<()> {
+    let item = object(value, path)?;
+    let item_type = item
+        .get("type")
+        .map(|value| string(value, &format!("{path}.type")))
+        .transpose()?;
+    match item_type {
+        Some("message") | None if item.contains_key("role") || item.contains_key("content") => {
+            if let Some(value) = item.get("role") {
+                string_enum(
+                    value,
+                    &format!("{path}.role"),
+                    &["user", "assistant", "system", "developer"],
+                )?;
+            }
+            if let Some(value) = item.get("content") {
+                validate_responses_content_container(value, &format!("{path}.content"))?;
+            }
+        }
+        Some("function_call") => {
+            for field in ["call_id", "name", "arguments"] {
+                if let Some(value) = item.get(field) {
+                    string(value, &format!("{path}.{field}"))?;
+                }
+            }
+        }
+        Some("function_call_output") => {
+            if let Some(value) = item.get("call_id") {
+                string(value, &format!("{path}.call_id"))?;
+            }
+            if let Some(value) = item.get("output") {
+                validate_responses_content_container(value, &format!("{path}.output"))?;
+            }
+        }
+        Some("reasoning") => {
+            if let Some(value) = item.get("text").filter(|value| !value.is_null()) {
+                string(value, &format!("{path}.text"))?;
+            }
+            for field in ["content", "summary"] {
+                if let Some(value) = item.get(field).filter(|value| !value.is_null()) {
+                    let blocks = array(value, &format!("{path}.{field}"))?;
+                    for (index, block) in blocks.iter().enumerate() {
+                        validate_responses_content_block(
+                            block,
+                            &format!("{path}.{field}[{index}]"),
+                        )?;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_responses_content_container(value: &Value, path: &str) -> Result<()> {
+    match value {
+        Value::String(_) => Ok(()),
+        Value::Array(blocks) => {
+            for (index, block) in blocks.iter().enumerate() {
+                validate_responses_content_block(block, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        _ => Err(TranslationError::InvalidType {
+            path: path.to_string(),
+            expected: "string or array",
+        }),
+    }
+}
+
+fn validate_responses_content_block(value: &Value, path: &str) -> Result<()> {
+    let block = object(value, path)?;
+    let Some(block_type) = block.get("type") else {
+        return Ok(());
+    };
+    let block_type = string(block_type, &format!("{path}.type"))?;
+    match block_type {
+        "input_text" | "output_text" | "text" | "reasoning_text" | "summary_text" => {
+            if let Some(value) = block.get("text") {
+                string(value, &format!("{path}.text"))?;
+            }
+        }
+        "refusal" => {
+            if let Some(value) = block.get("refusal") {
+                string(value, &format!("{path}.refusal"))?;
+            }
+        }
+        "input_image" => {
+            if let Some(value) = block.get("image_url").filter(|value| !value.is_null()) {
+                string(value, &format!("{path}.image_url"))?;
+            }
+            if let Some(value) = block.get("file_id").filter(|value| !value.is_null()) {
+                string(value, &format!("{path}.file_id"))?;
+            }
+            if let Some(value) = block.get("detail").filter(|value| !value.is_null()) {
+                string_enum(value, &format!("{path}.detail"), &["auto", "low", "high"])?;
+            }
+        }
+        "input_file" => {
+            for field in ["file_data", "file_id", "file_url", "filename"] {
+                if let Some(value) = block.get(field).filter(|value| !value.is_null()) {
+                    string(value, &format!("{path}.{field}"))?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_responses_tools(value: &Value) -> Result<()> {
+    for (index, tool) in array(value, "$.tools")?.iter().enumerate() {
+        let path = format!("$.tools[{index}]");
+        let tool = object(tool, &path)?;
+        let tool_type = tool
+            .get("type")
+            .map(|value| string(value, &format!("{path}.type")))
+            .transpose()?;
+        if tool_type == Some("function") {
+            if let Some(function) = tool.get("function") {
+                validate_function_definition(
+                    object(function, &format!("{path}.function"))?,
+                    &format!("{path}.function"),
+                )?;
+            } else {
+                validate_function_definition(tool, &path)?;
+            }
+        }
+        if let Some(value) = tool.get("id").filter(|value| !value.is_null()) {
+            string(value, &format!("{path}.id"))?;
+        }
+        if let Some(value) = tool.get("inputSchema").filter(|value| !value.is_null()) {
+            object(value, &format!("{path}.inputSchema"))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_responses_tool_choice(value: &Value) -> Result<()> {
+    match value {
+        Value::String(_) => {
+            string_enum(value, "$.tool_choice", &["none", "auto", "required"])?;
+        }
+        Value::Object(choice) => {
+            if let Some(value) = choice.get("type") {
+                let choice_type = string(value, "$.tool_choice.type")?;
+                if choice_type == "function"
+                    && let Some(value) = choice.get("name")
+                {
+                    string(value, "$.tool_choice.name")?;
+                }
+            }
+        }
+        _ => {
+            return Err(TranslationError::InvalidType {
+                path: "$.tool_choice".to_string(),
+                expected: "string or object",
+            });
+        }
+    }
+    Ok(())
 }
 
 // Decodes Responses `input` into ordered normalized messages.
@@ -695,15 +930,14 @@ fn role_from_responses(role: Option<&str>) -> Role {
 // Unlike `role_from_responses` (used for provider responses), request decoding
 // rejects an unknown role such as "api" with [`TranslationError::InvalidValue`]
 // so the router surfaces the same `invalid_value` error the provider would,
-// instead of silently coercing it to `user`. A missing role and
-// known-but-unmapped roles keep their historical mapping to `user`.
+// instead of silently coercing it to `user`. A missing role keeps its
+// historical mapping to `user`.
 fn request_role_from_responses(role: Option<&str>, path: &str) -> Result<Role> {
     match role {
         Some("assistant") => Ok(Role::Assistant),
         Some("system") => Ok(Role::System),
         Some("developer") => Ok(Role::Developer),
-        None => Ok(Role::User),
-        Some(other) if is_known_role_name(other) => Ok(Role::User),
+        Some("user") | None => Ok(Role::User),
         Some(other) => Err(TranslationError::unsupported_role(path, other)),
     }
 }
@@ -980,9 +1214,30 @@ fn encode_responses_content(
             ContentBlock::Refusal { text } => {
                 blocks.push(json!({"type": "refusal", "refusal": text}));
             }
-            ContentBlock::Image { source } => {
-                blocks.push(json!({"type": "input_image", "image_url": source}));
-            }
+            ContentBlock::Image { source } => match source {
+                ImageSource::Url { url, detail } => {
+                    let mut block = json!({"type": "input_image", "image_url": url});
+                    if let Some(detail) = detail {
+                        block["detail"] = Value::String(detail.clone());
+                    }
+                    blocks.push(block);
+                }
+                ImageSource::Base64 { media_type, data } => {
+                    let media_type = media_type.as_deref().unwrap_or("image/png");
+                    blocks.push(json!({
+                        "type": "input_image",
+                        "image_url": format!("data:{media_type};base64,{data}"),
+                    }));
+                }
+                ImageSource::Raw(raw) => {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "raw image source encoded as text for Responses",
+                    )?;
+                    blocks.push(json!({"type": "input_text", "text": json_string(raw)}));
+                }
+            },
             ContentBlock::Audio { source } => blocks.push(match source {
                 MediaSource::Raw(raw) => json!({"type": "input_text", "text": json_string(raw)}),
                 MediaSource::Url { url, media_type } => json!({
@@ -1007,9 +1262,26 @@ fn encode_responses_content(
                     "video": {"media_type": media_type, "data": data},
                 }),
             }),
-            ContentBlock::File { source } => {
-                blocks.push(json!({"type": "input_file", "file": source}));
-            }
+            ContentBlock::File { source } => match source {
+                FileSource::FileId(file_id) => {
+                    blocks.push(json!({"type": "input_file", "file_id": file_id}));
+                }
+                FileSource::FileData { data, filename } => {
+                    let mut block = json!({"type": "input_file", "file_data": data});
+                    if let Some(filename) = filename {
+                        block["filename"] = Value::String(filename.clone());
+                    }
+                    blocks.push(block);
+                }
+                FileSource::Raw(raw) => {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "raw file source encoded as text for Responses",
+                    )?;
+                    blocks.push(json!({"type": "input_text", "text": json_string(raw)}));
+                }
+            },
             ContentBlock::Unknown { raw, .. } => {
                 push_lossy(
                     diagnostics,

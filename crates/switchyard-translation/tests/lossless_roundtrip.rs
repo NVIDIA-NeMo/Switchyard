@@ -463,14 +463,12 @@ fn request_fixture(format: WireFormat) -> Value {
                         {"type": "input_text", "text": "Inspect this payload."},
                         {
                             "type": "input_image",
-                            "image_url": {
-                                "url": "https://example.test/image.png",
-                                "detail": "high"
-                            }
+                            "image_url": "https://example.test/image.png",
+                            "detail": "high"
                         },
                         {
                             "type": "input_file",
-                            "file": {"file_id": "file_123"}
+                            "file_id": "file_123"
                         },
                         {
                             "type": "vendor_block",
@@ -483,12 +481,12 @@ fn request_fixture(format: WireFormat) -> Value {
                     "type": "function_call",
                     "call_id": "call_lookup",
                     "name": "lookup",
-                    "arguments": {"query": "rust", "limit": 2}
+                    "arguments": "{\"query\":\"rust\",\"limit\":2}"
                 },
                 {
                     "type": "function_call_output",
                     "call_id": "call_lookup",
-                    "output": {"ok": true, "items": [1, 2]}
+                    "output": "{\"ok\":true,\"items\":[1,2]}"
                 },
                 {
                     "type": "local_shell_call",
