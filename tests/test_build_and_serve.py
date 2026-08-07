@@ -16,8 +16,6 @@ of build_and_serve's imports, app construction, or extra-endpoint wiring
 fails one of these tests.
 """
 
-from __future__ import annotations
-
 import argparse
 from collections.abc import AsyncIterator
 from typing import Any
@@ -100,25 +98,53 @@ class _SentinelEndpoint(Endpoint):
 # ---------------------------------------------------------------------------
 
 
-def _ns(**overrides: Any) -> argparse.Namespace:
+def _ns(
+    host: str = "127.0.0.1",
+    port: int | None = 4000,
+    reload: bool = False,
+    workers: int = 1,
+) -> argparse.Namespace:
     """Build the argparse namespace ``build_and_serve`` expects."""
-    defaults = {"host": "127.0.0.1", "port": 4000, "reload": False, "workers": 1}
-    defaults.update(overrides)
-    return argparse.Namespace(**defaults)
+    return argparse.Namespace(host=host, port=port, reload=reload, workers=workers)
 
 
 def _capture_uvicorn(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Patch ``uvicorn.run`` to capture its kwargs without starting a server."""
     captured: dict[str, Any] = {}
 
-    def _fake_run(app: FastAPI, **kwargs: Any) -> None:
+    def _fake_run(
+        app: FastAPI,
+        host: str,
+        port: int,
+        reload: bool,
+        workers: int,
+    ) -> None:
         captured["app"] = app
-        captured["kwargs"] = kwargs
+        captured["kwargs"] = {
+            "host": host,
+            "port": port,
+            "reload": reload,
+            "workers": workers,
+        }
 
     import uvicorn
 
     monkeypatch.setattr(uvicorn, "run", _fake_run)
     return captured
+
+
+def _assert_invalid_request_response(
+    response: httpx.Response,
+    path: str,
+    code: str,
+) -> None:
+    body = response.json()
+    assert body["error"]["type"] == "invalid_request_error"
+    if path == "/v1/messages":
+        assert body["type"] == "error"
+        assert set(body["error"]) == {"type", "message"}
+    else:
+        assert body["error"]["code"] == code
 
 
 def _switchyard() -> Switchyard:
@@ -266,9 +292,7 @@ class TestInvalidRequestBody:
         )
         assert resp.status_code == 400
         assert resp.headers["content-type"].startswith("application/json")
-        body = resp.json()
-        assert body["error"]["type"] == "invalid_request_error"
-        assert body["error"]["code"] == "invalid_body"
+        _assert_invalid_request_response(resp, path, "invalid_body")
 
     @pytest.mark.parametrize("path", _ENDPOINTS)
     async def test_json_array_body_returns_400(
@@ -281,9 +305,7 @@ class TestInvalidRequestBody:
         )
         assert resp.status_code == 400
         assert resp.headers["content-type"].startswith("application/json")
-        body = resp.json()
-        assert body["error"]["type"] == "invalid_request_error"
-        assert body["error"]["code"] == "invalid_body"
+        _assert_invalid_request_response(resp, path, "invalid_body")
 
     async def test_server_stays_healthy_after_bad_request(
         self, served_client: httpx.AsyncClient
@@ -304,9 +326,20 @@ async def counting_client(
     """Like served_client but exposes a call-counting backend for short-circuit checks."""
     captured: dict[str, Any] = {}
 
-    def _fake_run(app: FastAPI, **kwargs: Any) -> None:
+    def _fake_run(
+        app: FastAPI,
+        host: str,
+        port: int,
+        reload: bool,
+        workers: int,
+    ) -> None:
         captured["app"] = app
-        captured["kwargs"] = kwargs
+        captured["kwargs"] = {
+            "host": host,
+            "port": port,
+            "reload": reload,
+            "workers": workers,
+        }
 
     import uvicorn
 
@@ -357,9 +390,7 @@ class TestEmptyMessages:
         )
         assert resp.status_code == 400
         assert resp.headers["content-type"].startswith("application/json")
-        body = resp.json()
-        assert body["error"]["type"] == "invalid_request_error"
-        assert body["error"]["code"] == "empty_messages"
+        _assert_invalid_request_response(resp, "/v1/messages", "empty_messages")
         assert backend.call_count == 0, "backend must not be invoked for empty messages"
 
     async def test_non_empty_messages_still_succeed(

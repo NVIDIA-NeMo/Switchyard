@@ -3,8 +3,6 @@
 
 """Tests for the FastAPI app factory wiring."""
 
-from __future__ import annotations
-
 from typing import Protocol
 
 from fastapi import FastAPI
@@ -25,7 +23,6 @@ class _RecordingSwitchyard:
     async def call(
         self,
         request: _RequestWithBody,
-        *,
         ctx: object | None = None,
     ) -> dict[str, object]:
         self.requests.append(request)
@@ -86,3 +83,19 @@ def test_app_registers_component_contributed_endpoints() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_unknown_path_uses_switchyard_error_envelope() -> None:
+    app = build_switchyard_app(_RecordingSwitchyard())  # type: ignore[arg-type]
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/this/does/not/exist")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "message": "Not Found",
+            "type": "not_found",
+            "code": "endpoint_not_found",
+        }
+    }

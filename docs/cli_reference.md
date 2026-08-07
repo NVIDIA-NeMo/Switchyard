@@ -85,6 +85,25 @@ Validate a deployment, then start the proxy:
   --host 127.0.0.1 --port 4000
 ```
 
+### Error Responses
+
+OpenAI Chat Completions, OpenAI Responses, and unknown URL paths return this
+error body:
+
+```json
+{"error": {"message": "...", "type": "...", "code": "..."}}
+```
+
+Anthropic Messages returns the Anthropic error body:
+
+```json
+{"type": "error", "error": {"type": "...", "message": "..."}}
+```
+
+Common OpenAI-compatible `code` values include `invalid_body`, `empty_messages`,
+`model_not_found`, `endpoint_not_found`, `upstream_error`,
+`internal_chain_error`, and `context_length_exceeded`.
+
 ## Removed Setup Commands
 
 `switchyard configure` and `switchyard verify` are not available. Export the
