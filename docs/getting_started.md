@@ -271,10 +271,8 @@ An algorithm yields a stream of steps. Each `Step::CallLlm` is a model call your
 host performs over its own transport, and the run ends with
 `Step::ReturnToAgent` carrying the final response.
 
-If you would rather not drive the stream yourself, `switchyard-llm-client`
-provides a ready-made consumer that performs the calls over HTTP. See the
-[`switchyard-llm-client`](../crates/libsy-llm-client/README.md) quickstart for a
-complete buffered and streaming example.
+For the request, response, and streaming types the steps carry, see
+[`switchyard-protocol`](../crates/protocol/README.md).
 
 ---
 
