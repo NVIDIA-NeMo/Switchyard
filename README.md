@@ -26,6 +26,7 @@ algorithm you write yourself.
 
 Choose the launcher path to run Claude Code, Codex CLI, or OpenClaw through
 Switchyard. Choose the server path to run Switchyard as a standalone proxy.
+Choose the library path to embed routing in your own Rust application.
 
 ### Launcher Path
 
@@ -91,6 +92,36 @@ curl http://localhost:4000/health
 
 For a complete configuration and a test request, follow
 [Getting Started](docs/getting_started.md).
+
+### Library Path
+
+`switchyard-libsy` embeds the routing algorithms in your own Rust application.
+It makes no network calls: an algorithm decides which target to use and hands
+every model call back to you, so it drops into an existing proxy, gateway, or
+agent runtime without owning an HTTP stack. Pair it with
+`switchyard-llm-client` when you want the calls made for you.
+
+```toml
+[dependencies]
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+```
+
+See [Getting Started](docs/getting_started.md#library-path) for a worked
+example, or the [`switchyard-libsy`](crates/libsy/README.md) crate docs.
+
+## Routing Strategies
+
+| Strategy | Use it when | Route `type` |
+|---|---|---|
+| [Random](docs/routing_algorithms/random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
+| [LLM Classifier](docs/routing_algorithms/llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
+| [Stage Router](docs/routing_algorithms/stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
+| [Escalation Router](docs/routing_algorithms/escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `llm_classifier` with `escalation` |
+
+A `passthrough` route registers one target under one model ID with no routing
+decision. See the [Routing Overview](docs/routing_algorithms/overview.md) for
+the common route shape and self-hosted targets.
 
 ## Architecture
 
