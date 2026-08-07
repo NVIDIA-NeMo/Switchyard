@@ -13,13 +13,14 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use switchyard_libsy::{
-    Algorithm, CallLlmRequest, LibsyError, Result, RunObserver, algorithm_label, drive,
-};
+use parking_lot::Mutex;
+use switchyard_libsy::{Algorithm, CallLlmRequest, LibsyError, Result, algorithm_label, drive};
 use switchyard_protocol::{Context, Decision, LlmClientError, Request, Response, RoutedLlmClient};
 
-use crate::observability;
+use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
+use crate::{metrics, observability};
 
 /// Run one request to completion, serving every offloaded model call with `client`.
 ///
@@ -41,10 +42,61 @@ pub async fn run(
     request: Request,
     observer: Option<RunObserver>,
 ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
-    drive(algorithm, ctx, request, observer, move |call| {
-        serve(clients.clone(), call)
+    let algorithm_name = algorithm.name().to_string();
+    // The output from `serve` goes in here: when each successful routed call was in
+    // flight. Everything else the run spent time on is routing overhead.
+    let routed_calls = Arc::new(Mutex::new(RoutedCallWindows::default()));
+    let run_started = Instant::now();
+    let result = drive(algorithm, ctx, request, {
+        let observer = observer.clone();
+        let routed_calls = Arc::clone(&routed_calls);
+        move |call| {
+            serve(
+                clients.clone(),
+                call,
+                observer.clone(),
+                Arc::clone(&routed_calls),
+            )
+        }
     })
-    .await
+    .await?;
+    if let Some(served) = routed_calls.lock().served() {
+        let overhead =
+            metrics::record_routing_overhead(&algorithm_name, run_started.elapsed(), served);
+        if let Some(observer) = observer {
+            observer(RunObservation::RoutingOverhead(overhead));
+        }
+    }
+    Ok(result)
+}
+
+/// The wall-clock windows during which a successful routed call was in flight.
+/// An algorithm can make multiple overlapping calls. This is the union of all of them.
+#[derive(Default)]
+struct RoutedCallWindows(Vec<(Instant, Instant)>);
+
+impl RoutedCallWindows {
+    /// Record one completed routed call.
+    fn record(&mut self, started: Instant, ended: Instant) {
+        self.0.push((started, ended));
+    }
+
+    /// Total time at least one routed call was in flight, merging overlapping windows.
+    fn served(&mut self) -> Option<Duration> {
+        self.0.sort_unstable_by_key(|(started, _)| *started);
+        // Sweep the windows in start order, advancing a cursor along the timeline and
+        // counting only the time each window covers that the cursor has not reached.
+        let mut covered = self.0.first()?.0;
+        let mut total = Duration::ZERO;
+        for &(started, ended) in &self.0 {
+            covered = covered.max(started);
+            if ended > covered {
+                total += ended - covered;
+                covered = ended;
+            }
+        }
+        Some(total)
+    }
 }
 
 /// Serve one offloaded call. A failed *model* call is forwarded to the algorithm via
@@ -88,7 +140,13 @@ pub async fn run(
         error = tracing::field::Empty,
     )
 )]
-async fn serve(clients: ClientRouter, call: CallLlmRequest) -> Result<()> {
+async fn serve(
+    clients: ClientRouter,
+    call: CallLlmRequest,
+    observer: Option<RunObserver>,
+    // Output parameter because `drive` takes a function that returns a plain `Result<()>`.
+    routed_calls: Arc<Mutex<RoutedCallWindows>>,
+) -> Result<()> {
     let span = tracing::Span::current();
     observability::record_gen_ai_request(&span, &call.get_routed().request.llm_request);
     if let Some(tier) = call.get_decision().routing_tier() {
@@ -105,7 +163,13 @@ async fn serve(clients: ClientRouter, call: CallLlmRequest) -> Result<()> {
     }
     let routed = call.get_routed().clone();
     let target = routed.decision.selected_model().to_string();
-    let result = match clients.route(&target) {
+    let tier = call.get_decision().routing_tier().map(str::to_string);
+    let is_routed = call.get_decision().is_routed_call();
+    // Resolved before the clock starts: picking the client is Switchyard's work, not
+    // the provider's, so it belongs in the routing overhead.
+    let client = clients.route(&target);
+    let started = Instant::now();
+    let result = match client {
         Ok(client) => {
             client
                 .call(routed.ctx, routed.request, routed.decision)
@@ -115,6 +179,25 @@ async fn serve(clients: ClientRouter, call: CallLlmRequest) -> Result<()> {
     }
     .map_err(|source| LibsyError::client_call(target, source));
     let result = observability::observe_client_call(result);
+    let ended = Instant::now();
+    let duration = ended - started;
+    if let Some(observer) = observer {
+        observer(RunObservation::LlmCall(LlmCallObservation {
+            selected_model: call.get_decision().selected_model().to_string(),
+            tier,
+            is_routed,
+            is_success: result.is_ok(),
+            duration,
+            usage: result
+                .as_ref()
+                .ok()
+                .and_then(|response| response.llm_response.as_agg())
+                .map(|response| response.usage.clone()),
+        }));
+    }
+    if is_routed && result.is_ok() {
+        routed_calls.lock().record(started, ended);
+    }
     call.respond(result)
 }
 

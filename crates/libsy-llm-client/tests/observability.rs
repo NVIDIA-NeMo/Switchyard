@@ -36,7 +36,7 @@ use switchyard_libsy::{
     Algorithm, Driver, LibsyError, LlmClassifierConfig, LlmTarget, LlmTargetSet, LlmTaskClassifier,
     RoutedRequest, Step, TaskClassifierConfig,
 };
-use switchyard_llm_client::ClientRouter;
+use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{
     Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
 };
@@ -843,6 +843,50 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     Ok(())
 }
 
+#[tokio::test]
+async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&observations);
+    let observer: RunObserver = Arc::new(move |observation| observed.lock().push(observation));
+    const ALGO: &str = "observed-run-algo";
+    const MODEL: &str = "observed-run-model";
+    let client = Arc::new(UsageClient {
+        usage: Usage::default(),
+    }) as Arc<dyn RoutedLlmClient>;
+
+    let (_, response) = switchyard_llm_client::run(
+        algo(ALGO, MODEL),
+        ClientRouter::single(client),
+        Context::default(),
+        request_with_metadata("observed-session", "observed-correlation"),
+        Some(observer),
+    )
+    .await?;
+
+    assert_eq!(
+        response
+            .llm_response
+            .as_agg()
+            .map(|response| response.model.as_deref()),
+        Some(Some(MODEL))
+    );
+    let observations = observations.lock();
+    assert_eq!(observations.len(), 2);
+    let RunObservation::LlmCall(observation) = &observations[0] else {
+        return Err(test_error("expected an LLM call observation"));
+    };
+    assert_eq!(observation.selected_model, MODEL);
+    assert!(observation.is_routed);
+    assert!(observation.is_success);
+    assert!(observation.usage.is_some());
+    assert!(matches!(
+        observations[1],
+        RunObservation::RoutingOverhead(_)
+    ));
+    Ok(())
+}
+
 /// A streamed response keeps the client span available until terminal usage arrives.
 struct StreamingUsageClient;
 
@@ -1006,7 +1050,6 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
     let stream = algo(ALGO, MODEL).run_stream(
         Context::default(),
         request_with_metadata("obs-session-2", "obs-corr-2"),
-        None,
     );
     tokio::pin!(stream);
 

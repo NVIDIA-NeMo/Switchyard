@@ -21,12 +21,14 @@ pub mod client;
 pub mod error;
 pub mod metrics;
 mod observability;
+mod observation;
 pub mod raw;
 pub mod run;
 
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
 pub use client::{ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
+pub use observation::{LlmCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
 pub use run::{ClientRouter, run};
 pub use switchyard_translation::RawEventStream;

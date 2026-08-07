@@ -57,7 +57,7 @@ Each histogram emits `_bucket`, `_sum`, and `_count` series. Use
 
 | Metric | Type | Meaning |
 |---|---|---|
-| `switchyard_routing_overhead_ms{algorithm}` | histogram | Algorithm run time minus the final routed model call. Includes classifier calls, target resolution, and decision publication; runs with no final routed call are not recorded. |
+| `switchyard_routing_overhead_ms{algorithm}` | histogram | Total run time minus the time spent in successful routed model calls, with overlapping hedged calls counted once. Includes classifier calls, failed routed attempts, target resolution, and decision publication; runs with no successful routed call are not recorded. Measured across the whole run, so it does not reconcile with `switchyard_run_duration_ms`, which times only the algorithm task. |
 
 ## Classifier fail-open counter
 
@@ -160,6 +160,6 @@ into label space.
 |---|---|
 | `model="<unknown>"` rows appear | A routed-call observation did not include a selected model. |
 | All counters at 0 after warm-up | Server just started with no traffic, or the scraper is hitting the wrong port. |
-| `switchyard_routing_overhead_ms_count` stuck at `0` | No successful algorithm run has recorded a final routed model call. |
+| `switchyard_routing_overhead_ms_count` stuck at `0` | No successful algorithm run has recorded a successful routed model call. |
 | `switchyard_classifier_fail_open_total` rising | The judge target is failing or returning a response the classifier cannot parse. Check `judge_model` and `reason`. |
 | `switchyard_client_responses_total{outcome="retryable_error"}` rising | Either the upstream is genuinely flaky, or retries are exhausting; compare client responses with retryable upstream attempts. |

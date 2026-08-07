@@ -41,7 +41,7 @@ use opentelemetry::metrics::{Meter, ObservableGauge};
 use opentelemetry::{KeyValue, global};
 use tracing::Span;
 
-use crate::{Driver, Result};
+use crate::Result;
 use switchyard_protocol::{Context, Decision, Request, Response};
 
 const METRICS_SCOPE: &str = "switchyard";
@@ -146,12 +146,10 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
 }
 
 /// Runs one algorithm task to completion, recording the run counter, duration
-/// histogram, routing overhead, span outcome, and failure log when it resolves.
+/// histogram, span outcome, and failure log when it resolves.
 /// Executes inside the `libsy.run` span its caller instruments the task with.
-/// `driver` is the run's own, holding the duration of the call that served it.
 pub(crate) async fn observe_run(
     ctx: Context,
-    driver: Driver,
     run: impl Future<Output = Result<Response>>,
 ) -> Result<Response> {
     let started = Instant::now();
@@ -159,12 +157,6 @@ pub(crate) async fn observe_run(
     let duration = started.elapsed();
     let algorithm = algorithm_label(&ctx);
     record_run(algorithm, duration, &result, &Span::current());
-    if result.is_ok()
-        && let Some(overhead) =
-            record_routing_overhead(algorithm, duration, driver.routed_call_duration())
-    {
-        driver.observe_routing_overhead(overhead);
-    }
     result
 }
 
@@ -197,28 +189,6 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, sp
         .f64_histogram("switchyard.run_duration_ms")
         .build()
         .record(duration.as_secs_f64() * 1000.0, &attributes);
-}
-
-/// Records what routing cost on top of the call that served the run: classifier
-/// calls, target resolution, decision publishing. A run with no routed call has
-/// nothing to subtract, so it records nothing.
-fn record_routing_overhead(
-    algorithm: &str,
-    run: Duration,
-    routed_call: Option<Duration>,
-) -> Option<Duration> {
-    let routed_call = routed_call?;
-    // Saturating: the two clocks start a moment apart, so a run that is all
-    // routed call can come out fractionally negative.
-    let overhead = run.saturating_sub(routed_call);
-    meter()
-        .f64_histogram("switchyard.routing_overhead_ms")
-        .build()
-        .record(
-            overhead.as_secs_f64() * 1000.0,
-            &[KeyValue::new("algorithm", algorithm.to_string())],
-        );
-    Some(overhead)
 }
 
 /// Records a judge failure that made the classifier route without a verdict.

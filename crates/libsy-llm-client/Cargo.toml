@@ -20,6 +20,7 @@ async-trait.workspace = true
 futures.workspace = true
 futures-util.workspace = true
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+parking_lot.workspace = true
 http.workspace = true
 httpdate.workspace = true
 serde_json.workspace = true
@@ -30,7 +31,6 @@ tracing-opentelemetry.workspace = true
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.
 opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
-parking_lot.workspace = true
 thiserror.workspace = true
 tracing-subscriber.workspace = true
 wiremock = "0.6"

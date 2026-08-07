@@ -73,7 +73,7 @@ mod tests {
 
     use super::Passthrough;
     use crate::core::algorithm::{Algorithm, LlmTarget};
-    use crate::core::testing::{drive, echo};
+    use crate::core::testing::{echo, test_drive};
     use switchyard_protocol::{Context, Request, completion_text, text_request};
 
     #[tokio::test]
@@ -87,7 +87,7 @@ mod tests {
         let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(LlmTarget {
             semantic_name: MODEL_ID.to_string(),
         }));
-        let (trace, response) = drive(algorithm, Context::default(), request, echo()).await?;
+        let (trace, response) = test_drive(algorithm, Context::default(), request, echo()).await?;
 
         assert_eq!(
             response

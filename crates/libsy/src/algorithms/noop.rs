@@ -79,7 +79,7 @@ mod tests {
     use switchyard_protocol::{LlmRequest, Message, Role};
 
     use super::*;
-    use crate::core::testing::{drive, echo};
+    use crate::core::testing::{echo, test_drive};
 
     #[tokio::test]
     async fn test_noop_algo() -> Result<()> {
@@ -97,7 +97,7 @@ mod tests {
         // `Noop` synthesizes its own response and never offloads a call, so `echo` is
         // never reached.
         let a: Arc<dyn Algorithm> = Arc::new(Noop {});
-        let (decisions, response) = drive(a, Context::default(), request, echo()).await?;
+        let (decisions, response) = test_drive(a, Context::default(), request, echo()).await?;
         let Some(decision) = decisions.first() else {
             panic!("Expected exactly one Decision");
         };

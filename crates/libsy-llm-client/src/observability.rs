@@ -1,18 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `tracing` span fields for the provider call [`run`](crate::run) makes.
-//!
-//! libsy instruments the orchestration layer (`libsy.run`, `libsy.llm_call`) and owns the
-//! `switchyard.*` metrics. This module owns the other half: the `libsy.client_call` span that
-//! covers the one HTTP call a routed request performs, recorded as OpenTelemetry gen_ai
-//! semantic-convention attributes.
-//!
-//! Nothing here records a metric — these are span fields only, written through the `tracing`
-//! facade so the host's subscriber decides where they go. A streamed response resolves before
-//! its usage is known, so [`observe_client_call`] wraps the stream and keeps the span alive
-//! until it drains, errors, or is abandoned.
-
 use std::borrow::Cow;
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};

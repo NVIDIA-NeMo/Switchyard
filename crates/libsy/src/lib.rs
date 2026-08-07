@@ -6,8 +6,8 @@
 
 mod core;
 pub use core::algorithm::{
-    Algorithm, CallLlmRequest, Driver, LlmCallObservation, LlmTarget, LlmTargetSet, RoutedRequest,
-    RunObservation, RunObserver, Step, StepStream, drive,
+    Algorithm, CallLlmRequest, Driver, LlmTarget, LlmTargetSet, RoutedRequest, Step, StepStream,
+    drive,
 };
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::processor::{Event, Processor};

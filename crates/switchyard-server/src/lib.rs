@@ -32,11 +32,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, LibsyError, RunObservation, RunObserver};
+use libsy::{Algorithm, LibsyError};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use switchyard_llm_client::{ClientRouter, TranslatingLlmClient};
+use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{Context, Decision, LlmClientError, Metadata, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
@@ -689,16 +689,14 @@ async fn handle_llm_request(
         Err(response) => return response,
     };
     let algorithm = Arc::clone(&route.algorithm);
-    // Not one client for the route: a router that resolves each offloaded call to the
-    // client configured for the target the algorithm selected.
-    let target_clients = route.target_clients.clone();
+    let client_router = route.target_clients.clone();
     let observer = stats_observer(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
     );
     let (trace, response) = match switchyard_llm_client::run(
         algorithm,
-        target_clients,
+        client_router,
         Context::default(),
         request,
         Some(observer),
@@ -1318,7 +1316,7 @@ fn endpoint_listing(has_routing_log: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use libsy::LlmCallObservation;
+    use switchyard_llm_client::LlmCallObservation;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::{Notify, oneshot};
 

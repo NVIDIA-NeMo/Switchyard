@@ -182,7 +182,7 @@ mod tests {
     use crate::DriverError;
     use crate::algorithms::util::affinity::AffinityRouter;
     use crate::core::algorithm::LlmTarget;
-    use crate::core::testing::{drive, echo};
+    use crate::core::testing::{echo, test_drive};
     use switchyard_protocol::{Request, Signals};
 
     fn request() -> Request {
@@ -225,7 +225,7 @@ mod tests {
         let mut selected = Vec::with_capacity(count);
         for _ in 0..count {
             let (_, response) =
-                drive(algorithm.clone(), Context::default(), request(), echo()).await?;
+                test_drive(algorithm.clone(), Context::default(), request(), echo()).await?;
             selected.push(
                 response
                     .llm_response
@@ -240,7 +240,8 @@ mod tests {
     #[tokio::test]
     async fn single_target_is_always_selected_and_called() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"])?;
-        let (trace, response) = drive(algorithm, Context::default(), request(), echo()).await?;
+        let (trace, response) =
+            test_drive(algorithm, Context::default(), request(), echo()).await?;
 
         assert_eq!(
             response
@@ -262,7 +263,7 @@ mod tests {
 
         for _ in 0..50 {
             let (trace, response) =
-                drive(algorithm.clone(), Context::default(), request(), echo()).await?;
+                test_drive(algorithm.clone(), Context::default(), request(), echo()).await?;
             let selected = response
                 .llm_response
                 .as_agg()
@@ -284,7 +285,7 @@ mod tests {
 
         for _ in 0..100 {
             let (_, response) =
-                drive(algorithm.clone(), Context::default(), request(), echo()).await?;
+                test_drive(algorithm.clone(), Context::default(), request(), echo()).await?;
             seen.insert(
                 response
                     .llm_response
@@ -348,7 +349,7 @@ mod tests {
                 .with_classifier(random),
         );
 
-        let (_, first) = drive(
+        let (_, first) = test_drive(
             algorithm.clone(),
             Context::default(),
             request_for_session("session-1"),
@@ -373,7 +374,7 @@ mod tests {
             Some(selected.to_string())
         );
 
-        let (_, second) = drive(
+        let (_, second) = test_drive(
             algorithm,
             Context::default(),
             request_for_session("session-1"),
@@ -431,7 +432,7 @@ mod tests {
     #[tokio::test]
     async fn decision_is_inspectable_and_downcasts() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"])?;
-        let (trace, _) = drive(algorithm, Context::default(), request(), echo()).await?;
+        let (trace, _) = test_drive(algorithm, Context::default(), request(), echo()).await?;
         let decision = &trace[0];
 
         assert_eq!(decision.selected_model(), "only/model");

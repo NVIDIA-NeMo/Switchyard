@@ -17,7 +17,7 @@ use super::util::subagent::SubagentOverride;
 use crate::Result;
 use crate::core::algorithm::{Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
-use crate::core::testing::{drive, echo};
+use crate::core::testing::{echo, test_drive};
 use switchyard_protocol::{
     Context, Metadata, Request, Response, completion_text, slice_to_header_map, text_request,
 };
@@ -77,7 +77,8 @@ fn router() -> Arc<FallThrough> {
 
 /// Runs one turn, returning the target that served it.
 async fn turn(router: &Arc<FallThrough>, headers: &[(&str, &str)]) -> Result<String> {
-    let (_, response) = drive(router.clone(), Context::default(), request(headers), echo()).await?;
+    let (_, response) =
+        test_drive(router.clone(), Context::default(), request(headers), echo()).await?;
     Ok(response
         .llm_response
         .as_agg()

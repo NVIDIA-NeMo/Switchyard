@@ -463,7 +463,7 @@ mod tests {
     use crate::core::classifier::Classification;
     use crate::{AffinityRouter, SystemPromptProcessor, TargetPrompts};
 
-    use crate::core::testing::{Serve, drive, echo, reply};
+    use crate::core::testing::{Serve, echo, reply, test_drive};
     use switchyard_protocol::{
         LlmClientError, LlmRequest, Message, Metadata, Role, completion_text, text_request,
     };
@@ -562,7 +562,7 @@ mod tests {
         recorder: &Arc<PromptRecorder>,
         router: FallThrough,
     ) -> Result<RecordedCall> {
-        drive(
+        test_drive(
             Arc::new(router),
             Context::default(),
             Request {
@@ -648,7 +648,8 @@ mod tests {
     where
         S: Default + Send + 'static,
     {
-        let (trace, response) = drive(router.clone(), Context::default(), request, serve).await?;
+        let (trace, response) =
+            test_drive(router.clone(), Context::default(), request, serve).await?;
         let text = response
             .llm_response
             .into_agg()
@@ -958,7 +959,7 @@ mod tests {
         );
         let mut ctx = Context::default();
         ctx.exclude_target("weak");
-        let (trace, response) = drive(router, ctx, request(), echo()).await?;
+        let (trace, response) = test_drive(router, ctx, request(), echo()).await?;
         let text = response
             .llm_response
             .into_agg()
@@ -1252,7 +1253,7 @@ mod tests {
             ..request()
         };
 
-        let result = drive(router.clone(), Context::default(), final_request, echo()).await;
+        let result = test_drive(router.clone(), Context::default(), final_request, echo()).await;
 
         assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
         let states = router

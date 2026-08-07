@@ -20,7 +20,7 @@ use switchyard_protocol::{
     Context, Decision, LlmClientError, LlmResponse, Request, Response, text_response,
 };
 
-use crate::core::algorithm::{Algorithm, CallLlmRequest, RunObserver};
+use crate::core::algorithm::{Algorithm, CallLlmRequest};
 use crate::{LibsyError, Result};
 
 /// The result a fake client hands back for one offloaded call.
@@ -51,25 +51,14 @@ where
 }
 
 /// Run `algorithm` to completion, serving each offloaded call with `serve`.
-pub(crate) async fn drive(
+pub(crate) async fn test_drive(
     algorithm: Arc<dyn Algorithm>,
     ctx: Context,
     request: Request,
-    serve: impl Serve,
-) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
-    drive_observed(algorithm, ctx, request, None, serve).await
-}
-
-/// [`drive`] plus a [`RunObserver`], for tests that assert on run observations.
-pub(crate) async fn drive_observed(
-    algorithm: Arc<dyn Algorithm>,
-    ctx: Context,
-    request: Request,
-    observer: Option<RunObserver>,
     serve: impl Serve,
 ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
     let serve = Arc::new(serve);
-    crate::drive(algorithm, ctx, request, observer, move |call| {
+    crate::drive(algorithm, ctx, request, move |call| {
         fulfill(Arc::clone(&serve), call)
     })
     .await

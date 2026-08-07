@@ -959,7 +959,7 @@ mod tests {
     };
 
     use crate::algorithms::util::llm_judge::Judge;
-    use crate::core::testing::{Serve, drive, reply};
+    use crate::core::testing::{Serve, reply, test_drive};
     use switchyard_protocol::{Context, LlmResponse, Response};
 
     const TEST_THRESHOLD: f64 = 0.5;
@@ -1128,7 +1128,7 @@ mod tests {
     async fn an_unreachable_judge_routes_capable_instead_of_failing_the_request() -> Result<()> {
         let router = router()?;
 
-        let (trace, response) = drive(
+        let (trace, response) = test_drive(
             router,
             Context::default(),
             classify_request(),
@@ -1150,14 +1150,14 @@ mod tests {
         let router = router()?;
         let request = classify_request;
 
-        drive(
+        test_drive(
             router.clone(),
             Context::default(),
             request(),
             recorder.serve(),
         )
         .await?;
-        drive(
+        test_drive(
             router.clone(),
             Context::default(),
             request(),
@@ -1188,7 +1188,7 @@ mod tests {
             },
         })?);
 
-        drive(
+        test_drive(
             router,
             Context::default(),
             classify_request(),
@@ -1217,7 +1217,7 @@ mod tests {
             },
         })?);
 
-        drive(
+        test_drive(
             router,
             Context::default(),
             classify_request(),
@@ -1248,14 +1248,14 @@ mod tests {
         })?);
 
         let session_request = classify_session_request;
-        drive(
+        test_drive(
             router.clone(),
             Context::default(),
             session_request(),
             recorder.serve(),
         )
         .await?;
-        drive(
+        test_drive(
             router.clone(),
             Context::default(),
             session_request(),
@@ -1285,14 +1285,14 @@ mod tests {
             },
         })?);
 
-        drive(
+        test_drive(
             router.clone(),
             Context::default(),
             classify_request(),
             recorder.serve(),
         )
         .await?;
-        drive(
+        test_drive(
             router.clone(),
             Context::default(),
             classify_follow_up_request(),
@@ -1860,7 +1860,7 @@ mod tests {
         let model = Queue::new(["efficient answer"]);
         let router = escalation_router()?;
 
-        let (trace, response) = drive(
+        let (trace, response) = test_drive(
             router,
             Context::default(),
             classify_request(),
@@ -1895,7 +1895,7 @@ mod tests {
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         })?);
 
-        drive(
+        test_drive(
             router,
             Context::default(),
             classify_request(),
@@ -1917,7 +1917,7 @@ mod tests {
         let model = Queue::new(["efficient draft", "capable answer"]);
         let router = escalation_router()?;
 
-        let (trace, response) = drive(
+        let (trace, response) = test_drive(
             router,
             Context::default(),
             classify_request(),
@@ -1942,14 +1942,14 @@ mod tests {
         let router = escalation_router()?;
 
         let session_request = classify_session_request();
-        drive(
+        test_drive(
             router.clone(),
             Context::default(),
             session_request.clone(),
             queued(Arc::clone(&model), Arc::clone(&judge)),
         )
         .await?;
-        let (trace, _) = drive(
+        let (trace, _) = test_drive(
             router.clone(),
             Context::default(),
             session_request,
@@ -1981,7 +1981,7 @@ mod tests {
         };
 
         let (trace, response) =
-            drive(router, Context::default(), classify_request(), serve).await?;
+            test_drive(router, Context::default(), classify_request(), serve).await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         assert_eq!(

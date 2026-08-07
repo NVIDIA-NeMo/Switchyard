@@ -23,7 +23,7 @@ use tracing::Instrument;
 
 use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
-use crate::metrics::{is_retryable_http_status, record_upstream_attempt};
+use crate::metrics;
 use crate::raw::RawResponse;
 
 // TODO: Why is this here? What does it do?
@@ -287,7 +287,7 @@ impl TranslatingLlmClient {
         let response = match builder.send().await {
             Ok(response) => response,
             Err(error) => {
-                record_upstream_attempt(None);
+                metrics::record_upstream_attempt(None);
                 return Err(AttemptFailure {
                     error: convert_reqwest_error(error),
                     status: None,
@@ -299,13 +299,13 @@ impl TranslatingLlmClient {
         if status.is_success() {
             if streaming {
                 // Streaming body failures happen after the retry boundary.
-                record_upstream_attempt(Some(status.as_u16()));
+                metrics::record_upstream_attempt(Some(status.as_u16()));
                 return Ok(EncodedResponse::Streaming(response));
             }
             let body = match response.bytes().await {
                 Ok(body) => body,
                 Err(error) => {
-                    record_upstream_attempt(None);
+                    metrics::record_upstream_attempt(None);
                     return Err(AttemptFailure {
                         error: convert_reqwest_error(error),
                         status: Some(status.as_u16()),
@@ -313,7 +313,7 @@ impl TranslatingLlmClient {
                     });
                 }
             };
-            record_upstream_attempt(Some(status.as_u16()));
+            metrics::record_upstream_attempt(Some(status.as_u16()));
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
                 body: body.to_vec(),
@@ -324,7 +324,7 @@ impl TranslatingLlmClient {
         let body = match response.text().await {
             Ok(body) => body,
             Err(error) => {
-                record_upstream_attempt(None);
+                metrics::record_upstream_attempt(None);
                 return Err(AttemptFailure {
                     error: convert_reqwest_error(error),
                     status: Some(status.as_u16()),
@@ -332,7 +332,7 @@ impl TranslatingLlmClient {
                 });
             }
         };
-        record_upstream_attempt(Some(status.as_u16()));
+        metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
                 LlmClientError::ContextWindowExceeded {
@@ -563,7 +563,9 @@ impl AttemptFailure {
     fn is_retryable(&self) -> bool {
         match &self.error {
             LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
-            LlmClientError::UpstreamHttp { status, .. } => is_retryable_http_status(*status),
+            LlmClientError::UpstreamHttp { status, .. } => {
+                metrics::is_retryable_http_status(*status)
+            }
             _ => false,
         }
     }
