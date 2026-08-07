@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trajectory-judge components for the escalation router — the judge, its verdict policy, and
-//! the transcript condenser they read.
+//! Trajectory-judge components for the escalation router — the judges, their shared verdict
+//! policy, and the transcript condenser they read.
 //!
-//! [`build_judge`] is the whole surface; the confirmation policy that consumes its verdicts
-//! lives with the assembled algorithm in [`crate::algorithms::escalation`].
+//! [`build_judge`] (the trouble judge) and [`build_recovery_judge`] (the hand-back judge
+//! consulted on latched turns) are the whole surface; the confirmation policy that consumes
+//! their verdicts lives with the assembled algorithm in [`crate::algorithms::escalation`].
 
 use serde::Deserialize;
 use switchyard_protocol::{ContentBlock, Message, Role};
@@ -22,6 +23,7 @@ use crate::{LibsyError, Result};
 use switchyard_protocol::Request;
 
 const PROMPT_TEMPLATE: &str = include_str!("../../prompts/escalation/prompt.md");
+const RECOVERY_PROMPT_TEMPLATE: &str = include_str!("../../prompts/escalation/recovery_prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../../prompts/escalation/schema.json");
 
 /// Separator marking where [`truncate_middle`] dropped a message's interior.
@@ -52,6 +54,11 @@ pub struct EscalationJudgeConfig {
     /// `1` escalates on the first verdict; the router's main cost dial.
     /// `2` or higher needs a session id, since the streak is retained per session.
     pub confirmations: u32,
+    /// Consecutive clear verdicts required, while latched, before the session de-latches back
+    /// to the efficient tier. `0` (the default) disables recovery: a latch is permanent for
+    /// the session's remainder and latched turns skip the judge entirely. Any escalate verdict
+    /// clears the recovery streak, and a de-latched session can re-escalate as usual.
+    pub recovery_confirmations: u32,
     /// Trailing messages shown on top of the anchors. A loop longer than this is invisible.
     pub recent_turn_window: usize,
     /// Per-message cap inside the trailing window.
@@ -82,6 +89,7 @@ impl Default for EscalationJudgeConfig {
     fn default() -> Self {
         Self {
             confirmations: 2,
+            recovery_confirmations: 0,
             recent_turn_window: 28,
             window_message_chars: 500,
         }
@@ -152,9 +160,58 @@ pub(crate) fn build_judge(
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
-    config.validate()?;
     let contract =
         ClassifierContract::from_config(contract_config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+    assemble_judge(
+        judge_target,
+        capable,
+        efficient,
+        contract,
+        config,
+        max_output_tokens,
+    )
+}
+
+/// Builds the hand-back judge consulted on latched turns when recovery is enabled.
+///
+/// The recovery question — could the efficient tier carry the *remaining* work — is
+/// different from the trouble question the trajectory judge answers, and the latched
+/// transcript it reads is the capable tier's own (usually healthy-looking) work. It
+/// therefore always uses the packaged recovery prompt: the route-level `prompt` override
+/// replaces the trouble rubric only. Same verdict schema, so `escalate: true` keeps the
+/// session on the capable tier.
+pub(crate) fn build_recovery_judge(
+    judge_target: LlmTarget,
+    capable: String,
+    efficient: String,
+    config: EscalationJudgeConfig,
+    max_output_tokens: u64,
+) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
+    let contract = ClassifierContract::from_config(
+        &ClassifierContractConfig::default(),
+        RECOVERY_PROMPT_TEMPLATE,
+        SCHEMA_TEMPLATE,
+    )?;
+    assemble_judge(
+        judge_target,
+        capable,
+        efficient,
+        contract,
+        config,
+        max_output_tokens,
+    )
+}
+
+/// Validates `config` and assembles a structured judge over the rendered `contract`.
+fn assemble_judge(
+    judge_target: LlmTarget,
+    capable: String,
+    efficient: String,
+    contract: ClassifierContract,
+    config: EscalationJudgeConfig,
+    max_output_tokens: u64,
+) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
+    config.validate()?;
     Ok(JudgeClassifier::new(
         StructuredJudge::new(
             EscalationInput { config },

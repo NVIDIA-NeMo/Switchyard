@@ -68,7 +68,8 @@ For each turn on an unlatched session, Switchyard:
    streak reaches `confirmations`. That turn is billed for a weak call, a judge
    call, and a strong call.
 
-A latched session routes straight to the strong target with no judge call:
+With recovery disabled (the default), a latched session routes straight to the
+strong target with no judge call:
 
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
@@ -103,6 +104,7 @@ configuration, so a bare `escalation = {}` is a valid, tuned route:
 | Key | Default | Meaning |
 |---|---|---|
 | `confirmations` | `2` | Consecutive escalate verdicts required before the session latches to strong. Must be at least `1`. |
+| `recovery_confirmations` | `0` | Consecutive clear verdicts, while latched, before the session de-latches back to weak. `0` keeps the latch permanent and skips the judge on latched turns. |
 | `recent_turn_window` | `28` | Trailing messages shown to the judge on top of the anchors. Must be at least `1`. |
 | `window_message_chars` | `500` | Per-message truncation cap inside that trailing window. Must be at least `50`. |
 
@@ -114,6 +116,38 @@ never latches. Clients supply it with `x-switchyard-session-id`.
 Anchor and transcript caps remain fixed. Set the route-level
 `max_output_tokens` key to change the judge's reply budget. Any decline still
 resets the streak to zero.
+
+## Recovery (de-escalation)
+
+By default a latch is permanent: latched turns skip the judge and the strong
+tier serves the session's remainder, including long stretches of routine work
+after the original trouble is fixed. Setting `recovery_confirmations` above
+`0` consults a hand-back judge on latched turns. Once it rules clear for that
+many consecutive turns, the session de-latches back to the weak tier; the
+de-latching turn itself runs the ordinary weak-first path, so a fresh
+escalate verdict can immediately re-latch. Any stay-strong verdict while
+latched clears the recovery streak.
+
+The hand-back judge answers a different question than the trajectory judge.
+The latched transcript is the strong tier's own work and usually looks
+healthy, so "is there trouble?" would hand sessions back exactly when the
+strong tier is cruising through the hard part. The packaged recovery prompt
+instead asks whether the *remaining* work could be carried by the weak tier,
+and defaults to staying strong when the evidence is thin. The route-level
+`prompt` key overrides the trajectory-judge rubric only; the recovery prompt
+is not configurable.
+
+Two guards keep a wrong hand-back cheap:
+
+- **Probation.** After a de-latch, a single escalate verdict re-latches the
+  session — the weak tier does not get a full `confirmations`-length streak
+  of turns to prove itself a second time.
+- **One recovery per session.** The re-latch is permanent: latched turns stop
+  consulting the judge again, so a session cannot oscillate between tiers.
+
+If a de-latched conversation has outgrown the weak model's context window,
+the [context-window fallback](../operations/context_window.md) returns it to
+strong on the next turn.
 
 ## Run the route
 
@@ -157,6 +191,10 @@ When the server runs with a routing log, successful judge calls also appear in
 per-session routing stats under the judge's model id, tagged with the
 `classifier` tier — so per-session token accounting includes judge overhead
 alongside the tiers the session was served by.
+
+Recovery transitions are logged at `info` level: one event when a session is
+handed back to the weak tier, and one when it re-latches (via probation or a
+weak-tier context overflow) and the latch becomes permanent.
 
 ## When not to use escalation routing
 
