@@ -371,6 +371,7 @@ impl RoutedLlmClient for ClassifierClient {
 
 enum JudgeOutcome {
     CallFailure,
+    BadRequest,
     Reply(&'static str),
     StreamDecodeFailure,
 }
@@ -401,6 +402,10 @@ impl RoutedLlmClient for JudgeClient {
             JudgeOutcome::CallFailure => Err(LlmClientError::UpstreamHttp {
                 status: 500,
                 body: "server error".to_string(),
+            }),
+            JudgeOutcome::BadRequest => Err(LlmClientError::UpstreamHttp {
+                status: 400,
+                body: "unsupported structured-output schema".to_string(),
             }),
             JudgeOutcome::Reply(text) => Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, *text)),
@@ -1189,6 +1194,11 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
 
     let cases = [
         ("fo-call", JudgeOutcome::CallFailure, Some("upstream_5xx")),
+        (
+            "fo-bedrock-schema",
+            JudgeOutcome::BadRequest,
+            Some("upstream_non_5xx"),
+        ),
         (
             "fo-parse",
             JudgeOutcome::Reply("not json at all"),
