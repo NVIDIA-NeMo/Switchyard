@@ -26,6 +26,7 @@ static DEFAULT_TRANSLATION_POLICY: LazyLock<TranslationPolicy> =
     LazyLock::new(TranslationPolicy::default);
 static DEFAULT_TRANSLATION_ENGINE: LazyLock<TranslationEngine> =
     LazyLock::new(TranslationEngine::default);
+const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 /// Decodes a `wire_format` request body into the neutral IR.
 pub fn decode_request(wire_format: WireFormat, body: &Value) -> Result<LlmRequest> {
@@ -178,6 +179,17 @@ pub fn decode_stream<S>(
 where
     S: Stream<Item = std::result::Result<Vec<u8>, LlmClientError>> + Send + 'static,
 {
+    decode_stream_with_limit(bytes, source, MAX_SSE_FRAME_BYTES)
+}
+
+fn decode_stream_with_limit<S>(
+    bytes: S,
+    source: WireFormat,
+    max_frame_bytes: usize,
+) -> std::result::Result<LlmResponseStream, LlmClientError>
+where
+    S: Stream<Item = std::result::Result<Vec<u8>, LlmClientError>> + Send + 'static,
+{
     let marker = sse::done_marker(source);
     let source_format: FormatId = source.into();
     // The source is always a built-in wire format, so this lookup cannot fail; a
@@ -191,8 +203,23 @@ where
     // an `io::Error` item so `into_async_read`'s error bound resolves cleanly. The
     // source error is boxed intact rather than stringified, so
     // `llm_client_error_from_io` can recover its original variant on the way out.
-    let io_bytes: Pin<Box<dyn Stream<Item = std::io::Result<Vec<u8>>> + Send>> =
-        Box::pin(bytes.map(|item| item.map_err(std::io::Error::other)));
+    // Validate frame growth before the line reader allocates an unbounded
+    // `String` for a provider event without a delimiter.
+    let bounded_bytes = try_stream! {
+        let mut bytes = Box::pin(bytes);
+        let mut line_endings = SseLineEndingNormalizer::default();
+        let mut tracker = SseFrameSizeTracker::default();
+        while let Some(chunk) = bytes.next().await {
+            let chunk = line_endings.normalize(chunk?);
+            tracker.observe(&chunk, max_frame_bytes)?;
+            yield chunk;
+        }
+    };
+    let io_bytes: Pin<Box<dyn Stream<Item = std::io::Result<Vec<u8>>> + Send>> = Box::pin(
+        bounded_bytes.map(|item: std::result::Result<Vec<u8>, LlmClientError>| {
+            item.map_err(std::io::Error::other)
+        }),
+    );
     let lines = futures::io::BufReader::new(io_bytes.into_async_read()).lines();
 
     let mut state = StreamTranslationState {
@@ -204,8 +231,8 @@ where
         futures::pin_mut!(lines);
         while let Some(line) = lines.next().await {
             let line = line.map_err(llm_client_error_from_io)?;
-            // A blank line (allowing a bare CR for CRLF streams) ends the frame.
-            if line.trim_end().is_empty() {
+            // An ASCII-whitespace-only line ends the frame.
+            if is_sse_frame_boundary(&line) {
                 let parsed = sse::parse_json_sse_frame(&frame, marker)
                     .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
                 frame.clear();
@@ -230,7 +257,7 @@ where
         // A non-standard upstream might omit the final blank line; parse a trailing
         // complete frame instead of losing its last chunk.
         #[allow(clippy::collapsible_if)]
-        if !frame.trim_end().is_empty() {
+        if !is_sse_frame_boundary(&frame) {
             let parsed = sse::parse_json_sse_frame(&frame, marker)
                 .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
             if let sse::SseFrame::Data(value) = parsed {
@@ -240,6 +267,69 @@ where
         }
     });
     Ok(stream)
+}
+
+fn is_sse_whitespace(byte: &u8) -> bool {
+    byte.is_ascii_whitespace()
+}
+
+fn is_sse_frame_boundary(line: &str) -> bool {
+    line.as_bytes().iter().all(is_sse_whitespace)
+}
+
+#[derive(Default)]
+struct SseLineEndingNormalizer {
+    previous_byte_was_cr: bool,
+}
+
+impl SseLineEndingNormalizer {
+    // SSE accepts CR, LF, and CRLF. Normalize all three to one LF while
+    // retaining enough state to collapse a CRLF pair split across chunks.
+    fn normalize(&mut self, mut bytes: Vec<u8>) -> Vec<u8> {
+        let mut write = 0;
+        for read in 0..bytes.len() {
+            let byte = bytes[read];
+            if self.previous_byte_was_cr && byte == b'\n' {
+                self.previous_byte_was_cr = false;
+                continue;
+            }
+            self.previous_byte_was_cr = byte == b'\r';
+            bytes[write] = if byte == b'\r' { b'\n' } else { byte };
+            write += 1;
+        }
+        bytes.truncate(write);
+        bytes
+    }
+}
+
+#[derive(Default)]
+struct SseFrameSizeTracker {
+    frame_bytes: usize,
+    current_line_has_non_whitespace: bool,
+}
+
+impl SseFrameSizeTracker {
+    // Tracks blank-line frame boundaries across arbitrary transport chunks.
+    fn observe(&mut self, bytes: &[u8], limit: usize) -> std::result::Result<(), LlmClientError> {
+        for byte in bytes {
+            self.frame_bytes = self.frame_bytes.saturating_add(1);
+            match byte {
+                b'\n' if !self.current_line_has_non_whitespace => self.frame_bytes = 0,
+                b'\n' => self.current_line_has_non_whitespace = false,
+                byte if is_sse_whitespace(byte) => {}
+                _ => self.current_line_has_non_whitespace = true,
+            }
+            if self.frame_bytes > limit {
+                return Err(LlmClientError::InvalidResponse {
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("provider SSE frame exceeded {limit} bytes"),
+                    )),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 // Recover transport errors wrapped for `AsyncRead`; other reader failures are
@@ -268,8 +358,9 @@ mod tests {
     };
 
     use super::{
-        decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
-        encode_request, encode_stream, stamp_streamed_response_model,
+        SseFrameSizeTracker, SseLineEndingNormalizer, decode_aggregated_response, decode_request,
+        decode_stream, decode_stream_with_limit, encode_aggregated_response, encode_request,
+        encode_stream, stamp_streamed_response_model,
     };
     use crate::{LlmResponseStream, WireFormat};
 
@@ -704,6 +795,26 @@ mod tests {
     }
 
     #[test]
+    fn decode_stream_decodes_bare_cr_delimited_frames() -> Result<(), BoxError> {
+        let sse =
+            b"data:{\"choices\":[{\"delta\":{\"content\":\"cr\"}}]}\r\rdata:[DONE]\r\r".to_vec();
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
+        let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
+        assert_eq!(text_of(&chunks), "cr");
+        Ok(())
+    }
+
+    #[test]
+    fn decode_stream_accepts_data_fields_without_the_optional_space() -> Result<(), BoxError> {
+        let sse = b"data:{\"choices\":[{\"delta\":{\"content\":\"compact\"}}]}\n\ndata:[DONE]\n\n"
+            .to_vec();
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
+        let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
+        assert_eq!(text_of(&chunks), "compact");
+        Ok(())
+    }
+
+    #[test]
     fn decode_stream_propagates_source_errors() -> Result<(), BoxError> {
         // A transport error mid-stream surfaces as an error item, not a panic.
         let bytes = stream::iter(vec![
@@ -731,6 +842,60 @@ mod tests {
             panic!("expected invalid SSE JSON to fail");
         };
         assert!(matches!(error, LlmClientError::ResponseTranslation(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn sse_frame_limit_spans_transport_chunks_and_resets_at_boundaries() {
+        let mut tracker = SseFrameSizeTracker::default();
+        tracker.observe(b"data: 1\n", 10).unwrap();
+        tracker.observe(b" \ndata: 2\n\n", 10).unwrap();
+
+        let mut oversized = SseFrameSizeTracker::default();
+        oversized.observe(b"data: ", 8).unwrap();
+        let error = oversized.observe(b"123", 8).unwrap_err();
+        assert!(matches!(error, LlmClientError::InvalidResponse { .. }));
+    }
+
+    #[test]
+    fn sse_line_endings_collapse_crlf_split_across_chunks() {
+        let mut normalizer = SseLineEndingNormalizer::default();
+        assert_eq!(normalizer.normalize(b"data: {}\r".to_vec()), b"data: {}\n");
+        assert_eq!(normalizer.normalize(b"\n\r".to_vec()), b"\n");
+        assert!(normalizer.normalize(b"\n".to_vec()).is_empty());
+    }
+
+    #[test]
+    fn decode_stream_resets_frame_limit_at_whitespace_boundaries() -> Result<(), LlmClientError> {
+        let bytes = stream::iter(vec![
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n \n".to_vec()),
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n".to_vec()),
+        ]);
+
+        let events = block_on(
+            decode_stream_with_limit(bytes, WireFormat::OpenAiChat, 50)?.collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(text_of(&events), "ab");
+        Ok(())
+    }
+
+    #[test]
+    fn decode_stream_resets_frame_limit_at_bare_cr_boundaries() -> Result<(), LlmClientError> {
+        let bytes = stream::iter(vec![
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\r\r".to_vec()),
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\r\r".to_vec()),
+        ]);
+
+        let events = block_on(
+            decode_stream_with_limit(bytes, WireFormat::OpenAiChat, 50)?.collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(text_of(&events), "ab");
         Ok(())
     }
 }

@@ -52,14 +52,25 @@ pub struct HttpBackendConfig {
 
 impl fmt::Debug for HttpBackendConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let extra_header_names = self.extra_headers.keys().collect::<Vec<_>>();
+        let base_url = redacted_base_url(&self.base_url);
         f.debug_struct("HttpBackendConfig")
-            .field("base_url", &self.base_url)
+            .field("base_url", &base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
-            .field("extra_headers", &self.extra_headers)
+            .field("extra_header_names", &extra_header_names)
             .field("extra_body_keys", &self.extra_body.keys())
             .field("max_retries", &self.max_retries)
             .finish()
     }
+}
+
+fn redacted_base_url(base_url: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(base_url) else {
+        return "[INVALID URL]".into();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.into()
 }
 
 /// A configured upstream backend, one variant per built-in wire format.
@@ -219,6 +230,21 @@ mod tests {
     }
 
     #[test]
+    fn debug_redacts_base_url_userinfo() {
+        let debug = format!("{:?}", config("https://user:pass@provider.example/v1"));
+        assert!(debug.contains("provider.example/v1"));
+        assert!(!debug.contains("user"));
+        assert!(!debug.contains("pass"));
+    }
+
+    #[test]
+    fn debug_does_not_emit_an_invalid_base_url() {
+        let debug = format!("{:?}", config("not a valid url with a secret"));
+        assert!(debug.contains("[INVALID URL]"));
+        assert!(!debug.contains("secret"));
+    }
+
+    #[test]
     fn openai_chat_url_tolerates_trailing_slash_and_existing_suffix() {
         assert_eq!(
             Backend::OpenAiChat(config("https://api.openai.com/v1/")).url(),
@@ -280,6 +306,18 @@ mod tests {
         assert!(Backend::Anthropic(config("x")).is_anthropic());
         assert!(!Backend::OpenAiChat(config("x")).is_anthropic());
         assert!(!Backend::OpenAiResponses(config("x")).is_anthropic());
+    }
+
+    #[test]
+    fn debug_redacts_static_header_values() {
+        let mut config = config("https://provider.example/v1");
+        config
+            .extra_headers
+            .insert("authorization".into(), "Bearer provider-secret".into());
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("authorization"));
+        assert!(!debug.contains("provider-secret"));
     }
 
     #[test]

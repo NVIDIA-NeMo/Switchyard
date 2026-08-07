@@ -51,6 +51,29 @@ const RESERVED_HEADERS: &[&str] = &[
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_BUFFERED_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+const TRUNCATED_BODY_SUFFIX: &str = "...[truncated]";
+
+/// Connection and idle-read timeouts for a [`TranslatingLlmClient`]'s shared HTTP client.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HttpTransportConfig {
+    /// Maximum time allowed to establish an upstream connection.
+    pub connect_timeout: Duration,
+    /// Maximum idle time between response reads. `None` disables the idle-read timeout.
+    pub read_timeout: Option<Duration>,
+}
+
+impl Default for HttpTransportConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            read_timeout: Some(DEFAULT_READ_TIMEOUT),
+        }
+    }
+}
 
 /// How one model is served: the `default_backend` used when the request does not
 /// pin a wire format, plus any `other_backends` reachable over additional formats.
@@ -92,14 +115,31 @@ pub struct TranslatingLlmClient {
 
 impl TranslatingLlmClient {
     /// Builds a client over the given [`ModelConfig`]s, with a fresh shared HTTP
-    /// client and the built-in translation codecs.
+    /// client, the default transport timeouts, and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
-        let client =
-            reqwest::Client::builder()
-                .build()
-                .map_err(|error| LlmClientError::Transport {
-                    source: Box::new(error),
-                })?;
+        Self::new_with_transport_config(model_configs, HttpTransportConfig::default())
+    }
+
+    /// Builds a client with explicit connection and idle-read timeouts.
+    pub fn new_with_transport_config(
+        model_configs: &[ModelConfig],
+        transport: HttpTransportConfig,
+    ) -> Result<Self> {
+        let mut client_builder = reqwest::Client::builder()
+            // A configured target is an authority boundary. Do not let a
+            // provider redirect credentials or request bodies elsewhere.
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(transport.connect_timeout);
+        if let Some(read_timeout) = transport.read_timeout {
+            // Read timeout resets after each successful read, so active LLM
+            // streams may run indefinitely while stalled providers cannot.
+            client_builder = client_builder.read_timeout(read_timeout);
+        }
+        let client = client_builder
+            .build()
+            .map_err(|error| LlmClientError::Transport {
+                source: Box::new(error),
+            })?;
         let model_to_config = model_configs
             .iter()
             .map(|config| (config.model_name.clone(), config.clone()))
@@ -302,8 +342,28 @@ impl TranslatingLlmClient {
                 record_upstream_attempt(Some(status.as_u16()));
                 return Ok(EncodedResponse::Streaming(response));
             }
-            let body = match response.bytes().await {
-                Ok(body) => body,
+            let body = match collect_response_body(response, MAX_BUFFERED_RESPONSE_BYTES).await {
+                Ok(CollectedBody {
+                    bytes,
+                    truncated: false,
+                }) => bytes,
+                Ok(CollectedBody {
+                    truncated: true, ..
+                }) => {
+                    record_upstream_attempt(Some(status.as_u16()));
+                    return Err(AttemptFailure {
+                        error: LlmClientError::InvalidResponse {
+                            source: Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "upstream response exceeded {MAX_BUFFERED_RESPONSE_BYTES} bytes"
+                                ),
+                            )),
+                        },
+                        status: Some(status.as_u16()),
+                        retry_after: None,
+                    });
+                }
                 Err(error) => {
                     record_upstream_attempt(None);
                     return Err(AttemptFailure {
@@ -316,13 +376,13 @@ impl TranslatingLlmClient {
             record_upstream_attempt(Some(status.as_u16()));
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
-                body: body.to_vec(),
+                body,
             });
         }
 
         let retry_after = retry_after_delay(response.headers());
-        let body = match response.text().await {
-            Ok(body) => body,
+        let body = match collect_response_body(response, MAX_ERROR_BODY_BYTES).await {
+            Ok(body) => body.into_text(),
             Err(error) => {
                 record_upstream_attempt(None);
                 return Err(AttemptFailure {
@@ -503,6 +563,48 @@ impl TranslatingLlmClient {
             }
         }
     }
+}
+
+struct CollectedBody {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+impl CollectedBody {
+    fn into_text(self) -> String {
+        let mut text = String::from_utf8_lossy(&self.bytes).into_owned();
+        if self.truncated {
+            text.push_str(TRUNCATED_BODY_SUFFIX);
+        }
+        text
+    }
+}
+
+async fn collect_response_body(
+    response: reqwest::Response,
+    limit: usize,
+) -> std::result::Result<CollectedBody, reqwest::Error> {
+    // Content-Length is provider-controlled and may be much larger than the
+    // bytes actually received. Grow from received chunks instead of reserving
+    // the advertised size up front.
+    let mut bytes = Vec::new();
+    let mut chunks = response.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk?;
+        let remaining = limit.saturating_sub(bytes.len());
+        if chunk.len() > remaining {
+            bytes.extend_from_slice(&chunk[..remaining]);
+            return Ok(CollectedBody {
+                bytes,
+                truncated: true,
+            });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(CollectedBody {
+        bytes,
+        truncated: false,
+    })
 }
 
 #[async_trait]
@@ -1087,6 +1189,133 @@ mod tests {
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hi there");
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn configured_provider_requests_do_not_follow_redirects()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let redirected = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(chat_success_response())
+            .mount(&redirected)
+            .await;
+
+        let provider = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(307).insert_header(
+                "location",
+                format!("{}/v1/chat/completions", redirected.uri()),
+            ))
+            .mount(&provider)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", provider.uri())))?;
+        let Err(error) = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("redirect must be returned instead of followed");
+        };
+
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamHttp { status: 307, .. }
+        ));
+        let redirected_requests = redirected
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        assert!(redirected_requests.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn upstream_error_body_is_bounded_and_redacted_from_display()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let secret = "provider-reflected-secret";
+        let oversized = format!("{secret}{}", "x".repeat(MAX_ERROR_BODY_BYTES));
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(oversized))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let Err(error) = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("expected an upstream error");
+        };
+
+        assert!(!error.to_string().contains(secret));
+        let LlmClientError::UpstreamHttp { body, .. } = error else {
+            panic!("expected a typed HTTP error");
+        };
+        assert!(body.starts_with(secret));
+        assert!(body.ends_with(TRUNCATED_BODY_SUFFIX));
+        assert_eq!(
+            body.len(),
+            MAX_ERROR_BODY_BYTES + TRUNCATED_BODY_SUFFIX.len()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn response_body_does_not_preallocate_advertised_content_length()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        struct InflatedContentLengthBody {
+            data: Option<bytes::Bytes>,
+            advertised_length: u64,
+        }
+
+        impl http_body::Body for InflatedContentLengthBody {
+            type Data = bytes::Bytes;
+            type Error = std::convert::Infallible;
+
+            fn poll_frame(
+                self: std::pin::Pin<&mut Self>,
+                _context: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<
+                Option<std::result::Result<http_body::Frame<Self::Data>, Self::Error>>,
+            > {
+                std::task::Poll::Ready(
+                    self.get_mut()
+                        .data
+                        .take()
+                        .map(http_body::Frame::data)
+                        .map(Ok),
+                )
+            }
+
+            fn size_hint(&self) -> http_body::SizeHint {
+                let mut hint = http_body::SizeHint::new();
+                hint.set_exact(self.advertised_length);
+                hint
+            }
+        }
+
+        let advertised_length = MAX_BUFFERED_RESPONSE_BYTES as u64;
+        let response_body = reqwest::Body::wrap(InflatedContentLengthBody {
+            data: Some(bytes::Bytes::from_static(b"{}")),
+            advertised_length,
+        });
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .header(reqwest::header::CONTENT_LENGTH, advertised_length)
+                .body(response_body)?,
+        );
+        assert_eq!(response.content_length(), Some(advertised_length));
+
+        let body = collect_response_body(response, MAX_BUFFERED_RESPONSE_BYTES).await?;
+
+        assert_eq!(body.bytes, b"{}");
+        assert!(body.bytes.capacity() < MAX_BUFFERED_RESPONSE_BYTES);
+        assert!(!body.truncated);
         Ok(())
     }
 
@@ -1715,10 +1944,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
-        client.client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(10))
-            .build()?;
+        let client = TranslatingLlmClient::new_with_transport_config(
+            &chat_map(&format!("{}/v1", server.uri())),
+            HttpTransportConfig {
+                connect_timeout: Duration::from_secs(1),
+                read_timeout: Some(Duration::from_millis(10)),
+            },
+        )?;
         let decision: std::sync::Arc<dyn Decision> = std::sync::Arc::new(FixedDecision("gpt"));
 
         let Err(error) = client
