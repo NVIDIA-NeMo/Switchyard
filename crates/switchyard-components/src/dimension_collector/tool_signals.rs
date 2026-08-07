@@ -26,8 +26,13 @@ fn to_protocol_request(request: &ChatRequest) -> Request {
     // The signals are read off the decoded conversation, so decode here rather
     // than handing over a raw body the extractor cannot interpret. A body that
     // fails to decode yields no signals, which is what an absent body did before.
-    let llm_request =
-        switchyard_translation::decode_request(wire_format, request.body()).unwrap_or_default();
+    let llm_request = match switchyard_translation::decode_request(wire_format, request.body()) {
+        Ok(req) => req,
+        Err(e) => {
+            tracing::warn!("Failed to decode request for tool signals: {e}");
+            LlmRequest::default()
+        }
+    };
     Request {
         llm_request,
         raw_request: Some(request.body().clone()),
