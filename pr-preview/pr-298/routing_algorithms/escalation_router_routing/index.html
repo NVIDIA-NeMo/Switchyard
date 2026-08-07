@@ -1358,6 +1358,10 @@ first request, so <code>--dry-run</code> catches them.</p>
 <p>The snapshot reports per-model calls, tokens, latency, and cost for the strong
 and weak tiers. Judge calls are recorded in the classifier stats bucket, so their
 token cost and latency remain visible as routing overhead.</p>
+<p>When the server runs with a routing log, successful judge calls also appear in
+per-session routing stats under the judge's model id, tagged with the
+<code>classifier</code> tier — so per-session token accounting includes judge overhead
+alongside the tiers the session was served by.</p>
 <h2 id="when-not-to-use-escalation-routing">When not to use escalation routing<a class="headerlink" href="#when-not-to-use-escalation-routing" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>One-shot requests.</strong> No trajectory to judge. Use
