@@ -433,6 +433,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#020" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.2.0
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#010" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1032,6 +1043,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#020" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.2.0
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#010" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1063,6 +1085,18 @@
 
 
 <h1 id="known-issues">Known Issues<a class="headerlink" href="#known-issues" title="Permanent link">&para;</a></h1>
+<h2 id="020">0.2.0<a class="headerlink" href="#020" title="Permanent link">&para;</a></h2>
+<ol>
+<li><code>stage_router</code> drops a configured tier system prompt when the inbound request and the selected target both use <code>openai_chat</code>. The call succeeds and no warning is emitted.</li>
+<li>Errors returned from <code>/v1/messages</code> use the OpenAI error envelope rather than Anthropic's <code>{"type": "error", ...}</code> shape, so Anthropic SDK clients cannot dispatch on <code>error.type</code>.</li>
+<li>Session state is retained without a capacity limit or eviction, so memory grows with the number of sessions a process has served.</li>
+<li>Buffered upstream work continues after the client disconnects, so a cancelled request can still incur provider cost.</li>
+<li>Routing-tier attribution is missing from <code>GET /v1/stats</code> and <code>/metrics</code> for fail-open, escalation, and <code>stage_router</code> fallback decisions.</li>
+<li>The retry recovery counter stays at zero after a successful upstream retry.</li>
+<li><code>x-switchyard-session-id</code> is not recorded in native session stats.</li>
+<li>The native server does not send the documented <code>X-Switchyard-Version</code> header upstream.</li>
+<li>LLM-classifier history trimming can separate a tool result from the tool call it belongs to when <code>recent_turn_window</code> is configured.</li>
+</ol>
 <h2 id="010">0.1.0<a class="headerlink" href="#010" title="Permanent link">&para;</a></h2>
 <ol>
 <li>Completed Codex Responses tasks may record <code>0</code> token usage in <code>GET /v1/stats</code>.</li>
