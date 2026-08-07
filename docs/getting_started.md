@@ -258,7 +258,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 |---|---|
 | `LlmTaskClassifier` | Ask a judge model to choose an efficient or capable target. |
 | `StageRouter` | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
-| `Passthrough` | Always call one configured target. |
+| `LlmTaskClassifier` with escalation | Start every task on the efficient target and escalate when a judge detects trouble. |
 | `Random` | Select among any number of targets, uniform or weighted. |
 
 These are the same strategies the server exposes as route types, so a deployment
