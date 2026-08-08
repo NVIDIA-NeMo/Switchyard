@@ -75,6 +75,16 @@ pub type RawEventStream = Pin<
     >,
 >;
 
+/// Shared flag reporting whether a [`RawEventStream`] ended on an in-band error.
+///
+/// An in-band error is terminal: the encoder emits the error event and stops
+/// without calling `finish`, so no terminal event follows. The serving layer
+/// cannot tell that apart from a clean end-of-stream, yet it must not append a
+/// success sentinel (OpenAI Chat's `[DONE]`) to a failed stream. This flag
+/// carries that outcome across the layer boundary; `false` until the encoder
+/// observes an error.
+pub type StreamOutcome = std::sync::Arc<std::sync::atomic::AtomicBool>;
+
 /// Encodes a stream of IR chunks into a stream of target-format wire events.
 ///
 /// `served_model` is exposed as the response model (via the stream state's
@@ -86,6 +96,16 @@ pub fn encode_stream(
     target: WireFormat,
     served_model: Option<String>,
 ) -> std::result::Result<RawEventStream, LlmClientError> {
+    encode_stream_with_outcome(chunks, target, served_model).map(|(stream, _)| stream)
+}
+
+/// Same as [`encode_stream`], plus a [`StreamOutcome`] the caller can read once
+/// the stream ends to tell a clean finish from an in-band error termination.
+pub fn encode_stream_with_outcome(
+    chunks: LlmResponseStream,
+    target: WireFormat,
+    served_model: Option<String>,
+) -> std::result::Result<(RawEventStream, StreamOutcome), LlmClientError> {
     let target_format: FormatId = target.into();
     // The target is always a built-in wire format, so this lookup cannot fail; a
     // failure returns as an `Err` rather than a panic.
@@ -103,6 +123,8 @@ pub fn encode_stream(
         ..Default::default()
     };
     let mut chunks = chunks;
+    let outcome: StreamOutcome = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let outcome_for_stream = std::sync::Arc::clone(&outcome);
 
     let events = try_stream! {
         while let Some(item) = chunks.next().await {
@@ -118,6 +140,9 @@ pub fn encode_stream(
                 yield value;
             }
             if state.errored {
+                // Terminal: report the outcome so the serving layer skips any
+                // success sentinel, and stop without calling `finish`.
+                outcome_for_stream.store(true, std::sync::atomic::Ordering::Release);
                 return;
             }
         }
@@ -131,7 +156,7 @@ pub fn encode_stream(
         }
     };
 
-    Ok(Box::pin(events))
+    Ok((Box::pin(events), outcome))
 }
 
 // The raw-response helper promises that the caller sees the model that served the
