@@ -200,7 +200,7 @@ mod tests {
     use prometheus::Registry;
 
     use super::*;
-    use crate::stats::algorithm::{AlgorithmStats, STAGE_ROUTER};
+    use crate::stats::{StatsAccumulator, algorithms::STAGE_ROUTER};
 
     #[test]
     fn stage_router_projection_preserves_decisions_scores_and_reset_baseline() {
@@ -211,7 +211,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("failed to build metrics exporter: {error}"));
         let provider = SdkMeterProvider::builder().with_reader(exporter).build();
         let meter = provider.meter("switchyard");
-        let stats = AlgorithmStats::new(registry, [STAGE_ROUTER.to_string()]);
+        let stats = StatsAccumulator::new(registry, [STAGE_ROUTER.to_string()]);
 
         meter
             .u64_counter("switchyard.stage_router.routing_decisions")
@@ -246,6 +246,7 @@ mod tests {
 
         let snapshot = stats.snapshot();
         let stage = snapshot
+            .algorithm_stats
             .stage_router
             .unwrap_or_else(|| panic!("stage-router stats missing"));
         let dimensions = &stage.routing_decisions["dimensions"];
@@ -259,7 +260,7 @@ mod tests {
 
         stats.reset();
         assert_eq!(
-            stats.snapshot().stage_router,
+            stats.snapshot().algorithm_stats.stage_router,
             Some(StageRouterStatsSnapshot::default())
         );
 
@@ -275,6 +276,7 @@ mod tests {
             );
         let after_reset = stats
             .snapshot()
+            .algorithm_stats
             .stage_router
             .unwrap_or_else(|| panic!("stage-router stats missing after reset"));
         assert_eq!(after_reset.routing_decisions["override"].total, 1);

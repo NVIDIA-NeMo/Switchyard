@@ -3,14 +3,14 @@
 
 //! Thread-safe stats accumulator and serializable snapshot schema.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, MutexGuard};
 use prometheus::Registry;
 use serde::Serialize;
 
-use super::algorithm::{AlgorithmStats, AlgorithmStatsSnapshot};
+use super::algorithms::{AlgorithmMetrics, AlgorithmStatsSnapshot};
 use super::cache_eligibility::PrefixProbe;
 
 const MAX_LATENCY_SAMPLES: usize = 10_000;
@@ -27,18 +27,22 @@ pub(crate) struct TokenUsage {
 }
 
 /// Thread-safe process-local stats store.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct StatsAccumulator {
     inner: Arc<Mutex<StatsAccumulatorInner>>,
-    algorithm_stats: AlgorithmStats,
+}
+
+impl Default for StatsAccumulator {
+    fn default() -> Self {
+        Self::new(Registry::new(), std::iter::empty())
+    }
 }
 
 impl StatsAccumulator {
     /// Creates a stats store that projects metrics for the configured algorithms.
     pub(crate) fn new(registry: Registry, configured: impl IntoIterator<Item = String>) -> Self {
         Self {
-            inner: Arc::default(),
-            algorithm_stats: AlgorithmStats::new(registry, configured),
+            inner: Arc::new(Mutex::new(StatsAccumulatorInner::new(registry, configured))),
         }
     }
 
@@ -126,14 +130,12 @@ impl StatsAccumulator {
 
     /// Returns a serializable point-in-time snapshot.
     pub(crate) fn snapshot(&self) -> StatsSnapshot {
-        let inner = self.lock().clone();
-        inner.snapshot(self.algorithm_stats.snapshot())
+        self.lock().snapshot()
     }
 
     /// Clears all accumulated stats.
     pub(crate) fn reset(&self) {
-        *self.lock() = StatsAccumulatorInner::default();
-        self.algorithm_stats.reset();
+        self.lock().reset();
     }
 
     fn lock(&self) -> MutexGuard<'_, StatsAccumulatorInner> {
@@ -141,7 +143,6 @@ impl StatsAccumulator {
     }
 }
 
-#[derive(Clone, Debug, Default)]
 struct StatsAccumulatorInner {
     by_model: BTreeMap<String, ModelStats>,
     total_requests: u64,
@@ -151,9 +152,29 @@ struct StatsAccumulatorInner {
     by_classifier: BTreeMap<String, ModelStats>,
     classifier_requests: u64,
     classifier_errors: u64,
+    algorithm_registry: Registry,
+    configured_algorithms: BTreeSet<String>,
+    algorithm_baseline: AlgorithmMetrics,
 }
 
 impl StatsAccumulatorInner {
+    fn new(registry: Registry, configured: impl IntoIterator<Item = String>) -> Self {
+        let algorithm_baseline = AlgorithmMetrics::collect(&registry);
+        Self {
+            by_model: BTreeMap::new(),
+            total_requests: 0,
+            total_errors: 0,
+            routing_overhead: LatencyHistogram::default(),
+            routing_fallbacks: RoutingFallbackStats::default(),
+            by_classifier: BTreeMap::new(),
+            classifier_requests: 0,
+            classifier_errors: 0,
+            algorithm_registry: registry,
+            configured_algorithms: configured.into_iter().collect(),
+            algorithm_baseline,
+        }
+    }
+
     fn model_stats_mut(&mut self, model: String) -> &mut ModelStats {
         self.by_model.entry(model).or_default()
     }
@@ -162,13 +183,15 @@ impl StatsAccumulatorInner {
         self.by_classifier.entry(model).or_default()
     }
 
-    fn snapshot(&self, algorithm_stats: AlgorithmStatsSnapshot) -> StatsSnapshot {
+    fn snapshot(&self) -> StatsSnapshot {
         let (models, total_tokens) = build_model_snapshots(&self.by_model, self.total_requests);
         let classifier = build_classifier_snapshot(
             &self.by_classifier,
             self.classifier_requests,
             self.classifier_errors,
         );
+        let algorithm_stats = AlgorithmMetrics::collect(&self.algorithm_registry)
+            .snapshot(&self.algorithm_baseline, &self.configured_algorithms);
         StatsSnapshot {
             total_requests: self.total_requests,
             total_errors: self.total_errors,
@@ -179,6 +202,12 @@ impl StatsAccumulatorInner {
             classifier,
             algorithm_stats,
         }
+    }
+
+    fn reset(&mut self) {
+        let registry = self.algorithm_registry.clone();
+        let configured = std::mem::take(&mut self.configured_algorithms);
+        *self = Self::new(registry, configured);
     }
 }
 
