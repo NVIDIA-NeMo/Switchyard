@@ -7,9 +7,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, MutexGuard};
+use prometheus::Registry;
 use serde::Serialize;
 
-use super::algorithm::AlgorithmStatsSnapshot;
+use super::algorithm::{AlgorithmStats, AlgorithmStatsSnapshot};
 use super::cache_eligibility::PrefixProbe;
 
 const MAX_LATENCY_SAMPLES: usize = 10_000;
@@ -26,12 +27,21 @@ pub(crate) struct TokenUsage {
 }
 
 /// Thread-safe process-local stats store.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct StatsAccumulator {
     inner: Arc<Mutex<StatsAccumulatorInner>>,
+    algorithm_stats: AlgorithmStats,
 }
 
 impl StatsAccumulator {
+    /// Creates a stats store that projects metrics for the configured algorithms.
+    pub(crate) fn new(registry: Registry, configured: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            inner: Arc::default(),
+            algorithm_stats: AlgorithmStats::new(registry, configured),
+        }
+    }
+
     /// Records one successful routed backend call.
     pub(crate) fn record_success(&self, model: impl Into<String>, backend_latency_ms: f64) {
         let mut inner = self.lock();
@@ -117,12 +127,13 @@ impl StatsAccumulator {
     /// Returns a serializable point-in-time snapshot.
     pub(crate) fn snapshot(&self) -> StatsSnapshot {
         let inner = self.lock().clone();
-        inner.snapshot()
+        inner.snapshot(self.algorithm_stats.snapshot())
     }
 
     /// Clears all accumulated stats.
     pub(crate) fn reset(&self) {
         *self.lock() = StatsAccumulatorInner::default();
+        self.algorithm_stats.reset();
     }
 
     fn lock(&self) -> MutexGuard<'_, StatsAccumulatorInner> {
@@ -151,7 +162,7 @@ impl StatsAccumulatorInner {
         self.by_classifier.entry(model).or_default()
     }
 
-    fn snapshot(&self) -> StatsSnapshot {
+    fn snapshot(&self, algorithm_stats: AlgorithmStatsSnapshot) -> StatsSnapshot {
         let (models, total_tokens) = build_model_snapshots(&self.by_model, self.total_requests);
         let classifier = build_classifier_snapshot(
             &self.by_classifier,
@@ -166,7 +177,7 @@ impl StatsAccumulatorInner {
             routing_overhead: self.routing_overhead.snapshot(),
             routing_fallbacks: self.routing_fallbacks,
             classifier,
-            algorithm_stats: AlgorithmStatsSnapshot::default(),
+            algorithm_stats,
         }
     }
 }

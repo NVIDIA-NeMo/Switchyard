@@ -8,5 +8,4 @@ mod algorithm;
 mod cache_eligibility;
 
 pub(crate) use accumulator::{StatsAccumulator, StatsSnapshot, TokenUsage};
-pub(crate) use algorithm::AlgorithmStats;
 pub(crate) use cache_eligibility::{prefix_probe, tracking_enabled_from_env};

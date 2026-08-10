@@ -22,6 +22,12 @@ pub(crate) struct AlgorithmStats {
     inner: Arc<AlgorithmStatsInner>,
 }
 
+impl Default for AlgorithmStats {
+    fn default() -> Self {
+        Self::new(Registry::new(), std::iter::empty())
+    }
+}
+
 struct AlgorithmStatsInner {
     registry: Registry,
     configured: BTreeSet<String>,
