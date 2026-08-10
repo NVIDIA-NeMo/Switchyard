@@ -9,6 +9,7 @@ use std::sync::Arc;
 use parking_lot::{Mutex, MutexGuard};
 use serde::Serialize;
 
+use super::algorithm::AlgorithmStatsSnapshot;
 use super::cache_eligibility::PrefixProbe;
 
 const MAX_LATENCY_SAMPLES: usize = 10_000;
@@ -165,6 +166,7 @@ impl StatsAccumulatorInner {
             routing_overhead: self.routing_overhead.snapshot(),
             routing_fallbacks: self.routing_fallbacks,
             classifier,
+            algorithm_stats: AlgorithmStatsSnapshot::default(),
         }
     }
 }
@@ -275,6 +277,7 @@ pub(crate) struct StatsSnapshot {
     pub routing_overhead: LatencyHistogramSnapshot,
     pub routing_fallbacks: RoutingFallbackStats,
     pub classifier: ClassifierStatsSnapshot,
+    pub algorithm_stats: AlgorithmStatsSnapshot,
 }
 
 /// Legacy fallback counters retained in the stats response shape.

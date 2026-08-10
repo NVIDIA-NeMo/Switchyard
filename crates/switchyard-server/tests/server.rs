@@ -294,6 +294,7 @@ async fn stats_exposes_the_exact_empty_schema_and_no_legacy_alias() -> TestResul
                 "total_tokens": empty_token_totals(),
                 "models": {},
             },
+            "algorithm_stats": {},
         })
     );
     assert_eq!(
@@ -754,11 +755,11 @@ format = "openai_chat"
 base_url = "{base_url}"
 
 [targets.strong]
-id = "model/strong"
+id = "model/stats-strong"
 llm_client = "upstream"
 
 [targets.weak]
-id = "model/weak"
+id = "model/stats-weak"
 llm_client = "upstream"
 
 [routes.stage]
@@ -798,8 +799,13 @@ confidence_threshold = 0.5
             .headers
             .get("x-model-router-selected-model")
             .and_then(|value| value.to_str().ok()),
-        Some("model/strong"),
+        Some("model/stats-strong"),
         "a critical error should escalate on the signals alone"
+    );
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(
+        stats["algorithm_stats"]["stage_router"]["routing_decisions"]["override"]["targets"]["model/stats-strong"],
+        1
     );
     Ok(())
 }

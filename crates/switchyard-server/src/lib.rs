@@ -45,7 +45,9 @@ use tracing::{Instrument, Level};
 use switchyard_translation::{WireFormat, decode_request};
 
 use crate::response::into_http_response;
-use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
+use crate::stats::{
+    AlgorithmStats, StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env,
+};
 
 pub use observability::{flush_observability, initialize_observability};
 
@@ -133,6 +135,7 @@ pub struct ServerState {
     routes: Arc<BTreeMap<String, RouteEntry>>,
     metrics: prometheus::Registry,
     stats: StatsAccumulator,
+    algorithm_stats: AlgorithmStats,
     routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
 }
@@ -219,10 +222,17 @@ impl ServerState {
             return Err(ServerError::new("at least one algorithm route is required"));
         }
         let metrics = metrics::registry().map_err(ServerError::new)?;
+        let algorithm_stats = AlgorithmStats::new(
+            metrics.clone(),
+            entries
+                .values()
+                .map(|entry| entry.algorithm.name().to_string()),
+        );
         Ok(Self {
             routes: Arc::new(entries),
             metrics,
             stats: StatsAccumulator::default(),
+            algorithm_stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
         })
@@ -1016,11 +1026,14 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
 }
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
-    Json(state.stats.snapshot())
+    let mut snapshot = state.stats.snapshot();
+    snapshot.algorithm_stats = state.algorithm_stats.snapshot();
+    Json(snapshot)
 }
 
 async fn reset_stats(State(state): State<ServerState>) -> Json<Value> {
     state.stats.reset();
+    state.algorithm_stats.reset();
     Json(json!({"status": "reset"}))
 }
 

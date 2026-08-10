@@ -122,7 +122,7 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 | `POST` | `/v1/responses` | OpenAI Responses |
 | `POST` | `/v1/messages/count_tokens` | Token count from a route's Anthropic target |
 | `GET` | `/v1/models` | Routes served by this deployment |
-| `GET` | `/v1/stats` | Per-model request, token, and cost totals |
+| `GET` | `/v1/stats` | Per-model usage plus curated algorithm stats |
 | `POST` | `/v1/stats/reset` | Clear accumulated stats |
 | `GET` | `/metrics` | Prometheus text, see [Metrics](#metrics) |
 | `GET` | `/health` | Liveness |
@@ -130,6 +130,10 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 Requests name a route by its `id`, so `POST /v1/chat/completions` with `"model": "switchyard/general"`
 routes through the `[routes.general]` entry above. Any of the three request formats can address any
 route, and the server translates between them.
+
+For `stage_router`, `algorithm_stats.stage_router` groups routing decisions by source and semantic
+target and summarizes its score, confidence, and input-dimension histograms. These values reset
+with `/v1/stats/reset`; the process-lifetime counters on `/metrics` remain cumulative.
 
 Token counting selects an Anthropic-format completion target, preferring target names or model IDs
 containing `opus`, `sonnet`, then `haiku`. Other ties preserve the route's target order.

@@ -109,8 +109,8 @@ staying on the default tier.)
 | `1.0` | yes (required) | Classifier-driven. Tool signals only apply hard overrides; other turns reach the classifier. |
 
 The signal-vs-classifier split is dataset-dependent. Measure it in
-production: `/v1/stats` reports traffic by tier and model, while response headers
-and structured decision logs explain individual selections.
+production: `/v1/stats` reports stage-router decisions by source and semantic
+target, while response headers and structured decision logs explain individual selections.
 
 ### Calibrating the threshold from run data
 
