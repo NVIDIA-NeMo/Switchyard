@@ -230,7 +230,7 @@ where
         match served {
             Some(response) => Ok(response),
             None => {
-                algorithm::call_llm_with_fallback(
+                algorithm::call_model_with_fallback(
                     ctx,
                     &driver,
                     &self.targets,

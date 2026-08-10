@@ -33,7 +33,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 [`LlmTarget`] names a routing destination. An [`Algorithm`] selects targets and
 records [`Decision`](switchyard_protocol::Decision)s, offloading every model call
 to its caller: [`Algorithm::run_stream`] yields a [`Step`] stream whose
-[`Step::CallLlm`] items the host serves over its own transport. libsy makes no
+[`Step::CallModel`] items the host serves over its own transport. libsy makes no
 network calls itself — `switchyard-llm-client`'s `run` is a ready-made consumer
 that drives the stream and performs the calls over HTTP.
 

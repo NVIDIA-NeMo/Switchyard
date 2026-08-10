@@ -227,7 +227,7 @@ where
         let judge_model = self.target.semantic_name.as_str();
 
         let response = driver
-            .call_llm(RoutedRequest {
+            .call_model(RoutedRequest {
                 request: self.judge.build_request(state, request),
                 decision: Arc::new(Decision::new(
                     self.target.semantic_name.to_string(),
@@ -470,7 +470,7 @@ mod tests {
         let mut request = request();
 
         let serve = async {
-            if let Some(Ok(Step::CallLlm(call))) = steps.next().await {
+            if let Some(Ok(Step::CallModel(call))) = steps.next().await {
                 let _ = call.respond(reply);
             }
         };

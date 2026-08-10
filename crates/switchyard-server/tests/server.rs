@@ -662,7 +662,7 @@ fn assert_in_order(haystack: &str, needles: &[&str]) {
 
 /// A route is a synthetic model (`switchyard/classify`) with no upstream of its own; its
 /// algorithm picks real targets, and *those* name the client. One request can emit several
-/// `Step::CallLlm` for different targets, and two targets may sit on different
+/// `Step::CallModel` for different targets, and two targets may sit on different
 /// `[llm_clients.*]` sections — here the judge is on one provider and the serving models on
 /// another. Pin that each call reaches its own target's upstream, rather than one client
 /// chosen per route serving all of them.

@@ -45,7 +45,7 @@ impl Algorithm for Passthrough {
         ));
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
-            .call_llm(RoutedRequest {
+            .call_model(RoutedRequest {
                 request,
                 decision,
                 ctx,

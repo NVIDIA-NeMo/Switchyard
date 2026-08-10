@@ -458,7 +458,7 @@ impl Algorithm for SingleCallAlgo {
         ));
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
-            .call_llm(RoutedRequest {
+            .call_model(RoutedRequest {
                 request,
                 decision,
                 ctx,
@@ -1039,7 +1039,7 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
     let mut saw_error_step = false;
     while let Some(step) = stream.next().await {
         match step {
-            Ok(Step::CallLlm(call)) => {
+            Ok(Step::CallModel(call)) => {
                 call.respond(Err(test_error("synthetic upstream failure")))?;
             }
             Ok(Step::Decision(_)) => {}

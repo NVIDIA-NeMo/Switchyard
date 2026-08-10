@@ -20,7 +20,7 @@ use switchyard_protocol::{
     Context, Decision, LlmClientError, LlmResponse, Request, Response, text_response,
 };
 
-use crate::core::algorithm::{Algorithm, CallLlmRequest};
+use crate::core::algorithm::{Algorithm, CallModelRequest};
 use crate::{LibsyError, Result};
 
 /// The result a fake client hands back for one offloaded call.
@@ -58,7 +58,7 @@ pub(crate) async fn test_drive(
 
 /// Serve one call and fulfill its promise, mapping failures the way a host does so
 /// error-shape assertions match production.
-async fn fulfill(serve: Arc<impl Serve>, call: CallLlmRequest) -> Result<()> {
+async fn fulfill(serve: Arc<impl Serve>, call: CallModelRequest) -> Result<()> {
     let routed = call.get_routed().clone();
     let target = routed.decision.selected_model_id().to_string();
     let result = serve

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use switchyard_libsy::{Algorithm, CallLlmRequest, LibsyError, Result, algorithm_label, drive};
+use switchyard_libsy::{Algorithm, CallModelRequest, LibsyError, Result, algorithm_label, drive};
 use switchyard_protocol::{Context, Decision, LlmClientError, Request, Response, RoutedLlmClient};
 
 use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
@@ -141,7 +141,7 @@ impl RoutedCallWindows {
 )]
 async fn serve(
     clients: ClientRouter,
-    call: CallLlmRequest,
+    call: CallModelRequest,
     observer: Option<RunObserver>,
     // Output parameter because `drive` takes a function that returns a plain `Result<()>`.
     routed_calls: Arc<Mutex<RoutedCallWindows>>,

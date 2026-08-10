@@ -517,9 +517,9 @@ impl Classifier<State> for EscalationClassifier {
         //
         // If the efficient model exceeds its context window, fall through to capable: returning
         // `(decisive(capable), None)` tells FallThrough::execute to call
-        // call_llm_with_fallback with the capable target instead of surfacing the error.
+        // call_model_with_fallback with the capable target instead of surfacing the error.
         let efficient_response = match driver
-            .call_llm(RoutedRequest {
+            .call_model(RoutedRequest {
                 request: request.clone(),
                 decision: Arc::new(Decision::new(
                     self.efficient.semantic_name.clone(),
