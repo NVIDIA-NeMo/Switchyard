@@ -9,8 +9,9 @@ per active outbound model tier.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from switchyard.cli.launchers.live_stats_footer import FOOTER_ROWS, LiveStatsFooter
-from switchyard.lib.stats_accumulator import StatsAccumulator
 
 
 def _strip_ansi(text: str) -> str:
@@ -37,38 +38,60 @@ class _StubHealth:
         return ("●", 1)
 
 
-async def _stats_with_model_call(
+class _Stats:
+    def __init__(self, snapshot: Mapping[str, object] | None = None) -> None:
+        self.snapshot = snapshot or {
+            "total_requests": 0,
+            "total_errors": 0,
+            "total_tokens": {},
+            "models": {},
+        }
+
+    def snapshot_sync(self) -> Mapping[str, object]:
+        return self.snapshot
+
+
+def _stats_with_model_call(
     model: str,
     *,
     prompt: int = 1234,
     completion: int = 567,
     cached: int = 200,
-) -> StatsAccumulator:
-    acc = StatsAccumulator()
-    await acc.record_success(model=model)
-    await acc.record_usage(
-        model=model,
-        prompt_tokens=prompt,
-        completion_tokens=completion,
-        cached_tokens=cached,
-    )
-    return acc
+) -> _Stats:
+    return _Stats({
+        "total_requests": 1,
+        "total_errors": 0,
+        "total_tokens": {
+            "prompt": prompt,
+            "completion": completion,
+            "cached": cached,
+        },
+        "models": {
+            model: {
+                "calls": 1,
+                "errors": 0,
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "cached_tokens": cached,
+            }
+        },
+    })
 
 
-def _footer(stats: StatsAccumulator, *, model: str = "nvidia/some/default") -> LiveStatsFooter:
+def _footer(stats: _Stats, *, model: str = "nvidia/some/default") -> LiveStatsFooter:
     return LiveStatsFooter(stats, model=model, health=_StubHealth())  # type: ignore[arg-type]
 
 
-async def test_footer_height_at_zero_traffic() -> None:
+def test_footer_height_at_zero_traffic() -> None:
     """Before any traffic: aggregate + 1 fallback row = 2 rows."""
-    footer = _footer(StatsAccumulator())
+    footer = _footer(_Stats())
     assert footer.height == FOOTER_ROWS == 2
     rows = footer.render(cols=80)
     assert len(rows) == 2
 
 
-async def test_aggregate_row_shows_totals_without_model_name() -> None:
-    stats = await _stats_with_model_call("vendor/some-model")
+def test_aggregate_row_shows_totals_without_model_name() -> None:
+    stats = _stats_with_model_call("vendor/some-model")
     rows = _footer(stats).render(cols=80)
     agg = _strip_ansi(rows[0][0])
     assert "switchyard" in agg
@@ -79,8 +102,8 @@ async def test_aggregate_row_shows_totals_without_model_name() -> None:
     assert "some-model" not in agg
 
 
-async def test_active_row_shows_model_with_recent_traffic() -> None:
-    stats = await _stats_with_model_call("vendor/winner-model")
+def test_active_row_shows_model_with_recent_traffic() -> None:
+    stats = _stats_with_model_call("vendor/winner-model")
     rows = _footer(stats).render(cols=80)
     active = _strip_ansi(rows[1][0])
     assert "winner-model" in active
@@ -90,31 +113,40 @@ async def test_active_row_shows_model_with_recent_traffic() -> None:
     assert "200 cached" in active
 
 
-async def test_active_row_falls_back_to_default_when_no_traffic() -> None:
+def test_active_row_falls_back_to_default_when_no_traffic() -> None:
     """Before any backend call lands, the row labels with the launch default."""
-    rows = _footer(StatsAccumulator(), model="vendor/launch-default").render(cols=80)
+    rows = _footer(_Stats(), model="vendor/launch-default").render(cols=80)
     active = _strip_ansi(rows[1][0])
     assert "launch-default" in active
     assert "0 req" in active
 
 
-async def test_new_tier_adds_a_row_on_next_render() -> None:
+def test_new_tier_adds_a_row_on_next_render() -> None:
     """A new model in traffic adds a row; height grows from 2 to 3."""
-    stats = StatsAccumulator()
-    await stats.record_success(model="vendor/first")
-    await stats.record_usage(
-        model="vendor/first", prompt_tokens=10, completion_tokens=20,
-    )
+    stats = _stats_with_model_call("vendor/first", prompt=10, completion=20, cached=0)
     footer = _footer(stats)
     rows = footer.render(cols=80)
     assert len(rows) == 2
     assert footer.height == 2
     assert "first" in _strip_ansi(rows[1][0])
 
-    await stats.record_success(model="vendor/second")
-    await stats.record_usage(
-        model="vendor/second", prompt_tokens=30, completion_tokens=40,
-    )
+    stats.snapshot = {
+        "total_requests": 2,
+        "total_errors": 0,
+        "total_tokens": {"prompt": 40, "completion": 60, "cached": 0},
+        "models": {
+            "vendor/first": {
+                "calls": 1,
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+            },
+            "vendor/second": {
+                "calls": 1,
+                "prompt_tokens": 30,
+                "completion_tokens": 40,
+            },
+        },
+    }
     rows = footer.render(cols=80)
     assert len(rows) == 3
     assert footer.height == 3

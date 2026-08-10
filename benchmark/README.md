@@ -288,23 +288,6 @@ Neither artifact provides task or trial attribution. The runner writes them only
 and while the Rust server is still reachable; otherwise the manifest records them as missing.
 `routing_requests.jsonl` and `routing_stats_by_task.json` are not produced by the Rust server.
 
-### Replay Stage-Router Scores
-
-Replay completed trajectories through the stage-router scorer and both picker policies:
-
-```bash
-uv run python benchmark/score_staged_run.py \
-  --run benchmark/tb_runs/<run-name>
-```
-
-Use `--threshold` and `--window` to override the scorer defaults. The command writes per-turn JSONL
-to `/tmp/<run-name>-scores.jsonl` and a per-task summary to
-`/tmp/<run-name>-per-task.csv` unless `--output` or `--csv` is supplied.
-
-The script processes each turn once, then applies both pickers to the same signal. Use `pick_cf` and
-`pick_ef` for actual routing decisions; score bands alone do not include picker overrides or
-fall-open behavior.
-
 ## Docker Image Notes
 
 Baseline runs build `switchyard-baseline:local` from

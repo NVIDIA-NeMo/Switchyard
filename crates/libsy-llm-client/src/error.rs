@@ -3,10 +3,8 @@
 
 //! Canonical client error re-export and shared context-window-overflow detection.
 //!
-//! The overflow detection is ported from
-//! `switchyard-components/src/backends/context_overflow.rs`; that helper is
-//! crate-private there and this crate cannot depend on `switchyard-components`,
-//! so the small, self-contained logic is vendored here.
+//! The client owns overflow detection so callers receive one stable error
+//! classification across providers.
 
 use serde_json::Value;
 

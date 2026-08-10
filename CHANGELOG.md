@@ -4,6 +4,15 @@ All notable changes to Switchyard are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **Deprecated Python server stack** — `switchyard serve`, YAML route bundles,
+  the FastAPI endpoints and legacy chain, the `switchyard-components` crate,
+  and their compatibility PyO3 bindings are removed. Use `switchyard-server`
+  with native TOML deployments, or `switchyard launch` for coding agents.
+
 ## [0.2.0]
 
 Switchyard 0.2.0 introduces the native Rust server and libsy library path,

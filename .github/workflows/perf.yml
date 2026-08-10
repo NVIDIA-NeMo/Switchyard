@@ -55,8 +55,8 @@ jobs:
         run: uv pip install aiperf
 
       # ------------------------------------------------------------------
-      # Start a local zero-latency mock OpenAI upstream. This replaces the
-      # The proxy serves a real `type: passthrough` chain that
+      # Start a local zero-latency mock OpenAI upstream. The proxy serves a
+      # real `type: passthrough` route that
       # forwards to this loopback stub, which returns a fixed completion
       # instantly. The extra loopback hop adds a small constant overhead.
       # ------------------------------------------------------------------
@@ -127,21 +127,30 @@ jobs:
           echo "STUB_PID=$!" >> "$GITHUB_ENV"
 
       # ------------------------------------------------------------------
-      # Start the proxy: a `type: passthrough` route pointed at the local stub.
+      # Build and start the native proxy against the local stub.
       # ------------------------------------------------------------------
+      - name: Build switchyard server
+        run: cargo build --locked --release -p switchyard-server
+
       - name: Start switchyard proxy
         run: |
-          cat > bench.yaml <<YAML
-          defaults:
-            api_key: dummy
-            base_url: http://localhost:$STUB_PORT/v1
-            format: openai
-          routes:
-            mock-model:
-              type: passthrough
-              target: mock-model
-          YAML
-          uv run switchyard serve --routes bench.yaml --port $PROXY_PORT &
+          cat > bench.toml <<TOML
+          schema_version = 1
+
+          [llm_clients.stub]
+          format = "openai_chat"
+          base_url = "http://localhost:$STUB_PORT/v1"
+
+          [targets.mock]
+          id = "mock-model"
+          llm_client = "stub"
+
+          [routes.mock]
+          id = "mock-model"
+          type = "passthrough"
+          target = "mock"
+          TOML
+          target/release/switchyard-server --config bench.toml --port $PROXY_PORT &
           echo "PROXY_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for proxy to be ready

@@ -3,9 +3,11 @@
 
 //! Minimal Python API for running Rust-owned libsy algorithms.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use http::header::{HeaderName, HeaderValue};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde_json::{Value, json};
@@ -21,8 +23,22 @@ use switchyard_protocol::{
 };
 
 use crate::errors::py_libsy_error;
-use crate::interop::subagent::header_map_from_python;
 use crate::py_serde::{from_python, to_python};
+
+/// Convert Python-owned headers into the request metadata expected by libsy.
+fn header_map_from_python(headers: &HashMap<String, String>) -> PyResult<http::HeaderMap> {
+    let mut result = http::HeaderMap::new();
+    for (name, value) in headers {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let value = HeaderValue::from_str(value)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        result
+            .try_append(name, value)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    }
+    Ok(result)
+}
 
 /// Adapts a Python object with `async call(request)` to libsy.
 struct PythonLlmClient {

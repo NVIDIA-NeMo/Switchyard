@@ -2264,27 +2264,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
-name = "switchyard-components"
-version = "0.2.0"
-dependencies = [
- "async-stream",
- "async-trait",
- "futures-core",
- "futures-util",
- "parking_lot",
- "rand 0.10.2",
- "reqwest",
- "serde",
- "serde_json",
- "switchyard-libsy",
- "switchyard-protocol",
- "switchyard-translation",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "switchyard-libsy"
 version = "0.2.0"
 dependencies = [
@@ -2349,22 +2328,17 @@ name = "switchyard-py"
 version = "0.2.0"
 dependencies = [
  "async-trait",
- "futures-util",
  "http",
- "parking_lot",
  "pyo3",
  "pyo3-async-runtimes",
  "pythonize",
  "serde",
  "serde_json",
- "switchyard-components",
  "switchyard-libsy",
  "switchyard-llm-client",
  "switchyard-protocol",
  "switchyard-server",
- "switchyard-translation",
  "tokio",
- "tracing",
 ]
 
 [[package]]

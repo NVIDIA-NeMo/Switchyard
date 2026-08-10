@@ -165,11 +165,8 @@ fixed error categories.
 
 `switchyard_total_latency_ms` observes an aggregate when it becomes available or a stream when it
 ends cleanly. Its clock starts in a router-wide middleware, before the request body is read and
-decoded, so it covers the same span as the Python server's request-ingress-to-completion
-measurement. It still excludes connection accept and TLS handshake, which hyper completes before
-the server sees the request. The Rust server exports this metric as a histogram, while the Python
-server exports its counterpart as a summary; this matches the existing histogram/summary difference
-for model-call latency.
+decoded, so it measures request ingress through response completion. It still excludes connection
+accept and TLS handshake, which hyper completes before the server sees the request.
 
 `switchyard_routing_overhead_ms` is what routing cost on top of the model call: the algorithm's run
 time minus the call that served the request. Classifier calls are not subtracted, so an

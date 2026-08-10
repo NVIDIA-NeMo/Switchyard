@@ -9,10 +9,9 @@ field names instead of stringly-typed dict lookups.
 
 Usage::
 
-    from switchyard.lib.cost_estimator import estimate_cost, MODEL_PRICING
+    from switchyard.cli.launchers.cost_estimator import estimate_cost
 
-    stats = requests.get("http://localhost:4000/v1/routing/stats").json()
-    breakdown = estimate_cost(stats["models"])
+    breakdown = estimate_cost({"model": {"prompt_tokens": 10}})
     print(f"Total: ${breakdown['total_cost']:.4f}")
 
 See ``docs.anthropic.com/en/docs/about-claude/pricing`` for the

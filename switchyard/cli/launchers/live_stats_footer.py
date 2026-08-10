@@ -3,8 +3,8 @@
 
 """Shared live token-usage footer for launcher TUI sessions.
 
-One layout for every routing strategy: an aggregate row across all chains plus
-one indented row per active outbound model tier.
+One layout for every routing strategy: an aggregate row across all requests
+plus one indented row per active outbound model.
 """
 
 from __future__ import annotations
@@ -14,13 +14,12 @@ from typing import cast
 
 from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
 from switchyard.cli.launchers.stats_source import StatsSource
-from switchyard.lib.route_table import RouteTable
 
 FOOTER_ROWS = 2
 
 
 class LiveStatsFooter:
-    """Live stats footer: aggregate row + one row per active model tier."""
+    """Live stats footer: aggregate row plus one row per active model."""
 
     def __init__(
         self,
@@ -28,13 +27,11 @@ class LiveStatsFooter:
         model: str,
         health: ProxyHealthMonitor,
         *,
-        table: RouteTable | None = None,
         strategy_label: str | None = None,
     ) -> None:
         self._stats = stats
         self._default_model_short = model.rsplit("/", 1)[-1]
         self._health = health
-        self._table = table
         self._strategy_label = strategy_label
         # Ordered list of models seen in traffic so far. Grows as new tiers
         # receive their first request; order is first-seen, which keeps the
@@ -44,7 +41,7 @@ class LiveStatsFooter:
 
     @property
     def height(self) -> int:
-        """Current footer height: 1 aggregate row + 1 row per seen tier (min 2)."""
+        """Current footer height: one aggregate plus each seen model (minimum two)."""
         return FOOTER_ROWS - 1 + max(1, len(self._seen_models))
 
     def as_footer_fn(self) -> Callable[[int], list[tuple[str, int]]]:
@@ -87,20 +84,21 @@ class LiveStatsFooter:
     def _tier_rows(
         self, snapshot: Mapping[str, object],
     ) -> list[tuple[str, int]]:
-        """Return one row per model tier that has received traffic.
+        """Return one row per model that has received traffic.
 
-        Before any traffic lands, returns a single placeholder row using the
-        table's last-looked-up id or the launch default.  Once traffic
-        arrives, the list grows to match the number of distinct models seen,
-        in first-seen order, and never shrinks.
+        Before traffic lands, a placeholder uses the launch model. Once traffic
+        arrives, rows grow in first-seen order and never shrink.
         """
         models = _mapping(snapshot, "models")
         if not models:
-            fallback = (
-                (self._table.last_looked_up if self._table else None)
-                or self._default_model_short
-            )
-            return [_model_row(fallback, calls=0, errors=0, prompt=0, completion=0, cached=0)]
+            return [_model_row(
+                self._default_model_short,
+                calls=0,
+                errors=0,
+                prompt=0,
+                completion=0,
+                cached=0,
+            )]
 
         for m in models:
             if m not in self._seen_set:

@@ -30,7 +30,7 @@ from switchyard.cli.launchers.live_stats_footer import LiveStatsFooter
 from switchyard.cli.launchers.native_server import NativeServer
 from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
 from switchyard.cli.launchers.session_summary import print_session_summary
-from switchyard.server.shell_tui import ShellTUI
+from switchyard.cli.launchers.shell_tui import ShellTUI
 
 logger = logging.getLogger(__name__)
 

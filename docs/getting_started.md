@@ -27,11 +27,11 @@ source "$HOME/.local/bin/env"
 Then install the published Switchyard tool:
 
 ```bash
-uv tool install --python 3.12 "nemo-switchyard[cli,server]"
+uv tool install --python 3.12 "nemo-switchyard[cli]"
 ```
 
 This creates an isolated Python tool environment containing the `switchyard`
-CLI, its CLI and server dependencies, and the packaged PyO3 Rust extension.
+CLI, its launcher dependency, and the packaged PyO3 Rust extension.
 `switchyard launch` starts the native Rust server through that extension; this
 path does not install or run the standalone `switchyard-server` binary.
 
@@ -122,8 +122,7 @@ Cargo builds the release binary and installs it into `~/.cargo/bin` by default.
 
 ### Configure
 
-The Rust server reads an explicit TOML file. It does not use the Python
-server's minimal YAML route bundle.
+The Rust server reads an explicit TOML file.
 
 Create `routes.toml` with an LLM-classifier route:
 

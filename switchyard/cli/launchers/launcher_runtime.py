@@ -69,20 +69,13 @@ def configure_debug_file_logging(*, display_model: str) -> Path:
         handler.close()
     root.setLevel(logging.WARNING)
 
-    for name in (
-        "switchyard",
-        "httpx",
-        "httpcore",
-        "openai",
-        "anthropic",
-    ):
-        logger = logging.getLogger(name)
-        for handler in logger.handlers[:]:
-            logger.removeHandler(handler)
-            handler.close()
-        logger.addHandler(file_handler)
-        logger.setLevel(logging.DEBUG)
-        logger.propagate = False
+    switchyard_logger = logging.getLogger("switchyard")
+    for handler in switchyard_logger.handlers[:]:
+        switchyard_logger.removeHandler(handler)
+        handler.close()
+    switchyard_logger.addHandler(file_handler)
+    switchyard_logger.setLevel(logging.DEBUG)
+    switchyard_logger.propagate = False
 
     logging.getLogger("switchyard").info(
         "=== switchyard debug log: model=%s pid=%d ===",
@@ -94,14 +87,7 @@ def configure_debug_file_logging(*, display_model: str) -> Path:
 
 def silence_launch_loggers(*, local_logger: logging.Logger) -> None:
     """Keep dependency chatter out of a child process terminal UI."""
-    for noisy in (
-        "switchyard",
-        "httpx",
-        "httpcore",
-        "openai",
-        "anthropic",
-    ):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    logging.getLogger("switchyard").setLevel(logging.WARNING)
     local_logger.setLevel(logging.INFO)
 
 
@@ -111,30 +97,6 @@ def stdin_is_tty() -> bool:
         return os.isatty(sys.stdin.fileno())
     except Exception:
         return False
-
-
-def route_bundle_strategy_summary(route_bundle: str, default_model: str) -> str:
-    """Describe the default route in a Python server bundle."""
-    try:
-        from collections.abc import Mapping as _Mapping
-        from importlib import import_module
-        yaml = import_module("yaml")
-        raw = yaml.safe_load(Path(route_bundle).read_text())
-        routes = raw.get("routes") if isinstance(raw, dict) else None
-        if isinstance(routes, _Mapping) and routes:
-            first_key = next(iter(routes))
-            route = routes[first_key]
-            route_type = route.get("type") if isinstance(route, _Mapping) else None
-            if isinstance(route_type, str):
-                if route_type == "noop":
-                    return "noop"
-                if route_type == "passthrough":
-                    target = route.get("target")
-                    model = target.get("model") if isinstance(target, _Mapping) else target
-                    return f"passthrough: model={model or first_key}"
-    except Exception:
-        pass
-    return f"route: {default_model}"
 
 
 # Keys that are abbreviated in the banner display.

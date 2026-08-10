@@ -671,8 +671,7 @@ fn set_json_model(body: &mut Value, model: &str) {
 // later turns from an Anthropic one. Clients such as Claude Code send
 // `context_management` on every turn, so the Anthropic leg must strip it or the
 // upstream rejects the request (for example `clear_thinking_20251015` strategy
-// requires `thinking` to be enabled or adaptive). Mirrors
-// `switchyard-components`' `strip_anthropic_incompatible_fields`.
+// requires `thinking` to be enabled or adaptive).
 fn strip_anthropic_incompatible_fields(body: &mut Value) {
     if let Value::Object(object) = body {
         object.remove("reasoning_effort");
@@ -686,8 +685,7 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
 // turns of a session from an OpenAI-format target whose thinking blocks are
 // unsigned, so the Anthropic leg must drop them or the upstream rejects the
 // request. Bedrock enforces this (surfacing as a SigV4 signature mismatch) where
-// Azure-hosted Anthropic currently does not. Mirrors `switchyard-components`'
-// `strip_unsigned_thinking_blocks`.
+// Azure-hosted Anthropic currently does not.
 fn strip_unsigned_thinking_blocks(body: &mut Value) {
     let Value::Object(object) = body else {
         return;

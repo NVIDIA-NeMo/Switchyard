@@ -130,97 +130,59 @@ testing, and review do not require loading a skill.
 | `switchyard-coding-agent-launchers` | Claude Code, Codex, or OpenClaw launcher behavior |
 | `switchyard-docs` | Published MkDocs pages, strict builds, previews, and docs CI |
 | `switchyard-rust-review` | Focused review of Rust, PyO3, async, streaming, and crate boundaries |
-| `switchyard-stage-router-scorer` | Replaying benchmark trajectories through the stage-router scorer and picker |
 | `switchyard-testing-ci` | Selecting non-obvious validation or diagnosing CI failures |
 
 Skills should contain stable operational constraints, not mutable architecture inventories. Read the
 current source and CI workflows for implementation details.
 
-## Architecture: staged chain
+## Architecture
 
-Everything flows through a fixed-shape chain enforced at construction time:
+The supported serving path is native Rust:
 
 ```
-request-side component* → LLMBackend → response-side component* → TranslationEngine
+HTTP request → switchyard-server → libsy Algorithm → LlmTarget/RoutedLlmClient
+             → switchyard-translation → upstream model
 ```
 
-The chain executor is `Switchyard` (`switchyard/lib/switchyard.py`). `LLMBackend` is the shared
-Python role class re-exported from `switchyard/lib/roles.py`; native implementations register with
-it, and request-side and response-side processors are plain async components with `process(...)`
-methods.
-Direct Rust bindings for migrated concrete processors/backends are exposed from
-`switchyard_rust.components` and implemented under `crates/switchyard-py/src/component_bindings/`.
+`switchyard-server` loads explicit TOML deployments and exposes the OpenAI Chat,
+OpenAI Responses, and Anthropic Messages APIs. `switchyard-libsy` owns routing
+algorithms, `switchyard-protocol` owns provider-neutral request and response
+types, and `switchyard-llm-client` performs translated HTTP calls.
 
-| Stage | Binding | Method | Purpose |
-|------|-----|--------|---------|
-| Request component | Plain Python/Rust object | `async process(ctx, request) -> ChatRequest` | Pre-process (routing, buffering, auth) |
-| `LLMBackend` | `switchyard.lib.roles` | `async call(ctx, request) -> ChatResponse` | Make the LLM call. Exactly one per chain. |
-| Response component | Plain Python/Rust object | `async process(ctx, response) -> ChatResponse` | Post-process (logging, stats) |
-| `TranslationEngine` | `switchyard_rust.translation` | `async translate(ctx, request, response) -> Any` | Convert to client's wire format |
+Python is an integration layer. `switchyard launch` hosts the native server for
+coding agents, `switchyard.libsy` exposes selected algorithms, and
+`switchyard_rust.server` exposes the native server lifecycle through PyO3.
 
 ## Project Structure
 
 ```
 switchyard/
-├── __init__.py                     # Public API — all exports live here
-├── lib/                            # Core library
-│   ├── roles.py                    # Python LLMBackend re-export and translation aliases
-│   ├── switchyard.py               # Switchyard — chain executor
-│   ├── proxy_context.py            # ProxyContext — per-request state carrier
-│   ├── route_table.py              # RouteTable — model-id dispatch to runnable chains
-│   ├── llm_client.py               # OpenAILLMClient
-│   ├── cost_estimator.py           # Token-cost bookkeeping
-│   ├── stats_accumulator.py        # Stats accumulation helpers
-│   ├── request_metadata.py         # RequestMetadata
-│   ├── chat_response/              # Rust-backed response re-exports + stream adapters
-│   │   ├── base.py                 # ChatResponse, ChatResponseType compatibility re-export
-│   │   ├── openai_chat.py          # ResponseStream
-│   │   ├── openai_responses.py     # ResponsesApiStream
-│   │   └── anthropic.py            # AnthropicResponseStream
-│   ├── backends/                   # LLMBackend implementations
-│   │   ├── openai_llm_backend.py           # OpenAiPassthroughBackend
-│   │   ├── openai_native_backend.py        # OpenAiNativeBackend
-│   │   ├── anthropic_native_llm_backend.py # AnthropicNativeBackend
-│   │   ├── llm_target.py                   # LlmTarget, BackendFormat
-│   │   ├── multi_llm_backend.py            # MultiLlmBackend helpers
-│   │   ├── stats_llm_backend.py            # StatsLlmBackend
-│   │   └── backend_format_resolver.py      # BackendFormatResolver
-│   ├── processors/                 # Request-side / response-side component implementations
-│   │   ├── format_translate.py
-│   │   ├── stats_request_processor.py
-│   │   └── stats_response_processor_accumulator.py
-│   ├── endpoints/                  # FastAPI endpoint wrappers (require `nemo-switchyard[server]`)
-│   │   ├── openai_chat_endpoint.py         # OpenAIChatEndpoint
-│   │   ├── anthropic_messages_endpoint.py  # AnthropicMessagesEndpoint
-│   │   ├── responses_endpoint.py           # ResponsesEndpoint
-│   │   ├── stats_endpoint.py               # StatsEndpoint
-│   │   ├── sse_helpers.py
-│   │   └── base.py
+├── __init__.py                     # Package version
 ├── cli/                            # CLI (requires `nemo-switchyard[cli]`)
 │   ├── switchyard_cli.py           # `switchyard` entry point
 │   ├── launch_command.py           # `switchyard launch`
-│   ├── command_utils.py
 │   ├── defaults/                   # packaged OpenRouter TOML deployment
-│   ├── launchers/                  # Claude, Codex, and OpenClaw launchers
-│   ├── model_catalog/              # model_discovery
-│   └── route_bundle.py             # YAML route parsing for `serve`
-└── server/                         # FastAPI app factory + server utilities
-    ├── switchyard_app.py           # build_switchyard_app()
-    ├── server_util.py              # Shared CLI / server plumbing
-    └── shell_tui.py                # Shell TUI session
+│   └── launchers/                  # Claude, Codex, and OpenClaw launchers
+└── libsy/                          # typed Python wrappers for libsy algorithms
+
+switchyard_rust/                    # Python facades over the PyO3 extension
+crates/libsy/                       # routing algorithms and driver
+crates/libsy-llm-client/            # translated HTTP LLM client
+crates/protocol/                    # provider-neutral protocol types
+crates/switchyard-server/           # native HTTP server and TOML config
+crates/switchyard-translation/      # wire-format codecs
+crates/switchyard-py/               # libsy and server PyO3 bindings
 
 tests/                              # Unit tests (pytest)
 ```
 
 ## Tech Stack
 
-- **Python 3.12+**, async-first (asyncio)
-- **FastAPI + Uvicorn** for HTTP (`nemo-switchyard[server]`), **sse-starlette** for SSE streaming
-- **OpenAI SDK** (`openai>=2.30`) — primary client; the translation engine converts all inbound formats to Chat Completions
-- **Anthropic SDK** (`anthropic>=0.94`)
-- **httpx** for direct HTTP (health polling, Anthropic Messages)
+- **Rust 1.96.1**, edition 2024, Tokio, Axum, and PyO3
+- **Python 3.12+** for launchers and native bindings
+- **prompt-toolkit** for interactive launcher sessions
 - **uv** as the package manager (preferred over pip)
-- **pytest + pytest-asyncio** for testing, **respx** for HTTP mocking
+- **Cargo test + pytest** for testing
 - **ruff** for linting, **mypy** (strict) for type checking
 
 ## Setup
@@ -237,13 +199,10 @@ and their transitives never appear in downstream vulnerability scans.
 
 ## Commands
 
-### Running the server
+### Running Switchyard
 
 ```bash
 export OPENROUTER_API_KEY="sk-or-..."
-
-# Serve the minimal Python YAML bundle (noop and passthrough only).
-switchyard serve --routes examples/route.yaml --port 4000
 
 # Launch against the packaged OpenRouter deployment.
 switchyard launch claude --model switchyard
@@ -251,6 +210,9 @@ switchyard launch codex --model switchyard
 
 # Or select a route from a custom native TOML deployment.
 switchyard launch claude --model my-route --config routes.toml
+
+# Run a standalone native server.
+switchyard-server --config routes.toml --port 4000
 ```
 
 ### Testing
@@ -260,8 +222,7 @@ switchyard launch claude --model my-route --config routes.toml
 uv run pytest tests/ -v
 
 # Single test file / function
-uv run pytest tests/test_switchyard.py -v
-uv run pytest tests/test_route_bundle.py::test_noop_route_returns_ok_without_an_upstream -v
+uv run pytest tests/test_launchers.py -v
 
 # Live end-to-end tests are not part of the public test suite; if you write
 # one, set the provider key explicitly and run it directly, e.g.:
@@ -270,49 +231,7 @@ uv run pytest tests/test_route_bundle.py::test_noop_route_returns_ok_without_an_
 # Lint / type check (run before every commit)
 uv run ruff check .
 uv run mypy switchyard
-```
-
-### Adding a new component
-
-1. Pick the right stage: request component (pre-call), response component (post-call), `LLMBackend` (rare), or Rust translation codec work.
-2. Create a file with the explicit name (`snake_case` of the class name), one class per file.
-3. Implement the async method for that stage (`process` for components, `call` for backends).
-4. Wire it into the owning explicit chain or route-bundle builder.
-5. Add tests under `tests/`.
-6. Export from the relevant `__init__.py` and from `switchyard/__init__.py`'s `__all__`.
-
-### Example: custom request component
-
-```python
-from switchyard.lib.proxy_context import ProxyContext
-from switchyard import ChatRequest
-
-
-class MyRequestComponent:
-    async def process(self, ctx: ProxyContext, request: ChatRequest) -> ChatRequest:
-        ctx.metadata["my_key"] = "my_value"
-        return request
-```
-
-### App factory
-
-```python
-from switchyard import BackendFormat, LlmTarget, Switchyard, TranslationEngine
-from switchyard.lib.backends import OpenAiNativeBackend
-from switchyard import build_switchyard_app
-import uvicorn
-
-target = LlmTarget(
-    model="gpt-4o",
-    format=BackendFormat.OPENAI,
-    api_key="sk-...",
-    base_url="https://api.openai.com/v1",
-)
-switchyard = Switchyard(
-    backend=OpenAiNativeBackend(target),
-    translator=TranslationEngine(),
-)
-uvicorn.run(build_switchyard_app(switchyard), port=4000)
+cargo test --workspace
 ```
 
 ## Environment Variables
@@ -349,16 +268,15 @@ uvicorn.run(build_switchyard_app(switchyard), port=4000)
 ### Always do
 - File name = snake_case of the primary class exported. Rename on touch.
 - Run `uv run ruff check .` (zero errors) and `uv run pytest tests/` before pushing.
-- Export new public classes from `switchyard/__init__.py` with `__all__`.
-- Write unit tests for new roles and bug fixes.
-- Use `ProxyContext.metadata` for cross-component state within a request.
-- In a new `LLMBackend`, map upstream context-window 4xx to `SwitchyardError::ContextWindowExceeded` (Rust) — the chain executor uses it for evict-and-retry. See [Context-Window Handling](docs/operations/context_window.md).
+- Run `cargo test --workspace` for Rust behavior changes.
+- Write focused unit tests for new behavior and bug fixes.
+- Keep provider-neutral request and response types in `switchyard-protocol`.
+- Map upstream context-window errors to `SwitchyardError::ContextWindowExceeded`.
 
 ### Ask first
 - Modifying `pyproject.toml` dependencies.
-- Changes to the chain shape or public role classes in `switchyard/lib/roles.py`.
 - Adding new HTTP endpoints.
-- Removing or renaming any public API currently in `switchyard/__init__.__all__`.
+- Removing or renaming public Rust, PyO3, or Python APIs.
 
 ### Never do
 - Commit API keys or secrets (`secrets/` is gitignored).

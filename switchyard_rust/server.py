@@ -8,7 +8,7 @@ from __future__ import annotations
 from os import PathLike
 from typing import TYPE_CHECKING, Any, final
 
-from switchyard_rust.core import _load_native
+from switchyard_rust._native import load_native
 
 if TYPE_CHECKING:
 
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 def __getattr__(name: str) -> object:
     if name == "Server":
-        native: Any = _load_native()
+        native: Any = load_native()
         return native.server.Server
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

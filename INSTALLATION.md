@@ -1,186 +1,81 @@
 # Installation Guide
 
-Switchyard supports modular installation based on your use case. Install only the dependencies you need.
+Switchyard has separate packages for Python integrations and standalone Rust
+serving.
 
-## System Requirements
+## Requirements
 
-- Python 3.12 or newer. If the active interpreter is older, run
-  `uv pip install --python 3.12 nemo-switchyard`.
-- Linux x86_64 wheels require an x86-64-v3 / AVX2-class CPU (post 2013).
-- Linux aarch64 wheels require a Neoverse N1-class CPU (post 2020).
+- Python 3.12 or newer for `nemo-switchyard`
+- Rust 1.96.1 or newer for `switchyard-server` and the Rust libraries
+- Linux x86_64 wheels require an x86-64-v3 / AVX2-class CPU
+- Linux aarch64 wheels require a Neoverse N1-class CPU
 
-## Core Installation (Library Only)
+## Python Bindings
 
-For applications that use Switchyard as a Python library for routing and recipe composition:
+Install the Python package to embed libsy algorithms or host the native server
+through PyO3:
 
 ```bash
 pip install nemo-switchyard
 ```
 
-**Includes:**
-- Core routing logic
-- All recipe factories (Passthrough, RandomRouting, etc.)
-- Format translation engine (Anthropic ↔ OpenAI)
-- Request/response processors
+The base package has no Python runtime dependencies. Its native extension owns
+the libsy and server implementations.
 
-**Does NOT include:**
-- FastAPI / Uvicorn (server)
-- prompt-toolkit (interactive command-line UI)
+## Coding-Agent Launchers
 
-**Use case:** Library users, middleware plugins, embedded integrations.
-
-## Optional Extras
-
-### `[server]` — Run as a Proxy Server
-
-Add FastAPI and Uvicorn to run Switchyard as a standalone HTTP proxy:
+Install the CLI extra to launch Claude Code, Codex CLI, or OpenClaw through the
+packaged native server:
 
 ```bash
-pip install nemo-switchyard[server]
+uv tool install --python 3.12 "nemo-switchyard[cli]"
+export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
+switchyard launch claude --model switchyard
 ```
 
-**Adds:**
-- FastAPI
-- Uvicorn with standard extras
-- sse-starlette (for SSE streaming)
+The selected coding agent must already be installed and available on `PATH`.
+Use `--config routes.toml` to select a custom native TOML deployment.
 
-**Use case:** Deploying Switchyard as a service, e2e proxy operations.
+## Standalone Server
 
-### `[cli]` — Command-Line Tools
-
-Add prompt-toolkit support for interactive command-line workflows:
+Install the native Rust proxy from crates.io:
 
 ```bash
-pip install nemo-switchyard[cli]
+cargo install --locked switchyard-server
+switchyard-server --config routes.toml --dry-run
+switchyard-server --config routes.toml --port 4000
 ```
 
-## Combined Extras
+See [Getting Started](docs/getting_started.md#server-path) for a complete TOML
+deployment and [`switchyard-server`](crates/switchyard-server/README.md) for the
+configuration reference.
 
-### Full Installation
+## Rust Libraries
 
-Install all optional dependencies:
+Add the crates needed by an embedded application:
 
-```bash
-pip install nemo-switchyard[all]
+```toml
+[dependencies]
+switchyard-libsy = "0.2.0"
+switchyard-protocol = "0.2.0"
+switchyard-llm-client = "0.2.0"
+switchyard-translation = "0.2.0"
 ```
 
-Equivalent to: `nemo-switchyard[server,cli,tracing,affinity-redis]`
-
-### Common Combinations
-
-**Middleware plugin (no server/CLI):**
-```bash
-pip install nemo-switchyard                  # Core only
-```
-
-**Proxy server:**
-```bash
-pip install nemo-switchyard[server]
-```
-
-**Command-line tools:**
-```bash
-pip install nemo-switchyard[cli]             # Includes core
-```
-
-**Production deployment with all features:**
-```bash
-pip install nemo-switchyard[all]
-```
-
-## Dependency Structure
-
-### Core (Always Installed)
-```
-- openai>=2.34.0,<3.0
-- anthropic>=0.99.0,<1.0
-- httpx>=0.28.1,<1.0
-- pydantic>=2.13.3,<3.0
-```
-
-### Optional Dependencies
-| Extra | Size | Purpose |
-|-------|------|---------|
-| `[server]` | ~50 MB | HTTP proxy (FastAPI + Uvicorn) |
-| `[cli]` | ~5 MB | Interactive terminal UI (prompt-toolkit) |
-
-## Embedding in Your Own Application
-
-### For Custom Applications
-
-Embed Switchyard with minimal overhead:
-
-```python
-from switchyard import LlmTarget, OpenAiNativeBackend, Switchyard, TranslationEngine
-
-# Core library only — no server/CLI dependencies
-target = LlmTarget(
-    id="direct",
-    model="gpt-4o-mini",
-    format="openai",
-    api_key="sk-...",
-    base_url="https://api.openai.com/v1",
-)
-switchyard = Switchyard(
-    backend=OpenAiNativeBackend(target),
-    translator=TranslationEngine(),
-)
-```
-
-## Troubleshooting
-
-### Import Error: "No module named 'fastapi'"
-
-You're trying to run the HTTP server without the `[server]` extra:
-
-```bash
-# Install with server support
-pip install nemo-switchyard[server]
-```
-
-```python
-from switchyard import Switchyard                                       # OK (core)
-from switchyard.server.switchyard_app import build_switchyard_app   # needs [server]
-```
-
-### Import Error: "No module named 'prompt_toolkit'"
-
-You're using an interactive command-line workflow without the `[cli]` extra:
-
-```bash
-# Install CLI support
-pip install nemo-switchyard[cli]
-```
+`switchyard-libsy` owns algorithms, `switchyard-protocol` owns provider-neutral
+request and response types, `switchyard-translation` owns wire conversion, and
+`switchyard-llm-client` performs translated HTTP calls.
 
 ## Development
 
-For development with all testing tools, use `uv` (recommended):
+From a checkout:
 
 ```bash
-uv sync                  # core + dev tooling (dev is uv's default group)
-uv sync --all-extras     # add every user-facing extra as well
+uv sync
+uv run maturin develop
+cargo test --workspace
+uv run pytest tests/ -v
 ```
 
-Or with pip ≥ 25.1 from a checkout:
-
-```bash
-pip install -e ".[all]"
-pip install --group dev .
-```
-
-This includes:
-- Core + all optional extras
-- pytest, ruff, mypy, respx for testing
-
-> **Note:** dev tooling lives in a PEP 735 dependency group, not an extra,
-> so `pip install nemo-switchyard[dev]` is **not supported** and dev tooling
-> never appears in the published wheel's METADATA (it's invisible to
-> downstream vulnerability scans).
-
-## Version Compatibility
-
-Switchyard requires Python 3.12 or later.
-
-Supported versions:
-- Python 3.12
-- Python 3.13
+The `dev` dependency group contains testing and linting tools and is not exposed
+in the published wheel metadata.
