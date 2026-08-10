@@ -35,14 +35,14 @@
 <a href=#35 id=35 data-nosnippet>35</a>        driver: Driver,
 <a href=#36 id=36 data-nosnippet>36</a>        request: Request,
 <a href=#37 id=37 data-nosnippet>37</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;Response&gt; {
-<a href=#38 id=38 data-nosnippet>38</a>        <span class="kw">let </span>decision: Arc&lt;Decision&gt; = Arc::new(Decision {
-<a href=#39 id=39 data-nosnippet>39</a>            selected_target_id: <span class="self">self</span>.target.semantic_name.clone(),
-<a href=#40 id=40 data-nosnippet>40</a>            reasoning: <span class="prelude-val">Some</span>(<span class="macro">format!</span>(
+<a href=#38 id=38 data-nosnippet>38</a>        <span class="kw">let </span>decision: Arc&lt;Decision&gt; = Arc::new(Decision::new(
+<a href=#39 id=39 data-nosnippet>39</a>            <span class="self">self</span>.target.semantic_name.clone(),
+<a href=#40 id=40 data-nosnippet>40</a>            <span class="prelude-val">Some</span>(<span class="macro">format!</span>(
 <a href=#41 id=41 data-nosnippet>41</a>                <span class="string">"passthrough selected target '{}'"</span>,
 <a href=#42 id=42 data-nosnippet>42</a>                <span class="self">self</span>.target.semantic_name
 <a href=#43 id=43 data-nosnippet>43</a>            )),
-<a href=#44 id=44 data-nosnippet>44</a>            is_answer_call: <span class="bool-val">true</span>,
-<a href=#45 id=45 data-nosnippet>45</a>        });
+<a href=#44 id=44 data-nosnippet>44</a>            <span class="bool-val">true</span>,
+<a href=#45 id=45 data-nosnippet>45</a>        ));
 <a href=#46 id=46 data-nosnippet>46</a>        driver.info(ctx.clone(), decision.clone()).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#47 id=47 data-nosnippet>47</a>        driver
 <a href=#48 id=48 data-nosnippet>48</a>            .call_llm(RoutedRequest {
@@ -85,7 +85,7 @@
 <a href=#85 id=85 data-nosnippet>85</a>            MODEL_ID
 <a href=#86 id=86 data-nosnippet>86</a>        );
 <a href=#87 id=87 data-nosnippet>87</a>        <span class="macro">assert_eq!</span>(trace.len(), <span class="number">1</span>);
-<a href=#88 id=88 data-nosnippet>88</a>        <span class="macro">assert_eq!</span>(trace[<span class="number">0</span>].selected_target_id(), MODEL_ID);
+<a href=#88 id=88 data-nosnippet>88</a>        <span class="macro">assert_eq!</span>(trace[<span class="number">0</span>].selected_model_id(), MODEL_ID);
 <a href=#89 id=89 data-nosnippet>89</a>        <span class="macro">assert!</span>(trace[<span class="number">0</span>].is_answer_call());
 <a href=#90 id=90 data-nosnippet>90</a>        <span class="prelude-val">Ok</span>(())
 <a href=#91 id=91 data-nosnippet>91</a>    }

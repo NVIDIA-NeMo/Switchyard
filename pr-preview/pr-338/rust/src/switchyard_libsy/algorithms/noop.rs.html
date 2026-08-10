@@ -32,11 +32,11 @@
 <a href=#32 id=32 data-nosnippet>32</a>            .requested_model()
 <a href=#33 id=33 data-nosnippet>33</a>            .unwrap_or(<span class="string">"switchyard/noop"</span>)
 <a href=#34 id=34 data-nosnippet>34</a>            .to_string();
-<a href=#35 id=35 data-nosnippet>35</a>        <span class="kw">let </span>decision: Arc&lt;Decision&gt; = Arc::new(Decision {
-<a href=#36 id=36 data-nosnippet>36</a>            selected_target_id: model.clone(),
-<a href=#37 id=37 data-nosnippet>37</a>            reasoning: <span class="prelude-val">Some</span>(<span class="string">"noop returned its synthetic response"</span>.to_string()),
-<a href=#38 id=38 data-nosnippet>38</a>            is_answer_call: <span class="bool-val">true</span>,
-<a href=#39 id=39 data-nosnippet>39</a>        });
+<a href=#35 id=35 data-nosnippet>35</a>        <span class="kw">let </span>decision: Arc&lt;Decision&gt; = Arc::new(Decision::new(
+<a href=#36 id=36 data-nosnippet>36</a>            model.clone(),
+<a href=#37 id=37 data-nosnippet>37</a>            <span class="prelude-val">Some</span>(<span class="string">"noop returned its synthetic response"</span>.to_string()),
+<a href=#38 id=38 data-nosnippet>38</a>            <span class="bool-val">true</span>,
+<a href=#39 id=39 data-nosnippet>39</a>        ));
 <a href=#40 id=40 data-nosnippet>40</a>        driver.info(ctx, decision.clone()).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#41 id=41 data-nosnippet>41</a>
 <a href=#42 id=42 data-nosnippet>42</a>        <span class="kw">let </span>llm_response = LlmResponse::Agg(AggLlmResponse {
@@ -86,7 +86,7 @@
 <a href=#86 id=86 data-nosnippet>86</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(decision) = decisions.first() <span class="kw">else </span>{
 <a href=#87 id=87 data-nosnippet>87</a>            <span class="macro">panic!</span>(<span class="string">"Expected exactly one Decision"</span>);
 <a href=#88 id=88 data-nosnippet>88</a>        };
-<a href=#89 id=89 data-nosnippet>89</a>        <span class="macro">assert_eq!</span>(decision.selected_target_id(), TEST_MODEL);
+<a href=#89 id=89 data-nosnippet>89</a>        <span class="macro">assert_eq!</span>(decision.selected_model_id(), TEST_MODEL);
 <a href=#90 id=90 data-nosnippet>90</a>        <span class="macro">assert!</span>(decision.is_answer_call());
 <a href=#91 id=91 data-nosnippet>91</a>        <span class="macro">assert_eq!</span>(response.selected_model(), <span class="prelude-val">Some</span>(TEST_MODEL));
 <a href=#92 id=92 data-nosnippet>92</a>        <span class="prelude-val">Ok</span>(())

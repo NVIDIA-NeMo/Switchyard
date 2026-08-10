@@ -248,7 +248,7 @@
 <a href=#248 id=248 data-nosnippet>248</a>            <span class="string">"only/model"
 <a href=#249 id=249 data-nosnippet>249</a>        </span>);
 <a href=#250 id=250 data-nosnippet>250</a>        <span class="macro">assert_eq!</span>(trace.len(), <span class="number">1</span>);
-<a href=#251 id=251 data-nosnippet>251</a>        <span class="macro">assert_eq!</span>(trace[<span class="number">0</span>].selected_target_id(), <span class="string">"only/model"</span>);
+<a href=#251 id=251 data-nosnippet>251</a>        <span class="macro">assert_eq!</span>(trace[<span class="number">0</span>].selected_model_id(), <span class="string">"only/model"</span>);
 <a href=#252 id=252 data-nosnippet>252</a>        <span class="prelude-val">Ok</span>(())
 <a href=#253 id=253 data-nosnippet>253</a>    }
 <a href=#254 id=254 data-nosnippet>254</a>
@@ -269,7 +269,7 @@
 <a href=#269 id=269 data-nosnippet>269</a>                names.contains(<span class="kw-2">&amp;</span>selected.as_str()),
 <a href=#270 id=270 data-nosnippet>270</a>                <span class="string">"selected {selected} not in target set"
 <a href=#271 id=271 data-nosnippet>271</a>            </span>);
-<a href=#272 id=272 data-nosnippet>272</a>            <span class="macro">assert_eq!</span>(trace[<span class="number">0</span>].selected_target_id(), selected.as_str());
+<a href=#272 id=272 data-nosnippet>272</a>            <span class="macro">assert_eq!</span>(trace[<span class="number">0</span>].selected_model_id(), selected.as_str());
 <a href=#273 id=273 data-nosnippet>273</a>        }
 <a href=#274 id=274 data-nosnippet>274</a>        <span class="prelude-val">Ok</span>(())
 <a href=#275 id=275 data-nosnippet>275</a>    }
@@ -431,7 +431,7 @@
 <a href=#431 id=431 data-nosnippet>431</a>        <span class="kw">let </span>(trace, <span class="kw">_</span>) = test_drive(algorithm, Context::default(), request(), echo()).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#432 id=432 data-nosnippet>432</a>        <span class="kw">let </span>decision = <span class="kw-2">&amp;</span>trace[<span class="number">0</span>];
 <a href=#433 id=433 data-nosnippet>433</a>
-<a href=#434 id=434 data-nosnippet>434</a>        <span class="macro">assert_eq!</span>(decision.selected_target_id(), <span class="string">"only/model"</span>);
+<a href=#434 id=434 data-nosnippet>434</a>        <span class="macro">assert_eq!</span>(decision.selected_model_id(), <span class="string">"only/model"</span>);
 <a href=#435 id=435 data-nosnippet>435</a>        <span class="macro">assert!</span>(
 <a href=#436 id=436 data-nosnippet>436</a>            decision
 <a href=#437 id=437 data-nosnippet>437</a>                .reasoning()

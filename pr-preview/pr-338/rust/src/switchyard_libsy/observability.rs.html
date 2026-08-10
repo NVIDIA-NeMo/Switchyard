@@ -290,7 +290,7 @@
 <a href=#290 id=290 data-nosnippet>290</a>/// structured debug event carrying the decision's reasoning.
 <a href=#291 id=291 data-nosnippet>291</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>record_decision(ctx: <span class="kw-2">&amp;</span>Context, decision: <span class="kw-2">&amp;</span>Decision) {
 <a href=#292 id=292 data-nosnippet>292</a>    <span class="kw">let </span>algorithm = algorithm_label(ctx);
-<a href=#293 id=293 data-nosnippet>293</a>    <span class="kw">let </span>selected_model = decision.selected_target_id();
+<a href=#293 id=293 data-nosnippet>293</a>    <span class="kw">let </span>selected_model = decision.selected_model_id();
 <a href=#294 id=294 data-nosnippet>294</a>    <span class="macro">tracing::debug!</span>(
 <a href=#295 id=295 data-nosnippet>295</a>        target: TRACING_TARGET,
 <a href=#296 id=296 data-nosnippet>296</a>        algorithm,
