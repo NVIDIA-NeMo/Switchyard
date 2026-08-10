@@ -191,3 +191,93 @@ fn round4(value: f64) -> f64 {
     let rounded = (value * 10_000.0).round() / 10_000.0;
     if rounded == 0.0 { 0.0 } else { rounded }
 }
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::KeyValue;
+    use opentelemetry::metrics::MeterProvider as _;
+    use opentelemetry_sdk::metrics::SdkMeterProvider;
+    use prometheus::Registry;
+
+    use super::*;
+    use crate::stats::algorithm::{AlgorithmStats, STAGE_ROUTER};
+
+    #[test]
+    fn stage_router_projection_preserves_decisions_scores_and_reset_baseline() {
+        let registry = Registry::new();
+        let exporter = opentelemetry_prometheus::exporter()
+            .with_registry(registry.clone())
+            .build()
+            .unwrap_or_else(|error| panic!("failed to build metrics exporter: {error}"));
+        let provider = SdkMeterProvider::builder().with_reader(exporter).build();
+        let meter = provider.meter("switchyard");
+        let stats = AlgorithmStats::new(registry, [STAGE_ROUTER.to_string()]);
+
+        meter
+            .u64_counter("switchyard.stage_router.routing_decisions")
+            .build()
+            .add(
+                2,
+                &[
+                    KeyValue::new("decision_source", "dimensions"),
+                    KeyValue::new("target_name", "model/efficient"),
+                ],
+            );
+        meter
+            .u64_counter("switchyard.stage_router.routing_decisions")
+            .build()
+            .add(
+                1,
+                &[
+                    KeyValue::new("decision_source", "dimensions"),
+                    KeyValue::new("target_name", "model/capable"),
+                ],
+            );
+        for value in [0.5, -0.25] {
+            meter
+                .f64_histogram("switchyard.stage_router.score")
+                .build()
+                .record(value, &[]);
+        }
+        meter
+            .f64_histogram("switchyard.stage_router.confidence")
+            .build()
+            .record(0.75, &[]);
+
+        let snapshot = stats.snapshot();
+        let stage = snapshot
+            .stage_router
+            .unwrap_or_else(|| panic!("stage-router stats missing"));
+        let dimensions = &stage.routing_decisions["dimensions"];
+        assert_eq!(dimensions.total, 3);
+        assert_eq!(dimensions.targets["model/efficient"], 2);
+        assert_eq!(dimensions.targets["model/capable"], 1);
+        assert_eq!(stage.scoring.score.count, 2);
+        assert_eq!(stage.scoring.score.sum, 0.25);
+        assert_eq!(stage.scoring.score.avg, 0.125);
+        assert_eq!(stage.scoring.confidence.avg, 0.75);
+
+        stats.reset();
+        assert_eq!(
+            stats.snapshot().stage_router,
+            Some(StageRouterStatsSnapshot::default())
+        );
+
+        meter
+            .u64_counter("switchyard.stage_router.routing_decisions")
+            .build()
+            .add(
+                1,
+                &[
+                    KeyValue::new("decision_source", "override"),
+                    KeyValue::new("target_name", "model/capable"),
+                ],
+            );
+        let after_reset = stats
+            .snapshot()
+            .stage_router
+            .unwrap_or_else(|| panic!("stage-router stats missing after reset"));
+        assert_eq!(after_reset.routing_decisions["override"].total, 1);
+        assert!(!after_reset.routing_decisions.contains_key("dimensions"));
+    }
+}
