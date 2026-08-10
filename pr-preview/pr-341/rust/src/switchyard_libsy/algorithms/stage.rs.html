@@ -22,7 +22,7 @@
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">super</span>::util::prompts::{SystemPromptProcessor, TargetPrompts};
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span><span class="kw">super</span>::util::stage::{
 <a href=#24 id=24 data-nosnippet>24</a>    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
-<a href=#25 id=25 data-nosnippet>25</a>    record_decision_source,
+<a href=#25 id=25 data-nosnippet>25</a>    record_decision_source, record_routing_decision,
 <a href=#26 id=26 data-nosnippet>26</a>};
 <a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span><span class="kw">super</span>::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 <a href=#28 id=28 data-nosnippet>28</a><span class="kw">use </span><span class="kw">crate</span>::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
@@ -57,132 +57,132 @@
 <a href=#57 id=57 data-nosnippet>57</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
 <a href=#58 id=58 data-nosnippet>58</a>        <span class="kw">let </span>(classification, served) = <span class="self">self</span>.inner.score(state, request, driver).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#59 id=59 data-nosnippet>59</a>        <span class="comment">// An abstaining classifier passes the turn on, so it is not its to claim.
-<a href=#60 id=60 data-nosnippet>60</a>        </span><span class="kw">if </span><span class="macro">matches!</span>(<span class="kw-2">&amp;</span>classification, Classification::Scores(scores) <span class="kw">if </span>!scores.is_empty()) {
+<a href=#60 id=60 data-nosnippet>60</a>        </span><span class="kw">if let </span><span class="prelude-val">Some</span>(winner) = classification.argmax(<span class="bool-val">false</span>)<span class="question-mark">? </span>{
 <a href=#61 id=61 data-nosnippet>61</a>            record_decision_source(state, <span class="self">self</span>.source);
-<a href=#62 id=62 data-nosnippet>62</a>        }
-<a href=#63 id=63 data-nosnippet>63</a>        <span class="prelude-val">Ok</span>((classification, served))
-<a href=#64 id=64 data-nosnippet>64</a>    }
-<a href=#65 id=65 data-nosnippet>65</a>}
-<a href=#66 id=66 data-nosnippet>66</a>
-<a href=#67 id=67 data-nosnippet>67</a><span class="doccomment">/// The capability judge a stage router falls through to.
-<a href=#68 id=68 data-nosnippet>68</a></span><span class="kw">pub struct </span>LlmFallback {
-<a href=#69 id=69 data-nosnippet>69</a>    <span class="doccomment">/// Target the judge model is called through. It is not a routing
-<a href=#70 id=70 data-nosnippet>70</a>    /// destination, so it does not belong in the router's target set.
-<a href=#71 id=71 data-nosnippet>71</a>    </span><span class="kw">pub </span>judge_target: LlmTarget,
-<a href=#72 id=72 data-nosnippet>72</a>    <span class="doccomment">/// Judge configuration. `recent_turn_window` is worth setting to this router's
-<a href=#73 id=73 data-nosnippet>73</a>    /// `recent_window` so the judge reads the same span the signal scorer scored.
-<a href=#74 id=74 data-nosnippet>74</a>    /// Note: `session_affinity` and `message_hash_fallback` have no effect here —
-<a href=#75 id=75 data-nosnippet>75</a>    /// the judge runs as a cascade classifier, not a standalone algorithm.
-<a href=#76 id=76 data-nosnippet>76</a>    </span><span class="kw">pub </span>config: TaskClassifierConfig,
-<a href=#77 id=77 data-nosnippet>77</a>}
-<a href=#78 id=78 data-nosnippet>78</a>
-<a href=#79 id=79 data-nosnippet>79</a><span class="doccomment">/// How a stage router scores turns, and what it hands the model it picks.
-<a href=#80 id=80 data-nosnippet>80</a></span><span class="kw">pub struct </span>StageRouterConfig {
-<a href=#81 id=81 data-nosnippet>81</a>    <span class="doccomment">/// Tier a turn falls open to when the scorer is not confident.
-<a href=#82 id=82 data-nosnippet>82</a>    </span><span class="kw">pub </span>mode: PickerMode,
-<a href=#83 id=83 data-nosnippet>83</a>    <span class="doccomment">/// How much corroboration a decisive pick needs, in `[0.0, 1.0]`.
-<a href=#84 id=84 data-nosnippet>84</a>    </span><span class="kw">pub </span>confidence_threshold: f64,
-<a href=#85 id=85 data-nosnippet>85</a>    <span class="doccomment">/// Trailing tool results the signals are computed over. `None` uses
-<a href=#86 id=86 data-nosnippet>86</a>    /// [`DEFAULT_RECENT_WINDOW`].
-<a href=#87 id=87 data-nosnippet>87</a>    </span><span class="kw">pub </span>recent_window: <span class="prelude-ty">Option</span>&lt;usize&gt;,
-<a href=#88 id=88 data-nosnippet>88</a>    <span class="doccomment">/// Note handed to the model on a signal-driven escalation, and on a
-<a href=#89 id=89 data-nosnippet>89</a>    /// hand-back to the efficient tier when a de-escalation note is configured.
-<a href=#90 id=90 data-nosnippet>90</a>    </span><span class="kw">pub </span>handoff_notes: <span class="prelude-ty">Option</span>&lt;HandoffNoteConfig&gt;,
-<a href=#91 id=91 data-nosnippet>91</a>    <span class="doccomment">/// System prompts keyed by target, handed over on every turn that target
-<a href=#92 id=92 data-nosnippet>92</a>    /// serves. Empty by default.
-<a href=#93 id=93 data-nosnippet>93</a>    </span><span class="kw">pub </span>tier_prompts: TargetPrompts,
-<a href=#94 id=94 data-nosnippet>94</a>    <span class="doccomment">/// Capability judge consulted on turns the signals leave undecided — the
-<a href=#95 id=95 data-nosnippet>95</a>    /// judge's own target, plus the same configuration the standalone capability
-<a href=#96 id=96 data-nosnippet>96</a>    /// route takes.
-<a href=#97 id=97 data-nosnippet>97</a>    </span><span class="kw">pub </span>llm_fallback: <span class="prelude-ty">Option</span>&lt;LlmFallback&gt;,
-<a href=#98 id=98 data-nosnippet>98</a>}
-<a href=#99 id=99 data-nosnippet>99</a>
-<a href=#100 id=100 data-nosnippet>100</a><span class="kw">impl </span>StageRouterConfig {
-<a href=#101 id=101 data-nosnippet>101</a>    <span class="doccomment">/// The signal-only configuration: no notes, no per-tier prompts, no judge.
-<a href=#102 id=102 data-nosnippet>102</a>    /// Set the optional fields to add them.
-<a href=#103 id=103 data-nosnippet>103</a>    </span><span class="kw">pub fn </span>new(mode: PickerMode, confidence_threshold: f64) -&gt; <span class="self">Self </span>{
-<a href=#104 id=104 data-nosnippet>104</a>        <span class="self">Self </span>{
-<a href=#105 id=105 data-nosnippet>105</a>            mode,
-<a href=#106 id=106 data-nosnippet>106</a>            confidence_threshold,
-<a href=#107 id=107 data-nosnippet>107</a>            recent_window: <span class="prelude-val">None</span>,
-<a href=#108 id=108 data-nosnippet>108</a>            handoff_notes: <span class="prelude-val">None</span>,
-<a href=#109 id=109 data-nosnippet>109</a>            tier_prompts: TargetPrompts::default(),
-<a href=#110 id=110 data-nosnippet>110</a>            llm_fallback: <span class="prelude-val">None</span>,
-<a href=#111 id=111 data-nosnippet>111</a>        }
-<a href=#112 id=112 data-nosnippet>112</a>    }
-<a href=#113 id=113 data-nosnippet>113</a>}
-<a href=#114 id=114 data-nosnippet>114</a>
-<a href=#115 id=115 data-nosnippet>115</a><span class="doccomment">/// Routes coding-agent turns between a capable and an efficient tier: tool signals
-<a href=#116 id=116 data-nosnippet>116</a>/// decide first, an optional capability judge takes the turns they cannot, and
-<a href=#117 id=117 data-nosnippet>117</a>/// the picker's default tier closes the cascade so a turn is never left unrouted.
-<a href=#118 id=118 data-nosnippet>118</a></span><span class="kw">pub struct </span>StageRouter {
-<a href=#119 id=119 data-nosnippet>119</a>    route: FallThrough&lt;State&gt;,
-<a href=#120 id=120 data-nosnippet>120</a>}
-<a href=#121 id=121 data-nosnippet>121</a>
-<a href=#122 id=122 data-nosnippet>122</a><span class="kw">impl </span>StageRouter {
-<a href=#123 id=123 data-nosnippet>123</a>    <span class="doccomment">/// Routes between the `capable` and `efficient` targets. The
-<a href=#124 id=124 data-nosnippet>124</a>    /// judge, when configured, is called through its own target and is not a
-<a href=#125 id=125 data-nosnippet>125</a>    /// routing destination.
-<a href=#126 id=126 data-nosnippet>126</a>    ///
-<a href=#127 id=127 data-nosnippet>127</a>    /// Errors if either threshold in `config` is outside `[0.0, 1.0]`.
-<a href=#128 id=128 data-nosnippet>128</a>    </span><span class="kw">pub fn </span>new(
-<a href=#129 id=129 data-nosnippet>129</a>        capable: LlmTarget,
-<a href=#130 id=130 data-nosnippet>130</a>        efficient: LlmTarget,
-<a href=#131 id=131 data-nosnippet>131</a>        config: StageRouterConfig,
-<a href=#132 id=132 data-nosnippet>132</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>&gt; {
-<a href=#133 id=133 data-nosnippet>133</a>        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
-<a href=#134 id=134 data-nosnippet>134</a>            route: build_route(capable, efficient, config)<span class="question-mark">?</span>,
-<a href=#135 id=135 data-nosnippet>135</a>        })
-<a href=#136 id=136 data-nosnippet>136</a>    }
-<a href=#137 id=137 data-nosnippet>137</a>}
-<a href=#138 id=138 data-nosnippet>138</a>
-<a href=#139 id=139 data-nosnippet>139</a><span class="attr">#[async_trait]
-<a href=#140 id=140 data-nosnippet>140</a></span><span class="kw">impl </span>Algorithm <span class="kw">for </span>StageRouter {
-<a href=#141 id=141 data-nosnippet>141</a>    <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#142 id=142 data-nosnippet>142</a>        STAGE_ROUTER
-<a href=#143 id=143 data-nosnippet>143</a>    }
-<a href=#144 id=144 data-nosnippet>144</a>
-<a href=#145 id=145 data-nosnippet>145</a>    <span class="kw">async fn </span>create_run_task(
-<a href=#146 id=146 data-nosnippet>146</a>        <span class="self">self</span>: Arc&lt;<span class="self">Self</span>&gt;,
-<a href=#147 id=147 data-nosnippet>147</a>        driver: Driver,
-<a href=#148 id=148 data-nosnippet>148</a>        request: Request,
-<a href=#149 id=149 data-nosnippet>149</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;Response&gt; {
-<a href=#150 id=150 data-nosnippet>150</a>        <span class="self">self</span>.route.execute(driver, request).<span class="kw">await
-<a href=#151 id=151 data-nosnippet>151</a>    </span>}
-<a href=#152 id=152 data-nosnippet>152</a>}
-<a href=#153 id=153 data-nosnippet>153</a>
-<a href=#154 id=154 data-nosnippet>154</a><span class="doccomment">/// Wires the cascade the wrapper drives.
-<a href=#155 id=155 data-nosnippet>155</a></span><span class="kw">fn </span>build_route(
-<a href=#156 id=156 data-nosnippet>156</a>    capable: LlmTarget,
-<a href=#157 id=157 data-nosnippet>157</a>    efficient: LlmTarget,
-<a href=#158 id=158 data-nosnippet>158</a>    config: StageRouterConfig,
-<a href=#159 id=159 data-nosnippet>159</a>) -&gt; <span class="prelude-ty">Result</span>&lt;FallThrough&lt;State&gt;&gt; {
-<a href=#160 id=160 data-nosnippet>160</a>    <span class="kw">if </span>!(<span class="number">0.0</span>..=<span class="number">1.0</span>).contains(<span class="kw-2">&amp;</span>config.confidence_threshold) {
-<a href=#161 id=161 data-nosnippet>161</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::AlgorithmError {
-<a href=#162 id=162 data-nosnippet>162</a>            message: <span class="macro">format!</span>(
-<a href=#163 id=163 data-nosnippet>163</a>                <span class="string">"confidence_threshold must be between 0 and 1, got {}"</span>,
-<a href=#164 id=164 data-nosnippet>164</a>                config.confidence_threshold
-<a href=#165 id=165 data-nosnippet>165</a>            ),
-<a href=#166 id=166 data-nosnippet>166</a>        });
-<a href=#167 id=167 data-nosnippet>167</a>    }
-<a href=#168 id=168 data-nosnippet>168</a>    <span class="comment">// The tiers are a fixed pair; their targets are whatever the deployment calls
-<a href=#169 id=169 data-nosnippet>169</a>    // them, and the classifier scores onto those names.
-<a href=#170 id=170 data-nosnippet>170</a>    </span><span class="kw">let </span>targets = StageTargets::new(
-<a href=#171 id=171 data-nosnippet>171</a>        capable.semantic_name.clone(),
-<a href=#172 id=172 data-nosnippet>172</a>        efficient.semantic_name.clone(),
-<a href=#173 id=173 data-nosnippet>173</a>    );
-<a href=#174 id=174 data-nosnippet>174</a>    <span class="comment">// The picker's mode fixes the fallback tier up front, so the terminal
-<a href=#175 id=175 data-nosnippet>175</a>    // classifier is a constant rather than a per-turn lookup.
-<a href=#176 id=176 data-nosnippet>176</a>    </span><span class="kw">let </span>fall_open = targets.name(config.mode.default_tier()).to_string();
-<a href=#177 id=177 data-nosnippet>177</a>
-<a href=#178 id=178 data-nosnippet>178</a>    <span class="kw">let </span><span class="kw-2">mut </span>classifier = StageClassifier::new(targets, config.mode, config.confidence_threshold);
-<a href=#179 id=179 data-nosnippet>179</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(notes) = config.handoff_notes {
-<a href=#180 id=180 data-nosnippet>180</a>        classifier = classifier.with_handoff_notes(notes);
-<a href=#181 id=181 data-nosnippet>181</a>    }
-<a href=#182 id=182 data-nosnippet>182</a>    <span class="kw">let </span>signals = ToolSignalProcessor {
-<a href=#183 id=183 data-nosnippet>183</a>        recent_window: config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW),
-<a href=#184 id=184 data-nosnippet>184</a>    };
-<a href=#185 id=185 data-nosnippet>185</a>
+<a href=#62 id=62 data-nosnippet>62</a>            record_routing_decision(<span class="self">self</span>.source, <span class="kw-2">&amp;</span>winner.target);
+<a href=#63 id=63 data-nosnippet>63</a>        }
+<a href=#64 id=64 data-nosnippet>64</a>        <span class="prelude-val">Ok</span>((classification, served))
+<a href=#65 id=65 data-nosnippet>65</a>    }
+<a href=#66 id=66 data-nosnippet>66</a>}
+<a href=#67 id=67 data-nosnippet>67</a>
+<a href=#68 id=68 data-nosnippet>68</a><span class="doccomment">/// The capability judge a stage router falls through to.
+<a href=#69 id=69 data-nosnippet>69</a></span><span class="kw">pub struct </span>LlmFallback {
+<a href=#70 id=70 data-nosnippet>70</a>    <span class="doccomment">/// Target the judge model is called through. It is not a routing
+<a href=#71 id=71 data-nosnippet>71</a>    /// destination, so it does not belong in the router's target set.
+<a href=#72 id=72 data-nosnippet>72</a>    </span><span class="kw">pub </span>judge_target: LlmTarget,
+<a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// Judge configuration. `recent_turn_window` is worth setting to this router's
+<a href=#74 id=74 data-nosnippet>74</a>    /// `recent_window` so the judge reads the same span the signal scorer scored.
+<a href=#75 id=75 data-nosnippet>75</a>    /// Note: `session_affinity` and `message_hash_fallback` have no effect here —
+<a href=#76 id=76 data-nosnippet>76</a>    /// the judge runs as a cascade classifier, not a standalone algorithm.
+<a href=#77 id=77 data-nosnippet>77</a>    </span><span class="kw">pub </span>config: TaskClassifierConfig,
+<a href=#78 id=78 data-nosnippet>78</a>}
+<a href=#79 id=79 data-nosnippet>79</a>
+<a href=#80 id=80 data-nosnippet>80</a><span class="doccomment">/// How a stage router scores turns, and what it hands the model it picks.
+<a href=#81 id=81 data-nosnippet>81</a></span><span class="kw">pub struct </span>StageRouterConfig {
+<a href=#82 id=82 data-nosnippet>82</a>    <span class="doccomment">/// Tier a turn falls open to when the scorer is not confident.
+<a href=#83 id=83 data-nosnippet>83</a>    </span><span class="kw">pub </span>mode: PickerMode,
+<a href=#84 id=84 data-nosnippet>84</a>    <span class="doccomment">/// How much corroboration a decisive pick needs, in `[0.0, 1.0]`.
+<a href=#85 id=85 data-nosnippet>85</a>    </span><span class="kw">pub </span>confidence_threshold: f64,
+<a href=#86 id=86 data-nosnippet>86</a>    <span class="doccomment">/// Trailing tool results the signals are computed over. `None` uses
+<a href=#87 id=87 data-nosnippet>87</a>    /// [`DEFAULT_RECENT_WINDOW`].
+<a href=#88 id=88 data-nosnippet>88</a>    </span><span class="kw">pub </span>recent_window: <span class="prelude-ty">Option</span>&lt;usize&gt;,
+<a href=#89 id=89 data-nosnippet>89</a>    <span class="doccomment">/// Note handed to the model on a signal-driven escalation, and on a
+<a href=#90 id=90 data-nosnippet>90</a>    /// hand-back to the efficient tier when a de-escalation note is configured.
+<a href=#91 id=91 data-nosnippet>91</a>    </span><span class="kw">pub </span>handoff_notes: <span class="prelude-ty">Option</span>&lt;HandoffNoteConfig&gt;,
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="doccomment">/// System prompts keyed by target, handed over on every turn that target
+<a href=#93 id=93 data-nosnippet>93</a>    /// serves. Empty by default.
+<a href=#94 id=94 data-nosnippet>94</a>    </span><span class="kw">pub </span>tier_prompts: TargetPrompts,
+<a href=#95 id=95 data-nosnippet>95</a>    <span class="doccomment">/// Capability judge consulted on turns the signals leave undecided — the
+<a href=#96 id=96 data-nosnippet>96</a>    /// judge's own target, plus the same configuration the standalone capability
+<a href=#97 id=97 data-nosnippet>97</a>    /// route takes.
+<a href=#98 id=98 data-nosnippet>98</a>    </span><span class="kw">pub </span>llm_fallback: <span class="prelude-ty">Option</span>&lt;LlmFallback&gt;,
+<a href=#99 id=99 data-nosnippet>99</a>}
+<a href=#100 id=100 data-nosnippet>100</a>
+<a href=#101 id=101 data-nosnippet>101</a><span class="kw">impl </span>StageRouterConfig {
+<a href=#102 id=102 data-nosnippet>102</a>    <span class="doccomment">/// The signal-only configuration: no notes, no per-tier prompts, no judge.
+<a href=#103 id=103 data-nosnippet>103</a>    /// Set the optional fields to add them.
+<a href=#104 id=104 data-nosnippet>104</a>    </span><span class="kw">pub fn </span>new(mode: PickerMode, confidence_threshold: f64) -&gt; <span class="self">Self </span>{
+<a href=#105 id=105 data-nosnippet>105</a>        <span class="self">Self </span>{
+<a href=#106 id=106 data-nosnippet>106</a>            mode,
+<a href=#107 id=107 data-nosnippet>107</a>            confidence_threshold,
+<a href=#108 id=108 data-nosnippet>108</a>            recent_window: <span class="prelude-val">None</span>,
+<a href=#109 id=109 data-nosnippet>109</a>            handoff_notes: <span class="prelude-val">None</span>,
+<a href=#110 id=110 data-nosnippet>110</a>            tier_prompts: TargetPrompts::default(),
+<a href=#111 id=111 data-nosnippet>111</a>            llm_fallback: <span class="prelude-val">None</span>,
+<a href=#112 id=112 data-nosnippet>112</a>        }
+<a href=#113 id=113 data-nosnippet>113</a>    }
+<a href=#114 id=114 data-nosnippet>114</a>}
+<a href=#115 id=115 data-nosnippet>115</a>
+<a href=#116 id=116 data-nosnippet>116</a><span class="doccomment">/// Routes coding-agent turns between a capable and an efficient tier: tool signals
+<a href=#117 id=117 data-nosnippet>117</a>/// decide first, an optional capability judge takes the turns they cannot, and
+<a href=#118 id=118 data-nosnippet>118</a>/// the picker's default tier closes the cascade so a turn is never left unrouted.
+<a href=#119 id=119 data-nosnippet>119</a></span><span class="kw">pub struct </span>StageRouter {
+<a href=#120 id=120 data-nosnippet>120</a>    route: FallThrough&lt;State&gt;,
+<a href=#121 id=121 data-nosnippet>121</a>}
+<a href=#122 id=122 data-nosnippet>122</a>
+<a href=#123 id=123 data-nosnippet>123</a><span class="kw">impl </span>StageRouter {
+<a href=#124 id=124 data-nosnippet>124</a>    <span class="doccomment">/// Routes between the `capable` and `efficient` targets. The
+<a href=#125 id=125 data-nosnippet>125</a>    /// judge, when configured, is called through its own target and is not a
+<a href=#126 id=126 data-nosnippet>126</a>    /// routing destination.
+<a href=#127 id=127 data-nosnippet>127</a>    ///
+<a href=#128 id=128 data-nosnippet>128</a>    /// Errors if either threshold in `config` is outside `[0.0, 1.0]`.
+<a href=#129 id=129 data-nosnippet>129</a>    </span><span class="kw">pub fn </span>new(
+<a href=#130 id=130 data-nosnippet>130</a>        capable: LlmTarget,
+<a href=#131 id=131 data-nosnippet>131</a>        efficient: LlmTarget,
+<a href=#132 id=132 data-nosnippet>132</a>        config: StageRouterConfig,
+<a href=#133 id=133 data-nosnippet>133</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>&gt; {
+<a href=#134 id=134 data-nosnippet>134</a>        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
+<a href=#135 id=135 data-nosnippet>135</a>            route: build_route(capable, efficient, config)<span class="question-mark">?</span>,
+<a href=#136 id=136 data-nosnippet>136</a>        })
+<a href=#137 id=137 data-nosnippet>137</a>    }
+<a href=#138 id=138 data-nosnippet>138</a>}
+<a href=#139 id=139 data-nosnippet>139</a>
+<a href=#140 id=140 data-nosnippet>140</a><span class="attr">#[async_trait]
+<a href=#141 id=141 data-nosnippet>141</a></span><span class="kw">impl </span>Algorithm <span class="kw">for </span>StageRouter {
+<a href=#142 id=142 data-nosnippet>142</a>    <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#143 id=143 data-nosnippet>143</a>        STAGE_ROUTER
+<a href=#144 id=144 data-nosnippet>144</a>    }
+<a href=#145 id=145 data-nosnippet>145</a>
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="kw">async fn </span>create_run_task(
+<a href=#147 id=147 data-nosnippet>147</a>        <span class="self">self</span>: Arc&lt;<span class="self">Self</span>&gt;,
+<a href=#148 id=148 data-nosnippet>148</a>        driver: Driver,
+<a href=#149 id=149 data-nosnippet>149</a>        request: Request,
+<a href=#150 id=150 data-nosnippet>150</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;Response&gt; {
+<a href=#151 id=151 data-nosnippet>151</a>        <span class="self">self</span>.route.execute(driver, request).<span class="kw">await
+<a href=#152 id=152 data-nosnippet>152</a>    </span>}
+<a href=#153 id=153 data-nosnippet>153</a>}
+<a href=#154 id=154 data-nosnippet>154</a>
+<a href=#155 id=155 data-nosnippet>155</a><span class="doccomment">/// Wires the cascade the wrapper drives.
+<a href=#156 id=156 data-nosnippet>156</a></span><span class="kw">fn </span>build_route(
+<a href=#157 id=157 data-nosnippet>157</a>    capable: LlmTarget,
+<a href=#158 id=158 data-nosnippet>158</a>    efficient: LlmTarget,
+<a href=#159 id=159 data-nosnippet>159</a>    config: StageRouterConfig,
+<a href=#160 id=160 data-nosnippet>160</a>) -&gt; <span class="prelude-ty">Result</span>&lt;FallThrough&lt;State&gt;&gt; {
+<a href=#161 id=161 data-nosnippet>161</a>    <span class="kw">if </span>!(<span class="number">0.0</span>..=<span class="number">1.0</span>).contains(<span class="kw-2">&amp;</span>config.confidence_threshold) {
+<a href=#162 id=162 data-nosnippet>162</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::AlgorithmError {
+<a href=#163 id=163 data-nosnippet>163</a>            message: <span class="macro">format!</span>(
+<a href=#164 id=164 data-nosnippet>164</a>                <span class="string">"confidence_threshold must be between 0 and 1, got {}"</span>,
+<a href=#165 id=165 data-nosnippet>165</a>                config.confidence_threshold
+<a href=#166 id=166 data-nosnippet>166</a>            ),
+<a href=#167 id=167 data-nosnippet>167</a>        });
+<a href=#168 id=168 data-nosnippet>168</a>    }
+<a href=#169 id=169 data-nosnippet>169</a>    <span class="comment">// The tiers are a fixed pair; their targets are whatever the deployment calls
+<a href=#170 id=170 data-nosnippet>170</a>    // them, and the classifier scores onto those names.
+<a href=#171 id=171 data-nosnippet>171</a>    </span><span class="kw">let </span>targets = StageTargets::new(
+<a href=#172 id=172 data-nosnippet>172</a>        capable.semantic_name.clone(),
+<a href=#173 id=173 data-nosnippet>173</a>        efficient.semantic_name.clone(),
+<a href=#174 id=174 data-nosnippet>174</a>    );
+<a href=#175 id=175 data-nosnippet>175</a>    <span class="comment">// The picker's mode fixes the fallback tier up front, so the terminal
+<a href=#176 id=176 data-nosnippet>176</a>    // classifier is a constant rather than a per-turn lookup.
+<a href=#177 id=177 data-nosnippet>177</a>    </span><span class="kw">let </span>fall_open = targets.name(config.mode.default_tier()).to_string();
+<a href=#178 id=178 data-nosnippet>178</a>
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="kw">let </span><span class="kw-2">mut </span>classifier = StageClassifier::new(targets, config.mode, config.confidence_threshold);
+<a href=#180 id=180 data-nosnippet>180</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(notes) = config.handoff_notes {
+<a href=#181 id=181 data-nosnippet>181</a>        classifier = classifier.with_handoff_notes(notes);
+<a href=#182 id=182 data-nosnippet>182</a>    }
+<a href=#183 id=183 data-nosnippet>183</a>    <span class="kw">let </span>signals = ToolSignalProcessor {
+<a href=#184 id=184 data-nosnippet>184</a>        recent_window: config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW),
+<a href=#185 id=185 data-nosnippet>185</a>    };
 <a href=#186 id=186 data-nosnippet>186</a>    <span class="kw">let </span>target_set = LlmTargetSet::new(<span class="macro">vec!</span>[capable.clone(), efficient.clone()]);
 <a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">let </span><span class="kw-2">mut </span>router = FallThrough::&lt;State&gt;::new_with_state(target_set)
 <a href=#188 id=188 data-nosnippet>188</a>        .with_name(STAGE_ROUTER)

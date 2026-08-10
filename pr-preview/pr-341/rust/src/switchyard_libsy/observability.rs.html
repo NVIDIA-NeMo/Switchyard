@@ -52,7 +52,7 @@
 <a href=#52 id=52 data-nosnippet>52</a><span class="kw">static </span>TOTAL_GAUGES: OnceLock&lt;(ObservableGauge&lt;u64&gt;, ObservableGauge&lt;u64&gt;)&gt; = OnceLock::new();
 <a href=#53 id=53 data-nosnippet>53</a>
 <a href=#54 id=54 data-nosnippet>54</a><span class="doccomment">/// The `libsy`-scoped meter from the globally installed provider.
-<a href=#55 id=55 data-nosnippet>55</a></span><span class="kw">fn </span>meter() -&gt; Meter {
+<a href=#55 id=55 data-nosnippet>55</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>meter() -&gt; Meter {
 <a href=#56 id=56 data-nosnippet>56</a>    global::meter(METRICS_SCOPE)
 <a href=#57 id=57 data-nosnippet>57</a>}
 <a href=#58 id=58 data-nosnippet>58</a>
