@@ -127,7 +127,7 @@ where
         if let Event::Decision { request, decision } = event
             && let Some(key) = self.affinity_key(request)
         {
-            let model = decision.selected_model();
+            let model = decision.selected_target_id();
             let mut assignments = self.assignments.lock();
             if self.should_latch(model) && !assignments.contains_key(&key) {
                 evict_if_full(&mut assignments);
@@ -215,20 +215,11 @@ mod tests {
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
-    /// A decision that reports a fixed selected model.
-    struct FixedDecision(&'static str);
-
-    impl Decision for FixedDecision {
-        fn selected_model(&self) -> &str {
-            self.0
-        }
-
-        fn reasoning(&self) -> Option<&str> {
-            None
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
+    fn fixed_decision(target: &str) -> Decision {
+        Decision {
+            selected_target_id: target.to_string(),
+            reasoning: None,
+            is_answer_call: true,
         }
     }
 
@@ -289,12 +280,13 @@ mod tests {
         request: &mut Request,
         model: &'static str,
     ) -> Result<(), BoxErr> {
+        let decision = fixed_decision(model);
         router
             .process(
                 state,
                 Event::Decision {
                     request,
-                    decision: &FixedDecision(model),
+                    decision: &decision,
                 },
             )
             .await?;
@@ -562,7 +554,7 @@ mod tests {
                 &mut state,
                 Event::Decision {
                     request: &mut first,
-                    decision: &FixedDecision("model-a"),
+                    decision: &fixed_decision("model-a"),
                 },
             )
             .await?;
@@ -587,7 +579,7 @@ mod tests {
                 &mut state,
                 Event::Decision {
                     request: &mut unkeyed,
-                    decision: &FixedDecision("model-a"),
+                    decision: &fixed_decision("model-a"),
                 },
             )
             .await?;
@@ -611,7 +603,7 @@ mod tests {
                 &mut state,
                 Event::Decision {
                     request: &mut second,
-                    decision: &FixedDecision("model-b"),
+                    decision: &fixed_decision("model-b"),
                 },
             )
             .await?;
@@ -620,7 +612,7 @@ mod tests {
                 &mut state,
                 Event::Decision {
                     request: &mut first,
-                    decision: &FixedDecision("model-a"),
+                    decision: &fixed_decision("model-a"),
                 },
             )
             .await?;

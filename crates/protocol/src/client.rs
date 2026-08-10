@@ -120,7 +120,7 @@ pub enum RoutingFallbackReason {
 }
 
 impl RoutingFallbackReason {
-    /// Stable value used by logs and statistics.
+    /// Stable value embedded in routing reasoning.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ContextWindow => "context_window",
@@ -129,54 +129,31 @@ impl RoutingFallbackReason {
     }
 }
 
-/// A decision/trace object produced by an algorithm.
-///
-/// Carried as a trait object (not a generic parameter) so a stream consumer can
-/// inspect any algorithm's decision through this common interface without
-/// knowing the concrete type. `as_any` is the escape hatch for a consumer that
-/// *does* know the algo and wants to downcast to the concrete decision.
-pub trait Decision: Send + Sync {
-    /// The model this decision selected (e.g. the routed target's name).
-    fn selected_model(&self) -> &str;
-    /// Stable routing tier for the selected model, when the algorithm provides one.
-    fn routing_tier(&self) -> Option<&str> {
-        None
-    }
-    /// Whether this is the final call selected to serve the request.
-    fn is_routed_call(&self) -> bool {
-        true
-    }
-    /// Why this decision replaced an earlier selected target, when it did.
-    fn fallback_reason(&self) -> Option<RoutingFallbackReason> {
-        None
-    }
-    /// A human-readable explanation of the decision, for logs and traces.
-    fn reasoning(&self) -> Option<&str>;
-    /// Downcast handle: a consumer that knows the algorithm can recover the
-    /// concrete decision type via `as_any().downcast_ref::<ConcreteDecision>()`.
-    fn as_any(&self) -> &dyn std::any::Any;
-}
-
-/// A minimal [`Decision`] implementation for one-off calls that don't belong to a
-/// named algorithm step — judge side calls, classifier side calls, etc.
-pub struct SimpleDecision {
-    /// Model or semantic target selected for the call.
-    pub selected_model: String,
-    /// Optional explanation recorded with the call.
+/// A routing choice produced by an algorithm.
+#[derive(Clone, Debug)]
+pub struct Decision {
+    /// The target to call.
+    pub selected_target_id: String,
+    /// Why, for logs and traces.
     pub reasoning: Option<String>,
+    /// True for an answer-generating call. False for classifier and judge calls.
+    pub is_answer_call: bool,
 }
 
-impl Decision for SimpleDecision {
-    fn selected_model(&self) -> &str {
-        &self.selected_model
+impl Decision {
+    /// The target to call.
+    pub fn selected_target_id(&self) -> &str {
+        self.selected_target_id.as_str()
     }
 
-    fn reasoning(&self) -> Option<&str> {
+    /// Why this decision was made.
+    pub fn reasoning(&self) -> Option<&str> {
         self.reasoning.as_deref()
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    /// Whether this call generates an answer rather than a routing verdict.
+    pub fn is_answer_call(&self) -> bool {
+        self.is_answer_call
     }
 }
 
@@ -192,15 +169,15 @@ impl Decision for SimpleDecision {
 /// not serialize requests unless their transport requires it.
 #[async_trait]
 pub trait RoutedLlmClient: Send + Sync {
-    /// Serve the call, returning the model's response. Call the model named by
-    /// [`decision.selected_model()`](Decision::selected_model) — the target the algorithm
-    /// routed to — mapping it to whatever provider model id this client hits.
+    /// Serve the target identified by
+    /// [`decision.selected_target_id`](Decision::selected_target_id), mapping that target to
+    /// whichever provider model this client calls.
     /// `request.llm_request.model` is the agent's original name, carried through for
     /// reference, not a call target. `ctx` carries the request's cross-cutting state.
     async fn call(
         &self,
         ctx: Context,
         request: Request,
-        decision: Arc<dyn Decision>,
+        decision: Arc<Decision>,
     ) -> Result<Response, LlmClientError>;
 }

@@ -397,7 +397,7 @@ struct RequestStart(Instant);
 /// routing overhead from the routed tiers a session was served by.
 const CLASSIFIER_TIER: &str = "classifier";
 
-/// Maps routed call observations to backend stats, non-routed calls to classifier/judge
+/// Maps answer-call observations to backend stats, routing calls to classifier/judge
 /// stats, and records routing overhead once the algorithm run completes.
 ///
 /// Successful classifier/judge calls are also appended to `classifier_log` when one is
@@ -411,11 +411,11 @@ fn stats_observer(
     Arc::new(move |observation| match observation {
         RunObservation::LlmCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
-            if call.is_routed {
+            if call.is_answer_call {
                 if call.is_success {
-                    stats.record_success(&call.selected_model, latency_ms, call.tier.as_deref());
+                    stats.record_success(&call.selected_model, latency_ms, None);
                 } else {
-                    stats.record_error(&call.selected_model, call.tier.as_deref());
+                    stats.record_error(&call.selected_model, None);
                 }
             } else if call.is_success {
                 if let (Some((log, context)), Some(usage)) =
@@ -706,32 +706,22 @@ async fn handle_llm_request(
         Ok(result) => result,
         Err(error) => return algorithm_error(error),
     };
-    for reason in trace
-        .iter()
-        .filter_map(|decision| decision.fallback_reason())
-    {
-        state.stats.record_routing_fallback(reason);
-    }
-
     // Metrics, response body, and routing header all read the same decision, so
     // the model they name can never disagree. An empty trace leaves the body with
     // the id the upstream reported.
     let decision = trace.last();
     let response = if let Some(decision) = decision {
-        let routing_log_context = routing_log_context
-            .map(|context| context.with_fallback_reason(decision.fallback_reason()));
         let cache_eligible = cache_probe
             .as_ref()
             .map(|probe| {
                 state
                     .stats
-                    .prefix_eligibility(decision.selected_model(), probe)
+                    .prefix_eligibility(decision.selected_target_id(), probe)
             })
             .unwrap_or(0.0);
         usage_metrics::observe(
             response,
-            decision.selected_model(),
-            decision.routing_tier(),
+            decision.selected_target_id(),
             started.0,
             state.stats,
             cache_eligible,
@@ -741,7 +731,7 @@ async fn handle_llm_request(
         response
     };
 
-    let served_model = decision.map(|decision| decision.selected_model().to_string());
+    let served_model = decision.map(|decision| decision.selected_target_id().to_string());
     let mut response = match into_http_response(response, wire_format, served_model) {
         Ok(response) => response,
         Err(error) => return server_error(error.to_string()),
@@ -823,8 +813,12 @@ fn metadata_from_headers(headers: HeaderMap) -> Metadata {
     metadata
 }
 
-fn attach_routing_headers(response: &mut Response, decision: &dyn Decision) {
-    insert_routing_header(response, HEADER_SELECTED_MODEL, decision.selected_model());
+fn attach_routing_headers(response: &mut Response, decision: &Decision) {
+    insert_routing_header(
+        response,
+        HEADER_SELECTED_MODEL,
+        decision.selected_target_id(),
+    );
     if let Some(reasoning) = decision.reasoning() {
         insert_routing_header(response, HEADER_RATIONALE, reasoning);
     }
@@ -1335,11 +1329,10 @@ mod tests {
         let context = routing_log::RoutingLogContext::from_headers(&headers);
         let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
 
-        let call = |model: &str, is_routed: bool| {
+        let call = |model: &str, is_answer_call: bool| {
             RunObservation::LlmCall(LlmCallObservation {
                 selected_model: model.to_string(),
-                tier: None,
-                is_routed,
+                is_answer_call,
                 is_success: true,
                 duration: Duration::from_millis(3),
                 usage: Some(Usage {

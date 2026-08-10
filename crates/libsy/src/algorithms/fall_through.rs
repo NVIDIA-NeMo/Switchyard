@@ -51,38 +51,6 @@ const SESSION_STATE_TTL: Duration = Duration::from_secs(60 * 60);
 /// Run the expired session cleanup code this often.
 const SESSION_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// The decision a fall-through run produces: the selected model plus a human-readable reason.
-pub struct FallThroughDecision {
-    /// Target selected by the classifier cascade.
-    pub selected_model: String,
-    /// Human-readable explanation of the selection.
-    pub reasoning: String,
-    tier: Option<&'static str>,
-    fallback_reason: Option<RoutingFallbackReason>,
-}
-
-impl Decision for FallThroughDecision {
-    fn selected_model(&self) -> &str {
-        &self.selected_model
-    }
-
-    fn routing_tier(&self) -> Option<&str> {
-        self.tier
-    }
-
-    fn fallback_reason(&self) -> Option<RoutingFallbackReason> {
-        self.fallback_reason
-    }
-
-    fn reasoning(&self) -> Option<&str> {
-        Some(&self.reasoning)
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
 /// Terminal classifier for a cascade whose classifiers may all abstain.
 ///
 /// A classifier abstains when it cannot decide, which lets the next one try. The
@@ -298,19 +266,23 @@ where
         from: &LlmTarget,
         to: &LlmTarget,
         reason: RoutingFallbackReason,
-    ) -> Arc<dyn Decision> {
+    ) -> Arc<Decision> {
         let failure = match reason {
             RoutingFallbackReason::ContextWindow => "exceeded its context window",
             RoutingFallbackReason::Unavailable => "was unavailable",
         };
-        Arc::new(FallThroughDecision {
-            selected_model: to.semantic_name.clone(),
-            reasoning: format!(
-                "{} {failure}; fell back to {}",
-                from.semantic_name, to.semantic_name,
-            ),
-            tier: deciding.routing_tier(&to.semantic_name),
-            fallback_reason: Some(reason),
+        Arc::new(Decision {
+            selected_target_id: to.semantic_name.clone(),
+            reasoning: Some(with_routing_tier(
+                format!(
+                    "{} {failure}; fell back to {} (fallback reason: {})",
+                    from.semantic_name,
+                    to.semantic_name,
+                    reason.as_str(),
+                ),
+                deciding.routing_tier(&to.semantic_name),
+            )),
+            is_answer_call: true,
         })
     }
 
@@ -336,7 +308,7 @@ where
         request: &mut Request,
     ) -> Result<(
         LlmTarget,
-        Arc<dyn Decision>,
+        Arc<Decision>,
         Option<Response>,
         Arc<dyn Classifier<S>>,
     )> {
@@ -364,7 +336,7 @@ where
         };
 
         // 3. Resolve the target and publish the decision. When an excluded target sends
-        //    the request elsewhere, the tier and reasoning describe where it actually went.
+        //    the request elsewhere, the reasoning describes where it actually went.
         let target = self.targets.resolve_target(&score.target, ctx)?;
         let reasoning = if target.semantic_name == score.target {
             (self.decision_reason)(&self.name, &score)
@@ -374,16 +346,18 @@ where
                 score.target, target.semantic_name
             )
         };
-        let decision: Arc<dyn Decision> = Arc::new(FallThroughDecision {
-            selected_model: target.semantic_name.clone(),
-            reasoning,
-            tier: deciding.routing_tier(&target.semantic_name),
-            fallback_reason: None,
+        let decision: Arc<Decision> = Arc::new(Decision {
+            selected_target_id: target.semantic_name.clone(),
+            reasoning: Some(with_routing_tier(
+                reasoning,
+                deciding.routing_tier(&target.semantic_name),
+            )),
+            is_answer_call: true,
         });
         driver.info(ctx.clone(), decision.clone()).await?;
 
         // 4. Post-decision replay: every processor sees the decision so stateful ones
-        //    can bind it, and may rewrite the outbound request (e.g. add a tier prompt).
+        //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
         for processor in &self.processors {
             let event = Event::Decision {
                 request,
@@ -438,6 +412,14 @@ fn default_decision_reason(_name: &str, winner: &Score) -> String {
     )
 }
 
+// Routing tier is not part of Decision struct, so keeping it in reasoning for now. Remove it later if needed from reasoning.
+fn with_routing_tier(reasoning: String, tier: Option<&str>) -> String {
+    match tier {
+        Some(tier) => format!("{reasoning}; routing tier: {tier}"),
+        None => reasoning,
+    }
+}
+
 #[async_trait]
 impl<S> Algorithm for FallThrough<S>
 where
@@ -481,11 +463,11 @@ mod tests {
     /// Echoes the routed model name, capturing the request it was handed so a test can
     /// assert on what actually reached the model.
     fn capturing(into: Arc<Mutex<Option<Request>>>) -> impl Serve {
-        move |decision: Arc<dyn Decision>, request: Request| {
+        move |decision: Arc<Decision>, request: Request| {
             let into = Arc::clone(&into);
             async move {
                 *into.lock() = Some(request);
-                Ok(reply(decision.selected_model()))
+                Ok(reply(decision.selected_target_id()))
             }
         }
     }
@@ -509,11 +491,11 @@ mod tests {
     impl PromptRecorder {
         fn serve(self: &Arc<Self>) -> impl Serve {
             let recorder = Arc::clone(self);
-            move |decision: Arc<dyn Decision>, request: Request| {
+            move |decision: Arc<Decision>, request: Request| {
                 let recorder = Arc::clone(&recorder);
                 async move {
                     *recorder.0.lock() = Some(RecordedCall {
-                        target: decision.selected_model().to_string(),
+                        target: decision.selected_target_id().to_string(),
                         messages: request
                             .llm_request
                             .messages
@@ -527,7 +509,7 @@ mod tests {
                             .filter_map(|block| block.content.iter().find_map(text_of))
                             .collect(),
                     });
-                    Ok(reply(decision.selected_model()))
+                    Ok(reply(decision.selected_target_id()))
                 }
             }
         }
@@ -644,7 +626,7 @@ mod tests {
         router: &Arc<FallThrough<S>>,
         request: Request,
         serve: impl Serve,
-    ) -> Result<(String, Vec<Arc<dyn Decision>>)>
+    ) -> Result<(String, Vec<Arc<Decision>>)>
     where
         S: Default + Send + 'static,
     {
@@ -663,7 +645,7 @@ mod tests {
     async fn run_turn<S>(
         router: &Arc<FallThrough<S>>,
         serve: impl Serve,
-    ) -> Result<(String, Vec<Arc<dyn Decision>>)>
+    ) -> Result<(String, Vec<Arc<Decision>>)>
     where
         S: Default + Send + 'static,
     {
@@ -674,7 +656,7 @@ mod tests {
     async fn run_with(
         router: FallThrough,
         serve: impl Serve,
-    ) -> Result<(String, Vec<Arc<dyn Decision>>)> {
+    ) -> Result<(String, Vec<Arc<Decision>>)> {
         run_turn(&Arc::new(router), serve).await
     }
 
@@ -689,10 +671,10 @@ mod tests {
         overflowing: &'static [&'static str],
         calls: Arc<Mutex<Vec<String>>>,
     ) -> impl Serve {
-        move |decision: Arc<dyn Decision>, _request: Request| {
+        move |decision: Arc<Decision>, _request: Request| {
             let calls = Arc::clone(&calls);
             async move {
-                let model = decision.selected_model().to_string();
+                let model = decision.selected_target_id().to_string();
                 calls.lock().push(model.clone());
                 if overflowing.contains(&model.as_str()) {
                     return Err(LlmClientError::ContextWindowExceeded {
@@ -711,10 +693,10 @@ mod tests {
         unavailable: &'static [&'static str],
         calls: Arc<Mutex<Vec<String>>>,
     ) -> impl Serve {
-        move |decision: Arc<dyn Decision>, _request: Request| {
+        move |decision: Arc<Decision>, _request: Request| {
             let calls = Arc::clone(&calls);
             async move {
-                let model = decision.selected_model().to_string();
+                let model = decision.selected_target_id().to_string();
                 calls.lock().push(model.clone());
                 if unavailable.contains(&model.as_str()) {
                     return Err(LlmClientError::UpstreamHttp {
@@ -888,12 +870,61 @@ mod tests {
         for _ in 0..2 {
             let (model, trace) = run_turn(&router, unavailable(&["weak"], calls.clone())).await?;
             assert_eq!(model, "strong");
-            assert_eq!(
-                trace.last().and_then(|decision| decision.fallback_reason()),
-                Some(RoutingFallbackReason::Unavailable)
+            assert!(
+                trace
+                    .last()
+                    .and_then(|decision| decision.reasoning())
+                    .is_some_and(|reasoning| reasoning.contains("fallback reason: unavailable"))
             );
         }
         assert_eq!(&*calls.lock(), &["weak", "strong", "weak", "strong"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fallback_decision_preserves_tier_and_cause_in_reasoning() -> Result<()> {
+        struct TieredClassifier;
+
+        #[async_trait]
+        impl Classifier for TieredClassifier {
+            fn routing_tier(&self, selected_target_id: &str) -> Option<&'static str> {
+                match selected_target_id {
+                    "weak" => Some("weak"),
+                    "strong" => Some("strong"),
+                    _ => None,
+                }
+            }
+
+            async fn score(
+                &self,
+                _state: &mut (),
+                _request: &mut Request,
+                _driver: Option<&Driver>,
+            ) -> Result<(Classification, Option<Response>)> {
+                Ok((Classification::Scores(vec![score("weak", 1.0)]), None))
+            }
+        }
+
+        let router = FallThrough::<()>::new(target_set(&["weak", "strong"]))
+            .with_classifier(Arc::new(TieredClassifier));
+        let (_, trace) = run_with(router, unavailable(&["weak"], Arc::default())).await?;
+
+        assert_eq!(trace.len(), 2);
+        assert_eq!(trace[0].selected_target_id(), "weak");
+        assert!(trace[0].is_answer_call());
+        assert!(
+            trace[0]
+                .reasoning()
+                .is_some_and(|reasoning| reasoning.contains("routing tier: weak"))
+        );
+
+        let fallback = &trace[1];
+        assert_eq!(fallback.selected_target_id(), "strong");
+        assert!(fallback.is_answer_call());
+        assert!(fallback.reasoning().is_some_and(|reasoning| {
+            reasoning.contains("fallback reason: unavailable")
+                && reasoning.contains("routing tier: strong")
+        }));
         Ok(())
     }
 
@@ -968,7 +999,7 @@ mod tests {
             .map_err(|error| LibsyError::external("aggregating fall-through response", error))?;
 
         assert_eq!(text, "strong");
-        assert_eq!(trace[0].selected_model(), "strong");
+        assert_eq!(trace[0].selected_target_id(), "strong");
         assert!(
             trace[0]
                 .reasoning()
@@ -984,7 +1015,7 @@ mod tests {
         let (model, trace) = run_with(router, echo()).await?;
         assert_eq!(model, "strong");
         assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].selected_model(), "strong");
+        assert_eq!(trace[0].selected_target_id(), "strong");
         Ok(())
     }
 

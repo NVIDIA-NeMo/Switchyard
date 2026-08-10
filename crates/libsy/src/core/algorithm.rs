@@ -41,17 +41,17 @@ pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
 /// A request paired with the routing [`Decision`] that produced it — the offload
 /// payload a host reads (via [`CallLlmRequest::get_routed`]) to serve the call.
 ///
-/// The two model identifiers live in separate, unambiguous places: the model to
-/// call is [`decision.selected_model()`](Decision::selected_model), while
+/// The routing target and inbound model live in separate, unambiguous places: the target to
+/// call is [`decision.selected_target_id()`](Decision::selected_target_id), while
 /// `request.llm_request.model` is the *inbound* name the agent asked for (libsy
-/// never overwrites it). A client maps `selected_model()` to the provider model
+/// never overwrites it). A client maps `selected_target_id()` to the provider model
 /// id it hits.
 #[derive(Clone)]
 pub struct RoutedRequest {
     /// The request to serve; its `model` is the agent's original name.
     pub request: Request,
-    /// The routing decision behind this call; `selected_model()` is the model to hit.
-    pub decision: Arc<dyn Decision>,
+    /// The routing decision behind this call; `selected_target_id()` is the target to hit.
+    pub decision: Arc<Decision>,
     /// The request's cross-cutting context, carried through the offload so the host
     /// serving the call can pass it to its client.
     pub ctx: Context,
@@ -70,7 +70,7 @@ pub struct CallLlmRequest {
 }
 
 impl CallLlmRequest {
-    /// The routed request the host should serve; its `decision.selected_model()` names
+    /// The routed request the host should serve; its `decision.selected_target_id()` names
     /// the model to hit.
     pub fn get_routed(&self) -> &RoutedRequest {
         &self.routed
@@ -81,8 +81,8 @@ impl CallLlmRequest {
         &self.get_routed().request
     }
 
-    /// The decision that led to this call — its `selected_model()` is the model to hit.
-    pub fn get_decision(&self) -> &dyn Decision {
+    /// The decision that led to this call — its `selected_target_id()` is the target to hit.
+    pub fn get_decision(&self) -> &Decision {
         self.get_routed().decision.as_ref()
     }
 
@@ -133,7 +133,7 @@ impl Driver {
         skip_all,
         fields(
             algorithm = observability::algorithm_label(&routed.ctx),
-            selected_model = routed.decision.selected_model(),
+            selected_model = routed.decision.selected_target_id(),
             openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
             error = tracing::field::Empty,
@@ -145,9 +145,8 @@ impl Driver {
     )]
     pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response> {
         let algorithm = observability::algorithm_label(&routed.ctx).to_string();
-        let selected_model = routed.decision.selected_model().to_string();
-        let tier = routed.decision.routing_tier().map(str::to_string);
-        let is_routed = routed.decision.is_routed_call();
+        let decision = Arc::clone(&routed.decision);
+        let is_answer_call = decision.is_answer_call();
         let started = Instant::now();
         let (reply, response) = oneshot::channel::<Result<Response>>();
         let call = CallLlmRequest { routed, reply };
@@ -164,9 +163,8 @@ impl Driver {
         let elapsed = started.elapsed();
         observability::record_llm_call(
             &algorithm,
-            &selected_model,
-            tier.as_deref(),
-            is_routed,
+            decision.selected_target_id(),
+            is_answer_call,
             elapsed,
             &result,
             &tracing::Span::current(),
@@ -177,7 +175,7 @@ impl Driver {
     /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
     /// Each successfully published decision is counted and logged with its
     /// reasoning; a decision the stream never accepted is not recorded.
-    pub async fn info(&self, ctx: Context, decision: Arc<dyn Decision>) -> Result<()> {
+    pub async fn info(&self, ctx: Context, decision: Arc<Decision>) -> Result<()> {
         self.step_tx
             .send(Ok(Step::Decision(decision.clone())))
             .await
@@ -205,7 +203,7 @@ pub enum Step {
     CallLlm(Box<CallLlmRequest>),
     /// A routing decision the algorithm made, published via [`Driver::info`] as it
     /// happens (rather than collected into a trace returned at the end).
-    Decision(Arc<dyn Decision>),
+    Decision(Arc<Decision>),
     /// The algorithm finished with its final response — the last step of a run.
     ReturnToAgent(Box<Response>),
 }
@@ -227,7 +225,7 @@ pub async fn drive<F, Fut>(
     ctx: Context,
     request: Request,
     serve: F,
-) -> Result<(Vec<Arc<dyn Decision>>, Response)>
+) -> Result<(Vec<Arc<Decision>>, Response)>
 where
     F: Fn(CallLlmRequest) -> Fut,
     Fut: Future<Output = Result<()>>,
@@ -235,7 +233,7 @@ where
     let stream = algorithm.run_stream(ctx, request);
     tokio::pin!(stream);
 
-    let mut trace: Vec<Arc<dyn Decision>> = Vec::new();
+    let mut trace: Vec<Arc<Decision>> = Vec::new();
     let mut in_flight = futures::stream::FuturesUnordered::new();
     let mut final_response: Option<Response> = None;
 
@@ -276,7 +274,7 @@ impl Drop for AbortOnDrop {
 
 /// A named routing target an algorithm routes by. Serving its calls is the stream
 /// consumer's concern: the target's name reaches the consumer as
-/// `decision.selected_model()` on the offloaded [`RoutedRequest`].
+/// `decision.selected_target_id()` on the offloaded [`RoutedRequest`].
 #[derive(Clone)]
 pub struct LlmTarget {
     /// The routing label an algorithm selects this target by — a logical tier like
@@ -480,12 +478,12 @@ pub(crate) async fn call_llm_with_fallback(
     driver: &Driver,
     targets: &LlmTargetSet,
     mut target: LlmTarget,
-    mut decision: Arc<dyn Decision>,
+    mut decision: Arc<Decision>,
     request: Request,
     identity: Option<&RoutingIdentity>,
     evictions: &SessionEvictions,
     target_unavailable: impl Fn(&Request, &str),
-    fallback_decision: impl Fn(&LlmTarget, &LlmTarget, RoutingFallbackReason) -> Arc<dyn Decision>,
+    fallback_decision: impl Fn(&LlmTarget, &LlmTarget, RoutingFallbackReason) -> Arc<Decision>,
 ) -> Result<Response> {
     loop {
         let result = driver
@@ -695,24 +693,17 @@ mod tests {
         );
     }
 
-    /// Trivial decision + algo used only to exercise the orchestrator: calls the
-    /// first target and returns its response with a one-item trace.
-    struct TestDecision {
-        model: String,
+    /// Build a routed decision for orchestration tests.
+    fn test_decision(selected_target_id: String) -> Arc<Decision> {
+        Arc::new(Decision {
+            selected_target_id,
+            reasoning: None,
+            is_answer_call: true,
+        })
     }
 
-    impl Decision for TestDecision {
-        fn selected_model(&self) -> &str {
-            &self.model
-        }
-        fn reasoning(&self) -> Option<&str> {
-            None
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-
+    /// Trivial algo used only to exercise the orchestrator: calls the first target
+    /// and returns its response with a one-item trace.
     struct TestAlgo {
         target_set: LlmTargetSet,
     }
@@ -735,9 +726,7 @@ mod tests {
                 .first()
                 .ok_or(LibsyError::NoTargets)?
                 .clone();
-            let decision: Arc<dyn Decision> = Arc::new(TestDecision {
-                model: target.semantic_name.clone(),
-            });
+            let decision = test_decision(target.semantic_name.clone());
             driver.info(ctx.clone(), decision.clone()).await?;
             driver
                 .call_llm(RoutedRequest {
@@ -775,9 +764,7 @@ mod tests {
     fn routed(model: &str) -> RoutedRequest {
         RoutedRequest {
             request: request(),
-            decision: Arc::new(TestDecision {
-                model: model.to_string(),
-            }),
+            decision: test_decision(model.to_string()),
             ctx: Context::default(),
         }
     }
@@ -799,7 +786,10 @@ mod tests {
                 let Step::CallLlm(call) = step else {
                     return Err(test_error("expected a CallLlm step"));
                 };
-                calls.insert(call.get_decision().selected_model().to_string(), call);
+                calls.insert(
+                    call.get_decision().selected_target_id().to_string(),
+                    call,
+                );
             }
             assert!(
                 tokio::time::timeout(std::time::Duration::from_millis(20), &mut first)
@@ -850,9 +840,7 @@ mod tests {
             // A standalone driver reports the typed step receiver disappearing at its next send.
             let (driver, step_rx) = Driver::new();
             drop(step_rx);
-            let decision: Arc<dyn Decision> = Arc::new(TestDecision {
-                model: "closed".to_string(),
-            });
+            let decision = test_decision("closed".to_string());
             let result = driver.info(Context::default(), decision).await;
             assert!(matches!(
                 result,
@@ -877,7 +865,7 @@ mod tests {
     /// replaying `chunks` in order (as `Ok` items).
     fn streaming_orch(chunks: Vec<LlmResponseChunk>) -> (Arc<dyn Algorithm>, impl Serve) {
         let algo = orch(target_set(&["stream/model"]));
-        let serve = move |_decision: Arc<dyn Decision>, _request: Request| {
+        let serve = move |_decision: Arc<Decision>, _request: Request| {
             let chunks = chunks.clone();
             async move {
                 let stream =
@@ -962,7 +950,7 @@ mod tests {
                 Step::CallLlm(call) => {
                     saw_call = true;
                     // The decision rode along with the promise.
-                    assert_eq!(call.get_decision().selected_model(), "offload/model");
+                    assert_eq!(call.get_decision().selected_target_id(), "offload/model");
                     // Fulfilling the promise is the "real" model call the caller makes.
                     call.respond(Ok(Response {
                         llm_response: LlmResponse::Agg(text_response(
@@ -973,7 +961,7 @@ mod tests {
                     }))?;
                 }
                 Step::Decision(decision) => {
-                    assert_eq!(decision.selected_model(), "offload/model");
+                    assert_eq!(decision.selected_target_id(), "offload/model");
                 }
                 Step::ReturnToAgent(response) => {
                     final_completion = Some(
@@ -1013,7 +1001,7 @@ mod tests {
                 .unwrap_or_default(),
             "direct/model"
         );
-        assert_eq!(trace[0].selected_model(), "direct/model");
+        assert_eq!(trace[0].selected_target_id(), "direct/model");
         Ok(())
     }
 
@@ -1036,11 +1024,11 @@ mod tests {
         for _ in 0..N {
             let algo = algo.clone();
             let barrier = barrier.clone();
-            let serve = move |decision: Arc<dyn Decision>, _request: Request| {
+            let serve = move |decision: Arc<Decision>, _request: Request| {
                 let barrier = barrier.clone();
                 async move {
                     barrier.wait().await;
-                    Ok(reply(decision.selected_model()))
+                    Ok(reply(decision.selected_target_id()))
                 }
             };
             handles.push(tokio::spawn(async move {
@@ -1325,12 +1313,8 @@ mod tests {
             driver: Driver,
             request: Request,
         ) -> Result<Response> {
-            let dec_w: Arc<dyn Decision> = Arc::new(TestDecision {
-                model: self.winner.semantic_name.clone(),
-            });
-            let dec_l: Arc<dyn Decision> = Arc::new(TestDecision {
-                model: self.loser.semantic_name.clone(),
-            });
+            let dec_w = test_decision(self.winner.semantic_name.clone());
+            let dec_l = test_decision(self.loser.semantic_name.clone());
             let win = driver.call_llm(RoutedRequest {
                 request: request.clone(),
                 decision: dec_w,
@@ -1362,10 +1346,10 @@ mod tests {
                 semantic_name: "loser".to_string(),
             },
         });
-        let serve = move |decision: Arc<dyn Decision>, _request: Request| {
+        let serve = move |decision: Arc<Decision>, _request: Request| {
             let started = started.clone();
             async move {
-                if decision.selected_model() == "loser" {
+                if decision.selected_target_id() == "loser" {
                     started.notify_one();
                     match loser_delay {
                         Some(delay) => tokio::time::sleep(delay).await,
@@ -1374,7 +1358,7 @@ mod tests {
                 } else {
                     started.notified().await;
                 }
-                Ok(reply(decision.selected_model()))
+                Ok(reply(decision.selected_target_id()))
             }
         };
         (algo, serve)
@@ -1445,9 +1429,7 @@ mod tests {
                 request: Request,
             ) -> Result<Response> {
                 let offloads = futures::future::join_all((0..self.n).map(|i| {
-                    let decision: Arc<dyn Decision> = Arc::new(TestDecision {
-                        model: format!("m{i}"),
-                    });
+                    let decision = test_decision(format!("m{i}"));
                     driver.call_llm(RoutedRequest {
                         request: request.clone(),
                         decision,
@@ -1471,7 +1453,7 @@ mod tests {
 
         // Serving enters each call; once all N are in flight it signals, then pends forever.
         let started = Arc::new(AtomicUsize::new(0));
-        let serve = move |_decision: Arc<dyn Decision>, _request: Request| {
+        let serve = move |_decision: Arc<Decision>, _request: Request| {
             let started = started.clone();
             let all_started = all_started.clone();
             async move {

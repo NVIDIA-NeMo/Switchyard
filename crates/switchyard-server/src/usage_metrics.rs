@@ -17,7 +17,6 @@ use crate::stats::{StatsAccumulator, TokenUsage};
 pub(crate) fn observe(
     response: Response,
     model: &str,
-    tier: Option<&str>,
     started: Instant,
     stats: StatsAccumulator,
     cache_eligible: f64,
@@ -28,23 +27,12 @@ pub(crate) fn observe(
         metadata,
     } = response;
     let model = model.to_string();
-    let tier = tier
-        .map(str::trim)
-        .filter(|tier| !tier.is_empty())
-        .map(str::to_string);
 
     let llm_response = match llm_response {
         LlmResponse::Agg(agg) => {
-            record_terminal(
-                &stats,
-                &agg.usage,
-                &model,
-                tier.as_deref(),
-                started,
-                cache_eligible,
-            );
+            record_terminal(&stats, &agg.usage, &model, started, cache_eligible);
             if let Some((log, context)) = routing_log {
-                log.append(context, &model, tier.as_deref(), &agg.usage);
+                log.append(context, &model, None, &agg.usage);
             }
             LlmResponse::Agg(agg)
         }
@@ -70,7 +58,7 @@ pub(crate) fn observe(
                         }
                     }
                     if failed {
-                        record_stream_error(&stats, &model, tier.as_deref());
+                        record_stream_error(&stats, &model);
                     }
                     yield item;
                     if failed {
@@ -78,16 +66,9 @@ pub(crate) fn observe(
                     }
                 }
                 let usage = latest_usage.unwrap_or_default();
-                record_terminal(
-                    &stats,
-                    &usage,
-                    &model,
-                    tier.as_deref(),
-                    started,
-                    cache_eligible,
-                );
+                record_terminal(&stats, &usage, &model, started, cache_eligible);
                 if let Some((log, context)) = routing_log {
-                    log.append(context, &model, tier.as_deref(), &usage);
+                    log.append(context, &model, None, &usage);
                 }
             };
             LlmResponse::Stream(Box::pin(wrapped))
@@ -101,12 +82,12 @@ pub(crate) fn observe(
 }
 
 // Records a terminal stream failure after the routed call was already counted.
-fn record_stream_error(stats: &StatsAccumulator, model: &str, tier: Option<&str>) {
-    stats.record_stream_error(model, tier);
+fn record_stream_error(stats: &StatsAccumulator, model: &str) {
+    stats.record_stream_error(model, None);
     global::meter("switchyard")
         .u64_counter("switchyard.errors")
         .build()
-        .add(1, &attributes(model, tier));
+        .add(1, &attributes(model));
 }
 
 pub(crate) fn token_usage(usage: &Usage) -> TokenUsage {
@@ -131,13 +112,12 @@ fn record_terminal(
     stats: &StatsAccumulator,
     usage: &Usage,
     model: &str,
-    tier: Option<&str>,
     started: Instant,
     cache_eligible: f64,
 ) {
     let total_latency = started.elapsed();
-    record_usage(usage, model, tier);
-    record_latency(model, tier, total_latency);
+    record_usage(usage, model);
+    record_latency(model, total_latency);
     let mut token_usage = token_usage(usage);
     token_usage.cacheable_prompt_tokens =
         (token_usage.prompt_tokens as f64 * cache_eligible).round() as u64;
@@ -145,20 +125,16 @@ fn record_terminal(
         model,
         token_usage,
         total_latency.as_secs_f64() * 1_000.0,
-        tier,
+        None,
     );
 }
 
-fn attributes(model: &str, tier: Option<&str>) -> Vec<KeyValue> {
-    let mut attributes = vec![KeyValue::new("model", model.to_string())];
-    if let Some(tier) = tier {
-        attributes.push(KeyValue::new("tier", tier.to_string()));
-    }
-    attributes
+fn attributes(model: &str) -> [KeyValue; 1] {
+    [KeyValue::new("model", model.to_string())]
 }
 
-fn record_usage(usage: &Usage, model: &str, tier: Option<&str>) {
-    let attributes = attributes(model, tier);
+fn record_usage(usage: &Usage, model: &str) {
+    let attributes = attributes(model);
     let meter = global::meter("switchyard");
     let cached = usage.cached_input_tokens();
     let cache_creation = usage.cache_creation_input_tokens();
@@ -183,9 +159,9 @@ fn record_usage(usage: &Usage, model: &str, tier: Option<&str>) {
     }
 }
 
-fn record_latency(model: &str, tier: Option<&str>, latency: Duration) {
+fn record_latency(model: &str, latency: Duration) {
     global::meter("switchyard")
         .f64_histogram("switchyard.total_latency_ms")
         .build()
-        .record(latency.as_secs_f64() * 1000.0, &attributes(model, tier));
+        .record(latency.as_secs_f64() * 1000.0, &attributes(model));
 }

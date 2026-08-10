@@ -23,24 +23,6 @@ impl Passthrough {
     }
 }
 
-/// Decision emitted before [`Passthrough`] calls its configured target.
-pub struct PassthroughDecision {
-    model_id: String,
-}
-
-impl Decision for PassthroughDecision {
-    fn selected_model(&self) -> &str {
-        &self.model_id
-    }
-    fn reasoning(&self) -> Option<&str> {
-        // There is no decision to take, so no reasoning
-        None
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
 #[async_trait::async_trait]
 impl Algorithm for Passthrough {
     fn name(&self) -> &str {
@@ -53,8 +35,13 @@ impl Algorithm for Passthrough {
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
-        let decision: Arc<dyn Decision> = Arc::new(PassthroughDecision {
-            model_id: self.target.semantic_name.clone(),
+        let decision: Arc<Decision> = Arc::new(Decision {
+            selected_target_id: self.target.semantic_name.clone(),
+            reasoning: Some(format!(
+                "passthrough selected target '{}'",
+                self.target.semantic_name
+            )),
+            is_answer_call: true,
         });
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
@@ -98,7 +85,8 @@ mod tests {
             MODEL_ID
         );
         assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].selected_model(), MODEL_ID);
+        assert_eq!(trace[0].selected_target_id(), MODEL_ID);
+        assert!(trace[0].is_answer_call());
         Ok(())
     }
 }

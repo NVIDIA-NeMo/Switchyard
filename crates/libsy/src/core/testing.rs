@@ -29,23 +29,15 @@ pub(crate) type ServeResult = std::result::Result<Response, LlmClientError>;
 /// Answers offloaded model calls. Returning `Err` propagates a failed *model* call back into
 /// the algorithm, which may route around it.
 pub(crate) trait Serve: Send + Sync + 'static {
-    fn serve(
-        &self,
-        decision: Arc<dyn Decision>,
-        request: Request,
-    ) -> BoxFuture<'static, ServeResult>;
+    fn serve(&self, decision: Arc<Decision>, request: Request) -> BoxFuture<'static, ServeResult>;
 }
 
 impl<F, Fut> Serve for F
 where
-    F: Fn(Arc<dyn Decision>, Request) -> Fut + Send + Sync + 'static,
+    F: Fn(Arc<Decision>, Request) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ServeResult> + Send + 'static,
 {
-    fn serve(
-        &self,
-        decision: Arc<dyn Decision>,
-        request: Request,
-    ) -> BoxFuture<'static, ServeResult> {
+    fn serve(&self, decision: Arc<Decision>, request: Request) -> BoxFuture<'static, ServeResult> {
         Box::pin(self(decision, request))
     }
 }
@@ -56,7 +48,7 @@ pub(crate) async fn test_drive(
     ctx: Context,
     request: Request,
     serve: impl Serve,
-) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
+) -> Result<(Vec<Arc<Decision>>, Response)> {
     let serve = Arc::new(serve);
     crate::drive(algorithm, ctx, request, move |call| {
         fulfill(Arc::clone(&serve), call)
@@ -68,7 +60,7 @@ pub(crate) async fn test_drive(
 /// error-shape assertions match production.
 async fn fulfill(serve: Arc<impl Serve>, call: CallLlmRequest) -> Result<()> {
     let routed = call.get_routed().clone();
-    let target = routed.decision.selected_model().to_string();
+    let target = routed.decision.selected_target_id().to_string();
     let result = serve
         .serve(routed.decision, routed.request)
         .await
@@ -79,7 +71,7 @@ async fn fulfill(serve: Arc<impl Serve>, call: CallLlmRequest) -> Result<()> {
 /// Answers with the selected model name as the completion — what most routing tests need,
 /// since they assert on *which* target was called.
 pub(crate) fn echo() -> impl Serve {
-    |decision: Arc<dyn Decision>, _request: Request| async move { Ok(reply(decision.selected_model())) }
+    |decision: Arc<Decision>, _request: Request| async move { Ok(reply(decision.selected_target_id())) }
 }
 
 /// A buffered response whose completion text is `completion`.

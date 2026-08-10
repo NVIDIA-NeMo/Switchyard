@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
-use switchyard_protocol::{RoutingFallbackReason, Usage};
+use switchyard_protocol::Usage;
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
@@ -56,7 +56,8 @@ impl RoutingLog {
             session_id: context.session_id.map(Cow::Owned),
             model: model.into(),
             tier: tier.unwrap_or("").into(),
-            fallback_reason: context.fallback_reason.map(Cow::Borrowed),
+            // Kept in the read schema for older logs; new decisions carry this in reasoning.
+            fallback_reason: None,
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
@@ -102,7 +103,6 @@ pub(crate) struct RoutingLogContext {
     task: Option<String>,
     trial_id: Option<String>,
     session_id: Option<String>,
-    fallback_reason: Option<&'static str>,
 }
 
 impl RoutingLogContext {
@@ -111,13 +111,7 @@ impl RoutingLogContext {
             task: nonempty_header(headers, TASK_HEADER).map(|s| s.to_string()),
             trial_id: nonempty_header(headers, TRIAL_ID_HEADER).map(|s| s.to_string()),
             session_id: nonempty_header(headers, SESSION_ID_HEADER).map(|s| s.to_string()),
-            fallback_reason: None,
         }
-    }
-
-    pub(crate) fn with_fallback_reason(mut self, reason: Option<RoutingFallbackReason>) -> Self {
-        self.fallback_reason = reason.map(RoutingFallbackReason::as_str);
-        self
     }
 }
 

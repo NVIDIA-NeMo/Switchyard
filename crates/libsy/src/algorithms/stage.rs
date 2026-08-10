@@ -45,8 +45,8 @@ struct SourceStamp {
 
 #[async_trait]
 impl Classifier<State> for SourceStamp {
-    fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
-        self.inner.routing_tier(selected_model)
+    fn routing_tier(&self, selected_target_id: &str) -> Option<&'static str> {
+        self.inner.routing_tier(selected_target_id)
     }
 
     async fn score(
@@ -355,6 +355,7 @@ mod tests {
     struct Call {
         target: String,
         messages: Vec<String>,
+        is_answer_call: bool,
     }
 
     /// Records what each target receives.
@@ -369,7 +370,7 @@ mod tests {
             self.calls
                 .lock()
                 .iter()
-                .filter(|call| call.target != JUDGE)
+                .filter(|call| call.is_answer_call)
                 .cloned()
                 .collect()
         }
@@ -378,10 +379,10 @@ mod tests {
         /// back so the fallback classifier has an answer without a real model.
         fn serve(self: &Arc<Self>) -> impl Serve {
             let recorder = Arc::clone(self);
-            move |decision: Arc<dyn Decision>, request: Request| {
+            move |decision: Arc<Decision>, request: Request| {
                 let recorder = Arc::clone(&recorder);
                 async move {
-                    let target = decision.selected_model().to_string();
+                    let target = decision.selected_target_id().to_string();
                     recorder.calls.lock().push(Call {
                         target: target.clone(),
                         messages: request
@@ -390,6 +391,7 @@ mod tests {
                             .iter()
                             .filter_map(|message| message.text_content("|"))
                             .collect(),
+                        is_answer_call: decision.is_answer_call(),
                     });
                     let completion = if target == JUDGE {
                         let p_solve = *recorder.judge_p_solve.lock();
@@ -527,7 +529,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let router = recording_router(config_with_judge(&recorder, 0.1))?;
 
-        test_drive(
+        let (trace, _) = test_drive(
             router.clone(),
             Context::default(),
             turn_request(false),
@@ -535,11 +537,26 @@ mod tests {
         )
         .await?;
 
+        let calls = recorder.calls.lock();
         assert!(
-            recorder.calls.lock().iter().any(|c| c.target == JUDGE),
-            "the judge should be consulted on an undecided turn"
+            calls
+                .iter()
+                .any(|call| call.target == JUDGE && !call.is_answer_call),
+            "the judge should be recorded as a routing side call"
         );
-        assert_eq!(recorder.routed()[0].target, "strong");
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.target == "strong" && call.is_answer_call),
+            "the selected target should be recorded as an answer call"
+        );
+        drop(calls);
+        assert!(
+            trace
+                .last()
+                .and_then(|decision| decision.reasoning())
+                .is_some_and(|reasoning| reasoning.contains("routing tier: strong"))
+        );
         Ok(())
     }
 

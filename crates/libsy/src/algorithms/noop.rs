@@ -16,23 +16,6 @@ use switchyard_protocol::{Context, Decision};
 /// Test helper that returns a hard-coded response without routing or model I/O.
 pub struct Noop {}
 
-/// Test decision carrying the inbound model or a fixed placeholder.
-pub struct NoopDecision {
-    model: String,
-}
-
-impl Decision for NoopDecision {
-    fn selected_model(&self) -> &str {
-        &self.model
-    }
-    fn reasoning(&self) -> Option<&str> {
-        None
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
 #[async_trait::async_trait]
 impl Algorithm for Noop {
     fn name(&self) -> &str {
@@ -49,8 +32,10 @@ impl Algorithm for Noop {
             .requested_model()
             .unwrap_or("switchyard/noop")
             .to_string();
-        let decision: Arc<dyn Decision> = Arc::new(NoopDecision {
-            model: model.clone(),
+        let decision: Arc<Decision> = Arc::new(Decision {
+            selected_target_id: model.clone(),
+            reasoning: Some("noop returned its synthetic response".to_string()),
+            is_answer_call: true,
         });
         driver.info(ctx, decision.clone()).await?;
 
@@ -101,7 +86,8 @@ mod tests {
         let Some(decision) = decisions.first() else {
             panic!("Expected exactly one Decision");
         };
-        assert_eq!(decision.selected_model(), TEST_MODEL);
+        assert_eq!(decision.selected_target_id(), TEST_MODEL);
+        assert!(decision.is_answer_call());
         assert_eq!(response.selected_model(), Some(TEST_MODEL));
         Ok(())
     }

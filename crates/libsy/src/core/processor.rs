@@ -18,12 +18,12 @@ pub enum Event<'a> {
     /// A routing decision paired with the request that produced it.
     ///
     /// The request is rewritable: a processor may add instructions or notes here that
-    /// are bound to the routing outcome (e.g. a tier-specific system prompt).
+    /// are bound to the routing outcome (e.g. a model-specific system prompt).
     Decision {
         /// The request, rewritable in place.
         request: &'a mut Request,
         /// The routing decision produced for `request`.
-        decision: &'a dyn Decision,
+        decision: &'a Decision,
     },
     /// A buffered response received back from a model.
     ModelResponse(&'a AggLlmResponse),
@@ -71,21 +71,6 @@ mod tests {
         }
     }
 
-    /// Minimal [`Decision`] so an `Event::Decision` can be constructed.
-    struct TestDecision;
-
-    impl Decision for TestDecision {
-        fn selected_model(&self) -> &str {
-            "test/model"
-        }
-        fn reasoning(&self) -> Option<&str> {
-            None
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-
     fn request() -> Request {
         Request {
             llm_request: text_request(Some("auto".to_string()), "hi"),
@@ -100,7 +85,11 @@ mod tests {
         let mut state = TestState::default();
         let mut req = request();
         let response = text_response(None, "ok");
-        let decision = TestDecision;
+        let decision = Decision {
+            selected_target_id: "test/model".to_string(),
+            reasoning: None,
+            is_answer_call: true,
+        };
         let signals = Signals {};
 
         // Feed one of every event variant through the processor.

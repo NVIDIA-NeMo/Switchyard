@@ -229,8 +229,10 @@ where
         let response = driver
             .call_llm(RoutedRequest {
                 request: self.judge.build_request(state, request),
-                decision: Arc::new(JudgeDecision {
-                    model: self.target.semantic_name.to_string(),
+                decision: Arc::new(Decision {
+                    selected_target_id: self.target.semantic_name.to_string(),
+                    reasoning: Some("llm judge consultation".to_string()),
+                    is_answer_call: false,
                 }),
                 ctx: Context::default(),
             })
@@ -322,28 +324,6 @@ fn parse_json_verdict<T: DeserializeOwned>(response: &AggLlmResponse) -> Result<
             std::any::type_name::<T>()
         ),
     })
-}
-
-struct JudgeDecision {
-    model: String,
-}
-
-impl Decision for JudgeDecision {
-    fn selected_model(&self) -> &str {
-        &self.model
-    }
-
-    fn is_routed_call(&self) -> bool {
-        false
-    }
-
-    fn reasoning(&self) -> Option<&str> {
-        Some("llm judge consultation")
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 fn strip_json_fence(text: &str) -> &str {

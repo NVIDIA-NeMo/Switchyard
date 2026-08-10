@@ -35,7 +35,7 @@ impl RoutedLlmClient for PythonLlmClient {
         &self,
         _ctx: Context,
         request: Request,
-        _decision: Arc<dyn Decision>,
+        _decision: Arc<Decision>,
     ) -> Result<Response, LlmClientError> {
         let metadata = request.metadata;
         let future = Python::attach(|py| {
@@ -268,8 +268,9 @@ impl PyAlgorithm {
                 .iter()
                 .map(|decision| {
                     json!({
-                        "selected_model": decision.selected_model(),
+                        "selected_target_id": decision.selected_target_id(),
                         "reasoning": decision.reasoning(),
+                        "is_answer_call": decision.is_answer_call(),
                     })
                 })
                 .collect::<Vec<Value>>();

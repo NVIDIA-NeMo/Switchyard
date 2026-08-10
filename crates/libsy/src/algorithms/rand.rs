@@ -15,14 +15,11 @@ use rand::SeedableRng;
 use rand::distr::{Distribution, weighted::WeightedIndex};
 use rand::rngs::StdRng;
 
-use crate::algorithms::fall_through::{FallThrough, FallThroughDecision};
+use crate::algorithms::fall_through::FallThrough;
 use crate::core::algorithm::{Algorithm, Driver, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::{LibsyError, Result};
 use switchyard_protocol::{Context, Request, Response};
-
-/// Compatibility name for the decision produced by [`Random`].
-pub type RandomDecision = FallThroughDecision;
 
 /// Stateless weighted classifier used by random fall-through routing.
 pub struct RandomClassifier {
@@ -251,7 +248,7 @@ mod tests {
             "only/model"
         );
         assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].selected_model(), "only/model");
+        assert_eq!(trace[0].selected_target_id(), "only/model");
         Ok(())
     }
 
@@ -272,7 +269,7 @@ mod tests {
                 names.contains(&selected.as_str()),
                 "selected {selected} not in target set"
             );
-            assert_eq!(trace[0].selected_model(), selected.as_str());
+            assert_eq!(trace[0].selected_target_id(), selected.as_str());
         }
         Ok(())
     }
@@ -429,25 +426,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decision_is_inspectable_and_downcasts() -> Result<()> {
+    async fn decision_is_inspectable() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"])?;
         let (trace, _) = test_drive(algorithm, Context::default(), request(), echo()).await?;
         let decision = &trace[0];
 
-        assert_eq!(decision.selected_model(), "only/model");
+        assert_eq!(decision.selected_target_id(), "only/model");
         assert!(
             decision
                 .reasoning()
                 .unwrap_or_default()
                 .contains("only/model")
         );
-        let concrete = decision
-            .as_any()
-            .downcast_ref::<RandomDecision>()
-            .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "decision did not downcast to RandomDecision".to_string(),
-            })?;
-        assert_eq!(concrete.selected_model, "only/model");
+        assert!(decision.is_answer_call());
         Ok(())
     }
 }

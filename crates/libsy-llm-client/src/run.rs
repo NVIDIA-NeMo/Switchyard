@@ -41,7 +41,7 @@ pub async fn run(
     ctx: Context,
     request: Request,
     observer: Option<RunObserver>,
-) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
+) -> Result<(Vec<Arc<Decision>>, Response)> {
     let algorithm_name = algorithm.name().to_string();
     // The output from `serve` goes in here: when each successful routed call was in
     // flight. Everything else the run spent time on is routing overhead.
@@ -110,13 +110,12 @@ impl RoutedCallWindows {
     fields(
         algorithm = algorithm_label(&call.get_routed().ctx),
         switchyard.algorithm = algorithm_label(&call.get_routed().ctx),
-        switchyard.routing.tier = tracing::field::Empty,
-        selected_model = call.get_decision().selected_model(),
+        selected_model = call.get_decision().selected_target_id(),
         otel.kind = "client",
-        otel.name = %format_args!("chat {}", call.get_decision().selected_model()),
+        otel.name = %format_args!("chat {}", call.get_decision().selected_target_id()),
         openinference.span.kind = "LLM",
         gen_ai.operation.name = "chat",
-        gen_ai.request.model = call.get_decision().selected_model(),
+        gen_ai.request.model = call.get_decision().selected_target_id(),
         gen_ai.request.stream = tracing::field::Empty,
         gen_ai.request.temperature = tracing::field::Empty,
         gen_ai.request.top_p = tracing::field::Empty,
@@ -149,9 +148,6 @@ async fn serve(
 ) -> Result<()> {
     let span = tracing::Span::current();
     observability::record_gen_ai_request(&span, &call.get_routed().request.llm_request);
-    if let Some(tier) = call.get_decision().routing_tier() {
-        span.record("switchyard.routing.tier", tier);
-    }
     if let Some(session_id) = call
         .get_routed()
         .request
@@ -162,9 +158,8 @@ async fn serve(
         span.record("gen_ai.conversation.id", session_id);
     }
     let routed = call.get_routed().clone();
-    let target = routed.decision.selected_model().to_string();
-    let tier = call.get_decision().routing_tier().map(str::to_string);
-    let is_routed = call.get_decision().is_routed_call();
+    let target = routed.decision.selected_target_id().to_string();
+    let is_answer_call = call.get_decision().is_answer_call();
     // Resolved before the clock starts: picking the client is Switchyard's work, not
     // the provider's, so it belongs in the routing overhead.
     let client = clients.route(&target);
@@ -184,9 +179,8 @@ async fn serve(
     let result = observability::observe_client_call(result);
     if let Some(observer) = observer {
         observer(RunObservation::LlmCall(LlmCallObservation {
-            selected_model: call.get_decision().selected_model().to_string(),
-            tier,
-            is_routed,
+            selected_model: call.get_decision().selected_target_id().to_string(),
+            is_answer_call,
             is_success: result.is_ok(),
             duration,
             usage: result
@@ -196,7 +190,7 @@ async fn serve(
                 .map(|response| response.usage.clone()),
         }));
     }
-    if is_routed && result.is_ok() {
+    if is_answer_call && result.is_ok() {
         routed_calls.lock().record(started, ended);
     }
 

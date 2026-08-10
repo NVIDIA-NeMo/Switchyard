@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, MutexGuard};
 use serde::Serialize;
-use switchyard_protocol::RoutingFallbackReason;
 
 use super::cache_eligibility::PrefixProbe;
 
@@ -102,19 +101,6 @@ impl StatsAccumulator {
     /// Records routing time for one completed algorithm run.
     pub(crate) fn record_routing_overhead(&self, routing_overhead_ms: f64) {
         self.lock().routing_overhead.record(routing_overhead_ms);
-    }
-
-    /// Records one target replacement by its route-level cause.
-    pub(crate) fn record_routing_fallback(&self, reason: RoutingFallbackReason) {
-        let fallbacks = &mut self.lock().routing_fallbacks;
-        match reason {
-            RoutingFallbackReason::ContextWindow => {
-                fallbacks.context_window = fallbacks.context_window.saturating_add(1);
-            }
-            RoutingFallbackReason::Unavailable => {
-                fallbacks.unavailable = fallbacks.unavailable.saturating_add(1);
-            }
-        }
     }
 
     /// Records one successful classifier or judge call.
@@ -350,7 +336,9 @@ pub(crate) struct StatsSnapshot {
     pub classifier: ClassifierStatsSnapshot,
 }
 
-/// Route-level target replacements grouped by their fixed, low-cardinality cause.
+/// Legacy fallback counters retained in the stats response shape.
+///
+/// New decisions carry fallback details in their reasoning instead.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub(crate) struct RoutingFallbackStats {
     pub context_window: u64,

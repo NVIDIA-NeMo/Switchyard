@@ -476,8 +476,8 @@ impl StageClassifier {
 
 #[async_trait]
 impl Classifier<State> for StageClassifier {
-    fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
-        self.targets.label_for(selected_model)
+    fn routing_tier(&self, selected_target_id: &str) -> Option<&'static str> {
+        self.targets.label_for(selected_target_id)
     }
 
     async fn score(

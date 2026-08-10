@@ -21,9 +21,9 @@ pub use algorithms::llm_class::{
     CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
     TaskClassifierConfig,
 };
-pub use algorithms::noop::{Noop, NoopDecision};
-pub use algorithms::passthrough::{Passthrough, PassthroughDecision};
-pub use algorithms::rand::{Random, RandomClassifier, RandomDecision};
+pub use algorithms::noop::Noop;
+pub use algorithms::passthrough::Passthrough;
+pub use algorithms::rand::{Random, RandomClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::util::affinity::AffinityRouter;
 pub use algorithms::util::classifier_contract::ClassifierContractConfig;

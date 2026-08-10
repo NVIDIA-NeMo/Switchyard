@@ -49,8 +49,9 @@ async def test_random_runs_with_a_python_client() -> None:
 
     assert decisions == [
         {
-            "selected_model": "fast",
+            "selected_target_id": "fast",
             "reasoning": "random routing selected target 'fast'",
+            "is_answer_call": True,
         }
     ]
     assert client.calls[0]["messages"][0]["content"] == [
@@ -141,7 +142,7 @@ def test_random_rejects_invalid_weights() -> None:
 async def test_noop_needs_no_client() -> None:
     decisions, response = await algorithms.noop().run(request_body())
 
-    assert decisions[0]["selected_model"] == "auto"
+    assert decisions[0]["selected_target_id"] == "auto"
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "OK"}]
 
 
@@ -162,7 +163,7 @@ async def test_algorithm_accepts_case_insensitive_duplicate_names() -> None:
         request_body(), headers={"X-Unused": "first", "x-unused": "second"}
     )
 
-    assert decisions[0]["selected_model"] == "auto"
+    assert decisions[0]["selected_target_id"] == "auto"
 
 
 def test_algorithm_rejects_header_map_capacity_overflow() -> None:

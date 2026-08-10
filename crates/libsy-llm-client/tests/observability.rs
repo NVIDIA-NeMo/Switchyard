@@ -317,24 +317,6 @@ fn u64_gauge_value(snapshots: &[ResourceMetrics], name: &str) -> Option<u64> {
     })
 }
 
-/// Decision with a fixed model and reasoning string.
-struct StaticDecision {
-    model: String,
-    reasoning: String,
-}
-
-impl Decision for StaticDecision {
-    fn selected_model(&self) -> &str {
-        &self.model
-    }
-    fn reasoning(&self) -> Option<&str> {
-        Some(&self.reasoning)
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
 /// Client that answers every call with a fixed token [`Usage`].
 struct UsageClient {
     usage: Usage,
@@ -353,10 +335,10 @@ impl RoutedLlmClient for ClassifierClient {
         &self,
         _ctx: Context,
         _request: Request,
-        decision: Arc<dyn Decision>,
+        decision: Arc<Decision>,
     ) -> Result<Response, LlmClientError> {
-        let model = decision.selected_model().to_string();
-        let completion = if decision.is_routed_call() {
+        let model = decision.selected_target_id().to_string();
+        let completion = if decision.is_answer_call() {
             tokio::time::sleep(self.routed_delay).await;
             "routed response"
         } else {
@@ -387,12 +369,12 @@ impl RoutedLlmClient for JudgeClient {
         &self,
         _ctx: Context,
         _request: Request,
-        decision: Arc<dyn Decision>,
+        decision: Arc<Decision>,
     ) -> Result<Response, LlmClientError> {
-        if decision.is_routed_call() {
+        if decision.is_answer_call() {
             return Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
-                    Some(decision.selected_model().to_string()),
+                    Some(decision.selected_target_id().to_string()),
                     "routed response",
                 )),
                 metadata: None,
@@ -428,10 +410,10 @@ impl RoutedLlmClient for UsageClient {
         &self,
         _ctx: Context,
         _request: Request,
-        decision: Arc<dyn Decision>,
+        decision: Arc<Decision>,
     ) -> Result<Response, switchyard_protocol::LlmClientError> {
         let mut response = text_response(
-            Some(decision.selected_model().to_string()),
+            Some(decision.selected_target_id().to_string()),
             "observed response",
         );
         response.id = Some("obs-response-1".to_string());
@@ -469,9 +451,10 @@ impl Algorithm for SingleCallAlgo {
             .first()
             .ok_or(LibsyError::NoTargets)?
             .clone();
-        let decision: Arc<dyn Decision> = Arc::new(StaticDecision {
-            reasoning: format!("picked '{}'", target.semantic_name),
-            model: target.semantic_name.clone(),
+        let decision = Arc::new(Decision {
+            selected_target_id: target.semantic_name.clone(),
+            reasoning: Some(format!("picked '{}'", target.semantic_name)),
+            is_answer_call: true,
         });
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
@@ -515,7 +498,7 @@ async fn run(
     algorithm: Arc<dyn Algorithm>,
     client: Arc<dyn RoutedLlmClient>,
     request: Request,
-) -> switchyard_libsy::Result<(Vec<Arc<dyn Decision>>, Response)> {
+) -> switchyard_libsy::Result<(Vec<Arc<Decision>>, Response)> {
     switchyard_llm_client::run(
         algorithm,
         ClientRouter::single(client),
@@ -877,7 +860,7 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
         return Err(test_error("expected an LLM call observation"));
     };
     assert_eq!(observation.selected_model, MODEL);
-    assert!(observation.is_routed);
+    assert!(observation.is_answer_call);
     assert!(observation.is_success);
     assert!(observation.usage.is_some());
     assert!(matches!(
@@ -896,7 +879,7 @@ impl RoutedLlmClient for StreamingUsageClient {
         &self,
         _ctx: Context,
         _request: Request,
-        decision: Arc<dyn Decision>,
+        decision: Arc<Decision>,
     ) -> Result<Response, LlmClientError> {
         let usage = Usage {
             input_tokens: Some(13),
@@ -907,7 +890,7 @@ impl RoutedLlmClient for StreamingUsageClient {
         let chunks = vec![Ok(LlmResponseStreamEvent::new(vec![
             LlmResponseChunk::MessageStart {
                 id: Some("obs-stream-response".to_string()),
-                model: Some(decision.selected_model().to_string()),
+                model: Some(decision.selected_target_id().to_string()),
             },
             LlmResponseChunk::Usage(usage),
             LlmResponseChunk::MessageStop {
@@ -929,7 +912,7 @@ impl RoutedLlmClient for TimeoutClient {
         &self,
         _ctx: Context,
         _request: Request,
-        _decision: Arc<dyn Decision>,
+        _decision: Arc<Decision>,
     ) -> Result<Response, LlmClientError> {
         Err(LlmClientError::Timeout {
             source: Box::new(TestError("upstream timed out")),
@@ -1173,9 +1156,11 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
 
     let (trace, _response) = run(router, client, classifier_request()).await?;
 
-    assert_eq!(
-        trace.last().and_then(|decision| decision.routing_tier()),
-        Some("weak")
+    assert!(
+        trace
+            .last()
+            .and_then(|decision| decision.reasoning())
+            .is_some_and(|reasoning| reasoning.contains("routing tier: weak"))
     );
 
     let snapshots = flushed_metrics(exporter, provider);
@@ -1192,11 +1177,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
         Some(1)
     );
     assert_eq!(
-        u64_counter_value(
-            &snapshots,
-            "switchyard.requests",
-            &[("model", "weak"), ("tier", "weak")],
-        ),
+        u64_counter_value(&snapshots, "switchyard.requests", &[("model", "weak")],),
         Some(1)
     );
     assert_eq!(

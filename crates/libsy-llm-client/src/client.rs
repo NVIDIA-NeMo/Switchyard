@@ -511,9 +511,9 @@ impl RoutedLlmClient for TranslatingLlmClient {
         &self,
         ctx: Context,
         request: Request,
-        decision: std::sync::Arc<dyn Decision>,
+        decision: std::sync::Arc<Decision>,
     ) -> Result<Response> {
-        let model_name = Some(decision.selected_model());
+        let model_name = Some(decision.selected_target_id());
         self.call_rewrite_model(ctx, request, model_name).await
     }
 }
@@ -1721,7 +1721,7 @@ mod tests {
         client.client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(10))
             .build()?;
-        let decision: std::sync::Arc<dyn Decision> = std::sync::Arc::new(FixedDecision("gpt"));
+        let decision = std::sync::Arc::new(fixed_decision("gpt"));
 
         let Err(error) = client
             .call(Context::default(), request_for(None, false), decision)
@@ -1825,18 +1825,11 @@ mod tests {
         Ok(())
     }
 
-    // Minimal `Decision` for driving the client through the `RoutedLlmClient` trait.
-    struct FixedDecision(&'static str);
-
-    impl Decision for FixedDecision {
-        fn selected_model(&self) -> &str {
-            self.0
-        }
-        fn reasoning(&self) -> Option<&str> {
-            None
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
+    fn fixed_decision(target: &str) -> Decision {
+        Decision {
+            selected_target_id: target.to_string(),
+            reasoning: None,
+            is_answer_call: true,
         }
     }
 
@@ -1862,7 +1855,7 @@ mod tests {
             .await;
 
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
-        let decision: std::sync::Arc<dyn Decision> = std::sync::Arc::new(FixedDecision("gpt"));
+        let decision = std::sync::Arc::new(fixed_decision("gpt"));
         // Called through the trait; the request has no model, so "gpt" comes from the decision.
         let response = client
             .call(Context::default(), request_for(None, false), decision)

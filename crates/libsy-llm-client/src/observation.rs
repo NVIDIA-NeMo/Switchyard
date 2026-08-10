@@ -13,10 +13,8 @@ use switchyard_protocol::Usage;
 pub struct LlmCallObservation {
     /// Model selected for the completed call.
     pub selected_model: String,
-    /// Routing tier attached to the selected model, when present.
-    pub tier: Option<String>,
-    /// Whether this was the routed backend call rather than classifier or judge overhead.
-    pub is_routed: bool,
+    /// Whether this call generated an answer rather than a routing verdict.
+    pub is_answer_call: bool,
     /// Whether the call completed successfully.
     pub is_success: bool,
     /// Time spent waiting for the model call to resolve.

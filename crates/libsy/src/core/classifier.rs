@@ -71,8 +71,8 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
 /// Scores targets from the current request and the composition's state.
 #[async_trait]
 pub trait Classifier<S = ()>: Send + Sync {
-    /// Stable tier represented by `selected_model`, when this classifier defines one.
-    fn routing_tier(&self, _selected_model: &str) -> Option<&'static str> {
+    /// Stable tier represented by `selected_target_id`, when this classifier defines one.
+    fn routing_tier(&self, _selected_target_id: &str) -> Option<&'static str> {
         None
     }
 

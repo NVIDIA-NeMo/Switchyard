@@ -211,8 +211,7 @@ pub(crate) fn record_classifier_fail_open(judge_model: &str, reason: &'static st
 pub(crate) fn record_llm_call(
     algorithm: &str,
     selected_model: &str,
-    tier: Option<&str>,
-    is_routed: bool,
+    is_answer_call: bool,
     duration: Duration,
     result: &Result<Response>,
     span: &Span,
@@ -235,12 +234,9 @@ pub(crate) fn record_llm_call(
         .build()
         .record(duration.as_secs_f64() * 1000.0, &call_attributes);
 
-    if is_routed {
+    if is_answer_call {
         TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
-        let mut routed_attributes = vec![KeyValue::new("model", selected_model.to_string())];
-        if let Some(tier) = tier {
-            routed_attributes.push(KeyValue::new("tier", tier.to_string()));
-        }
+        let routed_attributes = [KeyValue::new("model", selected_model.to_string())];
         if result.is_ok() {
             meter
                 .u64_counter("switchyard.requests")
@@ -292,9 +288,9 @@ pub(crate) fn record_llm_call(
 
 /// Records one published routing decision: the decision counter plus a
 /// structured debug event carrying the decision's reasoning.
-pub(crate) fn record_decision(ctx: &Context, decision: &dyn Decision) {
+pub(crate) fn record_decision(ctx: &Context, decision: &Decision) {
     let algorithm = algorithm_label(ctx);
-    let selected_model = decision.selected_model();
+    let selected_model = decision.selected_target_id();
     tracing::debug!(
         target: TRACING_TARGET,
         algorithm,
