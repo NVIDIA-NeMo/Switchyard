@@ -91,7 +91,7 @@ async fn ask(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<Str
 
     // model_name wins over request.llm_request.model; it is also sent upstream.
     let response = client
-        .call_rewrite_model(Context::default(), request, Some("gpt-4o-mini"))
+        .call_rewrite_model(request, Some("gpt-4o-mini"))
         .await?;
 
     match response.llm_response {
@@ -120,7 +120,7 @@ async fn stream(
     let request = Request { llm_request, raw_request: None, metadata: None };
 
     let response = client
-        .call_rewrite_model(Context::default(), request, Some("gpt-4o-mini"))
+        .call_rewrite_model(request, Some("gpt-4o-mini"))
         .await?;
 
     if let LlmResponse::Stream(mut chunks) = response.llm_response {

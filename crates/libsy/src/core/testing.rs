@@ -17,10 +17,10 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use switchyard_protocol::{
-    Context, Decision, LlmClientError, LlmResponse, Request, Response, text_response,
+    Decision, LlmClientError, LlmResponse, Request, Response, text_response,
 };
 
-use crate::core::algorithm::{Algorithm, CallModelRequest};
+use crate::core::algorithm::{Algorithm, CallModel};
 use crate::{LibsyError, Result};
 
 /// The result a fake client hands back for one offloaded call.
@@ -29,15 +29,15 @@ pub(crate) type ServeResult = std::result::Result<Response, LlmClientError>;
 /// Answers offloaded model calls. Returning `Err` propagates a failed *model* call back into
 /// the algorithm, which may route around it.
 pub(crate) trait Serve: Send + Sync + 'static {
-    fn serve(&self, decision: Arc<Decision>, request: Request) -> BoxFuture<'static, ServeResult>;
+    fn serve(&self, decision: Decision, request: Request) -> BoxFuture<'static, ServeResult>;
 }
 
 impl<F, Fut> Serve for F
 where
-    F: Fn(Arc<Decision>, Request) -> Fut + Send + Sync + 'static,
+    F: Fn(Decision, Request) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ServeResult> + Send + 'static,
 {
-    fn serve(&self, decision: Arc<Decision>, request: Request) -> BoxFuture<'static, ServeResult> {
+    fn serve(&self, decision: Decision, request: Request) -> BoxFuture<'static, ServeResult> {
         Box::pin(self(decision, request))
     }
 }
@@ -45,12 +45,11 @@ where
 /// Run `algorithm` to completion, serving each offloaded call with `serve`.
 pub(crate) async fn test_drive(
     algorithm: Arc<dyn Algorithm>,
-    ctx: Context,
     request: Request,
     serve: impl Serve,
-) -> Result<(Vec<Arc<Decision>>, Response)> {
+) -> Result<(Vec<Decision>, Response)> {
     let serve = Arc::new(serve);
-    crate::drive(algorithm, ctx, request, move |call| {
+    crate::drive(algorithm, request, move |call| {
         fulfill(Arc::clone(&serve), call)
     })
     .await
@@ -58,11 +57,12 @@ pub(crate) async fn test_drive(
 
 /// Serve one call and fulfill its promise, mapping failures the way a host does so
 /// error-shape assertions match production.
-async fn fulfill(serve: Arc<impl Serve>, call: CallModelRequest) -> Result<()> {
-    let routed = call.get_routed().clone();
-    let target = routed.decision.selected_model_id().to_string();
+async fn fulfill(serve: Arc<impl Serve>, call: CallModel) -> Result<()> {
+    let request = call.request.clone();
+    let decision = call.decision.clone();
+    let target = decision.selected_model_id().to_string();
     let result = serve
-        .serve(routed.decision, routed.request)
+        .serve(decision, request)
         .await
         .map_err(|source| LibsyError::client_call(target, source));
     call.respond(result)
@@ -71,7 +71,7 @@ async fn fulfill(serve: Arc<impl Serve>, call: CallModelRequest) -> Result<()> {
 /// Answers with the selected model name as the completion — what most routing tests need,
 /// since they assert on *which* target was called.
 pub(crate) fn echo() -> impl Serve {
-    |decision: Arc<Decision>, _request: Request| async move { Ok(reply(decision.selected_model_id())) }
+    |decision: Decision, _request: Request| async move { Ok(reply(decision.selected_model_id())) }
 }
 
 /// A buffered response whose completion text is `completion`.

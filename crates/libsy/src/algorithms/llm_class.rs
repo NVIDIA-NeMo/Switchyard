@@ -21,13 +21,11 @@ use super::util::llm_judge::{
     SerdeDecoder, StructuredJudge,
 };
 use super::util::target_selector::TargetSelectorPolicy;
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet, RoutedRequest};
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
-use switchyard_protocol::{
-    AggLlmResponse, Context, LlmClientError, LlmResponse, Request, Response,
-};
+use switchyard_protocol::{AggLlmResponse, LlmClientError, LlmResponse, Request, Response};
 
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../prompts/capability-classifier/schema.json");
@@ -511,23 +509,19 @@ impl Classifier<State> for EscalationClassifier {
         }
 
         // Call efficient model and buffer the response so the judge can read it.
-        // `Classifier::score` takes no `ctx`, so inner calls use Context::default() and their
-        // spans carry algorithm="" rather than the algorithm name. Known gap shared with the
-        // task classifier's judge consultation.
         //
         // If the efficient model exceeds its context window, fall through to capable: returning
         // `(decisive(capable), None)` tells FallThrough::execute to call
         // call_model_with_fallback with the capable target instead of surfacing the error.
         let efficient_response = match driver
-            .call_model(RoutedRequest {
-                request: request.clone(),
-                decision: Arc::new(Decision::new(
+            .call_model(
+                request.clone(),
+                Decision::new(
                     self.efficient.semantic_name.clone(),
                     Some("escalation classifier: efficient tier".into()),
                     true,
-                )),
-                ctx: Context::default(),
-            })
+                ),
+            )
             .await
         {
             Ok(r) => r,
@@ -938,11 +932,10 @@ impl Algorithm for LlmTaskClassifier {
 
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
-        self.route.execute(ctx, driver, request).await
+        self.route.execute(driver, request).await
     }
 }
 
@@ -961,7 +954,7 @@ mod tests {
 
     use crate::algorithms::util::llm_judge::Judge;
     use crate::core::testing::{Serve, reply, test_drive};
-    use switchyard_protocol::{Context, LlmResponse, Response};
+    use switchyard_protocol::{LlmResponse, Response};
 
     const TEST_THRESHOLD: f64 = 0.5;
 
@@ -1031,7 +1024,7 @@ mod tests {
 
         fn serve(self: &Arc<Self>) -> impl Serve {
             let recorder = Arc::clone(self);
-            move |decision: Arc<Decision>, request: Request| {
+            move |decision: Decision, request: Request| {
                 let recorder = Arc::clone(&recorder);
                 async move {
                     let model = decision.selected_model_id().to_string();
@@ -1075,7 +1068,7 @@ mod tests {
 
     /// The judge times out; every other target answers normally.
     fn unreachable_judge() -> impl Serve {
-        |decision: Arc<Decision>, request: Request| async move {
+        |decision: Decision, request: Request| async move {
             let model = decision.selected_model_id().to_string();
             if model == "judge" {
                 return Err(LlmClientError::Timeout {
@@ -1138,13 +1131,7 @@ mod tests {
     async fn an_unreachable_judge_routes_capable_instead_of_failing_the_request() -> Result<()> {
         let router = router()?;
 
-        let (trace, response) = test_drive(
-            router,
-            Context::default(),
-            classify_request(),
-            unreachable_judge(),
-        )
-        .await?;
+        let (trace, response) = test_drive(router, classify_request(), unreachable_judge()).await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model_id()), Some("capable"));
         assert_eq!(
@@ -1160,20 +1147,8 @@ mod tests {
         let router = router()?;
         let request = classify_request;
 
-        test_drive(
-            router.clone(),
-            Context::default(),
-            request(),
-            recorder.serve(),
-        )
-        .await?;
-        test_drive(
-            router.clone(),
-            Context::default(),
-            request(),
-            recorder.serve(),
-        )
-        .await?;
+        test_drive(router.clone(), request(), recorder.serve()).await?;
+        test_drive(router.clone(), request(), recorder.serve()).await?;
 
         assert_eq!(
             recorder.calls(),
@@ -1207,13 +1182,7 @@ mod tests {
             },
         })?);
 
-        test_drive(
-            router,
-            Context::default(),
-            classify_request(),
-            recorder.serve(),
-        )
-        .await?;
+        test_drive(router, classify_request(), recorder.serve()).await?;
 
         assert_eq!(recorder.judge_max_output_tokens(), vec![Some(512)]);
         Ok(())
@@ -1236,13 +1205,7 @@ mod tests {
             },
         })?);
 
-        test_drive(
-            router,
-            Context::default(),
-            classify_request(),
-            recorder.serve(),
-        )
-        .await?;
+        test_drive(router, classify_request(), recorder.serve()).await?;
 
         let prompts = recorder.judge_system_prompts();
         assert_eq!(prompts.len(), 1);
@@ -1267,20 +1230,8 @@ mod tests {
         })?);
 
         let session_request = classify_session_request;
-        test_drive(
-            router.clone(),
-            Context::default(),
-            session_request(),
-            recorder.serve(),
-        )
-        .await?;
-        test_drive(
-            router.clone(),
-            Context::default(),
-            session_request(),
-            recorder.serve(),
-        )
-        .await?;
+        test_drive(router.clone(), session_request(), recorder.serve()).await?;
+        test_drive(router.clone(), session_request(), recorder.serve()).await?;
 
         assert_eq!(recorder.calls(), vec!["judge", "efficient", "efficient"]);
         Ok(())
@@ -1304,16 +1255,9 @@ mod tests {
             },
         })?);
 
+        test_drive(router.clone(), classify_request(), recorder.serve()).await?;
         test_drive(
             router.clone(),
-            Context::default(),
-            classify_request(),
-            recorder.serve(),
-        )
-        .await?;
-        test_drive(
-            router.clone(),
-            Context::default(),
             classify_follow_up_request(),
             recorder.serve(),
         )
@@ -1837,7 +1781,7 @@ mod tests {
     /// Serves the judge target from `judge` and every other target from `model`, each with
     /// its next queued reply.
     fn queued(model: Arc<Queue>, judge: Arc<Queue>) -> impl Serve {
-        move |decision: Arc<Decision>, request: Request| {
+        move |decision: Decision, request: Request| {
             let queue = if decision.selected_model_id() == "judge" {
                 Arc::clone(&judge)
             } else {
@@ -1879,13 +1823,8 @@ mod tests {
         let model = Queue::new(["efficient answer"]);
         let router = escalation_router()?;
 
-        let (trace, response) = test_drive(
-            router,
-            Context::default(),
-            classify_request(),
-            queued(model, judge),
-        )
-        .await?;
+        let (trace, response) =
+            test_drive(router, classify_request(), queued(model, judge)).await?;
 
         // The efficient model is the serving target, and the response comes from its call.
         assert_eq!(
@@ -1923,13 +1862,7 @@ mod tests {
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         })?);
 
-        test_drive(
-            router,
-            Context::default(),
-            classify_request(),
-            recorder.serve(),
-        )
-        .await?;
+        test_drive(router, classify_request(), recorder.serve()).await?;
 
         let prompts = recorder.judge_system_prompts();
         assert_eq!(prompts.len(), 1);
@@ -1945,13 +1878,8 @@ mod tests {
         let model = Queue::new(["efficient draft", "capable answer"]);
         let router = escalation_router()?;
 
-        let (trace, response) = test_drive(
-            router,
-            Context::default(),
-            classify_request(),
-            queued(model, judge),
-        )
-        .await?;
+        let (trace, response) =
+            test_drive(router, classify_request(), queued(model, judge)).await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model_id()), Some("capable"));
         assert!(
@@ -1978,18 +1906,11 @@ mod tests {
         let session_request = classify_session_request();
         test_drive(
             router.clone(),
-            Context::default(),
             session_request.clone(),
             queued(Arc::clone(&model), Arc::clone(&judge)),
         )
         .await?;
-        let (trace, _) = test_drive(
-            router.clone(),
-            Context::default(),
-            session_request,
-            queued(model, judge),
-        )
-        .await?;
+        let (trace, _) = test_drive(router.clone(), session_request, queued(model, judge)).await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model_id()), Some("capable"));
         Ok(())
@@ -2003,7 +1924,7 @@ mod tests {
         let router = escalation_router()?;
 
         // Efficient overflows, capable answers, and the judge must never be called.
-        let serve = |decision: Arc<Decision>, _request: Request| async move {
+        let serve = |decision: Decision, _request: Request| async move {
             match decision.selected_model_id() {
                 "efficient" => Err(LlmClientError::ContextWindowExceeded {
                     model: decision.selected_model_id().to_string(),
@@ -2014,8 +1935,7 @@ mod tests {
             }
         };
 
-        let (trace, response) =
-            test_drive(router, Context::default(), classify_request(), serve).await?;
+        let (trace, response) = test_drive(router, classify_request(), serve).await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model_id()), Some("capable"));
         assert_eq!(

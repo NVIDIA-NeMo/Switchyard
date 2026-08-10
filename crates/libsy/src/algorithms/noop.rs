@@ -11,7 +11,7 @@ use switchyard_protocol::{
 
 use crate::Result;
 use crate::core::algorithm::{Algorithm, Driver};
-use switchyard_protocol::{Context, Decision};
+use switchyard_protocol::Decision;
 
 /// Test helper that returns a hard-coded response without routing or model I/O.
 pub struct Noop {}
@@ -24,7 +24,6 @@ impl Algorithm for Noop {
 
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
@@ -32,12 +31,12 @@ impl Algorithm for Noop {
             .requested_model()
             .unwrap_or("switchyard/noop")
             .to_string();
-        let decision: Arc<Decision> = Arc::new(Decision::new(
+        let decision: Decision = Decision::new(
             model.clone(),
             Some("noop returned its synthetic response".to_string()),
             true,
-        ));
-        driver.info(ctx, decision.clone()).await?;
+        );
+        driver.info(decision.clone()).await?;
 
         let llm_response = LlmResponse::Agg(AggLlmResponse {
             id: Some("switchyard-noop".to_string()),
@@ -82,7 +81,7 @@ mod tests {
         // `Noop` synthesizes its own response and never offloads a call, so `echo` is
         // never reached.
         let a: Arc<dyn Algorithm> = Arc::new(Noop {});
-        let (decisions, response) = test_drive(a, Context::default(), request, echo()).await?;
+        let (decisions, response) = test_drive(a, request, echo()).await?;
         let Some(decision) = decisions.first() else {
             panic!("Expected exactly one Decision");
         };

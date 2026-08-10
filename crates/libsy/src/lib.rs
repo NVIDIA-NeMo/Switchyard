@@ -6,8 +6,7 @@
 
 mod core;
 pub use core::algorithm::{
-    Algorithm, CallModelRequest, Driver, LlmTarget, LlmTargetSet, RoutedRequest, Step, StepStream,
-    drive,
+    Algorithm, CallModel, Driver, LlmTarget, LlmTargetSet, Step, StepStream, drive,
 };
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::processor::{Event, Processor};
@@ -41,7 +40,6 @@ pub use algorithms::util::stage::{
 };
 
 mod observability;
-pub use observability::algorithm_label;
 
 /// Registers process-wide compatibility gauges with the global meter provider.
 ///

@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use switchyard_libsy::{Algorithm, CallModelRequest, LibsyError, Result, algorithm_label, drive};
-use switchyard_protocol::{Context, Decision, LlmClientError, Request, Response, RoutedLlmClient};
+use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, drive};
+use switchyard_protocol::{Decision, LlmClientError, Request, Response, RoutedLlmClient};
 
 use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
 use crate::{metrics, observability};
@@ -38,16 +38,15 @@ use crate::{metrics, observability};
 pub async fn run(
     algorithm: Arc<dyn Algorithm>,
     clients: ClientRouter,
-    ctx: Context,
     request: Request,
     observer: Option<RunObserver>,
-) -> Result<(Vec<Arc<Decision>>, Response)> {
+) -> Result<(Vec<Decision>, Response)> {
     let algorithm_name = algorithm.name().to_string();
     // The output from `serve` goes in here: when each successful routed call was in
     // flight. Everything else the run spent time on is routing overhead.
     let routed_calls = Arc::new(Mutex::new(RoutedCallWindows::default()));
     let run_started = Instant::now();
-    let result = drive(algorithm, ctx, request, {
+    let result = drive(algorithm, request, {
         let observer = observer.clone();
         let routed_calls = Arc::clone(&routed_calls);
         move |call| {
@@ -108,14 +107,14 @@ impl RoutedCallWindows {
     name = "libsy.client_call",
     skip_all,
     fields(
-        algorithm = algorithm_label(&call.get_routed().ctx),
-        switchyard.algorithm = algorithm_label(&call.get_routed().ctx),
-        selected_model = call.get_decision().selected_model_id(),
+        algorithm = call.algorithm,
+        switchyard.algorithm = call.algorithm,
+        selected_model = call.decision.selected_model_id(),
         otel.kind = "client",
-        otel.name = %format_args!("chat {}", call.get_decision().selected_model_id()),
+        otel.name = %format_args!("chat {}", call.decision.selected_model_id()),
         openinference.span.kind = "LLM",
         gen_ai.operation.name = "chat",
-        gen_ai.request.model = call.get_decision().selected_model_id(),
+        gen_ai.request.model = call.decision.selected_model_id(),
         gen_ai.request.stream = tracing::field::Empty,
         gen_ai.request.temperature = tracing::field::Empty,
         gen_ai.request.top_p = tracing::field::Empty,
@@ -141,15 +140,14 @@ impl RoutedCallWindows {
 )]
 async fn serve(
     clients: ClientRouter,
-    call: CallModelRequest,
+    call: CallModel,
     observer: Option<RunObserver>,
     // Output parameter because `drive` takes a function that returns a plain `Result<()>`.
     routed_calls: Arc<Mutex<RoutedCallWindows>>,
 ) -> Result<()> {
     let span = tracing::Span::current();
-    observability::record_gen_ai_request(&span, &call.get_routed().request.llm_request);
+    observability::record_gen_ai_request(&span, &call.request.llm_request);
     if let Some(session_id) = call
-        .get_routed()
         .request
         .metadata
         .as_ref()
@@ -157,19 +155,16 @@ async fn serve(
     {
         span.record("gen_ai.conversation.id", session_id);
     }
-    let routed = call.get_routed().clone();
-    let target = routed.decision.selected_model_id().to_string();
-    let is_answer_call = call.get_decision().is_answer_call();
+    let request = call.request.clone();
+    let decision = call.decision.clone();
+    let target = decision.selected_model_id().to_string();
+    let is_answer_call = decision.is_answer_call();
     // Resolved before the clock starts: picking the client is Switchyard's work, not
     // the provider's, so it belongs in the routing overhead.
     let client = clients.route(&target);
     let started = Instant::now();
     let result = match client {
-        Ok(client) => {
-            client
-                .call(routed.ctx, routed.request, routed.decision)
-                .await
-        }
+        Ok(client) => client.call(request, decision).await,
         Err(error) => Err(error),
     }
     .map_err(|source| LibsyError::client_call(target, source));
@@ -179,7 +174,7 @@ async fn serve(
     let result = observability::observe_client_call(result);
     if let Some(observer) = observer {
         observer(RunObservation::LlmCall(LlmCallObservation {
-            selected_model: call.get_decision().selected_model_id().to_string(),
+            selected_model: call.decision.selected_model_id().to_string(),
             is_answer_call,
             is_success: result.is_ok(),
             duration,

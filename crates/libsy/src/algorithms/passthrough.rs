@@ -8,8 +8,8 @@ use std::sync::Arc;
 use switchyard_protocol::{Request, Response};
 
 use crate::Result;
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget, RoutedRequest};
-use switchyard_protocol::{Context, Decision};
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget};
+use switchyard_protocol::Decision;
 
 /// Routing algorithm that always calls one configured target.
 pub struct Passthrough {
@@ -31,26 +31,19 @@ impl Algorithm for Passthrough {
 
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
-        let decision: Arc<Decision> = Arc::new(Decision::new(
+        let decision: Decision = Decision::new(
             self.target.semantic_name.clone(),
             Some(format!(
                 "passthrough selected target '{}'",
                 self.target.semantic_name
             )),
             true,
-        ));
-        driver.info(ctx.clone(), decision.clone()).await?;
-        driver
-            .call_model(RoutedRequest {
-                request,
-                decision,
-                ctx,
-            })
-            .await
+        );
+        driver.info(decision.clone()).await?;
+        driver.call_model(request, decision).await
     }
 }
 
@@ -61,7 +54,7 @@ mod tests {
     use super::Passthrough;
     use crate::core::algorithm::{Algorithm, LlmTarget};
     use crate::core::testing::{echo, test_drive};
-    use switchyard_protocol::{Context, Request, completion_text, text_request};
+    use switchyard_protocol::{Request, completion_text, text_request};
 
     #[tokio::test]
     async fn test_passthrough() -> crate::Result<()> {
@@ -74,7 +67,7 @@ mod tests {
         let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(LlmTarget {
             semantic_name: MODEL_ID.to_string(),
         }));
-        let (trace, response) = test_drive(algorithm, Context::default(), request, echo()).await?;
+        let (trace, response) = test_drive(algorithm, request, echo()).await?;
 
         assert_eq!(
             response

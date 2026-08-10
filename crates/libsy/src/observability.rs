@@ -41,8 +41,8 @@ use opentelemetry::metrics::{Meter, ObservableGauge};
 use opentelemetry::{KeyValue, global};
 use tracing::Span;
 
-use crate::Result;
-use switchyard_protocol::{Context, Decision, Request, Response};
+use crate::{DriverError, LibsyError, Result};
+use switchyard_protocol::{Decision, Request, Response};
 
 const METRICS_SCOPE: &str = "switchyard";
 const TRACING_TARGET: &str = "libsy";
@@ -50,22 +50,6 @@ const TRACING_TARGET: &str = "libsy";
 static TOTAL_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_ERRORS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_GAUGES: OnceLock<(ObservableGauge<u64>, ObservableGauge<u64>)> = OnceLock::new();
-
-/// [`Context::values`] key under which `run_stream` stamps the algorithm's
-/// telemetry label ([`Algorithm::name`](crate::Algorithm::name)).
-pub(crate) const ALGORITHM_KEY: &str = "algorithm";
-
-/// The algorithm label [`Algorithm::run_stream`](crate::Algorithm::run_stream) stamps into
-/// a request context; empty until stamped.
-///
-/// A host instrumenting the calls it serves reads this to attribute its own spans to the
-/// algorithm that produced them.
-pub fn algorithm_label(ctx: &Context) -> &str {
-    ctx.values
-        .get(ALGORITHM_KEY)
-        .map(String::as_str)
-        .unwrap_or("")
-}
 
 /// The `libsy`-scoped meter from the globally installed provider.
 pub(crate) fn meter() -> Meter {
@@ -92,9 +76,18 @@ pub(crate) fn initialize_metrics() {
     });
 }
 
-/// `outcome` attribute value for a result: `ok` or `error`.
-fn outcome_value<T>(result: &Result<T>) -> &'static str {
-    if result.is_ok() { "ok" } else { "error" }
+/// Whether a result is a call the consumer deliberately abandoned rather than a failure.
+pub(crate) fn is_abandoned<T>(result: &Result<T>) -> bool {
+    matches!(result, Err(LibsyError::Driver(DriverError::Abandoned)))
+}
+
+/// `outcome` attribute value for a result: `ok`, `abandoned`, or `error`.
+pub(crate) fn outcome_value<T>(result: &Result<T>) -> &'static str {
+    match result {
+        Ok(_) => "ok",
+        Err(LibsyError::Driver(DriverError::Abandoned)) => "abandoned",
+        Err(_) => "error",
+    }
 }
 
 /// Span covering one algorithm run (the whole `create_run_task` execution).
@@ -149,13 +142,12 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
 /// histogram, span outcome, and failure log when it resolves.
 /// Executes inside the `libsy.run` span its caller instruments the task with.
 pub(crate) async fn observe_run(
-    ctx: Context,
+    algorithm: &str,
     run: impl Future<Output = Result<Response>>,
 ) -> Result<Response> {
     let started = Instant::now();
     let result = run.await;
     let duration = started.elapsed();
-    let algorithm = algorithm_label(&ctx);
     record_run(algorithm, duration, &result, &Span::current());
     result
 }
@@ -166,7 +158,11 @@ pub(crate) async fn observe_run(
 fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, span: &Span) {
     let outcome = outcome_value(result);
     span.record("outcome", outcome);
-    if let Err(error) = result {
+    // An abandoned run ended because the consumer took the call, not because anything went
+    // wrong, so it is counted but not reported as a failure.
+    if let Err(error) = result
+        && !is_abandoned(result)
+    {
         span.record("error", tracing::field::display(error));
         tracing::warn!(
             target: TRACING_TARGET,
@@ -234,7 +230,9 @@ pub(crate) fn record_llm_call(
         .build()
         .record(duration.as_secs_f64() * 1000.0, &call_attributes);
 
-    if is_answer_call {
+    // An abandoned answer call was never served, so it counts as neither a served
+    // request nor an error.
+    if is_answer_call && !is_abandoned(result) {
         TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
         let routed_attributes = [KeyValue::new("model", selected_model.to_string())];
         if result.is_ok() {
@@ -288,8 +286,7 @@ pub(crate) fn record_llm_call(
 
 /// Records one published routing decision: the decision counter plus a
 /// structured debug event carrying the decision's reasoning.
-pub(crate) fn record_decision(ctx: &Context, decision: &Decision) {
-    let algorithm = algorithm_label(ctx);
+pub(crate) fn record_decision(algorithm: &str, decision: &Decision) {
     let selected_model = decision.selected_model_id();
     tracing::debug!(
         target: TRACING_TARGET,

@@ -8,7 +8,6 @@
 //! the route.
 
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -18,11 +17,11 @@ use switchyard_protocol::{
 };
 
 use super::classifier_contract::ClassifierContract;
-use crate::core::algorithm::{Driver, LlmTarget, RoutedRequest};
+use crate::core::algorithm::{Driver, LlmTarget};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Decision, LlmClientError, Request, Response};
+use switchyard_protocol::{Decision, LlmClientError, Request, Response};
 
 /// Builds the classifier-specific message view presented to a structured judge.
 pub(crate) trait ClassifierInput: Send + Sync {
@@ -227,15 +226,14 @@ where
         let judge_model = self.target.semantic_name.as_str();
 
         let response = driver
-            .call_model(RoutedRequest {
-                request: self.judge.build_request(state, request),
-                decision: Arc::new(Decision::new(
+            .call_model(
+                self.judge.build_request(state, request),
+                Decision::new(
                     self.target.semantic_name.to_string(),
                     Some("llm judge consultation".to_string()),
                     false,
-                )),
-                ctx: Context::default(),
-            })
+                ),
+            )
             .await
             .inspect_err(|error| report_fail_open(judge_model, error, libsy_error_reason(error)))
             .ok()?;
@@ -463,7 +461,7 @@ mod tests {
 
     /// Serves the single offloaded judge call with `reply` through a standalone step receiver.
     async fn score_served_with(reply: Result<Response>) -> Result<String> {
-        let (driver, step_rx) = Driver::new();
+        let (driver, step_rx) = Driver::new("test");
         let mut steps = tokio_stream::wrappers::ReceiverStream::new(step_rx);
         let classifier = classifier();
         let mut state = State::default();

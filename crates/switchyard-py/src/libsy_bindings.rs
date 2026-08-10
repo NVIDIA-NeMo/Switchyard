@@ -16,7 +16,7 @@ use switchyard_libsy::{
 };
 use switchyard_llm_client::ClientRouter;
 use switchyard_protocol::{
-    AggLlmResponse, Context, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
+    AggLlmResponse, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
     RoutedLlmClient,
 };
 
@@ -33,9 +33,8 @@ struct PythonLlmClient {
 impl RoutedLlmClient for PythonLlmClient {
     async fn call(
         &self,
-        _ctx: Context,
         request: Request,
-        _decision: Arc<Decision>,
+        _decision: Decision,
     ) -> Result<Response, LlmClientError> {
         let metadata = request.metadata;
         let future = Python::attach(|py| {
@@ -250,15 +249,10 @@ impl PyAlgorithm {
             metadata: headers.map(|headers| Metadata::from_headers(&headers)),
         };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (decisions, response) = switchyard_llm_client::run(
-                algorithm,
-                client_router,
-                Context::default(),
-                request,
-                None,
-            )
-            .await
-            .map_err(py_libsy_error)?;
+            let (decisions, response) =
+                switchyard_llm_client::run(algorithm, client_router, request, None)
+                    .await
+                    .map_err(py_libsy_error)?;
             let response = response
                 .llm_response
                 .into_agg()

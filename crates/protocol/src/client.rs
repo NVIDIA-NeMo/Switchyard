@@ -10,12 +10,10 @@
 //! in libsy's orchestration crate — so a client crate that depends only on the
 //! protocol can serve routed calls without pulling in the orchestrator.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::{Context, Request, Response};
+use crate::{Request, Response};
 
 /// A boxed client-specific error preserved as the source of a routed call failure.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -186,11 +184,6 @@ pub trait RoutedLlmClient: Send + Sync {
     /// [`decision.selected_model_id()`](Decision::selected_model_id), resolving it to the
     /// provider model this client calls.
     /// `request.llm_request.model` is the agent's original name, carried through for
-    /// reference, not a call target. `ctx` carries the request's cross-cutting state.
-    async fn call(
-        &self,
-        ctx: Context,
-        request: Request,
-        decision: Arc<Decision>,
-    ) -> Result<Response, LlmClientError>;
+    /// reference, not a call target.
+    async fn call(&self, request: Request, decision: Decision) -> Result<Response, LlmClientError>;
 }

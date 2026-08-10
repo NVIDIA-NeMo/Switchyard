@@ -104,6 +104,12 @@ pub enum DriverError {
     /// One side of a response promise was dropped before delivery.
     #[error("driver response promise was dropped")]
     ResponseDropped,
+
+    /// The consumer took the call's contents with `CallModel::into_parts` instead of
+    /// answering it, so the run ends here by the consumer's choice. Distinct from
+    /// [`ResponseDropped`](Self::ResponseDropped), which means the promise was lost.
+    #[error("model call was abandoned by the consumer")]
+    Abandoned,
 }
 
 #[cfg(test)]

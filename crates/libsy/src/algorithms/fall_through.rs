@@ -17,6 +17,7 @@
 //! remembered for the rest of its session and skipped on later turns.
 //! An unavailable target is skipped only for the current request.
 
+use std::collections::HashSet;
 use std::{
     collections::HashMap,
     sync::{Arc, Once, Weak},
@@ -33,7 +34,7 @@ use crate::core::algorithm::{
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Decision, Request, Response, RoutingFallbackReason};
+use switchyard_protocol::{Decision, Request, Response, RoutingFallbackReason};
 
 struct SessionState<S> {
     state: Arc<AsyncMutex<S>>,
@@ -161,12 +162,7 @@ where
         self
     }
     /// Executes the processor/classifier/target-call sequence for wrappers and the trait entrypoint.
-    pub(crate) async fn execute(
-        &self,
-        ctx: Context,
-        driver: Driver,
-        request: Request,
-    ) -> Result<Response> {
+    pub(crate) async fn execute(&self, driver: Driver, request: Request) -> Result<Response> {
         self.start_cleanup_task();
         let session = session_id(&request);
         let session_final = request
@@ -174,7 +170,7 @@ where
             .as_ref()
             .and_then(|metadata| metadata.session_final)
             == Some(true);
-        let result = self.execute_session(ctx, driver, request).await;
+        let result = self.execute_session(driver, request).await;
         if session_final && let Some(session) = session.as_deref() {
             self.remove_session(session);
         }
@@ -192,20 +188,17 @@ where
         });
     }
 
-    async fn execute_session(
-        &self,
-        ctx: Context,
-        driver: Driver,
-        request: Request,
-    ) -> Result<Response> {
+    async fn execute_session(&self, driver: Driver, request: Request) -> Result<Response> {
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
-        let mut ctx = ctx;
+        // Targets this turn must not route to. Scratch state for one run: seeded from the
+        // session's overflow history, then grown by each route-level failure below.
+        let mut excluded = HashSet::new();
         // Processors may rewrite the request; overflow history stays with its inbound identity.
         let identity = RoutingIdentity::from_request(&request);
         algorithm::exclude_evicted(
-            &mut ctx,
+            &mut excluded,
             &self.targets,
             &self.session_evictions,
             identity.as_ref(),
@@ -214,11 +207,13 @@ where
         let (target, decision, served, deciding) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
-                self.route(&mut state, &ctx, &driver, &mut request).await?
+                self.route(&mut state, &excluded, &driver, &mut request)
+                    .await?
             }
             None => {
                 let mut state = S::default();
-                self.route(&mut state, &ctx, &driver, &mut request).await?
+                self.route(&mut state, &excluded, &driver, &mut request)
+                    .await?
             }
         };
 
@@ -231,7 +226,7 @@ where
             Some(response) => Ok(response),
             None => {
                 algorithm::call_model_with_fallback(
-                    ctx,
+                    &mut excluded,
                     &driver,
                     &self.targets,
                     target,
@@ -266,12 +261,12 @@ where
         from: &LlmTarget,
         to: &LlmTarget,
         reason: RoutingFallbackReason,
-    ) -> Arc<Decision> {
+    ) -> Decision {
         let failure = match reason {
             RoutingFallbackReason::ContextWindow => "exceeded its context window",
             RoutingFallbackReason::Unavailable => "was unavailable",
         };
-        Arc::new(Decision::new(
+        Decision::new(
             to.semantic_name.clone(),
             Some(with_routing_tier(
                 format!(
@@ -283,7 +278,7 @@ where
                 deciding.routing_tier(&to.semantic_name),
             )),
             true,
-        ))
+        )
     }
 
     /// Returns this request's retained state without holding the registry lock.
@@ -303,12 +298,12 @@ where
     async fn route(
         &self,
         state: &mut S,
-        ctx: &Context,
+        excluded: &HashSet<String>,
         driver: &Driver,
         request: &mut Request,
     ) -> Result<(
         LlmTarget,
-        Arc<Decision>,
+        Decision,
         Option<Response>,
         Arc<dyn Classifier<S>>,
     )> {
@@ -337,7 +332,7 @@ where
 
         // 3. Resolve the target and publish the decision. When an excluded target sends
         //    the request elsewhere, the reasoning describes where it actually went.
-        let target = self.targets.resolve_target(&score.target, ctx)?;
+        let target = self.targets.resolve_target(&score.target, excluded)?;
         let reasoning = if target.semantic_name == score.target {
             (self.decision_reason)(&self.name, &score)
         } else {
@@ -346,22 +341,22 @@ where
                 score.target, target.semantic_name
             )
         };
-        let decision: Arc<Decision> = Arc::new(Decision::new(
+        let decision: Decision = Decision::new(
             target.semantic_name.clone(),
             Some(with_routing_tier(
                 reasoning,
                 deciding.routing_tier(&target.semantic_name),
             )),
             true,
-        ));
-        driver.info(ctx.clone(), decision.clone()).await?;
+        );
+        driver.info(decision.clone()).await?;
 
         // 4. Post-decision replay: every processor sees the decision so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
         for processor in &self.processors {
             let event = Event::Decision {
                 request,
-                decision: decision.as_ref(),
+                decision: &decision,
             };
             processor.process(state, event).await?;
         }
@@ -431,11 +426,10 @@ where
 
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
-        self.execute(ctx, driver, request).await
+        self.execute(driver, request).await
     }
 }
 #[cfg(test)]
@@ -463,7 +457,7 @@ mod tests {
     /// Echoes the routed model name, capturing the request it was handed so a test can
     /// assert on what actually reached the model.
     fn capturing(into: Arc<Mutex<Option<Request>>>) -> impl Serve {
-        move |decision: Arc<Decision>, request: Request| {
+        move |decision: Decision, request: Request| {
             let into = Arc::clone(&into);
             async move {
                 *into.lock() = Some(request);
@@ -491,7 +485,7 @@ mod tests {
     impl PromptRecorder {
         fn serve(self: &Arc<Self>) -> impl Serve {
             let recorder = Arc::clone(self);
-            move |decision: Arc<Decision>, request: Request| {
+            move |decision: Decision, request: Request| {
                 let recorder = Arc::clone(&recorder);
                 async move {
                     *recorder.0.lock() = Some(RecordedCall {
@@ -546,7 +540,6 @@ mod tests {
     ) -> Result<RecordedCall> {
         test_drive(
             Arc::new(router),
-            Context::default(),
             Request {
                 llm_request: text_request(Some("auto".to_string()), "fix the build"),
                 raw_request: None,
@@ -626,12 +619,11 @@ mod tests {
         router: &Arc<FallThrough<S>>,
         request: Request,
         serve: impl Serve,
-    ) -> Result<(String, Vec<Arc<Decision>>)>
+    ) -> Result<(String, Vec<Decision>)>
     where
         S: Default + Send + 'static,
     {
-        let (trace, response) =
-            test_drive(router.clone(), Context::default(), request, serve).await?;
+        let (trace, response) = test_drive(router.clone(), request, serve).await?;
         let text = response
             .llm_response
             .into_agg()
@@ -645,7 +637,7 @@ mod tests {
     async fn run_turn<S>(
         router: &Arc<FallThrough<S>>,
         serve: impl Serve,
-    ) -> Result<(String, Vec<Arc<Decision>>)>
+    ) -> Result<(String, Vec<Decision>)>
     where
         S: Default + Send + 'static,
     {
@@ -653,10 +645,7 @@ mod tests {
     }
 
     /// Drives a fresh router through one turn with a specific `serve`.
-    async fn run_with(
-        router: FallThrough,
-        serve: impl Serve,
-    ) -> Result<(String, Vec<Arc<Decision>>)> {
+    async fn run_with(router: FallThrough, serve: impl Serve) -> Result<(String, Vec<Decision>)> {
         run_turn(&Arc::new(router), serve).await
     }
 
@@ -671,7 +660,7 @@ mod tests {
         overflowing: &'static [&'static str],
         calls: Arc<Mutex<Vec<String>>>,
     ) -> impl Serve {
-        move |decision: Arc<Decision>, _request: Request| {
+        move |decision: Decision, _request: Request| {
             let calls = Arc::clone(&calls);
             async move {
                 let model = decision.selected_model_id().to_string();
@@ -693,7 +682,7 @@ mod tests {
         unavailable: &'static [&'static str],
         calls: Arc<Mutex<Vec<String>>>,
     ) -> impl Serve {
-        move |decision: Arc<Decision>, _request: Request| {
+        move |decision: Decision, _request: Request| {
             let calls = Arc::clone(&calls);
             async move {
                 let model = decision.selected_model_id().to_string();
@@ -982,21 +971,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_excluded_target_reports_the_target_it_fell_back_to() -> Result<()> {
+    async fn a_target_barred_by_overflow_history_reports_the_fallback() -> Result<()> {
         // Headers and usage metrics read the decision, so it must describe the real call.
         let router = Arc::new(
             FallThrough::<()>::new(target_set(&["weak", "strong"]))
                 .with_classifier(fixed(vec![score("weak", 0.9)])),
         );
-        let mut ctx = Context::default();
-        ctx.exclude_target("weak");
-        let (trace, response) = test_drive(router, ctx, request(), echo()).await?;
-        let text = response
-            .llm_response
-            .into_agg()
-            .await
-            .map(|agg| completion_text(&agg))
-            .map_err(|error| LibsyError::external("aggregating fall-through response", error))?;
+        // The first turn teaches the session that "weak" overflows; the second is barred
+        // from it before calling, so routing redirects and must say where it went.
+        run_turn(&router, overflows(&["weak"])).await?;
+        let (text, trace) = run_turn(&router, overflows(&["weak"])).await?;
 
         assert_eq!(text, "strong");
         assert_eq!(trace[0].selected_model_id(), "strong");
@@ -1284,7 +1268,7 @@ mod tests {
             ..request()
         };
 
-        let result = test_drive(router.clone(), Context::default(), final_request, echo()).await;
+        let result = test_drive(router.clone(), final_request, echo()).await;
 
         assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
         let states = router

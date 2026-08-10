@@ -29,7 +29,7 @@ use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Request, Response};
+use switchyard_protocol::{Request, Response};
 
 /// Telemetry name for a router this module assembles.
 const STAGE_ROUTER: &str = "stage_router";
@@ -145,11 +145,10 @@ impl Algorithm for StageRouter {
 
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
-        self.route.execute(ctx, driver, request).await
+        self.route.execute(driver, request).await
     }
 }
 
@@ -232,7 +231,7 @@ mod tests {
     use crate::core::classifier::Score;
     use crate::core::state::StateValue;
     use crate::core::testing::{Serve, reply, test_drive};
-    use switchyard_protocol::{Context, Decision, Metadata, Response};
+    use switchyard_protocol::{Decision, Metadata, Response};
 
     fn tier_target(name: &str) -> LlmTarget {
         LlmTarget {
@@ -379,7 +378,7 @@ mod tests {
         /// back so the fallback classifier has an answer without a real model.
         fn serve(self: &Arc<Self>) -> impl Serve {
             let recorder = Arc::clone(self);
-            move |decision: Arc<Decision>, request: Request| {
+            move |decision: Decision, request: Request| {
                 let recorder = Arc::clone(&recorder);
                 async move {
                     let target = decision.selected_model_id().to_string();
@@ -494,16 +493,9 @@ mod tests {
     async fn a_signal_driven_escalation_hands_the_note_to_the_model() -> Result<()> {
         let recorder = Arc::new(Recorder::default());
         let router = recording_router(config_with_notes())?;
-        let ctx = Context::default();
 
-        test_drive(
-            router.clone(),
-            ctx.clone(),
-            turn_request(false),
-            recorder.serve(),
-        )
-        .await?;
-        test_drive(router.clone(), ctx, turn_request(true), recorder.serve()).await?;
+        test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
+        test_drive(router.clone(), turn_request(true), recorder.serve()).await?;
 
         let calls = recorder.routed();
         assert_eq!(calls[0].target, "weak");
@@ -529,13 +521,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let router = recording_router(config_with_judge(&recorder, 0.1))?;
 
-        let (trace, _) = test_drive(
-            router.clone(),
-            Context::default(),
-            turn_request(false),
-            recorder.serve(),
-        )
-        .await?;
+        let (trace, _) = test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
 
         let calls = recorder.calls.lock();
         assert!(
@@ -565,13 +551,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let router = recording_router(config_with_judge(&recorder, 0.9))?;
 
-        test_drive(
-            router.clone(),
-            Context::default(),
-            turn_request(true),
-            recorder.serve(),
-        )
-        .await?;
+        test_drive(router.clone(), turn_request(true), recorder.serve()).await?;
 
         assert!(
             !recorder.calls.lock().iter().any(|c| c.target == JUDGE),
@@ -585,17 +565,10 @@ mod tests {
     async fn the_judges_verdict_is_not_pinned_to_the_session() -> Result<()> {
         let recorder = Arc::new(Recorder::default());
         let router = recording_router(config_with_judge(&recorder, 0.1))?;
-        let ctx = Context::default();
 
-        test_drive(
-            router.clone(),
-            ctx.clone(),
-            turn_request(false),
-            recorder.serve(),
-        )
-        .await?;
+        test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
         *recorder.judge_p_solve.lock() = 0.9;
-        test_drive(router.clone(), ctx, turn_request(false), recorder.serve()).await?;
+        test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
 
         let routed = recorder.routed();
         assert_eq!(routed[0].target, "strong");
@@ -618,13 +591,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let router = recording_router(config_with_judge(&recorder, 42.0))?;
 
-        test_drive(
-            router.clone(),
-            Context::default(),
-            turn_request(false),
-            recorder.serve(),
-        )
-        .await?;
+        test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
 
         assert_eq!(recorder.routed()[0].target, "weak");
         Ok(())
@@ -635,13 +602,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let router = recording_router(config_with_judge(&recorder, 0.9))?;
 
-        test_drive(
-            router.clone(),
-            Context::default(),
-            turn_request(false),
-            recorder.serve(),
-        )
-        .await?;
+        test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
 
         let judged = recorder
             .calls

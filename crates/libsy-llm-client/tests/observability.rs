@@ -34,12 +34,12 @@ use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
     Algorithm, Driver, LibsyError, LlmClassifierConfig, LlmTarget, LlmTargetSet, LlmTaskClassifier,
-    PickerMode, RoutedRequest, StageRouter, StageRouterConfig, Step, TaskClassifierConfig,
+    PickerMode, StageRouter, StageRouterConfig, Step, TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{
-    ContentBlock, Context, Decision, LlmRequest, LlmResponse, Message, Metadata, Request, Response,
-    Role, RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
+    ContentBlock, Decision, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
+    RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
 };
 use switchyard_protocol::{
     LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, text_request,
@@ -334,9 +334,8 @@ struct ClassifierClient {
 impl RoutedLlmClient for ClassifierClient {
     async fn call(
         &self,
-        _ctx: Context,
         _request: Request,
-        decision: Arc<Decision>,
+        decision: Decision,
     ) -> Result<Response, LlmClientError> {
         let model = decision.selected_model_id().to_string();
         let completion = if decision.is_answer_call() {
@@ -368,9 +367,8 @@ struct JudgeClient {
 impl RoutedLlmClient for JudgeClient {
     async fn call(
         &self,
-        _ctx: Context,
         _request: Request,
-        decision: Arc<Decision>,
+        decision: Decision,
     ) -> Result<Response, LlmClientError> {
         if decision.is_answer_call() {
             return Ok(Response {
@@ -409,9 +407,8 @@ impl RoutedLlmClient for JudgeClient {
 impl RoutedLlmClient for UsageClient {
     async fn call(
         &self,
-        _ctx: Context,
         _request: Request,
-        decision: Arc<Decision>,
+        decision: Decision,
     ) -> Result<Response, switchyard_protocol::LlmClientError> {
         let mut response = text_response(
             Some(decision.selected_model_id().to_string()),
@@ -442,7 +439,6 @@ impl Algorithm for SingleCallAlgo {
 
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> switchyard_libsy::Result<Response> {
@@ -452,19 +448,13 @@ impl Algorithm for SingleCallAlgo {
             .first()
             .ok_or(LibsyError::NoTargets)?
             .clone();
-        let decision = Arc::new(Decision::new(
+        let decision = Decision::new(
             target.semantic_name.clone(),
             Some(format!("picked '{}'", target.semantic_name)),
             true,
-        ));
-        driver.info(ctx.clone(), decision.clone()).await?;
-        driver
-            .call_model(RoutedRequest {
-                request,
-                decision,
-                ctx,
-            })
-            .await
+        );
+        driver.info(decision.clone()).await?;
+        driver.call_model(request, decision).await
     }
 }
 
@@ -499,15 +489,8 @@ async fn run(
     algorithm: Arc<dyn Algorithm>,
     client: Arc<dyn RoutedLlmClient>,
     request: Request,
-) -> switchyard_libsy::Result<(Vec<Arc<Decision>>, Response)> {
-    switchyard_llm_client::run(
-        algorithm,
-        ClientRouter::single(client),
-        Context::default(),
-        request,
-        None,
-    )
-    .await
+) -> switchyard_libsy::Result<(Vec<Decision>, Response)> {
+    switchyard_llm_client::run(algorithm, ClientRouter::single(client), request, None).await
 }
 
 fn classifier_router(
@@ -918,7 +901,6 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
     let (_, response) = switchyard_llm_client::run(
         algo(ALGO, MODEL),
         ClientRouter::single(client),
-        Context::default(),
         request_with_metadata("observed-session", "observed-correlation"),
         Some(observer),
     )
@@ -954,9 +936,8 @@ struct StreamingUsageClient;
 impl RoutedLlmClient for StreamingUsageClient {
     async fn call(
         &self,
-        _ctx: Context,
         _request: Request,
-        decision: Arc<Decision>,
+        decision: Decision,
     ) -> Result<Response, LlmClientError> {
         let usage = Usage {
             input_tokens: Some(13),
@@ -987,9 +968,8 @@ struct TimeoutClient;
 impl RoutedLlmClient for TimeoutClient {
     async fn call(
         &self,
-        _ctx: Context,
         _request: Request,
-        _decision: Arc<Decision>,
+        _decision: Decision,
     ) -> Result<Response, LlmClientError> {
         Err(LlmClientError::Timeout {
             source: Box::new(TestError("upstream timed out")),
@@ -1107,10 +1087,7 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
         u64_gauge_value(&before, "switchyard.total_errors").unwrap_or_default();
 
     // The call is offloaded and we fail it by hand, without a client.
-    let stream = algo(ALGO, MODEL).run_stream(
-        Context::default(),
-        request_with_metadata("obs-session-2", "obs-corr-2"),
-    );
+    let stream = algo(ALGO, MODEL).run_stream(request_with_metadata("obs-session-2", "obs-corr-2"));
     tokio::pin!(stream);
 
     let mut saw_error_step = false;
@@ -1246,7 +1223,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
             &snapshots,
             "switchyard.llm_calls",
             &[
-                ("algorithm", ""),
+                ("algorithm", "llm_task_classifier"),
                 ("selected_model", "classifier"),
                 ("outcome", "ok"),
             ],
