@@ -17,7 +17,7 @@ const EXPLORING_METRIC: &str = "switchyard_stage_router_exploring";
 const PRODUCTION_INTENSITY_METRIC: &str = "switchyard_stage_router_production_intensity";
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct StageRouterCumulative {
+pub(in crate::stats) struct StageRouterCumulative {
     decisions: BTreeMap<DecisionKey, u64>,
     score: HistogramTotal,
     confidence: HistogramTotal,
@@ -79,7 +79,7 @@ pub(crate) struct MetricSummary {
 }
 
 impl StageRouterCumulative {
-    pub(super) fn collect(families: &[MetricFamily]) -> Self {
+    pub(in crate::stats) fn collect(families: &[MetricFamily]) -> Self {
         Self {
             decisions: collect_decisions(families),
             score: collect_histogram(families, SCORE_METRIC),
@@ -91,7 +91,7 @@ impl StageRouterCumulative {
         }
     }
 
-    pub(super) fn delta(&self, baseline: &Self) -> StageRouterStatsSnapshot {
+    pub(in crate::stats) fn delta(&self, baseline: &Self) -> StageRouterStatsSnapshot {
         let mut routing_decisions: BTreeMap<String, DecisionStatsSnapshot> = BTreeMap::new();
         for (key, current) in &self.decisions {
             let count = current.saturating_sub(*baseline.decisions.get(key).unwrap_or(&0));
@@ -200,7 +200,7 @@ mod tests {
     use prometheus::Registry;
 
     use super::*;
-    use crate::stats::{StatsAccumulator, algorithms::STAGE_ROUTER};
+    use crate::stats::StatsAccumulator;
 
     #[test]
     fn stage_router_projection_preserves_decisions_scores_and_reset_baseline() {
@@ -211,7 +211,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("failed to build metrics exporter: {error}"));
         let provider = SdkMeterProvider::builder().with_reader(exporter).build();
         let meter = provider.meter("switchyard");
-        let stats = StatsAccumulator::new(registry, [STAGE_ROUTER.to_string()]);
+        let stats = StatsAccumulator::new(registry, true);
 
         meter
             .u64_counter("switchyard.stage_router.routing_decisions")
