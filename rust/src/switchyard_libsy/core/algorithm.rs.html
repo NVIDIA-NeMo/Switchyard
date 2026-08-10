@@ -39,7 +39,7 @@
 <a href=#39 id=39 data-nosnippet>39</a></span><span class="kw">pub type </span>StepStream = Pin&lt;Box&lt;<span class="kw">dyn </span>Stream&lt;Item = <span class="prelude-ty">Result</span>&lt;Step&gt;&gt; + Send&gt;&gt;;
 <a href=#40 id=40 data-nosnippet>40</a>
 <a href=#41 id=41 data-nosnippet>41</a><span class="doccomment">/// A request paired with the routing [`Decision`] that produced it — the offload
-<a href=#42 id=42 data-nosnippet>42</a>/// payload a host reads (via [`CallLlmRequest::get_routed`]) to serve the call.
+<a href=#42 id=42 data-nosnippet>42</a>/// payload a host reads (via [`CallModelRequest::get_routed`]) to serve the call.
 <a href=#43 id=43 data-nosnippet>43</a>///
 <a href=#44 id=44 data-nosnippet>44</a>/// The selected model and inbound route name live in separate, unambiguous places: the model
 <a href=#45 id=45 data-nosnippet>45</a>/// identifier is [`decision.selected_model_id()`](Decision::selected_model_id), while
@@ -57,19 +57,19 @@
 <a href=#57 id=57 data-nosnippet>57</a>    </span><span class="kw">pub </span>ctx: Context,
 <a href=#58 id=58 data-nosnippet>58</a>}
 <a href=#59 id=59 data-nosnippet>59</a>
-<a href=#60 id=60 data-nosnippet>60</a><span class="doccomment">/// The host-facing half of an offloaded model call, surfaced inside [`Step::CallLlm`].
+<a href=#60 id=60 data-nosnippet>60</a><span class="doccomment">/// The host-facing half of an offloaded model call, surfaced inside [`Step::CallModel`].
 <a href=#61 id=61 data-nosnippet>61</a>///
 <a href=#62 id=62 data-nosnippet>62</a>/// The host reads the routed request ([`get_routed`](Self::get_routed)) and the decision
 <a href=#63 id=63 data-nosnippet>63</a>/// behind it ([`get_decision`](Self::get_decision)), performs (or delegates) the model
 <a href=#64 id=64 data-nosnippet>64</a>/// call, and fulfills it with [`respond`](Self::respond) — unblocking the algorithm's
-<a href=#65 id=65 data-nosnippet>65</a>/// [`Driver::call_llm`] on the other side. `switchyard-llm-client`'s `run` is the ready-made
+<a href=#65 id=65 data-nosnippet>65</a>/// [`Driver::call_model`] on the other side. `switchyard-llm-client`'s `run` is the ready-made
 <a href=#66 id=66 data-nosnippet>66</a>/// consumer that does this for you.
-<a href=#67 id=67 data-nosnippet>67</a></span><span class="kw">pub struct </span>CallLlmRequest {
+<a href=#67 id=67 data-nosnippet>67</a></span><span class="kw">pub struct </span>CallModelRequest {
 <a href=#68 id=68 data-nosnippet>68</a>    routed: RoutedRequest,
 <a href=#69 id=69 data-nosnippet>69</a>    reply: oneshot::Sender&lt;<span class="prelude-ty">Result</span>&lt;Response&gt;&gt;,
 <a href=#70 id=70 data-nosnippet>70</a>}
 <a href=#71 id=71 data-nosnippet>71</a>
-<a href=#72 id=72 data-nosnippet>72</a><span class="kw">impl </span>CallLlmRequest {
+<a href=#72 id=72 data-nosnippet>72</a><span class="kw">impl </span>CallModelRequest {
 <a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// The routed request the host should serve; its `decision.selected_model_id()` names
 <a href=#74 id=74 data-nosnippet>74</a>    /// the model to hit.
 <a href=#75 id=75 data-nosnippet>75</a>    </span><span class="kw">pub fn </span>get_routed(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>RoutedRequest {
@@ -98,7 +98,7 @@
 <a href=#98 id=98 data-nosnippet>98</a>
 <a href=#99 id=99 data-nosnippet>99</a><span class="doccomment">/// The offload channel handed to an algorithm's
 <a href=#100 id=100 data-nosnippet>100</a>/// [`create_run_task`](Algorithm::create_run_task). The algorithm makes model calls
-<a href=#101 id=101 data-nosnippet>101</a>/// with [`call_llm`](Self::call_llm) and publishes its [`Decision`]s with
+<a href=#101 id=101 data-nosnippet>101</a>/// with [`call_model`](Self::call_model) and publishes its [`Decision`]s with
 <a href=#102 id=102 data-nosnippet>102</a>/// [`info`](Self::info); each call is offloaded to the request's [`Step`] stream and
 <a href=#103 id=103 data-nosnippet>103</a>/// awaits the consumer's response. The step channel is bounded, so the consumer paces
 <a href=#104 id=104 data-nosnippet>104</a>/// the algorithm one step at a time.
@@ -119,7 +119,7 @@
 <a href=#119 id=119 data-nosnippet>119</a>        (<span class="self">Self </span>{ step_tx }, step_rx)
 <a href=#120 id=120 data-nosnippet>120</a>    }
 <a href=#121 id=121 data-nosnippet>121</a>
-<a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Offload a model call: publish `routed` as a [`Step::CallLlm`] and await the
+<a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Offload a model call: publish `routed` as a [`Step::CallModel`] and await the
 <a href=#123 id=123 data-nosnippet>123</a>    /// consumer's [`Response`]. The call's context travels inside
 <a href=#124 id=124 data-nosnippet>124</a>    /// [`routed.ctx`](RoutedRequest::ctx). Errors if the stream is closed or the call failed.
 <a href=#125 id=125 data-nosnippet>125</a>    /// The await is wrapped in a `libsy.llm_call` span measuring *fulfillment* as
@@ -143,16 +143,16 @@
 <a href=#143 id=143 data-nosnippet>143</a>            reasoning_tokens = tracing::field::Empty,
 <a href=#144 id=144 data-nosnippet>144</a>        )
 <a href=#145 id=145 data-nosnippet>145</a>    )]
-<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">pub async fn </span>call_llm(<span class="kw-2">&amp;</span><span class="self">self</span>, routed: RoutedRequest) -&gt; <span class="prelude-ty">Result</span>&lt;Response&gt; {
+<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">pub async fn </span>call_model(<span class="kw-2">&amp;</span><span class="self">self</span>, routed: RoutedRequest) -&gt; <span class="prelude-ty">Result</span>&lt;Response&gt; {
 <a href=#147 id=147 data-nosnippet>147</a>        <span class="kw">let </span>algorithm = observability::algorithm_label(<span class="kw-2">&amp;</span>routed.ctx).to_string();
 <a href=#148 id=148 data-nosnippet>148</a>        <span class="kw">let </span>decision = Arc::clone(<span class="kw-2">&amp;</span>routed.decision);
 <a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">let </span>is_answer_call = decision.is_answer_call();
 <a href=#150 id=150 data-nosnippet>150</a>        <span class="kw">let </span>started = Instant::now();
 <a href=#151 id=151 data-nosnippet>151</a>        <span class="kw">let </span>(reply, response) = oneshot::channel::&lt;<span class="prelude-ty">Result</span>&lt;Response&gt;&gt;();
-<a href=#152 id=152 data-nosnippet>152</a>        <span class="kw">let </span>call = CallLlmRequest { routed, reply };
+<a href=#152 id=152 data-nosnippet>152</a>        <span class="kw">let </span>call = CallModelRequest { routed, reply };
 <a href=#153 id=153 data-nosnippet>153</a>        <span class="kw">let </span>result = <span class="kw">async </span>{
 <a href=#154 id=154 data-nosnippet>154</a>            <span class="self">self</span>.step_tx
-<a href=#155 id=155 data-nosnippet>155</a>                .send(<span class="prelude-val">Ok</span>(Step::CallLlm(Box::new(call))))
+<a href=#155 id=155 data-nosnippet>155</a>                .send(<span class="prelude-val">Ok</span>(Step::CallModel(Box::new(call))))
 <a href=#156 id=156 data-nosnippet>156</a>                .<span class="kw">await
 <a href=#157 id=157 data-nosnippet>157</a>                </span>.map_err(|<span class="kw">_</span>| DriverError::StreamClosed)<span class="question-mark">?</span>;
 <a href=#158 id=158 data-nosnippet>158</a>            response
@@ -199,8 +199,8 @@
 <a href=#199 id=199 data-nosnippet>199</a><span class="doccomment">/// One item in the stream returned by [`Algorithm::run_stream`].
 <a href=#200 id=200 data-nosnippet>200</a></span><span class="kw">pub enum </span>Step {
 <a href=#201 id=201 data-nosnippet>201</a>    <span class="doccomment">/// The algorithm needs this model call performed. The host serves it and fulfills
-<a href=#202 id=202 data-nosnippet>202</a>    /// it with [`CallLlmRequest::respond`]. Boxed: it is by far the largest variant.
-<a href=#203 id=203 data-nosnippet>203</a>    </span>CallLlm(Box&lt;CallLlmRequest&gt;),
+<a href=#202 id=202 data-nosnippet>202</a>    /// it with [`CallModelRequest::respond`]. Boxed: it is by far the largest variant.
+<a href=#203 id=203 data-nosnippet>203</a>    </span>CallModel(Box&lt;CallModelRequest&gt;),
 <a href=#204 id=204 data-nosnippet>204</a>    <span class="doccomment">/// A routing decision the algorithm made, published via [`Driver::info`] as it
 <a href=#205 id=205 data-nosnippet>205</a>    /// happens (rather than collected into a trace returned at the end).
 <a href=#206 id=206 data-nosnippet>206</a>    </span>Decision(Arc&lt;Decision&gt;),
@@ -212,7 +212,7 @@
 <a href=#212 id=212 data-nosnippet>212</a>///
 <a href=#213 id=213 data-nosnippet>213</a>/// Returns the final [`Response`] and the trace of [`Decision`]s the algorithm published.
 <a href=#214 id=214 data-nosnippet>214</a>/// `serve` owns the call: it performs it however the host likes and must fulfill the promise
-<a href=#215 id=215 data-nosnippet>215</a>/// with [`CallLlmRequest::respond`]. A failed *model* call belongs in `respond` — the
+<a href=#215 id=215 data-nosnippet>215</a>/// with [`CallModelRequest::respond`]. A failed *model* call belongs in `respond` — the
 <a href=#216 id=216 data-nosnippet>216</a>/// algorithm may route around it. Returning `Err` from `serve` aborts the whole run, so
 <a href=#217 id=217 data-nosnippet>217</a>/// reserve it for infrastructure failures. Calls are served concurrently, so an algorithm
 <a href=#218 id=218 data-nosnippet>218</a>/// that offloads several at once (hedging, fan-out) gets real parallelism.
@@ -227,7 +227,7 @@
 <a href=#227 id=227 data-nosnippet>227</a>    serve: F,
 <a href=#228 id=228 data-nosnippet>228</a>) -&gt; <span class="prelude-ty">Result</span>&lt;(Vec&lt;Arc&lt;Decision&gt;&gt;, Response)&gt;
 <a href=#229 id=229 data-nosnippet>229</a><span class="kw">where
-<a href=#230 id=230 data-nosnippet>230</a>    </span>F: Fn(CallLlmRequest) -&gt; Fut,
+<a href=#230 id=230 data-nosnippet>230</a>    </span>F: Fn(CallModelRequest) -&gt; Fut,
 <a href=#231 id=231 data-nosnippet>231</a>    Fut: Future&lt;Output = <span class="prelude-ty">Result</span>&lt;()&gt;&gt;,
 <a href=#232 id=232 data-nosnippet>232</a>{
 <a href=#233 id=233 data-nosnippet>233</a>    <span class="kw">let </span>stream = algorithm.run_stream(ctx, request);
@@ -240,14 +240,14 @@
 <a href=#240 id=240 data-nosnippet>240</a>    <span class="kw">loop </span>{
 <a href=#241 id=241 data-nosnippet>241</a>        <span class="macro">tokio::select!</span> {
 <a href=#242 id=242 data-nosnippet>242</a>            <span class="prelude-val">Some</span>(result) = in_flight.next() =&gt; <span class="kw">match </span>result {
-<a href=#243 id=243 data-nosnippet>243</a>                <span class="prelude-val">Ok</span>(()) =&gt; {}, <span class="comment">// CallLlm completed successfully
-<a href=#244 id=244 data-nosnippet>244</a>                </span><span class="prelude-val">Err</span>(err) =&gt; <span class="kw">return </span><span class="prelude-val">Err</span>(err), <span class="comment">// CallLlm failed, propagate the error
+<a href=#243 id=243 data-nosnippet>243</a>                <span class="prelude-val">Ok</span>(()) =&gt; {}, <span class="comment">// CallModel completed successfully
+<a href=#244 id=244 data-nosnippet>244</a>                </span><span class="prelude-val">Err</span>(err) =&gt; <span class="kw">return </span><span class="prelude-val">Err</span>(err), <span class="comment">// CallModel failed, propagate the error
 <a href=#245 id=245 data-nosnippet>245</a>            </span>},
 <a href=#246 id=246 data-nosnippet>246</a>            step = stream.next() =&gt; {
 <a href=#247 id=247 data-nosnippet>247</a>                <span class="kw">match </span>step {
 <a href=#248 id=248 data-nosnippet>248</a>                    <span class="prelude-val">None </span>=&gt; <span class="kw">break</span>, <span class="comment">// stream has ended, no more steps
 <a href=#249 id=249 data-nosnippet>249</a>                    </span><span class="prelude-val">Some</span>(item) =&gt; <span class="kw">match </span>item<span class="question-mark">? </span>{
-<a href=#250 id=250 data-nosnippet>250</a>                        Step::CallLlm(call) =&gt; in_flight.push(serve(<span class="kw-2">*</span>call)),
+<a href=#250 id=250 data-nosnippet>250</a>                        Step::CallModel(call) =&gt; in_flight.push(serve(<span class="kw-2">*</span>call)),
 <a href=#251 id=251 data-nosnippet>251</a>                        Step::Decision(decision) =&gt; trace.push(decision),
 <a href=#252 id=252 data-nosnippet>252</a>                        Step::ReturnToAgent(response) =&gt; {
 <a href=#253 id=253 data-nosnippet>253</a>                            final_response = <span class="prelude-val">Some</span>(<span class="kw-2">*</span>response);
@@ -473,7 +473,7 @@
 <a href=#473 id=473 data-nosnippet>473</a>/// `fallback_decision` builds the [`Decision`] published for a `from -&gt; to` hop. Context
 <a href=#474 id=474 data-nosnippet>474</a>/// overflows are recorded for `identity`; unavailable targets remain request-local.
 <a href=#475 id=475 data-nosnippet>475</a></span><span class="attr">#[allow(clippy::too_many_arguments)]
-<a href=#476 id=476 data-nosnippet>476</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>call_llm_with_fallback(
+<a href=#476 id=476 data-nosnippet>476</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>call_model_with_fallback(
 <a href=#477 id=477 data-nosnippet>477</a>    <span class="kw-2">mut </span>ctx: Context,
 <a href=#478 id=478 data-nosnippet>478</a>    driver: <span class="kw-2">&amp;</span>Driver,
 <a href=#479 id=479 data-nosnippet>479</a>    targets: <span class="kw-2">&amp;</span>LlmTargetSet,
@@ -487,7 +487,7 @@
 <a href=#487 id=487 data-nosnippet>487</a>) -&gt; <span class="prelude-ty">Result</span>&lt;Response&gt; {
 <a href=#488 id=488 data-nosnippet>488</a>    <span class="kw">loop </span>{
 <a href=#489 id=489 data-nosnippet>489</a>        <span class="kw">let </span>result = driver
-<a href=#490 id=490 data-nosnippet>490</a>            .call_llm(RoutedRequest {
+<a href=#490 id=490 data-nosnippet>490</a>            .call_model(RoutedRequest {
 <a href=#491 id=491 data-nosnippet>491</a>                request: request.clone(),
 <a href=#492 id=492 data-nosnippet>492</a>                decision: decision.clone(),
 <a href=#493 id=493 data-nosnippet>493</a>                ctx: ctx.clone(),
@@ -516,7 +516,7 @@
 <a href=#516 id=516 data-nosnippet>516</a>}
 <a href=#517 id=517 data-nosnippet>517</a>
 <a href=#518 id=518 data-nosnippet>518</a><span class="doccomment">/// An optimization strategy. Implement [`create_run_task`](Self::create_run_task);
-<a href=#519 id=519 data-nosnippet>519</a>/// callers drive it with [`run_stream`](Self::run_stream), serving each [`Step::CallLlm`]
+<a href=#519 id=519 data-nosnippet>519</a>/// callers drive it with [`run_stream`](Self::run_stream), serving each [`Step::CallModel`]
 <a href=#520 id=520 data-nosnippet>520</a>/// it emits. `switchyard-llm-client`'s `run` is the ready-made consumer that does this
 <a href=#521 id=521 data-nosnippet>521</a>/// over HTTP.
 <a href=#522 id=522 data-nosnippet>522</a>///
@@ -543,7 +543,7 @@
 <a href=#543 id=543 data-nosnippet>543</a>    /// emits for its runs.
 <a href=#544 id=544 data-nosnippet>544</a>    </span><span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str;
 <a href=#545 id=545 data-nosnippet>545</a>
-<a href=#546 id=546 data-nosnippet>546</a>    <span class="doccomment">/// Run one request to completion: make model calls with [`Driver::call_llm`],
+<a href=#546 id=546 data-nosnippet>546</a>    <span class="doccomment">/// Run one request to completion: make model calls with [`Driver::call_model`],
 <a href=#547 id=547 data-nosnippet>547</a>    /// publish [`Decision`]s with [`Driver::info`], and return the final [`Response`].
 <a href=#548 id=548 data-nosnippet>548</a>    /// The method an algorithm implements; [`run_stream`](Self::run_stream) drives it.
 <a href=#549 id=549 data-nosnippet>549</a>    /// `ctx` carries the request's cross-cutting values (today: the algorithm's
@@ -565,7 +565,7 @@
 <a href=#565 id=565 data-nosnippet>565</a>
 <a href=#566 id=566 data-nosnippet>566</a>    <span class="doccomment">/// Process a request to completion, returning a stream of [`Step`]s.
 <a href=#567 id=567 data-nosnippet>567</a>    ///
-<a href=#568 id=568 data-nosnippet>568</a>    /// The consumer must fulfill every [`Step::CallLlm`] before the algorithm can
+<a href=#568 id=568 data-nosnippet>568</a>    /// The consumer must fulfill every [`Step::CallModel`] before the algorithm can
 <a href=#569 id=569 data-nosnippet>569</a>    /// continue. The bounded step channel applies backpressure when the consumer is
 <a href=#570 id=570 data-nosnippet>570</a>    /// not polling. A successful run ends with [`Step::ReturnToAgent`]; a failure is
 <a href=#571 id=571 data-nosnippet>571</a>    /// emitted as an `Err` item. Dropping the stream aborts the spawned algorithm task.
@@ -725,7 +725,7 @@
 <a href=#725 id=725 data-nosnippet>725</a>            <span class="kw">let </span>decision = test_decision(target.semantic_name.clone());
 <a href=#726 id=726 data-nosnippet>726</a>            driver.info(ctx.clone(), decision.clone()).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#727 id=727 data-nosnippet>727</a>            driver
-<a href=#728 id=728 data-nosnippet>728</a>                .call_llm(RoutedRequest {
+<a href=#728 id=728 data-nosnippet>728</a>                .call_model(RoutedRequest {
 <a href=#729 id=729 data-nosnippet>729</a>                    request,
 <a href=#730 id=730 data-nosnippet>730</a>                    decision,
 <a href=#731 id=731 data-nosnippet>731</a>                    ctx,
@@ -773,14 +773,14 @@
 <a href=#773 id=773 data-nosnippet>773</a>            </span><span class="kw">let </span>(driver, <span class="kw-2">mut </span>step_rx) = Driver::new();
 <a href=#774 id=774 data-nosnippet>774</a>            <span class="kw">let </span>first_driver = driver.clone();
 <a href=#775 id=775 data-nosnippet>775</a>            <span class="kw">let </span><span class="kw-2">mut </span>first =
-<a href=#776 id=776 data-nosnippet>776</a>                tokio::spawn(<span class="kw">async move </span>{ first_driver.call_llm(routed(<span class="string">"first"</span>)).<span class="kw">await </span>});
-<a href=#777 id=777 data-nosnippet>777</a>            <span class="kw">let </span>second = tokio::spawn(<span class="kw">async move </span>{ driver.call_llm(routed(<span class="string">"second"</span>)).<span class="kw">await </span>});
+<a href=#776 id=776 data-nosnippet>776</a>                tokio::spawn(<span class="kw">async move </span>{ first_driver.call_model(routed(<span class="string">"first"</span>)).<span class="kw">await </span>});
+<a href=#777 id=777 data-nosnippet>777</a>            <span class="kw">let </span>second = tokio::spawn(<span class="kw">async move </span>{ driver.call_model(routed(<span class="string">"second"</span>)).<span class="kw">await </span>});
 <a href=#778 id=778 data-nosnippet>778</a>
 <a href=#779 id=779 data-nosnippet>779</a>            <span class="kw">let </span><span class="kw-2">mut </span>calls = HashMap::new();
 <a href=#780 id=780 data-nosnippet>780</a>            <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">2 </span>{
 <a href=#781 id=781 data-nosnippet>781</a>                <span class="kw">let </span>step = step_rx.recv().<span class="kw">await</span>.ok_or(DriverError::StreamClosed)<span class="question-mark">??</span>;
-<a href=#782 id=782 data-nosnippet>782</a>                <span class="kw">let </span>Step::CallLlm(call) = step <span class="kw">else </span>{
-<a href=#783 id=783 data-nosnippet>783</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(test_error(<span class="string">"expected a CallLlm step"</span>));
+<a href=#782 id=782 data-nosnippet>782</a>                <span class="kw">let </span>Step::CallModel(call) = step <span class="kw">else </span>{
+<a href=#783 id=783 data-nosnippet>783</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(test_error(<span class="string">"expected a CallModel step"</span>));
 <a href=#784 id=784 data-nosnippet>784</a>                };
 <a href=#785 id=785 data-nosnippet>785</a>                calls.insert(call.get_decision().selected_model_id().to_string(), call);
 <a href=#786 id=786 data-nosnippet>786</a>            }
@@ -816,10 +816,10 @@
 <a href=#816 id=816 data-nosnippet>816</a>
 <a href=#817 id=817 data-nosnippet>817</a>            <span class="comment">// Dropping the host-facing promise closes only that call's reply channel.
 <a href=#818 id=818 data-nosnippet>818</a>            </span><span class="kw">let </span>(driver, <span class="kw-2">mut </span>step_rx) = Driver::new();
-<a href=#819 id=819 data-nosnippet>819</a>            <span class="kw">let </span>producer = tokio::spawn(<span class="kw">async move </span>{ driver.call_llm(routed(<span class="string">"dropped"</span>)).<span class="kw">await </span>});
+<a href=#819 id=819 data-nosnippet>819</a>            <span class="kw">let </span>producer = tokio::spawn(<span class="kw">async move </span>{ driver.call_model(routed(<span class="string">"dropped"</span>)).<span class="kw">await </span>});
 <a href=#820 id=820 data-nosnippet>820</a>            <span class="kw">let </span>step = step_rx.recv().<span class="kw">await</span>.ok_or(DriverError::StreamClosed)<span class="question-mark">??</span>;
-<a href=#821 id=821 data-nosnippet>821</a>            <span class="kw">let </span>Step::CallLlm(call) = step <span class="kw">else </span>{
-<a href=#822 id=822 data-nosnippet>822</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(test_error(<span class="string">"expected a CallLlm step"</span>));
+<a href=#821 id=821 data-nosnippet>821</a>            <span class="kw">let </span>Step::CallModel(call) = step <span class="kw">else </span>{
+<a href=#822 id=822 data-nosnippet>822</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(test_error(<span class="string">"expected a CallModel step"</span>));
 <a href=#823 id=823 data-nosnippet>823</a>            };
 <a href=#824 id=824 data-nosnippet>824</a>            drop(call);
 <a href=#825 id=825 data-nosnippet>825</a>            <span class="kw">let </span>result = producer
@@ -932,7 +932,7 @@
 <a href=#932 id=932 data-nosnippet>932</a>    <span class="attr">#[tokio::test]
 <a href=#933 id=933 data-nosnippet>933</a>    </span><span class="kw">async fn </span>run_offloads_via_promise_then_returns_to_agent() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
 <a href=#934 id=934 data-nosnippet>934</a>        <span class="comment">// Every call is offloaded via a promise the orchestrator surfaces as a
-<a href=#935 id=935 data-nosnippet>935</a>        // `CallLlm` step for us to fulfill.
+<a href=#935 id=935 data-nosnippet>935</a>        // `CallModel` step for us to fulfill.
 <a href=#936 id=936 data-nosnippet>936</a>        </span><span class="kw">let </span>stream = orch(target_set(<span class="kw-2">&amp;</span>[<span class="string">"offload/model"</span>])).run_stream(Context::default(), request());
 <a href=#937 id=937 data-nosnippet>937</a>        <span class="macro">tokio::pin!</span>(stream);
 <a href=#938 id=938 data-nosnippet>938</a>
@@ -940,7 +940,7 @@
 <a href=#940 id=940 data-nosnippet>940</a>        <span class="kw">let </span><span class="kw-2">mut </span>final_completion = <span class="prelude-val">None</span>;
 <a href=#941 id=941 data-nosnippet>941</a>        <span class="kw">while let </span><span class="prelude-val">Some</span>(step) = stream.next().<span class="kw">await </span>{
 <a href=#942 id=942 data-nosnippet>942</a>            <span class="kw">match </span>step<span class="question-mark">? </span>{
-<a href=#943 id=943 data-nosnippet>943</a>                Step::CallLlm(call) =&gt; {
+<a href=#943 id=943 data-nosnippet>943</a>                Step::CallModel(call) =&gt; {
 <a href=#944 id=944 data-nosnippet>944</a>                    saw_call = <span class="bool-val">true</span>;
 <a href=#945 id=945 data-nosnippet>945</a>                    <span class="comment">// The decision rode along with the promise.
 <a href=#946 id=946 data-nosnippet>946</a>                    </span><span class="macro">assert_eq!</span>(call.get_decision().selected_model_id(), <span class="string">"offload/model"</span>);
@@ -968,7 +968,7 @@
 <a href=#968 id=968 data-nosnippet>968</a>            }
 <a href=#969 id=969 data-nosnippet>969</a>        }
 <a href=#970 id=970 data-nosnippet>970</a>
-<a href=#971 id=971 data-nosnippet>971</a>        <span class="macro">assert!</span>(saw_call, <span class="string">"expected a CallLlm step before ReturnToAgent"</span>);
+<a href=#971 id=971 data-nosnippet>971</a>        <span class="macro">assert!</span>(saw_call, <span class="string">"expected a CallModel step before ReturnToAgent"</span>);
 <a href=#972 id=972 data-nosnippet>972</a>        <span class="macro">assert_eq!</span>(
 <a href=#973 id=973 data-nosnippet>973</a>            final_completion.ok_or_else(|| test_error(<span class="string">"no ReturnToAgent step"</span>))<span class="question-mark">?</span>,
 <a href=#974 id=974 data-nosnippet>974</a>            <span class="string">"fulfilled"
@@ -1051,7 +1051,7 @@
 <a href=#1051 id=1051 data-nosnippet>1051</a>    <span class="attr">#[tokio::test]
 <a href=#1052 id=1052 data-nosnippet>1052</a>    </span><span class="kw">async fn </span>offload_error_propagates_back_to_the_algorithm() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
 <a href=#1053 id=1053 data-nosnippet>1053</a>        <span class="comment">// A client-less target offloads its call; we fulfill the promise with an
-<a href=#1054 id=1054 data-nosnippet>1054</a>        // Err, which must flow back through `call_llm_target` into the algorithm and
+<a href=#1054 id=1054 data-nosnippet>1054</a>        // Err, which must flow back through `call_model_target` into the algorithm and
 <a href=#1055 id=1055 data-nosnippet>1055</a>        // out as an error step — not a response.
 <a href=#1056 id=1056 data-nosnippet>1056</a>        </span><span class="kw">let </span>stream = orch(target_set(<span class="kw-2">&amp;</span>[<span class="string">"offload/model"</span>])).run_stream(Context::default(), request());
 <a href=#1057 id=1057 data-nosnippet>1057</a>        <span class="macro">tokio::pin!</span>(stream);
@@ -1059,7 +1059,7 @@
 <a href=#1059 id=1059 data-nosnippet>1059</a>        <span class="kw">let </span><span class="kw-2">mut </span>saw_error = <span class="bool-val">false</span>;
 <a href=#1060 id=1060 data-nosnippet>1060</a>        <span class="kw">while let </span><span class="prelude-val">Some</span>(step) = stream.next().<span class="kw">await </span>{
 <a href=#1061 id=1061 data-nosnippet>1061</a>            <span class="kw">match </span>step {
-<a href=#1062 id=1062 data-nosnippet>1062</a>                <span class="prelude-val">Ok</span>(Step::CallLlm(call)) =&gt; {
+<a href=#1062 id=1062 data-nosnippet>1062</a>                <span class="prelude-val">Ok</span>(Step::CallModel(call)) =&gt; {
 <a href=#1063 id=1063 data-nosnippet>1063</a>                    call.respond(<span class="prelude-val">Err</span>(test_error(<span class="string">"upstream model call failed"</span>)))<span class="question-mark">?</span>;
 <a href=#1064 id=1064 data-nosnippet>1064</a>                }
 <a href=#1065 id=1065 data-nosnippet>1065</a>                <span class="prelude-val">Ok</span>(Step::Decision(<span class="kw">_</span>)) =&gt; {}
@@ -1069,7 +1069,7 @@
 <a href=#1069 id=1069 data-nosnippet>1069</a>                    ));
 <a href=#1070 id=1070 data-nosnippet>1070</a>                }
 <a href=#1071 id=1071 data-nosnippet>1071</a>                <span class="prelude-val">Err</span>(err) =&gt; {
-<a href=#1072 id=1072 data-nosnippet>1072</a>                    <span class="comment">// The algorithm's `call_llm_target` saw the error via the promise.
+<a href=#1072 id=1072 data-nosnippet>1072</a>                    <span class="comment">// The algorithm's `call_model_target` saw the error via the promise.
 <a href=#1073 id=1073 data-nosnippet>1073</a>                    </span><span class="macro">assert!</span>(err.to_string().contains(<span class="string">"upstream model call failed"</span>));
 <a href=#1074 id=1074 data-nosnippet>1074</a>                    saw_error = <span class="bool-val">true</span>;
 <a href=#1075 id=1075 data-nosnippet>1075</a>                }
@@ -1308,12 +1308,12 @@
 <a href=#1308 id=1308 data-nosnippet>1308</a>        ) -&gt; <span class="prelude-ty">Result</span>&lt;Response&gt; {
 <a href=#1309 id=1309 data-nosnippet>1309</a>            <span class="kw">let </span>dec_w = test_decision(<span class="self">self</span>.winner.semantic_name.clone());
 <a href=#1310 id=1310 data-nosnippet>1310</a>            <span class="kw">let </span>dec_l = test_decision(<span class="self">self</span>.loser.semantic_name.clone());
-<a href=#1311 id=1311 data-nosnippet>1311</a>            <span class="kw">let </span>win = driver.call_llm(RoutedRequest {
+<a href=#1311 id=1311 data-nosnippet>1311</a>            <span class="kw">let </span>win = driver.call_model(RoutedRequest {
 <a href=#1312 id=1312 data-nosnippet>1312</a>                request: request.clone(),
 <a href=#1313 id=1313 data-nosnippet>1313</a>                decision: dec_w,
 <a href=#1314 id=1314 data-nosnippet>1314</a>                ctx: ctx.clone(),
 <a href=#1315 id=1315 data-nosnippet>1315</a>            });
-<a href=#1316 id=1316 data-nosnippet>1316</a>            <span class="kw">let </span>lose = driver.call_llm(RoutedRequest {
+<a href=#1316 id=1316 data-nosnippet>1316</a>            <span class="kw">let </span>lose = driver.call_model(RoutedRequest {
 <a href=#1317 id=1317 data-nosnippet>1317</a>                request,
 <a href=#1318 id=1318 data-nosnippet>1318</a>                decision: dec_l,
 <a href=#1319 id=1319 data-nosnippet>1319</a>                ctx,
@@ -1423,7 +1423,7 @@
 <a href=#1423 id=1423 data-nosnippet>1423</a>            ) -&gt; <span class="prelude-ty">Result</span>&lt;Response&gt; {
 <a href=#1424 id=1424 data-nosnippet>1424</a>                <span class="kw">let </span>offloads = futures::future::join_all((<span class="number">0</span>..<span class="self">self</span>.n).map(|i| {
 <a href=#1425 id=1425 data-nosnippet>1425</a>                    <span class="kw">let </span>decision = test_decision(<span class="macro">format!</span>(<span class="string">"m{i}"</span>));
-<a href=#1426 id=1426 data-nosnippet>1426</a>                    driver.call_llm(RoutedRequest {
+<a href=#1426 id=1426 data-nosnippet>1426</a>                    driver.call_model(RoutedRequest {
 <a href=#1427 id=1427 data-nosnippet>1427</a>                        request: request.clone(),
 <a href=#1428 id=1428 data-nosnippet>1428</a>                        decision,
 <a href=#1429 id=1429 data-nosnippet>1429</a>                        ctx: ctx.clone(),

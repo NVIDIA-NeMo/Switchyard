@@ -517,9 +517,9 @@
 <a href=#517 id=517 data-nosnippet>517</a>        //
 <a href=#518 id=518 data-nosnippet>518</a>        // If the efficient model exceeds its context window, fall through to capable: returning
 <a href=#519 id=519 data-nosnippet>519</a>        // `(decisive(capable), None)` tells FallThrough::execute to call
-<a href=#520 id=520 data-nosnippet>520</a>        // call_llm_with_fallback with the capable target instead of surfacing the error.
+<a href=#520 id=520 data-nosnippet>520</a>        // call_model_with_fallback with the capable target instead of surfacing the error.
 <a href=#521 id=521 data-nosnippet>521</a>        </span><span class="kw">let </span>efficient_response = <span class="kw">match </span>driver
-<a href=#522 id=522 data-nosnippet>522</a>            .call_llm(RoutedRequest {
+<a href=#522 id=522 data-nosnippet>522</a>            .call_model(RoutedRequest {
 <a href=#523 id=523 data-nosnippet>523</a>                request: request.clone(),
 <a href=#524 id=524 data-nosnippet>524</a>                decision: Arc::new(Decision::new(
 <a href=#525 id=525 data-nosnippet>525</a>                    <span class="self">self</span>.efficient.semantic_name.clone(),
