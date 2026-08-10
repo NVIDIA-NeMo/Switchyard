@@ -144,23 +144,20 @@ Routed-call compatibility metrics are:
 | `switchyard_build_info` | gauge | `version` | Constant `1` for this server version |
 | `switchyard_total_requests` | gauge | none | Successful and failed final routed calls |
 | `switchyard_total_errors` | gauge | none | Failed final routed calls |
-| `switchyard_requests_total` | counter | `model`, optional `tier` | Successful final routed calls |
-| `switchyard_errors_total` | counter | `model`, optional `tier` | Failed final routed calls |
-| `switchyard_model_call_latency_ms` | histogram | `model`, optional `tier` | Successful final routed-call latency |
-| `switchyard_prompt_tokens_total` | counter | `model`, optional `tier` | Input tokens, including cached and cache-creation tokens |
-| `switchyard_completion_tokens_total` | counter | `model`, optional `tier` | Output tokens |
-| `switchyard_cached_tokens_total` | counter | `model`, optional `tier` | Cached input tokens |
-| `switchyard_cache_creation_tokens_total` | counter | `model`, optional `tier` | Cache-creation input tokens |
-| `switchyard_reasoning_tokens_total` | counter | `model`, optional `tier` | Reasoning output tokens |
-| `switchyard_total_latency_ms` | histogram | `model`, optional `tier` | Full-turn latency for successful routed responses |
+| `switchyard_requests_total` | counter | `model` | Successful final routed calls |
+| `switchyard_errors_total` | counter | `model` | Failed final routed calls |
+| `switchyard_model_call_latency_ms` | histogram | `model` | Successful final routed-call latency |
+| `switchyard_prompt_tokens_total` | counter | `model` | Input tokens, including cached and cache-creation tokens |
+| `switchyard_completion_tokens_total` | counter | `model` | Output tokens |
+| `switchyard_cached_tokens_total` | counter | `model` | Cached input tokens |
+| `switchyard_cache_creation_tokens_total` | counter | `model` | Cache-creation input tokens |
+| `switchyard_reasoning_tokens_total` | counter | `model` | Reasoning output tokens |
+| `switchyard_total_latency_ms` | histogram | `model` | Full-turn latency for successful routed responses |
 | `switchyard_routing_overhead_ms` | histogram | `algorithm` | Algorithm run time minus the call that served it |
 | `switchyard_classifier_fail_open_total` | counter | `judge_model`, `reason` | Judge failures that made a classifier route without a verdict |
 | `switchyard_client_responses_total` | counter | `outcome` | Final LLM-route responses |
 | `switchyard_upstream_attempts_total` | counter | `outcome`, `code` | Actual upstream HTTP attempts |
 | `switchyard_router_retry_recovered_total` | counter | none | Retry recoveries (currently always zero) |
-
-The `tier` label is `strong` or `weak` for a distinguishable built-in LLM-classifier decision and
-is omitted for untiered algorithms. Classifier calls are excluded from these families.
 
 `switchyard_classifier_fail_open_total` counts requests that still reached a target after the
 judge call failed. `judge_model` names the configured judge target, and `reason` is one of eight

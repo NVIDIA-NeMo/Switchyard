@@ -83,7 +83,7 @@ pub(crate) fn observe(
 
 // Records a terminal stream failure after the routed call was already counted.
 fn record_stream_error(stats: &StatsAccumulator, model: &str) {
-    stats.record_stream_error(model, None);
+    stats.record_stream_error(model);
     global::meter("switchyard")
         .u64_counter("switchyard.errors")
         .build()
@@ -121,12 +121,7 @@ fn record_terminal(
     let mut token_usage = token_usage(usage);
     token_usage.cacheable_prompt_tokens =
         (token_usage.prompt_tokens as f64 * cache_eligible).round() as u64;
-    stats.record_usage(
-        model,
-        token_usage,
-        total_latency.as_secs_f64() * 1_000.0,
-        None,
-    );
+    stats.record_usage(model, token_usage, total_latency.as_secs_f64() * 1_000.0);
 }
 
 fn attributes(model: &str) -> [KeyValue; 1] {

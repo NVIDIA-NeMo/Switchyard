@@ -393,8 +393,7 @@ async fn serve_until_shutdown(
 #[derive(Clone, Copy)]
 struct RequestStart(Instant);
 
-/// Tier recorded for classifier and judge calls in the routing log, distinguishing
-/// routing overhead from the routed tiers a session was served by.
+/// Routing-log marker distinguishing classifier and judge calls from answer calls.
 const CLASSIFIER_TIER: &str = "classifier";
 
 /// Maps answer-call observations to backend stats, routing calls to classifier/judge
@@ -413,9 +412,9 @@ fn stats_observer(
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if call.is_answer_call {
                 if call.is_success {
-                    stats.record_success(&call.selected_model, latency_ms, None);
+                    stats.record_success(&call.selected_model, latency_ms);
                 } else {
-                    stats.record_error(&call.selected_model, None);
+                    stats.record_error(&call.selected_model);
                 }
             } else if call.is_success {
                 if let (Some((log, context)), Some(usage)) =

@@ -3,7 +3,7 @@
 
 //! Thread-safe stats accumulator and serializable snapshot schema.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, MutexGuard};
@@ -32,51 +32,29 @@ pub(crate) struct StatsAccumulator {
 
 impl StatsAccumulator {
     /// Records one successful routed backend call.
-    pub(crate) fn record_success(
-        &self,
-        model: impl Into<String>,
-        backend_latency_ms: f64,
-        tier: Option<&str>,
-    ) {
+    pub(crate) fn record_success(&self, model: impl Into<String>, backend_latency_ms: f64) {
         let mut inner = self.lock();
         inner.total_requests = inner.total_requests.saturating_add(1);
-        let model = model.into();
-        let tier = normalized_tier(tier);
-        let stats = inner.model_stats_mut(model.clone());
+        let stats = inner.model_stats_mut(model.into());
         stats.calls = stats.calls.saturating_add(1);
         stats.model_call_latency.record(backend_latency_ms);
-        if let Some(tier) = tier {
-            stats.tiers.insert(tier.to_string());
-            let tier_stats = inner.tier_stats_mut(tier, &model);
-            tier_stats.calls = tier_stats.calls.saturating_add(1);
-        }
     }
 
     /// Records one failed routed backend call.
-    pub(crate) fn record_error(&self, model: impl Into<String>, tier: Option<&str>) {
+    pub(crate) fn record_error(&self, model: impl Into<String>) {
         let mut inner = self.lock();
         inner.total_requests = inner.total_requests.saturating_add(1);
         inner.total_errors = inner.total_errors.saturating_add(1);
-        let model = model.into();
-        let stats = inner.model_stats_mut(model.clone());
+        let stats = inner.model_stats_mut(model.into());
         stats.errors = stats.errors.saturating_add(1);
-        if let Some(tier) = normalized_tier(tier) {
-            stats.tiers.insert(tier.to_string());
-            inner.tier_stats_mut(tier, &model);
-        }
     }
 
     /// Records a stream failure after its routed call was already counted.
-    pub(crate) fn record_stream_error(&self, model: impl Into<String>, tier: Option<&str>) {
+    pub(crate) fn record_stream_error(&self, model: impl Into<String>) {
         let mut inner = self.lock();
         inner.total_errors = inner.total_errors.saturating_add(1);
-        let model = model.into();
-        let stats = inner.model_stats_mut(model.clone());
+        let stats = inner.model_stats_mut(model.into());
         stats.errors = stats.errors.saturating_add(1);
-        if let Some(tier) = normalized_tier(tier) {
-            stats.tiers.insert(tier.to_string());
-            inner.tier_stats_mut(tier, &model);
-        }
     }
 
     /// Records usage and terminal latency after a successful routed call.
@@ -85,17 +63,11 @@ impl StatsAccumulator {
         model: impl Into<String>,
         usage: TokenUsage,
         total_latency_ms: f64,
-        tier: Option<&str>,
     ) {
         let mut inner = self.lock();
-        let model = model.into();
-        let stats = inner.model_stats_mut(model.clone());
+        let stats = inner.model_stats_mut(model.into());
         stats.add_usage(usage);
         stats.total_latency.record(total_latency_ms);
-        if let Some(tier) = normalized_tier(tier) {
-            stats.tiers.insert(tier.to_string());
-            inner.tier_stats_mut(tier, &model).add_usage(usage);
-        }
     }
 
     /// Records routing time for one completed algorithm run.
@@ -157,14 +129,9 @@ impl StatsAccumulator {
     }
 }
 
-fn normalized_tier(tier: Option<&str>) -> Option<&str> {
-    tier.map(str::trim).filter(|tier| !tier.is_empty())
-}
-
 #[derive(Clone, Debug, Default)]
 struct StatsAccumulatorInner {
     by_model: BTreeMap<String, ModelStats>,
-    by_tier: BTreeMap<String, TierStats>,
     total_requests: u64,
     total_errors: u64,
     routing_overhead: LatencyHistogram,
@@ -183,12 +150,6 @@ impl StatsAccumulatorInner {
         self.by_classifier.entry(model).or_default()
     }
 
-    fn tier_stats_mut(&mut self, tier: &str, model: &str) -> &mut TierStats {
-        let stats = self.by_tier.entry(tier.to_string()).or_default();
-        stats.models.insert(model.to_string());
-        stats
-    }
-
     fn snapshot(&self) -> StatsSnapshot {
         let (models, total_tokens) = build_model_snapshots(&self.by_model, self.total_requests);
         let classifier = build_classifier_snapshot(
@@ -201,7 +162,6 @@ impl StatsAccumulatorInner {
             total_errors: self.total_errors,
             total_tokens,
             models,
-            tiers: tier_snapshots(&self.by_tier, total_tokens.total, self.total_requests),
             routing_overhead: self.routing_overhead.snapshot(),
             routing_fallbacks: self.routing_fallbacks,
             classifier,
@@ -223,7 +183,6 @@ struct ModelStats {
     seen_prefixes: HashSet<u64>,
     model_call_latency: LatencyHistogram,
     total_latency: LatencyHistogram,
-    tiers: BTreeSet<String>,
 }
 
 impl ModelStats {
@@ -243,23 +202,6 @@ impl ModelStats {
         self.max_observed_context_tokens = self
             .max_observed_context_tokens
             .max(usage.prompt_tokens.saturating_add(usage.completion_tokens));
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct TierStats {
-    models: BTreeSet<String>,
-    calls: u64,
-    prompt_tokens: u64,
-    completion_tokens: u64,
-}
-
-impl TierStats {
-    fn add_usage(&mut self, usage: TokenUsage) {
-        self.prompt_tokens = self.prompt_tokens.saturating_add(usage.prompt_tokens);
-        self.completion_tokens = self
-            .completion_tokens
-            .saturating_add(usage.completion_tokens);
     }
 }
 
@@ -330,7 +272,6 @@ pub(crate) struct StatsSnapshot {
     pub total_errors: u64,
     pub total_tokens: TokenTotals,
     pub models: BTreeMap<String, ModelStatsSnapshot>,
-    pub tiers: BTreeMap<String, TierStatsSnapshot>,
     pub routing_overhead: LatencyHistogramSnapshot,
     pub routing_fallbacks: RoutingFallbackStats,
     pub classifier: ClassifierStatsSnapshot,
@@ -382,18 +323,6 @@ pub(crate) struct ModelStatsSnapshot {
     pub theoretical_cache_hit_rate: f64,
     pub model_call_latency: LatencyHistogramSnapshot,
     pub total_latency: LatencyHistogramSnapshot,
-    pub tiers: BTreeSet<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub(crate) struct TierStatsSnapshot {
-    pub models: BTreeSet<String>,
-    pub calls: u64,
-    pub request_pct: f64,
-    pub prompt_tokens: u64,
-    pub completion_tokens: u64,
-    pub total_tokens: u64,
-    pub token_pct: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
@@ -448,7 +377,6 @@ fn build_model_snapshots(
                 ),
                 model_call_latency: stats.model_call_latency.snapshot(),
                 total_latency: stats.total_latency.snapshot(),
-                tiers: stats.tiers.clone(),
             };
             (model.clone(), snapshot)
         })
@@ -468,31 +396,6 @@ fn build_classifier_snapshot(
         total_tokens,
         models,
     }
-}
-
-fn tier_snapshots(
-    tiers: &BTreeMap<String, TierStats>,
-    total_tokens: u64,
-    total_requests: u64,
-) -> BTreeMap<String, TierStatsSnapshot> {
-    tiers
-        .iter()
-        .map(|(tier, stats)| {
-            let tier_tokens = stats.prompt_tokens.saturating_add(stats.completion_tokens);
-            (
-                tier.clone(),
-                TierStatsSnapshot {
-                    models: stats.models.clone(),
-                    calls: stats.calls,
-                    request_pct: percentage(stats.calls, total_requests),
-                    prompt_tokens: stats.prompt_tokens,
-                    completion_tokens: stats.completion_tokens,
-                    total_tokens: tier_tokens,
-                    token_pct: percentage(tier_tokens, total_tokens),
-                },
-            )
-        })
-        .collect()
 }
 
 fn percentage(numerator: u64, denominator: u64) -> f64 {
@@ -545,7 +448,7 @@ mod tests {
     #[test]
     fn snapshot_aggregates_backend_and_classifier_stats() {
         let stats = StatsAccumulator::default();
-        stats.record_success("model/strong", 10.0, Some("strong"));
+        stats.record_success("model/strong", 10.0);
         stats.record_usage(
             "model/strong",
             TokenUsage {
@@ -555,11 +458,10 @@ mod tests {
                 ..usage(10, 5)
             },
             15.0,
-            Some("strong"),
         );
         stats.record_routing_overhead(5.0);
-        stats.record_success("model/weak", 20.0, Some("weak"));
-        stats.record_usage("model/weak", usage(20, 10), 30.0, Some("weak"));
+        stats.record_success("model/weak", 20.0);
+        stats.record_usage("model/weak", usage(20, 10), 30.0);
         stats.record_routing_overhead(10.0);
         stats.record_classifier_success("gemini-3.5-flash", Some(usage(1_000_000, 0)), 8.0);
         let snapshot = stats.snapshot();
@@ -573,30 +475,17 @@ mod tests {
             snapshot.models["model/strong"].theoretical_cache_hit_rate,
             0.0
         );
-        assert_eq!(snapshot.tiers["strong"].request_pct, 50.0);
         assert_eq!(snapshot.routing_overhead.p50_ms, 10.0);
         assert_eq!(snapshot.routing_overhead.p99_ms, 10.0);
         assert_eq!(snapshot.classifier.total_requests, 1);
         assert_eq!(snapshot.classifier.total_tokens.prompt, 1_000_000);
-
-        stats.record_success("model/strong", 1.0, Some("weak"));
-        stats.record_success("model/other", 1.0, Some("strong"));
-        let snapshot = stats.snapshot();
-        assert_eq!(
-            snapshot.models["model/strong"].tiers,
-            BTreeSet::from(["strong".to_string(), "weak".to_string()])
-        );
-        assert_eq!(
-            snapshot.tiers["strong"].models,
-            BTreeSet::from(["model/other".to_string(), "model/strong".to_string()])
-        );
     }
 
     #[test]
     fn reset_clears_backend_classifier_and_cache_eligibility_state() {
         let stats = StatsAccumulator::default();
-        stats.record_success("model/a", 10.0, Some("strong"));
-        stats.record_usage("model/a", usage(10, 5), 15.0, Some("strong"));
+        stats.record_success("model/a", 10.0);
+        stats.record_usage("model/a", usage(10, 5), 15.0);
         stats.record_routing_overhead(5.0);
         stats.record_classifier_success("model/classifier", Some(usage(4, 1)), 2.0);
         let probe = prefix_probe(&json!({
@@ -624,7 +513,6 @@ mod tests {
                 ..usage(100, 4)
             },
             1.0,
-            None,
         );
 
         let second = prefix_probe(&json!({
@@ -641,7 +529,6 @@ mod tests {
                 ..usage(100, 4)
             },
             1.0,
-            None,
         );
 
         assert_eq!(first_eligible, 0.0);

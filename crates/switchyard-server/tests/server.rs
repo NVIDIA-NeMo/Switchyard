@@ -275,7 +275,6 @@ async fn stats_exposes_the_exact_empty_schema_and_no_legacy_alias() -> TestResul
             "total_errors": 0,
             "total_tokens": empty_token_totals(),
             "models": {},
-            "tiers": {},
             "routing_overhead": {
                 "count": 0,
                 "total_ms": 0.0,
@@ -390,7 +389,6 @@ async fn stats_reset_returns_confirmation_and_clears_all_stats() -> TestResult {
     assert_eq!(stats["total_errors"], 0);
     assert_eq!(stats["total_tokens"], empty_token_totals());
     assert_eq!(stats["models"], json!({}));
-    assert_eq!(stats["tiers"], json!({}));
     assert_eq!(stats["routing_overhead"]["count"], 0);
     assert_eq!(stats["classifier"]["total_requests"], 0);
     assert_eq!(stats["classifier"]["models"], json!({}));
@@ -905,7 +903,6 @@ base_threshold = 0.5
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(stats["total_requests"], 3);
     assert_eq!(stats["models"]["model/weak"]["calls"], 3);
-    assert_eq!(stats["tiers"], json!({}));
     assert_eq!(stats["classifier"]["total_requests"], 1);
     assert_eq!(
         stats["classifier"]["models"]["model/classifier"]["calls"],
