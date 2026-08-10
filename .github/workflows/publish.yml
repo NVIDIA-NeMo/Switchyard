@@ -428,7 +428,7 @@ jobs:
   publish:
     name: Publish distributions
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [source-dist, wheels, publish-rust-server]
+    needs: [source-dist, wheels, publish-rust-crates]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -445,104 +445,72 @@ jobs:
         run: ls -l dist
 
       - name: Publish to PyPI
-        run: uv publish --trusted-publishing always dist/*
+        run: |
+          uv publish \
+            --trusted-publishing always \
+            --check-url https://pypi.org/simple/ \
+            dist/*
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
 
-  publish-rust-protocol:
-    name: Publish switchyard-protocol
+  publish-rust-crates:
+    name: Publish Rust crates
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: [source-dist, wheels]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Publish crate
+        with:
+          persist-credentials: false
+      - name: Publish crates in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked --package switchyard-protocol
-
-  publish-rust-foundations:
-    name: Publish ${{ matrix.crate }}
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [publish-rust-protocol]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        crate: [switchyard-libsy, switchyard-translation]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Wait for registry dependencies
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          for attempt in {1..30}; do
-            cargo info --registry crates-io "switchyard-protocol@${version}" >/dev/null 2>&1 \
-              && exit 0
-            echo "Waiting for switchyard-protocol ${version} (${attempt}/30)"
-            sleep 10
-          done
-          echo "switchyard-protocol ${version} did not reach the crates.io index" >&2
-          exit 1
-      - name: Publish crate
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked --package "${{ matrix.crate }}"
+          metadata="$(cargo metadata --locked --no-deps --format-version 1)"
 
-  publish-rust-client:
-    name: Publish switchyard-llm-client
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [publish-rust-foundations]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Wait for registry dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          for attempt in {1..30}; do
-            ready=true
-            for crate in switchyard-libsy switchyard-translation; do
-              cargo info --registry crates-io "${crate}@${version}" >/dev/null 2>&1 \
-                || ready=false
-            done
-            if [[ "${ready}" == true ]]; then
-              exit 0
+          for crate in \
+            switchyard-protocol \
+            switchyard-translation \
+            switchyard-libsy \
+            switchyard-llm-client \
+            switchyard-server; do
+            crate_version="$(jq -r --arg crate "${crate}" \
+              '.packages[] | select(.name == $crate) | .version' <<<"${metadata}")"
+            if [[ "${crate_version}" != "${version}" ]]; then
+              echo "Release tag ${version} does not match ${crate} ${crate_version}" >&2
+              exit 1
             fi
-            echo "Waiting for Rust foundation crates ${version} (${attempt}/30)"
-            sleep 10
           done
-          echo "Rust foundation crates ${version} did not reach the crates.io index" >&2
-          exit 1
-      - name: Publish crate
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked --package switchyard-llm-client
 
-  publish-rust-server:
-    name: Publish switchyard-server
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [publish-rust-client]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Wait for registry dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          for attempt in {1..30}; do
-            cargo info --registry crates-io "switchyard-llm-client@${version}" >/dev/null 2>&1 \
-              && exit 0
-            echo "Waiting for switchyard-llm-client ${version} (${attempt}/30)"
-            sleep 10
-          done
-          echo "switchyard-llm-client ${version} did not reach the crates.io index" >&2
-          exit 1
-      - name: Publish crate
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked --package switchyard-server
+          wait_for_crate() {
+            local crate="$1"
+            for attempt in {1..30}; do
+              if cargo info --registry crates-io "${crate}@${version}" >/dev/null 2>&1; then
+                return 0
+              fi
+              echo "Waiting for ${crate} ${version} (${attempt}/30)"
+              sleep 10
+            done
+            echo "${crate} ${version} did not reach the crates.io index" >&2
+            return 1
+          }
+
+          publish_crate() {
+            local crate="$1"
+            if cargo info --registry crates-io "${crate}@${version}" >/dev/null 2>&1; then
+              echo "${crate} ${version} already exists; skipping"
+              return 0
+            fi
+            cargo publish --locked --package "${crate}"
+            wait_for_crate "${crate}"
+          }
+
+          publish_crate switchyard-protocol
+          publish_crate switchyard-translation
+          publish_crate switchyard-libsy
+          publish_crate switchyard-llm-client
+          publish_crate switchyard-server
