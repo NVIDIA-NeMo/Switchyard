@@ -6,6 +6,72 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-10
+
+Switchyard 0.2.0 introduces the native Rust server and libsy library path,
+with explicit TOML deployments, provider-neutral routing algorithms, and
+production-facing observability.
+
+### Added
+
+- **Standalone Rust server** — `switchyard-server` serves OpenAI Chat
+  Completions, OpenAI Responses, and Anthropic Messages from one explicit TOML
+  deployment. It includes TLS, graceful shutdown, upstream retries, token
+  counting, health and model discovery, and optional durable session routing
+  logs.
+- **Rust library and protocol crates** — `switchyard-libsy` provides composable
+  multi-LLM algorithms, `switchyard-protocol` owns the provider-neutral request
+  and response contracts, `switchyard-translation` handles wire-format
+  conversion, and `switchyard-llm-client` provides translated HTTP model calls.
+- **Native routing algorithms** — weighted and reproducible random routing,
+  capability and escalation modes for LLM-classifier routing, session affinity,
+  context-window fallback, and signal-driven stage routing with handoff notes,
+  per-tier prompts, and an optional classifier fallback.
+- **Native observability** — Prometheus metrics, GenAI OpenTelemetry spans,
+  structured request logs, `/v1/stats`, `/v1/stats/reset`, and optional
+  `/v1/routing/session-stats` expose request, routing, latency, token, cache,
+  retry, and error data.
+
+### Changed
+
+- **Native TOML is the primary deployment format** — LLM clients, targets, and
+  routes are declared explicitly and validated by `switchyard-server`. The
+  launcher path accepts the same TOML schema and includes a packaged OpenRouter
+  deployment for zero-config startup.
+- **Serving is built around libsy algorithms** — the native server and Python
+  server binding construct algorithms directly instead of using the legacy
+  profile and components-v2 serving stack.
+- **The CLI is focused on serving and launching** — `switchyard serve` remains
+  for the minimal Python route bundle, while `switchyard launch` starts Claude
+  Code, Codex CLI, or OpenClaw against a selected route.
+- **The Rust workspace uses Rust 1.96.1 and edition 2024.**
+
+### Fixed
+
+- **Response `model` now names the model that actually served the request**, on
+  every serving path and wire format. Streamed Anthropic and Responses replies,
+  and every libsy-served reply, previously echoed the model id the client
+  requested — for a route bundle whose key is an alias, that meant the alias
+  rather than the routed target, so trajectories, dashboards, and client UIs
+  labelled routed turns with the route name. The routed model was already
+  reported by `x-model-router-selected-model`, `x-switchyard-selected-model`,
+  `/v1/routing/stats`, and Intake's `served_model`; the response body now agrees
+  with them. Streamed OpenAI Chat replies report the routed target instead of
+  the provider's own id, and no longer fall back to `"unknown"` when a provider
+  omits `model` on delta chunks.
+- **Buffered Responses output is preserved** rather than dropping final answer
+  items when translating a non-streaming response.
+- **Known request fields are validated before translation**, so malformed
+  OpenAI and Anthropic inputs return client errors instead of being silently
+  coerced or omitted.
+- **Prompt-cache usage survives format translation**, including cached and
+  cache-creation token counts from OpenRouter and Anthropic-compatible
+  providers.
+- **Streaming stops after in-band upstream errors** instead of forwarding
+  trailing events after the error.
+- **Context-overflow history is isolated by session and agent**, preventing one
+  task's overflow recovery from changing another task's routing state.
+
 ### Removed
 
 - **Latency-aware router** — the `latency_service` route type and its
@@ -29,19 +95,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the deployment to each `switchyard launch`. Validate a deployment with
   `./target/release/switchyard-server --config <deployment.toml> --dry-run`.
 
-### Fixed
+### Known Issues
 
-- **Response `model` now names the model that actually served the request**, on
-  every serving path and wire format. Streamed Anthropic and Responses replies,
-  and every libsy-served reply, previously echoed the model id the client
-  requested — for a route bundle whose key is an alias, that meant the alias
-  rather than the routed target, so trajectories, dashboards, and client UIs
-  labelled routed turns with the route name. The routed model was already
-  reported by `x-model-router-selected-model`, `x-switchyard-selected-model`,
-  `/v1/routing/stats`, and Intake's `served_model`; the response body now agrees
-  with them. Streamed OpenAI Chat replies report the routed target instead of
-  the provider's own id, and no longer fall back to `"unknown"` when a provider
-  omits `model` on delta chunks.
+1. `stage_router` drops a configured tier system prompt when the inbound
+   request and the selected target both use `openai_chat`. The call succeeds and
+   no warning is emitted.
+2. Errors returned from `/v1/messages` use the OpenAI error envelope rather than
+   Anthropic's `{"type": "error", ...}` shape, so Anthropic SDK clients cannot
+   dispatch on `error.type`.
+3. Session state is retained without a capacity limit or eviction, so memory
+   grows with the number of sessions a process has served.
+4. Buffered upstream work continues after the client disconnects, so a
+   cancelled request can still incur provider cost.
+5. Routing-tier attribution is missing from `GET /v1/stats` and `/metrics` for
+   fail-open, escalation, and `stage_router` fallback decisions.
+6. The retry recovery counter stays at zero after a successful upstream retry.
+7. `x-switchyard-session-id` is not recorded in native session stats.
+8. The native server does not send the documented `X-Switchyard-Version` header
+   upstream.
+9. LLM-classifier history trimming can separate a tool result from the tool
+   call it belongs to when `recent_turn_window` is configured.
 
 ## [0.1.0] — Initial release
 
