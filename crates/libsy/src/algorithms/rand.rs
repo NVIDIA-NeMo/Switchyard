@@ -179,7 +179,6 @@ mod tests {
 
     use switchyard_protocol::{Metadata, completion_text, text_request};
 
-    use crate::DriverError;
     use crate::algorithms::util::affinity::AffinityRouter;
     use crate::core::algorithm::LlmTarget;
     use crate::core::testing::{echo, test_drive};
@@ -445,10 +444,8 @@ mod tests {
         let concrete = decision
             .as_any()
             .downcast_ref::<RandomDecision>()
-            .ok_or_else(|| {
-                LibsyError::from(DriverError::TypeMismatch {
-                    expected: "RandomDecision",
-                })
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "decision did not downcast to RandomDecision".to_string(),
             })?;
         assert_eq!(concrete.selected_model, "only/model");
         Ok(())

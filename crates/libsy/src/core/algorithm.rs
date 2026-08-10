@@ -109,7 +109,7 @@ pub struct Driver {
 
 impl Driver {
     /// Build an empty driver with its step channel ready. Created per call by
-    /// [`run_stream`](Algorithm::run_stream).
+    /// [`run_stream`](Algorithm::run_stream). Also returns the Step receiver.
     pub(crate) fn new() -> (Self, mpsc::Receiver<Result<Step>>) {
         // Capacity one keeps the algorithm paced by the stream consumer. It limits queued steps,
         // not model calls already pulled from the stream, which can still run at the same time.
@@ -189,7 +189,7 @@ impl Driver {
     /// Emit the terminal step: [`Step::ReturnToAgent`] on `Ok`, or an `Err` stream
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
-    pub(crate) async fn finish(&self, _ctx: Context, result: Result<Response>) -> Result<()> {
+    pub(crate) async fn finish(&self, result: Result<Response>) -> Result<()> {
         let step = result.map(|response| Step::ReturnToAgent(Box::new(response)));
         self.step_tx
             .send(step)
@@ -603,14 +603,13 @@ pub trait Algorithm: Send + Sync + 'static {
         let abort_guard = AbortOnDrop(handle.abort_handle());
 
         let finish_driver = driver.clone();
-        let finish_ctx = ctx;
         let tail: StepStream = Box::pin(
             futures::stream::once(async move {
                 let result = match handle.await {
                     Ok(response) => response,
                     Err(source) => Err(LibsyError::AlgorithmTask { source }),
                 };
-                finish_driver.finish(finish_ctx, result).await
+                finish_driver.finish(result).await
             })
             .filter_map(|finish_result| async move { finish_result.err().map(Err) }),
         );

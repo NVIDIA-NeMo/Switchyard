@@ -3,7 +3,7 @@
 
 //! Typed failures surfaced by libsy's orchestration APIs.
 
-use std::{error::Error as StdError, time::Duration};
+use std::error::Error as StdError;
 
 use switchyard_protocol::LlmClientError;
 use thiserror::Error;
@@ -97,35 +97,13 @@ impl LibsyError {
 /// Failures in the step-stream driver.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DriverError {
-    /// A producer operation was attempted before taking the consumer stream.
-    #[error("driver stream must be taken before calling producer methods")]
-    NotStarted,
-
     /// The consumer side of the step channel was dropped.
     #[error("driver stream is closed")]
     StreamClosed,
 
-    /// The single-consumer stream had already been taken.
-    #[error("driver stream was already taken")]
-    StreamAlreadyTaken,
-
     /// One side of a response promise was dropped before delivery.
     #[error("driver response promise was dropped")]
     ResponseDropped,
-
-    /// A consumer did not fulfill a request before its deadline.
-    #[error("driver response timed out after {timeout:?}")]
-    ResponseTimedOut {
-        /// Maximum time allowed for request fulfillment.
-        timeout: Duration,
-    },
-
-    /// A type-erased payload did not contain the expected concrete type.
-    #[error("driver payload type mismatch: expected {expected}")]
-    TypeMismatch {
-        /// Human-readable expected payload type or role.
-        expected: &'static str,
-    },
 }
 
 #[cfg(test)]
