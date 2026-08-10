@@ -271,7 +271,7 @@ pub(crate) fn record_llm_call(
                 }
             }
         }
-        Err(error) => {
+        Err(error) if !is_abandoned(result) => {
             span.record("error", tracing::field::display(error));
             tracing::warn!(
                 target: TRACING_TARGET,
@@ -281,6 +281,7 @@ pub(crate) fn record_llm_call(
                 "model call failed"
             );
         }
+        Err(_) => {}
     }
 }
 
