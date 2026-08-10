@@ -18,6 +18,7 @@
 //! how much corroboration a decisive escalation needs (see [`score_signal`]).
 
 use async_trait::async_trait;
+use opentelemetry::KeyValue;
 use serde::Deserialize;
 
 use super::prompts;
@@ -26,6 +27,7 @@ use crate::Result;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
+use crate::observability::meter;
 use switchyard_protocol::Request;
 
 /// Turn depth below which stall signals stay quiet — early no-write turns are
@@ -43,6 +45,22 @@ const HARD_SEVERITY: f64 = 0.7;
 const SIGNAL_UNIT: f64 = 0.10;
 /// Critical severity forces the capable tier regardless of the scorer.
 const SEVERITY_CRITICAL: f32 = 1.0;
+
+/// Counts final stage-router choices by decision source and semantic target.
+const ROUTING_DECISIONS_METRIC: &str = "switchyard.stage_router.routing_decisions";
+
+/// Distribution of the stage scorer's signed routing score.
+const SCORE_METRIC: &str = "switchyard.stage_router.score";
+/// Distribution of the confidence used to resolve or defer a turn.
+const CONFIDENCE_METRIC: &str = "switchyard.stage_router.confidence";
+/// Distribution of detected tool-failure severity.
+const SEVERITY_METRIC: &str = "switchyard.stage_router.severity";
+/// Distribution of repeated unproductive tool activity.
+const SPINNING_METRIC: &str = "switchyard.stage_router.spinning";
+/// Distribution of exploratory tool activity.
+const EXPLORING_METRIC: &str = "switchyard.stage_router.exploring";
+/// Distribution of production-oriented tool activity.
+const PRODUCTION_INTENSITY_METRIC: &str = "switchyard.stage_router.production_intensity";
 
 /// The two tiers a turn can route to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -244,6 +262,41 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
             signal.recent_write_count + signal.recent_edit_count,
             recent_ops,
         ),
+    }
+}
+
+/// Records one stage-router decision with bounded labels.
+pub(crate) fn record_routing_decision(source: DecisionSource, target_name: &str) {
+    meter().u64_counter(ROUTING_DECISIONS_METRIC).build().add(
+        1,
+        &[
+            KeyValue::new("decision_source", source.as_str()),
+            KeyValue::new("target_name", target_name.to_string()),
+        ],
+    );
+}
+
+/// Records the scorer's bounded inputs and output as six explicit histograms.
+fn record_score_metrics(signal: &ToolSignals, outcome: &PickOutcome) {
+    let (score, confidence) = match outcome {
+        PickOutcome::Resolved {
+            score, confidence, ..
+        } => (*score, confidence.unwrap_or(score.abs())),
+        PickOutcome::ConsultClassifier {
+            score, confidence, ..
+        } => (*score, *confidence),
+    };
+    let dimensions = dimensions_from_signal(signal);
+    let meter = meter();
+    for (name, value) in [
+        (SCORE_METRIC, score),
+        (CONFIDENCE_METRIC, confidence),
+        (SEVERITY_METRIC, dimensions.severity),
+        (SPINNING_METRIC, dimensions.spinning),
+        (EXPLORING_METRIC, dimensions.exploring),
+        (PRODUCTION_INTENSITY_METRIC, dimensions.production_intensity),
+    ] {
+        meter.f64_histogram(name).build().record(value, &[]);
     }
 }
 
@@ -494,6 +547,7 @@ impl Classifier<State> for StageClassifier {
         };
 
         let outcome = pick_tier(signal, self.mode, self.confidence_threshold);
+        record_score_metrics(signal, &outcome);
         match outcome {
             PickOutcome::Resolved {
                 tier,
@@ -503,6 +557,7 @@ impl Classifier<State> for StageClassifier {
             } => {
                 let target = self.targets.name(tier);
                 record_decision_source(state, source);
+                record_routing_decision(source, target);
                 // Only a resolved turn routes on this classifier's target, so it
                 // is the only branch whose tier the signals actually chose — an
                 // ambiguous turn is decided further down the cascade.

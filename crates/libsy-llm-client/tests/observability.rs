@@ -34,11 +34,12 @@ use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
     Algorithm, Driver, LibsyError, LlmClassifierConfig, LlmTarget, LlmTargetSet, LlmTaskClassifier,
-    RoutedRequest, Step, TaskClassifierConfig,
+    PickerMode, RoutedRequest, StageRouter, StageRouterConfig, Step, TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{
-    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
+    ContentBlock, Context, Decision, LlmRequest, LlmResponse, Message, Metadata, Request, Response,
+    Role, RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
 };
 use switchyard_protocol::{
     LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, text_request,
@@ -823,6 +824,82 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         }),
         "no routing-decision log event for {MODEL} in {events:?}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_, exporter, provider, _, _) = telemetry();
+    const STRONG: &str = "obs-stage-strong";
+    const WEAK: &str = "obs-stage-weak";
+    let target = |name: &str| LlmTarget {
+        semantic_name: name.to_string(),
+    };
+    let algorithm = Arc::new(StageRouter::new(
+        target(STRONG),
+        target(WEAK),
+        StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+    )?) as Arc<dyn Algorithm>;
+    let request = Request {
+        llm_request: LlmRequest {
+            model: Some("auto".to_string()),
+            messages: vec![
+                Message::text(Role::User, "fix the build"),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolCall(ToolCall {
+                        id: "call_1".to_string(),
+                        name: "Bash".to_string(),
+                        arguments: json!({"command": "cargo test"}),
+                    })],
+                },
+                Message {
+                    role: Role::Tool,
+                    content: vec![ContentBlock::ToolResult(ToolResult {
+                        tool_call_id: "call_1".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: "fatal runtime error: out of memory".to_string(),
+                        }],
+                        is_error: Some(true),
+                    })],
+                },
+            ],
+            ..LlmRequest::default()
+        },
+        raw_request: None,
+        metadata: Some(Metadata {
+            wire_format: Some(WireFormat::OpenAiChat),
+            session_id: Some("obs-stage-session".to_string()),
+            ..Metadata::default()
+        }),
+    };
+    let client = Arc::new(UsageClient {
+        usage: Usage::default(),
+    }) as Arc<dyn RoutedLlmClient>;
+
+    let (trace, _) = run(algorithm, client, request).await?;
+    assert_eq!(trace[0].selected_model_id(), STRONG);
+
+    let snapshots = flushed_metrics(exporter, provider);
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.stage_router.routing_decisions",
+            &[("decision_source", "override"), ("target_name", STRONG)],
+        ),
+        Some(1)
+    );
+    for name in [
+        "switchyard.stage_router.score",
+        "switchyard.stage_router.confidence",
+        "switchyard.stage_router.severity",
+        "switchyard.stage_router.spinning",
+        "switchyard.stage_router.exploring",
+        "switchyard.stage_router.production_intensity",
+    ] {
+        assert_eq!(f64_histogram_count(&snapshots, name, &[]), Some(1));
+    }
     Ok(())
 }
 

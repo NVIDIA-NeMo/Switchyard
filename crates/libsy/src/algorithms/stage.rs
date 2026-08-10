@@ -22,7 +22,7 @@ use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierCon
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
-    record_decision_source,
+    record_decision_source, record_routing_decision,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
@@ -57,8 +57,9 @@ impl Classifier<State> for SourceStamp {
     ) -> Result<(Classification, Option<Response>)> {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
-        if matches!(&classification, Classification::Scores(scores) if !scores.is_empty()) {
+        if let Some(winner) = classification.argmax(false)? {
             record_decision_source(state, self.source);
+            record_routing_decision(self.source, &winner.target);
         }
         Ok((classification, served))
     }
@@ -183,7 +184,6 @@ fn build_route(
     let signals = ToolSignalProcessor {
         recent_window: config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW),
     };
-
     let target_set = LlmTargetSet::new(vec![capable.clone(), efficient.clone()]);
     let mut router = FallThrough::<State>::new_with_state(target_set)
         .with_name(STAGE_ROUTER)

@@ -68,7 +68,7 @@ pub fn algorithm_label(ctx: &Context) -> &str {
 }
 
 /// The `libsy`-scoped meter from the globally installed provider.
-fn meter() -> Meter {
+pub(crate) fn meter() -> Meter {
     global::meter(METRICS_SCOPE)
 }
 
