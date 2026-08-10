@@ -117,7 +117,7 @@ impl<S: Send> Processor<S> for SystemPromptProcessor {
         let Event::Decision { request, decision } = event else {
             return Ok(());
         };
-        let Some(prompt) = self.prompts.get(decision.selected_target_id()) else {
+        let Some(prompt) = self.prompts.get(decision.selected_model_id()) else {
             return Ok(());
         };
         // Ahead of the client's own instructions, so this framing is what the
@@ -265,11 +265,7 @@ mod tests {
             },
             ..Request::default()
         };
-        let decision = Decision {
-            selected_target_id: target.to_string(),
-            reasoning: None,
-            is_answer_call: true,
-        };
+        let decision = Decision::new(target, None, true);
         processor
             .process(
                 &mut (),
@@ -330,11 +326,7 @@ mod tests {
                 text: "you are a coding agent".to_string(),
             }],
         });
-        let decision = Decision {
-            selected_target_id: "strong".to_string(),
-            reasoning: None,
-            is_answer_call: true,
-        };
+        let decision = Decision::new("strong", None, true);
 
         processor
             .process(

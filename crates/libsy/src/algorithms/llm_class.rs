@@ -481,12 +481,12 @@ struct EscalationClassifier {
 
 #[async_trait]
 impl Classifier<State> for EscalationClassifier {
-    fn routing_tier(&self, selected_target_id: &str) -> Option<&'static str> {
+    fn routing_tier(&self, selected_model_id: &str) -> Option<&'static str> {
         if self.capable.semantic_name == self.efficient.semantic_name {
             None
-        } else if selected_target_id == self.capable.semantic_name {
+        } else if selected_model_id == self.capable.semantic_name {
             Some("strong")
-        } else if selected_target_id == self.efficient.semantic_name {
+        } else if selected_model_id == self.efficient.semantic_name {
             Some("weak")
         } else {
             None
@@ -521,11 +521,11 @@ impl Classifier<State> for EscalationClassifier {
         let efficient_response = match driver
             .call_llm(RoutedRequest {
                 request: request.clone(),
-                decision: Arc::new(Decision {
-                    selected_target_id: self.efficient.semantic_name.clone(),
-                    reasoning: Some("escalation classifier: efficient tier".into()),
-                    is_answer_call: true,
-                }),
+                decision: Arc::new(Decision::new(
+                    self.efficient.semantic_name.clone(),
+                    Some("escalation classifier: efficient tier".into()),
+                    true,
+                )),
                 ctx: Context::default(),
             })
             .await
@@ -892,12 +892,12 @@ impl LlmTaskClassifier {
 
 #[async_trait]
 impl Classifier<State> for TaskClassifier {
-    fn routing_tier(&self, selected_target_id: &str) -> Option<&'static str> {
+    fn routing_tier(&self, selected_model_id: &str) -> Option<&'static str> {
         if self.efficient_target == self.capable_target {
             None
-        } else if selected_target_id == self.efficient_target {
+        } else if selected_model_id == self.efficient_target {
             Some("weak")
-        } else if selected_target_id == self.capable_target {
+        } else if selected_model_id == self.capable_target {
             Some("strong")
         } else {
             None
@@ -916,8 +916,8 @@ impl Classifier<State> for TaskClassifier {
 
 #[async_trait]
 impl Classifier<State> for LlmTaskClassifier {
-    fn routing_tier(&self, selected_target_id: &str) -> Option<&'static str> {
-        self.inner.routing_tier(selected_target_id)
+    fn routing_tier(&self, selected_model_id: &str) -> Option<&'static str> {
+        self.inner.routing_tier(selected_model_id)
     }
 
     async fn score(
@@ -1034,7 +1034,7 @@ mod tests {
             move |decision: Arc<Decision>, request: Request| {
                 let recorder = Arc::clone(&recorder);
                 async move {
-                    let model = decision.selected_target_id().to_string();
+                    let model = decision.selected_model_id().to_string();
                     recorder.calls.lock().push(model.clone());
                     recorder
                         .call_roles
@@ -1076,7 +1076,7 @@ mod tests {
     /// The judge times out; every other target answers normally.
     fn unreachable_judge() -> impl Serve {
         |decision: Arc<Decision>, request: Request| async move {
-            let model = decision.selected_target_id().to_string();
+            let model = decision.selected_model_id().to_string();
             if model == "judge" {
                 return Err(LlmClientError::Timeout {
                     source: Box::new(std::io::Error::other("judge unreachable")),
@@ -1146,10 +1146,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(
-            trace.last().map(|d| d.selected_target_id()),
-            Some("capable")
-        );
+        assert_eq!(trace.last().map(|d| d.selected_model_id()), Some("capable"));
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("answer from capable".to_string())
@@ -1841,7 +1838,7 @@ mod tests {
     /// its next queued reply.
     fn queued(model: Arc<Queue>, judge: Arc<Queue>) -> impl Serve {
         move |decision: Arc<Decision>, request: Request| {
-            let queue = if decision.selected_target_id() == "judge" {
+            let queue = if decision.selected_model_id() == "judge" {
                 Arc::clone(&judge)
             } else {
                 Arc::clone(&model)
@@ -1892,7 +1889,7 @@ mod tests {
 
         // The efficient model is the serving target, and the response comes from its call.
         assert_eq!(
-            trace.last().map(|d| d.selected_target_id()),
+            trace.last().map(|d| d.selected_model_id()),
             Some("efficient")
         );
         assert!(
@@ -1956,10 +1953,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(
-            trace.last().map(|d| d.selected_target_id()),
-            Some("capable")
-        );
+        assert_eq!(trace.last().map(|d| d.selected_model_id()), Some("capable"));
         assert!(
             trace
                 .last()
@@ -1997,10 +1991,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(
-            trace.last().map(|d| d.selected_target_id()),
-            Some("capable")
-        );
+        assert_eq!(trace.last().map(|d| d.selected_model_id()), Some("capable"));
         Ok(())
     }
 
@@ -2013,9 +2004,9 @@ mod tests {
 
         // Efficient overflows, capable answers, and the judge must never be called.
         let serve = |decision: Arc<Decision>, _request: Request| async move {
-            match decision.selected_target_id() {
+            match decision.selected_model_id() {
                 "efficient" => Err(LlmClientError::ContextWindowExceeded {
-                    model: decision.selected_target_id().to_string(),
+                    model: decision.selected_model_id().to_string(),
                     message: "prompt is too long".to_string(),
                 }),
                 "judge" => panic!("the judge must not be consulted when efficient overflows"),
@@ -2026,10 +2017,7 @@ mod tests {
         let (trace, response) =
             test_drive(router, Context::default(), classify_request(), serve).await?;
 
-        assert_eq!(
-            trace.last().map(|d| d.selected_target_id()),
-            Some("capable")
-        );
+        assert_eq!(trace.last().map(|d| d.selected_model_id()), Some("capable"));
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("capable answer".to_string())

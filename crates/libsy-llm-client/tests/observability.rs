@@ -337,7 +337,7 @@ impl RoutedLlmClient for ClassifierClient {
         _request: Request,
         decision: Arc<Decision>,
     ) -> Result<Response, LlmClientError> {
-        let model = decision.selected_target_id().to_string();
+        let model = decision.selected_model_id().to_string();
         let completion = if decision.is_answer_call() {
             tokio::time::sleep(self.routed_delay).await;
             "routed response"
@@ -374,7 +374,7 @@ impl RoutedLlmClient for JudgeClient {
         if decision.is_answer_call() {
             return Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
-                    Some(decision.selected_target_id().to_string()),
+                    Some(decision.selected_model_id().to_string()),
                     "routed response",
                 )),
                 metadata: None,
@@ -413,7 +413,7 @@ impl RoutedLlmClient for UsageClient {
         decision: Arc<Decision>,
     ) -> Result<Response, switchyard_protocol::LlmClientError> {
         let mut response = text_response(
-            Some(decision.selected_target_id().to_string()),
+            Some(decision.selected_model_id().to_string()),
             "observed response",
         );
         response.id = Some("obs-response-1".to_string());
@@ -451,11 +451,11 @@ impl Algorithm for SingleCallAlgo {
             .first()
             .ok_or(LibsyError::NoTargets)?
             .clone();
-        let decision = Arc::new(Decision {
-            selected_target_id: target.semantic_name.clone(),
-            reasoning: Some(format!("picked '{}'", target.semantic_name)),
-            is_answer_call: true,
-        });
+        let decision = Arc::new(Decision::new(
+            target.semantic_name.clone(),
+            Some(format!("picked '{}'", target.semantic_name)),
+            true,
+        ));
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
             .call_llm(RoutedRequest {
@@ -890,7 +890,7 @@ impl RoutedLlmClient for StreamingUsageClient {
         let chunks = vec![Ok(LlmResponseStreamEvent::new(vec![
             LlmResponseChunk::MessageStart {
                 id: Some("obs-stream-response".to_string()),
-                model: Some(decision.selected_target_id().to_string()),
+                model: Some(decision.selected_model_id().to_string()),
             },
             LlmResponseChunk::Usage(usage),
             LlmResponseChunk::MessageStop {

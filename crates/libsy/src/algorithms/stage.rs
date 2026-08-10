@@ -45,8 +45,8 @@ struct SourceStamp {
 
 #[async_trait]
 impl Classifier<State> for SourceStamp {
-    fn routing_tier(&self, selected_target_id: &str) -> Option<&'static str> {
-        self.inner.routing_tier(selected_target_id)
+    fn routing_tier(&self, selected_model_id: &str) -> Option<&'static str> {
+        self.inner.routing_tier(selected_model_id)
     }
 
     async fn score(
@@ -382,7 +382,7 @@ mod tests {
             move |decision: Arc<Decision>, request: Request| {
                 let recorder = Arc::clone(&recorder);
                 async move {
-                    let target = decision.selected_target_id().to_string();
+                    let target = decision.selected_model_id().to_string();
                     recorder.calls.lock().push(Call {
                         target: target.clone(),
                         messages: request

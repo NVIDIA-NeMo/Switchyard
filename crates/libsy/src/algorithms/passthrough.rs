@@ -35,14 +35,14 @@ impl Algorithm for Passthrough {
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
-        let decision: Arc<Decision> = Arc::new(Decision {
-            selected_target_id: self.target.semantic_name.clone(),
-            reasoning: Some(format!(
+        let decision: Arc<Decision> = Arc::new(Decision::new(
+            self.target.semantic_name.clone(),
+            Some(format!(
                 "passthrough selected target '{}'",
                 self.target.semantic_name
             )),
-            is_answer_call: true,
-        });
+            true,
+        ));
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
             .call_llm(RoutedRequest {
@@ -85,7 +85,7 @@ mod tests {
             MODEL_ID
         );
         assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].selected_target_id(), MODEL_ID);
+        assert_eq!(trace[0].selected_model_id(), MODEL_ID);
         assert!(trace[0].is_answer_call());
         Ok(())
     }

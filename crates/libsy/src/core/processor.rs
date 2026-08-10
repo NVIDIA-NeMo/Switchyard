@@ -85,11 +85,7 @@ mod tests {
         let mut state = TestState::default();
         let mut req = request();
         let response = text_response(None, "ok");
-        let decision = Decision {
-            selected_target_id: "test/model".to_string(),
-            reasoning: None,
-            is_answer_call: true,
-        };
+        let decision = Decision::new("test/model", None, true);
         let signals = Signals {};
 
         // Feed one of every event variant through the processor.

@@ -110,12 +110,12 @@ impl RoutedCallWindows {
     fields(
         algorithm = algorithm_label(&call.get_routed().ctx),
         switchyard.algorithm = algorithm_label(&call.get_routed().ctx),
-        selected_model = call.get_decision().selected_target_id(),
+        selected_model = call.get_decision().selected_model_id(),
         otel.kind = "client",
-        otel.name = %format_args!("chat {}", call.get_decision().selected_target_id()),
+        otel.name = %format_args!("chat {}", call.get_decision().selected_model_id()),
         openinference.span.kind = "LLM",
         gen_ai.operation.name = "chat",
-        gen_ai.request.model = call.get_decision().selected_target_id(),
+        gen_ai.request.model = call.get_decision().selected_model_id(),
         gen_ai.request.stream = tracing::field::Empty,
         gen_ai.request.temperature = tracing::field::Empty,
         gen_ai.request.top_p = tracing::field::Empty,
@@ -158,7 +158,7 @@ async fn serve(
         span.record("gen_ai.conversation.id", session_id);
     }
     let routed = call.get_routed().clone();
-    let target = routed.decision.selected_target_id().to_string();
+    let target = routed.decision.selected_model_id().to_string();
     let is_answer_call = call.get_decision().is_answer_call();
     // Resolved before the clock starts: picking the client is Switchyard's work, not
     // the provider's, so it belongs in the routing overhead.
@@ -179,7 +179,7 @@ async fn serve(
     let result = observability::observe_client_call(result);
     if let Some(observer) = observer {
         observer(RunObservation::LlmCall(LlmCallObservation {
-            selected_model: call.get_decision().selected_target_id().to_string(),
+            selected_model: call.get_decision().selected_model_id().to_string(),
             is_answer_call,
             is_success: result.is_ok(),
             duration,

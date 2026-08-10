@@ -229,11 +229,11 @@ where
         let response = driver
             .call_llm(RoutedRequest {
                 request: self.judge.build_request(state, request),
-                decision: Arc::new(Decision {
-                    selected_target_id: self.target.semantic_name.to_string(),
-                    reasoning: Some("llm judge consultation".to_string()),
-                    is_answer_call: false,
-                }),
+                decision: Arc::new(Decision::new(
+                    self.target.semantic_name.to_string(),
+                    Some("llm judge consultation".to_string()),
+                    false,
+                )),
                 ctx: Context::default(),
             })
             .await

@@ -248,7 +248,7 @@ mod tests {
             "only/model"
         );
         assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].selected_target_id(), "only/model");
+        assert_eq!(trace[0].selected_model_id(), "only/model");
         Ok(())
     }
 
@@ -269,7 +269,7 @@ mod tests {
                 names.contains(&selected.as_str()),
                 "selected {selected} not in target set"
             );
-            assert_eq!(trace[0].selected_target_id(), selected.as_str());
+            assert_eq!(trace[0].selected_model_id(), selected.as_str());
         }
         Ok(())
     }
@@ -431,7 +431,7 @@ mod tests {
         let (trace, _) = test_drive(algorithm, Context::default(), request(), echo()).await?;
         let decision = &trace[0];
 
-        assert_eq!(decision.selected_target_id(), "only/model");
+        assert_eq!(decision.selected_model_id(), "only/model");
         assert!(
             decision
                 .reasoning()

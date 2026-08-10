@@ -56,8 +56,6 @@ impl RoutingLog {
             session_id: context.session_id.map(Cow::Owned),
             model: model.into(),
             tier: tier.unwrap_or("").into(),
-            // Kept in the read schema for older logs; new decisions carry this in reasoning.
-            fallback_reason: None,
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
@@ -130,8 +128,6 @@ struct RoutingRecord<'a> {
     session_id: Option<Cow<'a, str>>,
     model: Cow<'a, str>,
     tier: Cow<'a, str>,
-    #[serde(borrow, skip_serializing_if = "Option::is_none")]
-    fallback_reason: Option<Cow<'a, str>>,
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,
@@ -238,7 +234,7 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                r#"{"session_id":"a","model":"m1","prompt_tokens":10,"completion_tokens":2}"#,
+                r#"{"session_id":"a","model":"m1","fallback_reason":"unavailable","prompt_tokens":10,"completion_tokens":2}"#,
                 "\n",
                 r#"{"session_id":"b","model":"m1","prompt_tokens":99,"completion_tokens":99}"#,
                 "\n",

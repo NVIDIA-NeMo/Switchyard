@@ -159,7 +159,7 @@ async fn route(
         switchyard_llm_client::run(algorithm, clients, Context::default(), request, None).await?;
     Ok(trace
         .last()
-        .map(|decision| decision.selected_target_id().to_string())
+        .map(|decision| decision.selected_model_id().to_string())
         .unwrap_or_default())
 }
 ```

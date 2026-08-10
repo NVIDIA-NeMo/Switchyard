@@ -127,7 +127,7 @@ where
         if let Event::Decision { request, decision } = event
             && let Some(key) = self.affinity_key(request)
         {
-            let model = decision.selected_target_id();
+            let model = decision.selected_model_id();
             let mut assignments = self.assignments.lock();
             if self.should_latch(model) && !assignments.contains_key(&key) {
                 evict_if_full(&mut assignments);
@@ -216,11 +216,7 @@ mod tests {
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
     fn fixed_decision(target: &str) -> Decision {
-        Decision {
-            selected_target_id: target.to_string(),
-            reasoning: None,
-            is_answer_call: true,
-        }
+        Decision::new(target, None, true)
     }
 
     fn request(metadata: Metadata) -> Request {

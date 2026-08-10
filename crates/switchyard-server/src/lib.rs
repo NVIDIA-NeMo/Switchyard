@@ -715,12 +715,12 @@ async fn handle_llm_request(
             .map(|probe| {
                 state
                     .stats
-                    .prefix_eligibility(decision.selected_target_id(), probe)
+                    .prefix_eligibility(decision.selected_model_id(), probe)
             })
             .unwrap_or(0.0);
         usage_metrics::observe(
             response,
-            decision.selected_target_id(),
+            decision.selected_model_id(),
             started.0,
             state.stats,
             cache_eligible,
@@ -730,7 +730,7 @@ async fn handle_llm_request(
         response
     };
 
-    let served_model = decision.map(|decision| decision.selected_target_id().to_string());
+    let served_model = decision.map(|decision| decision.selected_model_id().to_string());
     let mut response = match into_http_response(response, wire_format, served_model) {
         Ok(response) => response,
         Err(error) => return server_error(error.to_string()),
@@ -816,7 +816,7 @@ fn attach_routing_headers(response: &mut Response, decision: &Decision) {
     insert_routing_header(
         response,
         HEADER_SELECTED_MODEL,
-        decision.selected_target_id(),
+        decision.selected_model_id(),
     );
     if let Some(reasoning) = decision.reasoning() {
         insert_routing_header(response, HEADER_RATIONALE, reasoning);

@@ -132,18 +132,31 @@ impl RoutingFallbackReason {
 /// A routing choice produced by an algorithm.
 #[derive(Clone, Debug)]
 pub struct Decision {
-    /// The target to call.
-    pub selected_target_id: String,
+    /// The model identifier selected for the call.
+    selected_model_id: String,
     /// Why, for logs and traces.
-    pub reasoning: Option<String>,
+    reasoning: Option<String>,
     /// True for an answer-generating call. False for classifier and judge calls.
-    pub is_answer_call: bool,
+    is_answer_call: bool,
 }
 
 impl Decision {
-    /// The target to call.
-    pub fn selected_target_id(&self) -> &str {
-        self.selected_target_id.as_str()
+    /// Creates a decision and records whether its call produces the answer.
+    pub fn new(
+        selected_model_id: impl Into<String>,
+        reasoning: Option<String>,
+        is_answer_call: bool,
+    ) -> Self {
+        Self {
+            selected_model_id: selected_model_id.into(),
+            reasoning,
+            is_answer_call,
+        }
+    }
+
+    /// The model identifier selected for the call.
+    pub fn selected_model_id(&self) -> &str {
+        self.selected_model_id.as_str()
     }
 
     /// Why this decision was made.
@@ -169,9 +182,9 @@ impl Decision {
 /// not serialize requests unless their transport requires it.
 #[async_trait]
 pub trait RoutedLlmClient: Send + Sync {
-    /// Serve the target identified by
-    /// [`decision.selected_target_id`](Decision::selected_target_id), mapping that target to
-    /// whichever provider model this client calls.
+    /// Serve the model identified by
+    /// [`decision.selected_model_id()`](Decision::selected_model_id), resolving it to the
+    /// provider model this client calls.
     /// `request.llm_request.model` is the agent's original name, carried through for
     /// reference, not a call target. `ctx` carries the request's cross-cutting state.
     async fn call(

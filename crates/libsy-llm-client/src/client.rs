@@ -513,7 +513,7 @@ impl RoutedLlmClient for TranslatingLlmClient {
         request: Request,
         decision: std::sync::Arc<Decision>,
     ) -> Result<Response> {
-        let model_name = Some(decision.selected_target_id());
+        let model_name = Some(decision.selected_model_id());
         self.call_rewrite_model(ctx, request, model_name).await
     }
 }
@@ -1826,11 +1826,7 @@ mod tests {
     }
 
     fn fixed_decision(target: &str) -> Decision {
-        Decision {
-            selected_target_id: target.to_string(),
-            reasoning: None,
-            is_answer_call: true,
-        }
+        Decision::new(target, None, true)
     }
 
     // Exercises the `RoutedLlmClient` impl: `call` resolves the upstream model from the

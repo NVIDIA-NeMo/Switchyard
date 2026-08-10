@@ -32,11 +32,11 @@ impl Algorithm for Noop {
             .requested_model()
             .unwrap_or("switchyard/noop")
             .to_string();
-        let decision: Arc<Decision> = Arc::new(Decision {
-            selected_target_id: model.clone(),
-            reasoning: Some("noop returned its synthetic response".to_string()),
-            is_answer_call: true,
-        });
+        let decision: Arc<Decision> = Arc::new(Decision::new(
+            model.clone(),
+            Some("noop returned its synthetic response".to_string()),
+            true,
+        ));
         driver.info(ctx, decision.clone()).await?;
 
         let llm_response = LlmResponse::Agg(AggLlmResponse {
@@ -86,7 +86,7 @@ mod tests {
         let Some(decision) = decisions.first() else {
             panic!("Expected exactly one Decision");
         };
-        assert_eq!(decision.selected_target_id(), TEST_MODEL);
+        assert_eq!(decision.selected_model_id(), TEST_MODEL);
         assert!(decision.is_answer_call());
         assert_eq!(response.selected_model(), Some(TEST_MODEL));
         Ok(())

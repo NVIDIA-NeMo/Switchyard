@@ -271,9 +271,9 @@ where
             RoutingFallbackReason::ContextWindow => "exceeded its context window",
             RoutingFallbackReason::Unavailable => "was unavailable",
         };
-        Arc::new(Decision {
-            selected_target_id: to.semantic_name.clone(),
-            reasoning: Some(with_routing_tier(
+        Arc::new(Decision::new(
+            to.semantic_name.clone(),
+            Some(with_routing_tier(
                 format!(
                     "{} {failure}; fell back to {} (fallback reason: {})",
                     from.semantic_name,
@@ -282,8 +282,8 @@ where
                 ),
                 deciding.routing_tier(&to.semantic_name),
             )),
-            is_answer_call: true,
-        })
+            true,
+        ))
     }
 
     /// Returns this request's retained state without holding the registry lock.
@@ -346,14 +346,14 @@ where
                 score.target, target.semantic_name
             )
         };
-        let decision: Arc<Decision> = Arc::new(Decision {
-            selected_target_id: target.semantic_name.clone(),
-            reasoning: Some(with_routing_tier(
+        let decision: Arc<Decision> = Arc::new(Decision::new(
+            target.semantic_name.clone(),
+            Some(with_routing_tier(
                 reasoning,
                 deciding.routing_tier(&target.semantic_name),
             )),
-            is_answer_call: true,
-        });
+            true,
+        ));
         driver.info(ctx.clone(), decision.clone()).await?;
 
         // 4. Post-decision replay: every processor sees the decision so stateful ones
@@ -467,7 +467,7 @@ mod tests {
             let into = Arc::clone(&into);
             async move {
                 *into.lock() = Some(request);
-                Ok(reply(decision.selected_target_id()))
+                Ok(reply(decision.selected_model_id()))
             }
         }
     }
@@ -495,7 +495,7 @@ mod tests {
                 let recorder = Arc::clone(&recorder);
                 async move {
                     *recorder.0.lock() = Some(RecordedCall {
-                        target: decision.selected_target_id().to_string(),
+                        target: decision.selected_model_id().to_string(),
                         messages: request
                             .llm_request
                             .messages
@@ -509,7 +509,7 @@ mod tests {
                             .filter_map(|block| block.content.iter().find_map(text_of))
                             .collect(),
                     });
-                    Ok(reply(decision.selected_target_id()))
+                    Ok(reply(decision.selected_model_id()))
                 }
             }
         }
@@ -674,7 +674,7 @@ mod tests {
         move |decision: Arc<Decision>, _request: Request| {
             let calls = Arc::clone(&calls);
             async move {
-                let model = decision.selected_target_id().to_string();
+                let model = decision.selected_model_id().to_string();
                 calls.lock().push(model.clone());
                 if overflowing.contains(&model.as_str()) {
                     return Err(LlmClientError::ContextWindowExceeded {
@@ -696,7 +696,7 @@ mod tests {
         move |decision: Arc<Decision>, _request: Request| {
             let calls = Arc::clone(&calls);
             async move {
-                let model = decision.selected_target_id().to_string();
+                let model = decision.selected_model_id().to_string();
                 calls.lock().push(model.clone());
                 if unavailable.contains(&model.as_str()) {
                     return Err(LlmClientError::UpstreamHttp {
@@ -887,8 +887,8 @@ mod tests {
 
         #[async_trait]
         impl Classifier for TieredClassifier {
-            fn routing_tier(&self, selected_target_id: &str) -> Option<&'static str> {
-                match selected_target_id {
+            fn routing_tier(&self, selected_model_id: &str) -> Option<&'static str> {
+                match selected_model_id {
                     "weak" => Some("weak"),
                     "strong" => Some("strong"),
                     _ => None,
@@ -910,7 +910,7 @@ mod tests {
         let (_, trace) = run_with(router, unavailable(&["weak"], Arc::default())).await?;
 
         assert_eq!(trace.len(), 2);
-        assert_eq!(trace[0].selected_target_id(), "weak");
+        assert_eq!(trace[0].selected_model_id(), "weak");
         assert!(trace[0].is_answer_call());
         assert!(
             trace[0]
@@ -919,7 +919,7 @@ mod tests {
         );
 
         let fallback = &trace[1];
-        assert_eq!(fallback.selected_target_id(), "strong");
+        assert_eq!(fallback.selected_model_id(), "strong");
         assert!(fallback.is_answer_call());
         assert!(fallback.reasoning().is_some_and(|reasoning| {
             reasoning.contains("fallback reason: unavailable")
@@ -999,7 +999,7 @@ mod tests {
             .map_err(|error| LibsyError::external("aggregating fall-through response", error))?;
 
         assert_eq!(text, "strong");
-        assert_eq!(trace[0].selected_target_id(), "strong");
+        assert_eq!(trace[0].selected_model_id(), "strong");
         assert!(
             trace[0]
                 .reasoning()
@@ -1015,7 +1015,7 @@ mod tests {
         let (model, trace) = run_with(router, echo()).await?;
         assert_eq!(model, "strong");
         assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].selected_target_id(), "strong");
+        assert_eq!(trace[0].selected_model_id(), "strong");
         Ok(())
     }
 

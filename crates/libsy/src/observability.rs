@@ -290,7 +290,7 @@ pub(crate) fn record_llm_call(
 /// structured debug event carrying the decision's reasoning.
 pub(crate) fn record_decision(ctx: &Context, decision: &Decision) {
     let algorithm = algorithm_label(ctx);
-    let selected_model = decision.selected_target_id();
+    let selected_model = decision.selected_model_id();
     tracing::debug!(
         target: TRACING_TARGET,
         algorithm,

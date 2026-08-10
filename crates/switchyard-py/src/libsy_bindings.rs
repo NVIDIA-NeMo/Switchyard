@@ -268,7 +268,7 @@ impl PyAlgorithm {
                 .iter()
                 .map(|decision| {
                     json!({
-                        "selected_target_id": decision.selected_target_id(),
+                        "selected_model_id": decision.selected_model_id(),
                         "reasoning": decision.reasoning(),
                         "is_answer_call": decision.is_answer_call(),
                     })

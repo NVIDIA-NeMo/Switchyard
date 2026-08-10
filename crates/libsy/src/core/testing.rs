@@ -60,7 +60,7 @@ pub(crate) async fn test_drive(
 /// error-shape assertions match production.
 async fn fulfill(serve: Arc<impl Serve>, call: CallLlmRequest) -> Result<()> {
     let routed = call.get_routed().clone();
-    let target = routed.decision.selected_target_id().to_string();
+    let target = routed.decision.selected_model_id().to_string();
     let result = serve
         .serve(routed.decision, routed.request)
         .await
@@ -71,7 +71,7 @@ async fn fulfill(serve: Arc<impl Serve>, call: CallLlmRequest) -> Result<()> {
 /// Answers with the selected model name as the completion — what most routing tests need,
 /// since they assert on *which* target was called.
 pub(crate) fn echo() -> impl Serve {
-    |decision: Arc<Decision>, _request: Request| async move { Ok(reply(decision.selected_target_id())) }
+    |decision: Arc<Decision>, _request: Request| async move { Ok(reply(decision.selected_model_id())) }
 }
 
 /// A buffered response whose completion text is `completion`.

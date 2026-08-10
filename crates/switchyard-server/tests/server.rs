@@ -1695,7 +1695,7 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(records.len(), 3);
     assert!(records.iter().all(|record| {
-        record["model"] == "model/strong" && record["fallback_reason"].is_null()
+        record["model"] == "model/strong" && record.get("fallback_reason").is_none()
     }));
 
     let previous_call_count = upstream.calls.lock().await.len();
