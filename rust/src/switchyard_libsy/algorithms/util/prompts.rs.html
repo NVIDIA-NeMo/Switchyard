@@ -117,7 +117,7 @@
 <a href=#117 id=117 data-nosnippet>117</a>        </span><span class="kw">let </span>Event::Decision { request, decision } = event <span class="kw">else </span>{
 <a href=#118 id=118 data-nosnippet>118</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(());
 <a href=#119 id=119 data-nosnippet>119</a>        };
-<a href=#120 id=120 data-nosnippet>120</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(prompt) = <span class="self">self</span>.prompts.get(decision.selected_model()) <span class="kw">else </span>{
+<a href=#120 id=120 data-nosnippet>120</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(prompt) = <span class="self">self</span>.prompts.get(decision.selected_model_id()) <span class="kw">else </span>{
 <a href=#121 id=121 data-nosnippet>121</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(());
 <a href=#122 id=122 data-nosnippet>122</a>        };
 <a href=#123 id=123 data-nosnippet>123</a>        <span class="comment">// Ahead of the client's own instructions, so this framing is what the
@@ -139,7 +139,7 @@
 <a href=#139 id=139 data-nosnippet>139</a><span class="attr">#[cfg(test)]
 <a href=#140 id=140 data-nosnippet>140</a></span><span class="kw">mod </span>tests {
 <a href=#141 id=141 data-nosnippet>141</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#142 id=142 data-nosnippet>142</a>    <span class="kw">use </span>switchyard_protocol::{LlmRequest, ToolResult, text_request};
+<a href=#142 id=142 data-nosnippet>142</a>    <span class="kw">use </span>switchyard_protocol::{Decision, LlmRequest, ToolResult, text_request};
 <a href=#143 id=143 data-nosnippet>143</a>
 <a href=#144 id=144 data-nosnippet>144</a>    <span class="kw">const </span>NOTE: <span class="kw-2">&amp;</span>str = <span class="string">"recovering from an error"</span>;
 <a href=#145 id=145 data-nosnippet>145</a>    <span class="kw">const </span>STRONG_PROMPT: <span class="kw-2">&amp;</span>str = <span class="string">"diagnose before you edit"</span>;
@@ -241,132 +241,120 @@
 <a href=#241 id=241 data-nosnippet>241</a>        </span>);
 <a href=#242 id=242 data-nosnippet>242</a>    }
 <a href=#243 id=243 data-nosnippet>243</a>
-<a href=#244 id=244 data-nosnippet>244</a>    <span class="doccomment">/// A decision routed to `target`.
-<a href=#245 id=245 data-nosnippet>245</a>    </span><span class="kw">struct </span>RoutedTo(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str);
-<a href=#246 id=246 data-nosnippet>246</a>    <span class="kw">impl </span>switchyard_protocol::Decision <span class="kw">for </span>RoutedTo {
-<a href=#247 id=247 data-nosnippet>247</a>        <span class="kw">fn </span>selected_model(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#248 id=248 data-nosnippet>248</a>            <span class="self">self</span>.<span class="number">0
-<a href=#249 id=249 data-nosnippet>249</a>        </span>}
-<a href=#250 id=250 data-nosnippet>250</a>        <span class="kw">fn </span>reasoning(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
-<a href=#251 id=251 data-nosnippet>251</a>            <span class="prelude-val">None
-<a href=#252 id=252 data-nosnippet>252</a>        </span>}
-<a href=#253 id=253 data-nosnippet>253</a>        <span class="kw">fn </span>as_any(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="kw">dyn </span>std::any::Any {
-<a href=#254 id=254 data-nosnippet>254</a>            <span class="self">self
-<a href=#255 id=255 data-nosnippet>255</a>        </span>}
-<a href=#256 id=256 data-nosnippet>256</a>    }
-<a href=#257 id=257 data-nosnippet>257</a>
-<a href=#258 id=258 data-nosnippet>258</a>    <span class="doccomment">/// The instruction text the request carries.
-<a href=#259 id=259 data-nosnippet>259</a>    </span><span class="kw">fn </span>instructions(request: <span class="kw-2">&amp;</span>Request) -&gt; Vec&lt;String&gt; {
-<a href=#260 id=260 data-nosnippet>260</a>        request
-<a href=#261 id=261 data-nosnippet>261</a>            .llm_request
-<a href=#262 id=262 data-nosnippet>262</a>            .instructions
-<a href=#263 id=263 data-nosnippet>263</a>            .iter()
-<a href=#264 id=264 data-nosnippet>264</a>            .filter_map(|block| {
-<a href=#265 id=265 data-nosnippet>265</a>                block.content.iter().find_map(|content| <span class="kw">match </span>content {
-<a href=#266 id=266 data-nosnippet>266</a>                    ContentBlock::Text { text } =&gt; <span class="prelude-val">Some</span>(text.clone()),
-<a href=#267 id=267 data-nosnippet>267</a>                    <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#268 id=268 data-nosnippet>268</a>                })
-<a href=#269 id=269 data-nosnippet>269</a>            })
-<a href=#270 id=270 data-nosnippet>270</a>            .collect()
-<a href=#271 id=271 data-nosnippet>271</a>    }
-<a href=#272 id=272 data-nosnippet>272</a>
-<a href=#273 id=273 data-nosnippet>273</a>    <span class="doccomment">/// Runs one outbound request routed to `target` through `processor`.
-<a href=#274 id=274 data-nosnippet>274</a>    </span><span class="kw">async fn </span>run(processor: <span class="kw-2">&amp;</span>SystemPromptProcessor, target: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str) -&gt; <span class="prelude-ty">Result</span>&lt;Request&gt; {
-<a href=#275 id=275 data-nosnippet>275</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request {
-<a href=#276 id=276 data-nosnippet>276</a>            llm_request: LlmRequest {
-<a href=#277 id=277 data-nosnippet>277</a>                preservation: preserved_body(),
-<a href=#278 id=278 data-nosnippet>278</a>                ..LlmRequest::default()
-<a href=#279 id=279 data-nosnippet>279</a>            },
-<a href=#280 id=280 data-nosnippet>280</a>            ..Request::default()
-<a href=#281 id=281 data-nosnippet>281</a>        };
-<a href=#282 id=282 data-nosnippet>282</a>        processor
-<a href=#283 id=283 data-nosnippet>283</a>            .process(
-<a href=#284 id=284 data-nosnippet>284</a>                <span class="kw-2">&amp;mut </span>(),
-<a href=#285 id=285 data-nosnippet>285</a>                Event::Decision {
-<a href=#286 id=286 data-nosnippet>286</a>                    request: <span class="kw-2">&amp;mut </span>request,
-<a href=#287 id=287 data-nosnippet>287</a>                    decision: <span class="kw-2">&amp;</span>RoutedTo(target),
-<a href=#288 id=288 data-nosnippet>288</a>                },
-<a href=#289 id=289 data-nosnippet>289</a>            )
-<a href=#290 id=290 data-nosnippet>290</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#291 id=291 data-nosnippet>291</a>        <span class="prelude-val">Ok</span>(request)
-<a href=#292 id=292 data-nosnippet>292</a>    }
-<a href=#293 id=293 data-nosnippet>293</a>
-<a href=#294 id=294 data-nosnippet>294</a>    <span class="kw">fn </span>prompts() -&gt; TargetPrompts {
-<a href=#295 id=295 data-nosnippet>295</a>        TargetPrompts::default()
-<a href=#296 id=296 data-nosnippet>296</a>            .with(<span class="string">"strong"</span>, STRONG_PROMPT)
-<a href=#297 id=297 data-nosnippet>297</a>            .with(<span class="string">"weak"</span>, WEAK_PROMPT)
-<a href=#298 id=298 data-nosnippet>298</a>    }
-<a href=#299 id=299 data-nosnippet>299</a>
-<a href=#300 id=300 data-nosnippet>300</a>    <span class="attr">#[tokio::test]
-<a href=#301 id=301 data-nosnippet>301</a>    </span><span class="kw">async fn </span>each_target_gets_its_own_prompt() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#302 id=302 data-nosnippet>302</a>        <span class="kw">let </span>processor = SystemPromptProcessor::new(prompts());
-<a href=#303 id=303 data-nosnippet>303</a>        <span class="kw">for </span>(target, expected) <span class="kw">in </span>[(<span class="string">"strong"</span>, STRONG_PROMPT), (<span class="string">"weak"</span>, WEAK_PROMPT)] {
-<a href=#304 id=304 data-nosnippet>304</a>            <span class="kw">let </span>request = run(<span class="kw-2">&amp;</span>processor, target).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#305 id=305 data-nosnippet>305</a>            <span class="macro">assert_eq!</span>(instructions(<span class="kw-2">&amp;</span>request), <span class="macro">vec!</span>[expected]);
-<a href=#306 id=306 data-nosnippet>306</a>            <span class="macro">assert!</span>(
-<a href=#307 id=307 data-nosnippet>307</a>                !replays_exactly(<span class="kw-2">&amp;</span>request),
-<a href=#308 id=308 data-nosnippet>308</a>                <span class="string">"{target}: a same-format hop would replay the body captured before the prompt"
-<a href=#309 id=309 data-nosnippet>309</a>            </span>);
-<a href=#310 id=310 data-nosnippet>310</a>        }
-<a href=#311 id=311 data-nosnippet>311</a>        <span class="prelude-val">Ok</span>(())
-<a href=#312 id=312 data-nosnippet>312</a>    }
-<a href=#313 id=313 data-nosnippet>313</a>
-<a href=#314 id=314 data-nosnippet>314</a>    <span class="attr">#[tokio::test]
-<a href=#315 id=315 data-nosnippet>315</a>    </span><span class="kw">async fn </span>an_unconfigured_target_is_left_untouched() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#316 id=316 data-nosnippet>316</a>        <span class="comment">// One target's prompt must not leak onto another, whatever ran before.
-<a href=#317 id=317 data-nosnippet>317</a>        </span><span class="kw">let </span>processor =
-<a href=#318 id=318 data-nosnippet>318</a>            SystemPromptProcessor::new(TargetPrompts::default().with(<span class="string">"strong"</span>, STRONG_PROMPT));
-<a href=#319 id=319 data-nosnippet>319</a>        <span class="macro">assert_eq!</span>(
-<a href=#320 id=320 data-nosnippet>320</a>            instructions(<span class="kw-2">&amp;</span>run(<span class="kw-2">&amp;</span>processor, <span class="string">"strong"</span>).<span class="kw">await</span><span class="question-mark">?</span>),
-<a href=#321 id=321 data-nosnippet>321</a>            <span class="macro">vec!</span>[STRONG_PROMPT]
-<a href=#322 id=322 data-nosnippet>322</a>        );
-<a href=#323 id=323 data-nosnippet>323</a>        <span class="kw">let </span>untouched = run(<span class="kw-2">&amp;</span>processor, <span class="string">"weak"</span>).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#324 id=324 data-nosnippet>324</a>        <span class="macro">assert!</span>(instructions(<span class="kw-2">&amp;</span>untouched).is_empty());
-<a href=#325 id=325 data-nosnippet>325</a>        <span class="macro">assert!</span>(
-<a href=#326 id=326 data-nosnippet>326</a>            replays_exactly(<span class="kw-2">&amp;</span>untouched),
-<a href=#327 id=327 data-nosnippet>327</a>            <span class="string">"an untouched request must keep its lossless same-format replay"
-<a href=#328 id=328 data-nosnippet>328</a>        </span>);
-<a href=#329 id=329 data-nosnippet>329</a>        <span class="prelude-val">Ok</span>(())
-<a href=#330 id=330 data-nosnippet>330</a>    }
-<a href=#331 id=331 data-nosnippet>331</a>
-<a href=#332 id=332 data-nosnippet>332</a>    <span class="attr">#[tokio::test]
-<a href=#333 id=333 data-nosnippet>333</a>    </span><span class="kw">async fn </span>the_prompt_leads_the_client_instructions() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#334 id=334 data-nosnippet>334</a>        <span class="kw">let </span>processor = SystemPromptProcessor::new(prompts());
-<a href=#335 id=335 data-nosnippet>335</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request::default();
-<a href=#336 id=336 data-nosnippet>336</a>        request.llm_request.instructions.push(InstructionBlock {
-<a href=#337 id=337 data-nosnippet>337</a>            role: Role::System,
-<a href=#338 id=338 data-nosnippet>338</a>            content: <span class="macro">vec!</span>[ContentBlock::Text {
-<a href=#339 id=339 data-nosnippet>339</a>                text: <span class="string">"you are a coding agent"</span>.to_string(),
-<a href=#340 id=340 data-nosnippet>340</a>            }],
-<a href=#341 id=341 data-nosnippet>341</a>        });
-<a href=#342 id=342 data-nosnippet>342</a>
-<a href=#343 id=343 data-nosnippet>343</a>        processor
-<a href=#344 id=344 data-nosnippet>344</a>            .process(
-<a href=#345 id=345 data-nosnippet>345</a>                <span class="kw-2">&amp;mut </span>(),
-<a href=#346 id=346 data-nosnippet>346</a>                Event::Decision {
-<a href=#347 id=347 data-nosnippet>347</a>                    request: <span class="kw-2">&amp;mut </span>request,
-<a href=#348 id=348 data-nosnippet>348</a>                    decision: <span class="kw-2">&amp;</span>RoutedTo(<span class="string">"strong"</span>),
-<a href=#349 id=349 data-nosnippet>349</a>                },
-<a href=#350 id=350 data-nosnippet>350</a>            )
-<a href=#351 id=351 data-nosnippet>351</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#352 id=352 data-nosnippet>352</a>
-<a href=#353 id=353 data-nosnippet>353</a>        <span class="macro">assert_eq!</span>(
-<a href=#354 id=354 data-nosnippet>354</a>            instructions(<span class="kw-2">&amp;</span>request),
-<a href=#355 id=355 data-nosnippet>355</a>            <span class="macro">vec!</span>[STRONG_PROMPT, <span class="string">"you are a coding agent"</span>]
-<a href=#356 id=356 data-nosnippet>356</a>        );
+<a href=#244 id=244 data-nosnippet>244</a>    <span class="doccomment">/// The instruction text the request carries.
+<a href=#245 id=245 data-nosnippet>245</a>    </span><span class="kw">fn </span>instructions(request: <span class="kw-2">&amp;</span>Request) -&gt; Vec&lt;String&gt; {
+<a href=#246 id=246 data-nosnippet>246</a>        request
+<a href=#247 id=247 data-nosnippet>247</a>            .llm_request
+<a href=#248 id=248 data-nosnippet>248</a>            .instructions
+<a href=#249 id=249 data-nosnippet>249</a>            .iter()
+<a href=#250 id=250 data-nosnippet>250</a>            .filter_map(|block| {
+<a href=#251 id=251 data-nosnippet>251</a>                block.content.iter().find_map(|content| <span class="kw">match </span>content {
+<a href=#252 id=252 data-nosnippet>252</a>                    ContentBlock::Text { text } =&gt; <span class="prelude-val">Some</span>(text.clone()),
+<a href=#253 id=253 data-nosnippet>253</a>                    <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#254 id=254 data-nosnippet>254</a>                })
+<a href=#255 id=255 data-nosnippet>255</a>            })
+<a href=#256 id=256 data-nosnippet>256</a>            .collect()
+<a href=#257 id=257 data-nosnippet>257</a>    }
+<a href=#258 id=258 data-nosnippet>258</a>
+<a href=#259 id=259 data-nosnippet>259</a>    <span class="doccomment">/// Runs one outbound request routed to `target` through `processor`.
+<a href=#260 id=260 data-nosnippet>260</a>    </span><span class="kw">async fn </span>run(processor: <span class="kw-2">&amp;</span>SystemPromptProcessor, target: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str) -&gt; <span class="prelude-ty">Result</span>&lt;Request&gt; {
+<a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request {
+<a href=#262 id=262 data-nosnippet>262</a>            llm_request: LlmRequest {
+<a href=#263 id=263 data-nosnippet>263</a>                preservation: preserved_body(),
+<a href=#264 id=264 data-nosnippet>264</a>                ..LlmRequest::default()
+<a href=#265 id=265 data-nosnippet>265</a>            },
+<a href=#266 id=266 data-nosnippet>266</a>            ..Request::default()
+<a href=#267 id=267 data-nosnippet>267</a>        };
+<a href=#268 id=268 data-nosnippet>268</a>        <span class="kw">let </span>decision = Decision::new(target, <span class="prelude-val">None</span>, <span class="bool-val">true</span>);
+<a href=#269 id=269 data-nosnippet>269</a>        processor
+<a href=#270 id=270 data-nosnippet>270</a>            .process(
+<a href=#271 id=271 data-nosnippet>271</a>                <span class="kw-2">&amp;mut </span>(),
+<a href=#272 id=272 data-nosnippet>272</a>                Event::Decision {
+<a href=#273 id=273 data-nosnippet>273</a>                    request: <span class="kw-2">&amp;mut </span>request,
+<a href=#274 id=274 data-nosnippet>274</a>                    decision: <span class="kw-2">&amp;</span>decision,
+<a href=#275 id=275 data-nosnippet>275</a>                },
+<a href=#276 id=276 data-nosnippet>276</a>            )
+<a href=#277 id=277 data-nosnippet>277</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#278 id=278 data-nosnippet>278</a>        <span class="prelude-val">Ok</span>(request)
+<a href=#279 id=279 data-nosnippet>279</a>    }
+<a href=#280 id=280 data-nosnippet>280</a>
+<a href=#281 id=281 data-nosnippet>281</a>    <span class="kw">fn </span>prompts() -&gt; TargetPrompts {
+<a href=#282 id=282 data-nosnippet>282</a>        TargetPrompts::default()
+<a href=#283 id=283 data-nosnippet>283</a>            .with(<span class="string">"strong"</span>, STRONG_PROMPT)
+<a href=#284 id=284 data-nosnippet>284</a>            .with(<span class="string">"weak"</span>, WEAK_PROMPT)
+<a href=#285 id=285 data-nosnippet>285</a>    }
+<a href=#286 id=286 data-nosnippet>286</a>
+<a href=#287 id=287 data-nosnippet>287</a>    <span class="attr">#[tokio::test]
+<a href=#288 id=288 data-nosnippet>288</a>    </span><span class="kw">async fn </span>each_target_gets_its_own_prompt() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#289 id=289 data-nosnippet>289</a>        <span class="kw">let </span>processor = SystemPromptProcessor::new(prompts());
+<a href=#290 id=290 data-nosnippet>290</a>        <span class="kw">for </span>(target, expected) <span class="kw">in </span>[(<span class="string">"strong"</span>, STRONG_PROMPT), (<span class="string">"weak"</span>, WEAK_PROMPT)] {
+<a href=#291 id=291 data-nosnippet>291</a>            <span class="kw">let </span>request = run(<span class="kw-2">&amp;</span>processor, target).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#292 id=292 data-nosnippet>292</a>            <span class="macro">assert_eq!</span>(instructions(<span class="kw-2">&amp;</span>request), <span class="macro">vec!</span>[expected]);
+<a href=#293 id=293 data-nosnippet>293</a>            <span class="macro">assert!</span>(
+<a href=#294 id=294 data-nosnippet>294</a>                !replays_exactly(<span class="kw-2">&amp;</span>request),
+<a href=#295 id=295 data-nosnippet>295</a>                <span class="string">"{target}: a same-format hop would replay the body captured before the prompt"
+<a href=#296 id=296 data-nosnippet>296</a>            </span>);
+<a href=#297 id=297 data-nosnippet>297</a>        }
+<a href=#298 id=298 data-nosnippet>298</a>        <span class="prelude-val">Ok</span>(())
+<a href=#299 id=299 data-nosnippet>299</a>    }
+<a href=#300 id=300 data-nosnippet>300</a>
+<a href=#301 id=301 data-nosnippet>301</a>    <span class="attr">#[tokio::test]
+<a href=#302 id=302 data-nosnippet>302</a>    </span><span class="kw">async fn </span>an_unconfigured_target_is_left_untouched() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#303 id=303 data-nosnippet>303</a>        <span class="comment">// One target's prompt must not leak onto another, whatever ran before.
+<a href=#304 id=304 data-nosnippet>304</a>        </span><span class="kw">let </span>processor =
+<a href=#305 id=305 data-nosnippet>305</a>            SystemPromptProcessor::new(TargetPrompts::default().with(<span class="string">"strong"</span>, STRONG_PROMPT));
+<a href=#306 id=306 data-nosnippet>306</a>        <span class="macro">assert_eq!</span>(
+<a href=#307 id=307 data-nosnippet>307</a>            instructions(<span class="kw-2">&amp;</span>run(<span class="kw-2">&amp;</span>processor, <span class="string">"strong"</span>).<span class="kw">await</span><span class="question-mark">?</span>),
+<a href=#308 id=308 data-nosnippet>308</a>            <span class="macro">vec!</span>[STRONG_PROMPT]
+<a href=#309 id=309 data-nosnippet>309</a>        );
+<a href=#310 id=310 data-nosnippet>310</a>        <span class="kw">let </span>untouched = run(<span class="kw-2">&amp;</span>processor, <span class="string">"weak"</span>).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#311 id=311 data-nosnippet>311</a>        <span class="macro">assert!</span>(instructions(<span class="kw-2">&amp;</span>untouched).is_empty());
+<a href=#312 id=312 data-nosnippet>312</a>        <span class="macro">assert!</span>(
+<a href=#313 id=313 data-nosnippet>313</a>            replays_exactly(<span class="kw-2">&amp;</span>untouched),
+<a href=#314 id=314 data-nosnippet>314</a>            <span class="string">"an untouched request must keep its lossless same-format replay"
+<a href=#315 id=315 data-nosnippet>315</a>        </span>);
+<a href=#316 id=316 data-nosnippet>316</a>        <span class="prelude-val">Ok</span>(())
+<a href=#317 id=317 data-nosnippet>317</a>    }
+<a href=#318 id=318 data-nosnippet>318</a>
+<a href=#319 id=319 data-nosnippet>319</a>    <span class="attr">#[tokio::test]
+<a href=#320 id=320 data-nosnippet>320</a>    </span><span class="kw">async fn </span>the_prompt_leads_the_client_instructions() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#321 id=321 data-nosnippet>321</a>        <span class="kw">let </span>processor = SystemPromptProcessor::new(prompts());
+<a href=#322 id=322 data-nosnippet>322</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request::default();
+<a href=#323 id=323 data-nosnippet>323</a>        request.llm_request.instructions.push(InstructionBlock {
+<a href=#324 id=324 data-nosnippet>324</a>            role: Role::System,
+<a href=#325 id=325 data-nosnippet>325</a>            content: <span class="macro">vec!</span>[ContentBlock::Text {
+<a href=#326 id=326 data-nosnippet>326</a>                text: <span class="string">"you are a coding agent"</span>.to_string(),
+<a href=#327 id=327 data-nosnippet>327</a>            }],
+<a href=#328 id=328 data-nosnippet>328</a>        });
+<a href=#329 id=329 data-nosnippet>329</a>        <span class="kw">let </span>decision = Decision::new(<span class="string">"strong"</span>, <span class="prelude-val">None</span>, <span class="bool-val">true</span>);
+<a href=#330 id=330 data-nosnippet>330</a>
+<a href=#331 id=331 data-nosnippet>331</a>        processor
+<a href=#332 id=332 data-nosnippet>332</a>            .process(
+<a href=#333 id=333 data-nosnippet>333</a>                <span class="kw-2">&amp;mut </span>(),
+<a href=#334 id=334 data-nosnippet>334</a>                Event::Decision {
+<a href=#335 id=335 data-nosnippet>335</a>                    request: <span class="kw-2">&amp;mut </span>request,
+<a href=#336 id=336 data-nosnippet>336</a>                    decision: <span class="kw-2">&amp;</span>decision,
+<a href=#337 id=337 data-nosnippet>337</a>                },
+<a href=#338 id=338 data-nosnippet>338</a>            )
+<a href=#339 id=339 data-nosnippet>339</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#340 id=340 data-nosnippet>340</a>
+<a href=#341 id=341 data-nosnippet>341</a>        <span class="macro">assert_eq!</span>(
+<a href=#342 id=342 data-nosnippet>342</a>            instructions(<span class="kw-2">&amp;</span>request),
+<a href=#343 id=343 data-nosnippet>343</a>            <span class="macro">vec!</span>[STRONG_PROMPT, <span class="string">"you are a coding agent"</span>]
+<a href=#344 id=344 data-nosnippet>344</a>        );
+<a href=#345 id=345 data-nosnippet>345</a>        <span class="prelude-val">Ok</span>(())
+<a href=#346 id=346 data-nosnippet>346</a>    }
+<a href=#347 id=347 data-nosnippet>347</a>
+<a href=#348 id=348 data-nosnippet>348</a>    <span class="attr">#[tokio::test]
+<a href=#349 id=349 data-nosnippet>349</a>    </span><span class="kw">async fn </span>the_inbound_request_is_left_alone() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#350 id=350 data-nosnippet>350</a>        <span class="comment">// The inbound hook runs before the cascade has picked anything.
+<a href=#351 id=351 data-nosnippet>351</a>        </span><span class="kw">let </span>processor = SystemPromptProcessor::new(prompts());
+<a href=#352 id=352 data-nosnippet>352</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request::default();
+<a href=#353 id=353 data-nosnippet>353</a>        processor
+<a href=#354 id=354 data-nosnippet>354</a>            .process(<span class="kw-2">&amp;mut </span>(), Event::Request(<span class="kw-2">&amp;mut </span>request))
+<a href=#355 id=355 data-nosnippet>355</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#356 id=356 data-nosnippet>356</a>        <span class="macro">assert!</span>(instructions(<span class="kw-2">&amp;</span>request).is_empty());
 <a href=#357 id=357 data-nosnippet>357</a>        <span class="prelude-val">Ok</span>(())
 <a href=#358 id=358 data-nosnippet>358</a>    }
-<a href=#359 id=359 data-nosnippet>359</a>
-<a href=#360 id=360 data-nosnippet>360</a>    <span class="attr">#[tokio::test]
-<a href=#361 id=361 data-nosnippet>361</a>    </span><span class="kw">async fn </span>the_inbound_request_is_left_alone() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#362 id=362 data-nosnippet>362</a>        <span class="comment">// The inbound hook runs before the cascade has picked anything.
-<a href=#363 id=363 data-nosnippet>363</a>        </span><span class="kw">let </span>processor = SystemPromptProcessor::new(prompts());
-<a href=#364 id=364 data-nosnippet>364</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request::default();
-<a href=#365 id=365 data-nosnippet>365</a>        processor
-<a href=#366 id=366 data-nosnippet>366</a>            .process(<span class="kw-2">&amp;mut </span>(), Event::Request(<span class="kw-2">&amp;mut </span>request))
-<a href=#367 id=367 data-nosnippet>367</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#368 id=368 data-nosnippet>368</a>        <span class="macro">assert!</span>(instructions(<span class="kw-2">&amp;</span>request).is_empty());
-<a href=#369 id=369 data-nosnippet>369</a>        <span class="prelude-val">Ok</span>(())
-<a href=#370 id=370 data-nosnippet>370</a>    }
-<a href=#371 id=371 data-nosnippet>371</a>}
+<a href=#359 id=359 data-nosnippet>359</a>}
 </code></pre></div></section></main></body></html>

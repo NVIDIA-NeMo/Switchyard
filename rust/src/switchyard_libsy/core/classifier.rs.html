@@ -71,8 +71,8 @@
 <a href=#71 id=71 data-nosnippet>71</a><span class="doccomment">/// Scores targets from the current request and the composition's state.
 <a href=#72 id=72 data-nosnippet>72</a></span><span class="attr">#[async_trait]
 <a href=#73 id=73 data-nosnippet>73</a></span><span class="kw">pub trait </span>Classifier&lt;S = ()&gt;: Send + Sync {
-<a href=#74 id=74 data-nosnippet>74</a>    <span class="doccomment">/// Stable tier represented by `selected_model`, when this classifier defines one.
-<a href=#75 id=75 data-nosnippet>75</a>    </span><span class="kw">fn </span>routing_tier(<span class="kw-2">&amp;</span><span class="self">self</span>, _selected_model: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt; {
+<a href=#74 id=74 data-nosnippet>74</a>    <span class="doccomment">/// Stable tier represented by `selected_model_id`, when this classifier defines one.
+<a href=#75 id=75 data-nosnippet>75</a>    </span><span class="kw">fn </span>routing_tier(<span class="kw-2">&amp;</span><span class="self">self</span>, _selected_model_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt; {
 <a href=#76 id=76 data-nosnippet>76</a>        <span class="prelude-val">None
 <a href=#77 id=77 data-nosnippet>77</a>    </span>}
 <a href=#78 id=78 data-nosnippet>78</a>
