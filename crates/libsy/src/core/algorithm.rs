@@ -16,6 +16,8 @@ use std::{
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
+use tokio::sync::{mpsc, oneshot};
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::Instrument;
 
 /// The request/response protocol types come from [`switchyard_protocol`].
@@ -29,7 +31,6 @@ use switchyard_protocol::{
     Context, Decision, LlmClientError, Request, Response, RoutingFallbackReason, Signals,
 };
 
-use super::driver::{DriverRequest, DriverStep, TypeErasedDriver};
 use crate::{DriverError, LibsyError, Result, observability};
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
@@ -58,30 +59,17 @@ pub struct RoutedRequest {
 
 /// The host-facing half of an offloaded model call, surfaced inside [`Step::CallLlm`].
 ///
-/// Wraps a `DriverRequest` whose payload is a [`RoutedRequest`]. The host reads the
-/// routed request ([`get_routed`](Self::get_routed)) and the decision behind it
-/// ([`get_decision`](Self::get_decision)), performs (or delegates) the model call, and
-/// fulfills it with [`respond`](Self::respond) — unblocking the algorithm's
-/// [`Driver::call_llm`] on the other side. `switchyard-llm-client`'s `run` is the
-/// ready-made consumer that does this for you.
+/// The host reads the routed request ([`get_routed`](Self::get_routed)) and the decision
+/// behind it ([`get_decision`](Self::get_decision)), performs (or delegates) the model
+/// call, and fulfills it with [`respond`](Self::respond) — unblocking the algorithm's
+/// [`Driver::call_llm`] on the other side. `switchyard-llm-client`'s `run` is the ready-made
+/// consumer that does this for you.
 pub struct CallLlmRequest {
-    inner: DriverRequest,
     routed: RoutedRequest,
+    reply: oneshot::Sender<Result<Response>>,
 }
 
 impl CallLlmRequest {
-    /// Wrap a driver request whose payload is a [`RoutedRequest`]. Caches an owned copy
-    /// so the accessors are plain field reads.
-    fn new(inner: DriverRequest) -> Self {
-        // The payload is always a `RoutedRequest` (set by `Driver::call_llm`); a
-        // mismatch would be a libsy bug, not a runtime condition.
-        let routed = match inner.request::<RoutedRequest>() {
-            Ok(routed) => routed.clone(),
-            Err(_) => unreachable!("CallLlmRequest payload is always a RoutedRequest"),
-        };
-        Self { inner, routed }
-    }
-
     /// The routed request the host should serve; its `decision.selected_model()` names
     /// the model to hit.
     pub fn get_routed(&self) -> &RoutedRequest {
@@ -102,7 +90,9 @@ impl CallLlmRequest {
     /// propagate a failed model call back to the algorithm. Consumes the promise: it
     /// can only be fulfilled once.
     pub fn respond(self, result: Result<Response>) -> Result<()> {
-        self.inner.respond::<Response>(result)
+        self.reply
+            .send(result)
+            .map_err(|_| DriverError::ResponseDropped.into())
     }
 }
 
@@ -114,16 +104,19 @@ impl CallLlmRequest {
 /// the algorithm one step at a time.
 #[derive(Clone)]
 pub struct Driver {
-    driver: TypeErasedDriver,
+    step_tx: mpsc::Sender<Result<Step>>,
 }
 
 impl Driver {
     /// Build an empty driver with its step channel ready. Created per call by
     /// [`run_stream`](Algorithm::run_stream).
-    pub(crate) fn new() -> Self {
-        Self {
-            driver: TypeErasedDriver::new(),
-        }
+    pub(crate) fn new() -> (Self, mpsc::Receiver<Result<Step>>) {
+        // Capacity one keeps the algorithm paced by the stream consumer. It limits queued steps,
+        // not model calls already pulled from the stream, which can still run at the same time.
+        // A larger buffer would use more memory and let the algorithm run farther ahead with
+        // little benefit because reading a step is cheap compared with serving a model call.
+        let (step_tx, step_rx) = mpsc::channel(1);
+        (Self { step_tx }, step_rx)
     }
 
     /// Offload a model call: publish `routed` as a [`Step::CallLlm`] and await the
@@ -156,10 +149,18 @@ impl Driver {
         let tier = routed.decision.routing_tier().map(str::to_string);
         let is_routed = routed.decision.is_routed_call();
         let started = Instant::now();
-        let result = self
-            .driver
-            .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed)
-            .await;
+        let (reply, response) = oneshot::channel::<Result<Response>>();
+        let call = CallLlmRequest { routed, reply };
+        let result = async {
+            self.step_tx
+                .send(Ok(Step::CallLlm(Box::new(call))))
+                .await
+                .map_err(|_| DriverError::StreamClosed)?;
+            response
+                .await
+                .map_err(|_| LibsyError::from(DriverError::ResponseDropped))?
+        }
+        .await;
         let elapsed = started.elapsed();
         observability::record_llm_call(
             &algorithm,
@@ -177,7 +178,10 @@ impl Driver {
     /// Each successfully published decision is counted and logged with its
     /// reasoning; a decision the stream never accepted is not recorded.
     pub async fn info(&self, ctx: Context, decision: Arc<dyn Decision>) -> Result<()> {
-        self.driver.info(ctx.clone(), decision.clone()).await?;
+        self.step_tx
+            .send(Ok(Step::Decision(decision.clone())))
+            .await
+            .map_err(|_| DriverError::StreamClosed)?;
         observability::record_decision(&ctx, decision.as_ref());
         Ok(())
     }
@@ -185,48 +189,16 @@ impl Driver {
     /// Emit the terminal step: [`Step::ReturnToAgent`] on `Ok`, or an `Err` stream
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
-    pub(crate) async fn finish(&self, ctx: Context, result: Result<Response>) -> Result<()> {
-        match result {
-            Ok(response) => self.driver.done(ctx, response).await,
-            Err(err) => self.driver.fail(ctx, err).await,
-        }
-    }
-
-    /// Transform the raw driver stream into a stream of [`Step`]s. Internal: the
-    /// consumer stream is taken (once) by [`run_stream`](Algorithm::run_stream). A
-    /// payload that does not match the expected type for its step becomes an `Err` item.
-    pub(crate) fn stream(&self) -> impl Stream<Item = Result<Step>> + use<> {
-        self.driver.stream().map(|item| match item? {
-            DriverStep::Request(req) => Ok(Step::CallLlm(Box::new(CallLlmRequest::new(req)))),
-            DriverStep::Info(payload) => payload
-                .downcast::<Arc<dyn Decision>>()
-                .map(|decision| Step::Decision(*decision))
-                .map_err(|_| {
-                    DriverError::TypeMismatch {
-                        expected: "Arc<dyn Decision>",
-                    }
-                    .into()
-                }),
-            DriverStep::Done(payload) => payload
-                .downcast::<Response>()
-                .map(Step::ReturnToAgent)
-                .map_err(|_| {
-                    DriverError::TypeMismatch {
-                        expected: "Response",
-                    }
-                    .into()
-                }),
-        })
+    pub(crate) async fn finish(&self, _ctx: Context, result: Result<Response>) -> Result<()> {
+        let step = result.map(|response| Step::ReturnToAgent(Box::new(response)));
+        self.step_tx
+            .send(step)
+            .await
+            .map_err(|_| DriverError::StreamClosed.into())
     }
 }
 
-impl Default for Driver {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// One item in the stream returned by `Driver::stream` / [`Algorithm::run_stream`].
+/// One item in the stream returned by [`Algorithm::run_stream`].
 pub enum Step {
     /// The algorithm needs this model call performed. The host serves it and fulfills
     /// it with [`CallLlmRequest::respond`]. Boxed: it is by far the largest variant.
@@ -609,10 +581,10 @@ pub trait Algorithm: Send + Sync + 'static {
             observability::ALGORITHM_KEY.to_string(),
             self.name().to_string(),
         );
-        let driver = Driver::new();
+        let (driver, step_rx) = Driver::new();
         let task_driver = driver.clone();
         let task_ctx = ctx.clone();
-        let stream = task_driver.stream();
+        let stream = ReceiverStream::new(step_rx);
         // One `libsy.run` span covers the whole algorithm task; the driver's
         // `libsy.llm_call` spans and decision logs nest inside it via `tracing`'s
         // contextual parenting.
@@ -799,6 +771,98 @@ mod tests {
             })
             .collect();
         LlmTargetSet::new(targets)
+    }
+
+    fn routed(model: &str) -> RoutedRequest {
+        RoutedRequest {
+            request: request(),
+            decision: Arc::new(TestDecision {
+                model: model.to_string(),
+            }),
+            ctx: Context::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_driver_preserves_call_and_stream_boundaries() -> Result<()> {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            // Distinct oneshots keep reverse-order replies paired with their producers, and a
+            // retained call remains pending until the host responds.
+            let (driver, mut step_rx) = Driver::new();
+            let first_driver = driver.clone();
+            let mut first =
+                tokio::spawn(async move { first_driver.call_llm(routed("first")).await });
+            let second = tokio::spawn(async move { driver.call_llm(routed("second")).await });
+
+            let mut calls = HashMap::new();
+            for _ in 0..2 {
+                let step = step_rx.recv().await.ok_or(DriverError::StreamClosed)??;
+                let Step::CallLlm(call) = step else {
+                    return Err(test_error("expected a CallLlm step"));
+                };
+                calls.insert(call.get_decision().selected_model().to_string(), call);
+            }
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(20), &mut first)
+                    .await
+                    .is_err(),
+                "call completed before the host responded"
+            );
+            calls
+                .remove("second")
+                .ok_or_else(|| test_error("missing second call"))?
+                .respond(Ok(reply("second response")))?;
+            calls
+                .remove("first")
+                .ok_or_else(|| test_error("missing first call"))?
+                .respond(Ok(reply("first response")))?;
+
+            let first_response = first
+                .await
+                .map_err(|source| LibsyError::AlgorithmTask { source })??;
+            let second_response = second
+                .await
+                .map_err(|source| LibsyError::AlgorithmTask { source })??;
+            assert_eq!(
+                first_response.llm_response.as_agg().map(completion_text),
+                Some("first response".to_string())
+            );
+            assert_eq!(
+                second_response.llm_response.as_agg().map(completion_text),
+                Some("second response".to_string())
+            );
+
+            // Dropping the host-facing promise closes only that call's reply channel.
+            let (driver, mut step_rx) = Driver::new();
+            let producer = tokio::spawn(async move { driver.call_llm(routed("dropped")).await });
+            let step = step_rx.recv().await.ok_or(DriverError::StreamClosed)??;
+            let Step::CallLlm(call) = step else {
+                return Err(test_error("expected a CallLlm step"));
+            };
+            drop(call);
+            let result = producer
+                .await
+                .map_err(|source| LibsyError::AlgorithmTask { source })?;
+            assert!(matches!(
+                result,
+                Err(LibsyError::Driver(DriverError::ResponseDropped))
+            ));
+
+            // A standalone driver reports the typed step receiver disappearing at its next send.
+            let (driver, step_rx) = Driver::new();
+            drop(step_rx);
+            let decision: Arc<dyn Decision> = Arc::new(TestDecision {
+                model: "closed".to_string(),
+            });
+            let result = driver.info(Context::default(), decision).await;
+            assert!(matches!(
+                result,
+                Err(LibsyError::Driver(DriverError::StreamClosed))
+            ));
+            Ok(())
+        })
+        .await
+        .map_err(|error| LibsyError::external("waiting for typed driver boundaries", error))?
     }
 
     #[test]

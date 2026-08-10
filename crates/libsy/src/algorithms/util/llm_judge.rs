@@ -481,11 +481,10 @@ mod tests {
             })
     }
 
-    /// Serves the single offloaded judge call with `reply`. The stream is taken first
-    /// because the driver refuses to publish a step until a consumer exists.
+    /// Serves the single offloaded judge call with `reply` through a standalone step receiver.
     async fn score_served_with(reply: Result<Response>) -> Result<String> {
-        let driver = Driver::new();
-        let mut steps = Box::pin(driver.stream());
+        let (driver, step_rx) = Driver::new();
+        let mut steps = tokio_stream::wrappers::ReceiverStream::new(step_rx);
         let classifier = classifier();
         let mut state = State::default();
         let mut request = request();

@@ -32,7 +32,7 @@ pub enum LibsyError {
         message: String,
     },
 
-    /// The type-erased offload driver could not complete an operation.
+    /// The step-stream driver could not complete an operation.
     #[error(transparent)]
     Driver(#[from] DriverError),
 
@@ -94,7 +94,7 @@ impl LibsyError {
     }
 }
 
-/// Failures in the type-erased promise-over-stream driver.
+/// Failures in the step-stream driver.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DriverError {
     /// A producer operation was attempted before taking the consumer stream.
