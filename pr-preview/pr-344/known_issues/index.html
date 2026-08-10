@@ -1088,7 +1088,7 @@
 <h2 id="020">0.2.0<a class="headerlink" href="#020" title="Permanent link">&para;</a></h2>
 <ol>
 <li>Buffered upstream work continues after the client disconnects, so a cancelled request can still incur provider cost.</li>
-<li>Routing-tier attribution is missing from <code>GET /v1/stats</code> and <code>/metrics</code> for LLM-classifier judge failures that route to the default target and escalation decisions.</li>
+<li>Routing-tier attribution is missing from <code>GET /v1/stats</code> and <code>/metrics</code> for LLM-classifier judge failures that route to the default target, escalation decisions, and <code>stage_router</code> fallback decisions.</li>
 <li>The retry recovery counter stays at zero after a successful upstream retry.</li>
 <li><code>x-switchyard-session-id</code> is not recorded in native session stats.</li>
 <li>The native server does not send the documented <code>X-Switchyard-Version</code> header upstream.</li>
