@@ -1,0 +1,426 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Switchyard NeMo Relay Dynamic Plugin
+
+This crate builds the external `nvidia.switchyard` native plugin. It embeds
+`switchyard-libsy`, drives it through `switchyard-llm-client::run`, and uses
+`switchyard-llm-client` for provider HTTP calls. Managed calls use Relay's
+completion-based asynchronous middleware hooks and do not require a targeted
+provider continuation from Relay.
+
+The plugin uses NeMo Relay native API v1. It depends on the small
+`nemo-relay-plugin` authoring SDK, not the Relay runtime, and does not start
+`switchyard-server`. Managed provider calls do not use Relay's provider
+continuation.
+
+## Ownership boundary
+
+For a managed LLM call:
+
+1. Relay invokes the native LLM execution intercept.
+2. The plugin decodes the caller JSON through `switchyard-translation`.
+3. The plugin passes the configured algorithm and its target-to-client map to
+   `switchyard-llm-client::run`, using the library's public execution and
+   observation boundary.
+4. For every routed call, the selected target client translates the neutral
+   request, applies its URL and credentials, and performs the HTTP request.
+5. `switchyard-llm-client` drives libsy to its final response while the plugin
+   records decisions and routing-only model usage.
+6. The plugin encodes the final neutral response into the caller's protocol.
+
+Relay still owns the outer LLM lifecycle, dynamic-plugin loading, plugin
+configuration, and event substrate. Relay's downstream LLM continuation is
+used only for calls whose inbound protocol is not managed by this plugin.
+
+```mermaid
+flowchart LR
+    A["Caller JSON"] --> B["Relay LLM execution intercept"]
+    B --> C["Switchyard decode"]
+    C --> D["switchyard-llm-client run"]
+    D --> E["libsy algorithm"]
+    E --> F["target ClientRouter"]
+    F --> G["Provider HTTP endpoint"]
+    G --> H["Switchyard response or event decode"]
+    H --> I["libsy final response"]
+    I --> J["routing observations"]
+    J --> K["Switchyard encode"]
+    K --> A
+
+    U["Unmanaged profile"] -.-> V["Relay v1 continuation"]
+```
+
+This boundary has two important consequences:
+
+- Managed provider calls do not traverse Relay middleware registered after the
+  Switchyard intercept and do not use the host's provider callback. Provider
+  transport activity is therefore not represented as nested Relay LLM
+  lifecycle events. Relay records the outer managed call and the plugin emits
+  Switchyard routing marks; bridging Switchyard transport spans into Relay is
+  future work. The adapter captures the active Relay scope before returning
+  `Pending`, so asynchronous routing marks retain their event parent.
+- Switchyard owns provider URLs, credentials, HTTP retry behavior, and
+  translation for managed calls. Relay neither validates nor transports those
+  target details.
+
+## Native API v1 and asynchronous execution
+
+The manifest remains `compat.native_api = "1"`, but the plugin requires the
+generic host-table v3 extension shipped by Relay 0.7. It registers through
+v3's completion-based buffered and incremental streaming hooks, returns
+`Pending` immediately, and performs libsy and provider HTTP work on a
+plugin-owned Tokio runtime. Relay workers therefore do not wait synchronously
+for provider I/O.
+
+The stream adapter forwards the plugin's bounded 32-message channel into
+Relay's bounded output queue. It retries a logical event when the host queue is
+full and checks cancellation between attempts. Managed HTTP work is selected
+against Relay caller cancellation, so cancelling a buffered or streaming call
+drops its in-flight provider future.
+
+Unmanaged profiles use the same v3 continuation hooks for pass-through. V3's
+downstream stream callback has continue/cancel control but no asynchronous
+acknowledgement, so the adapter uses a nonblocking bridge capped at 8 MiB of
+queued encoded payloads and 256 events. A pass-through stream that outruns
+either bound is rejected rather than consuming unbounded memory.
+
+This is a raw C boundary: Switchyard contains a small ownership adapter for
+host strings, completion and stream handles, continuation handles, and captured
+scope handles because Relay 0.7 does not expose a safe Rust facade for its
+generic asynchronous surface. The HTTP, routing, and translation behavior
+remains in Switchyard. The adapter can be replaced with the safe typed surface
+when Relay exposes equivalent asynchronous callbacks and cancellation.
+
+## Supported routers
+
+The plugin supports four libsy routing modes:
+
+- seeded, weighted `random` routing; and
+- capability-based `llm_classifier` routing, where a judge selects the weak or
+  strong target before the final provider call;
+- escalation-mode `llm_classifier` routing, where a judge evaluates the weak
+  model's completed turn and latches a session to the strong target after a
+  configured confirmation streak; and
+- signal-driven `stage_router` routing, with optional handoff notes, tier
+  prompts, and a capability-classifier fallback for ambiguous turns.
+
+Unsupported algorithm kinds are rejected instead of being approximated.
+
+## Compatibility Matrix
+
+The following matrix describes the algorithm behavior implemented by the
+plugin. `Conditional` means that the feature is implemented with the constraint
+shown in the table; it does not mean that the feature falls back to a different
+algorithm.
+
+| Compatibility Area | `random` | `llm_classifier` (`capability`) | `llm_classifier` (`escalation`) | `stage_router` |
+|---|---|---|---|---|
+| Version-2 configuration and static validation | Supported | Supported | Supported | Supported |
+| Caller protocols | OpenAI Chat, OpenAI Responses, Anthropic Messages | OpenAI Chat, OpenAI Responses, Anthropic Messages | OpenAI Chat, OpenAI Responses, Anthropic Messages | OpenAI Chat, OpenAI Responses, Anthropic Messages |
+| Serving-target protocols | OpenAI Chat, OpenAI Responses, Anthropic Messages | OpenAI Chat, OpenAI Responses, Anthropic Messages | OpenAI Chat, OpenAI Responses, Anthropic Messages | OpenAI Chat, OpenAI Responses, Anthropic Messages |
+| Structured-output judge protocols | Not applicable | OpenAI Chat or OpenAI Responses | OpenAI Chat or OpenAI Responses | OpenAI Chat or OpenAI Responses for the optional classifier |
+| Buffered responses | Supported | Supported | Supported | Supported |
+| Streaming responses | Supported | Supported after the judge selects a target | Conditional: an unlatched weak stream is aggregated before the judge runs | Supported after the signal cascade selects a target |
+| Retained routing state | No selection affinity; context-overflow eviction can use session identity | Optional session affinity and message-hash fallback | Confirmation streak and strong latch require stable session identity | No classifier affinity; context-overflow eviction can use session identity |
+| Router-specific prompts | Not applicable | Optional judge prompt | Optional escalation-judge prompt | Optional tier prompts, handoff notes, and classifier prompt |
+| Relay decision marks | Algorithm, attempt, selected target, and identity; routing tier is `null` | Algorithm, attempt, selected target, weak or strong routing tier, and identity | Algorithm, attempt, selected target, weak or strong routing tier, and identity | Algorithm, attempt, selected target, routing tier, decision source, and identity |
+| ATOF routing-LLM usage | Not applicable unless a failed candidate is replaced | Judge calls, plus failed candidates | Judge calls and discarded weak candidates | Optional classifier judge calls, plus failed candidates |
+
+Anthropic Messages is supported for callers and serving targets, but not for a
+structured-output judge. That restriction is intentional and fails during
+static configuration loading. Same-protocol streaming preserves parsed provider
+events when the router does not aggregate or replace them; raw SSE bytes and
+framing are not part of the compatibility contract.
+
+### Known issue: OpenAI Responses structured-output judges
+
+OpenAI Responses targets are accepted for structured-output judges, but the
+shared Responses request encoder currently emits the Chat-compatible JSON
+Schema object directly under `text.format`. This places `name`, `schema`, and
+`strict` under `text.format.json_schema`; conforming Responses endpoints expect
+those fields directly under `text.format`. InferenceHub therefore returns HTTP
+400 with `Missing required parameter: 'text.format.name'`, and the affected
+router follows its existing judge-failure or fall-open path.
+
+A hosted Relay process run passed 20 of 23 router-matrix cases. The only
+failures were the Responses-judge variants of the capability classifier,
+escalation router, and stage classifier fallback. OpenAI Responses remains
+verified as a caller and ordinary serving-target protocol. Until the shared
+`switchyard-translation` encoder is corrected, configure structured-output
+judges with `protocol = "openai_chat"`. Follow-up work must add the inverse of
+the existing Responses-to-neutral schema conversion plus core and
+process-level regression coverage for all three affected router paths.
+
+The following integration components have not reached complete compatibility.
+`Not built` identifies missing integration work rather than a hidden or
+best-effort runtime path.
+
+| Compatibility Component | Status | Current Boundary |
+|---|---|---|
+| Pinned Relay process-level acceptance harness | Not built | The plugin's standalone tests run through its nested Cargo workspace. Relay 0.7.1 plus Ollama smoke coverage is manual and currently covers OpenAI Chat paths for escalation and stage routing. |
+| OpenAI Responses and Anthropic Messages process-level routing matrix | Not built | Translation and in-process runtime coverage exists, including stage signals across all three caller protocols, but no automated Relay gateway matrix exercises every algorithm and target combination. |
+| Real coding-agent acceptance harness | Not built | Codex, Claude Code, and Hermes sessions are not driven automatically through the packaged plugin. |
+| Hosted-provider certification | Not built | No automated suite qualifies structured-output judges, serving targets, latency, or token cost against hosted provider APIs. |
+| Native bundle platform and Relay-version matrix | Partial | The plugin was smoked manually on macOS arm64 with Relay 0.7.1. Dedicated packaged-plugin jobs do not yet cover Linux and Windows bundles or every supported Relay 0.7 release. |
+| Dynamic-plugin lifecycle automation | Partial | Manifest validation, registration, enablement, execution, and unload were exercised manually; they are not part of a repeatable CI acceptance test. |
+| Nested Relay lifecycle telemetry for managed provider calls | Not built | Relay records the outer serving call. Routing-only model calls emit `switchyard.routing.llm_call` marks with normalized usage, but Switchyard provider HTTP spans are not bridged into nested Relay LLM lifecycle events. |
+| Provider `Retry-After` propagation | Not built | The outer routing loop uses bounded exponential backoff because the client error contract does not expose `Retry-After`. |
+| Cross-protocol streaming loss diagnostics | Not built | Cross-protocol streams use normalized chunks, but the stream adapter does not surface the buffered translation engine's reject-lossy diagnostics. |
+| Safe typed Relay asynchronous host adapter | Blocked on host API | The plugin uses its tested raw C ownership adapter until Relay exposes an equivalent safe asynchronous Rust facade. |
+
+Managed inner provider calls also do not re-enter Relay's downstream provider
+middleware. This behavior is part of the current ownership boundary, not an
+automatic compatibility fallback.
+
+Each completed routing-only model call emits a
+`switchyard.routing.llm_call` ATOF mark. Its data identifies the algorithm,
+attempt, call order, target, routing tier, role (`judge` or discarded
+`candidate`), outcome, latency, and normalized provider token `usage`. The
+successful call that serves the caller is deliberately excluded because
+Relay's outer LLM end event already records that usage. A failed call, or a
+provider response that omits usage, has `usage = null`. Consumers can therefore
+add these marks to the outer LLM usage to measure total request compute without
+double-counting the serving model.
+
+The plugin owns the outer routing retry loop. Each retry starts a fresh libsy
+run. Random routing draws again; an algorithm configured with persistent state,
+such as classifier session affinity, may intentionally retain its assignment.
+Each target's built-in HTTP retry count is set to zero to avoid retrying a
+failed target invisibly before reselection. A random target with `weight = 0`
+is fallback-only and is not considered by the algorithm. Trusted fallback is
+attempted at most once and, for streaming responses, only before the first
+caller event is emitted. Outer routing retries use exponential backoff starting
+at 250 milliseconds and capped at 2 seconds. They do not currently honor
+provider `Retry-After` headers because the client error contract does not expose
+that metadata to the routing loop.
+
+## Translation and stream fidelity
+
+`switchyard-translation` is the only request, response, and event translation
+layer. It decodes caller JSON into Switchyard's neutral protocol, encodes each
+selected call for the target protocol, decodes provider results, and encodes
+`ReturnToAgent` back to the caller protocol. Relay codecs are not used.
+
+The streaming contract carries each parsed provider JSON event in a preservation
+envelope alongside its normalized `LlmResponseChunk` representation.
+Same-protocol routes replay the preserved JSON unchanged, including
+provider-specific fields; this preserves parsed events, not raw SSE bytes or
+framing. Cross-protocol routes encode only normalized chunks, and the streaming
+helpers still do not expose the buffered translation engine's reject-lossy
+diagnostics, so unsupported fields may be normalized or omitted. Replacing
+normalized stream content or folding a stream into an aggregate drops the
+per-event preservation envelope.
+
+## Configuration
+
+The manifest declares `compat.native_api = "1"` and Relay `>=0.7.0,<0.8`, and
+the Rust SDK uses the exact published `0.7.0` crate. The manifest API value
+selects Relay's released native plugin contract; the binary also requires the
+v3 C host table shipped on the Relay 0.7 line. Rebuild the bundle when changing
+SDK versions rather than assuming Rust dynamic-library compatibility from the
+manifest value alone.
+
+A Relay project can configure a seeded weighted-random router as follows:
+
+```toml
+version = 1
+
+[[plugins.dynamic]]
+manifest = "/opt/switchyard-relay-plugin/relay-plugin.toml"
+
+[plugins.dynamic.config]
+version = 2
+priority = 0
+max_retries = 3
+
+[plugins.dynamic.config.algorithm]
+kind = "random"
+seed = 42
+
+[plugins.dynamic.config.default_targets]
+openai_chat = "fast"
+
+[plugins.dynamic.config.targets.fast]
+model = "provider/model"
+protocol = "openai_chat"
+endpoint = "/v1/chat/completions"
+base_url = "https://provider.example.com"
+weight = 1
+drop_caller_extra_body = true
+
+[plugins.dynamic.config.targets.fast.header_env]
+authorization = "PROVIDER_AUTHORIZATION"
+```
+
+Target map keys such as `fast` are stable semantic names visible to libsy. The
+target binding is authoritative for the provider model, protocol, endpoint,
+base URL, weight, and environment-backed headers. Each `default_targets` key
+both enables that inbound protocol and names its trusted fallback.
+
+`header_env` is the only custom provider-header source. It resolves values in
+the plugin process at registration time so literal header values never appear
+in configuration. Environment values must not appear in errors, routing marks,
+spans, or debug output. The plugin does not inherit caller credentials for
+managed calls. Each variable supplies the complete header value, so an
+`authorization` value must include its scheme, such as `Bearer`. Literal
+`headers` configuration is rejected; non-secret routing or tenancy headers must
+also use `header_env`.
+
+Relay may intercept an OpenAI SDK call before the SDK materializes its
+`extra_body` option into a provider request. Targets that reject this
+caller-specific wrapper can set `drop_caller_extra_body = true`. The plugin
+then drops the wrapper and its contents; it does not promote those values to
+top-level provider fields. The default is `false` so lossless same-format
+forwarding remains unchanged for targets that consume the extension.
+
+`extra_body` supplies non-secret provider defaults for a target. It is useful
+for provider-specific controls such as disabling reasoning on a dedicated
+judge model. Fields already present on the caller's request take precedence.
+Do not put credentials in `extra_body`; use `header_env` for secrets.
+
+For `kind = "llm_classifier"`, the classifier target must use `openai_chat` or
+`openai_responses`; libsy's judge request uses a JSON-schema response format
+that cannot be represented losslessly by Anthropic Messages. Omitting `mode`
+selects `capability`, preserving the original version-2 configuration shape.
+
+Escalation mode evaluates the weak model's completed response before returning
+it or replacing it with a strong-model response:
+
+```toml
+[plugins.dynamic.config.algorithm]
+kind = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge"
+weak_target = "weak"
+strong_target = "strong"
+prompt = "Judge whether the weak model is stuck."
+max_output_tokens = 512
+
+[plugins.dynamic.config.algorithm.escalation]
+confirmations = 2
+recent_turn_window = 28
+window_message_chars = 500
+```
+
+`judge`, `weak`, and `strong` are keys in
+`plugins.dynamic.config.targets`, configured with the same model, protocol,
+URL, and `header_env` fields shown above. The judge must use `openai_chat` or
+`openai_responses`; the serving targets may use any supported protocol.
+
+Use a dedicated, non-reasoning model for the judge when possible. Providers
+that expose a reasoning switch can configure it on that target, for example:
+
+```toml
+[plugins.dynamic.config.targets.judge]
+model = "provider/non-reasoning-judge"
+protocol = "openai_chat"
+base_url = "https://provider.example.com"
+extra_body = { think = false }
+```
+
+The packaged escalation rubric is intentionally detailed and can consume
+roughly two thousand or more input tokens depending on the tokenizer. Every
+unlatched request also pays for a complete judge call. A custom `prompt` can
+reduce that cost, but should be evaluated against representative trajectories
+before deployment. Reasoning models may spend `max_output_tokens` on hidden or
+visible reasoning before returning the structured verdict; disable reasoning
+with provider-supported `extra_body` controls or raise the cap after measuring.
+
+An unlatched streaming escalation request is intentionally buffered. Libsy must
+read the complete weak response before asking the judge, so caller first-token
+delivery waits for the weak call and judge verdict. A declined escalation is
+reconstructed as a stream from the aggregate response, which drops the
+provider-event preservation envelope. A confirmed escalation discards that
+weak response and serves the strong target.
+
+The default `confirmations = 2` retains a streak per Switchyard session. Callers
+must send a stable `x-switchyard-session-id` header for the streak and strong
+latch to survive across turns. Without session identity each request has
+isolated state and a multi-confirmation escalation cannot latch.
+
+A full stage router can combine tool-result signals, model-specific prompts,
+handoff notes, and an optional judge for ambiguous turns:
+
+```toml
+[plugins.dynamic.config.algorithm]
+kind = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 3
+capable_system_prompt = "Diagnose before editing."
+efficient_system_prompt = "Follow the settled plan."
+
+[plugins.dynamic.config.algorithm.handoff_notes]
+escalation_note = "The previous model was stalling; pick up the diagnosis."
+deescalation_note = "The task is settled; continue with the mechanical work."
+only_on_wrong_signal_escalation = true
+
+[plugins.dynamic.config.algorithm.classifier]
+target = "judge"
+base_threshold = 0.5
+threshold_step = 0.1
+recent_turn_window = 3
+prompt = "Estimate whether the efficient target can finish this turn."
+max_output_tokens = 512
+```
+
+Stage routing reads normalized tool calls and tool results from OpenAI Chat,
+OpenAI Responses, and Anthropic Messages traffic. When the signals do not cross
+`confidence_threshold`, the optional classifier decides; if it is absent or
+cannot decide, the configured picker's default tier serves the turn. The
+classifier target has the same structured-output protocol restriction as the
+standalone classifier.
+
+Ambiguous turns that reach the optional classifier add one judge call;
+decisive tool signals do not. Decision marks include `routing_tier` for signal,
+classifier, and picker-default paths, plus `decision_source` (`override`,
+`tests_passed`, `dimensions`, `llm-classifier`, or `fall_open`) for stage-router
+explainability.
+
+Version-1 service configuration, decision-only execution, and observe-only
+mode are rejected.
+
+## Build and bundle
+
+The crate is a nested standalone Cargo workspace with `publish = false`. This
+keeps the integration from changing Switchyard's root workspace manifest or
+lockfile. Operators install a binary bundle rather than a Rust crate:
+
+```bash
+cargo build --release \
+  --manifest-path crates/switchyard-nemo-relay-plugin/Cargo.toml
+python3 crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
+  --library crates/switchyard-nemo-relay-plugin/target/release/libswitchyard_nemo_relay_plugin.so \
+  --output dist/switchyard-nemo-relay-plugin-linux-x86_64
+```
+
+On macOS the library suffix is `.dylib`; Windows builds use `.dll`. The bundle
+builder creates the minimal Relay package: the shared library, a materialized
+manifest with Relay's inline SHA-256 integrity digest, and the JSON schema.
+
+Install the materialized bundle with Relay's normal lifecycle commands:
+
+```bash
+nemo-relay plugins validate /opt/switchyard-relay-plugin/relay-plugin.toml
+nemo-relay plugins add /opt/switchyard-relay-plugin/relay-plugin.toml
+nemo-relay plugins enable nvidia.switchyard
+nemo-relay plugins inspect nvidia.switchyard
+```
+
+## Validation expectations
+
+Before release, validate both routers against buffered and streaming OpenAI
+Chat, OpenAI Responses, and Anthropic Messages providers. The acceptance suite
+must cover same- and supported cross-protocol routes, deterministic weighted
+routing, independent runs, classifier weak and strong selections, retry
+reselection, exhaustion, exactly-once fallback, stream commitment, empty
+streams, late errors, cancellation, credential privacy, and unmanaged
+pass-through.
+
+The tests must also prove that managed target traffic reaches the provider
+through `switchyard-llm-client`, never through Relay's provider continuation,
+and that no Switchyard service or health endpoint is involved.

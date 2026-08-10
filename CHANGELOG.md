@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **NeMo Relay native plugin** — a dynamically loaded integration that runs
+  libsy's weighted-random, LLM-classifier, escalation, and stage-router
+  algorithms in process while Switchyard owns provider HTTP dispatch,
+  credentials, translation, retries, and fallback. Managed calls require NeMo
+  Relay 0.7 or newer and do not depend on `switchyard-server`.
+
+- **NeMo Relay routing-model usage marks** — classifier judges, escalation
+  judges and discarded weak candidates, and failed routing candidates now emit
+  `switchyard.routing.llm_call` ATOF marks with normalized token usage and
+  latency. The final serving call remains represented only by Relay's outer LLM
+  lifecycle event to prevent double-counting.
+
 ### Removed
 
 - **Latency-aware router** — the `latency_service` route type and its
@@ -30,6 +44,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `./target/release/switchyard-server --config <deployment.toml> --dry-run`.
 
 ### Fixed
+
+- **NeMo Relay stage and escalation integration** — preserved same-protocol
+  request bodies are now re-encoded after tier prompts or handoff notes mutate
+  the normalized request; Relay's synthetic `gateway-gateway` identity no
+  longer shares escalation latch state across unrelated raw gateway requests;
+  stage decision marks now retain picker-default tiers, decision sources, and
+  hard-override confidence. Target bindings also accept non-secret
+  `extra_body` defaults for provider-specific judge controls.
 
 - **Response `model` now names the model that actually served the request**, on
   every serving path and wire format. Streamed Anthropic and Responses replies,
