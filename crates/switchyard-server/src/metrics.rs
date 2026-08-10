@@ -18,17 +18,6 @@ pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8"
 const ROUTING_OVERHEAD_BUCKETS_MS: &[f64] = &[
     0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
 ];
-const STAGE_ROUTER_SCORE_BUCKETS: &[f64] = &[-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0];
-const STAGE_ROUTER_UNIT_BUCKETS: &[f64] = &[0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
-
-const STAGE_ROUTER_SCORE_METRIC: &str = "switchyard.stage_router.score";
-const STAGE_ROUTER_UNIT_METRICS: &[&str] = &[
-    "switchyard.stage_router.confidence",
-    "switchyard.stage_router.severity",
-    "switchyard.stage_router.spinning",
-    "switchyard.stage_router.exploring",
-    "switchyard.stage_router.production_intensity",
-];
 
 struct Metrics {
     registry: Registry,
@@ -84,12 +73,8 @@ pub(crate) fn flush() {
 fn histogram_buckets(instrument: &Instrument) -> Option<Stream> {
     let boundaries = if instrument.name() == "switchyard.routing_overhead_ms" {
         ROUTING_OVERHEAD_BUCKETS_MS
-    } else if instrument.name() == STAGE_ROUTER_SCORE_METRIC {
-        STAGE_ROUTER_SCORE_BUCKETS
-    } else if STAGE_ROUTER_UNIT_METRICS.contains(&instrument.name()) {
-        STAGE_ROUTER_UNIT_BUCKETS
     } else {
-        return None;
+        crate::stats::algorithm_histogram_buckets(instrument.name())?
     };
     Stream::builder()
         .with_aggregation(Aggregation::ExplicitBucketHistogram {

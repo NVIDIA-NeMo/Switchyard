@@ -16,8 +16,20 @@ const SPINNING_METRIC: &str = "switchyard_stage_router_spinning";
 const EXPLORING_METRIC: &str = "switchyard_stage_router_exploring";
 const PRODUCTION_INTENSITY_METRIC: &str = "switchyard_stage_router_production_intensity";
 
+const SCORE_INSTRUMENT: &str = "switchyard.stage_router.score";
+const UNIT_INSTRUMENTS: &[&str] = &[
+    "switchyard.stage_router.confidence",
+    "switchyard.stage_router.severity",
+    "switchyard.stage_router.spinning",
+    "switchyard.stage_router.exploring",
+    "switchyard.stage_router.production_intensity",
+];
+
+const SCORE_BUCKETS: &[f64] = &[-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0];
+const UNIT_BUCKETS: &[f64] = &[0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
+
 #[derive(Clone, Debug, Default)]
-pub(in crate::stats) struct StageRouterCumulative {
+pub(super) struct StageRouterCumulative {
     decisions: BTreeMap<DecisionKey, u64>,
     score: HistogramTotal,
     confidence: HistogramTotal,
@@ -79,7 +91,7 @@ pub(crate) struct MetricSummary {
 }
 
 impl StageRouterCumulative {
-    pub(in crate::stats) fn collect(families: &[MetricFamily]) -> Self {
+    pub(super) fn collect(families: &[MetricFamily]) -> Self {
         Self {
             decisions: collect_decisions(families),
             score: collect_histogram(families, SCORE_METRIC),
@@ -91,7 +103,7 @@ impl StageRouterCumulative {
         }
     }
 
-    pub(in crate::stats) fn delta(&self, baseline: &Self) -> StageRouterStatsSnapshot {
+    pub(super) fn delta(&self, baseline: &Self) -> StageRouterStatsSnapshot {
         let mut routing_decisions: BTreeMap<String, DecisionStatsSnapshot> = BTreeMap::new();
         for (key, current) in &self.decisions {
             let count = current.saturating_sub(*baseline.decisions.get(key).unwrap_or(&0));
@@ -192,6 +204,16 @@ fn round4(value: f64) -> f64 {
     if rounded == 0.0 { 0.0 } else { rounded }
 }
 
+pub(super) fn histogram_buckets(metric: &str) -> Option<&'static [f64]> {
+    if metric == SCORE_INSTRUMENT {
+        Some(SCORE_BUCKETS)
+    } else if UNIT_INSTRUMENTS.contains(&metric) {
+        Some(UNIT_BUCKETS)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use opentelemetry::KeyValue;
@@ -211,7 +233,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("failed to build metrics exporter: {error}"));
         let provider = SdkMeterProvider::builder().with_reader(exporter).build();
         let meter = provider.meter("switchyard");
-        let stats = StatsAccumulator::new(registry, true);
+        let stats = StatsAccumulator::new(registry, ["stage_router"]);
 
         meter
             .u64_counter("switchyard.stage_router.routing_decisions")

@@ -219,10 +219,10 @@ impl ServerState {
             return Err(ServerError::new("at least one algorithm route is required"));
         }
         let metrics = metrics::registry().map_err(ServerError::new)?;
-        let has_stage_router = entries
-            .values()
-            .any(|entry| entry.algorithm.name() == "stage_router");
-        let stats = StatsAccumulator::new(metrics.clone(), has_stage_router);
+        let stats = StatsAccumulator::new(
+            metrics.clone(),
+            entries.values().map(|entry| entry.algorithm.name()),
+        );
         Ok(Self {
             routes: Arc::new(entries),
             metrics,

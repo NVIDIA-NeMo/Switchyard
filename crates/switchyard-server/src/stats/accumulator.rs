@@ -10,7 +10,7 @@ use parking_lot::{Mutex, MutexGuard};
 use prometheus::Registry;
 use serde::Serialize;
 
-use super::algorithms::{AlgorithmStatsSnapshot, StageRouterCumulative};
+use super::algorithms::{AlgorithmStats, AlgorithmStatsSnapshot};
 use super::cache_eligibility::PrefixProbe;
 
 const MAX_LATENCY_SAMPLES: usize = 10_000;
@@ -34,18 +34,18 @@ pub(crate) struct StatsAccumulator {
 
 impl Default for StatsAccumulator {
     fn default() -> Self {
-        Self::new(Registry::new(), false)
+        Self::new(Registry::new(), std::iter::empty())
     }
 }
 
 impl StatsAccumulator {
-    /// Creates a stats store with optional stage-router metric projection.
-    pub(crate) fn new(registry: Registry, stage_router: bool) -> Self {
+    /// Creates a stats store for the supplied algorithm names.
+    pub(crate) fn new<'a>(
+        registry: Registry,
+        algorithms: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(StatsAccumulatorInner::new(
-                registry,
-                stage_router,
-            ))),
+            inner: Arc::new(Mutex::new(StatsAccumulatorInner::new(registry, algorithms))),
         }
     }
 
@@ -155,16 +155,11 @@ struct StatsAccumulatorInner {
     by_classifier: BTreeMap<String, ModelStats>,
     classifier_requests: u64,
     classifier_errors: u64,
-    algorithm_registry: Registry,
-    stage_router_baseline: Option<StageRouterCumulative>,
+    algorithm_stats: AlgorithmStats,
 }
 
 impl StatsAccumulatorInner {
-    fn new(registry: Registry, stage_router: bool) -> Self {
-        let stage_router_baseline = stage_router.then(|| {
-            let families = registry.gather();
-            StageRouterCumulative::collect(&families)
-        });
+    fn new<'a>(registry: Registry, algorithms: impl IntoIterator<Item = &'a str>) -> Self {
         Self {
             by_model: BTreeMap::new(),
             total_requests: 0,
@@ -174,8 +169,7 @@ impl StatsAccumulatorInner {
             by_classifier: BTreeMap::new(),
             classifier_requests: 0,
             classifier_errors: 0,
-            algorithm_registry: registry,
-            stage_router_baseline,
+            algorithm_stats: AlgorithmStats::new(registry, algorithms),
         }
     }
 
@@ -194,10 +188,6 @@ impl StatsAccumulatorInner {
             self.classifier_requests,
             self.classifier_errors,
         );
-        let stage_router = self.stage_router_baseline.as_ref().map(|baseline| {
-            let families = self.algorithm_registry.gather();
-            StageRouterCumulative::collect(&families).delta(baseline)
-        });
         StatsSnapshot {
             total_requests: self.total_requests,
             total_errors: self.total_errors,
@@ -206,14 +196,20 @@ impl StatsAccumulatorInner {
             routing_overhead: self.routing_overhead.snapshot(),
             routing_fallbacks: self.routing_fallbacks,
             classifier,
-            algorithm_stats: AlgorithmStatsSnapshot { stage_router },
+            algorithm_stats: self.algorithm_stats.snapshot(),
         }
     }
 
     fn reset(&mut self) {
-        let registry = self.algorithm_registry.clone();
-        let stage_router = self.stage_router_baseline.is_some();
-        *self = Self::new(registry, stage_router);
+        self.by_model.clear();
+        self.total_requests = 0;
+        self.total_errors = 0;
+        self.routing_overhead = LatencyHistogram::default();
+        self.routing_fallbacks = RoutingFallbackStats::default();
+        self.by_classifier.clear();
+        self.classifier_requests = 0;
+        self.classifier_errors = 0;
+        self.algorithm_stats.reset();
     }
 }
 
