@@ -59,6 +59,13 @@ production-facing observability.
   floor moves from 2.34 to 2.7 while retaining the `<3.0` upper bound.
 - **The Rust workspace uses Rust 1.96.1 and edition 2024.**
 
+### Deprecated
+
+- **The Python `switchyard serve` path** — the Python server, YAML route
+  bundles, and profile APIs remain available in 0.2.0 for transition purposes
+  but are deprecated. New deployments should use `switchyard-server`, native
+  TOML configuration, and libsy algorithms.
+
 ### Fixed
 
 - **Response `model` now names the model that actually served the request**, on
