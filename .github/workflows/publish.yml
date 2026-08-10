@@ -461,6 +461,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Publish crates in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -468,6 +470,21 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
+          metadata="$(cargo metadata --locked --no-deps --format-version 1)"
+
+          for crate in \
+            switchyard-protocol \
+            switchyard-translation \
+            switchyard-libsy \
+            switchyard-llm-client \
+            switchyard-server; do
+            crate_version="$(jq -r --arg crate "${crate}" \
+              '.packages[] | select(.name == $crate) | .version' <<<"${metadata}")"
+            if [[ "${crate_version}" != "${version}" ]]; then
+              echo "Release tag ${version} does not match ${crate} ${crate_version}" >&2
+              exit 1
+            fi
+          done
 
           wait_for_crate() {
             local crate="$1"
