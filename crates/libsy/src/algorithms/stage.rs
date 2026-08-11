@@ -20,49 +20,15 @@ use async_trait::async_trait;
 use super::fall_through::{DefaultTarget, FallThrough};
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
-use super::util::stage::{
-    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
-    record_decision_source,
-};
+use super::util::stage::{HandoffNoteConfig, PickerMode, StageClassifier, StageTargets};
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
-use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{Context, Request, Response};
 
 /// Telemetry name for a router this module assembles.
 const STAGE_ROUTER: &str = "stage_router";
-
-/// Attributes a turn to the classifier it wraps, when that classifier decides it.
-///
-/// The classifiers themselves are composition-agnostic and write no state; only
-/// this router knows where each sits in its cascade.
-struct SourceStamp {
-    inner: Arc<dyn Classifier<State>>,
-    source: DecisionSource,
-}
-
-#[async_trait]
-impl Classifier<State> for SourceStamp {
-    fn routing_tier(&self, selected_model_id: &str) -> Option<&'static str> {
-        self.inner.routing_tier(selected_model_id)
-    }
-
-    async fn score(
-        &self,
-        state: &mut State,
-        request: &mut Request,
-        driver: Option<&Driver>,
-    ) -> Result<(Classification, Option<Response>)> {
-        let (classification, served) = self.inner.score(state, request, driver).await?;
-        // An abstaining classifier passes the turn on, so it is not its to claim.
-        if matches!(&classification, Classification::Scores(scores) if !scores.is_empty()) {
-            record_decision_source(state, self.source);
-        }
-        Ok((classification, served))
-    }
-}
 
 /// The capability judge a stage router falls through to.
 pub struct LlmFallback {
@@ -192,22 +158,18 @@ fn build_route(
     if let Some(fallback) = config.llm_fallback {
         // The capability judge takes its tiers in the same order the capability
         // route passes them: efficient first, capable second.
-        router = router.with_classifier(Arc::new(SourceStamp {
-            inner: Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+        router = router.with_classifier(Arc::new(LlmTaskClassifier::new(
+            LlmClassifierConfig::Capability {
                 judge_target: fallback.judge_target,
                 efficient_target: efficient,
                 capable_target: capable,
                 config: fallback.config,
-            })?),
-            source: DecisionSource::LlmClassifier,
-        }));
+            },
+        )?));
     }
     // Nothing behind this, so the turn lands on the picker's default tier —
     // including when the judge could not tell.
-    router = router.with_classifier(Arc::new(SourceStamp {
-        inner: Arc::new(DefaultTarget::new(fall_open)),
-        source: DecisionSource::FallOpen,
-    }));
+    router = router.with_classifier(Arc::new(DefaultTarget::new(fall_open)));
     // Runs on the post-decision hook, so it applies to the target the cascade
     // settled on, whichever classifier picked it. With no prompts configured it
     // is a no-op, so there is nothing to branch on.
@@ -219,7 +181,6 @@ fn build_route(
 mod tests {
     use std::sync::Arc;
 
-    use async_trait::async_trait;
     use parking_lot::Mutex;
     use serde_json::json;
     use switchyard_protocol::{
@@ -227,84 +188,14 @@ mod tests {
     };
 
     use super::*;
-    use crate::algorithms::util::stage::DECISION_SOURCE_KEY;
     use crate::core::algorithm::LlmTarget;
-    use crate::core::classifier::Score;
-    use crate::core::state::StateValue;
     use crate::core::testing::{Serve, reply, test_drive};
-    use switchyard_protocol::{Context, Decision, Metadata, Response};
+    use switchyard_protocol::{Context, Decision, Metadata};
 
     fn tier_target(name: &str) -> LlmTarget {
         LlmTarget {
             semantic_name: name.to_string(),
         }
-    }
-
-    /// A classifier that always picks `target`, standing in for a cascade member.
-    struct Fixed(&'static str);
-
-    #[async_trait]
-    impl Classifier<State> for Fixed {
-        async fn score(
-            &self,
-            _state: &mut State,
-            _request: &mut Request,
-            _driver: Option<&Driver>,
-        ) -> Result<(Classification, Option<Response>)> {
-            Ok((
-                Classification::Scores(vec![Score {
-                    target: self.0.to_string(),
-                    confidence: 1.0,
-                }]),
-                None,
-            ))
-        }
-    }
-
-    /// A classifier that never decides.
-    struct Abstains;
-
-    #[async_trait]
-    impl Classifier<State> for Abstains {
-        async fn score(
-            &self,
-            _state: &mut State,
-            _request: &mut Request,
-            _driver: Option<&Driver>,
-        ) -> Result<(Classification, Option<Response>)> {
-            Ok((Classification::Ambiguous(vec![]), None))
-        }
-    }
-
-    async fn stamped(inner: Arc<dyn Classifier<State>>) -> Result<Option<String>> {
-        let stamp = SourceStamp {
-            inner,
-            source: DecisionSource::LlmClassifier,
-        };
-        let mut state = State::default();
-        stamp
-            .score(&mut state, &mut Request::default(), None)
-            .await?;
-        Ok(match state.extra.get(DECISION_SOURCE_KEY) {
-            Some(StateValue::String(source)) => Some(source.clone()),
-            _ => None,
-        })
-    }
-
-    #[tokio::test]
-    async fn a_deciding_classifier_is_credited_with_the_turn() -> Result<()> {
-        assert_eq!(
-            stamped(Arc::new(Fixed("strong"))).await?.as_deref(),
-            Some("llm-classifier")
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn an_abstaining_classifier_claims_nothing() -> Result<()> {
-        // It passed the turn on, so the next classifier is the one that decided.
-        assert_eq!(stamped(Arc::new(Abstains)).await?, None);
-        Ok(())
     }
 
     fn config() -> StageRouterConfig {

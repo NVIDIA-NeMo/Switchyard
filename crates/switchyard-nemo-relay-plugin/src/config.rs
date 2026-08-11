@@ -304,16 +304,6 @@ pub(crate) struct PreparedConfig {
     pub(crate) algorithm: Arc<dyn Algorithm>,
     pub(crate) targets: BTreeMap<String, PreparedTargetBinding>,
     pub(crate) default_targets: BTreeMap<WireFormat, String>,
-    pub(crate) target_tiers: BTreeMap<String, &'static str>,
-    pub(crate) stage_marks: Option<StageMarkConfig>,
-}
-
-#[derive(Clone)]
-pub(crate) struct StageMarkConfig {
-    pub(crate) picker: PickerMode,
-    pub(crate) confidence_threshold: f64,
-    pub(crate) recent_turn_window: Option<usize>,
-    pub(crate) classifier_enabled: bool,
 }
 
 impl SwitchyardConfig {
@@ -361,7 +351,6 @@ impl SwitchyardConfig {
 
     pub(crate) fn prepare(self) -> Result<PreparedConfig, String> {
         self.validate_structure()?;
-        let (target_tiers, stage_marks) = self.routing_mark_config();
         let targets = self
             .targets
             .iter()
@@ -373,42 +362,7 @@ impl SwitchyardConfig {
             algorithm,
             targets,
             default_targets: self.default_targets,
-            target_tiers,
-            stage_marks,
         })
-    }
-
-    fn routing_mark_config(&self) -> (BTreeMap<String, &'static str>, Option<StageMarkConfig>) {
-        match &self.algorithm {
-            AlgorithmConfig::Random { .. } => (BTreeMap::new(), None),
-            AlgorithmConfig::LlmClassifier { config } => (
-                BTreeMap::from([
-                    (config.weak_target.clone(), "weak"),
-                    (config.strong_target.clone(), "strong"),
-                ]),
-                None,
-            ),
-            AlgorithmConfig::StageRouter {
-                capable_target,
-                efficient_target,
-                picker,
-                confidence_threshold,
-                recent_turn_window,
-                classifier,
-                ..
-            } => (
-                BTreeMap::from([
-                    (capable_target.clone(), "strong"),
-                    (efficient_target.clone(), "weak"),
-                ]),
-                Some(StageMarkConfig {
-                    picker: *picker,
-                    confidence_threshold: *confidence_threshold,
-                    recent_turn_window: *recent_turn_window,
-                    classifier_enabled: classifier.is_some(),
-                }),
-            ),
-        }
     }
 
     fn build_algorithm(

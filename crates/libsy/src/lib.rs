@@ -35,9 +35,8 @@ pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
 // Stage-router scoring and tier selection — the shared signal-driven routing
 // core (scorer, picker, and the `StageClassifier`).
 pub use algorithms::util::stage::{
-    CodingAgentDimensions, DECISION_SOURCE_KEY, DecisionSource, HandoffNoteConfig, PickOutcome,
-    PickerMode, ScoreResult, StageClassifier, StageTargets, Tier, dimensions_from_signal,
-    pick_tier, score_signal,
+    CodingAgentDimensions, DecisionSource, HandoffNoteConfig, PickOutcome, PickerMode, ScoreResult,
+    StageClassifier, StageTargets, Tier, dimensions_from_signal, pick_tier, score_signal,
 };
 
 mod observability;

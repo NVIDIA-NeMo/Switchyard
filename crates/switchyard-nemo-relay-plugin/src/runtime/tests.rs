@@ -101,7 +101,6 @@ fn runtime_with_algorithm_clients(
     protocol: WireFormat,
     clients: Vec<(&str, Arc<ScriptedClient>)>,
 ) -> SwitchyardRuntime {
-    let is_stage = algorithm.name() == "stage_router";
     let mut targets = BTreeMap::from([(
         "fallback".into(),
         PreparedTargetBinding {
@@ -121,13 +120,6 @@ fn runtime_with_algorithm_clients(
         algorithm,
         targets,
         default_targets: BTreeMap::from([(protocol, "fallback".into())]),
-        target_tiers: BTreeMap::from([("weak".into(), "weak"), ("strong".into(), "strong")]),
-        stage_marks: is_stage.then_some(StageMarkConfig {
-            picker: PickerMode::CapableFirst,
-            confidence_threshold: 0.5,
-            recent_turn_window: None,
-            classifier_enabled: true,
-        }),
         translation: TranslationEngine::default(),
     }
 }
@@ -307,8 +299,6 @@ async fn buffered_finalization_failure_uses_fallback_once() {
             ),
         ]),
         default_targets: BTreeMap::from([(WireFormat::OpenAiChat, "fallback".into())]),
-        target_tiers: BTreeMap::new(),
-        stage_marks: None,
         translation: TranslationEngine::default(),
     };
     let mut marks = Vec::new();
@@ -411,8 +401,6 @@ async fn invalid_selected_stream_does_not_invoke_failing_fallback_twice() {
             ),
         ]),
         default_targets: BTreeMap::from([(WireFormat::OpenAiChat, "fallback".into())]),
-        target_tiers: BTreeMap::new(),
-        stage_marks: None,
         translation: TranslationEngine::default(),
     };
     let (output, _messages) = async_channel::bounded(32);
@@ -451,8 +439,6 @@ async fn failing_fallback_call_flushes_error_and_fallback_marks() {
             ),
         ]),
         default_targets: BTreeMap::from([(WireFormat::OpenAiChat, "fallback".into())]),
-        target_tiers: BTreeMap::new(),
-        stage_marks: None,
         translation: TranslationEngine::default(),
     };
     let (output, messages) = async_channel::bounded(32);
@@ -632,7 +618,8 @@ async fn escalation_buffers_weak_stream_then_latches_the_session_to_strong() {
     assert!(marks.iter().any(|mark| {
         mark.name == "switchyard.routing.decision"
             && mark.data["selected_target"] == "strong"
-            && mark.data["routing_tier"] == "strong"
+            && mark.data["is_answer_call"] == true
+            && mark.data["reasoning"].is_string()
             && mark.metadata["session_id"] == "session-1"
     }));
 }
@@ -778,9 +765,10 @@ async fn stage_router_uses_tool_signals_for_every_managed_protocol() {
         assert!(marks.iter().any(|mark| {
             mark.name == "switchyard.routing.decision"
                 && mark.data["algorithm"] == "stage_router"
+                && mark.data["attempt"] == 1
                 && mark.data["selected_target"] == "strong"
-                && mark.data["routing_tier"] == "strong"
-                && mark.data["decision_source"] == "override"
+                && mark.data["reasoning"].is_string()
+                && mark.data["is_answer_call"] == true
                 && mark.metadata["session_id"] == format!("stage-{}", protocol.as_str())
         }));
     }
@@ -821,8 +809,8 @@ async fn stage_router_falls_open_to_each_picker_default_without_tool_history() {
         assert!(marks.iter().any(|mark| {
             mark.name == "switchyard.routing.decision"
                 && mark.data["selected_target"] == expected
-                && mark.data["routing_tier"] == expected
-                && mark.data["decision_source"] == "fall_open"
+                && mark.data["reasoning"].is_string()
+                && mark.data["is_answer_call"] == true
         }));
     }
 }
@@ -881,8 +869,8 @@ async fn stage_router_classifier_resolves_an_ambiguous_turn() {
     assert!(marks.iter().any(|mark| {
         mark.name == "switchyard.routing.decision"
             && mark.data["selected_target"] == "weak"
-            && mark.data["routing_tier"] == "weak"
-            && mark.data["decision_source"] == "llm-classifier"
+            && mark.data["reasoning"].is_string()
+            && mark.data["is_answer_call"] == true
     }));
 }
 

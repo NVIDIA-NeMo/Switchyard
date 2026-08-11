@@ -21,8 +21,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   judges and discarded weak candidates, and failed routing candidates now emit
   `switchyard.routing.llm_call` ATOF marks with normalized token usage and
   latency. The final serving call remains represented only by Relay's outer LLM
-  lifecycle event to prevent double-counting. Stage decision marks retain
-  picker-default tiers, decision sources, and hard-override confidence.
+  lifecycle event to prevent double-counting.
 
 ### Removed
 

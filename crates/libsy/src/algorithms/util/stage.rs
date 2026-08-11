@@ -25,7 +25,7 @@ use super::tool_signals::ToolSignals;
 use crate::Result;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
-use crate::core::state::{State, StateValue};
+use crate::core::state::State;
 use switchyard_protocol::Request;
 
 /// Turn depth below which stall signals stay quiet — early no-write turns are
@@ -126,23 +126,7 @@ impl PickerMode {
     }
 }
 
-/// `State.extra` key under which the turn's [`DecisionSource`] is recorded.
-pub const DECISION_SOURCE_KEY: &str = "decision_source";
-
-/// Record which component decided the turn.
-pub(crate) fn record_decision_source(state: &mut State, source: DecisionSource) {
-    state.extra.insert(
-        DECISION_SOURCE_KEY.to_string(),
-        StateValue::String(source.as_str().to_string()),
-    );
-}
-
-/// What produced a decision — for stats and explainability.
-///
-/// Each is stamped by the component that knows it, so a turn's final label names
-/// whoever actually decided it. [`Ambiguous`](Self::Ambiguous) is the exception:
-/// the signal scorer records it on its way out, and whichever classifier resolves
-/// the turn overwrites it.
+/// What produced a signal-resolved picker outcome.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecisionSource {
     /// Hard override (critical severity or context compaction).
@@ -160,7 +144,7 @@ pub enum DecisionSource {
 }
 
 impl DecisionSource {
-    /// Stable lowercase label used in stats.
+    /// Stable lowercase label for picker consumers.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Override => "override",
@@ -459,8 +443,7 @@ impl StageClassifier {
 
     /// The signals could not decide, so this turn belongs to whatever the cascade
     /// has behind this classifier.
-    fn abstain(state: &mut State) -> Classification {
-        record_decision_source(state, DecisionSource::Ambiguous);
+    fn abstain() -> Classification {
         Classification::Ambiguous(Vec::new())
     }
 
@@ -490,7 +473,7 @@ impl Classifier<State> for StageClassifier {
         let Some(signal) = tool_signals else {
             // No tool activity yet — nothing to score, so the signals have no
             // opinion, same as a below-threshold turn.
-            return Ok((Self::abstain(state), None));
+            return Ok((Self::abstain(), None));
         };
 
         let outcome = pick_tier(signal, self.mode, self.confidence_threshold);
@@ -502,7 +485,6 @@ impl Classifier<State> for StageClassifier {
                 ..
             } => {
                 let target = self.targets.name(tier);
-                record_decision_source(state, source);
                 // Only a resolved turn routes on this classifier's target, so it
                 // is the only branch whose tier the signals actually chose — an
                 // ambiguous turn is decided further down the cascade.
@@ -516,7 +498,7 @@ impl Classifier<State> for StageClassifier {
                     None,
                 ))
             }
-            PickOutcome::ConsultClassifier { .. } => Ok((Self::abstain(state), None)),
+            PickOutcome::ConsultClassifier { .. } => Ok((Self::abstain(), None)),
         }
     }
 }
@@ -621,10 +603,6 @@ mod tests {
             .score(&mut state, &mut Request::default(), None)
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
-        assert!(matches!(
-            state.extra.get(DECISION_SOURCE_KEY),
-            Some(StateValue::String(source)) if source == "ambiguous"
-        ));
         Ok(())
     }
 
@@ -646,11 +624,6 @@ mod tests {
             }
             _ => panic!("expected a definite classification"),
         }
-        // The decision source travels downstream (for handoff-note gating).
-        assert!(matches!(
-            state.extra.get(DECISION_SOURCE_KEY),
-            Some(StateValue::String(source)) if source == "override"
-        ));
         Ok(())
     }
 
@@ -679,18 +652,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn classifier_falls_open_to_default_and_records_it() -> Result<()> {
-        // A quiet signal corroborates neither axis, so the scorer abstains and
-        // records why.
+    async fn classifier_abstains_on_an_ambiguous_signal() -> Result<()> {
+        // A quiet signal corroborates neither axis, so the scorer abstains.
         let mut state = state_with(ToolSignals::default());
         let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), None)
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
-        assert!(matches!(
-            state.extra.get(DECISION_SOURCE_KEY),
-            Some(StateValue::String(source)) if source == "ambiguous"
-        ));
         Ok(())
     }
 

@@ -8,14 +8,14 @@ use std::time::Duration;
 use futures_util::{StreamExt, stream};
 use nemo_relay_plugin::{Json, LlmRequest as RelayRequest};
 use serde_json::{Map, json};
-use switchyard_libsy::{Algorithm, LibsyError, PickOutcome, ToolSignals, pick_tier};
+use switchyard_libsy::{Algorithm, LibsyError};
 use switchyard_llm_client::{ClientRouter, LlmCallObservation, RunObservation, RunObserver, run};
 use switchyard_protocol::{
     Context, Decision, LlmClientError, LlmResponse, Metadata, Request, Response, WireFormat,
 };
 use switchyard_translation::{TranslationEngine, encode_stream};
 
-use crate::config::{PreparedTargetBinding, StageMarkConfig, SwitchyardConfig, protocol_from_call};
+use crate::config::{PreparedTargetBinding, SwitchyardConfig, protocol_from_call};
 use crate::translation;
 
 const INITIAL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
@@ -39,8 +39,6 @@ pub(crate) struct SwitchyardRuntime {
     algorithm: Arc<dyn Algorithm>,
     targets: BTreeMap<String, PreparedTargetBinding>,
     default_targets: BTreeMap<WireFormat, String>,
-    target_tiers: BTreeMap<String, &'static str>,
-    stage_marks: Option<StageMarkConfig>,
     translation: TranslationEngine,
 }
 
@@ -52,8 +50,6 @@ impl SwitchyardRuntime {
             algorithm: prepared.algorithm,
             targets: prepared.targets,
             default_targets: prepared.default_targets,
-            target_tiers: prepared.target_tiers,
-            stage_marks: prepared.stage_marks,
             translation: TranslationEngine::default(),
         })
     }
@@ -317,7 +313,6 @@ impl SwitchyardRuntime {
         mark_metadata: &Json,
     ) -> Result<Response, LibsyError> {
         let context = context_from_metadata(request.metadata.as_ref());
-        let stage_request = self.stage_marks.as_ref().map(|_| request.clone());
         let observations = Arc::new(Mutex::new(Vec::new()));
         let observed_calls = observations.clone();
         let observer: RunObserver = Arc::new(move |observation| {
@@ -345,13 +340,7 @@ impl SwitchyardRuntime {
         {
             Ok((decisions, response)) => {
                 for decision in decisions {
-                    self.emit_decision(
-                        marks,
-                        decision.as_ref(),
-                        stage_request.as_ref(),
-                        attempt,
-                        mark_metadata,
-                    );
+                    self.emit_decision(marks, decision.as_ref(), attempt, mark_metadata);
                 }
                 self.emit_routing_llm_calls(
                     marks,
@@ -428,13 +417,9 @@ impl SwitchyardRuntime {
         &self,
         marks: &mut Vec<RoutingMark>,
         decision: &Decision,
-        request: Option<&Request>,
         attempt: u32,
         metadata: &Json,
     ) {
-        let decision_source =
-            request.and_then(|request| self.stage_decision_source(request, decision));
-        let routing_tier = self.target_tiers.get(decision.selected_model_id()).copied();
         self.mark(
             marks,
             "switchyard.routing.decision",
@@ -443,36 +428,10 @@ impl SwitchyardRuntime {
                 "attempt": attempt,
                 "selected_target": decision.selected_model_id(),
                 "reasoning": decision.reasoning(),
-                "routing_tier": routing_tier,
-                "decision_source": decision_source,
-                "is_routed_call": decision.is_answer_call(),
+                "is_answer_call": decision.is_answer_call(),
             }),
             metadata,
         );
-    }
-
-    fn stage_decision_source(
-        &self,
-        request: &Request,
-        decision: &Decision,
-    ) -> Option<&'static str> {
-        let config = self.stage_marks.as_ref()?;
-        let signals = ToolSignals::from_request(request, config.recent_turn_window);
-        match pick_tier(&signals, config.picker, config.confidence_threshold) {
-            PickOutcome::Resolved { source, .. } => Some(source.as_str()),
-            PickOutcome::ConsultClassifier { .. } => {
-                let classifier_decided = config.classifier_enabled
-                    && decision
-                        .reasoning()
-                        .and_then(decision_confidence)
-                        .is_some_and(|confidence| confidence > 0.0);
-                Some(if classifier_decided {
-                    "llm-classifier"
-                } else {
-                    "fall_open"
-                })
-            }
-        }
     }
 
     fn emit_routing_llm_calls(
@@ -496,7 +455,6 @@ impl SwitchyardRuntime {
         }
 
         for (index, call) in calls.into_iter().enumerate() {
-            let routing_tier = self.target_tiers.get(&call.selected_model).copied();
             self.mark(
                 marks,
                 "switchyard.routing.llm_call",
@@ -505,7 +463,6 @@ impl SwitchyardRuntime {
                     "attempt": attempt,
                     "call_index": index + 1,
                     "selected_target": call.selected_model,
-                    "routing_tier": routing_tier,
                     "call_role": if call.is_answer_call { "candidate" } else { "judge" },
                     "outcome": if call.is_success { "ok" } else { "error" },
                     "latency_ms": call.duration.as_secs_f64() * 1_000.0,
@@ -524,20 +481,6 @@ fn take_observed_calls(observations: &Mutex<Vec<LlmCallObservation>>) -> Vec<Llm
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     )
-}
-
-fn decision_confidence(reasoning: &str) -> Option<f64> {
-    let (_, suffix) = reasoning.rsplit_once("confidence ")?;
-    let numeric = suffix
-        .trim_start_matches(|character: char| {
-            !character.is_ascii_digit() && !matches!(character, '.' | '-' | '+')
-        })
-        .chars()
-        .take_while(|character| {
-            character.is_ascii_digit() || matches!(character, '.' | '-' | '+' | 'e' | 'E')
-        })
-        .collect::<String>();
-    numeric.parse().ok()
 }
 
 async fn send_marks(

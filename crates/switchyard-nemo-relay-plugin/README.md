@@ -125,7 +125,7 @@ algorithm.
 | Streaming responses | Supported | Supported after the judge selects a target | Conditional: an unlatched weak stream is aggregated before the judge runs | Supported after the signal cascade selects a target |
 | Retained routing state | No selection affinity; context-overflow eviction can use session identity | Optional session affinity and message-hash fallback | Confirmation streak and strong latch require stable session identity | No classifier affinity; context-overflow eviction can use session identity |
 | Router-specific prompts | Not applicable | Optional judge prompt | Optional escalation-judge prompt | Optional tier prompts, handoff notes, and classifier prompt |
-| Relay decision marks | Algorithm, attempt, selected target, and identity; routing tier is `null` | Algorithm, attempt, selected target, weak or strong routing tier, and identity | Algorithm, attempt, selected target, weak or strong routing tier, and identity | Algorithm, attempt, selected target, routing tier, decision source, and identity |
+| Relay decision marks | Algorithm, attempt, selected target, reasoning, answer-call status, and identity | Algorithm, attempt, selected target, reasoning, answer-call status, and identity | Algorithm, attempt, selected target, reasoning, answer-call status, and identity | Algorithm, attempt, selected target, reasoning, answer-call status, and identity |
 | ATOF routing-LLM usage | Not applicable unless a failed candidate is replaced | Judge calls, plus failed candidates | Judge calls and discarded weak candidates | Optional classifier judge calls, plus failed candidates |
 
 Anthropic Messages is supported for callers and serving targets, but not for a
@@ -157,8 +157,8 @@ automatic compatibility fallback.
 
 Each completed routing-only model call emits a
 `switchyard.routing.llm_call` ATOF mark. Its data identifies the algorithm,
-attempt, call order, target, routing tier, role (`judge` or discarded
-`candidate`), outcome, latency, and normalized provider token `usage`. The
+attempt, call order, target, role (`judge` or discarded `candidate`), outcome,
+latency, and normalized provider token `usage`. The
 successful call that serves the caller is deliberately excluded because
 Relay's outer LLM end event already records that usage. A failed call, or a
 provider response that omits usage, has `usage = null`. Consumers can therefore
@@ -357,10 +357,8 @@ classifier target has the same structured-output protocol restriction as the
 standalone classifier.
 
 Ambiguous turns that reach the optional classifier add one judge call;
-decisive tool signals do not. Decision marks include `routing_tier` for signal,
-classifier, and picker-default paths, plus `decision_source` (`override`,
-`tests_passed`, `dimensions`, `llm-classifier`, or `fall_open`) for stage-router
-explainability.
+decisive tool signals do not. Decision marks report the selected model,
+reasoning, and answer-call status exposed by libsy's `Decision` API.
 
 Version-1 service configuration, decision-only execution, and observe-only
 mode are rejected.
