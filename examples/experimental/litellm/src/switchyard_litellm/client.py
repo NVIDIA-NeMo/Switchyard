@@ -236,10 +236,10 @@ def _payload(request: Mapping[str, object], model: str) -> dict[str, Any]:
     tool_choice = _tool_choice(request)
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
-    for source, target in (("temperature", "temperature"), ("top_p", "top_p")):
-        value = sampling.get(source)
+    for key in ("temperature", "top_p"):
+        value = sampling.get(key)
         if value is not None:
-            payload[target] = value
+            payload[key] = value
     max_tokens = output.get("max_output_tokens")
     if max_tokens is not None:
         payload["max_completion_tokens"] = max_tokens
