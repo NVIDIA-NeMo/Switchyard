@@ -144,31 +144,12 @@ those fields directly under `text.format`. InferenceHub therefore returns HTTP
 400 with `Missing required parameter: 'text.format.name'`, and the affected
 router follows its existing judge-failure or fall-open path.
 
-A hosted Relay process run passed 20 of 23 router-matrix cases. The only
-failures were the Responses-judge variants of the capability classifier,
-escalation router, and stage classifier fallback. OpenAI Responses remains
-verified as a caller and ordinary serving-target protocol. Until the shared
-`switchyard-translation` encoder is corrected, configure structured-output
-judges with `protocol = "openai_chat"`. Follow-up work must add the inverse of
-the existing Responses-to-neutral schema conversion plus core and
-process-level regression coverage for all three affected router paths.
-
-The following integration components have not reached complete compatibility.
-`Not built` identifies missing integration work rather than a hidden or
-best-effort runtime path.
-
-| Compatibility Component | Status | Current Boundary |
-|---|---|---|
-| Pinned Relay process-level acceptance harness | Not built | The plugin's standalone tests run through its nested Cargo workspace. Relay 0.7.1 plus Ollama smoke coverage is manual and currently covers OpenAI Chat paths for escalation and stage routing. |
-| OpenAI Responses and Anthropic Messages process-level routing matrix | Not built | Translation and in-process runtime coverage exists, including stage signals across all three caller protocols, but no automated Relay gateway matrix exercises every algorithm and target combination. |
-| Real coding-agent acceptance harness | Not built | Codex, Claude Code, and Hermes sessions are not driven automatically through the packaged plugin. |
-| Hosted-provider certification | Not built | No automated suite qualifies structured-output judges, serving targets, latency, or token cost against hosted provider APIs. |
-| Native bundle platform and Relay-version matrix | Partial | The plugin was smoked manually on macOS arm64 with Relay 0.7.1. Dedicated packaged-plugin jobs do not yet cover Linux and Windows bundles or every supported Relay 0.7 release. |
-| Dynamic-plugin lifecycle automation | Partial | Manifest validation, registration, enablement, execution, and unload were exercised manually; they are not part of a repeatable CI acceptance test. |
-| Nested Relay lifecycle telemetry for managed provider calls | Not built | Relay records the outer serving call. Routing-only model calls emit `switchyard.routing.llm_call` marks with normalized usage, but Switchyard provider HTTP spans are not bridged into nested Relay LLM lifecycle events. |
-| Provider `Retry-After` propagation | Not built | The outer routing loop uses bounded exponential backoff because the client error contract does not expose `Retry-After`. |
-| Cross-protocol streaming loss diagnostics | Not built | Cross-protocol streams use normalized chunks, but the stream adapter does not surface the buffered translation engine's reject-lossy diagnostics. |
-| Safe typed Relay asynchronous host adapter | Blocked on host API | The plugin uses its tested raw C ownership adapter until Relay exposes an equivalent safe asynchronous Rust facade. |
+OpenAI Responses remains supported as a caller and ordinary serving-target
+protocol. Until the shared `switchyard-translation` encoder is corrected,
+configure structured-output judges with `protocol = "openai_chat"`. Follow-up
+work must add the inverse of the existing Responses-to-neutral schema conversion
+plus core and process-level regression coverage for all three affected router
+paths.
 
 Managed inner provider calls also do not re-enter Relay's downstream provider
 middleware. This behavior is part of the current ownership boundary, not an
@@ -410,17 +391,3 @@ nemo-relay plugins add /opt/switchyard-relay-plugin/relay-plugin.toml
 nemo-relay plugins enable nvidia.switchyard
 nemo-relay plugins inspect nvidia.switchyard
 ```
-
-## Validation expectations
-
-Before release, validate both routers against buffered and streaming OpenAI
-Chat, OpenAI Responses, and Anthropic Messages providers. The acceptance suite
-must cover same- and supported cross-protocol routes, deterministic weighted
-routing, independent runs, classifier weak and strong selections, retry
-reselection, exhaustion, exactly-once fallback, stream commitment, empty
-streams, late errors, cancellation, credential privacy, and unmanaged
-pass-through.
-
-The tests must also prove that managed target traffic reaches the provider
-through `switchyard-llm-client`, never through Relay's provider continuation,
-and that no Switchyard service or health endpoint is involved.
