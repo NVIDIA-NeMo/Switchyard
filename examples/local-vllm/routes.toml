@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+# A self-hosted OpenAI-compatible server. vLLM, NIM, Ollama and llama.cpp all
+# expose this shape, so only `base_url` changes between them. `api_key_env` is
+# omitted deliberately: with no key configured, no authentication is sent, which
+# is what a local server started without `--api-key` expects. Add it back if
+# yours requires one.
+[llm_clients.local]
+format = "openai_chat"
+base_url = "http://127.0.0.1:8000/v1"
+
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+# `id` must match what the local server reports at /v1/models. For vLLM that is
+# `--served-model-name`, which defaults to the checkpoint path when unset.
+[targets.weak]
+id = "my-local-model"
+llm_client = "local"
+
+# Classifying locally keeps the per-turn routing decision off the metered path.
+# Point this at the hosted client instead if you want a stronger classifier.
+[targets.classifier]
+id = "my-local-model"
+llm_client = "local"
+
+[targets.strong]
+id = "anthropic/claude-opus-4.7"
+llm_client = "openrouter"
+
+[routes.local_first]
+id = "local-first"
+type = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+threshold_step = 0.0
+session_affinity = true
+message_hash_fallback = true
