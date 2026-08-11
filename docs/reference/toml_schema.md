@@ -174,7 +174,7 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 |---|:---:|---|---|
 | `capable_target` | Yes | — | Capable tier. |
 | `efficient_target` | Yes | — | Efficient tier. |
-| `picker` | Yes | — | `capable_first` or `efficient_first`. Tier used when the signals are not confident. |
+| `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental, unbenchmarked). Tier used when the signals are not confident. |
 | `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. |
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
 | `capable_system_prompt` | No | unset | System prompt handed to the capable tier. |
