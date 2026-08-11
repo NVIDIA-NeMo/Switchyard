@@ -1397,12 +1397,21 @@ the classifier). Raising the threshold shrinks that path; lowering it widens it.
 <p>The picker name says which tier is the <strong>default</strong>: the tier used when the
 signals are ambiguous and no classifier verdict is available.</p>
 <ul>
-<li><strong><code>capable_first</code></strong>: capable is the default; drop to efficient only when the
-  signals (or the classifier) clearly say so. Quality-first.</li>
 <li><strong><code>efficient_first</code></strong>: efficient is the default; escalate to capable only when
   the signals (or the classifier) clearly say so. Cost-first.</li>
+<li><strong><code>capable_first</code></strong> <em>(experimental)</em>: capable is the default; drop to efficient
+  only when the signals (or the classifier) clearly say so. Quality-first.</li>
 </ul>
 <p>Both pickers read the same signals; only the default tier differs.</p>
+<div class="admonition warning">
+<p class="admonition-title"><code>capable_first</code> is experimental</p>
+<p>Every published threshold and routing result comes from <code>efficient_first</code>
+runs. <code>capable_first</code> works and the server accepts it, but it has not been
+benchmarked, so there are no calibrated thresholds for it and no measured
+accuracy or cost figures to set expectations against. The server logs a
+warning at startup when a route selects it. Use <code>efficient_first</code> unless you
+are running your own calibration.</p>
+</div>
 <h2 id="tuning-confidence_threshold">Tuning <code>confidence_threshold</code><a class="headerlink" href="#tuning-confidence_threshold" title="Permanent link">&para;</a></h2>
 <p>The scorer rates each turn from <code>0</code> (signals are neutral) to <code>1</code> (signals point
 hard at one tier). <code>confidence_threshold</code> is the bar that rating has to clear
