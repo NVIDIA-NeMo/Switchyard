@@ -436,7 +436,6 @@ async def test_call_rejects_unsupported_normalized_fields(
     match: str,
 ) -> None:
     request = request_body()
-    assert callable(mutate)
     mutate(request)
     with respx.mock(assert_all_called=False) as router:
         router.post(f"{BASE_URL}/chat/completions").mock(
