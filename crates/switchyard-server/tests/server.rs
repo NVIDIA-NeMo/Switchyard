@@ -232,6 +232,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
                     .iter()
                     .map(|model| LlmTarget {
                         semantic_name: (*model).to_string(),
+                        input_modalities: None,
                     })
                     .collect(),
             );

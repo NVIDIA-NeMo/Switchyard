@@ -20,7 +20,7 @@ use switchyard_llm_client::{
     Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     TranslatingLlmClient,
 };
-use switchyard_protocol::RoutedLlmClient;
+use switchyard_protocol::{InputModality, RoutedLlmClient};
 
 use crate::{CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState};
 
@@ -132,10 +132,11 @@ impl ServerConfig {
             let model_configs = models_by_client
                 .get_mut(&target.llm_client)
                 .ok_or_else(|| ServerError::new("validated llm client was not initialized"))?;
-            model_configs.push(ModelConfig::new(
+            model_configs.push(ModelConfig::with_input_modalities(
                 &target.id,
                 build_backend(&target.llm_client, client_config, &target.extra_body)?,
                 None,
+                target.input_modalities.clone(),
             ));
         }
 
@@ -159,6 +160,7 @@ impl ServerConfig {
                     name.clone(),
                     LlmTarget {
                         semantic_name: config.id.clone(),
+                        input_modalities: config.input_modalities.clone(),
                     },
                 )
             })
@@ -251,6 +253,7 @@ struct LlmClientConfig {
 struct TargetConfig {
     id: String,
     llm_client: String,
+    input_modalities: Option<Vec<InputModality>>,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
 }
@@ -1456,6 +1459,28 @@ target = "azure"
                 .and_then(|value| value.get("enable_thinking")),
             Some(&json!(false))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn target_input_modalities_are_parsed_and_validated() -> ServerResult<()> {
+        let configured = VALID_CONFIG.replacen(
+            "llm_client = \"responses\"",
+            "llm_client = \"responses\"\ninput_modalities = [\"text\", \"image\"]",
+            1,
+        );
+        let config: ServerConfig = toml::from_str(&configured)
+            .map_err(|error| ServerError::new(format!("failed to parse config: {error}")))?;
+        assert_eq!(
+            config
+                .targets
+                .get("strong")
+                .and_then(|target| target.input_modalities.as_ref()),
+            Some(&vec![InputModality::Text, InputModality::Image])
+        );
+
+        let invalid = configured.replace("\"image\"", "\"pdf\"");
+        assert!(error_message(&invalid).contains("unknown variant"));
         Ok(())
     }
 

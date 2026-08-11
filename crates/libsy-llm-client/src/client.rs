@@ -4,7 +4,7 @@
 //! [`TranslatingLlmClient`] — the crate's single public entry point: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
@@ -13,7 +13,8 @@ use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value};
 use switchyard_protocol::{
-    Decision, LlmRequest, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
+    ContentBlock, Decision, InputModality, LlmRequest, LlmResponse, Metadata, Request, Response,
+    RoutedLlmClient,
 };
 use switchyard_translation::{
     WireFormat, decode_aggregated_response, decode_request, decode_stream,
@@ -59,6 +60,7 @@ pub struct ModelConfig {
     model_name: String,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
+    input_modalities: Option<BTreeSet<InputModality>>,
 }
 
 impl ModelConfig {
@@ -73,6 +75,22 @@ impl ModelConfig {
             model_name: model_name.into(),
             default_backend,
             other_backends,
+            input_modalities: None,
+        }
+    }
+
+    /// A model config with an explicit target-local input modality allowlist.
+    pub fn with_input_modalities(
+        model_name: impl Into<String>,
+        default_backend: Backend,
+        other_backends: Option<Vec<Backend>>,
+        input_modalities: Option<Vec<InputModality>>,
+    ) -> Self {
+        Self {
+            model_name: model_name.into(),
+            default_backend,
+            other_backends,
+            input_modalities: input_modalities.map(|modalities| modalities.into_iter().collect()),
         }
     }
 }
@@ -115,16 +133,9 @@ impl TranslatingLlmClient {
     /// format matches, otherwise a matching entry in `other_backends`; `None` when
     /// the model is unknown or has no backend for `format`.
     pub fn backend_for(&self, model: &str, format: WireFormat) -> Option<&Backend> {
-        self.model_to_config.get(model).and_then(|config| {
-            if config.default_backend.wire_format() == format {
-                Some(&config.default_backend)
-            } else {
-                config
-                    .other_backends
-                    .as_ref()
-                    .and_then(|backends| backends.iter().find(|b| b.wire_format() == format))
-            }
-        })
+        self.model_to_config
+            .get(model)
+            .and_then(|config| backend_for_config(config, format))
     }
 
     /// Whether `model` has an Anthropic backend that supports token counting.
@@ -138,10 +149,17 @@ impl TranslatingLlmClient {
     /// Returns an error when the model has no Anthropic backend or the upstream
     /// request fails or returns invalid JSON.
     pub async fn count_tokens(&self, model: &str, request: Request) -> Result<Value> {
-        let backend = self
-            .backend_for(model, WireFormat::AnthropicMessages)
-            .ok_or_else(|| LlmClientError::Configuration {
-                message: format!("model {model} has no Anthropic backend for count_tokens"),
+        let config =
+            self.model_to_config
+                .get(model)
+                .ok_or_else(|| LlmClientError::Configuration {
+                    message: format!("model {model} has no Anthropic backend for count_tokens"),
+                })?;
+        let backend =
+            backend_for_config(config, WireFormat::AnthropicMessages).ok_or_else(|| {
+                LlmClientError::Configuration {
+                    message: format!("model {model} has no Anthropic backend for count_tokens"),
+                }
             })?;
         let Request {
             llm_request,
@@ -155,6 +173,7 @@ impl TranslatingLlmClient {
                 llm_request,
                 metadata.as_ref(),
                 model,
+                config.input_modalities.as_ref(),
                 UpstreamEndpoint::CountTokens,
             )
             .await?;
@@ -189,12 +208,15 @@ impl TranslatingLlmClient {
         mut llm_request: LlmRequest,
         metadata: Option<&Metadata>,
         model: &str,
+        input_modalities: Option<&BTreeSet<InputModality>>,
         endpoint: UpstreamEndpoint,
     ) -> Result<EncodedResponse> {
         // The resolved name is the upstream model id (per the crate contract).
         llm_request.model = Some(model.to_string());
+        filter_request_input_modalities(&mut llm_request, input_modalities);
         let mut body = encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
+        filter_encoded_input_modalities(&mut body, wire_format, input_modalities);
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
@@ -380,20 +402,19 @@ impl TranslatingLlmClient {
                 message: "no model given".to_string(),
             })?;
 
-        let orig_format = metadata.as_ref().and_then(|m| m.wire_format);
-        let wire_format = orig_format.unwrap_or(
+        let config =
             self.model_to_config
                 .get(&model)
-                .map(|config| config.default_backend.wire_format())
                 .ok_or_else(|| LlmClientError::Configuration {
                     message: format!("no backend configured for model {model:?}"),
-                })?,
-        );
-        let backend =
-            self.backend_for(&model, wire_format)
-                .ok_or_else(|| LlmClientError::Configuration {
-                    message: format!("model {model:?} has no backend for format {wire_format}"),
                 })?;
+        let orig_format = metadata.as_ref().and_then(|m| m.wire_format);
+        let wire_format = orig_format.unwrap_or(config.default_backend.wire_format());
+        let backend = backend_for_config(config, wire_format).ok_or_else(|| {
+            LlmClientError::Configuration {
+                message: format!("model {model:?} has no backend for format {wire_format}"),
+            }
+        })?;
 
         let http_response = self
             .send_encoded(
@@ -402,6 +423,7 @@ impl TranslatingLlmClient {
                 llm_request,
                 metadata.as_ref(),
                 &model,
+                config.input_modalities.as_ref(),
                 UpstreamEndpoint::Completion,
             )
             .await?;
@@ -651,6 +673,180 @@ fn apply_extra_headers(mut builder: RequestBuilder, backend: &Backend) -> Reques
     builder
 }
 
+fn backend_for_config(config: &ModelConfig, format: WireFormat) -> Option<&Backend> {
+    if config.default_backend.wire_format() == format {
+        Some(&config.default_backend)
+    } else {
+        config
+            .other_backends
+            .as_ref()
+            .and_then(|backends| backends.iter().find(|b| b.wire_format() == format))
+    }
+}
+
+fn filter_request_input_modalities(
+    request: &mut LlmRequest,
+    input_modalities: Option<&BTreeSet<InputModality>>,
+) {
+    let Some(allowed) = input_modalities else {
+        return;
+    };
+    for instruction in &mut request.instructions {
+        filter_content_blocks(&mut instruction.content, allowed);
+    }
+    for message in &mut request.messages {
+        filter_content_blocks(&mut message.content, allowed);
+    }
+}
+
+fn filter_content_blocks(content: &mut Vec<ContentBlock>, allowed: &BTreeSet<InputModality>) {
+    for block in content.iter_mut() {
+        if let ContentBlock::ToolResult(result) = block {
+            filter_content_blocks(&mut result.content, allowed);
+        }
+    }
+    content.retain(|block| match block_input_modality(block) {
+        Some(modality) => allowed.contains(&modality),
+        None => true,
+    });
+}
+
+fn block_input_modality(block: &ContentBlock) -> Option<InputModality> {
+    match block {
+        ContentBlock::Text { .. }
+        | ContentBlock::Reasoning { .. }
+        | ContentBlock::Refusal { .. } => Some(InputModality::Text),
+        ContentBlock::Image { .. } => Some(InputModality::Image),
+        ContentBlock::Audio { .. } => Some(InputModality::Audio),
+        ContentBlock::Video { .. } => Some(InputModality::Video),
+        ContentBlock::File { .. } => Some(InputModality::File),
+        ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_) | ContentBlock::Unknown { .. } => {
+            None
+        }
+    }
+}
+
+fn filter_encoded_input_modalities(
+    body: &mut Value,
+    wire_format: WireFormat,
+    input_modalities: Option<&BTreeSet<InputModality>>,
+) {
+    let Some(allowed) = input_modalities else {
+        return;
+    };
+    match wire_format {
+        WireFormat::OpenAiChat => filter_openai_chat_body(body, allowed),
+        WireFormat::OpenAiResponses => filter_openai_responses_body(body, allowed),
+        WireFormat::AnthropicMessages => filter_anthropic_body(body, allowed),
+    }
+}
+
+fn filter_openai_chat_body(body: &mut Value, allowed: &BTreeSet<InputModality>) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    if let Some(Value::Array(messages)) = object.get_mut("messages") {
+        for message in messages {
+            filter_json_content_field(message, allowed, openai_chat_json_modality);
+        }
+    }
+}
+
+fn filter_openai_responses_body(body: &mut Value, allowed: &BTreeSet<InputModality>) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    if let Some(input) = object.get_mut("input") {
+        match input {
+            Value::Array(items) => {
+                for item in items {
+                    filter_json_content_field(item, allowed, openai_responses_json_modality);
+                }
+            }
+            Value::Object(_) => {
+                filter_json_content_field(input, allowed, openai_responses_json_modality)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn filter_anthropic_body(body: &mut Value, allowed: &BTreeSet<InputModality>) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    if let Some(Value::Array(system)) = object.get_mut("system") {
+        filter_json_content_array(system, allowed, anthropic_json_modality);
+    }
+    if let Some(Value::Array(messages)) = object.get_mut("messages") {
+        for message in messages {
+            filter_json_content_field(message, allowed, anthropic_json_modality);
+        }
+    }
+}
+
+fn filter_json_content_field(
+    value: &mut Value,
+    allowed: &BTreeSet<InputModality>,
+    modality: fn(&Value) -> Option<InputModality>,
+) {
+    let Value::Object(object) = value else {
+        return;
+    };
+    if let Some(Value::Array(content)) = object.get_mut("content") {
+        filter_json_content_array(content, allowed, modality);
+    }
+}
+
+fn filter_json_content_array(
+    content: &mut Vec<Value>,
+    allowed: &BTreeSet<InputModality>,
+    modality: fn(&Value) -> Option<InputModality>,
+) {
+    for block in content.iter_mut() {
+        if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+            filter_json_content_field(block, allowed, modality);
+        }
+    }
+    content.retain(|block| match modality(block) {
+        Some(modality) => allowed.contains(&modality),
+        None => true,
+    });
+}
+
+fn openai_chat_json_modality(block: &Value) -> Option<InputModality> {
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => Some(InputModality::Text),
+        Some("image_url") => Some(InputModality::Image),
+        Some("input_audio") => Some(InputModality::Audio),
+        Some("input_video") => Some(InputModality::Video),
+        Some("file") => Some(InputModality::File),
+        _ => None,
+    }
+}
+
+fn openai_responses_json_modality(block: &Value) -> Option<InputModality> {
+    match block.get("type").and_then(Value::as_str) {
+        Some("input_text" | "output_text" | "refusal" | "reasoning") => Some(InputModality::Text),
+        Some("input_image") => Some(InputModality::Image),
+        Some("input_audio") => Some(InputModality::Audio),
+        Some("input_video") => Some(InputModality::Video),
+        Some("input_file") => Some(InputModality::File),
+        _ => None,
+    }
+}
+
+fn anthropic_json_modality(block: &Value) -> Option<InputModality> {
+    match block.get("type").and_then(Value::as_str) {
+        Some("text" | "thinking" | "redacted_thinking") => Some(InputModality::Text),
+        Some("image") => Some(InputModality::Image),
+        Some("audio") => Some(InputModality::Audio),
+        Some("video") => Some(InputModality::Video),
+        Some("document") => Some(InputModality::File),
+        _ => None,
+    }
+}
+
 // Overwrites the outbound body's `model` field with the resolved model id.
 fn set_json_model(body: &mut Value, model: &str) {
     if let Value::Object(object) = body {
@@ -802,7 +998,10 @@ mod tests {
     use std::thread::JoinHandle;
 
     use serde_json::json;
-    use switchyard_protocol::{LlmRequest, completion_text, text_request};
+    use switchyard_protocol::{
+        ContentBlock, FormatId, ImageSource, LlmRequest, Message, Role, completion_text,
+        text_request,
+    };
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -849,6 +1048,18 @@ mod tests {
             "claude",
             Backend::Anthropic(config(base_url)),
             None,
+        )]
+    }
+
+    fn responses_map_with_input_modalities(
+        base_url: &str,
+        input_modalities: Vec<InputModality>,
+    ) -> Vec<ModelConfig> {
+        vec![ModelConfig::with_input_modalities(
+            "gpt",
+            Backend::OpenAiResponses(config(base_url)),
+            None,
+            Some(input_modalities),
         )]
     }
 
@@ -1079,6 +1290,108 @@ mod tests {
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hi there");
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn input_modalities_filter_preserved_openai_responses_body_without_mutating_request()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let content = &body["input"][0]["content"];
+                body["model"] == json!("gpt")
+                    && content
+                        == &json!([
+                            {"type": "input_text", "text": "describe this"},
+                            {"type": "vendor_extension", "payload": {"kind": "kept"}}
+                        ])
+                    && body["tools"][0]["parameters"]["properties"]["content"]["type"]
+                        == json!("string")
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "model": "gpt",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let preserved_body = json!({
+            "model": "switchyard",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "describe this"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+                    {"type": "input_file", "file": {"file_id": "file-1"}},
+                    {"type": "vendor_extension", "payload": {"kind": "kept"}}
+                ]
+            }],
+            "tools": [{
+                "type": "function",
+                "name": "keep_schema",
+                "parameters": {"type": "object", "properties": {"content": {"type": "string"}}}
+            }]
+        });
+        let mut llm_request = LlmRequest {
+            model: Some("gpt".to_string()),
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "describe this".to_string(),
+                    },
+                    ContentBlock::Image {
+                        source: ImageSource::Url {
+                            url: "data:image/png;base64,abc".to_string(),
+                            detail: None,
+                        },
+                    },
+                    ContentBlock::Unknown {
+                        provider: FormatId::from(WireFormat::OpenAiResponses),
+                        raw: json!({"type": "vendor_extension", "payload": {"kind": "kept"}}),
+                    },
+                ],
+            }],
+            ..LlmRequest::default()
+        };
+        llm_request
+            .preservation
+            .requests
+            .insert(WireFormat::OpenAiResponses.into(), preserved_body);
+        let original_request = llm_request.clone();
+        let client = TranslatingLlmClient::new(&responses_map_with_input_modalities(
+            &format!("{}/v1", server.uri()),
+            vec![InputModality::Text],
+        ))?;
+
+        let response = client
+            .call_rewrite_model(
+                Request {
+                    llm_request: llm_request.clone(),
+                    raw_request: None,
+                    metadata: Some(Metadata {
+                        wire_format: Some(WireFormat::OpenAiResponses),
+                        ..Metadata::default()
+                    }),
+                },
+                None,
+            )
+            .await?;
+
+        assert_eq!(llm_request, original_request);
+        let agg = response.llm_response.into_agg().await?;
+        assert_eq!(completion_text(&agg), "ok");
         Ok(())
     }
 

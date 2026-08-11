@@ -199,6 +199,7 @@ mod tests {
             .iter()
             .map(|name| LlmTarget {
                 semantic_name: (*name).to_string(),
+                input_modalities: None,
             })
             .collect();
         LlmTargetSet::new(targets)

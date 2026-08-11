@@ -1081,6 +1081,7 @@ mod tests {
     fn router() -> Result<Arc<LlmTaskClassifier>> {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
+            input_modalities: None,
         };
         Ok(Arc::new(LlmTaskClassifier::new(
             LlmClassifierConfig::Capability {
@@ -1167,6 +1168,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
+            input_modalities: None,
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: target("judge"),
@@ -1189,6 +1191,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
+            input_modalities: None,
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: target("judge"),
@@ -1214,6 +1217,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
+            input_modalities: None,
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: target("judge"),
@@ -1238,6 +1242,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
+            input_modalities: None,
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: target("judge"),
@@ -1303,6 +1308,7 @@ mod tests {
     fn invalid_classifier_config_is_rejected() -> Result<()> {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
+            input_modalities: None,
         };
         for bad in [1.5, -0.1, f64::NAN, f64::INFINITY] {
             assert!(
@@ -1796,6 +1802,7 @@ mod tests {
     fn escalation_router() -> Result<Arc<LlmTaskClassifier>> {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
+            input_modalities: None,
         };
         Ok(Arc::new(LlmTaskClassifier::new(
             LlmClassifierConfig::Escalation {
@@ -1845,6 +1852,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
+            input_modalities: None,
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
             judge_target: target("judge"),

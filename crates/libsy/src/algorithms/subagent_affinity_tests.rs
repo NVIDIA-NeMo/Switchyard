@@ -49,6 +49,7 @@ fn targets() -> LlmTargetSet {
             .iter()
             .map(|name| LlmTarget {
                 semantic_name: (*name).to_string(),
+                input_modalities: None,
             })
             .collect(),
     )

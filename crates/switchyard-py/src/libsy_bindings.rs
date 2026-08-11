@@ -18,8 +18,8 @@ use switchyard_libsy::{
 };
 use switchyard_llm_client::ClientRouter;
 use switchyard_protocol::{
-    AggLlmResponse, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
-    RoutedLlmClient,
+    AggLlmResponse, Decision, InputModality, LlmClientError, LlmResponse, Metadata, Request,
+    Response, RoutedLlmClient,
 };
 
 use crate::errors::py_libsy_error;
@@ -75,12 +75,14 @@ impl RoutedLlmClient for PythonLlmClient {
 struct PyLlmTarget {
     name: String,
     client: Py<PyAny>,
+    input_modalities: Option<Vec<InputModality>>,
 }
 
 impl PyLlmTarget {
     fn clone_core(&self, _py: Python<'_>) -> LlmTarget {
         LlmTarget {
             semantic_name: self.name.clone(),
+            input_modalities: self.input_modalities.clone(),
         }
     }
 
@@ -100,7 +102,13 @@ impl PyLlmTarget {
 #[pymethods]
 impl PyLlmTarget {
     #[new]
-    fn new(py: Python<'_>, name: String, client: Py<PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (name, client, *, input_modalities=None))]
+    fn new(
+        py: Python<'_>,
+        name: String,
+        client: Py<PyAny>,
+        input_modalities: Option<Vec<String>>,
+    ) -> PyResult<Self> {
         let call = client
             .bind(py)
             .getattr("call")
@@ -110,7 +118,19 @@ impl PyLlmTarget {
                 "client.call must be callable as async call(request)",
             ));
         }
-        Ok(Self { name, client })
+        let input_modalities = input_modalities
+            .map(|modalities| {
+                modalities
+                    .into_iter()
+                    .map(|modality| parse_input_modality(&modality))
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .transpose()?;
+        Ok(Self {
+            name,
+            client,
+            input_modalities,
+        })
     }
 
     #[getter]
@@ -120,6 +140,19 @@ impl PyLlmTarget {
 
     fn __repr__(&self) -> String {
         format!("LlmTarget(name={:?})", self.name)
+    }
+}
+
+fn parse_input_modality(value: &str) -> PyResult<InputModality> {
+    match value {
+        "text" => Ok(InputModality::Text),
+        "image" => Ok(InputModality::Image),
+        "audio" => Ok(InputModality::Audio),
+        "video" => Ok(InputModality::Video),
+        "file" => Ok(InputModality::File),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown input modality {value:?}; expected one of text, image, audio, video, file"
+        ))),
     }
 }
 

@@ -38,13 +38,21 @@ class LlmClient(Protocol):
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from typing import final
+    from typing import Literal, final
+
+    InputModality = Literal["text", "image", "audio", "video", "file"]
 
     class LibsyError(RuntimeError): ...
 
     @final
     class LlmTarget:
-        def __init__(self, name: str, client: LlmClient) -> None: ...
+        def __init__(
+            self,
+            name: str,
+            client: LlmClient,
+            *,
+            input_modalities: Sequence[InputModality] | None = None,
+        ) -> None: ...
 
         @property
         def name(self) -> str: ...

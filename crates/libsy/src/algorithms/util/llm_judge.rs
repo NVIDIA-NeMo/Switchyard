@@ -386,6 +386,7 @@ mod tests {
             TestJudge,
             LlmTarget {
                 semantic_name: "judge".to_string(),
+                input_modalities: None,
             },
             TestPolicy,
         )

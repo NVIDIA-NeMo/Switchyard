@@ -232,6 +232,7 @@ mod tests {
     fn tier_target(name: &str) -> LlmTarget {
         LlmTarget {
             semantic_name: name.to_string(),
+            input_modalities: None,
         }
     }
 
@@ -322,6 +323,7 @@ mod tests {
         config.llm_fallback = Some(LlmFallback {
             judge_target: LlmTarget {
                 semantic_name: "judge".to_string(),
+                input_modalities: None,
             },
             config: TaskClassifierConfig {
                 base_threshold: -0.1,
@@ -405,6 +407,7 @@ mod tests {
     fn recording_target(name: &str) -> LlmTarget {
         LlmTarget {
             semantic_name: name.to_string(),
+            input_modalities: None,
         }
     }
 

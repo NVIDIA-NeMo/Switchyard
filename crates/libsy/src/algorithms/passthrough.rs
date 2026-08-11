@@ -62,6 +62,7 @@ mod tests {
         };
         let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(LlmTarget {
             semantic_name: MODEL_ID.to_string(),
+            input_modalities: None,
         }));
         let (trace, response) = test_drive(algorithm, request, echo()).await?;
 

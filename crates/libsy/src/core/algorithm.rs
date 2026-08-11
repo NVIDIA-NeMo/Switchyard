@@ -27,7 +27,9 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStreamEvent`] is its host/algorithm envelope; and
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
-use switchyard_protocol::{Decision, LlmClientError, Request, Response, RoutingFallbackReason};
+use switchyard_protocol::{
+    Decision, InputModality, LlmClientError, Request, Response, RoutingFallbackReason,
+};
 
 use crate::{DriverError, LibsyError, Result, observability};
 
@@ -289,6 +291,8 @@ pub struct LlmTarget {
     /// `"strong"`, or the model id when they coincide. Mapping it to a provider model
     /// id is the consumer's concern, never the algorithm's.
     pub semantic_name: String,
+    /// Optional authoritative allowlist of input modalities accepted by this target.
+    pub input_modalities: Option<Vec<InputModality>>,
 }
 
 /// The set of targets an algorithm may route among. An algorithm is constructed
@@ -717,6 +721,7 @@ mod tests {
             .iter()
             .map(|name| LlmTarget {
                 semantic_name: name.to_string(),
+                input_modalities: None,
             })
             .collect();
         LlmTargetSet::new(targets)
@@ -1321,9 +1326,11 @@ mod tests {
         let algo = Arc::new(Hedge {
             winner: LlmTarget {
                 semantic_name: "winner".to_string(),
+                input_modalities: None,
             },
             loser: LlmTarget {
                 semantic_name: "loser".to_string(),
+                input_modalities: None,
             },
         });
         let serve = move |decision: Decision, _request: Request| {

@@ -10,6 +10,22 @@ use serde_json::{Map, Value};
 
 use crate::format::FormatId;
 
+/// Input content modalities a target can explicitly accept.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputModality {
+    /// Plain text, refusal text, and reasoning text content.
+    Text,
+    /// Image content.
+    Image,
+    /// Audio content.
+    Audio,
+    /// Video content.
+    Video,
+    /// File or document content.
+    File,
+}
+
 /// Actor role normalized across provider APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
