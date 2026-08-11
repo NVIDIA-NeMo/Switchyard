@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// The identifier of an upstream model, such as `"openai/gpt-oss-20b"` or
 /// `"aws/anthropic/claude-opus-4-5"`.
 ///
-/// This is the id a deployment configures a target with, the id a routing [`Decision`]
+/// This is the id a deployment configures a target with, the id a routing Decision
 /// selects, and the key a host maps to the client that serves it. It is deliberately
 /// distinct from a *route* id — Switchyard's own synthetic front-door name, such as
 /// `"switchyard/random"` — which names a routing algorithm rather than a model.
