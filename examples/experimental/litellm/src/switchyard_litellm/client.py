@@ -39,7 +39,11 @@ def _reject_sequence_payload(
     value = request.get(field)
     if value is None:
         return
-    if _sequence(value, field):
+    if (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes, bytearray))
+        and value
+    ):
         raise ValueError(f"{field} is not supported")
 
 
@@ -47,10 +51,11 @@ def _reject_extensions_payload(request: Mapping[str, object]) -> None:
     value = request.get("extensions")
     if value is None:
         return
-    extensions = _mapping(value, "extensions")
-    if set(extensions) - {"fields"}:
+    if not isinstance(value, Mapping):
         raise ValueError("extensions is not supported")
-    if "fields" in extensions and _mapping(extensions["fields"], "extensions.fields"):
+    if set(value) - {"fields"}:
+        raise ValueError("extensions is not supported")
+    if "fields" in value and value["fields"]:
         raise ValueError("extensions is not supported")
 
 
@@ -58,13 +63,12 @@ def _reject_preservation_payload(request: Mapping[str, object]) -> None:
     value = request.get("preservation")
     if value is None:
         return
-    preservation = _mapping(value, "preservation")
-    if set(preservation) - {"requests", "responses"}:
+    if not isinstance(value, Mapping):
+        raise ValueError("preservation is not supported")
+    if set(value) - {"requests", "responses"}:
         raise ValueError("preservation is not supported")
     for field in ("requests", "responses"):
-        if field in preservation and _mapping(
-            preservation[field], f"preservation.{field}"
-        ):
+        if field in value and value[field]:
             raise ValueError("preservation is not supported")
 
 
