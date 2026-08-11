@@ -276,6 +276,19 @@ Each response carries two routing headers:
 | `x-model-router-selected-model` | The model ID the turn was routed to. |
 | `x-model-router-rationale` | Human-readable routing reason (e.g. `stage_router selected weak (confidence 0.612)`). |
 
+### Decision sources
+
+The router records an internal `decision_source` for each turn to distinguish the
+paths through its cascade:
+
+| Source | When |
+|---|---|
+| `override` | A critical-error severity (or a context-compaction marker) forced the capable tier. |
+| `tests_passed` | A settled run — a recent test pass with a recent write and no windowed error — landed the turn on the efficient tier. |
+| `dimensions` | The corroborative scorer crossed `confidence_threshold` and picked the tier by the sign of the score. |
+| `llm-classifier` | The signals were ambiguous and the classifier returned a verdict. |
+| `fall_open` | The signals were ambiguous and the classifier failed or wasn't configured; the default tier was used. |
+
 ## When *not* to use stage-router
 
 - **Single-model deployments.** Use a `passthrough` route instead.
