@@ -303,6 +303,39 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
     Ok(())
 }
 
+// Verifies streamed moderation stops are not reported to Anthropic clients as normal turns.
+#[test]
+fn openai_content_filter_stream_translates_to_anthropic_refusal() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "content_filter"
+        }]
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &chunk,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+
+    let terminal = events
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+        .ok_or("missing Anthropic terminal delta")?;
+    assert_eq!(terminal["delta"]["stop_reason"], "refusal");
+    Ok(())
+}
+
 // Verifies Anthropic usage and stop events become terminal OpenAI chunks.
 #[test]
 fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
@@ -334,6 +367,29 @@ fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
 
     assert_eq!(events[0]["usage"]["completion_tokens"], 42);
     assert_eq!(events[0]["choices"][0]["finish_reason"], "stop");
+    Ok(())
+}
+
+// Verifies streamed Anthropic refusals remain distinguishable for OpenAI clients.
+#[test]
+fn anthropic_refusal_stream_translates_to_openai_content_filter() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiChat);
+    let delta = json!({
+        "type": "message_delta",
+        "delta": {"stop_reason": "refusal"},
+        "usage": {"output_tokens": 1}
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &delta,
+    )?;
+
+    assert_eq!(events[0]["choices"][0]["finish_reason"], "content_filter");
     Ok(())
 }
 
