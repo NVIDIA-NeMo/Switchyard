@@ -977,6 +977,7 @@ fn map_anthropic_stop_reason(reason: Option<&str>) -> StopReason {
     match reason {
         Some("max_tokens") => StopReason::MaxTokens,
         Some("tool_use") => StopReason::ToolUse,
+        Some("refusal") => StopReason::ContentFilter,
         Some("end_turn") | None => StopReason::EndTurn,
         _ => StopReason::Unknown,
     }
@@ -987,9 +988,7 @@ fn anthropic_stop_reason(reason: StopReason) -> &'static str {
     match reason {
         StopReason::MaxTokens => "max_tokens",
         StopReason::ToolUse => "tool_use",
-        StopReason::EndTurn
-        | StopReason::ContentFilter
-        | StopReason::Error
-        | StopReason::Unknown => "end_turn",
+        StopReason::ContentFilter => "refusal",
+        StopReason::EndTurn | StopReason::Error | StopReason::Unknown => "end_turn",
     }
 }

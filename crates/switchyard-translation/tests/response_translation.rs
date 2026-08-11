@@ -600,3 +600,60 @@ fn incomplete_responses_source_survives_translation() -> TestResult {
     assert_eq!(output["choices"][0]["finish_reason"], "length");
     Ok(())
 }
+
+// Verifies a moderation stop reaches Anthropic clients as `refusal` rather than
+// being reported as a normal `end_turn`.
+#[test]
+fn openai_content_filter_translates_to_anthropic_refusal() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Partial answer"},
+            "finish_reason": "content_filter"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["stop_reason"], "refusal");
+    Ok(())
+}
+
+// Verifies the same distinction survives the other direction, so an Anthropic
+// `refusal` is not flattened when re-encoded for an OpenAI client.
+#[test]
+fn anthropic_refusal_translates_to_openai_content_filter() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4-5",
+        "content": [{"type": "text", "text": "Partial answer"}],
+        "stop_reason": "refusal",
+        "usage": {"input_tokens": 10, "output_tokens": 5}
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["choices"][0]["finish_reason"], "content_filter");
+    Ok(())
+}
