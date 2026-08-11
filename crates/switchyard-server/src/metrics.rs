@@ -42,7 +42,7 @@ fn initialize() -> Result<Metrics, String> {
         .map_err(|error| format!("failed to initialize Prometheus metrics: {error}"))?;
     let mut builder = SdkMeterProvider::builder()
         .with_reader(exporter)
-        .with_view(histogram_buckets)
+        .with_view(routing_overhead_buckets)
         .with_resource(crate::observability::resource());
     if crate::observability::otlp_enabled("METRICS") {
         let exporter = opentelemetry_otlp::MetricExporter::builder()
@@ -70,15 +70,13 @@ pub(crate) fn flush() {
     }
 }
 
-fn histogram_buckets(instrument: &Instrument) -> Option<Stream> {
-    let boundaries = if instrument.name() == "switchyard.routing_overhead_ms" {
-        ROUTING_OVERHEAD_BUCKETS_MS
-    } else {
-        crate::stats::algorithm_histogram_buckets(instrument.name())?
-    };
+fn routing_overhead_buckets(instrument: &Instrument) -> Option<Stream> {
+    if instrument.name() != "switchyard.routing_overhead_ms" {
+        return None;
+    }
     Stream::builder()
         .with_aggregation(Aggregation::ExplicitBucketHistogram {
-            boundaries: boundaries.to_vec(),
+            boundaries: ROUTING_OVERHEAD_BUCKETS_MS.to_vec(),
             // Cumulative min/max cover the whole process, so they aren't useful.
             record_min_max: false,
         })

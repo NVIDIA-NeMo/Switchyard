@@ -16,18 +16,6 @@ const SPINNING_METRIC: &str = "switchyard_stage_router_spinning";
 const EXPLORING_METRIC: &str = "switchyard_stage_router_exploring";
 const PRODUCTION_INTENSITY_METRIC: &str = "switchyard_stage_router_production_intensity";
 
-const SCORE_INSTRUMENT: &str = "switchyard.stage_router.score";
-const UNIT_INSTRUMENTS: &[&str] = &[
-    "switchyard.stage_router.confidence",
-    "switchyard.stage_router.severity",
-    "switchyard.stage_router.spinning",
-    "switchyard.stage_router.exploring",
-    "switchyard.stage_router.production_intensity",
-];
-
-const SCORE_BUCKETS: &[f64] = &[-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0];
-const UNIT_BUCKETS: &[f64] = &[0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
-
 #[derive(Clone, Debug, Default)]
 pub(super) struct StageRouterCumulative {
     decisions: BTreeMap<DecisionKey, u64>,
@@ -202,16 +190,6 @@ fn label<'a>(metric: &'a Metric, name: &str) -> Option<&'a str> {
 fn round4(value: f64) -> f64 {
     let rounded = (value * 10_000.0).round() / 10_000.0;
     if rounded == 0.0 { 0.0 } else { rounded }
-}
-
-pub(super) fn histogram_buckets(metric: &str) -> Option<&'static [f64]> {
-    if metric == SCORE_INSTRUMENT {
-        Some(SCORE_BUCKETS)
-    } else if UNIT_INSTRUMENTS.contains(&metric) {
-        Some(UNIT_BUCKETS)
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]

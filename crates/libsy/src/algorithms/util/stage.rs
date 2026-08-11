@@ -62,6 +62,11 @@ const EXPLORING_METRIC: &str = "switchyard.stage_router.exploring";
 /// Distribution of production-oriented tool activity.
 const PRODUCTION_INTENSITY_METRIC: &str = "switchyard.stage_router.production_intensity";
 
+// Histogram boundaries live with the instruments so every host exports the
+// same stage-router distributions without duplicating algorithm knowledge.
+const SCORE_BUCKETS: &[f64] = &[-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0];
+const UNIT_BUCKETS: &[f64] = &[0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
+
 /// The two tiers a turn can route to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Tier {
@@ -288,15 +293,23 @@ fn record_score_metrics(signal: &ToolSignals, outcome: &PickOutcome) {
     };
     let dimensions = dimensions_from_signal(signal);
     let meter = meter();
-    for (name, value) in [
-        (SCORE_METRIC, score),
-        (CONFIDENCE_METRIC, confidence),
-        (SEVERITY_METRIC, dimensions.severity),
-        (SPINNING_METRIC, dimensions.spinning),
-        (EXPLORING_METRIC, dimensions.exploring),
-        (PRODUCTION_INTENSITY_METRIC, dimensions.production_intensity),
+    for (name, value, boundaries) in [
+        (SCORE_METRIC, score, SCORE_BUCKETS),
+        (CONFIDENCE_METRIC, confidence, UNIT_BUCKETS),
+        (SEVERITY_METRIC, dimensions.severity, UNIT_BUCKETS),
+        (SPINNING_METRIC, dimensions.spinning, UNIT_BUCKETS),
+        (EXPLORING_METRIC, dimensions.exploring, UNIT_BUCKETS),
+        (
+            PRODUCTION_INTENSITY_METRIC,
+            dimensions.production_intensity,
+            UNIT_BUCKETS,
+        ),
     ] {
-        meter.f64_histogram(name).build().record(value, &[]);
+        meter
+            .f64_histogram(name)
+            .with_boundaries(boundaries.to_vec())
+            .build()
+            .record(value, &[]);
     }
 }
 

@@ -58,7 +58,3 @@ impl AlgorithmStats {
         }
     }
 }
-
-pub(crate) fn histogram_buckets(metric: &str) -> Option<&'static [f64]> {
-    stage_router::histogram_buckets(metric)
-}
