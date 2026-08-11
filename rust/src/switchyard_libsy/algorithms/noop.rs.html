@@ -32,7 +32,7 @@
 <a href=#32 id=32 data-nosnippet>32</a>            <span class="prelude-val">Some</span>(<span class="string">"noop returned its synthetic response"</span>.to_string()),
 <a href=#33 id=33 data-nosnippet>33</a>            <span class="bool-val">true</span>,
 <a href=#34 id=34 data-nosnippet>34</a>        );
-<a href=#35 id=35 data-nosnippet>35</a>        driver.info(decision.clone()).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#35 id=35 data-nosnippet>35</a>        driver.decide(decision.clone()).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#36 id=36 data-nosnippet>36</a>
 <a href=#37 id=37 data-nosnippet>37</a>        <span class="kw">let </span>llm_response = LlmResponse::Agg(AggLlmResponse {
 <a href=#38 id=38 data-nosnippet>38</a>            id: <span class="prelude-val">Some</span>(<span class="string">"switchyard-noop"</span>.to_string()),
