@@ -1479,6 +1479,52 @@ target = "azure"
     }
 
     #[test]
+    fn rejects_headers_that_switchyard_sets() {
+        let cases = [
+            (
+                "base_url = \"https://example.test/v1\"",
+                "base_url = \"https://example.test/v1\"\n\
+                 extra_headers = { AUTHORIZATION = \"Bearer custom-key\" }",
+                "AUTHORIZATION",
+            ),
+            (
+                "base_url = \"https://example.test\"",
+                "base_url = \"https://example.test\"\n\
+                 extra_headers = { \"X-Api-Key\" = \"custom-key\" }",
+                "X-Api-Key",
+            ),
+            (
+                "base_url = \"https://example.test\"",
+                "base_url = \"https://example.test\"\n\
+                 extra_headers = { \"ANTHROPIC-VERSION\" = \"custom-version\" }",
+                "ANTHROPIC-VERSION",
+            ),
+        ];
+
+        for (original, replacement, header) in cases {
+            let configured = VALID_CONFIG.replacen(original, replacement, 1);
+            let error = error_message(&configured);
+            assert!(
+                error.contains(&format!("extra_headers cannot set {header:?}")),
+                "expected {header} to be rejected, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_additional_headers() -> ServerResult<()> {
+        let configured = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\n\
+             extra_headers = { X-Inference-Priority = \"batch\" }",
+            1,
+        );
+
+        server_state_from_toml(&configured)?;
+        Ok(())
+    }
+
+    #[test]
     fn retry_budget_rejects_negative_values() {
         let invalid = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",

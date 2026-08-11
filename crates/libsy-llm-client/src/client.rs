@@ -94,6 +94,14 @@ impl TranslatingLlmClient {
     /// Builds a client over the given [`ModelConfig`]s, with a fresh shared HTTP
     /// client and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
+        for config in model_configs {
+            config
+                .default_backend
+                .validate_extra_headers(&config.model_name)?;
+            for backend in config.other_backends.iter().flatten() {
+                backend.validate_extra_headers(&config.model_name)?;
+            }
+        }
         let client =
             reqwest::Client::builder()
                 .build()
@@ -640,7 +648,7 @@ fn forward_metadata_headers(
     builder
 }
 
-// Adds the backend's static per-call headers.
+// Adds the backend's custom per-call headers.
 fn apply_extra_headers(mut builder: RequestBuilder, backend: &Backend) -> RequestBuilder {
     for (name, value) in backend.extra_headers() {
         builder = builder.header(name, value);
