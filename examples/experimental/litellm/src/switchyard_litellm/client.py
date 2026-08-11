@@ -300,7 +300,7 @@ def _response(response: ModelResponse) -> dict[str, object]:
             "name": tool_call.function.name,
             "arguments": arguments,
         })
-    if not content:
+    if not content and choice.finish_reason != "content_filter":
         raise ValueError("LiteLLM returned no text content")
     return {
         "id": response.id,

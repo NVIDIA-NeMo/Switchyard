@@ -582,3 +582,25 @@ async def test_cached_token_count_preserves_explicit_zero() -> None:
         await client.aclose()
 
     assert response["usage"]["cached_input_tokens"] == 0
+
+
+def test_response_content_filter_empty_content() -> None:
+    """Empty content with a content_filter finish reason must be normalized."""
+    from types import SimpleNamespace
+
+    from switchyard_litellm.client import _response
+
+    response = SimpleNamespace(
+        id="chatcmpl-test",
+        model="openai/strong",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=None),
+                finish_reason="content_filter",
+            )
+        ],
+        usage=None,
+    )
+    result = _response(response)
+    assert result["outputs"][0]["content"] == []
+    assert result["outputs"][0]["stop_reason"] == "content_filter"
