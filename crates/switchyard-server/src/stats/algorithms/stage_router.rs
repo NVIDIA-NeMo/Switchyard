@@ -70,12 +70,11 @@ pub(crate) struct DimensionStatsSnapshot {
     pub production_intensity: MetricSummary,
 }
 
-/// Exact count, sum, and average since the last JSON stats reset.
+/// Exact count and mean since the last JSON stats reset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub(crate) struct MetricSummary {
     pub count: u64,
-    pub sum: f64,
-    pub avg: f64,
+    pub mean: f64,
 }
 
 impl StageRouterCumulative {
@@ -129,8 +128,7 @@ impl HistogramTotal {
         let sum = round4(self.sum - baseline.sum);
         MetricSummary {
             count,
-            sum,
-            avg: round4(sum / count as f64),
+            mean: round4(sum / count as f64),
         }
     }
 }
@@ -254,9 +252,8 @@ mod tests {
         assert_eq!(dimensions.targets["model/efficient"], 2);
         assert_eq!(dimensions.targets["model/capable"], 1);
         assert_eq!(stage.scoring.score.count, 2);
-        assert_eq!(stage.scoring.score.sum, 0.25);
-        assert_eq!(stage.scoring.score.avg, 0.125);
-        assert_eq!(stage.scoring.confidence.avg, 0.75);
+        assert_eq!(stage.scoring.score.mean, 0.125);
+        assert_eq!(stage.scoring.confidence.mean, 0.75);
 
         stats.reset();
         assert_eq!(
