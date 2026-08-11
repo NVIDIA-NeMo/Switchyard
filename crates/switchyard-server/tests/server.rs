@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{Request as HttpRequest, StatusCode};
+use axum::http::{HeaderMap, Request as HttpRequest, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
@@ -48,6 +48,10 @@ impl MockUpstream {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
             .route("/v1/chat/completions", post(upstream_chat))
+            .route(
+                "/v1/messages",
+                post(upstream_messages_requires_forwarded_auth),
+            )
             .route("/v1/messages/count_tokens", post(upstream_count_tokens))
             .layer(DefaultBodyLimit::disable())
             .with_state(Arc::clone(&calls));
@@ -200,6 +204,48 @@ async fn upstream_chat(
     .into_response()
 }
 
+async fn upstream_messages_requires_forwarded_auth(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(body.clone());
+    let has_oauth_auth = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        == Some("Bearer claude-oauth-token")
+        && headers
+            .get("anthropic-beta")
+            .and_then(|value| value.to_str().ok())
+            == Some("oauth-2025-04-20");
+    let has_api_key = headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        == Some("client-api-key");
+    let has_required_version = headers
+        .get("anthropic-version")
+        .and_then(|value| value.to_str().ok())
+        == Some("2023-06-01");
+    if !(has_oauth_auth || has_api_key) || !has_required_version {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "missing forwarded Anthropic auth"}})),
+        )
+            .into_response();
+    }
+    Json(json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": body["model"],
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+    .into_response()
+}
+
 async fn upstream_count_tokens(
     State(calls): State<Arc<Mutex<Vec<Value>>>>,
     Json(body): Json<Value>,
@@ -212,6 +258,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
     let backend = Backend::OpenAiChat(HttpBackendConfig {
         base_url: base_url.to_string(),
         api_key: Some("test-key".to_string()),
+        forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
         max_retries: 0,
@@ -1167,6 +1214,63 @@ targets = ["other", "strong"]
     assert_eq!(calls.len(), 1);
     // The inbound route name is rewritten to the real upstream model.
     assert_eq!(calls[0]["model"], "real/opus");
+    Ok(())
+}
+
+#[tokio::test]
+async fn anthropic_client_forwards_inbound_auth_when_configured() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.claude]
+format = "anthropic_messages"
+base_url = "{base_url}"
+forward_auth = true
+max_retries = 0
+
+[targets.claude]
+id = "claude-opus"
+llm_client = "claude"
+
+[routes.claude]
+id = "switchyard/claude"
+type = "passthrough"
+target = "claude"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let credentials = [
+        (
+            "authorization",
+            "Bearer claude-oauth-token",
+            Some("oauth-2025-04-20,unsupported-beta"),
+        ),
+        ("x-api-key", "client-api-key", None),
+    ];
+    for (name, value, beta) in credentials {
+        let mut headers = vec![(name, value)];
+        if let Some(beta) = beta {
+            headers.push(("anthropic-beta", beta));
+        }
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/messages",
+            Some(json!({
+                "model": "switchyard/claude",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hello"}]
+            })),
+            &headers,
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+    }
+
     Ok(())
 }
 

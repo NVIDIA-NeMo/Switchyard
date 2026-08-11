@@ -155,6 +155,8 @@ base_threshold = 0.5
 `format` selects the upstream protocol and must be `openai_chat`,
 `openai_responses`, or `anthropic_messages`. `api_key_env` names the environment
 variable the server reads; the secret does not belong in the TOML file.
+An `anthropic_messages` client can set `forward_auth = true` instead of
+`api_key_env` to send each caller's Anthropic credential to that upstream.
 
 ### Run the server
 

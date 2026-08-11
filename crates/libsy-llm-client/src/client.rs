@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::RequestBuilder;
-use reqwest::header::{HeaderMap, RETRY_AFTER};
+use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 use serde_json::{Map, Value};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, Metadata, ModelId, Request, Response, RoutedLlmClient,
@@ -26,12 +26,8 @@ use crate::error::{LlmClientError, Result};
 use crate::metrics;
 use crate::raw::RawResponse;
 
-// TODO: Why is this here? What does it do?
-// Headers this client owns or that are hop-by-hop; never forwarded from the
-// caller's metadata. Auth/version/content-type are set by the backend or the
-// JSON body, so a forwarded copy would either be ignored or conflict. Compared
-// case-insensitively. Aligns with `_SENSITIVE_HEADERS` in the Python
-// `switchyard/lib/request_metadata.py` forwarding logic.
+// Headers this client owns or that are hop-by-hop. Explicit auth forwarding
+// admits `authorization`, `x-api-key`, and filtered OAuth beta markers only.
 const RESERVED_HEADERS: &[&str] = &[
     "host",
     "content-length",
@@ -287,7 +283,7 @@ impl TranslatingLlmClient {
         streaming: bool,
     ) -> std::result::Result<EncodedResponse, AttemptFailure> {
         let builder = self.client.post(url).json(body);
-        let builder = forward_metadata_headers(builder, metadata);
+        let builder = forward_metadata_headers(builder, metadata, backend.is_forwarding_auth());
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
@@ -631,16 +627,25 @@ fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     }
 }
 
-// Forwards caller-supplied metadata headers, skipping the reserved set.
+// Forwards caller-supplied metadata headers, including auth only when enabled.
 fn forward_metadata_headers(
     mut builder: RequestBuilder,
     metadata: Option<&Metadata>,
+    is_forwarding_auth: bool,
 ) -> RequestBuilder {
     let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) else {
         return builder;
     };
     for (name, value) in headers {
-        if is_reserved_header(name.as_str()) {
+        if is_forwarding_auth && name.as_str().eq_ignore_ascii_case("anthropic-beta") {
+            if let Some(oauth_betas) = oauth_beta_header(value) {
+                builder = builder.header(name, oauth_betas);
+            }
+            continue;
+        }
+        if is_reserved_header(name.as_str())
+            && !(is_forwarding_auth && is_auth_header(name.as_str()))
+        {
             continue;
         }
         builder = builder.header(name, value);
@@ -797,6 +802,25 @@ fn is_reserved_header(name: &str) -> bool {
         .any(|reserved| name.eq_ignore_ascii_case(reserved))
 }
 
+fn is_auth_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("x-api-key")
+}
+
+// Retains OAuth markers while keeping provider feature betas backend-owned.
+fn oauth_beta_header(value: &HeaderValue) -> Option<String> {
+    let oauth_betas = value
+        .to_str()
+        .ok()?
+        .split(',')
+        .map(str::trim)
+        .filter(|beta| {
+            beta.get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("oauth-"))
+        });
+    let value = oauth_betas.collect::<Vec<_>>().join(",");
+    (!value.is_empty()).then_some(value)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -818,6 +842,7 @@ mod tests {
         HttpBackendConfig {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
+            forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             max_retries: 0,

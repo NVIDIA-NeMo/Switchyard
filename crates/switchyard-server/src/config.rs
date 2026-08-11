@@ -234,6 +234,8 @@ struct LlmClientConfig {
     base_url: String,
     api_key_env: Option<String>,
     #[serde(default)]
+    forward_auth: bool,
+    #[serde(default)]
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
@@ -771,6 +773,25 @@ fn build_backend(
             "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
         )));
     }
+    if config.forward_auth && !matches!(config.format, ClientFormat::AnthropicMessages) {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} forward_auth requires format = \"anthropic_messages\""
+        )));
+    }
+    if config.forward_auth && config.api_key_env.is_some() {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} cannot set both forward_auth and api_key_env"
+        )));
+    }
+    if config.forward_auth
+        && config.extra_headers.keys().any(|header| {
+            header.eq_ignore_ascii_case("authorization") || header.eq_ignore_ascii_case("x-api-key")
+        })
+    {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} cannot set forward_auth with authorization or x-api-key in extra_headers"
+        )));
+    }
     let api_key = config
         .api_key_env
         .as_deref()
@@ -796,6 +817,7 @@ fn build_backend(
     let http = HttpBackendConfig {
         base_url: base_url.to_string(),
         api_key,
+        forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
         max_retries: config.max_retries,
@@ -1570,5 +1592,54 @@ target = "azure"
             std::env::remove_var(EMPTY_KEY_ENV);
         }
         assert!(message.contains("is empty"));
+    }
+
+    #[test]
+    fn forward_auth_rejects_unsupported_configurations() {
+        let non_anthropic = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\nforward_auth = true",
+            1,
+        );
+        assert!(
+            error_message(&non_anthropic)
+                .contains("forward_auth requires format = \"anthropic_messages\"")
+        );
+
+        let competing_auth = VALID_CONFIG
+            .replacen(
+                "format = \"openai_chat\"",
+                "format = \"anthropic_messages\"",
+                1,
+            )
+            .replacen(
+                "base_url = \"https://example.test/v1\"",
+                "base_url = \"https://example.test/v1\"\n\
+                 forward_auth = true\n\
+                 api_key_env = \"UNUSED_TEST_KEY\"",
+                1,
+            );
+        assert!(
+            error_message(&competing_auth).contains("cannot set both forward_auth and api_key_env")
+        );
+
+        let static_auth = VALID_CONFIG
+            .replacen(
+                "format = \"openai_chat\"",
+                "format = \"anthropic_messages\"",
+                1,
+            )
+            .replacen(
+                "base_url = \"https://example.test/v1\"",
+                "base_url = \"https://example.test/v1\"\n\
+                 forward_auth = true\n\
+                 extra_headers = { Authorization = \"static-value\" }",
+                1,
+            );
+        assert!(
+            error_message(&static_auth).contains(
+                "cannot set forward_auth with authorization or x-api-key in extra_headers"
+            )
+        );
     }
 }

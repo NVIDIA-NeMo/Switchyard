@@ -40,8 +40,10 @@ const ANTHROPIC_OVERFLOW_PHRASES: &[&str] = &[
 pub struct HttpBackendConfig {
     /// Base URL of the provider API (e.g. `https://api.openai.com/v1`).
     pub base_url: String,
-    /// API key for the provider, loaded by the caller. `None` sends no auth.
+    /// API key for the provider, loaded by the caller. `None` sends no configured auth.
     pub api_key: Option<String>,
+    /// Whether to forward the caller's `authorization` or `x-api-key` header instead.
+    pub forward_auth: bool,
     /// Custom headers added to every outbound call to this backend.
     ///
     /// OpenAI backends reject `Authorization`. Anthropic backends reject
@@ -58,6 +60,7 @@ impl fmt::Debug for HttpBackendConfig {
         f.debug_struct("HttpBackendConfig")
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("forward_auth", &self.forward_auth)
             .field("extra_headers", &self.extra_headers)
             .field("extra_body_keys", &self.extra_body.keys())
             .field("max_retries", &self.max_retries)
@@ -132,12 +135,17 @@ impl Backend {
         }
     }
 
-    /// Applies this backend's auth and version headers to a request builder.
+    /// Applies this backend's configured auth and version headers to a request builder.
     ///
     /// OpenAI variants use `Authorization: Bearer <key>`; Anthropic uses
-    /// `x-api-key: <key>` plus the required `anthropic-version` header.
+    /// `x-api-key: <key>` plus the required `anthropic-version` header. A backend
+    /// with `forward_auth` uses the caller's auth instead of its configured key.
     pub fn apply_auth(&self, mut builder: RequestBuilder) -> RequestBuilder {
-        let api_key = self.config().api_key.as_deref();
+        let api_key = if self.config().forward_auth {
+            None
+        } else {
+            self.config().api_key.as_deref()
+        };
         match self {
             Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
                 if let Some(api_key) = api_key {
@@ -152,6 +160,10 @@ impl Backend {
             }
         }
         builder
+    }
+
+    pub(crate) fn is_forwarding_auth(&self) -> bool {
+        self.config().forward_auth
     }
 
     /// Custom per-backend headers to forward on every call.
@@ -230,6 +242,7 @@ mod tests {
         HttpBackendConfig {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
+            forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             max_retries: 0,
