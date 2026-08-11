@@ -5,6 +5,7 @@
 
 from switchyard_rust.libsy import (
     Algorithm,
+    CustomClassifierConfig,
     LibsyError,
     LlmClient,
     LlmFallback,
@@ -16,6 +17,7 @@ from . import algorithms as algorithms
 
 __all__ = [
     "Algorithm",
+    "CustomClassifierConfig",
     "LibsyError",
     "LlmClient",
     "LlmFallback",
