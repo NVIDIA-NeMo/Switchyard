@@ -2276,6 +2276,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "rand 0.10.2",
+ "regex",
  "serde",
  "serde_json",
  "switchyard-protocol",

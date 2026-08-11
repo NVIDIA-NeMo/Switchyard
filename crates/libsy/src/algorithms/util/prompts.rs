@@ -66,7 +66,7 @@ pub fn append_note(request: &mut Request, note: &str) {
 ///
 /// Call this from any new code that mutates the request. Nothing checks that you
 /// have.
-fn drop_exact_replay(request: &mut Request) {
+pub(crate) fn drop_exact_replay(request: &mut Request) {
     request.llm_request.preservation.requests.clear();
 }
 
