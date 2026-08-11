@@ -1482,10 +1482,10 @@ not already available:</p>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">source</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.local/bin/env&quot;</span>
 </span></code></pre></div>
 <p>Then install the published Switchyard tool:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span><span class="s2">&quot;nemo-switchyard[cli,server]&quot;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span><span class="s2">&quot;nemo-switchyard[cli]&quot;</span>
 </span></code></pre></div>
 <p>This creates an isolated Python tool environment containing the <code>switchyard</code>
-CLI, its CLI and server dependencies, and the packaged PyO3 Rust extension.
+CLI, its launcher dependency, and the packaged PyO3 Rust extension.
 <code>switchyard launch</code> starts the native Rust server through that extension; this
 path does not install or run the standalone <code>switchyard-server</code> binary.</p>
 <p>Install the coding agent you want to launch, then verify both commands are on
@@ -1544,8 +1544,7 @@ continuing. Verify the tools:</p>
 </span></code></pre></div>
 <p>Cargo builds the release binary and installs it into <code>~/.cargo/bin</code> by default.</p>
 <h3 id="configure">Configure<a class="headerlink" href="#configure" title="Permanent link">&para;</a></h3>
-<p>The Rust server reads an explicit TOML file. It does not use the Python
-server's minimal YAML route bundle.</p>
+<p>The Rust server reads an explicit TOML file.</p>
 <p>Create <code>routes.toml</code> with an LLM-classifier route:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
 </span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
@@ -1625,7 +1624,7 @@ request should use the weak or strong target. The Rust server also supports:</p>
 <code>routes.smart</code>, is a local configuration name; each route's <code>id</code> is exposed as a
 model on <code>GET /v1/models</code>.</p>
 <p>See <a href="../routing_algorithms/overview/">Routing Overview</a> to compare strategies,
-and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/6df31a9c3d8e5eeeb96ca052b8de8a6fe72ab4b6/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
+and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b10476593c56d29e1b2ca5d8dae50e5676c17e85/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
 the complete TOML schema, route options, TLS, and metrics.</p>
 <h3 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h3>
 <p><strong>No API key / auth error</strong></p>
@@ -1692,16 +1691,16 @@ host performs over its own transport, and the run ends with
 is what lets libsy embed in a host that already owns its HTTP stack, retries,
 and credentials.</p>
 <p>For the request, response, and streaming types the steps carry, see
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/6df31a9c3d8e5eeeb96ca052b8de8a6fe72ab4b6/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b10476593c56d29e1b2ca5d8dae50e5676c17e85/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
 <hr />
 <h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../core_concepts/">Core Concepts</a>: LLM clients, targets, and routes</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/6df31a9c3d8e5eeeb96ca052b8de8a6fe72ab4b6/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b10476593c56d29e1b2ca5d8dae50e5676c17e85/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
   routing algorithms, TLS, and metrics</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol
   documentation, crate setup, and API boundaries</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/6df31a9c3d8e5eeeb96ca052b8de8a6fe72ab4b6/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b10476593c56d29e1b2ca5d8dae50e5676c17e85/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
   request, response, and stream translation</li>
 </ul>
 
