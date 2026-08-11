@@ -349,7 +349,7 @@ where
             )),
             true,
         );
-        driver.info(decision.clone()).await?;
+        driver.decide(decision.clone()).await?;
 
         // 4. Post-decision replay: every processor sees the decision so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).

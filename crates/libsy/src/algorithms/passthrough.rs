@@ -38,7 +38,7 @@ impl Algorithm for Passthrough {
             )),
             true,
         );
-        driver.info(decision.clone()).await?;
+        driver.decide(decision.clone()).await?;
         driver.call_model(request, decision).await
     }
 }

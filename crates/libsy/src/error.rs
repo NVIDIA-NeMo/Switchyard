@@ -36,14 +36,6 @@ pub enum LibsyError {
     #[error(transparent)]
     Driver(#[from] DriverError),
 
-    /// The spawned algorithm task failed before returning normally.
-    #[error("algorithm task failed: {source}")]
-    AlgorithmTask {
-        /// Tokio task failure, including panic and unexpected cancellation details.
-        #[from]
-        source: tokio::task::JoinError,
-    },
-
     /// An algorithm's step stream ended without a terminal response.
     #[error("algorithm run ended without a final response")]
     MissingFinalResponse,
@@ -95,7 +87,7 @@ impl LibsyError {
 }
 
 /// Failures in the step-stream driver.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error)]
 pub enum DriverError {
     /// The consumer side of the step channel was dropped.
     #[error("driver stream is closed")]

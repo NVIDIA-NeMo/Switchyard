@@ -8,13 +8,14 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
+    panic::AssertUnwindSafe,
     pin::Pin,
     sync::Arc,
     time::Instant,
 };
 
 use async_trait::async_trait;
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -184,7 +185,7 @@ impl Driver {
     /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
     /// Each successfully published decision is counted and logged with its
     /// reasoning; a decision the stream never accepted is not recorded.
-    pub async fn info(&self, decision: Decision) -> Result<()> {
+    pub async fn decide(&self, decision: Decision) -> Result<()> {
         self.step_tx
             .send(Ok(Step::Decision(decision.clone())))
             .await
@@ -210,7 +211,7 @@ pub enum Step {
     /// The algorithm needs this model call performed. The host serves it and fulfills
     /// it with [`CallModel::respond`]. Boxed: it is by far the largest variant.
     CallModel(Box<CallModel>),
-    /// A routing decision the algorithm made, published via [`Driver::info`] as it
+    /// A routing decision the algorithm made, published via [`Driver::decide`] as it
     /// happens (rather than collected into a trace returned at the end).
     Decision(Decision),
     /// The algorithm finished with its final response — the last step of a run.
@@ -269,6 +270,15 @@ where
     final_response
         .map(|response| (trace, response))
         .ok_or(LibsyError::MissingFinalResponse)
+}
+
+/// Recover the message from an algorithm's panic.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&'static str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic payload".to_string())
 }
 
 /// Abort guard
@@ -513,7 +523,7 @@ pub(crate) async fn call_model_with_fallback(
         };
         decision = fallback_decision(&target, &next, reason);
         target = next;
-        driver.info(decision.clone()).await?;
+        driver.decide(decision.clone()).await?;
     }
 }
 
@@ -546,50 +556,45 @@ pub trait Algorithm: Send + Sync + 'static {
     fn name(&self) -> &str;
 
     /// Run one request to completion: make model calls with [`Driver::call_model`],
-    /// publish [`Decision`]s with [`Driver::info`], and return the final [`Response`].
+    /// publish [`Decision`]s with [`Driver::decide`], and return the final [`Response`].
     /// The method an algorithm implements; [`run_stream`](Self::run_stream) drives it.
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response>;
 
     /// Process a request to completion, returning a stream of [`Step`]s.
     ///
     /// The consumer must fulfill every [`Step::CallModel`] before the algorithm can
-    /// continue. The bounded step channel applies backpressure when the consumer is
-    /// not polling. A successful run ends with [`Step::Done`]; a failure is
-    /// emitted as an `Err` item. Dropping the stream aborts the spawned algorithm task.
+    /// continue. Every run ends with exactly one terminal item — [`Step::Done`] on
+    /// success, an `Err` item on failure, including when the algorithm panics. Dropping
+    /// the stream aborts the spawned algorithm task.
     ///
     /// Every invocation owns a separate [`Driver`].
     fn run_stream(self: Arc<Self>, request: Request) -> StepStream {
         let (driver, step_rx) = Driver::new(self.name());
-        let task_driver = driver.clone();
-        let stream = ReceiverStream::new(step_rx);
-        // One `libsy.run` span covers the whole algorithm task; the driver's
-        // `libsy.llm_call` spans and decision logs nest inside it via `tracing`'s
-        // contextual parenting.
         let span = observability::run_span(self.name(), &request);
         let handle = tokio::spawn(
             async move {
                 let algorithm = self.name().to_string();
-                observability::observe_run(&algorithm, self.route(task_driver, request)).await
+                // Catch a panicking algorithm so the run still publishes a terminal step.
+                let route = AssertUnwindSafe(self.route(driver.clone(), request)).catch_unwind();
+                let result = observability::observe_run(&algorithm, async move {
+                    route.await.unwrap_or_else(|payload| {
+                        Err(LibsyError::AlgorithmError {
+                            message: format!(
+                                "algorithm task panicked: {}",
+                                panic_message(payload.as_ref())
+                            ),
+                        })
+                    })
+                })
+                .await;
+
+                let _ = driver.finish(result).await;
             }
             .instrument(span),
         );
         // Dropping the stream aborts the algorithm task when its consumer goes away.
         let abort_guard = AbortOnDrop(handle.abort_handle());
-
-        let finish_driver = driver.clone();
-        let tail: StepStream = Box::pin(
-            futures::stream::once(async move {
-                let result = match handle.await {
-                    Ok(response) => response,
-                    Err(source) => Err(LibsyError::AlgorithmTask { source }),
-                };
-                finish_driver.finish(result).await
-            })
-            .filter_map(|finish_result| async move { finish_result.err().map(Err) }),
-        );
-
-        let stream: StepStream = Box::pin(stream);
-        Box::pin(futures::stream::select(stream, tail).map(move |step| {
+        Box::pin(ReceiverStream::new(step_rx).map(move |step| {
             // link abort guard to stream
             let _keep_alive = &abort_guard;
             step
@@ -694,7 +699,7 @@ mod tests {
                 .ok_or(LibsyError::NoTargets)?
                 .clone();
             let decision = test_decision(target.semantic_name.clone());
-            driver.info(decision.clone()).await?;
+            driver.decide(decision.clone()).await?;
             driver.call_model(request, decision).await
         }
     }
@@ -765,10 +770,10 @@ mod tests {
 
             let first_response = first
                 .await
-                .map_err(|source| LibsyError::AlgorithmTask { source })??;
+                .map_err(|source| LibsyError::external("joining a test task", source))??;
             let second_response = second
                 .await
-                .map_err(|source| LibsyError::AlgorithmTask { source })??;
+                .map_err(|source| LibsyError::external("joining a test task", source))??;
             assert_eq!(
                 first_response.llm_response.as_agg().map(completion_text),
                 Some("first response".to_string())
@@ -792,7 +797,7 @@ mod tests {
             drop(call);
             let result = producer
                 .await
-                .map_err(|source| LibsyError::AlgorithmTask { source })?;
+                .map_err(|source| LibsyError::external("joining a test task", source))?;
             assert!(matches!(
                 result,
                 Err(LibsyError::Driver(DriverError::ResponseDropped))
@@ -802,7 +807,7 @@ mod tests {
             let (driver, step_rx) = Driver::new("test");
             drop(step_rx);
             let decision = test_decision("closed".to_string());
-            let result = driver.info(decision).await;
+            let result = driver.decide(decision).await;
             assert!(matches!(
                 result,
                 Err(LibsyError::Driver(DriverError::StreamClosed))
@@ -837,7 +842,7 @@ mod tests {
 
         let result = producer
             .await
-            .map_err(|source| LibsyError::AlgorithmTask { source })?;
+            .map_err(|source| LibsyError::external("joining a test task", source))?;
         assert!(matches!(
             result,
             Err(LibsyError::Driver(DriverError::Abandoned))
@@ -1049,7 +1054,7 @@ mod tests {
             let completion = tokio::time::timeout(Duration::from_secs(5), handle)
                 .await
                 .map_err(|error| LibsyError::external("waiting for test task", error))?
-                .map_err(|source| LibsyError::AlgorithmTask { source })??;
+                .map_err(|source| LibsyError::external("joining a test task", source))??;
             assert_eq!(completion, "m");
         }
         Ok(())
@@ -1150,8 +1155,8 @@ mod tests {
 
     #[tokio::test]
     async fn route_panic_surfaces_as_a_stream_error() -> Result<()> {
-        // An algorithm whose task panics must surface an `Err` step to the stream
-        // consumer, not abort the process from an unobserved detached task.
+        // An algorithm whose task panics must surface an `Err` step carrying the panic
+        // message, not abort the process from an unobserved detached task.
         struct Panicky;
 
         #[async_trait]
@@ -1177,7 +1182,8 @@ mod tests {
         while let Some(step) = stream.next().await {
             match step {
                 Err(err) => {
-                    assert!(matches!(err, LibsyError::AlgorithmTask { .. }));
+                    // The panic message is preserved, not flattened into an opaque failure.
+                    assert!(err.to_string().contains("algorithm task panicked: boom"));
                     saw_error = true;
                 }
                 Ok(_) => return Err(test_error("expected the panic to surface as an error step")),
@@ -1188,34 +1194,45 @@ mod tests {
         Ok(())
     }
 
+    /// A panicking algorithm must publish its terminal step even when it left a `Driver`
+    /// clone alive in another task. That clone holds the step channel open, so a run that
+    /// merely unwound would never terminate and the consumer would wait forever.
     #[tokio::test]
-    async fn run_returns_an_error_when_the_algorithm_task_panics() -> Result<()> {
-        // The panic surfaces as an `Err` step inside `run_stream`; `run` propagates it
-        // via `?`, so the caller gets an `Err` rather than a hang or a silent panic.
-        struct Panicky;
+    async fn a_panic_with_a_leaked_driver_clone_still_terminates_the_run() -> Result<()> {
+        struct LeakyPanic;
 
         #[async_trait]
-        impl Algorithm for Panicky {
+        impl Algorithm for LeakyPanic {
             fn name(&self) -> &str {
-                "panicky"
+                "leaky_panic"
             }
 
-            async fn route(
-                self: Arc<Self>,
-                _driver: Driver,
-                _request: Request,
-            ) -> Result<Response> {
+            async fn route(self: Arc<Self>, driver: Driver, _request: Request) -> Result<Response> {
+                tokio::spawn(async move {
+                    // Outlives the panic below, keeping a sender clone alive.
+                    let _keep_alive = driver;
+                    std::future::pending::<()>().await;
+                });
+                tokio::task::yield_now().await;
                 panic!("boom");
             }
         }
 
-        let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
-        match test_drive(algo, request(), echo()).await {
+        let algo: Arc<dyn Algorithm> = Arc::new(LeakyPanic);
+        // The timeout turns the hang this guards against into a failure rather than a hang.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            test_drive(algo, request(), echo()),
+        )
+        .await
+        .map_err(|error| LibsyError::external("waiting for the panicked run to end", error))?;
+
+        match result {
             Ok(_) => Err(test_error(
-                "expected the run to surface the algorithm panic as an error",
+                "expected the panic to end the run with an error",
             )),
             Err(err) => {
-                assert!(matches!(err, LibsyError::AlgorithmTask { .. }));
+                assert!(err.to_string().contains("algorithm task panicked: boom"));
                 Ok(())
             }
         }

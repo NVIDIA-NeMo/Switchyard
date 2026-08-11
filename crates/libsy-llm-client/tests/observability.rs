@@ -453,7 +453,7 @@ impl Algorithm for SingleCallAlgo {
             Some(format!("picked '{}'", target.semantic_name)),
             true,
         );
-        driver.info(decision.clone()).await?;
+        driver.decide(decision.clone()).await?;
         driver.call_model(request, decision).await
     }
 }

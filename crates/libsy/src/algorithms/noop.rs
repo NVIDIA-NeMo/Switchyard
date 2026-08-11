@@ -32,7 +32,7 @@ impl Algorithm for Noop {
             Some("noop returned its synthetic response".to_string()),
             true,
         );
-        driver.info(decision.clone()).await?;
+        driver.decide(decision.clone()).await?;
 
         let llm_response = LlmResponse::Agg(AggLlmResponse {
             id: Some("switchyard-noop".to_string()),
