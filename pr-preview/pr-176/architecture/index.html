@@ -376,7 +376,7 @@
   <span class="md-ellipsis">
     
   
-    Known Issues in 0.1.0
+    Known Issues
   
 
     
@@ -578,23 +578,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Backend Wire Format">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#auto-decision-tree" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        AUTO Decision Tree
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -747,34 +730,6 @@
     
   
     LLM Classifier Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../routing_algorithms/sticky_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Sticky Routing
   
 
     
@@ -1046,6 +1001,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/toml_schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TOML Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/rust_api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1112,23 +1123,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Backend Wire Format">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#auto-decision-tree" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        AUTO Decision Tree
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -1191,78 +1185,37 @@ on the selected strategy, that decision can use fixed weights, a classifier,
 request signals, or conversation affinity. See the
 <a href="../routing_algorithms/overview/">Routing Overview</a> for the available strategies.</p>
 <h2 id="backend-wire-format">Backend Wire Format<a class="headerlink" href="#backend-wire-format" title="Permanent link">&para;</a></h2>
-<p><code>BackendFormat</code> controls the upstream endpoint Switchyard calls. Explicit
-formats select an endpoint directly and do not run capability probes.</p>
+<p>Each LLM client in the deployment file sets <code>format</code>. It fixes the upstream
+endpoint and wire format for every target that uses that client.</p>
 <table>
 <thead>
 <tr>
-<th>Format</th>
-<th>Upstream behavior</th>
-<th>Use when</th>
+<th><code>format</code></th>
+<th>Upstream endpoint</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>ANTHROPIC</code></td>
-<td>Always sends to <code>/v1/messages</code>. No probe.</td>
-<td>You know the upstream is Anthropic-native (Anthropic API, NIM Claude routes).</td>
+<td><code>openai_chat</code></td>
+<td><code>/v1/chat/completions</code></td>
 </tr>
 <tr>
-<td><code>RESPONSES</code></td>
-<td>Always sends to <code>/v1/responses</code>. No probe.</td>
-<td>You know the upstream supports the OpenAI Responses API. Fails on NIM / non-OpenAI upstreams.</td>
+<td><code>openai_responses</code></td>
+<td><code>/v1/responses</code></td>
 </tr>
 <tr>
-<td><code>OPENAI</code></td>
-<td>Always sends to <code>/v1/chat/completions</code>. No probe.</td>
-<td>You know the upstream is OpenAI-compatible (NIM, OpenRouter, etc). Safe universal choice.</td>
-</tr>
-<tr>
-<td><code>AUTO</code></td>
-<td>Probes at startup and picks the best format.</td>
-<td>The upstream is unknown or varies across deployments.</td>
-</tr>
-<tr>
-<td><em>(omitted)</em></td>
-<td>Defaults to <code>OPENAI</code> with no probe.</td>
-<td>Always set <code>format:</code> explicitly when the upstream is not OpenAI-compatible.</td>
+<td><code>anthropic_messages</code></td>
+<td><code>/v1/messages</code></td>
 </tr>
 </tbody>
 </table>
-<h3 id="auto-decision-tree">AUTO Decision Tree<a class="headerlink" href="#auto-decision-tree" title="Permanent link">&para;</a></h3>
-<pre class="mermaid"><code>flowchart TB
-    auto["BackendFormat.AUTO"]
-    chat{"/v1/chat/completions works?"}
-    openai_chat["OPENAI&lt;br/&gt;/v1/chat/completions"]
-    messages{"/v1/messages works?"}
-    anthropic["ANTHROPIC&lt;br/&gt;/v1/messages"]
-    responses{"/v1/responses works?"}
-    responses_format["RESPONSES&lt;br/&gt;/v1/responses"]
-    openai_fallback["OPENAI&lt;br/&gt;/v1/chat/completions fallback"]
-
-    auto --&gt;|"Probe /v1/chat/completions"| chat
-    chat --&gt;|"Timeout: assume Chat Completions"| openai_chat
-    chat --&gt;|"Yes"| openai_chat
-    chat --&gt;|"No (fast 404): probe /v1/messages"| messages
-    messages --&gt;|"Yes"| anthropic
-    messages --&gt;|"No: probe /v1/responses"| responses
-    responses --&gt;|"Yes"| responses_format
-    responses --&gt;|"No"| openai_fallback</code></pre>
-<p>Supported inbound and response formats are handled automatically.
-<code>TranslationEngine</code> converts the client's request to the resolved backend
-format and translates the backend response back to the client's expected
-format. When a cross-format conversion is required, both directions decode to
-and re-encode from the neutral conversation IR. This lets Claude Code, Codex,
-OpenClaw, and SDK clients use their native wire format with any supported
-upstream format.</p>
-<blockquote>
-<p>Prefer an explicit format for controlled deployments. It skips capability
-probes and makes the upstream contract clear. Use <code>AUTO</code> when provider
-capabilities are unknown or vary across deployments.</p>
-<p><strong><code>AUTO</code> costs startup latency.</strong> Each probe is a live request to the upstream,
-so a slow endpoint adds a round-trip per probe, with up to three tried in
-order. Set <code>format:</code> explicitly to remove probing.</p>
-</blockquote>
+<p><code>format</code> is required. Switchyard does not probe upstreams or select a format
+automatically.</p>
+<p>Switchyard decodes every inbound request into provider-neutral types before
+routing, then encodes it for the selected target's format.
+<code>switchyard-translation</code> converts requests, buffered responses, and streaming
+events between these formats, so Claude Code, Codex, OpenClaw, and SDK clients
+keep their native wire format regardless of the upstream a route selects.</p>
 <h2 id="related-documentation">Related Documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../getting_started/">Getting Started</a>: install Switchyard and run a first request</li>

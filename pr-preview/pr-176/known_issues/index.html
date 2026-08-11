@@ -25,7 +25,7 @@
     
     
       
-        <title>Known Issues in 0.1.0 - Switchyard</title>
+        <title>Known Issues - Switchyard</title>
       
     
     
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Known Issues in 0.1.0
+              Known Issues
             
           </span>
         </div>
@@ -387,7 +387,7 @@
   <span class="md-ellipsis">
     
   
-    Known Issues in 0.1.0
+    Known Issues
   
 
     
@@ -405,7 +405,7 @@
   <span class="md-ellipsis">
     
   
-    Known Issues in 0.1.0
+    Known Issues
   
 
     
@@ -431,6 +431,17 @@
       On this page
     </label>
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#020" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.2.0
+      
+    </span>
+  </a>
+  
+</li>
       
         <li class="md-nav__item">
   <a href="#010" class="md-nav__link">
@@ -717,34 +728,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../routing_algorithms/sticky_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Sticky Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../routing_algorithms/stage_router_routing/" class="md-nav__link">
         
   
@@ -996,6 +979,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/toml_schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TOML Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/rust_api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1032,6 +1071,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#020" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.2.0
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#010" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1063,9 +1113,17 @@
 
 
 <h1 id="known-issues">Known Issues<a class="headerlink" href="#known-issues" title="Permanent link">&para;</a></h1>
+<h2 id="020">0.2.0<a class="headerlink" href="#020" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Buffered upstream work continues after the client disconnects, so a cancelled request can still incur provider cost.</li>
+<li>Routing-tier attribution is missing from <code>GET /v1/stats</code> and <code>/metrics</code> for LLM-classifier judge failures that route to the default target, escalation decisions, and <code>stage_router</code> fallback decisions.</li>
+<li>The retry recovery counter stays at zero after a successful upstream retry.</li>
+<li><code>x-switchyard-session-id</code> is not recorded in native session stats.</li>
+<li>The native server does not send the documented <code>X-Switchyard-Version</code> header upstream.</li>
+</ol>
 <h2 id="010">0.1.0<a class="headerlink" href="#010" title="Permanent link">&para;</a></h2>
 <ol>
-<li>Completed Codex Responses tasks may record <code>0</code> token usage in <code>GET /v1/stats</code> and <code>GET /v1/routing/stats</code>.</li>
+<li>Completed Codex Responses tasks may record <code>0</code> token usage in <code>GET /v1/stats</code>.</li>
 <li>Tool-bearing Codex requests may fail when Switchyard routes them to an upstream that accepts only a fixed set of tool names or schemas.</li>
 </ol>
 

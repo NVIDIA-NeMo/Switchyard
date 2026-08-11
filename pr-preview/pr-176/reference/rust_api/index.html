@@ -11,10 +11,8 @@
       
       
       
-        <link rel="prev" href="../llm_classifier_routing/">
+        <link rel="prev" href="../toml_schema/">
       
-      
-        <link rel="next" href="../stage_router_routing/">
       
       
         
@@ -25,7 +23,7 @@
     
     
       
-        <title>Sticky Routing - Switchyard</title>
+        <title>Rust API - Switchyard</title>
       
     
     
@@ -78,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#sticky-routing" class="md-skip">
+        <a href="#rust-api" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Sticky Routing
+              Rust API
             
           </span>
         </div>
@@ -376,7 +374,7 @@
   <span class="md-ellipsis">
     
   
-    Known Issues in 0.1.0
+    Known Issues
   
 
     
@@ -516,8 +514,6 @@
       
   
   
-    
-  
   
   
     
@@ -530,11 +526,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
         
           
           <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
@@ -555,7 +551,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -573,7 +569,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../overview/" class="md-nav__link">
+      <a href="../../routing_algorithms/overview/" class="md-nav__link">
         
   
   
@@ -601,7 +597,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../random_routing/" class="md-nav__link">
+      <a href="../../routing_algorithms/random_routing/" class="md-nav__link">
         
   
   
@@ -629,7 +625,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../llm_classifier_routing/" class="md-nav__link">
+      <a href="../../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
         
   
   
@@ -654,137 +650,10 @@
                 
   
   
-    
-  
-  
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Sticky Routing
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Sticky Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-      
-        
-
-  
-
-<nav class="md-nav md-nav--secondary" aria-label="On this page">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      On this page
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#how-a-conversation-is-identified" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How a conversation is identified
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configuration
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Configuration">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#deterministic-llm-classifier-router" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Deterministic (LLM-classifier) router
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#behavior-notes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Behavior notes
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
   
   
     <li class="md-nav__item">
-      <a href="../stage_router_routing/" class="md-nav__link">
+      <a href="../../routing_algorithms/stage_router_routing/" class="md-nav__link">
         
   
   
@@ -812,7 +681,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../escalation_router_routing/" class="md-nav__link">
+      <a href="../../routing_algorithms/escalation_router_routing/" class="md-nav__link">
         
   
   
@@ -959,8 +828,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -971,11 +842,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
@@ -996,7 +867,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1030,6 +901,155 @@
   
 
       </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../toml_schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TOML Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust API
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-libsy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard-libsy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard-protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#crate-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Crate boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ci-previews" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI previews
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1071,10 +1091,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#how-a-conversation-is-identified" class="md-nav__link">
+  <a href="#switchyard-libsy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How a conversation is identified
+        switchyard-libsy
       
     </span>
   </a>
@@ -1082,38 +1102,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#switchyard-protocol" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        switchyard-protocol
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Configuration">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#deterministic-llm-classifier-router" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Deterministic (LLM-classifier) router
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#behavior-notes" class="md-nav__link">
+  <a href="#crate-boundary" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Behavior notes
+        Crate boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ci-previews" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI previews
       
     </span>
   </a>
@@ -1140,74 +1154,31 @@
   
 
 
-<h1 id="sticky-routing">Sticky Routing<a class="headerlink" href="#sticky-routing" title="Permanent link">&para;</a></h1>
-<p>By default, routing is recomputed on every request, so a single task can hop
-between models mid-conversation. This throws away the upstream prompt/KV cache
-and, on the classifier router, pays for an LLM classifier call every turn.</p>
-<p><strong>Session affinity</strong>, also called sticky routing, is an opt-in feature configured
-directly on the deterministic LLM-classifier router. It pins the routing
-decision for a conversation and reuses it for later turns, so a task stays on
-one model tier. The router can optionally delay that pin for a fixed number of
-warmup turns before committing to a tier.</p>
-<h2 id="how-a-conversation-is-identified">How a conversation is identified<a class="headerlink" href="#how-a-conversation-is-identified" title="Permanent link">&para;</a></h2>
-<p>No client session ID is required. A conversation is keyed by hashing the stable
-prefix made from the <strong>system prompt + the first user message</strong>. Agent harnesses
-do not rewrite that prefix, so every turn of one task maps to the same key while
-distinct tasks differ. The key is derived per request and the pin store is a bounded
-(least-recently-used) in-process map.</p>
-<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<p>Opt in with <code>session_affinity: true</code> on the route. <code>affinity_max_sessions</code>
-(default <code>10000</code>) caps the number of pinned conversations.</p>
-<p>These fields are part of the deterministic router configuration, not a
-standalone route type. Configure them under a <code>deterministic</code> entry in the
-<code>routes:</code> bundle loaded with <code>--routing-profiles</code>.</p>
-<p>For deterministic routes, <code>affinity_warmup_turns</code> controls how many initial
-turns remain non-sticky. The default is <code>0</code>, which preserves the historical
-"pin the first confident verdict" behavior.</p>
-<h3 id="deterministic-llm-classifier-router">Deterministic (LLM-classifier) router<a class="headerlink" href="#deterministic-llm-classifier-router" title="Permanent link">&para;</a></h3>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">routes</span><span class="p">:</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">llm-classifier</span><span class="p">:</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">deterministic</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">coding_agent</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">session_affinity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">          </span><span class="c1"># pin a confident tier per conversation</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">affinity_max_sessions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10000</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">affinity_warmup_turns</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">        </span><span class="c1"># turns 1-2 classify normally; turn 3 can pin</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nt">fallback_target_on_evict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="nt">classifier</span><span class="p">:</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">      </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">      </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">      </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">      </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span>
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">      </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">      </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
+<h1 id="rust-api">Rust API<a class="headerlink" href="#rust-api" title="Permanent link">&para;</a></h1>
+<p>Switchyard publishes generated API documentation for its embeddable routing
+library and provider-neutral protocol types.</p>
+<h2 id="switchyard-libsy"><code>switchyard-libsy</code><a class="headerlink" href="#switchyard-libsy" title="Permanent link">&para;</a></h2>
+<p>Use libsy to construct targets, run built-in routing algorithms, implement a
+custom algorithm, or drive model calls through the host-facing step stream.</p>
+<p><a href="../../rust/switchyard_libsy/">Open the generated libsy API documentation</a></p>
+<h2 id="switchyard-protocol"><code>switchyard-protocol</code><a class="headerlink" href="#switchyard-protocol" title="Permanent link">&para;</a></h2>
+<p>Use protocol types for normalized conversations, response streams, routed LLM
+clients, decisions, metadata, and wire-format identifiers.</p>
+<p><a href="../../rust/switchyard_protocol/">Open the generated protocol API documentation</a></p>
+<h2 id="crate-boundary">Crate boundary<a class="headerlink" href="#crate-boundary" title="Permanent link">&para;</a></h2>
+<p>Applications embedding libsy normally depend on both crates:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[dependencies]</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">switchyard-libsy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">switchyard-protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
-<p>The first <strong>confident</strong> classifier verdict after the warmup period is pinned and
-reused. With <code>affinity_warmup_turns: 2</code>, turns 1 and 2 route normally and cannot
-read or write a pin; turn 3 is the first turn that can commit a confident tier.
-Once pinned, the classifier <strong>skips its LLM call entirely</strong>. It runs only until
-the route has a committed tier for the task. Fallback decisions (abstain / low
-confidence) are never pinned, so a transient classifier failure can't lock the
-task to the default tier.</p>
-<h2 id="behavior-notes">Behavior notes<a class="headerlink" href="#behavior-notes" title="Permanent link">&para;</a></h2>
-<ul>
-<li><strong>Off by default.</strong> With <code>session_affinity: false</code>, routing is recomputed per
-  turn as before.</li>
-<li><strong>Warmup.</strong> <code>affinity_warmup_turns: N</code> means turns
-  <code>1..N</code> stay non-sticky; the first eligible commit is turn <code>N + 1</code>.</li>
-<li><strong><code>affinity_max_sessions: 0</code> with affinity on is rejected</strong> at config load. A
-  zero-capacity store retains nothing and would silently disable stickiness.</li>
-<li><strong>In-process, per-worker.</strong> Pins live in memory and are not shared across
-  workers or restarts.</li>
-<li><strong>Degrades safe.</strong> Affinity assumes the system + first-user prefix is stable
-  across a task's turns. If a harness injects per-turn churn there, the key
-  changes each turn and routing simply reverts to per-turn behavior. No lock,
-  no error.</li>
-</ul>
+<p>Import algorithms and orchestration types from <code>switchyard_libsy</code>. Import
+requests, responses, metadata, decisions, and LLM client traits from
+<code>switchyard_protocol</code>. Keep both dependencies on compatible versions.</p>
+<h2 id="ci-previews">CI previews<a class="headerlink" href="#ci-previews" title="Permanent link">&para;</a></h2>
+<p>The Documentation workflow publishes a preview for same-repository pull
+requests. Open the workflow's <strong>Deploy PR preview</strong> summary to find its preview
+URL, then use the Rust API links above. The <strong>docs-site</strong> build artifact contains
+the same MkDocs and rustdoc output for one day.</p>
 
 
 

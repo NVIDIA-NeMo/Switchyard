@@ -14,7 +14,7 @@
         <link rel="prev" href="../random_routing/">
       
       
-        <link rel="next" href="../sticky_routing/">
+        <link rel="next" href="../stage_router_routing/">
       
       
         
@@ -376,7 +376,7 @@
   <span class="md-ellipsis">
     
   
-    Known Issues in 0.1.0
+    Known Issues
   
 
     
@@ -691,17 +691,6 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#choose-a-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Choose a policy
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#configure-a-classifier-route" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -713,13 +702,80 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#useful-options" class="md-nav__link">
+  <a href="#how-the-decision-works" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Useful options
+        How the decision works
       
     </span>
   </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#judge-model-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Judge model compatibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tuning-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tuning options
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Tuning options">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#override-the-classifier-prompt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Override the classifier prompt
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#custom-multi-target-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom multi-target routing
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Custom multi-target routing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#forecast-and-policy-assumptions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forecast and policy assumptions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -734,38 +790,21 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#run-the-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run the route
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../sticky_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Sticky Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -1029,6 +1068,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/toml_schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TOML Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/rust_api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1065,17 +1160,6 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#choose-a-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Choose a policy
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#configure-a-classifier-route" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1087,13 +1171,80 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#useful-options" class="md-nav__link">
+  <a href="#how-the-decision-works" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Useful options
+        How the decision works
       
     </span>
   </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#judge-model-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Judge model compatibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tuning-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tuning options
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Tuning options">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#override-the-classifier-prompt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Override the classifier prompt
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#custom-multi-target-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom multi-target routing
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Custom multi-target routing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#forecast-and-policy-assumptions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forecast and policy assumptions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1102,6 +1253,17 @@
     <span class="md-ellipsis">
       
         Session affinity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-the-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run the route
       
     </span>
   </a>
@@ -1129,135 +1291,231 @@
 
 
 <h1 id="llm-classifier-routing">LLM Classifier Routing<a class="headerlink" href="#llm-classifier-routing" title="Permanent link">&para;</a></h1>
-<p>LLM classifier routing asks a classifier model to evaluate each request, then
-sends the request to a <code>weak</code> or <code>strong</code> backend. Use it when routing should
-depend on request content, tool use, context needs, or risk level instead of a
-fixed traffic split.</p>
-<p>The classifier runs before the selected backend. Low-confidence and abstained
-results use the configured default tier. Classifier errors do the same when
-<code>classifier_fail_open</code> is enabled, which is the default. The built-in two-tier
-policies default to <code>strong</code>.</p>
-<h2 id="choose-a-policy">Choose a policy<a class="headerlink" href="#choose-a-policy" title="Permanent link">&para;</a></h2>
-<p>Set <code>profile</code> for the traffic you expect:</p>
-<table>
-<thead>
-<tr>
-<th><code>profile</code></th>
-<th>Use for</th>
-<th>Default tier mapping</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>general</code></td>
-<td>Mixed chat or API traffic</td>
-<td><code>simple</code> uses <code>weak</code>; all higher tiers use <code>strong</code>.</td>
-</tr>
-<tr>
-<td><code>coding_agent</code></td>
-<td>Claude Code, Codex, Cursor-style agents</td>
-<td><code>simple</code> and <code>medium</code> use <code>weak</code>; <code>complex</code> and <code>reasoning</code> use <code>strong</code>. Tool-planning turns can escalate.</td>
-</tr>
-<tr>
-<td><code>openclaw</code></td>
-<td>OpenClaw personal-assistant traffic</td>
-<td><code>simple</code> and <code>medium</code> use <code>weak</code>; <code>complex</code> and <code>reasoning</code> use <code>strong</code>. Tool orchestration and high-risk external actions can escalate.</td>
-</tr>
-</tbody>
-</table>
-<p>For coding-agent traffic, start with <code>profile: coding_agent</code>.</p>
+<p>LLM classifier routing supports capability classification, trajectory escalation,
+and custom schema-driven routing across two or more targets.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
-<p>Define the strong, weak, and classifier models in a <code>deterministic</code> route:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">defaults</span><span class="p">:</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="nt">routes</span><span class="p">:</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">smart</span><span class="p">:</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">deterministic</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">coding_agent</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="nt">classifier</span><span class="p">:</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nvidia/nemotron-3-nano-30b-a3b</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">      </span><span class="nt">min_confidence</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.6</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">      </span><span class="nt">fail_open</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">      </span><span class="nt">recent_turn_window</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span>
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span>
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">    </span><span class="nt">fallback_target_on_evict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
+<p>This example uses the packaged classifier prompt as intended: it estimates
+whether the weak target can complete the task, and keeps the first routing
+decision for later requests in the same conversation.</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[llm_clients.openrouter]</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai_chat&quot;</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">api_key_env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;OPENROUTER_API_KEY&quot;</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">[targets.classifier]</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4o-mini&quot;</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="k">[targets.strong]</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4o&quot;</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="k">[targets.weak]</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;z-ai/glm-5.2&quot;</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="k">[routes.smart]</span>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;smart&quot;</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;capability&quot;</span>
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span>
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="n">threshold_step</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.1</span>
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="n">session_affinity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="n">message_hash_fallback</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span></code></pre></div>
-<p>Start the server with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+<p><code>message_hash_fallback</code> is best-effort: independent sessions with the same
+first user message share an affinity key. Prefer an explicit
+<code>x-switchyard-session-id</code> when repeated opening prompts are possible.</p>
+<p>The target table names are local references. Their <code>id</code> values are the model
+identifiers sent to the upstream provider. The route's <code>id</code>, <code>smart</code>, is the
+model name clients send to Switchyard.</p>
+<h2 id="how-the-decision-works">How the decision works<a class="headerlink" href="#how-the-decision-works" title="Permanent link">&para;</a></h2>
+<p>The classifier target returns a structured verdict containing:</p>
+<ul>
+<li><code>p_solve</code>: the estimated probability that the weak model completes the task.</li>
+<li><code>capability_boundary</code>: <code>supported</code>, <code>uncertain</code>, <code>unsupported</code>, or <code>unmatched</code>.</li>
+<li><code>primary_rule</code>: the capability-card rule that determines the boundary.</li>
+<li><code>crux</code>: the hardest material requirement for whole-task success.</li>
+</ul>
+<p>For a usable verdict, Switchyard routes to <code>weak_target</code> when <code>p_solve</code> is
+greater than or equal to the applicable threshold. Otherwise it routes to
+<code>strong_target</code>:</p>
+<ul>
+<li><code>supported</code> uses <code>base_threshold</code>.</li>
+<li><code>uncertain</code> and <code>unmatched</code> use <code>base_threshold + threshold_step</code>.</li>
+<li><code>unsupported</code> uses <code>base_threshold + 2 * threshold_step</code>.</li>
+</ul>
+<p>An invalid, inconsistent, or unparseable verdict, or a judge failure, routes to
+<code>strong_target</code>. Raising either knob sends more traffic to the strong model.</p>
+<h2 id="judge-model-compatibility">Judge model compatibility<a class="headerlink" href="#judge-model-compatibility" title="Permanent link">&para;</a></h2>
+<p>The judge must return complete, schema-valid JSON in normal assistant <code>content</code>.
+Switchyard does not parse provider-specific reasoning fields such as
+<code>reasoning_content</code>. If <code>content</code> is empty or unparseable, the route falls back
+to <code>strong_target</code> even when the judge request returned HTTP 200. With session
+affinity, that fallback can be reused without another judge call.</p>
+<p>When a vLLM-compatible provider supports <code>enable_thinking</code>, configure it on the
+judge target through <code>extra_body</code>:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[targets.classifier]</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">extra_body</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">chat_template_kwargs</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">enable_thinking</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
-<p>The route ID (<code>smart</code>) is the model ID clients select for classifier-based
-routing.</p>
-<p>Try the profile with representative requests:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Coding task: expected to use the strong tier.</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer dummy&quot;</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;smart&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Plan and implement a multi-file API change.&quot;}],&quot;max_tokens&quot;:200}&#39;</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="c1"># Simple question: expected to use the weak tier.</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer dummy&quot;</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;smart&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;What is 2+2? Reply with just the number.&quot;}],&quot;max_tokens&quot;:50}&#39;</span>
-</span></code></pre></div>
-<p>Treat these as smoke checks, not fixed test vectors: the classifier model and
-prompt determine the verdict.</p>
-<h2 id="useful-options">Useful options<a class="headerlink" href="#useful-options" title="Permanent link">&para;</a></h2>
+<p><code>enable_thinking</code> is a provider-specific vLLM option, not a general requirement
+for reasoning models. Other model/provider pairs may work with reasoning enabled
+or use a different control. Verify the judge response shape before deployment.
+If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
+reasoning and final JSON. A truncated verdict has the same fail-open result. See
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9be04455b74538737ff0924b37ac3bbc3dcacbcb/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+for the server merge behavior.</p>
+<h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Configuration path</th>
-<th>Use it when</th>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>classifier.min_confidence</code></td>
-<td>Low-confidence results should use the default tier instead of the classifier policy.</td>
+<td><code>base_threshold</code></td>
+<td>required</td>
+<td>Lowest <code>p_solve</code> that routes a supported task to <code>weak_target</code>. Must be between <code>0</code> and <code>1</code>.</td>
 </tr>
 <tr>
-<td><code>classifier.fail_open</code></td>
-<td>Classifier errors should use the default tier rather than fail the client request.</td>
+<td><code>threshold_step</code></td>
+<td><code>0.0</code></td>
+<td>Amount added for each boundary step. Must be finite and non-negative, and <code>base_threshold + 2 * threshold_step</code> must not exceed <code>1</code>.</td>
 </tr>
 <tr>
-<td><code>classifier.recent_turn_window</code></td>
-<td>The classifier needs more or less recent conversation and tool context.</td>
+<td><code>recent_turn_window</code></td>
+<td>unset</td>
+<td>When unset, the judge sees the opening user task and the latest user message when they differ. When set to <code>N</code>, it sees the opening user task and the last <code>N</code> conversation messages after that task. <code>0</code> keeps only the opening task. Client system and developer instructions are not shown to the judge.</td>
 </tr>
 <tr>
-<td><code>alignment_min_confidence</code></td>
-<td>A classifier recommendation should only raise the policy tier above this confidence.</td>
+<td><code>session_affinity</code></td>
+<td><code>false</code></td>
+<td>Retains the first selected target for a session and reuses it on later requests.</td>
 </tr>
 <tr>
-<td><code>default_tier</code></td>
-<td>Abstain, low-confidence, and fail-open decisions should use a tier other than the default <code>strong</code>.</td>
+<td><code>message_hash_fallback</code></td>
+<td><code>false</code></td>
+<td>When session metadata is absent, keys affinity from the first user-message text. Requires <code>session_affinity = true</code>.</td>
 </tr>
 <tr>
-<td><code>tier_mapping</code></td>
-<td>The four classifier policy tiers need a custom mapping to <code>weak</code> or <code>strong</code>.</td>
+<td><code>prompt</code></td>
+<td>packaged capability prompt</td>
+<td>Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active.</td>
+</tr>
+<tr>
+<td><code>max_output_tokens</code></td>
+<td><code>4096</code></td>
+<td>Maximum completion tokens available to the classifier verdict. Must be at least <code>1</code>.</td>
 </tr>
 </tbody>
 </table>
-<p>For a self-hosted strong, weak, or classifier target, configure it like any
-other OpenAI-compatible endpoint. See
-<a href="../overview/#self-hosted-targets">Self-hosted targets</a>.</p>
+<h3 id="override-the-classifier-prompt">Override the classifier prompt<a class="headerlink" href="#override-the-classifier-prompt" title="Permanent link">&para;</a></h3>
+<p>Set <code>prompt</code> on the route when the packaged capability rubric does not describe
+your weak model. Switchyard sends the response schema separately through the
+provider's structured-output request; do not copy it into the prompt.</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[routes.smart]</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;smart&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;capability&quot;</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="s2">Estimate whether the weak target can complete the request.</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="s2">Return exactly one JSON object matching the response schema supplied with the request.</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="s2">&quot;&quot;&quot;</span>
+</span></code></pre></div>
+<p>The override changes the instructions only. The judge must still return the
+packaged <code>crux</code>, <code>primary_rule</code>, <code>capability_boundary</code>, and <code>p_solve</code> fields.</p>
+<h2 id="custom-multi-target-routing">Custom multi-target routing<a class="headerlink" href="#custom-multi-target-routing" title="Permanent link">&para;</a></h2>
+<p>Custom mode accepts an inner JSON Schema and a policy that reads the validated
+verdict. This example routes across four configured targets:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[routes.smart]</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;smart&quot;</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;balanced&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;reasoning&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span><span class="p">]</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">default_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="s2">Choose the best configured target for this request.</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="s2">Return JSON matching the response schema supplied with the request.</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="n">response_schema</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&#39;&#39;</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="s1">{</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="s1">  &quot;type&quot;: &quot;object&quot;,</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="s1">  &quot;properties&quot;: {</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="s1">    &quot;decision&quot;: {</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="s1">      &quot;type&quot;: &quot;object&quot;,</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="s1">      &quot;properties&quot;: {</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="s1">        &quot;target&quot;: {</span>
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="s1">          &quot;type&quot;: &quot;string&quot;,</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="s1">          &quot;enum&quot;: [&quot;fast&quot;, &quot;balanced&quot;, &quot;reasoning&quot;, &quot;premium&quot;]</span>
+</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="s1">        }</span>
+</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="s1">      },</span>
+</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="s1">      &quot;required&quot;: [&quot;target&quot;],</span>
+</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="s1">      &quot;additionalProperties&quot;: false</span>
+</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="s1">    }</span>
+</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="s1">  },</span>
+</span><span id="__span-3-28"><a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a><span class="s1">  &quot;required&quot;: [&quot;decision&quot;],</span>
+</span><span id="__span-3-29"><a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a><span class="s1">  &quot;additionalProperties&quot;: false</span>
+</span><span id="__span-3-30"><a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a><span class="s1">}</span>
+</span><span id="__span-3-31"><a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a><span class="s1">&#39;&#39;&#39;</span>
+</span><span id="__span-3-32"><a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a>
+</span><span id="__span-3-33"><a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a><span class="k">[routes.smart.policy]</span>
+</span><span id="__span-3-34"><a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;target_selector&quot;</span>
+</span><span id="__span-3-35"><a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a><span class="n">selector</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/decision/target&quot;</span>
+</span></code></pre></div>
+<p>The names in <code>targets</code> reference existing target tables. Switchyard passes the
+schema to the provider in a strict structured-output wrapper and validates the
+returned JSON again. <code>jsonptr</code> resolves the selector against that verdict. A
+missing, non-string, or unknown target falls back to <code>default_target</code>.</p>
+<p>This separation applies to every classifier mode. Prompts containing the legacy
+<code>{{RESPONSE_SCHEMA}}</code> placeholder are rejected during configuration validation.</p>
+<h3 id="forecast-and-policy-assumptions">Forecast and policy assumptions<a class="headerlink" href="#forecast-and-policy-assumptions" title="Permanent link">&para;</a></h3>
+<p>The packaged prompt forecasts whole-task success for a generic efficient agent.
+It produces a probability and capability boundary but does not choose a route.
+The deterministic policy applies <code>base_threshold</code> and <code>threshold_step</code> after
+generation.</p>
+<p>Without affinity, the runtime judges every request. By default, it sends the
+opening task and the latest user follow-up when they differ. Set
+<code>recent_turn_window</code> when intervening conversation context affects the forecast.
+If a client sends only a follow-up fragment without the opening task, enable
+affinity or include the task history. Threshold tuning changes routing policy;
+it cannot recover missing task context.</p>
 <h2 id="session-affinity">Session affinity<a class="headerlink" href="#session-affinity" title="Permanent link">&para;</a></h2>
-<p>LLM classifier routing supports optional session affinity through
-<code>DeterministicRoutingConfig</code>. Set <code>session_affinity: true</code> to share one affinity
-store between the classifier and tier selector. After any configured
-<code>affinity_warmup_turns</code>, the first confident verdict pins the tier. Later turns
-reuse that tier before classification, so they skip the classifier call;
-abstain, low-confidence, missing-signal, and fail-open decisions do not pin.</p>
-<p>Configure these fields on the <code>type: deterministic</code> entry in the <code>routes:</code>
-bundle. See <a href="../sticky_routing/">Session Affinity</a> for YAML and
-<a href="../overview/#how-session-affinity-composes">How session affinity composes</a> for
-the interaction with routing decisions.</p>
-<p>If the per-request classifier cost is too high, use
-<a href="../stage_router_routing/">Stage-Router Routing</a>, which can route many turns from tool and
-agent-progress signals without an extra classifier call.</p>
+<p>With <code>session_affinity = true</code>, the first selected target is retained for the
+request's session identity. This includes <code>strong_target</code> when it was selected
+as the fallback for an unavailable or unusable judge verdict. There is no
+warmup period. Later requests with the same identity reuse the target before
+classification, so the judge call is skipped.</p>
+<p>Affinity is process-local. Clients can send <code>x-switchyard-session-id</code>, or enable
+<code>message_hash_fallback</code> to key requests without session metadata from the first
+user-message text.</p>
+<h2 id="run-the-route">Run the route<a class="headerlink" href="#run-the-route" title="Permanent link">&para;</a></h2>
+<p>After <a href="../../getting_started/#install-the-server">installing the Rust server</a>, export
+the provider credential, validate the configuration, and start the release
+binary:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+</span></code></pre></div>
+<p>Send a request using the route ID:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;smart&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Explain why the sky appears blue.&quot;}]}&#39;</span>
+</span></code></pre></div>
+<p>Treat the selected target as model-dependent output, not a fixed test result.</p>
 
 
 
