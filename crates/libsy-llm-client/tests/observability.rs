@@ -33,8 +33,9 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    Algorithm, Driver, LibsyError, LlmClassifierConfig, LlmTarget, LlmTargetSet, LlmTaskClassifier,
-    PickerMode, StageRouter, StageRouterConfig, Step, TaskClassifierConfig,
+    AffinityRouter, Algorithm, Classifier, Driver, LibsyError, LlmClassifierConfig, LlmTarget,
+    LlmTargetSet, LlmTaskClassifier, PickerMode, StageRouter, StageRouterConfig, Step,
+    TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{
@@ -568,6 +569,51 @@ fn otel_attribute<'a>(span: &'a SpanData, key: &str) -> Option<&'a OtelValue> {
         .iter()
         .find(|attribute| attribute.key.as_str() == key)
         .map(|attribute| &attribute.value)
+}
+
+#[tokio::test]
+async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    let event_count = store.events().len();
+    let router = AffinityRouter::new().with_message_hash_fallback();
+    let mut state = ();
+    let mut request = Request {
+        llm_request: LlmRequest {
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Reasoning {
+                    text: "provider reasoning".to_string(),
+                    signature: None,
+                }],
+            }],
+            ..LlmRequest::default()
+        },
+        raw_request: None,
+        metadata: None,
+    };
+
+    for _ in 0..2 {
+        router.score(&mut state, &mut request, None).await?;
+    }
+
+    let events = store.events();
+    let warnings = events[event_count..]
+        .iter()
+        .filter(|event| {
+            event.target == "libsy"
+                && event.level == "WARN"
+                && event
+                    .fields
+                    .get("message")
+                    .is_some_and(|message| message.contains("affinity is enabled"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(warnings.len(), 1, "affinity warnings: {warnings:?}");
+    assert!(warnings[0].fields.get("message").is_some_and(|message| {
+        message.contains("message-hash fallback with usable first-user text")
+    }));
+    Ok(())
 }
 
 #[tokio::test]
