@@ -1457,8 +1457,8 @@ staying on the default tier.)</p>
 </tbody>
 </table>
 <p>The signal-vs-classifier split is dataset-dependent. Measure it in
-production: <code>/v1/stats</code> reports traffic by tier and model, while response headers
-and structured decision logs explain individual selections.</p>
+production: <code>/v1/stats</code> reports stage-router decisions by source and semantic
+target, while response headers and structured decision logs explain individual selections.</p>
 <h3 id="calibrating-the-threshold-from-run-data">Calibrating the threshold from run data<a class="headerlink" href="#calibrating-the-threshold-from-run-data" title="Permanent link">&para;</a></h3>
 <p>The recommended <code>0.5</code> starting point was derived from SWE-Bench Pro Python-75
 calibration. To tune for a different task set or model pair, follow this
