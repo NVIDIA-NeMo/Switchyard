@@ -747,7 +747,7 @@ fn filter_openai_chat_body(body: &mut Value, allowed: &BTreeSet<InputModality>) 
     };
     if let Some(Value::Array(messages)) = object.get_mut("messages") {
         for message in messages {
-            filter_json_content_field(message, allowed, openai_chat_json_modality);
+            filter_json_content_field(message, allowed, JsonModalityFormat::OpenAiChat);
         }
     }
 }
@@ -760,11 +760,11 @@ fn filter_openai_responses_body(body: &mut Value, allowed: &BTreeSet<InputModali
         match input {
             Value::Array(items) => {
                 for item in items {
-                    filter_json_content_field(item, allowed, openai_responses_json_modality);
+                    filter_json_content_field(item, allowed, JsonModalityFormat::OpenAiResponses);
                 }
             }
             Value::Object(_) => {
-                filter_json_content_field(input, allowed, openai_responses_json_modality)
+                filter_json_content_field(input, allowed, JsonModalityFormat::OpenAiResponses)
             }
             _ => {}
         }
@@ -776,73 +776,71 @@ fn filter_anthropic_body(body: &mut Value, allowed: &BTreeSet<InputModality>) {
         return;
     };
     if let Some(Value::Array(system)) = object.get_mut("system") {
-        filter_json_content_array(system, allowed, anthropic_json_modality);
+        filter_json_content_array(system, allowed, JsonModalityFormat::Anthropic);
     }
     if let Some(Value::Array(messages)) = object.get_mut("messages") {
         for message in messages {
-            filter_json_content_field(message, allowed, anthropic_json_modality);
+            filter_json_content_field(message, allowed, JsonModalityFormat::Anthropic);
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum JsonModalityFormat {
+    OpenAiChat,
+    OpenAiResponses,
+    Anthropic,
 }
 
 fn filter_json_content_field(
     value: &mut Value,
     allowed: &BTreeSet<InputModality>,
-    modality: fn(&Value) -> Option<InputModality>,
+    format: JsonModalityFormat,
 ) {
     let Value::Object(object) = value else {
         return;
     };
     if let Some(Value::Array(content)) = object.get_mut("content") {
-        filter_json_content_array(content, allowed, modality);
+        filter_json_content_array(content, allowed, format);
     }
 }
 
 fn filter_json_content_array(
     content: &mut Vec<Value>,
     allowed: &BTreeSet<InputModality>,
-    modality: fn(&Value) -> Option<InputModality>,
+    format: JsonModalityFormat,
 ) {
     for block in content.iter_mut() {
         if block.get("type").and_then(Value::as_str) == Some("tool_result") {
-            filter_json_content_field(block, allowed, modality);
+            filter_json_content_field(block, allowed, format);
         }
     }
-    content.retain(|block| match modality(block) {
+    content.retain(|block| match json_input_modality(format, block) {
         Some(modality) => allowed.contains(&modality),
         None => true,
     });
 }
 
-fn openai_chat_json_modality(block: &Value) -> Option<InputModality> {
-    match block.get("type").and_then(Value::as_str) {
-        Some("text") => Some(InputModality::Text),
-        Some("image_url") => Some(InputModality::Image),
-        Some("input_audio") => Some(InputModality::Audio),
-        Some("input_video") => Some(InputModality::Video),
-        Some("file") => Some(InputModality::File),
-        _ => None,
-    }
-}
-
-fn openai_responses_json_modality(block: &Value) -> Option<InputModality> {
-    match block.get("type").and_then(Value::as_str) {
-        Some("input_text" | "output_text" | "refusal" | "reasoning") => Some(InputModality::Text),
-        Some("input_image") => Some(InputModality::Image),
-        Some("input_audio") => Some(InputModality::Audio),
-        Some("input_video") => Some(InputModality::Video),
-        Some("input_file") => Some(InputModality::File),
-        _ => None,
-    }
-}
-
-fn anthropic_json_modality(block: &Value) -> Option<InputModality> {
-    match block.get("type").and_then(Value::as_str) {
-        Some("text" | "thinking" | "redacted_thinking") => Some(InputModality::Text),
-        Some("image") => Some(InputModality::Image),
-        Some("audio") => Some(InputModality::Audio),
-        Some("video") => Some(InputModality::Video),
-        Some("document") => Some(InputModality::File),
+fn json_input_modality(format: JsonModalityFormat, block: &Value) -> Option<InputModality> {
+    match (format, block.get("type").and_then(Value::as_str)?) {
+        (JsonModalityFormat::OpenAiChat | JsonModalityFormat::Anthropic, "text")
+        | (
+            JsonModalityFormat::OpenAiResponses,
+            "input_text" | "output_text" | "refusal" | "reasoning",
+        )
+        | (JsonModalityFormat::Anthropic, "thinking" | "redacted_thinking") => {
+            Some(InputModality::Text)
+        }
+        (JsonModalityFormat::OpenAiChat, "image_url")
+        | (JsonModalityFormat::OpenAiResponses, "input_image")
+        | (JsonModalityFormat::Anthropic, "image") => Some(InputModality::Image),
+        (JsonModalityFormat::OpenAiChat | JsonModalityFormat::OpenAiResponses, "input_audio")
+        | (JsonModalityFormat::Anthropic, "audio") => Some(InputModality::Audio),
+        (JsonModalityFormat::OpenAiChat | JsonModalityFormat::OpenAiResponses, "input_video")
+        | (JsonModalityFormat::Anthropic, "video") => Some(InputModality::Video),
+        (JsonModalityFormat::OpenAiChat, "file")
+        | (JsonModalityFormat::OpenAiResponses, "input_file")
+        | (JsonModalityFormat::Anthropic, "document") => Some(InputModality::File),
         _ => None,
     }
 }
