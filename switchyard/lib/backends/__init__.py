@@ -7,6 +7,9 @@ Each file defines one ``LLMBackend``. Re-exports live here for ergonomic imports
 ``from switchyard.lib.backends import OpenAiNativeBackend``.
 """
 
+from switchyard.lib.backends.advisor_config import AdvisorConfig
+from switchyard.lib.backends.advisor_loop_backend import AdvisorLoopBackend
+from switchyard.lib.backends.advisor_presets import AdvisorPresets
 from switchyard.lib.backends.backend_format_resolver import (
     BackendFormatResolution,
     BackendFormatResolver,
@@ -21,6 +24,9 @@ from switchyard_rust.components import (
 )
 
 __all__ = [
+    "AdvisorConfig",
+    "AdvisorLoopBackend",
+    "AdvisorPresets",
     "AnthropicNativeBackend",
     "BackendFormatResolution",
     "BackendFormatResolver",

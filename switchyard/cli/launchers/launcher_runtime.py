@@ -132,6 +132,17 @@ def route_bundle_strategy_summary(route_bundle: str, default_model: str) -> str:
                     target = route.get("target")
                     model = target.get("model") if isinstance(target, _Mapping) else target
                     return f"passthrough: model={model or first_key}"
+                if route_type == "advisor":
+                    tiers = {}
+                    for field in ("executor", "advisor"):
+                        tier = route.get(field)
+                        tiers[field] = (
+                            tier.get("model") if isinstance(tier, _Mapping) else tier
+                        )
+                    return (
+                        f"advisor: executor={tiers['executor']}, "
+                        f"advisor={tiers['advisor']}"
+                    )
     except Exception:
         pass
     return f"route: {default_model}"

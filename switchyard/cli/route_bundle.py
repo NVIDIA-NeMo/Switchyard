@@ -13,9 +13,14 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from pydantic import ValidationError
+
+from switchyard.lib.backends.advisor_config import AdvisorConfig
+from switchyard.lib.backends.advisor_loop_backend import AdvisorLoopBackend
 from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
 from switchyard.lib.backends.multi_llm_backend import build_native_backend
 from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
+from switchyard.lib.processors.reasoning_effort_normalizer import ReasoningEffortNormalizer
 from switchyard.lib.processors.stats_request_processor import StatsRequestProcessor
 from switchyard.lib.processors.stats_response_processor_accumulator import (
     StatsResponseProcessor,
@@ -31,9 +36,32 @@ from switchyard_rust.translation import TranslationEngine
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _TOP_LEVEL_KEYS = frozenset({"defaults", "routes"})
 _ROUTE_METADATA_KEYS = frozenset({"display_name", "description"})
+#: ``type: advisor`` route keys: the two tiers plus the scalar
+#: :class:`AdvisorConfig` fields tunable from YAML.
+_ADVISOR_ROUTE_KEYS = frozenset({
+    "type",
+    "executor",
+    "advisor",
+    "reviewer_system_prompt",
+    "redo_feedback_prefix",
+    "gate_trigger",
+    "gate_trigger_pattern",
+    "max_reviews",
+    "gate_stall_turns",
+    "gate_min_tool_results",
+    "advisor_system_prompt",
+    "seed_plan_advice",
+    "seed_advice_prefix",
+    "advisor_max_tokens",
+    "advisor_temperature",
+    "transcript_max_chars",
+    "fail_open",
+    "enable_stats",
+}) | _ROUTE_METADATA_KEYS
 _ROUTE_KEYS = {
     "noop": frozenset({"type"}) | _ROUTE_METADATA_KEYS,
     "passthrough": frozenset({"type", "target"}) | _ROUTE_METADATA_KEYS,
+    "advisor": _ADVISOR_ROUTE_KEYS,
 }
 
 
@@ -116,7 +144,7 @@ def build_route_bundle_table(
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> RouteTable:
-    """Build a table containing only noop and passthrough routes."""
+    """Build a table of noop, passthrough, and advisor routes."""
     bundle = _mapping(_expand_env(raw), "route bundle")
     _reject_unknown_keys(bundle, _TOP_LEVEL_KEYS, "route bundle")
     defaults = _mapping(bundle.get("defaults", {}), "defaults")
@@ -136,7 +164,7 @@ def build_route_bundle_table(
         if route_type not in _ROUTE_KEYS:
             raise RouteBundleConfigError(
                 f"route {route_id!r}: unsupported route type {route_type!r}; "
-                "expected 'noop' or 'passthrough'"
+                "expected 'noop', 'passthrough', or 'advisor'"
             )
         _reject_unknown_keys(route, _ROUTE_KEYS[route_type], f"route {route_id!r}")
 
@@ -145,6 +173,17 @@ def build_route_bundle_table(
                 _NoopBackend(),
                 stats,
                 pre_routing_request_processors,
+                extra_response_processors,
+            )
+        elif route_type == "advisor":
+            # The advisor backend is Python-only, so it cannot be wrapped in
+            # StatsLlmBackend (which requires a Rust-native binding); it records
+            # into the accumulator itself. The normalizer maps Claude Code's
+            # ``/effort xhigh`` to a value the executor upstream accepts.
+            runtime = _build_runtime(
+                _advisor_backend(route_id, route, defaults, stats),
+                stats,
+                [*pre_routing_request_processors, ReasoningEffortNormalizer()],
                 extra_response_processors,
             )
         else:
@@ -188,6 +227,51 @@ def _target(route_id: str, value: object, defaults: Mapping[str, object]) -> Llm
         return coerce_llm_target({**defaults, **target}, default_id=route_id)
     except (TypeError, ValueError) as error:
         raise RouteBundleConfigError(f"route {route_id!r}: invalid target: {error}") from error
+
+
+def _advisor_backend(
+    route_id: str,
+    route: Mapping[str, object],
+    defaults: Mapping[str, object],
+    stats: StatsAccumulator,
+) -> AdvisorLoopBackend:
+    """Build the review-gate advisor backend from a ``type: advisor`` route.
+
+    The ``executor`` / ``advisor`` tiers are ordinary targets (bundle
+    ``defaults`` apply to each); the remaining route keys are scalar
+    :class:`AdvisorConfig` fields. Each tier's ``format`` selects its wire
+    independently — ``anthropic`` (native ``/v1/messages``; the executor
+    passthrough preserves prompt caching) or ``openai`` (``/chat/completions``;
+    Qwen/DeepSeek/vLLM/NIM/OpenAI endpoints). ``responses`` targets are
+    rejected at validation.
+    """
+    config_data: dict[str, object] = {
+        key: value
+        for key, value in route.items()
+        if key != "type" and key not in _ROUTE_METADATA_KEYS
+    }
+    for field in ("executor", "advisor"):
+        config_data[field] = _advisor_tier(route_id, field, route.get(field), defaults)
+    try:
+        config = AdvisorConfig.model_validate(config_data)
+    except ValidationError as error:
+        raise RouteBundleConfigError(f"route {route_id!r}: {error}") from error
+    return AdvisorLoopBackend(config, stats_accumulator=stats)
+
+
+def _advisor_tier(
+    route_id: str, field: str, value: object, defaults: Mapping[str, object]
+) -> LlmTarget:
+    if value is None:
+        raise RouteBundleConfigError(f"route {route_id!r}: {field} target is required")
+    if isinstance(value, str):
+        tier: dict[str, object] = {"model": value}
+    else:
+        tier = _mapping(value, f"route {route_id!r} {field}")
+    try:
+        return coerce_llm_target({**defaults, **tier}, default_id=field)
+    except (TypeError, ValueError) as error:
+        raise RouteBundleConfigError(f"route {route_id!r}: invalid {field}: {error}") from error
 
 
 def _expand_env(value: object) -> object:

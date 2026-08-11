@@ -158,6 +158,21 @@ Direct Rust bindings for migrated concrete processors/backends are exposed from
 | Response component | Plain Python/Rust object | `async process(ctx, response) -> ChatResponse` | Post-process (logging, stats) |
 | `TranslationEngine` | `switchyard_rust.translation` | `async translate(ctx, request, response) -> Any` | Convert to client's wire format |
 
+### Multi-call backends
+
+`AdvisorLoopBackend` (`switchyard/lib/backends/advisor_loop_backend.py`) pairs the executor with a
+stronger advisor that reviews the executor's first no-tool-call turn once per session (APPROVE
+returns it; REDO feeds the advisor's plan back and re-invokes the executor). The trigger is
+proxy-side, so it fires even for executors that rarely call tools; advisor text goes into the
+first user message, never the newest turn, so the upstream cache prefix stays stable across a
+session. It is multi-call — one `call(...)` issues several upstream requests before returning one
+`ChatResponse`, so "exactly one `LLMBackend` per chain" holds at the chain level only — and it
+does its own stats accounting into the classifier bucket, so it must not be wrapped in
+`StatsLlmBackend` (which rejects Python-only backends); the route-bundle builder injects the
+accumulator through the constructor instead. Executor and advisor targets dispatch independently
+on `LlmTarget.format`; `responses` is rejected at `AdvisorConfig` validation. Compose with a
+`type: advisor` route (`switchyard/cli/route_bundle.py`) or an `AdvisorPresets` helper.
+
 ## Project Structure
 
 ```
@@ -181,6 +196,8 @@ switchyard/
 │   │   ├── openai_llm_backend.py           # OpenAiPassthroughBackend
 │   │   ├── openai_native_backend.py        # OpenAiNativeBackend
 │   │   ├── anthropic_native_llm_backend.py # AnthropicNativeBackend
+│   │   ├── advisor_loop_backend.py         # AdvisorLoopBackend (advisor review gate)
+│   │   ├── advisor_config.py               # AdvisorConfig (+ advisor_prompts, advisor_presets)
 │   │   ├── llm_target.py                   # LlmTarget, BackendFormat
 │   │   ├── multi_llm_backend.py            # MultiLlmBackend helpers
 │   │   ├── stats_llm_backend.py            # StatsLlmBackend
@@ -242,7 +259,7 @@ and their transitives never appear in downstream vulnerability scans.
 ```bash
 export OPENROUTER_API_KEY="sk-or-..."
 
-# Serve the minimal Python YAML bundle (noop and passthrough only).
+# Serve the minimal Python YAML bundle (noop, passthrough, and advisor routes).
 switchyard serve --routes examples/route.yaml --port 4000
 
 # Launch against the packaged OpenRouter deployment.

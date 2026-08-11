@@ -13,6 +13,9 @@ from importlib import metadata as _metadata
 from typing import TYPE_CHECKING, Any
 
 from switchyard.lib.backends import (
+    AdvisorConfig,
+    AdvisorLoopBackend,
+    AdvisorPresets,
     AnthropicNativeBackend,
     OpenAiNativeBackend,
 )
@@ -121,7 +124,10 @@ __all__ = [
     "BackendFormat",
     "RandomRoutingProcessorConfig",
     "LlmTarget",
-    # Deterministic (LLM-classifier) routing usage case
+    # Advisor review gate (executor gated by a stronger advisor model)
+    "AdvisorConfig",
+    "AdvisorLoopBackend",
+    "AdvisorPresets",
     # Translation engine
     "TranslationEngine",
     # ChatResponse types

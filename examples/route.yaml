@@ -10,3 +10,13 @@ routes:
 
   smoke-test:
     type: noop
+
+  # Executor gated by a stronger advisor model: the advisor reviews the
+  # executor's first no-tool-call turn (APPROVE lets it stop; REDO sends it
+  # back with a plan). Tiers accept the same fields as passthrough targets.
+  # advisor-gate:
+  #   type: advisor
+  #   executor:
+  #     model: moonshotai/kimi-k2.6
+  #   advisor:
+  #     model: anthropic/claude-opus-4.8
