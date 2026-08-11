@@ -13,12 +13,12 @@ use pyo3::prelude::*;
 use serde_json::{Value, json};
 use switchyard_libsy::{
     Algorithm, ClassifierContractConfig, HandoffNoteConfig, LibsyError as RustLibsyError,
-    LlmClassifierConfig, LlmFallback, LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, PickerMode,
-    Random, StageRouter, StageRouterConfig, TaskClassifierConfig,
+    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, PickerMode, Random, StageRouter,
+    StageRouterConfig, TaskClassifierConfig,
 };
 use switchyard_llm_client::ClientRouter;
 use switchyard_protocol::{
-    AggLlmResponse, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
+    AggLlmResponse, Decision, LlmClientError, LlmResponse, Metadata, ModelId, Request, Response,
     RoutedLlmClient,
 };
 
@@ -78,10 +78,9 @@ struct PyLlmTarget {
 }
 
 impl PyLlmTarget {
-    fn clone_core(&self, _py: Python<'_>) -> LlmTarget {
-        LlmTarget {
-            semantic_name: self.name.clone(),
-        }
+    /// The bare model id libsy routes by; the client behind it stays with the bindings.
+    fn clone_core(&self, _py: Python<'_>) -> ModelId {
+        ModelId::new(self.name.clone())
     }
 
     /// The `selected_model -> client` entry this target contributes to the algorithm's
@@ -89,7 +88,7 @@ impl PyLlmTarget {
     /// mapping and serve the calls themselves.
     fn client_entry(&self, py: Python<'_>) -> ClientEntry {
         (
-            self.name.clone(),
+            ModelId::new(self.name.clone()),
             Arc::new(PythonLlmClient {
                 inner: self.client.clone_ref(py),
             }),
@@ -229,7 +228,7 @@ struct PyAlgorithm {
 }
 
 /// One target's `selected_model -> client` mapping for an algorithm's router.
-type ClientEntry = (String, Arc<dyn RoutedLlmClient>);
+type ClientEntry = (ModelId, Arc<dyn RoutedLlmClient>);
 
 impl PyAlgorithm {
     fn new(inner: Arc<dyn Algorithm>, clients: impl IntoIterator<Item = ClientEntry>) -> Self {
@@ -310,13 +309,10 @@ fn random_algorithm(
     seed: Option<u64>,
 ) -> PyResult<PyAlgorithm> {
     let (cores, clients) = target_cores(py, &targets)?;
-    let algorithm =
-        Random::new(LlmTargetSet::new(cores), weights, seed).map_err(|error| match error {
-            RustLibsyError::NoTargets => {
-                PyValueError::new_err("random requires at least one target")
-            }
-            other => PyValueError::new_err(other.to_string()),
-        })?;
+    let algorithm = Random::new(cores, weights, seed).map_err(|error| match error {
+        RustLibsyError::NoTargets => PyValueError::new_err("random requires at least one target"),
+        other => PyValueError::new_err(other.to_string()),
+    })?;
     Ok(PyAlgorithm::new(Arc::new(algorithm), clients))
 }
 
@@ -325,7 +321,7 @@ fn random_algorithm(
 fn target_cores(
     py: Python<'_>,
     targets: &[Py<PyLlmTarget>],
-) -> PyResult<(Vec<LlmTarget>, Vec<ClientEntry>)> {
+) -> PyResult<(Vec<ModelId>, Vec<ClientEntry>)> {
     let mut cores = Vec::with_capacity(targets.len());
     let mut clients = Vec::with_capacity(targets.len());
     for target in targets {
@@ -429,14 +425,10 @@ fn stage_router_algorithm(
         (None, None) => None,
     };
     if let Some(prompt) = capable_system_prompt {
-        config.tier_prompts = config
-            .tier_prompts
-            .with(capable.semantic_name.clone(), prompt);
+        config.tier_prompts = config.tier_prompts.with(capable.clone(), prompt);
     }
     if let Some(prompt) = efficient_system_prompt {
-        config.tier_prompts = config
-            .tier_prompts
-            .with(efficient.semantic_name.clone(), prompt);
+        config.tier_prompts = config.tier_prompts.with(efficient.clone(), prompt);
     }
     // The judge is only reachable through the optional classifier fallback, so its client
     // joins the router only when a fallback is configured.

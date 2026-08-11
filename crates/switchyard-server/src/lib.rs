@@ -37,7 +37,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver, TranslatingLlmClient};
-use switchyard_protocol::{Decision, LlmClientError, Metadata, Request, Usage};
+use switchyard_protocol::{Decision, LlmClientError, Metadata, ModelId, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
@@ -117,7 +117,7 @@ struct RouteEntry {
 /// Exact upstream model used by the server's Anthropic token-count endpoint.
 #[derive(Clone)]
 struct CountTokensTarget {
-    model: String,
+    model: ModelId,
     client: Arc<TranslatingLlmClient>,
 }
 
@@ -1327,7 +1327,7 @@ mod tests {
 
         let call = |model: &str, is_answer_call: bool| {
             RunObservation::LlmCall(LlmCallObservation {
-                selected_model: model.to_string(),
+                selected_model: ModelId::from(model),
                 is_answer_call,
                 is_success: true,
                 duration: Duration::from_millis(3),

@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use libsy::{
     Algorithm, ClassifierContractConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTarget,
-    LlmTargetSet, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
-    StageRouterConfig, TargetPrompts, TaskClassifierConfig,
+    EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
+    Noop, Passthrough, PickerMode, Random, StageRouter, StageRouterConfig, TargetPrompts,
+    TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -20,7 +20,7 @@ use switchyard_llm_client::{
     Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     TranslatingLlmClient,
 };
-use switchyard_protocol::RoutedLlmClient;
+use switchyard_protocol::{ModelId, RoutedLlmClient};
 
 use crate::{CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState};
 
@@ -133,7 +133,7 @@ impl ServerConfig {
                 .get_mut(&target.llm_client)
                 .ok_or_else(|| ServerError::new("validated llm client was not initialized"))?;
             model_configs.push(ModelConfig::new(
-                &target.id,
+                target.id.clone(),
                 build_backend(&target.llm_client, client_config, &target.extra_body)?,
                 None,
             ));
@@ -150,18 +150,11 @@ impl ServerConfig {
         Ok(clients)
     }
 
-    fn build_targets(&self) -> ServerResult<BTreeMap<String, LlmTarget>> {
+    fn build_targets(&self) -> ServerResult<BTreeMap<String, ModelId>> {
         Ok(self
             .targets
             .iter()
-            .map(|(name, config)| {
-                (
-                    name.clone(),
-                    LlmTarget {
-                        semantic_name: config.id.clone(),
-                    },
-                )
-            })
+            .map(|(name, config)| (name.clone(), config.id.clone()))
             .collect())
     }
 
@@ -225,7 +218,7 @@ impl ServerConfig {
 }
 
 // Prefer known Claude families, then preserve the route's target order.
-fn count_tokens_priority(target_name: &str, model_id: &str) -> usize {
+fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
     let target_name = target_name.to_ascii_lowercase();
     let model_id = model_id.to_ascii_lowercase();
     ["opus", "sonnet", "haiku"]
@@ -249,7 +242,7 @@ struct LlmClientConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetConfig {
-    id: String,
+    id: ModelId,
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
@@ -821,7 +814,7 @@ const fn default_max_retries() -> u32 {
 fn build_algorithm(
     route_name: &str,
     config: &RouteConfig,
-    targets: &BTreeMap<String, LlmTarget>,
+    targets: &BTreeMap<String, ModelId>,
 ) -> ServerResult<Arc<dyn Algorithm>> {
     match config {
         RouteConfig::Noop { .. } => Ok(Arc::new(Noop {})),
@@ -939,9 +932,9 @@ fn build_algorithm(
             config.recent_window = *recent_turn_window;
             config.handoff_notes = handoff_notes.clone();
             config.tier_prompts = tier_prompts(
-                &capable.semantic_name,
+                &capable,
                 capable_system_prompt.as_deref(),
-                &efficient.semantic_name,
+                &efficient,
                 efficient_system_prompt.as_deref(),
             );
             // The judge is called through its own target, so it is not a routing
@@ -995,20 +988,19 @@ fn tier_prompts(
 fn resolve_targets<'a>(
     route_name: &str,
     names: impl IntoIterator<Item = &'a str>,
-    targets: &BTreeMap<String, LlmTarget>,
-) -> ServerResult<LlmTargetSet> {
-    let resolved = names
+    targets: &BTreeMap<String, ModelId>,
+) -> ServerResult<Vec<ModelId>> {
+    names
         .into_iter()
         .map(|name| resolve_target(route_name, name, targets))
-        .collect::<ServerResult<Vec<_>>>()?;
-    Ok(LlmTargetSet::new(resolved))
+        .collect()
 }
 
 fn resolve_target(
     route_name: &str,
     name: &str,
-    targets: &BTreeMap<String, LlmTarget>,
-) -> ServerResult<LlmTarget> {
+    targets: &BTreeMap<String, ModelId>,
+) -> ServerResult<ModelId> {
     targets.get(name).cloned().ok_or_else(|| {
         ServerError::new(format!(
             "route {route_name} references unknown target {name}"

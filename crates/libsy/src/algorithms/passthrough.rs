@@ -5,21 +5,23 @@
 
 use std::sync::Arc;
 
-use switchyard_protocol::{Request, Response};
+use switchyard_protocol::{ModelId, Request, Response};
 
 use crate::Result;
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget};
+use crate::core::algorithm::{Algorithm, Driver};
 use switchyard_protocol::Decision;
 
 /// Routing algorithm that always calls one configured target.
 pub struct Passthrough {
-    target: LlmTarget,
+    target: ModelId,
 }
 
 impl Passthrough {
     /// Creates an algorithm that always calls `target`.
-    pub fn new(target: LlmTarget) -> Self {
-        Passthrough { target }
+    pub fn new(target: impl Into<ModelId>) -> Self {
+        Passthrough {
+            target: target.into(),
+        }
     }
 }
 
@@ -31,11 +33,8 @@ impl Algorithm for Passthrough {
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
         let decision: Decision = Decision::new(
-            self.target.semantic_name.clone(),
-            Some(format!(
-                "passthrough selected target '{}'",
-                self.target.semantic_name
-            )),
+            self.target.clone(),
+            Some(format!("passthrough selected target '{}'", self.target)),
             true,
         );
         driver.decide(decision.clone()).await?;
@@ -48,7 +47,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::Passthrough;
-    use crate::core::algorithm::{Algorithm, LlmTarget};
+    use crate::core::algorithm::Algorithm;
     use crate::core::testing::{echo, test_drive};
     use switchyard_protocol::{Request, completion_text, text_request};
 
@@ -60,9 +59,7 @@ mod tests {
             raw_request: None,
             metadata: None,
         };
-        let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(LlmTarget {
-            semantic_name: MODEL_ID.to_string(),
-        }));
+        let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(MODEL_ID));
         let (trace, response) = test_drive(algorithm, request, echo()).await?;
 
         assert_eq!(

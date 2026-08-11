@@ -13,7 +13,7 @@
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::{Request, Response};
+use crate::{ModelId, Request, Response};
 
 /// A boxed client-specific error preserved as the source of a routed call failure.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -72,7 +72,7 @@ pub enum LlmClientError {
     #[error("context window exceeded for model {model}: {message}")]
     ContextWindowExceeded {
         /// Model whose context window was exceeded.
-        model: String,
+        model: ModelId,
         /// Upstream error message.
         message: String,
     },
@@ -131,7 +131,7 @@ impl RoutingFallbackReason {
 #[derive(Clone, Debug)]
 pub struct Decision {
     /// The model identifier selected for the call.
-    selected_model_id: String,
+    selected_model_id: ModelId,
     /// Why, for logs and traces.
     reasoning: Option<String>,
     /// True for an answer-generating call. False for classifier and judge calls.
@@ -141,7 +141,7 @@ pub struct Decision {
 impl Decision {
     /// Creates a decision and records whether its call produces the answer.
     pub fn new(
-        selected_model_id: impl Into<String>,
+        selected_model_id: impl Into<ModelId>,
         reasoning: Option<String>,
         is_answer_call: bool,
     ) -> Self {
@@ -153,8 +153,8 @@ impl Decision {
     }
 
     /// The model identifier selected for the call.
-    pub fn selected_model_id(&self) -> &str {
-        self.selected_model_id.as_str()
+    pub fn selected_model_id(&self) -> &ModelId {
+        &self.selected_model_id
     }
 
     /// Why this decision was made.

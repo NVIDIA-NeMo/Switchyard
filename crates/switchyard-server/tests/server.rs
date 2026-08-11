@@ -17,11 +17,12 @@ use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
 use axum::{Json, Router};
 use http_body_util::BodyExt;
-use libsy::{Algorithm, LlmTarget, LlmTargetSet, Random};
+use libsy::{Algorithm, Random};
 use serde_json::{Value, json};
 use switchyard_llm_client::{
     Backend, ClientRouter, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
+use switchyard_protocol::ModelId;
 use switchyard_protocol::RoutedLlmClient;
 use switchyard_server::config::load_server_state;
 use switchyard_server::{ServerState, build_switchyard_router};
@@ -227,14 +228,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
     let entries = routes
         .iter()
         .map(|(route_model, targets)| {
-            let target_set = LlmTargetSet::new(
-                targets
-                    .iter()
-                    .map(|model| LlmTarget {
-                        semantic_name: (*model).to_string(),
-                    })
-                    .collect(),
-            );
+            let target_set = targets.iter().map(|model| ModelId::from(*model)).collect();
             let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
             Ok((
                 (*route_model).to_string(),

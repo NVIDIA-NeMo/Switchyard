@@ -28,7 +28,9 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStreamEvent`] is its host/algorithm envelope; and
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
-use switchyard_protocol::{Decision, LlmClientError, Request, Response, RoutingFallbackReason};
+use switchyard_protocol::{
+    Decision, LlmClientError, ModelId, Request, Response, RoutingFallbackReason,
+};
 
 use crate::{DriverError, LibsyError, Result, observability};
 
@@ -139,7 +141,7 @@ impl Driver {
         skip_all,
         fields(
             algorithm = self.algorithm,
-            selected_model = decision.selected_model_id(),
+            selected_model = %decision.selected_model_id(),
             openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
             error = tracing::field::Empty,
@@ -290,60 +292,38 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// A named routing target an algorithm routes by. Serving its calls is the stream
-/// consumer's concern: the selected identifier reaches the consumer as
-/// `decision.selected_model_id()` on the offloaded [`CallModel`].
-#[derive(Clone)]
-pub struct LlmTarget {
-    /// The routing label an algorithm selects this target by — a logical tier like
-    /// `"strong"`, or the model id when they coincide. Mapping it to a provider model
-    /// id is the consumer's concern, never the algorithm's.
-    pub semantic_name: String,
+/// Errors unless `targets` contains `name`.
+///
+/// A target is a bare model id: the routing label an algorithm selects by — a logical
+/// tier like `"strong"`, or the model id when they coincide. Mapping it to a provider
+/// model id is the stream consumer's concern, never the algorithm's; the selected id
+/// reaches the consumer as `decision.selected_model_id()` on the offloaded [`CallModel`].
+pub(crate) fn require_target(targets: &[ModelId], name: &ModelId) -> Result<()> {
+    targets
+        .iter()
+        .any(|target| target == name)
+        .then_some(())
+        .ok_or_else(|| LibsyError::TargetNotFound {
+            target: name.clone(),
+        })
 }
 
-/// The set of targets an algorithm may route among. An algorithm is constructed
-/// with one and picks targets by position ([`targets`](Self::targets)) or by name
-/// ([`get_target`](Self::get_target)).
-#[derive(Clone)]
-pub struct LlmTargetSet {
-    targets: Vec<LlmTarget>,
-}
-
-impl LlmTargetSet {
-    /// Build a target set from a list of targets.
-    pub fn new(targets: Vec<LlmTarget>) -> Self {
-        Self { targets }
+/// `name` itself, or the first target not in `excluded` when `name` has been barred.
+/// Errors if `name` is unknown, or if every target is excluded.
+pub(crate) fn resolve_target(
+    targets: &[ModelId],
+    name: &ModelId,
+    excluded: &HashSet<ModelId>,
+) -> Result<ModelId> {
+    require_target(targets, name)?;
+    if !excluded.contains(name) {
+        return Ok(name.clone());
     }
-
-    /// All targets in the set — e.g. for an algorithm to select among.
-    pub fn targets(&self) -> &[LlmTarget] {
-        &self.targets
-    }
-
-    /// Look up a target by name; errors if no target has that name.
-    pub fn get_target(&self, name: &str) -> Result<LlmTarget> {
-        self.targets
-            .iter()
-            .find(|t| t.semantic_name == name)
-            .cloned()
-            .ok_or_else(|| LibsyError::TargetNotFound {
-                target: name.to_string(),
-            })
-    }
-
-    /// The named target, or the first one not in `excluded` when it has been barred.
-    /// Errors if every target is excluded.
-    pub fn resolve_target(&self, name: &str, excluded: &HashSet<String>) -> Result<LlmTarget> {
-        let target = self.get_target(name)?;
-        if !excluded.contains(&target.semantic_name) {
-            return Ok(target);
-        }
-        self.targets
-            .iter()
-            .find(|t| !excluded.contains(&t.semantic_name))
-            .cloned()
-            .ok_or(LibsyError::AllTargetsExcluded)
-    }
+    targets
+        .iter()
+        .find(|target| !excluded.contains(*target))
+        .cloned()
+        .ok_or(LibsyError::AllTargetsExcluded)
 }
 
 /// Key for overflow history: a root request by its session, a child request by its session
@@ -395,7 +375,7 @@ const MAX_EVICTION_IDENTITIES: usize = 1_024;
 /// without a routing identity are not tracked — there is nothing to remember them by.
 #[derive(Default)]
 pub(crate) struct SessionEvictions {
-    by_identity: Mutex<HashMap<RoutingIdentity, HashSet<String>>>,
+    by_identity: Mutex<HashMap<RoutingIdentity, HashSet<ModelId>>>,
 }
 
 impl SessionEvictions {
@@ -407,7 +387,7 @@ impl SessionEvictions {
     }
 
     /// The targets `identity` has already overflowed; empty for an untracked request.
-    fn evicted_for(&self, identity: Option<&RoutingIdentity>) -> Vec<String> {
+    fn evicted_for(&self, identity: Option<&RoutingIdentity>) -> Vec<ModelId> {
         let Some(identity) = identity else {
             return Vec::new();
         };
@@ -420,7 +400,7 @@ impl SessionEvictions {
 
     /// Remembers that `target` overflowed for `identity`, tracking at most
     /// [`MAX_EVICTION_IDENTITIES`] identities.
-    fn record(&self, identity: Option<&RoutingIdentity>, target: &str) {
+    fn record(&self, identity: Option<&RoutingIdentity>, target: &ModelId) {
         let Some(identity) = identity else { return };
         let mut histories = self.by_identity.lock();
         if histories.len() >= MAX_EVICTION_IDENTITIES
@@ -432,24 +412,23 @@ impl SessionEvictions {
         histories
             .entry(identity.clone())
             .or_default()
-            .insert(target.to_string());
+            .insert(target.clone());
     }
 }
 
 /// How many of `targets` this request is still allowed to reach.
-fn eligible_targets(targets: &LlmTargetSet, excluded: &HashSet<String>) -> usize {
+fn eligible_targets(targets: &[ModelId], excluded: &HashSet<ModelId>) -> usize {
     targets
-        .targets()
         .iter()
-        .filter(|t| !excluded.contains(&t.semantic_name))
+        .filter(|target| !excluded.contains(*target))
         .count()
 }
 
 /// Bars the targets `identity` has already overflowed from this request, so routing does
 /// not select one that is certain to fail again.
 pub(crate) fn exclude_evicted(
-    excluded: &mut HashSet<String>,
-    targets: &LlmTargetSet,
+    excluded: &mut HashSet<ModelId>,
+    targets: &[ModelId],
     evictions: &SessionEvictions,
     identity: Option<&RoutingIdentity>,
 ) {
@@ -464,7 +443,7 @@ pub(crate) fn exclude_evicted(
 }
 
 /// Returns the failed target and routing fallback policy for a terminal client error.
-fn classify_fallback(error: &LibsyError) -> Option<(&str, RoutingFallbackReason)> {
+fn classify_fallback(error: &LibsyError) -> Option<(&ModelId, RoutingFallbackReason)> {
     let LibsyError::ClientCall { target, source } = error else {
         return None;
     };
@@ -492,16 +471,16 @@ fn classify_fallback(error: &LibsyError) -> Option<(&str, RoutingFallbackReason)
 /// overflows are recorded for `identity`; unavailable targets remain request-local.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn call_model_with_fallback(
-    excluded: &mut HashSet<String>,
+    excluded: &mut HashSet<ModelId>,
     driver: &Driver,
-    targets: &LlmTargetSet,
-    mut target: LlmTarget,
+    targets: &[ModelId],
+    mut target: ModelId,
     mut decision: Decision,
     request: Request,
     identity: Option<&RoutingIdentity>,
     evictions: &SessionEvictions,
-    target_unavailable: impl Fn(&Request, &str),
-    fallback_decision: impl Fn(&LlmTarget, &LlmTarget, RoutingFallbackReason) -> Decision,
+    target_unavailable: impl Fn(&Request, &ModelId),
+    fallback_decision: impl Fn(&ModelId, &ModelId, RoutingFallbackReason) -> Decision,
 ) -> Result<Response> {
     loop {
         let result = driver.call_model(request.clone(), decision.clone()).await;
@@ -511,14 +490,14 @@ pub(crate) async fn call_model_with_fallback(
         };
         // A target already excluded means the pool is spent; surface the client error
         // so the caller still sees the concrete upstream failure.
-        if !excluded.insert(failed.to_string()) {
+        if !excluded.insert(failed.clone()) {
             return Err(error);
         }
         match reason {
             RoutingFallbackReason::ContextWindow => evictions.record(identity, failed),
             RoutingFallbackReason::Unavailable => target_unavailable(&request, failed),
         }
-        let Ok(next) = targets.resolve_target(&target.semantic_name, excluded) else {
+        let Ok(next) = resolve_target(targets, &target, excluded) else {
             return Err(error);
         };
         decision = fallback_decision(&target, &next, reason);
@@ -627,7 +606,7 @@ mod tests {
     fn route_fallback_only_accepts_context_and_unavailable_failures() {
         assert_eq!(
             classified_client_error(LlmClientError::ContextWindowExceeded {
-                model: "target".to_string(),
+                model: ModelId::from("target"),
                 message: "too long".to_string(),
             }),
             Some(RoutingFallbackReason::ContextWindow)
@@ -675,14 +654,14 @@ mod tests {
     }
 
     /// Build a routed decision for orchestration tests.
-    fn test_decision(selected_model_id: String) -> Decision {
+    fn test_decision(selected_model_id: ModelId) -> Decision {
         Decision::new(selected_model_id, None, true)
     }
 
     /// Trivial algo used only to exercise the orchestrator: calls the first target
     /// and returns its response with a one-item trace.
     struct TestAlgo {
-        target_set: LlmTargetSet,
+        target_set: Vec<ModelId>,
     }
 
     #[async_trait]
@@ -694,18 +673,17 @@ mod tests {
         async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
             let target = self
                 .target_set
-                .targets()
                 .first()
                 .ok_or(LibsyError::NoTargets)?
                 .clone();
-            let decision = test_decision(target.semantic_name.clone());
+            let decision = test_decision(target.clone());
             driver.decide(decision.clone()).await?;
             driver.call_model(request, decision).await
         }
     }
 
     /// Build a shared `TestAlgo` over the given target set.
-    fn orch(target_set: LlmTargetSet) -> Arc<dyn Algorithm> {
+    fn orch(target_set: Vec<ModelId>) -> Arc<dyn Algorithm> {
         Arc::new(TestAlgo { target_set })
     }
 
@@ -717,14 +695,8 @@ mod tests {
         }
     }
 
-    fn target_set(names: &[&str]) -> LlmTargetSet {
-        let targets = names
-            .iter()
-            .map(|name| LlmTarget {
-                semantic_name: name.to_string(),
-            })
-            .collect();
-        LlmTargetSet::new(targets)
+    fn target_set(names: &[&str]) -> Vec<ModelId> {
+        names.iter().map(|name| ModelId::from(*name)).collect()
     }
 
     #[tokio::test]
@@ -736,12 +708,12 @@ mod tests {
             let first_driver = driver.clone();
             let mut first = tokio::spawn(async move {
                 first_driver
-                    .call_model(request(), test_decision("first".to_string()))
+                    .call_model(request(), test_decision(ModelId::from("first")))
                     .await
             });
             let second = tokio::spawn(async move {
                 driver
-                    .call_model(request(), test_decision("second".to_string()))
+                    .call_model(request(), test_decision(ModelId::from("second")))
                     .await
             });
 
@@ -787,7 +759,7 @@ mod tests {
             let (driver, mut step_rx) = Driver::new("test");
             let producer = tokio::spawn(async move {
                 driver
-                    .call_model(request(), test_decision("dropped".to_string()))
+                    .call_model(request(), test_decision(ModelId::from("dropped")))
                     .await
             });
             let step = step_rx.recv().await.ok_or(DriverError::StreamClosed)??;
@@ -806,7 +778,7 @@ mod tests {
             // A standalone driver reports the typed step receiver disappearing at its next send.
             let (driver, step_rx) = Driver::new("test");
             drop(step_rx);
-            let decision = test_decision("closed".to_string());
+            let decision = test_decision(ModelId::from("closed"));
             let result = driver.decide(decision).await;
             assert!(matches!(
                 result,
@@ -825,7 +797,7 @@ mod tests {
     #[tokio::test]
     async fn into_parts_yields_the_call_without_answering_it() -> Result<()> {
         let (driver, mut step_rx) = Driver::new("test");
-        let decision = test_decision("answer/model".to_string());
+        let decision = test_decision(ModelId::from("answer/model"));
         let producer = tokio::spawn({
             let decision = decision.clone();
             async move { driver.call_model(request(), decision).await }
@@ -864,7 +836,7 @@ mod tests {
 
     #[test]
     fn target_lookup_returns_the_missing_target() {
-        let error = target_set(&[]).get_target("missing").err();
+        let error = require_target(&target_set(&[]), &ModelId::from("missing")).err();
         assert!(matches!(
             error,
             Some(LibsyError::TargetNotFound { target }) if target == "missing"
@@ -1307,8 +1279,8 @@ mod tests {
     /// Offloads two targets concurrently and returns the first to resolve, dropping the
     /// loser's call (first-wins hedging).
     struct Hedge {
-        winner: LlmTarget,
-        loser: LlmTarget,
+        winner: String,
+        loser: String,
     }
 
     #[async_trait]
@@ -1318,8 +1290,8 @@ mod tests {
         }
 
         async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
-            let dec_w = test_decision(self.winner.semantic_name.clone());
-            let dec_l = test_decision(self.loser.semantic_name.clone());
+            let dec_w = test_decision(self.winner.clone().into());
+            let dec_l = test_decision(self.loser.clone().into());
             let win = driver.call_model(request.clone(), dec_w);
             let lose = driver.call_model(request, dec_l);
             // First to resolve wins; `select!` drops the losing future (and its promise).
@@ -1336,12 +1308,8 @@ mod tests {
     fn hedge(loser_delay: Option<std::time::Duration>) -> (Arc<dyn Algorithm>, impl Serve) {
         let started = Arc::new(tokio::sync::Notify::new());
         let algo = Arc::new(Hedge {
-            winner: LlmTarget {
-                semantic_name: "winner".to_string(),
-            },
-            loser: LlmTarget {
-                semantic_name: "loser".to_string(),
-            },
+            winner: "winner".to_string(),
+            loser: "loser".to_string(),
         });
         let serve = move |decision: Decision, _request: Request| {
             let started = started.clone();
@@ -1421,7 +1389,7 @@ mod tests {
 
             async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
                 let offloads = futures::future::join_all((0..self.n).map(|i| {
-                    let decision = test_decision(format!("m{i}"));
+                    let decision = test_decision(format!("m{i}").into());
                     driver.call_model(request.clone(), decision)
                 }));
                 tokio::select! {

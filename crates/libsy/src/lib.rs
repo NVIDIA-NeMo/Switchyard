@@ -5,9 +5,7 @@
 #![doc = include_str!("../README.md")]
 
 mod core;
-pub use core::algorithm::{
-    Algorithm, CallModel, Driver, LlmTarget, LlmTargetSet, Step, StepStream, drive,
-};
+pub use core::algorithm::{Algorithm, CallModel, Driver, Step, StepStream, drive};
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::processor::{Event, Processor};
 pub use core::state::{State, StateValue};

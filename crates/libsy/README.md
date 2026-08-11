@@ -30,7 +30,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 
 ## How it fits together
 
-[`LlmTarget`] names a routing destination. An [`Algorithm`] selects targets and
+A target is a bare model id naming a routing destination. An [`Algorithm`] selects targets and
 records [`Decision`](switchyard_protocol::Decision)s, offloading every model call
 to its caller: [`Algorithm::run_stream`] yields a [`Step`] stream whose
 [`Step::CallModel`] items the host serves over its own transport. libsy makes no

@@ -13,11 +13,12 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use switchyard_protocol::{
-    AggLlmResponse, InstructionBlock, LlmRequest, Message, OutputParams, Role, completion_text,
+    AggLlmResponse, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Role,
+    completion_text,
 };
 
 use super::classifier_contract::ClassifierContract;
-use crate::core::algorithm::{Driver, LlmTarget};
+use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
@@ -192,7 +193,7 @@ pub trait JudgePolicy: Send + Sync {
 /// A classifier that calls one judge target and routes through its verdict policy.
 pub struct JudgeClassifier<J, P> {
     judge: J,
-    target: LlmTarget,
+    target: ModelId,
     policy: P,
 }
 
@@ -202,7 +203,7 @@ where
     P: JudgePolicy<Verdict = J::Verdict>,
 {
     /// Combines a judge target with a verdict policy.
-    pub fn new(judge: J, target: LlmTarget, policy: P) -> Self {
+    pub fn new(judge: J, target: ModelId, policy: P) -> Self {
         Self {
             judge,
             target,
@@ -223,13 +224,13 @@ where
         request: &Request,
         driver: &Driver,
     ) -> Option<J::Verdict> {
-        let judge_model = self.target.semantic_name.as_str();
+        let judge_model = self.target.as_str();
 
         let response = driver
             .call_model(
                 self.judge.build_request(state, request),
                 Decision::new(
-                    self.target.semantic_name.to_string(),
+                    self.target.to_string(),
                     Some("llm judge consultation".to_string()),
                     false,
                 ),
@@ -303,7 +304,7 @@ where
             return Err(LibsyError::AlgorithmError {
                 message: format!(
                     "judge classifier for target {:?} requires a driver to call it",
-                    self.target.semantic_name
+                    self.target
                 ),
             });
         };
@@ -375,20 +376,14 @@ mod tests {
                 "no-verdict"
             };
             Classification::Scores(vec![Score {
-                target: target.to_string(),
+                target: ModelId::from(target),
                 confidence: 1.0,
             }])
         }
     }
 
     fn classifier() -> JudgeClassifier<TestJudge, TestPolicy> {
-        JudgeClassifier::new(
-            TestJudge,
-            LlmTarget {
-                semantic_name: "judge".to_string(),
-            },
-            TestPolicy,
-        )
+        JudgeClassifier::new(TestJudge, ModelId::from("judge"), TestPolicy)
     }
 
     fn request() -> Request {
@@ -450,7 +445,7 @@ mod tests {
         }
     }
 
-    fn selected(classification: Classification) -> Result<String> {
+    fn selected(classification: Classification) -> Result<ModelId> {
         classification
             .argmax(false)?
             .map(|score| score.target)
@@ -460,7 +455,7 @@ mod tests {
     }
 
     /// Serves the single offloaded judge call with `reply` through a standalone step receiver.
-    async fn score_served_with(reply: Result<Response>) -> Result<String> {
+    async fn score_served_with(reply: Result<Response>) -> Result<ModelId> {
         let (driver, step_rx) = Driver::new("test");
         let mut steps = tokio_stream::wrappers::ReceiverStream::new(step_rx);
         let classifier = classifier();

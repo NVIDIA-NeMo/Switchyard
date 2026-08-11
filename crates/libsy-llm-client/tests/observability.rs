@@ -33,11 +33,11 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    AffinityRouter, Algorithm, Classifier, Driver, LibsyError, LlmClassifierConfig, LlmTarget,
-    LlmTargetSet, LlmTaskClassifier, PickerMode, StageRouter, StageRouterConfig, Step,
-    TaskClassifierConfig,
+    AffinityRouter, Algorithm, Classifier, Driver, LibsyError, LlmClassifierConfig,
+    LlmTaskClassifier, PickerMode, StageRouter, StageRouterConfig, Step, TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
+use switchyard_protocol::ModelId;
 use switchyard_protocol::{
     ContentBlock, Decision, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
     RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
@@ -429,7 +429,7 @@ impl RoutedLlmClient for UsageClient {
 /// algorithm exercising both instrumented driver paths.
 struct SingleCallAlgo {
     name: String,
-    target_set: LlmTargetSet,
+    target_set: Vec<String>,
 }
 
 #[async_trait]
@@ -445,15 +445,10 @@ impl Algorithm for SingleCallAlgo {
     ) -> switchyard_libsy::Result<Response> {
         let target = self
             .target_set
-            .targets()
             .first()
             .ok_or(LibsyError::NoTargets)?
             .clone();
-        let decision = Decision::new(
-            target.semantic_name.clone(),
-            Some(format!("picked '{}'", target.semantic_name)),
-            true,
-        );
+        let decision = Decision::new(target.clone(), Some(format!("picked '{target}'")), true);
         driver.decide(decision.clone()).await?;
         driver.call_model(request, decision).await
     }
@@ -478,9 +473,7 @@ fn request_with_metadata(session_id: &str, correlation_id: &str) -> Request {
 fn algo(name: &str, model: &str) -> Arc<dyn Algorithm> {
     Arc::new(SingleCallAlgo {
         name: name.to_string(),
-        target_set: LlmTargetSet::new(vec![LlmTarget {
-            semantic_name: model.to_string(),
-        }]),
+        target_set: vec![model.to_string()],
     })
 }
 
@@ -499,15 +492,11 @@ fn classifier_router(
     efficient_model: &str,
     capable_model: &str,
 ) -> switchyard_libsy::Result<Arc<dyn Algorithm>> {
-    let target = |name: &str| LlmTarget {
-        semantic_name: name.to_string(),
-    };
-    let targets = LlmTargetSet::new(vec![target(efficient_model), target(capable_model)]);
     Ok(Arc::new(LlmTaskClassifier::new(
         LlmClassifierConfig::Capability {
-            judge_target: target(judge_model),
-            efficient_target: targets.get_target(efficient_model)?,
-            capable_target: targets.get_target(capable_model)?,
+            judge_target: ModelId::from(judge_model),
+            efficient_target: ModelId::from(efficient_model),
+            capable_target: ModelId::from(capable_model),
             config: TaskClassifierConfig {
                 base_threshold: 0.5,
                 ..TaskClassifierConfig::default()
@@ -862,12 +851,10 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
     let (_, exporter, provider, _, _) = telemetry();
     const STRONG: &str = "obs-stage-strong";
     const WEAK: &str = "obs-stage-weak";
-    let target = |name: &str| LlmTarget {
-        semantic_name: name.to_string(),
-    };
+    let target = |name: &str| name.to_string();
     let algorithm = Arc::new(StageRouter::new(
-        target(STRONG),
-        target(WEAK),
+        target(STRONG).into(),
+        target(WEAK).into(),
         StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
     )?) as Arc<dyn Algorithm>;
     let request = Request {

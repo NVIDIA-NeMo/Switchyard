@@ -292,7 +292,7 @@ pub(crate) fn record_decision(algorithm: &str, decision: &Decision) {
     tracing::debug!(
         target: TRACING_TARGET,
         algorithm,
-        selected_model,
+        selected_model = %selected_model,
         reasoning = decision.reasoning().unwrap_or(""),
         "routing decision"
     );

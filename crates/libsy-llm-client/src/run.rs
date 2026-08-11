@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, drive};
-use switchyard_protocol::{Decision, LlmClientError, Request, Response, RoutedLlmClient};
+use switchyard_protocol::{Decision, LlmClientError, ModelId, Request, Response, RoutedLlmClient};
 
 use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
 use crate::{metrics, observability};
@@ -109,12 +109,12 @@ impl RoutedCallWindows {
     fields(
         algorithm = call.algorithm,
         switchyard.algorithm = call.algorithm,
-        selected_model = call.decision.selected_model_id(),
+        selected_model = %call.decision.selected_model_id(),
         otel.kind = "client",
         otel.name = %format_args!("chat {}", call.decision.selected_model_id()),
         openinference.span.kind = "LLM",
         gen_ai.operation.name = "chat",
-        gen_ai.request.model = call.decision.selected_model_id(),
+        gen_ai.request.model = %call.decision.selected_model_id(),
         gen_ai.request.stream = tracing::field::Empty,
         gen_ai.request.temperature = tracing::field::Empty,
         gen_ai.request.top_p = tracing::field::Empty,
@@ -157,7 +157,7 @@ async fn serve(
     }
     let request = call.request.clone();
     let decision = call.decision.clone();
-    let target = decision.selected_model_id().to_string();
+    let target = decision.selected_model_id().clone();
     let is_answer_call = decision.is_answer_call();
     // Resolved before the clock starts: picking the client is Switchyard's work, not
     // the provider's, so it belongs in the routing overhead.
@@ -174,7 +174,7 @@ async fn serve(
     let result = observability::observe_client_call(result);
     if let Some(observer) = observer {
         observer(RunObservation::LlmCall(LlmCallObservation {
-            selected_model: call.decision.selected_model_id().to_string(),
+            selected_model: call.decision.selected_model_id().clone(),
             is_answer_call,
             is_success: result.is_ok(),
             duration,
@@ -209,12 +209,12 @@ enum Routing {
     /// One client serves every model.
     Single(Arc<dyn RoutedLlmClient>),
     /// Each model is served by the client configured for it.
-    ByModel(HashMap<String, Arc<dyn RoutedLlmClient>>),
+    ByModel(HashMap<ModelId, Arc<dyn RoutedLlmClient>>),
 }
 
 impl ClientRouter {
     /// Build a router over `model name -> client`, for targets spread across providers.
-    pub fn new(by_model: HashMap<String, Arc<dyn RoutedLlmClient>>) -> Self {
+    pub fn new(by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>) -> Self {
         Self {
             routing: Arc::new(Routing::ByModel(by_model)),
         }
@@ -237,7 +237,7 @@ impl ClientRouter {
     /// entry for this one, rather than silently sending the call to another provider.
     pub fn route(
         &self,
-        model: &str,
+        model: &ModelId,
     ) -> std::result::Result<&Arc<dyn RoutedLlmClient>, LlmClientError> {
         match self.routing.as_ref() {
             Routing::Single(client) => Ok(client),
@@ -252,8 +252,8 @@ impl ClientRouter {
     }
 }
 
-impl FromIterator<(String, Arc<dyn RoutedLlmClient>)> for ClientRouter {
-    fn from_iter<I: IntoIterator<Item = (String, Arc<dyn RoutedLlmClient>)>>(iter: I) -> Self {
+impl FromIterator<(ModelId, Arc<dyn RoutedLlmClient>)> for ClientRouter {
+    fn from_iter<I: IntoIterator<Item = (ModelId, Arc<dyn RoutedLlmClient>)>>(iter: I) -> Self {
         Self::new(iter.into_iter().collect())
     }
 }

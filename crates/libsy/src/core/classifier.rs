@@ -4,7 +4,7 @@
 use crate::core::algorithm::Driver;
 use crate::{LibsyError, Result};
 use async_trait::async_trait;
-use switchyard_protocol::{Request, Response};
+use switchyard_protocol::{ModelId, Request, Response};
 
 /// One classifier's recommendation of a routing `target`, with a `[0.0, 1.0]` confidence.
 #[derive(Debug, Clone, PartialEq)]
@@ -12,7 +12,7 @@ pub struct Score {
     /// `[0.0, 1.0]` confidence in `target`.
     pub confidence: f64,
     /// The target (model / tier) being recommended.
-    pub target: String,
+    pub target: ModelId,
 }
 
 /// A classifier's verdict for a request: a set of target [`Score`]s, flagged by how
@@ -72,14 +72,14 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
 #[async_trait]
 pub trait Classifier<S = ()>: Send + Sync {
     /// Stable tier represented by `selected_model_id`, when this classifier defines one.
-    fn routing_tier(&self, _selected_model_id: &str) -> Option<&'static str> {
+    fn routing_tier(&self, _selected_model_id: &ModelId) -> Option<&'static str> {
         None
     }
 
     /// Drops retained routing state when `target` was unavailable for `request`.
     ///
     /// Stateless classifiers do not need to implement this hook.
-    fn target_unavailable(&self, _request: &Request, _target: &str) {}
+    fn target_unavailable(&self, _request: &Request, _target: &ModelId) {}
 
     /// Score the classifier's targets given the current state and request.
     ///
@@ -107,7 +107,7 @@ mod tests {
     /// Terse `Score` builder for the assertions below.
     fn score(target: &str, confidence: f64) -> Score {
         Score {
-            target: target.to_string(),
+            target: ModelId::from(target),
             confidence,
         }
     }
@@ -125,7 +125,7 @@ mod tests {
         // Equal confidence: the earlier target in cascade order wins the tie.
         let scores = vec![score("first", 0.7), score("second", 0.7)];
         let best = Classification::Scores(scores).argmax(false)?;
-        assert_eq!(best.map(|s| s.target), Some("first".to_string()));
+        assert_eq!(best.map(|s| s.target), Some(ModelId::from("first")));
         Ok(())
     }
 
@@ -196,7 +196,7 @@ mod tests {
             let target = request.requested_model().unwrap_or("auto").to_string();
             Ok((
                 Classification::Scores(vec![Score {
-                    target,
+                    target: target.into(),
                     confidence: 1.0,
                 }]),
                 None,
@@ -218,7 +218,7 @@ mod tests {
             .await?;
         assert_eq!(
             classification.argmax(false)?.map(|s| s.target),
-            Some("strong".to_string())
+            Some(ModelId::from("strong"))
         );
         assert!(state);
         Ok(())
@@ -238,7 +238,7 @@ mod tests {
             request.llm_request.model = Some("rewritten".to_string());
             Ok((
                 Classification::Scores(vec![Score {
-                    target: "rewritten".to_string(),
+                    target: ModelId::from("rewritten"),
                     confidence: 1.0,
                 }]),
                 None,

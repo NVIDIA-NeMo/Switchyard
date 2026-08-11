@@ -5,7 +5,7 @@
 
 use std::error::Error as StdError;
 
-use switchyard_protocol::LlmClientError;
+use switchyard_protocol::{LlmClientError, ModelId};
 use thiserror::Error;
 
 /// Result type returned by libsy APIs.
@@ -17,8 +17,8 @@ pub enum LibsyError {
     /// A named target was not present in the configured target set.
     #[error("target {target:?} was not found")]
     TargetNotFound {
-        /// Missing semantic target name.
-        target: String,
+        /// Missing target model id.
+        target: ModelId,
     },
 
     /// Routing was attempted without any configured targets.
@@ -44,7 +44,7 @@ pub enum LibsyError {
     #[error("client call to target {target:?} failed: {source}")]
     ClientCall {
         /// Target whose client failed.
-        target: String,
+        target: ModelId,
         /// Typed error supplied by the protocol-owned client trait.
         #[source]
         source: LlmClientError,
@@ -67,7 +67,7 @@ pub enum LibsyError {
 
 impl LibsyError {
     /// Wrap an error returned by the protocol-owned client trait.
-    pub fn client_call(target: impl Into<String>, source: LlmClientError) -> Self {
+    pub fn client_call(target: impl Into<ModelId>, source: LlmClientError) -> Self {
         Self::ClientCall {
             target: target.into(),
             source,

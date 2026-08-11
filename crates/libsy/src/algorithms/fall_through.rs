@@ -28,13 +28,11 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::algorithm::{
-    self, Algorithm, Driver, LlmTarget, LlmTargetSet, RoutingIdentity, SessionEvictions,
-};
+use crate::core::algorithm::{self, Algorithm, Driver, RoutingIdentity, SessionEvictions};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Decision, Request, Response, RoutingFallbackReason};
+use switchyard_protocol::{Decision, ModelId, Request, Response, RoutingFallbackReason};
 
 struct SessionState<S> {
     state: Arc<AsyncMutex<S>>,
@@ -59,12 +57,12 @@ const SESSION_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// decider that never does. Which target that is belongs to whoever assembles the
 /// cascade, not to the classifiers in it.
 pub struct DefaultTarget {
-    target: String,
+    target: ModelId,
 }
 
 impl DefaultTarget {
     /// Close a cascade with `target`.
-    pub fn new(target: impl Into<String>) -> Self {
+    pub fn new(target: impl Into<ModelId>) -> Self {
         Self {
             target: target.into(),
         }
@@ -98,7 +96,7 @@ pub struct FallThrough<S = ()> {
     decision_reason: fn(&str, &Score) -> String,
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
-    targets: LlmTargetSet,
+    targets: Vec<ModelId>,
     session_states: Option<Arc<SessionStates<S>>>,
     cleanup_started: Once,
     session_evictions: SessionEvictions,
@@ -106,7 +104,7 @@ pub struct FallThrough<S = ()> {
 
 impl FallThrough<()> {
     /// Creates an empty stateless router.
-    pub fn new(targets: LlmTargetSet) -> Self {
+    pub fn new(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
             decision_reason: default_decision_reason,
@@ -125,7 +123,7 @@ where
     S: Default + Send + 'static,
 {
     /// Creates a router that retains one private `S` per session.
-    pub fn new_with_state(targets: LlmTargetSet) -> Self {
+    pub fn new_with_state(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
             decision_reason: default_decision_reason,
@@ -258,8 +256,8 @@ where
     fn fallback_decision(
         &self,
         deciding: &dyn Classifier<S>,
-        from: &LlmTarget,
-        to: &LlmTarget,
+        from: &ModelId,
+        to: &ModelId,
         reason: RoutingFallbackReason,
     ) -> Decision {
         let failure = match reason {
@@ -267,15 +265,13 @@ where
             RoutingFallbackReason::Unavailable => "was unavailable",
         };
         Decision::new(
-            to.semantic_name.clone(),
+            to.clone(),
             Some(with_routing_tier(
                 format!(
-                    "{} {failure}; fell back to {} (fallback reason: {})",
-                    from.semantic_name,
-                    to.semantic_name,
+                    "{from} {failure}; fell back to {to} (fallback reason: {})",
                     reason.as_str(),
                 ),
-                deciding.routing_tier(&to.semantic_name),
+                deciding.routing_tier(to),
             )),
             true,
         )
@@ -298,15 +294,10 @@ where
     async fn route(
         &self,
         state: &mut S,
-        excluded: &HashSet<String>,
+        excluded: &HashSet<ModelId>,
         driver: &Driver,
         request: &mut Request,
-    ) -> Result<(
-        LlmTarget,
-        Decision,
-        Option<Response>,
-        Arc<dyn Classifier<S>>,
-    )> {
+    ) -> Result<(ModelId, Decision, Option<Response>, Arc<dyn Classifier<S>>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
         for processor in &self.processors {
             processor.process(state, Event::Request(request)).await?;
@@ -332,21 +323,18 @@ where
 
         // 3. Resolve the target and publish the decision. When an excluded target sends
         //    the request elsewhere, the reasoning describes where it actually went.
-        let target = self.targets.resolve_target(&score.target, excluded)?;
-        let reasoning = if target.semantic_name == score.target {
+        let target = algorithm::resolve_target(&self.targets, &score.target, excluded)?;
+        let reasoning = if target == score.target {
             (self.decision_reason)(&self.name, &score)
         } else {
             format!(
                 "{} exceeded its context window; fell back to {}",
-                score.target, target.semantic_name
+                score.target, target
             )
         };
         let decision: Decision = Decision::new(
-            target.semantic_name.clone(),
-            Some(with_routing_tier(
-                reasoning,
-                deciding.routing_tier(&target.semantic_name),
-            )),
+            target.clone(),
+            Some(with_routing_tier(reasoning, deciding.routing_tier(&target))),
             true,
         );
         driver.decide(decision.clone()).await?;
@@ -512,15 +500,8 @@ mod tests {
         }
     }
 
-    fn target_set(names: &[&str]) -> LlmTargetSet {
-        LlmTargetSet::new(
-            names
-                .iter()
-                .map(|name| LlmTarget {
-                    semantic_name: name.to_string(),
-                })
-                .collect(),
-        )
+    fn target_set(names: &[&str]) -> Vec<ModelId> {
+        names.iter().map(|name| ModelId::from(*name)).collect()
     }
 
     fn target_prompts() -> TargetPrompts {
@@ -587,7 +568,7 @@ mod tests {
     fn score(target: &str, confidence: f64) -> Score {
         Score {
             confidence,
-            target: target.to_string(),
+            target: ModelId::from(target),
         }
     }
 
@@ -659,8 +640,8 @@ mod tests {
         move |decision: Decision, _request: Request| {
             let calls = Arc::clone(&calls);
             async move {
-                let model = decision.selected_model_id().to_string();
-                calls.lock().push(model.clone());
+                let model = decision.selected_model_id().clone();
+                calls.lock().push(model.to_string());
                 if overflowing.contains(&model.as_str()) {
                     return Err(LlmClientError::ContextWindowExceeded {
                         model,
@@ -872,8 +853,11 @@ mod tests {
 
         #[async_trait]
         impl Classifier for TieredClassifier {
-            fn routing_tier(&self, selected_model_id: &str) -> Option<&'static str> {
-                match selected_model_id {
+            fn routing_tier(
+                &self,
+                selected_model_id: &switchyard_protocol::ModelId,
+            ) -> Option<&'static str> {
+                match selected_model_id.as_str() {
                     "weak" => Some("weak"),
                     "strong" => Some("strong"),
                     _ => None,

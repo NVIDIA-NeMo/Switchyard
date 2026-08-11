@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role};
+use switchyard_protocol::{ContentBlock, InstructionBlock, Message, ModelId, Request, Role};
 
 use crate::Result;
 use crate::core::processor::{Event, Processor};
@@ -74,18 +74,18 @@ fn drop_exact_replay(request: &mut Request) {
 /// untouched.
 #[derive(Clone, Debug, Default)]
 pub struct TargetPrompts {
-    by_target: BTreeMap<String, String>,
+    by_target: BTreeMap<ModelId, String>,
 }
 
 impl TargetPrompts {
     /// Hand `target` this prompt on every turn it serves.
-    pub fn with(mut self, target: impl Into<String>, prompt: impl Into<String>) -> Self {
+    pub fn with(mut self, target: impl Into<ModelId>, prompt: impl Into<String>) -> Self {
         self.by_target.insert(target.into(), prompt.into());
         self
     }
 
     /// The prompt configured for `target`, if any.
-    pub fn get(&self, target: &str) -> Option<&str> {
+    pub fn get(&self, target: &ModelId) -> Option<&str> {
         self.by_target.get(target).map(String::as_str)
     }
 

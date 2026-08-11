@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
-use switchyard_protocol::Usage;
+use switchyard_protocol::{ModelId, Usage};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
@@ -145,7 +145,7 @@ pub(crate) struct SessionStatsSnapshot {
     total_cached_tokens: u64,
     total_cache_creation_tokens: u64,
     total_completion_tokens: u64,
-    models: BTreeMap<String, SessionModelStats>,
+    models: BTreeMap<ModelId, SessionModelStats>,
 }
 
 #[derive(Default, Serialize)]
@@ -178,7 +178,7 @@ impl SessionStatsSnapshot {
             "" => "unknown",
             model => model,
         };
-        let stats = self.models.entry(model.to_string()).or_default();
+        let stats = self.models.entry(ModelId::from(model)).or_default();
         stats.calls = stats.calls.saturating_add(1);
         stats.prompt_tokens = stats.prompt_tokens.saturating_add(record.prompt_tokens);
         stats.cached_tokens = stats.cached_tokens.saturating_add(record.cached_tokens);

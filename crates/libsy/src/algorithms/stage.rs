@@ -25,11 +25,11 @@ use super::util::stage::{
     record_decision_source, record_routing_decision,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
+use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Request, Response};
+use switchyard_protocol::{ModelId, Request, Response};
 
 /// Telemetry name for a router this module assembles.
 const STAGE_ROUTER: &str = "stage_router";
@@ -45,7 +45,7 @@ struct SourceStamp {
 
 #[async_trait]
 impl Classifier<State> for SourceStamp {
-    fn routing_tier(&self, selected_model_id: &str) -> Option<&'static str> {
+    fn routing_tier(&self, selected_model_id: &ModelId) -> Option<&'static str> {
         self.inner.routing_tier(selected_model_id)
     }
 
@@ -69,7 +69,7 @@ impl Classifier<State> for SourceStamp {
 pub struct LlmFallback {
     /// Target the judge model is called through. It is not a routing
     /// destination, so it does not belong in the router's target set.
-    pub judge_target: LlmTarget,
+    pub judge_target: ModelId,
     /// Judge configuration. `recent_turn_window` is worth setting to this router's
     /// `recent_window` so the judge reads the same span the signal scorer scored.
     /// Note: `session_affinity` and `message_hash_fallback` have no effect here —
@@ -126,11 +126,7 @@ impl StageRouter {
     /// routing destination.
     ///
     /// Errors if either threshold in `config` is outside `[0.0, 1.0]`.
-    pub fn new(
-        capable: LlmTarget,
-        efficient: LlmTarget,
-        config: StageRouterConfig,
-    ) -> Result<Self> {
+    pub fn new(capable: ModelId, efficient: ModelId, config: StageRouterConfig) -> Result<Self> {
         Ok(Self {
             route: build_route(capable, efficient, config)?,
         })
@@ -150,8 +146,8 @@ impl Algorithm for StageRouter {
 
 /// Wires the cascade the wrapper drives.
 fn build_route(
-    capable: LlmTarget,
-    efficient: LlmTarget,
+    capable: ModelId,
+    efficient: ModelId,
     config: StageRouterConfig,
 ) -> Result<FallThrough<State>> {
     if !(0.0..=1.0).contains(&config.confidence_threshold) {
@@ -164,10 +160,7 @@ fn build_route(
     }
     // The tiers are a fixed pair; their targets are whatever the deployment calls
     // them, and the classifier scores onto those names.
-    let targets = StageTargets::new(
-        capable.semantic_name.clone(),
-        efficient.semantic_name.clone(),
-    );
+    let targets = StageTargets::new(capable.clone(), efficient.clone());
     // The picker's mode fixes the fallback tier up front, so the terminal
     // classifier is a constant rather than a per-turn lookup.
     let fall_open = targets.name(config.mode.default_tier()).to_string();
@@ -179,7 +172,7 @@ fn build_route(
     let signals = ToolSignalProcessor {
         recent_window: config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW),
     };
-    let target_set = LlmTargetSet::new(vec![capable.clone(), efficient.clone()]);
+    let target_set = vec![capable.clone(), efficient.clone()];
     let mut router = FallThrough::<State>::new_with_state(target_set)
         .with_name(STAGE_ROUTER)
         .with_processor(Arc::new(signals))
@@ -223,17 +216,10 @@ mod tests {
 
     use super::*;
     use crate::algorithms::util::stage::DECISION_SOURCE_KEY;
-    use crate::core::algorithm::LlmTarget;
     use crate::core::classifier::Score;
     use crate::core::state::StateValue;
     use crate::core::testing::{Serve, reply, test_drive};
     use switchyard_protocol::{Decision, Metadata, Response};
-
-    fn tier_target(name: &str) -> LlmTarget {
-        LlmTarget {
-            semantic_name: name.to_string(),
-        }
-    }
 
     /// A classifier that always picks `target`, standing in for a cascade member.
     struct Fixed(&'static str);
@@ -248,7 +234,7 @@ mod tests {
         ) -> Result<(Classification, Option<Response>)> {
             Ok((
                 Classification::Scores(vec![Score {
-                    target: self.0.to_string(),
+                    target: ModelId::from(self.0),
                     confidence: 1.0,
                 }]),
                 None,
@@ -311,7 +297,7 @@ mod tests {
         let mut config = config();
         config.confidence_threshold = 1.5;
         assert!(matches!(
-            StageRouter::new(tier_target("strong"), tier_target("weak"), config),
+            StageRouter::new(ModelId::from("strong"), ModelId::from("weak"), config),
             Err(LibsyError::AlgorithmError { .. })
         ));
     }
@@ -320,23 +306,21 @@ mod tests {
     fn rejects_an_out_of_range_judge_threshold() {
         let mut config = config();
         config.llm_fallback = Some(LlmFallback {
-            judge_target: LlmTarget {
-                semantic_name: "judge".to_string(),
-            },
+            judge_target: ModelId::from("judge"),
             config: TaskClassifierConfig {
                 base_threshold: -0.1,
                 ..Default::default()
             },
         });
         assert!(matches!(
-            StageRouter::new(tier_target("strong"), tier_target("weak"), config),
+            StageRouter::new(ModelId::from("strong"), ModelId::from("weak"), config),
             Err(LibsyError::AlgorithmError { .. })
         ));
     }
 
     #[test]
     fn builds_over_both_tiers() -> Result<()> {
-        let router = StageRouter::new(tier_target("strong"), tier_target("weak"), config())?;
+        let router = StageRouter::new(ModelId::from("strong"), ModelId::from("weak"), config())?;
         assert_eq!(router.name(), STAGE_ROUTER);
         Ok(())
     }
@@ -402,16 +386,10 @@ mod tests {
         }
     }
 
-    fn recording_target(name: &str) -> LlmTarget {
-        LlmTarget {
-            semantic_name: name.to_string(),
-        }
-    }
-
     fn recording_router(config: StageRouterConfig) -> Result<Arc<StageRouter>> {
         Ok(Arc::new(StageRouter::new(
-            recording_target("strong"),
-            recording_target("weak"),
+            ModelId::from("strong"),
+            ModelId::from("weak"),
             config,
         )?))
     }
@@ -426,7 +404,7 @@ mod tests {
         *recorder.judge_p_solve.lock() = p_solve;
         let mut c = config();
         c.llm_fallback = Some(LlmFallback {
-            judge_target: recording_target(JUDGE),
+            judge_target: ModelId::from(JUDGE),
             config: TaskClassifierConfig {
                 base_threshold: 0.5,
                 recent_turn_window: Some(3),

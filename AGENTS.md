@@ -140,7 +140,7 @@ current source and CI workflows for implementation details.
 The supported serving path is native Rust:
 
 ```
-HTTP request → switchyard-server → libsy Algorithm → LlmTarget/RoutedLlmClient
+HTTP request → switchyard-server → libsy Algorithm → RoutedLlmClient
              → switchyard-translation → upstream model
 ```
 

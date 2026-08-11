@@ -28,6 +28,7 @@ use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
 use crate::observability::meter;
+use switchyard_protocol::ModelId;
 use switchyard_protocol::Request;
 
 /// Turn depth below which stall signals stay quiet — early no-write turns are
@@ -96,13 +97,13 @@ impl Tier {
 /// reaches the right model.
 #[derive(Clone, Debug)]
 pub struct StageTargets {
-    capable: String,
-    efficient: String,
+    capable: ModelId,
+    efficient: ModelId,
 }
 
 impl StageTargets {
     /// Name the targets the two tiers route to.
-    pub fn new(capable: impl Into<String>, efficient: impl Into<String>) -> Self {
+    pub fn new(capable: impl Into<ModelId>, efficient: impl Into<ModelId>) -> Self {
         Self {
             capable: capable.into(),
             efficient: efficient.into(),
@@ -110,7 +111,7 @@ impl StageTargets {
     }
 
     /// The target `tier` routes to.
-    pub fn name(&self, tier: Tier) -> &str {
+    pub fn name(&self, tier: Tier) -> &ModelId {
         match tier {
             Tier::Capable => &self.capable,
             Tier::Efficient => &self.efficient,
@@ -118,10 +119,10 @@ impl StageTargets {
     }
 
     /// The tier label for a routed target, or `None` for one outside the pair.
-    pub fn label_for(&self, target: &str) -> Option<&'static str> {
-        if target == self.capable {
+    pub fn label_for(&self, target: &ModelId) -> Option<&'static str> {
+        if *target == self.capable {
             Some(Tier::Capable.label())
-        } else if target == self.efficient {
+        } else if *target == self.efficient {
             Some(Tier::Efficient.label())
         } else {
             None
@@ -542,7 +543,7 @@ impl StageClassifier {
 
 #[async_trait]
 impl Classifier<State> for StageClassifier {
-    fn routing_tier(&self, selected_model_id: &str) -> Option<&'static str> {
+    fn routing_tier(&self, selected_model_id: &ModelId) -> Option<&'static str> {
         self.targets.label_for(selected_model_id)
     }
 
@@ -578,7 +579,7 @@ impl Classifier<State> for StageClassifier {
                 let conf = score.abs();
                 Ok((
                     Classification::Scores(vec![Score {
-                        target: target.to_string(),
+                        target: target.clone(),
                         confidence: conf,
                     }]),
                     None,
