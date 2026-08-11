@@ -90,7 +90,7 @@ pub(crate) fn outcome_value<T>(result: &Result<T>) -> &'static str {
     }
 }
 
-/// Span covering one algorithm run (the whole `create_run_task` execution).
+/// Span covering one algorithm run (the whole `route` execution).
 ///
 /// Correlation ids from the request [`switchyard_protocol::Metadata`] are recorded as span fields
 /// when present. `tracing` spans cannot grow field names at runtime, so

@@ -29,11 +29,7 @@ impl Algorithm for Passthrough {
         "passthrough"
     }
 
-    async fn create_run_task(
-        self: Arc<Self>,
-        driver: Driver,
-        request: Request,
-    ) -> Result<Response> {
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
         let decision: Decision = Decision::new(
             self.target.semantic_name.clone(),
             Some(format!(

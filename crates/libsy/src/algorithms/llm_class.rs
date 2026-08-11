@@ -930,11 +930,7 @@ impl Algorithm for LlmTaskClassifier {
         "llm_task_classifier"
     }
 
-    async fn create_run_task(
-        self: Arc<Self>,
-        driver: Driver,
-        request: Request,
-    ) -> Result<Response> {
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
         self.route.execute(driver, request).await
     }
 }

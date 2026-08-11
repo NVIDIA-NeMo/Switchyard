@@ -6,14 +6,6 @@
 
 use crate::{LlmRequest, LlmResponse, Metadata};
 
-/// Agentic-stack events fed to an algorithm out of band (e.g. tool results, budget
-/// updates) — in libsy, via `Algorithm::process_signals`.
-///
-/// A placeholder today; a stateful algorithm can begin consuming signals as the enum
-/// grows without changing the orchestrator contract.
-#[derive(Clone)]
-pub struct Signals {}
-
 /// A request an algorithm routes: the normalized [`LlmRequest`] plus optional
 /// host-owned raw data and correlation [`Metadata`].
 #[derive(Clone, Default)]

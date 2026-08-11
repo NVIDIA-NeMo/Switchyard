@@ -424,11 +424,7 @@ where
         &self.name
     }
 
-    async fn create_run_task(
-        self: Arc<Self>,
-        driver: Driver,
-        request: Request,
-    ) -> Result<Response> {
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
         self.execute(driver, request).await
     }
 }

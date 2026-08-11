@@ -437,7 +437,7 @@ impl Algorithm for SingleCallAlgo {
         &self.name
     }
 
-    async fn create_run_task(
+    async fn route(
         self: Arc<Self>,
         driver: Driver,
         request: Request,
@@ -1097,7 +1097,7 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
                 call.respond(Err(test_error("synthetic upstream failure")))?;
             }
             Ok(Step::Decision(_)) => {}
-            Ok(Step::ReturnToAgent(_)) => {
+            Ok(Step::Done(_)) => {
                 return Err(test_error("expected the failed call to fail the run"));
             }
             Err(_) => saw_error_step = true,

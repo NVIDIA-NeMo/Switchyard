@@ -159,11 +159,7 @@ impl Algorithm for Random {
         "random"
     }
 
-    async fn create_run_task(
-        self: Arc<Self>,
-        driver: Driver,
-        request: Request,
-    ) -> Result<Response> {
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
         self.inner.execute(driver, request).await
     }
 }
@@ -178,7 +174,7 @@ mod tests {
     use crate::algorithms::util::affinity::AffinityRouter;
     use crate::core::algorithm::LlmTarget;
     use crate::core::testing::{echo, test_drive};
-    use switchyard_protocol::{Request, Signals};
+    use switchyard_protocol::Request;
 
     fn request() -> Request {
         Request {
@@ -400,13 +396,6 @@ mod tests {
             .map(|error| error.to_string())
             .unwrap_or_default();
         assert!(error.contains("random targets must be unique"));
-    }
-
-    #[tokio::test]
-    async fn process_signals_is_a_noop() -> Result<()> {
-        let algorithm: Arc<dyn Algorithm> = Arc::new(algorithm(&["only/model"], None, None)?);
-        algorithm.process_signals(Signals {}).await?;
-        Ok(())
     }
 
     #[tokio::test]

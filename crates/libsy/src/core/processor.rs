@@ -3,7 +3,7 @@
 
 use crate::Result;
 use async_trait::async_trait;
-use switchyard_protocol::{AggLlmResponse, Decision, Request, Signals};
+use switchyard_protocol::{AggLlmResponse, Decision, Request};
 
 /// An event observed by the algorithm. Events are consumed by [`Processor`] to mutate state.
 ///
@@ -13,8 +13,6 @@ use switchyard_protocol::{AggLlmResponse, Decision, Request, Signals};
 pub enum Event<'a> {
     /// The inbound request that begins a turn.
     Request(&'a mut Request),
-    /// An out-of-band agentic-stack signal (tool results, budget updates, …).
-    Signal(&'a Signals),
     /// A routing decision paired with the request that produced it.
     ///
     /// The request is rewritable: a processor may add instructions or notes here that
@@ -49,7 +47,6 @@ mod tests {
     fn event_key(event: &Event<'_>) -> &'static str {
         match event {
             Event::Request(_) => "requests",
-            Event::Signal(_) => "signals",
             Event::Decision { .. } => "decisions",
             Event::ModelResponse(_) => "model_responses",
         }
@@ -86,8 +83,6 @@ mod tests {
         let mut req = request();
         let response = text_response(None, "ok");
         let decision = Decision::new("test/model", None, true);
-        let signals = Signals {};
-
         // Feed one of every event variant through the processor.
         processor
             .process(&mut state, Event::Request(&mut req))
@@ -104,12 +99,7 @@ mod tests {
                 },
             )
             .await?;
-        processor
-            .process(&mut state, Event::Signal(&signals))
-            .await?;
-
         assert_eq!(count(&state, "requests"), 1);
-        assert_eq!(count(&state, "signals"), 1);
         assert_eq!(count(&state, "decisions"), 1);
         assert_eq!(count(&state, "model_responses"), 1);
         Ok(())
