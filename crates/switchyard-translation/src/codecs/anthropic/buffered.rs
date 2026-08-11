@@ -340,17 +340,20 @@ impl FormatCodec for AnthropicMessagesCodec {
         let content = output
             .map(|output| encode_anthropic_content(&output.content))
             .unwrap_or_else(|| vec![json!({"type": "text", "text": ""})]);
+        let normalized_stop_reason = output.and_then(|output| output.stop_reason);
         let body = json!({
             "id": response.id.clone().unwrap_or_else(|| "msg_switchyard".to_string()),
             "type": "message",
             "role": "assistant",
             "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
             "content": content,
-            "stop_reason": output
-                .and_then(|output| output.stop_reason)
+            "stop_reason": normalized_stop_reason
                 .map(anthropic_stop_reason)
                 .unwrap_or("end_turn"),
             "stop_sequence": Value::Null,
+            "stop_details": normalized_stop_reason
+                .map(anthropic_stop_details)
+                .unwrap_or(Value::Null),
             "usage": encode_anthropic_usage(&response.usage),
         });
         Ok(EncodedResponse {
@@ -990,5 +993,17 @@ fn anthropic_stop_reason(reason: StopReason) -> &'static str {
         StopReason::ToolUse => "tool_use",
         StopReason::ContentFilter => "refusal",
         StopReason::EndTurn | StopReason::Error | StopReason::Unknown => "end_turn",
+    }
+}
+
+// Emits the metadata object required by Anthropic refusal responses.
+fn anthropic_stop_details(reason: StopReason) -> Value {
+    match reason {
+        StopReason::ContentFilter => json!({
+            "type": "refusal",
+            "category": Value::Null,
+            "explanation": Value::Null,
+        }),
+        _ => Value::Null,
     }
 }

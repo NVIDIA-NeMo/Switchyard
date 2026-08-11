@@ -627,6 +627,10 @@ fn openai_content_filter_translates_to_anthropic_refusal() -> TestResult {
         .body;
 
     assert_eq!(output["stop_reason"], "refusal");
+    assert_eq!(
+        output["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
+    );
     Ok(())
 }
 

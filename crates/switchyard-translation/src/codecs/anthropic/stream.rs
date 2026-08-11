@@ -265,6 +265,7 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "delta": {
                 "stop_reason": anthropic_stop_reason(state.stop_reason.as_deref()),
                 "stop_sequence": Value::Null,
+                "stop_details": anthropic_stop_details(state.stop_reason.as_deref()),
             },
             "usage": anthropic_stream_usage(state),
         }));
@@ -579,6 +580,18 @@ fn anthropic_stop_reason(reason: Option<&str>) -> String {
         | Some("stop_sequence")
         | Some("refusal") => reason.unwrap_or("end_turn").to_string(),
         _ => "end_turn".to_string(),
+    }
+}
+
+// Emits the metadata object required by Anthropic refusal events.
+fn anthropic_stop_details(reason: Option<&str>) -> Value {
+    match reason {
+        Some("content_filter" | "refusal") => json!({
+            "type": "refusal",
+            "category": Value::Null,
+            "explanation": Value::Null,
+        }),
+        _ => Value::Null,
     }
 }
 

@@ -333,6 +333,10 @@ fn openai_content_filter_stream_translates_to_anthropic_refusal() -> TestResult 
         .find(|event| event["type"] == "message_delta")
         .ok_or("missing Anthropic terminal delta")?;
     assert_eq!(terminal["delta"]["stop_reason"], "refusal");
+    assert_eq!(
+        terminal["delta"]["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
+    );
     Ok(())
 }
 
