@@ -700,18 +700,30 @@ fn encode_message_with_tool_results_to_openai(
 
     for block in &message.content {
         if let ContentBlock::ToolResult(result) = block {
-            push_pending_openai_message(
-                &mut out,
-                message.role,
-                &mut pending_content,
-                diagnostics,
-                policy,
-            )?;
             out.push(json!({
                 "role": "tool",
                 "tool_call_id": result.tool_call_id,
                 "content": text_from_blocks(&result.content, " "),
             }));
+            let non_text = result
+                .content
+                .iter()
+                .filter(|block| {
+                    !matches!(
+                        block,
+                        ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !non_text.is_empty() {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "OpenAI Chat tool messages only support text; non-text tool-result content was moved to a user message",
+                )?;
+                pending_content.extend(non_text);
+            }
         } else {
             pending_content.push(block.clone());
         }

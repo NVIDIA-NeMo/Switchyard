@@ -568,6 +568,9 @@ fn decode_anthropic_content_block(
         Some("input_file") | Some("file") => vec![ContentBlock::File {
             source: decode_file_source(block),
         }],
+        Some("document") => vec![ContentBlock::File {
+            source: decode_anthropic_file_source(block),
+        }],
         _ => vec![ContentBlock::Unknown {
             provider: WireFormat::AnthropicMessages.into(),
             raw: Value::Object(block.clone()),
@@ -575,30 +578,40 @@ fn decode_anthropic_content_block(
     })
 }
 
-// Converts Anthropic tool-result content into text-like IR blocks.
+// Preserves supported Anthropic tool-result blocks in the neutral IR.
 fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
     match value {
         Value::String(text) => vec![ContentBlock::Text { text: text.clone() }],
         Value::Array(blocks) => {
-            let mut text = Vec::new();
+            let mut content = Vec::new();
             for block in blocks {
                 if let Some(block) = block.as_object() {
-                    if block.get("type").and_then(Value::as_str) == Some("text") {
-                        text.push(
-                            block
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("text") => content.push(ContentBlock::Text {
+                            text: block
                                 .get("text")
                                 .and_then(Value::as_str)
                                 .unwrap_or_default()
                                 .to_string(),
-                        );
-                    } else {
-                        text.push(json_string(&Value::Object(block.clone())));
+                        }),
+                        Some("image") => content.push(ContentBlock::Image {
+                            source: block
+                                .get("source")
+                                .cloned()
+                                .map(ImageSource::Raw)
+                                .unwrap_or_else(|| ImageSource::Raw(Value::Object(block.clone()))),
+                        }),
+                        Some("document") => content.push(ContentBlock::File {
+                            source: decode_anthropic_file_source(block),
+                        }),
+                        _ => content.push(ContentBlock::Unknown {
+                            provider: WireFormat::AnthropicMessages.into(),
+                            raw: Value::Object(block.clone()),
+                        }),
                     }
                 }
             }
-            vec![ContentBlock::Text {
-                text: text.join(" "),
-            }]
+            content
         }
         Value::Null => vec![ContentBlock::Text {
             text: String::new(),
@@ -607,6 +620,31 @@ fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
             text: json_string(other),
         }],
     }
+}
+
+// Decodes Anthropic document sources into normalized file sources.
+fn decode_anthropic_file_source(block: &Map<String, Value>) -> FileSource {
+    let Some(source) = block.get("source").and_then(Value::as_object) else {
+        return FileSource::Raw(Value::Object(block.clone()));
+    };
+    if source.get("type").and_then(Value::as_str) == Some("file")
+        && let Some(file_id) = source.get("file_id").and_then(Value::as_str)
+    {
+        return FileSource::FileId(file_id.to_string());
+    }
+    if source.get("type").and_then(Value::as_str) == Some("base64")
+        && let Some(data) = source.get("data").and_then(Value::as_str)
+    {
+        return FileSource::FileData {
+            data: data.to_string(),
+            filename: block
+                .get("title")
+                .or_else(|| source.get("filename"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        };
+    }
+    FileSource::Raw(Value::Object(source.clone()))
 }
 
 // Decodes Anthropic tool definitions into normalized tool definitions.

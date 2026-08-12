@@ -5,7 +5,9 @@
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -308,6 +310,180 @@ fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult
         ])
     );
     Ok(())
+}
+
+// Verifies image content in an Anthropic tool result remains multimodal for OpenAI Chat.
+#[test]
+fn anthropic_tool_result_image_splits_to_openai_user_message() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": [
+                    {"type": "text", "text": "here it is:"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "iVBORw0KGgo="
+                        }
+                    }
+                ]
+            }]
+        }],
+        "max_tokens": 1024
+    });
+
+    let translated = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &body,
+        &TranslationPolicy::default(),
+    )?;
+
+    assert_eq!(
+        translated.body["messages"],
+        json!([
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "here it is:"},
+            {
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}
+                }]
+            }
+        ])
+    );
+    assert_eq!(translated.diagnostics.len(), 1);
+    assert_eq!(translated.diagnostics[0].code, "lossy_conversion");
+    Ok(())
+}
+
+// Verifies parallel tool results stay contiguous before lowered image and document content.
+#[test]
+fn anthropic_parallel_multimodal_tool_results_preserve_openai_message_order() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_image",
+                    "content": [
+                        {"type": "text", "text": "image ready"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "aW1hZ2U="
+                            }
+                        }
+                    ]
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_document",
+                    "content": [
+                        {"type": "text", "text": "document ready"},
+                        {
+                            "type": "document",
+                            "title": "report.pdf",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": "ZG9jdW1lbnQ="
+                            }
+                        }
+                    ]
+                }
+            ]
+        }],
+        "max_tokens": 1024
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["messages"],
+        json!([
+            {"role": "tool", "tool_call_id": "toolu_image", "content": "image ready"},
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_document",
+                "content": "document ready"
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,aW1hZ2U="}
+                    },
+                    {
+                        "type": "file",
+                        "file": {"file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+                    }
+                ]
+            }
+        ])
+    );
+    Ok(())
+}
+
+// Verifies strict translation policy rejects role-lowering multimodal tool results.
+#[test]
+fn anthropic_multimodal_tool_result_respects_reject_policy() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": [{
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "aW1hZ2U="
+                    }
+                }]
+            }]
+        }],
+        "max_tokens": 1024
+    });
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+
+    let error = match engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &body,
+        &policy,
+    ) {
+        Ok(_) => panic!("multimodal tool result should be rejected by strict policy"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), "LossyConversion");
 }
 
 // Verifies structured Anthropic system blocks remain separated in OpenAI system text.
