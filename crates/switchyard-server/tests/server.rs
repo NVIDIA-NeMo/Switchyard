@@ -231,7 +231,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
             let target_set = targets.iter().map(|model| ModelId::from(*model)).collect();
             let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
             Ok((
-                (*route_model).to_string(),
+                ModelId::from(*route_model),
                 algorithm,
                 ClientRouter::single(Arc::clone(&client)),
             ))

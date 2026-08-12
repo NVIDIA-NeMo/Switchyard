@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The [`ModelId`] newtype: the identifier of an upstream model Switchyard calls.
+//! Model identifier used by Switchyard. See ModelId docs for details.
 
 use std::borrow::Borrow;
 use std::fmt;
@@ -9,17 +9,15 @@ use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 
-/// The identifier of an upstream model, such as `"openai/gpt-oss-20b"` or
-/// `"aws/anthropic/claude-opus-4-5"`.
+/// A model name used in a request or routing decision.
 ///
-/// This is the id a deployment configures a target with, the id a routing Decision
-/// selects, and the key a host maps to the client that serves it. It is deliberately
-/// distinct from a *route* id — Switchyard's own synthetic front-door name, such as
-/// `"switchyard/random"` — which names a routing algorithm rather than a model.
+/// It can name a provider model, such as `"openai/gpt-oss-20b"`. It can also name a
+/// Switchyard route, such as `"switchyard/random"`.
 ///
-/// Behaves like the string it wraps: it derefs to `str`, compares against `str` and
-/// `String`, and serializes as a bare string.
+/// A target name from server config, such as `"capable"`, is not a model ID. The server
+/// resolves target names to model IDs before routing.
 ///
+/// This type acts like a string. It can be printed, compared, and saved as a JSON string.
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ModelId(String);

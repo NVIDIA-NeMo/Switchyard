@@ -294,11 +294,9 @@ impl Drop for AbortOnDrop {
 
 /// Errors unless `targets` contains `name`.
 ///
-/// A target is a bare model id: the routing label an algorithm selects by — a logical
-/// tier like `"strong"`, or the model id when they coincide. Mapping it to a provider
-/// model id is the stream consumer's concern, never the algorithm's; the selected id
-/// reaches the consumer as `decision.selected_model_id()` on the offloaded [`CallModel`].
-pub(crate) fn require_target(targets: &[ModelId], name: &ModelId) -> Result<()> {
+/// Config target names must be resolved before an algorithm is built. This list contains
+/// model IDs, not target names.
+pub(crate) fn ensure_model_is_target(targets: &[ModelId], name: &ModelId) -> Result<()> {
     targets
         .iter()
         .any(|target| target == name)
@@ -310,12 +308,12 @@ pub(crate) fn require_target(targets: &[ModelId], name: &ModelId) -> Result<()> 
 
 /// `name` itself, or the first target not in `excluded` when `name` has been barred.
 /// Errors if `name` is unknown, or if every target is excluded.
-pub(crate) fn resolve_target(
+pub(crate) fn select_eligible_model(
     targets: &[ModelId],
     name: &ModelId,
     excluded: &HashSet<ModelId>,
 ) -> Result<ModelId> {
-    require_target(targets, name)?;
+    ensure_model_is_target(targets, name)?;
     if !excluded.contains(name) {
         return Ok(name.clone());
     }
@@ -497,7 +495,7 @@ pub(crate) async fn call_model_with_fallback(
             RoutingFallbackReason::ContextWindow => evictions.record(identity, failed),
             RoutingFallbackReason::Unavailable => target_unavailable(&request, failed),
         }
-        let Ok(next) = resolve_target(targets, &target, excluded) else {
+        let Ok(next) = select_eligible_model(targets, &target, excluded) else {
             return Err(error);
         };
         decision = fallback_decision(&target, &next, reason);
@@ -836,7 +834,7 @@ mod tests {
 
     #[test]
     fn target_lookup_returns_the_missing_target() {
-        let error = require_target(&target_set(&[]), &ModelId::from("missing")).err();
+        let error = ensure_model_is_target(&target_set(&[]), &ModelId::from("missing")).err();
         assert!(matches!(
             error,
             Some(LibsyError::TargetNotFound { target }) if target == "missing"

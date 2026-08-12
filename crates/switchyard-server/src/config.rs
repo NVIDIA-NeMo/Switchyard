@@ -102,7 +102,7 @@ impl ServerConfig {
             let client = self.build_client_router(config, &clients)?;
             let count_tokens_target = self.build_count_tokens_target(config, &clients);
             routes.push((
-                config.id().to_string(),
+                config.id().clone(),
                 algorithm,
                 client,
                 capabilities,
@@ -326,7 +326,7 @@ struct CustomClassifierRouteConfig {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum RouteConfig {
     Noop {
-        id: String,
+        id: ModelId,
         #[serde(default)]
         context_window: Option<u32>,
         #[serde(default)]
@@ -335,7 +335,7 @@ enum RouteConfig {
         reasoning: Option<bool>,
     },
     Random {
-        id: String,
+        id: ModelId,
         #[serde(default)]
         context_window: Option<u32>,
         #[serde(default)]
@@ -347,7 +347,7 @@ enum RouteConfig {
         seed: Option<u64>,
     },
     Passthrough {
-        id: String,
+        id: ModelId,
         #[serde(default)]
         context_window: Option<u32>,
         #[serde(default)]
@@ -357,7 +357,7 @@ enum RouteConfig {
         target: String,
     },
     LlmClassifier {
-        id: String,
+        id: ModelId,
         #[serde(default)]
         context_window: Option<u32>,
         #[serde(default)]
@@ -397,7 +397,7 @@ enum RouteConfig {
         policy: Option<ClassifierPolicyConfig>,
     },
     StageRouter {
-        id: String,
+        id: ModelId,
         #[serde(default)]
         context_window: Option<u32>,
         #[serde(default)]
@@ -462,7 +462,7 @@ impl StageClassifierConfig {
 }
 
 impl RouteConfig {
-    fn id(&self) -> &str {
+    fn id(&self) -> &ModelId {
         use RouteConfig::*;
         match self {
             Noop { id, .. }
@@ -831,18 +831,19 @@ fn build_algorithm(
             Ok(Arc::new(algorithm))
         }
         RouteConfig::Passthrough { target, .. } => {
-            let target = resolve_target(route_name, target, targets)?;
+            let target = resolve_target_model_id(route_name, target, targets)?;
             Ok(Arc::new(Passthrough::new(target)))
         }
         RouteConfig::LlmClassifier {
             classifier_target, ..
         } => {
-            let classifier = resolve_target(route_name, classifier_target, targets)?;
+            let classifier = resolve_target_model_id(route_name, classifier_target, targets)?;
             let mode = config.classifier_mode(route_name)?;
             let algorithm = match mode {
                 LlmClassifierModeConfig::Capability(config) => {
-                    let strong = resolve_target(route_name, &config.strong_target, targets)?;
-                    let weak = resolve_target(route_name, &config.weak_target, targets)?;
+                    let strong =
+                        resolve_target_model_id(route_name, &config.strong_target, targets)?;
+                    let weak = resolve_target_model_id(route_name, &config.weak_target, targets)?;
                     let classifier_config = TaskClassifierConfig {
                         base_threshold: config.base_threshold,
                         threshold_step: config.threshold_step,
@@ -860,8 +861,9 @@ fn build_algorithm(
                     })
                 }
                 LlmClassifierModeConfig::Escalation(config) => {
-                    let strong = resolve_target(route_name, &config.strong_target, targets)?;
-                    let weak = resolve_target(route_name, &config.weak_target, targets)?;
+                    let strong =
+                        resolve_target_model_id(route_name, &config.strong_target, targets)?;
+                    let weak = resolve_target_model_id(route_name, &config.weak_target, targets)?;
                     LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
                         judge_target: classifier,
                         efficient_target: weak,
@@ -876,7 +878,7 @@ fn build_algorithm(
                         .targets
                         .iter()
                         .map(|name| {
-                            resolve_target(route_name, name, targets)
+                            resolve_target_model_id(route_name, name, targets)
                                 .map(|target| (name.clone(), target))
                         })
                         .collect::<ServerResult<Vec<_>>>()?;
@@ -926,8 +928,8 @@ fn build_algorithm(
                     "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
                 );
             }
-            let capable = resolve_target(route_name, capable_target, targets)?;
-            let efficient = resolve_target(route_name, efficient_target, targets)?;
+            let capable = resolve_target_model_id(route_name, capable_target, targets)?;
+            let efficient = resolve_target_model_id(route_name, efficient_target, targets)?;
             let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
             config.recent_window = *recent_turn_window;
             config.handoff_notes = handoff_notes.clone();
@@ -942,12 +944,12 @@ fn build_algorithm(
             config.llm_fallback = classifier
                 .as_ref()
                 .map(|classifier| {
-                    resolve_target(route_name, &classifier.target, targets).map(|judge_target| {
-                        LlmFallback {
+                    resolve_target_model_id(route_name, &classifier.target, targets).map(
+                        |judge_target| LlmFallback {
                             judge_target,
                             config: classifier.task_classifier_config(),
-                        }
-                    })
+                        },
+                    )
                 })
                 .transpose()?;
             let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
@@ -992,11 +994,11 @@ fn resolve_targets<'a>(
 ) -> ServerResult<Vec<ModelId>> {
     names
         .into_iter()
-        .map(|name| resolve_target(route_name, name, targets))
+        .map(|name| resolve_target_model_id(route_name, name, targets))
         .collect()
 }
 
-fn resolve_target(
+fn resolve_target_model_id(
     route_name: &str,
     name: &str,
     targets: &BTreeMap<String, ModelId>,

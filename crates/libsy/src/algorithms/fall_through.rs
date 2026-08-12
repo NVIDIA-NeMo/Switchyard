@@ -323,7 +323,7 @@ where
 
         // 3. Resolve the target and publish the decision. When an excluded target sends
         //    the request elsewhere, the reasoning describes where it actually went.
-        let target = algorithm::resolve_target(&self.targets, &score.target, excluded)?;
+        let target = algorithm::select_eligible_model(&self.targets, &score.target, excluded)?;
         let reasoning = if target == score.target {
             (self.decision_reason)(&self.name, &score)
         } else {

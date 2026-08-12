@@ -846,7 +846,7 @@ impl LlmTaskClassifier {
         inner: Arc<dyn Classifier<State>>,
         config: ClassifierRouteConfig,
     ) -> Result<Self> {
-        algorithm::require_target(&targets, &config.default_target)?;
+        algorithm::ensure_model_is_target(&targets, &config.default_target)?;
         if config.message_hash_fallback && !config.session_affinity {
             return Err(LibsyError::AlgorithmError {
                 message: "message_hash_fallback requires session_affinity".to_string(),
