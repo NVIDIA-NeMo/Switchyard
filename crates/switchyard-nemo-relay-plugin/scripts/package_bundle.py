@@ -8,9 +8,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import shutil
+import tarfile
+import zipfile
 from pathlib import Path
 
 CRATE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = CRATE_ROOT.parents[1]
+PACKAGE_NAME = "switchyard-nemo-relay-plugin"
 
 
 def digest(path: Path) -> str:
@@ -22,11 +26,33 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
+def archive_bundle(bundle: Path, archive: Path) -> None:
+    """Archive a materialized bundle under the stable package directory name."""
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    if archive.exists():
+        raise ValueError(f"bundle archive already exists: {archive}")
+
+    if archive.name.endswith(".tar.gz"):
+        with tarfile.open(archive, "w:gz") as stream:
+            stream.add(bundle, arcname=PACKAGE_NAME)
+        return
+
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+            for path in sorted(bundle.rglob("*")):
+                if path.is_file():
+                    stream.write(path, Path(PACKAGE_NAME) / path.relative_to(bundle))
+        return
+
+    raise ValueError("bundle archive must end in .tar.gz or .zip")
+
+
 def main() -> None:
     """Materialize a Relay-loadable plugin bundle in an empty directory."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--library", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--archive", type=Path)
     args = parser.parse_args()
 
     library = args.library.resolve()
@@ -49,13 +75,24 @@ def main() -> None:
     artifact = output / library.name
     shutil.copy2(library, artifact)
     shutil.copy2(CRATE_ROOT / "config.schema.json", output / "config.schema.json")
+    for filename in ("LICENSE", "NOTICE"):
+        shutil.copy2(REPOSITORY_ROOT / filename, output / filename)
 
     artifact_digest = digest(artifact)
     manifest = manifest.replace("<platform-library-file>", artifact.name)
     manifest = manifest.replace("<artifact-sha256>", artifact_digest)
     (output / "relay-plugin.toml").write_text(manifest, encoding="utf-8")
 
-    print(output)
+    if args.archive is None:
+        print(output)
+        return
+
+    archive = args.archive.resolve()
+    try:
+        archive_bundle(output, archive)
+    except ValueError as error:
+        parser.error(str(error))
+    print(archive)
 
 
 if __name__ == "__main__":

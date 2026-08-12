@@ -90,8 +90,9 @@ This is a raw C boundary: Switchyard contains a small ownership adapter for
 host strings, completion and stream handles, continuation handles, and captured
 scope handles because Relay 0.7 does not expose a safe Rust facade for its
 generic asynchronous surface. The HTTP, routing, and translation behavior
-remains in Switchyard. The adapter can be replaced with the safe typed surface
-when Relay exposes equivalent asynchronous callbacks and cancellation.
+remains in Switchyard. NeMo Relay plans to provide the equivalent safe typed
+surface in 0.8.0; once that is available, the raw-FFI compatibility adapter
+should be removable.
 
 ## Supported routers
 
@@ -374,12 +375,21 @@ cargo build --release \
   --manifest-path crates/switchyard-nemo-relay-plugin/Cargo.toml
 python3 crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
   --library crates/switchyard-nemo-relay-plugin/target/release/libswitchyard_nemo_relay_plugin.so \
-  --output dist/switchyard-nemo-relay-plugin-linux-x86_64
+  --output build/switchyard-nemo-relay-plugin-linux-x86_64 \
+  --archive dist/switchyard-nemo-relay-plugin-0.2.0-linux-x86_64.tar.gz
 ```
 
 On macOS the library suffix is `.dylib`; Windows builds use `.dll`. The bundle
-builder creates the minimal Relay package: the shared library, a materialized
-manifest with Relay's inline SHA-256 integrity digest, and the JSON schema.
+builder creates the Relay package: the shared library, a materialized manifest
+with Relay's inline SHA-256 integrity digest, the JSON schema, and the project
+license files. Use `.tar.gz` archives on Linux and macOS and `.zip` on Windows.
+The archive's top-level directory is always `switchyard-nemo-relay-plugin`.
+
+The release archive convention is
+`switchyard-nemo-relay-plugin-<version>-<platform>.<format>`. A future Actions
+matrix should upload each archive under the artifact name
+`switchyard-nemo-relay-plugin-<platform>`, matching Switchyard's existing
+platform-qualified artifact convention.
 
 Install the materialized bundle with Relay's normal lifecycle commands:
 

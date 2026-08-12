@@ -3,7 +3,7 @@
 
 [package]
 name = "switchyard-nemo-relay-plugin"
-version = "0.1.0"
+version = "0.2.0"
 description = "Switchyard-owned HTTP routing plugin for NeMo Relay"
 authors = ["NVIDIA Corporation"]
 edition = "2024"
