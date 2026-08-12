@@ -356,6 +356,84 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
     Ok(())
 }
 
+// Verifies mixed reasoning and content emit reasoning before text for Anthropic clients for Anthropic clients.
+#[test]
+fn openai_chat_mixed_reasoning_and_content_stream_in_reasoning_first_order() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "nvidia/nvidia/nemotron-3-ultra-nvfp4",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "reasoning_content": ".",
+                "content": "Hello"
+            },
+            "finish_reason": null
+        }]
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &chunk,
+    )?;
+
+    assert_eq!(
+        events,
+        vec![
+            json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_chatcmpl-test",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "nvidia/nvidia/nemotron-3-ultra-nvfp4",
+                    "content": [],
+                    "stop_reason": null,
+                    "stop_sequence": null,
+                    "usage": {"input_tokens": 0, "output_tokens": 0}
+                }
+            }),
+            json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "thinking",
+                    "thinking": "",
+                    "signature": ""
+                }
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "."}
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "signature_delta", "signature": ""}
+            }),
+            json!({"type": "content_block_stop", "index": 0}),
+            json!({
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "text", "text": ""}
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "Hello"}
+            }),
+        ]
+    );
+    Ok(())
+}
+
 // Verifies Anthropic usage and stop events become terminal OpenAI chunks.
 #[test]
 fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
