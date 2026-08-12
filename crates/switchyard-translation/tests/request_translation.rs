@@ -973,6 +973,64 @@ fn chat_json_schema_response_format_maps_to_responses_text_format() -> TestResul
     Ok(())
 }
 
+// Verifies nested fields cannot override the Responses format discriminator.
+#[test]
+fn chat_json_schema_response_format_ignores_nested_type_override() -> TestResult {
+    let output = translate_chat_response_format_to_responses(json!({
+        "type": "json_schema",
+        "json_schema": {
+            "type": "text",
+            "name": "answer",
+            "description": "A structured answer",
+            "schema": {"type": "object"},
+            "strict": true
+        }
+    }))?;
+
+    assert_eq!(
+        output,
+        json!({
+            "type": "json_schema",
+            "name": "answer",
+            "description": "A structured answer",
+            "schema": {"type": "object"},
+            "strict": true
+        })
+    );
+    Ok(())
+}
+
+// Verifies incomplete JSON schema wrappers remain unchanged instead of being partially flattened.
+#[test]
+fn chat_empty_json_schema_wrapper_is_preserved() -> TestResult {
+    let response_format = json!({"type": "json_schema", "json_schema": {}});
+
+    assert_eq!(
+        translate_chat_response_format_to_responses(response_format.clone())?,
+        response_format
+    );
+    Ok(())
+}
+
+fn translate_chat_response_format_to_responses(
+    response_format: Value,
+) -> std::result::Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+    let body = json!({
+        "model": "gpt-5",
+        "messages": [{"role": "user", "content": "Return JSON"}],
+        "response_format": response_format
+    });
+    let output = TranslationEngine::default()
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    Ok(output["text"]["format"].clone())
+}
+
 // Verifies OpenAI system/developer/reasoning fields map to Anthropic request fields.
 #[test]
 fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> TestResult {
