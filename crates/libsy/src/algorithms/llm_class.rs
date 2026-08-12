@@ -531,13 +531,17 @@ impl Classifier<State> for EscalationClassifier {
             }) => return Ok((decisive(&self.capable), None)),
             Err(e) => return Err(e),
         };
-        let agg = efficient_response
-            .llm_response
-            .into_agg()
-            .await
-            .map_err(|e| LibsyError::AlgorithmError {
-                message: format!("failed to aggregate efficient response: {e}"),
-            })?;
+        // The call resolves when its stream handle arrives; transport can still fail while
+        // buffering. Fall back only for that availability failure and keep other errors typed.
+        let agg = match efficient_response.llm_response.into_agg().await {
+            Ok(agg) => agg,
+            Err(LlmClientError::Transport { .. }) => {
+                return Ok((decisive(&self.capable), None));
+            }
+            Err(source) => {
+                return Err(LibsyError::client_call(self.efficient.clone(), source));
+            }
+        };
         // Append the efficient reply so the judge reads this turn's completed trajectory.
         let mut judge_request = request.clone();
         judge_request
@@ -938,8 +942,8 @@ mod tests {
 
     use super::*;
     use switchyard_protocol::{
-        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, Metadata, ToolCall, ToolResult,
-        completion_text, text_request, text_response,
+        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, LlmResponseChunk, Metadata,
+        ToolCall, ToolResult, completion_text, text_request, text_response,
     };
 
     use crate::algorithms::util::llm_judge::Judge;
@@ -1771,6 +1775,21 @@ mod tests {
         }
     }
 
+    /// Returns a stream that emits partial content before failing during aggregation.
+    fn streamed_then_error(error: LlmClientError) -> Response {
+        Response {
+            llm_response: LlmResponse::Stream(Box::pin(futures::stream::iter([
+                Ok(LlmResponseChunk::TextDelta {
+                    index: 0,
+                    text: "partial".to_string(),
+                }
+                .into()),
+                Err(error),
+            ]))),
+            metadata: None,
+        }
+    }
+
     /// Builds a router with escalation enabled (`confirmations=1` latches on the first verdict).
     fn escalation_router() -> Result<Arc<LlmTaskClassifier>> {
         Ok(Arc::new(LlmTaskClassifier::new(
@@ -1921,5 +1940,72 @@ mod tests {
             Some("capable answer".to_string())
         );
         Ok(())
+    }
+
+    /// A transport failure while buffering efficient must bypass the judge and serve capable.
+    #[tokio::test]
+    async fn escalation_classifier_falls_back_when_efficient_stream_transport_fails() -> Result<()>
+    {
+        let router = escalation_router()?;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let serve = {
+            let calls = Arc::clone(&calls);
+            move |decision: Decision, _request: Request| {
+                let calls = Arc::clone(&calls);
+                async move {
+                    let model = decision.selected_model_id().to_string();
+                    calls.lock().push(model.clone());
+                    match model.as_str() {
+                        "efficient" => Ok(streamed_then_error(LlmClientError::Transport {
+                            source: Box::new(std::io::Error::other("stream disconnected")),
+                        })),
+                        "judge" => {
+                            panic!("the judge must not be consulted after a transport failure")
+                        }
+                        _ => Ok(reply("capable answer")),
+                    }
+                }
+            }
+        };
+        let mut request = classify_request();
+        request.llm_request.stream = true;
+
+        let result = test_drive(router, request, serve).await;
+
+        assert_eq!(&*calls.lock(), &["efficient", "capable"]);
+        let (_, response) = result?;
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("capable answer".to_string())
+        );
+        Ok(())
+    }
+
+    /// Non-transport aggregation failures remain typed and do not silently change targets.
+    #[tokio::test]
+    async fn escalation_classifier_preserves_non_transport_stream_errors() -> Result<()> {
+        let router = escalation_router()?;
+        let serve = |decision: Decision, _request: Request| async move {
+            match decision.selected_model_id().as_str() {
+                "efficient" => Ok(streamed_then_error(LlmClientError::InvalidResponse {
+                    source: Box::new(std::io::Error::other("invalid stream event")),
+                })),
+                other => panic!("unexpected call to {other}"),
+            }
+        };
+        let mut request = classify_request();
+        request.llm_request.stream = true;
+
+        match test_drive(router, request, serve).await {
+            Err(LibsyError::ClientCall {
+                target,
+                source: LlmClientError::InvalidResponse { .. },
+            }) => {
+                assert_eq!(target, "efficient");
+                Ok(())
+            }
+            Err(other) => panic!("expected InvalidResponse client error, got {other:?}"),
+            Ok(_) => panic!("expected stream aggregation to fail"),
+        }
     }
 }
