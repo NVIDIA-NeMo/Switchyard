@@ -486,6 +486,15 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         )
         .is_some()
     );
+    for metric in [
+        "switchyard_model_call_latency_ms_bucket",
+        "switchyard_total_latency_ms_bucket",
+    ] {
+        assert!(
+            metric_line(metrics, metric, &[("model", MODEL), ("le", "300000")]).is_some(),
+            "missing five-minute bucket for {metric}"
+        );
+    }
     assert!(
         metric_line(
             metrics,
