@@ -49,6 +49,12 @@ RUN git rev-parse --is-inside-work-tree \
 
 RUN useradd -m -s /bin/bash sandbox \
     && mkdir -p /home/sandbox/job /home/sandbox/.cache /sandbox/job /opt/switchyard \
+    && printf '%s\n' \
+        'export VIRTUAL_ENV=/home/sandbox/workspace/.venv' \
+        'export UV_PROJECT_ENVIRONMENT=/home/sandbox/workspace/.venv' \
+        'export PATH="/home/sandbox/workspace/.venv/bin:/usr/local/cargo/bin:${PATH}"' \
+        > /etc/profile.d/switchyard-agent-dev.sh \
+    && chmod 0644 /etc/profile.d/switchyard-agent-dev.sh \
     && chown -R sandbox:sandbox \
         /home/sandbox \
         /sandbox \
