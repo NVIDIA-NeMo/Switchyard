@@ -161,7 +161,10 @@ impl FormatCodec for OpenAiResponsesCodec {
             body.insert("max_output_tokens".to_string(), json!(max_output_tokens));
         }
         if let Some(response_format) = &request.output.response_format {
-            body.insert("text".to_string(), json!({"format": response_format}));
+            body.insert(
+                "text".to_string(),
+                json!({"format": encode_responses_text_format(response_format)}),
+            );
         }
         if let Some(effort) = &request.reasoning.effort {
             body.insert("reasoning".to_string(), json!({"effort": effort}));
@@ -853,6 +856,23 @@ fn decode_responses_text_format(value: Option<&Value>) -> Option<Value> {
         Some("text") => Some(json!({"type": "text"})),
         _ => None,
     }
+}
+
+// Flattens Chat-compatible JSON schema fields into the Responses text format shape.
+fn encode_responses_text_format(response_format: &Value) -> Value {
+    let Some(format) = response_format.as_object() else {
+        return response_format.clone();
+    };
+    if format.get("type").and_then(Value::as_str) != Some("json_schema") {
+        return response_format.clone();
+    }
+
+    let mut output = format.clone();
+    let Some(Value::Object(json_schema)) = output.remove("json_schema") else {
+        return response_format.clone();
+    };
+    output.extend(json_schema);
+    Value::Object(output)
 }
 
 // Encodes normalized messages into the Responses `input` shape.

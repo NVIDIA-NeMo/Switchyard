@@ -933,6 +933,46 @@ fn responses_json_schema_text_format_maps_to_chat_response_format() -> TestResul
     Ok(())
 }
 
+// Verifies Chat response_format JSON schema fields flatten into Responses text.format.
+#[test]
+fn chat_json_schema_response_format_maps_to_responses_text_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5",
+        "messages": [{"role": "user", "content": "Return JSON"}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "description": "A structured answer",
+                "schema": {"type": "object"},
+                "strict": true
+            }
+        }
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["text"]["format"],
+        json!({
+            "type": "json_schema",
+            "name": "answer",
+            "description": "A structured answer",
+            "schema": {"type": "object"},
+            "strict": true
+        })
+    );
+    Ok(())
+}
+
 // Verifies OpenAI system/developer/reasoning fields map to Anthropic request fields.
 #[test]
 fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> TestResult {
