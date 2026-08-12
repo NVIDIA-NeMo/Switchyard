@@ -22,7 +22,10 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::RoutedLlmClient;
 
-use crate::{CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState};
+use crate::{
+    CountTokensTarget, ModelCapabilities, ModelPrice, SavingsConfig, ServerError, ServerResult,
+    ServerState,
+};
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIGURED_RETRIES: u32 = 10;
@@ -55,6 +58,8 @@ struct ServerConfig {
     llm_clients: BTreeMap<String, LlmClientConfig>,
     targets: BTreeMap<String, TargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
+    #[serde(default)]
+    savings: Option<SavingsSectionConfig>,
 }
 
 impl ServerConfig {
@@ -109,7 +114,50 @@ impl ServerConfig {
                 count_tokens_target,
             ));
         }
-        ServerState::new_with_capabilities(routes)
+        let state = ServerState::new_with_capabilities(routes)?;
+        self.apply_savings(state)
+    }
+
+    /// Enables the savings endpoint when any target declares pricing.
+    ///
+    /// Stats are keyed by the model id the routed call selected, so the
+    /// pricing table is keyed by `target.id`, not the TOML target name.
+    fn apply_savings(&self, state: ServerState) -> ServerResult<ServerState> {
+        let mut pricing = BTreeMap::new();
+        for target in self.targets.values() {
+            if let Some(config) = target.pricing {
+                pricing.insert(target.id.clone(), config.into_model_price());
+            }
+        }
+        let baseline = match self
+            .savings
+            .as_ref()
+            .and_then(|s| s.baseline_target.as_ref())
+        {
+            Some(name) => {
+                let target = self.targets.get(name).ok_or_else(|| {
+                    ServerError::new(format!(
+                        "savings baseline_target {name} does not match any [targets.*] entry"
+                    ))
+                })?;
+                if target.pricing.is_none() {
+                    return Err(ServerError::new(format!(
+                        "savings baseline_target {name} has no pricing configured"
+                    )));
+                }
+                Some(target.id.clone())
+            }
+            None => None,
+        };
+        if pricing.is_empty() {
+            if self.savings.is_some() {
+                return Err(ServerError::new(
+                    "[savings] requires at least one target with a [targets.*.pricing] section",
+                ));
+            }
+            return Ok(state);
+        }
+        Ok(state.with_savings(SavingsConfig::new(pricing, baseline)))
     }
 
     fn build_clients(&self) -> ServerResult<BTreeMap<String, Arc<TranslatingLlmClient>>> {
@@ -253,6 +301,45 @@ struct TargetConfig {
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
+    #[serde(default)]
+    pricing: Option<PricingConfig>,
+}
+
+/// Per-target pricing in USD per 1 million tokens.
+///
+/// `cached` defaults to the cache-read discount being absent (0.0 means
+/// cache reads are free only if explicitly priced so); `cache_write`
+/// defaults to the base input rate when omitted, matching providers with
+/// no cache-write premium.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PricingConfig {
+    input: f64,
+    output: f64,
+    #[serde(default)]
+    cached: Option<f64>,
+    #[serde(default)]
+    cache_write: Option<f64>,
+}
+
+impl PricingConfig {
+    fn into_model_price(self) -> ModelPrice {
+        ModelPrice {
+            input: self.input,
+            output: self.output,
+            cached: self.cached.unwrap_or(self.input * 0.1),
+            cache_write: self.cache_write.unwrap_or(self.input),
+        }
+    }
+}
+
+/// Optional `[savings]` section selecting the baseline comparison target.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavingsSectionConfig {
+    /// Target name (TOML key under `[targets.*]`) to price the baseline
+    /// against. Defaults to the most expensive priced target.
+    baseline_target: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]

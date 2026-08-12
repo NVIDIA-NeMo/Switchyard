@@ -8,6 +8,7 @@ mod metrics;
 mod observability;
 mod response;
 mod routing_log;
+mod savings;
 mod shutdown;
 mod sse;
 mod stats;
@@ -45,6 +46,8 @@ use tracing::{Instrument, Level};
 use switchyard_translation::{WireFormat, decode_request};
 
 use crate::response::into_http_response;
+use crate::savings::SavingsSnapshot;
+pub use crate::savings::{ModelPrice, SavingsConfig};
 use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
 
 pub use observability::{flush_observability, initialize_observability};
@@ -134,6 +137,7 @@ pub struct ServerState {
     metrics: prometheus::Registry,
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
+    savings: Option<Arc<SavingsConfig>>,
     track_cache_eligibility: bool,
 }
 
@@ -228,6 +232,7 @@ impl ServerState {
             metrics,
             stats,
             routing_log: None,
+            savings: None,
             track_cache_eligibility: tracking_enabled_from_env(),
         })
     }
@@ -236,6 +241,12 @@ impl ServerState {
     pub fn with_routing_log(mut self, path: impl Into<PathBuf>) -> ServerResult<Self> {
         self.routing_log = Some(SharedRoutingLog::new(path.into())?);
         Ok(self)
+    }
+
+    /// Enables the cost-savings endpoint and live dashboard.
+    pub fn with_savings(mut self, config: SavingsConfig) -> Self {
+        self.savings = Some(Arc::new(config));
+        self
     }
 
     /// Returns the route model IDs served by the configured algorithms.
@@ -470,6 +481,11 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/health", get(health));
     if state.routing_log.is_some() {
         router = router.route("/v1/routing/session-stats", get(get_session_stats));
+    }
+    if state.savings.is_some() {
+        router = router
+            .route("/v1/savings", get(get_savings))
+            .route("/dashboard", get(savings_dashboard));
     }
     router
         .fallback(not_found)
@@ -1021,6 +1037,24 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
     Json(state.stats.snapshot())
+}
+
+async fn get_savings(State(state): State<ServerState>) -> Response {
+    let Some(savings) = &state.savings else {
+        // Unreachable: the route is only registered when savings is configured.
+        return not_found().await;
+    };
+    let snapshot: SavingsSnapshot = savings.compute(&state.stats.snapshot());
+    (StatusCode::OK, Json(snapshot)).into_response()
+}
+
+/// Serves the self-contained live savings dashboard page.
+async fn savings_dashboard() -> Response {
+    (
+        [(CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!("savings_dashboard.html"),
+    )
+        .into_response()
 }
 
 async fn reset_stats(State(state): State<ServerState>) -> Json<Value> {
