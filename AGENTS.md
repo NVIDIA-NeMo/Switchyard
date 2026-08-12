@@ -179,7 +179,7 @@ tests/                              # Unit tests (pytest)
 ## Tech Stack
 
 - **Rust 1.96.1**, edition 2024, Tokio, Axum, and PyO3
-- **Python 3.12+** for launchers and native bindings
+- **Python 3.10+** for launchers and native bindings
 - **prompt-toolkit** for interactive launcher sessions
 - **uv** as the package manager (preferred over pip)
 - **Cargo test + pytest** for testing
@@ -247,7 +247,7 @@ cargo test --workspace
 ## Code Style
 
 - **Line length**: 100 chars (ruff, E501 ignored)
-- **Target version**: Python 3.12 — use `X | Y` union syntax
+- **Target version**: Python 3.10 — use `X | Y` union syntax
 - **Imports**: sorted by ruff (`I` rules). Use `TYPE_CHECKING` guards for circular imports.
 - **File naming**: file name = `snake_case` of its primary class. One class per file when practical.
 - **Type hints**: throughout. `py.typed` marker present; mypy runs strict.

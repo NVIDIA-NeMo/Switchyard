@@ -10,7 +10,7 @@ def test_readme_documents_current_paths() -> None:
     readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
 
     assert readme.index("### Launcher Path") < readme.index("### Server Path")
-    assert 'uv tool install --python 3.12 "nemo-switchyard[cli]"' in readme
+    assert 'uv tool install --python 3.10 "nemo-switchyard[cli]"' in readme
     assert "switchyard launch claude --model switchyard" in readme
     assert "cargo install --locked switchyard-server" in readme
     assert "switchyard-server --config routes.toml --dry-run" in readme

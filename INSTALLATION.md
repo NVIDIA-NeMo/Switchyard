@@ -5,7 +5,7 @@ serving.
 
 ## Requirements
 
-- Python 3.12 or newer for `nemo-switchyard`
+- Python 3.10 or newer for `nemo-switchyard`
 - Rust 1.96.1 or newer for `switchyard-server` and the Rust libraries
 - Linux x86_64 wheels require an x86-64-v3 / AVX2-class CPU
 - Linux aarch64 wheels require a Neoverse N1-class CPU
@@ -28,7 +28,7 @@ Install the CLI extra to launch Claude Code, Codex CLI, or OpenClaw through the
 packaged native server:
 
 ```bash
-uv tool install --python 3.12 "nemo-switchyard[cli]"
+uv tool install --python 3.10 "nemo-switchyard[cli]"
 export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
 switchyard launch claude --model switchyard
 ```

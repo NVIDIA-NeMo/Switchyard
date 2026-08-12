@@ -43,7 +43,7 @@ not already available, then install the published Switchyard tool:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source "$HOME/.local/bin/env"
-uv tool install --python 3.12 "nemo-switchyard[cli]"
+uv tool install --python 3.10 "nemo-switchyard[cli]"
 ```
 
 The coding agent you launch must also be installed and on your `PATH`. This does

@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Typed, composable LLM routing with request/response translation and multi-backend orchestration"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 authors = [{ name = "NVIDIA Corporation" }]
 maintainers = [{ name = "NVIDIA Corporation" }]
 keywords = ["llm", "switchyard", "routing", "openai", "nemo"]
@@ -17,6 +17,8 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -106,7 +108,7 @@ markers = [
 addopts = "-x"  # Stop on first failure by default (use --no-x to override)
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.10"
 strict = true
 files = ["switchyard", "switchyard_rust"]
 warn_return_any = true
@@ -131,11 +133,11 @@ exclude = [
     "build",
     "tests",
 ]
-pythonVersion = "3.12"
+pythonVersion = "3.10"
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py310"
 exclude = [".agents", ".worktrees"]
 
 [tool.ruff.lint]
@@ -146,4 +148,5 @@ select = ["E", "F", "I", "W", "UP", "B", "C4"]
 ignore = ["E501", "UP040", "UP042", "UP046", "UP047"]
 
 [tool.ruff.lint.isort]
+extra-standard-library = ["tomllib"]
 known-first-party = ["switchyard"]

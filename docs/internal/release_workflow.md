@@ -62,7 +62,7 @@ publish anything to PyPI.
 
 Create a root `vMAJOR.MINOR.PATCH` tag only when a real release has been approved. Tag pushes run:
 
-- Python release checks on Python 3.12, 3.13, and 3.14;
+- Python release checks on Python 3.10 through 3.14;
 - Rust fmt, clippy, and workspace tests;
 - source distribution build;
 - full abi3 wheel matrix for Linux x86_64, Linux aarch64, macOS x86_64, macOS arm64,
