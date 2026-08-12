@@ -846,7 +846,7 @@
 <a href=#846 id=846 data-nosnippet>846</a>        inner: Arc&lt;<span class="kw">dyn </span>Classifier&lt;State&gt;&gt;,
 <a href=#847 id=847 data-nosnippet>847</a>        config: ClassifierRouteConfig,
 <a href=#848 id=848 data-nosnippet>848</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>&gt; {
-<a href=#849 id=849 data-nosnippet>849</a>        algorithm::require_target(<span class="kw-2">&amp;</span>targets, <span class="kw-2">&amp;</span>config.default_target)<span class="question-mark">?</span>;
+<a href=#849 id=849 data-nosnippet>849</a>        algorithm::ensure_model_is_target(<span class="kw-2">&amp;</span>targets, <span class="kw-2">&amp;</span>config.default_target)<span class="question-mark">?</span>;
 <a href=#850 id=850 data-nosnippet>850</a>        <span class="kw">if </span>config.message_hash_fallback &amp;&amp; !config.session_affinity {
 <a href=#851 id=851 data-nosnippet>851</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::AlgorithmError {
 <a href=#852 id=852 data-nosnippet>852</a>                message: <span class="string">"message_hash_fallback requires session_affinity"</span>.to_string(),

@@ -323,7 +323,7 @@
 <a href=#323 id=323 data-nosnippet>323</a>
 <a href=#324 id=324 data-nosnippet>324</a>        <span class="comment">// 3. Resolve the target and publish the decision. When an excluded target sends
 <a href=#325 id=325 data-nosnippet>325</a>        //    the request elsewhere, the reasoning describes where it actually went.
-<a href=#326 id=326 data-nosnippet>326</a>        </span><span class="kw">let </span>target = algorithm::resolve_target(<span class="kw-2">&amp;</span><span class="self">self</span>.targets, <span class="kw-2">&amp;</span>score.target, excluded)<span class="question-mark">?</span>;
+<a href=#326 id=326 data-nosnippet>326</a>        </span><span class="kw">let </span>target = algorithm::select_eligible_model(<span class="kw-2">&amp;</span><span class="self">self</span>.targets, <span class="kw-2">&amp;</span>score.target, excluded)<span class="question-mark">?</span>;
 <a href=#327 id=327 data-nosnippet>327</a>        <span class="kw">let </span>reasoning = <span class="kw">if </span>target == score.target {
 <a href=#328 id=328 data-nosnippet>328</a>            (<span class="self">self</span>.decision_reason)(<span class="kw-2">&amp;</span><span class="self">self</span>.name, <span class="kw-2">&amp;</span>score)
 <a href=#329 id=329 data-nosnippet>329</a>        } <span class="kw">else </span>{
