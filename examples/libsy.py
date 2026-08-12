@@ -2,49 +2,52 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run libsy's no-op and random-routing algorithms from Python."""
+"""Drive a libsy algorithm stream from Python."""
 
 import asyncio
 from collections.abc import Mapping
 
-from switchyard.libsy import LlmTarget, algorithms
+from switchyard.libsy import Step, algorithms
 
 
 class EchoClient:
-    """Return its configured model as the completion."""
+    """Return a fixed completion for any selected target."""
 
-    def __init__(self, model: str) -> None:
-        self.model = model
-
-    async def call(self, request: Mapping[str, object]) -> Mapping[str, object]:
+    async def call(
+        self,
+        request: Mapping[str, object],
+        model: str,
+    ) -> Mapping[str, object]:
         return {
-            "model": self.model,
+            "model": model,
             "outputs": [
-                {"role": "assistant", "content": [{"type": "text", "text": self.model}]}
+                {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]}
             ],
         }
 
 
 async def main() -> None:
-    """Run both algorithms and print their aggregate results."""
+    """Run random routing and serve its selected target."""
     request = {
         "model": "auto",
         "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
     }
-
-    noop_decisions, noop_response = await algorithms.noop().run(request)
-    print("No-op:", noop_decisions, noop_response)
-
-    random = algorithms.random(
-        [
-            LlmTarget("fast", EchoClient("fast")),
-            LlmTarget("quality", EchoClient("quality")),
-        ],
+    client = EchoClient()
+    algorithm = algorithms.random(
+        ["fast", "quality"],
         weights=[1, 3],
         seed=42,
     )
-    random_decisions, random_response = await random.run(request)
-    print("Random:", random_decisions, random_response)
+
+    async for step in algorithm.run_stream(request):
+        match step:
+            case Step.Decision(decision):
+                print("Decision:", decision.selected_model_id, decision.reasoning)
+            case Step.CallModel(call):
+                model = call.decision.selected_model_id
+                call.respond(await client.call(call.request, model))
+            case Step.Done(response):
+                print("Response:", response)
 
 
 if __name__ == "__main__":

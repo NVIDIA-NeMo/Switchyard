@@ -6,21 +6,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
+use futures::StreamExt;
 use http::header::{HeaderName, HeaderValue};
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use serde_json::{Value, json};
 use switchyard_libsy::{
-    Algorithm, ClassifierContractConfig, HandoffNoteConfig, LibsyError as RustLibsyError,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, PickerMode, Random, StageRouter,
-    StageRouterConfig, TaskClassifierConfig,
+    Algorithm, CallModel, ClassifierContractConfig, HandoffNoteConfig,
+    LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
+    PickerMode, Random, StageRouter, StageRouterConfig, Step as RustStep, StepStream,
+    TaskClassifierConfig,
 };
-use switchyard_llm_client::ClientRouter;
 use switchyard_protocol::{
-    AggLlmResponse, LlmClientError, LlmResponse, Metadata, ModelId, Request, Response,
-    RoutedLlmClient,
+    AggLlmResponse, Decision, LlmClientError, LlmResponse, Metadata, ModelId, Request, Response,
 };
+use tokio::sync::Mutex;
 
 use crate::errors::py_libsy_error;
 use crate::py_serde::{from_python, to_python};
@@ -38,84 +37,6 @@ fn header_map_from_python(headers: &HashMap<String, String>) -> PyResult<http::H
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
     }
     Ok(result)
-}
-
-/// Adapts a Python object with `async call(request)` to libsy.
-struct PythonLlmClient {
-    inner: Py<PyAny>,
-}
-
-#[async_trait]
-impl RoutedLlmClient for PythonLlmClient {
-    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
-        let metadata = request.metadata;
-        let future = Python::attach(|py| {
-            let request = to_python(py, &request.llm_request)?;
-            let awaitable = self.inner.bind(py).call_method1("call", (request,))?;
-            pyo3_async_runtimes::tokio::into_future(awaitable)
-        })
-        .map_err(other_python_error)?;
-
-        let response = future.await.map_err(other_python_error)?;
-        let aggregate = Python::attach(|py| from_python::<AggLlmResponse>(response.bind(py)))
-            .map_err(invalid_python_response)?;
-        Ok(Response {
-            llm_response: LlmResponse::Agg(aggregate),
-            metadata,
-        })
-    }
-}
-
-/// A required-client routing target used by Python-created algorithms.
-#[pyclass(name = "LlmTarget", module = "switchyard.libsy", frozen)]
-struct PyLlmTarget {
-    name: String,
-    client: Py<PyAny>,
-}
-
-impl PyLlmTarget {
-    /// The bare model id libsy routes by; the client behind it stays with the bindings.
-    fn clone_core(&self, _py: Python<'_>) -> ModelId {
-        ModelId::new(self.name.clone())
-    }
-
-    /// The `selected_model -> client` entry this target contributes to the algorithm's
-    /// [`ClientRouter`]. libsy no longer carries the client, so the bindings keep the
-    /// mapping and serve the calls themselves.
-    fn client_entry(&self, py: Python<'_>) -> ClientEntry {
-        (
-            ModelId::new(self.name.clone()),
-            Arc::new(PythonLlmClient {
-                inner: self.client.clone_ref(py),
-            }),
-        )
-    }
-}
-
-#[pymethods]
-impl PyLlmTarget {
-    #[new]
-    fn new(py: Python<'_>, name: String, client: Py<PyAny>) -> PyResult<Self> {
-        let call = client
-            .bind(py)
-            .getattr("call")
-            .map_err(|_| PyTypeError::new_err("client must define async call(request)"))?;
-        if !call.is_callable() {
-            return Err(PyTypeError::new_err(
-                "client.call must be callable as async call(request)",
-            ));
-        }
-        Ok(Self { name, client })
-    }
-
-    #[getter]
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn __repr__(&self) -> String {
-        format!("LlmTarget(name={:?})", self.name)
-    }
 }
 
 /// Classifier settings shared by standalone and stage-router classifiers.
@@ -185,19 +106,14 @@ impl PyTaskClassifierConfig {
     skip_from_py_object
 )]
 struct PyLlmFallback {
-    judge_target: Py<PyLlmTarget>,
+    judge_target: String,
     config: Py<PyTaskClassifierConfig>,
 }
 
 impl PyLlmFallback {
-    /// The judge's client entry, so the caller can register it with the algorithm's router.
-    fn judge_client_entry(&self, py: Python<'_>) -> PyResult<ClientEntry> {
-        Ok(self.judge_target.bind(py).try_borrow()?.client_entry(py))
-    }
-
     fn clone_core(&self, py: Python<'_>) -> PyResult<LlmFallback> {
         Ok(LlmFallback {
-            judge_target: self.judge_target.bind(py).try_borrow()?.clone_core(py),
+            judge_target: ModelId::new(self.judge_target.clone()),
             config: self.config.bind(py).try_borrow()?.clone_core(),
         })
     }
@@ -207,7 +123,7 @@ impl PyLlmFallback {
 impl PyLlmFallback {
     #[new]
     #[pyo3(signature = (judge_target, *, config))]
-    fn new(judge_target: Py<PyLlmTarget>, config: Py<PyTaskClassifierConfig>) -> Self {
+    fn new(judge_target: String, config: Py<PyTaskClassifierConfig>) -> Self {
         Self {
             judge_target,
             config,
@@ -215,71 +131,201 @@ impl PyLlmFallback {
     }
 }
 
-/// Opaque handle shared by every Rust-owned algorithm exposed to Python.
-#[pyclass(name = "Algorithm", module = "switchyard.libsy", frozen)]
-struct PyAlgorithm {
-    inner: Arc<dyn Algorithm>,
-    /// Resolves the calls `inner` offloads to each target's Python client.
-    client_router: ClientRouter,
+/// A routing choice produced by an algorithm.
+#[pyclass(name = "Decision", module = "switchyard.libsy", frozen)]
+struct PyDecision {
+    inner: Decision,
 }
 
-/// One target's `selected_model -> client` mapping for an algorithm's router.
-type ClientEntry = (ModelId, Arc<dyn RoutedLlmClient>);
-
-impl PyAlgorithm {
-    fn new(inner: Arc<dyn Algorithm>, clients: impl IntoIterator<Item = ClientEntry>) -> Self {
-        Self {
-            inner,
-            client_router: clients.into_iter().collect(),
-        }
+impl From<Decision> for PyDecision {
+    fn from(inner: Decision) -> Self {
+        Self { inner }
     }
 }
 
 #[pymethods]
+impl PyDecision {
+    /// The semantic model id selected for the call.
+    #[getter]
+    fn selected_model_id(&self) -> &str {
+        self.inner.selected_model_id().as_str()
+    }
+
+    /// Why the algorithm selected this model, when supplied.
+    #[getter]
+    fn reasoning(&self) -> Option<&str> {
+        self.inner.reasoning()
+    }
+
+    /// Whether this call produces the answer rather than a routing verdict.
+    #[getter]
+    fn is_answer_call(&self) -> bool {
+        self.inner.is_answer_call()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Decision(selected_model_id={:?}, reasoning={:?}, is_answer_call={})",
+            self.inner.selected_model_id(),
+            self.inner.reasoning(),
+            self.inner.is_answer_call()
+        )
+    }
+}
+
+/// One model call yielded by [`PyAlgorithm::run_stream`].
+#[pyclass(name = "ModelCall", module = "switchyard.libsy")]
+struct PyModelCall {
+    inner: Option<CallModel>,
+    algorithm: String,
+    request: Py<PyAny>,
+    decision: Py<PyDecision>,
+}
+
+impl PyModelCall {
+    fn new(py: Python<'_>, call: CallModel) -> PyResult<Self> {
+        let request = to_python(py, &call.request.llm_request)?;
+        let decision = Py::new(py, PyDecision::from(call.decision.clone()))?;
+        Ok(Self {
+            algorithm: call.algorithm.clone(),
+            inner: Some(call),
+            request,
+            decision,
+        })
+    }
+
+    fn take(&mut self) -> PyResult<CallModel> {
+        self.inner
+            .take()
+            .ok_or_else(|| py_libsy_error("model call has already been completed"))
+    }
+}
+
+#[pymethods]
+impl PyModelCall {
+    /// The algorithm that produced this call.
+    #[getter]
+    fn algorithm(&self) -> &str {
+        &self.algorithm
+    }
+
+    /// The normalized LLM request to serve as a Python dictionary.
+    #[getter]
+    fn request(&self, py: Python<'_>) -> Py<PyAny> {
+        self.request.clone_ref(py)
+    }
+
+    /// The routing decision behind this call.
+    #[getter]
+    fn decision(&self, py: Python<'_>) -> Py<PyDecision> {
+        self.decision.clone_ref(py)
+    }
+
+    /// Consume the answer call without serving it and return its rewritten request and decision.
+    #[pyo3(name = "into_parts")]
+    fn take_parts(&mut self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyDecision>)> {
+        let (request, decision) = self.take()?.into_parts();
+        Ok((
+            to_python(py, &request.llm_request)?,
+            Py::new(py, PyDecision::from(decision))?,
+        ))
+    }
+
+    /// Fulfill this call with an aggregate normalized response dictionary.
+    fn respond(&mut self, response: &Bound<'_, PyAny>) -> PyResult<()> {
+        let aggregate = from_python::<AggLlmResponse>(response)?;
+        let call = self.take()?;
+        let metadata = call.request.metadata.clone();
+        call.respond(Ok(Response {
+            llm_response: LlmResponse::Agg(aggregate),
+            metadata,
+        }))
+        .map_err(py_libsy_error)
+    }
+
+    /// Fulfill this call with a Python client failure.
+    fn fail(&mut self, error: &Bound<'_, PyAny>) -> PyResult<()> {
+        if !error.is_instance_of::<PyBaseException>() {
+            return Err(PyTypeError::new_err("error must derive from BaseException"));
+        }
+        let call = self.take()?;
+        let target = call.decision.selected_model_id().clone();
+        let source = LlmClientError::Ffi {
+            source: Box::new(PyErr::from_value(error.clone())),
+        };
+        call.respond(Err(RustLibsyError::client_call(target, source)))
+            .map_err(py_libsy_error)
+    }
+}
+
+/// One item yielded by a Python algorithm stream.
+#[pyclass(name = "Step", module = "switchyard.libsy", frozen)]
+enum PyStep {
+    /// The host must serve the model call before the algorithm can continue.
+    CallModel { call: Py<PyModelCall> },
+    /// A routing decision emitted by the algorithm.
+    Decision { decision: Py<PyDecision> },
+    /// The terminal aggregate response.
+    Done { response: Py<PyAny> },
+}
+
+/// Async Python iterator over one Rust algorithm run.
+#[pyclass(name = "_RunStream", module = "switchyard.libsy", frozen)]
+struct PyRunStream {
+    inner: Arc<Mutex<StepStream>>,
+}
+
+#[pymethods]
+impl PyRunStream {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stream = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let step = stream.lock().await.next().await;
+            match step {
+                Some(Ok(step)) => step_to_python(step).await,
+                Some(Err(error)) => Err(py_libsy_error(error)),
+                None => Err(PyStopAsyncIteration::new_err(())),
+            }
+        })
+    }
+}
+
+/// Opaque handle shared by every Rust-owned algorithm exposed to Python.
+#[pyclass(name = "Algorithm", module = "switchyard.libsy", frozen)]
+struct PyAlgorithm {
+    inner: Arc<dyn Algorithm>,
+}
+
+#[pymethods]
 impl PyAlgorithm {
-    /// Run to completion using the clients configured on the algorithm's targets.
+    /// Run the algorithm as a stream of model calls, decisions, and one terminal response.
     ///
     /// `headers`, when given, is normalized into the request's correlation
     /// [`Metadata`] exactly as an HTTP host would (`Metadata::from_headers`),
     /// so metadata-driven algorithms see the same signals in Python as when
     /// served over HTTP.
     #[pyo3(signature = (request, headers=None))]
-    fn run<'py>(
+    fn run_stream(
         &self,
-        py: Python<'py>,
         request: &Bound<'_, PyAny>,
         headers: Option<std::collections::HashMap<String, String>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let algorithm = Arc::clone(&self.inner);
-        let client_router = self.client_router.clone();
+    ) -> PyResult<PyRunStream> {
         let headers = headers.as_ref().map(header_map_from_python).transpose()?;
-
         let request = Request {
             llm_request: from_python(request)?,
             raw_request: None,
             metadata: headers.map(|headers| Metadata::from_headers(&headers)),
         };
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (decisions, response) =
-                switchyard_llm_client::run(algorithm, client_router, request, None)
-                    .await
-                    .map_err(py_libsy_error)?;
-            let response = response
-                .llm_response
-                .into_agg()
-                .await
-                .map_err(py_libsy_error)?;
-            let decisions = decisions
-                .iter()
-                .map(|decision| {
-                    json!({
-                        "selected_model_id": decision.selected_model_id(),
-                        "reasoning": decision.reasoning(),
-                        "is_answer_call": decision.is_answer_call(),
-                    })
-                })
-                .collect::<Vec<Value>>();
-            Python::attach(|py| Ok((to_python(py, &decisions)?, to_python(py, &response)?)))
+        let stream = {
+            let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
+            Arc::clone(&self.inner).run_stream(request)
+        };
+        Ok(PyRunStream {
+            inner: Arc::new(Mutex::new(stream)),
         })
     }
 
@@ -288,44 +334,57 @@ impl PyAlgorithm {
     }
 }
 
+async fn step_to_python(step: RustStep) -> PyResult<PyStep> {
+    match step {
+        RustStep::CallModel(call) => Python::attach(|py| {
+            Ok(PyStep::CallModel {
+                call: Py::new(py, PyModelCall::new(py, *call)?)?,
+            })
+        }),
+        RustStep::Decision(decision) => Python::attach(|py| {
+            Ok(PyStep::Decision {
+                decision: Py::new(py, PyDecision::from(decision))?,
+            })
+        }),
+        RustStep::Done(response) => {
+            let response = response
+                .llm_response
+                .into_agg()
+                .await
+                .map_err(py_libsy_error)?;
+            Python::attach(|py| {
+                Ok(PyStep::Done {
+                    response: to_python(py, &response)?,
+                })
+            })
+        }
+    }
+}
+
 /// Construct the no-op reference algorithm.
 #[pyfunction(name = "noop")]
 fn noop_algorithm() -> PyAlgorithm {
-    // `Noop` synthesizes its own response and never offloads a call, so it needs no clients.
-    PyAlgorithm::new(Arc::new(Noop {}), [])
+    PyAlgorithm {
+        inner: Arc::new(Noop {}),
+    }
 }
 
 /// Construct random routing over targets with optional relative weights and seed.
 #[pyfunction(name = "random")]
 #[pyo3(signature = (targets, *, weights=None, seed=None))]
 fn random_algorithm(
-    py: Python<'_>,
-    targets: Vec<Py<PyLlmTarget>>,
+    targets: Vec<String>,
     weights: Option<Vec<f64>>,
     seed: Option<u64>,
 ) -> PyResult<PyAlgorithm> {
-    let (cores, clients) = target_cores(py, &targets)?;
-    let algorithm = Random::new(cores, weights, seed).map_err(|error| match error {
+    let model_ids = targets.into_iter().map(ModelId::new).collect();
+    let algorithm = Random::new(model_ids, weights, seed).map_err(|error| match error {
         RustLibsyError::NoTargets => PyValueError::new_err("random requires at least one target"),
         other => PyValueError::new_err(other.to_string()),
     })?;
-    Ok(PyAlgorithm::new(Arc::new(algorithm), clients))
-}
-
-/// Splits a list of Python targets into libsy's client-free targets and the client entries
-/// the bindings keep for the algorithm's router.
-fn target_cores(
-    py: Python<'_>,
-    targets: &[Py<PyLlmTarget>],
-) -> PyResult<(Vec<ModelId>, Vec<ClientEntry>)> {
-    let mut cores = Vec::with_capacity(targets.len());
-    let mut clients = Vec::with_capacity(targets.len());
-    for target in targets {
-        let target = target.bind(py).try_borrow()?;
-        cores.push(target.clone_core(py));
-        clients.push(target.client_entry(py));
-    }
-    Ok((cores, clients))
+    Ok(PyAlgorithm {
+        inner: Arc::new(algorithm),
+    })
 }
 
 /// Construct task-level LLM classifier routing.
@@ -339,26 +398,21 @@ fn target_cores(
 ))]
 fn llm_task_classifier_algorithm(
     py: Python<'_>,
-    judge_target: Py<PyLlmTarget>,
-    efficient_target: Py<PyLlmTarget>,
-    capable_target: Py<PyLlmTarget>,
+    judge_target: String,
+    efficient_target: String,
+    capable_target: String,
     config: Py<PyTaskClassifierConfig>,
 ) -> PyResult<PyAlgorithm> {
-    let (cores, clients) = target_cores(
-        py,
-        &[judge_target.clone_ref(py), efficient_target, capable_target],
-    )?;
-    let [judge, efficient, capable] = cores
-        .try_into()
-        .map_err(|_| PyValueError::new_err("expected three targets"))?;
     let algorithm = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
-        judge_target: judge,
-        efficient_target: efficient,
-        capable_target: capable,
+        judge_target: ModelId::new(judge_target),
+        efficient_target: ModelId::new(efficient_target),
+        capable_target: ModelId::new(capable_target),
         config: config.bind(py).try_borrow()?.clone_core(),
     })
     .map_err(|error| PyValueError::new_err(error.to_string()))?;
-    Ok(PyAlgorithm::new(Arc::new(algorithm), clients))
+    Ok(PyAlgorithm {
+        inner: Arc::new(algorithm),
+    })
 }
 
 /// Construct signal-driven stage routing with an optional LLM classifier fallback.
@@ -380,8 +434,8 @@ fn llm_task_classifier_algorithm(
 #[allow(clippy::too_many_arguments)]
 fn stage_router_algorithm(
     py: Python<'_>,
-    capable_target: Py<PyLlmTarget>,
-    efficient_target: Py<PyLlmTarget>,
+    capable_target: String,
+    efficient_target: String,
     picker: &str,
     confidence_threshold: f64,
     recent_window: Option<usize>,
@@ -401,10 +455,8 @@ fn stage_router_algorithm(
             )));
         }
     };
-    let (cores, mut clients) = target_cores(py, &[capable_target, efficient_target])?;
-    let [capable, efficient] = cores
-        .try_into()
-        .map_err(|_| PyValueError::new_err("expected two targets"))?;
+    let capable = ModelId::new(capable_target);
+    let efficient = ModelId::new(efficient_target);
     let mut config = StageRouterConfig::new(mode, confidence_threshold);
     config.recent_window = recent_window;
     config.handoff_notes = match (escalation_note, deescalation_note) {
@@ -426,37 +478,25 @@ fn stage_router_algorithm(
     if let Some(prompt) = efficient_system_prompt {
         config.tier_prompts = config.tier_prompts.with(efficient.clone(), prompt);
     }
-    // The judge is only reachable through the optional classifier fallback, so its client
-    // joins the router only when a fallback is configured.
-    if let Some(classifier) = &classifier {
-        clients.push(classifier.bind(py).try_borrow()?.judge_client_entry(py)?);
-    }
     config.llm_fallback = classifier
         .map(|classifier| classifier.bind(py).try_borrow()?.clone_core(py))
         .transpose()?;
 
     let algorithm = StageRouter::new(capable, efficient, config)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
-    Ok(PyAlgorithm::new(Arc::new(algorithm), clients))
-}
-
-fn other_python_error(error: PyErr) -> LlmClientError {
-    LlmClientError::Ffi {
-        source: Box::new(error),
-    }
-}
-
-fn invalid_python_response(error: PyErr) -> LlmClientError {
-    LlmClientError::InvalidResponse {
-        source: Box::new(error),
-    }
+    Ok(PyAlgorithm {
+        inner: Arc::new(algorithm),
+    })
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let libsy_module = PyModule::new(module.py(), "libsy")?;
     libsy_module.add_class::<PyAlgorithm>()?;
+    libsy_module.add_class::<PyDecision>()?;
     libsy_module.add_class::<PyLlmFallback>()?;
-    libsy_module.add_class::<PyLlmTarget>()?;
+    libsy_module.add_class::<PyModelCall>()?;
+    libsy_module.add_class::<PyRunStream>()?;
+    libsy_module.add_class::<PyStep>()?;
     libsy_module.add_class::<PyTaskClassifierConfig>()?;
     libsy_module.add_function(wrap_pyfunction!(noop_algorithm, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(random_algorithm, &libsy_module)?)?;
