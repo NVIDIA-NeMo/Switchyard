@@ -3,32 +3,28 @@
 
 [package]
 name = "switchyard-nemo-relay-plugin"
-version = "0.2.0"
+version.workspace = true
 description = "Switchyard-owned HTTP routing plugin for NeMo Relay"
-authors = ["NVIDIA Corporation"]
-edition = "2024"
-license = "Apache-2.0"
-repository = "https://github.com/NVIDIA-NeMo/Switchyard"
-rust-version = "1.96.1"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 publish = false
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-async-channel = "2"
-async-trait = "0.1"
-futures-util = "0.3"
-http = "1"
-nemo-relay-plugin = "=0.7.0"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-switchyard-libsy = { path = "../libsy", version = "0.2.0" }
-switchyard-llm-client = { path = "../libsy-llm-client", version = "0.2.0" }
-switchyard-protocol = { path = "../protocol", version = "0.2.0" }
-switchyard-translation = { path = "../switchyard-translation", version = "0.2.0" }
-tokio = { version = "1", features = ["full"] }
-
-# Keep the dynamic plugin self-contained so adding it does not modify the root
-# Switchyard workspace manifest or lockfile.
-[workspace]
+async-channel.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+http.workspace = true
+nemo-relay-plugin.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+switchyard-libsy.workspace = true
+switchyard-llm-client.workspace = true
+switchyard-protocol.workspace = true
+switchyard-translation.workspace = true
+tokio.workspace = true

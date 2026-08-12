@@ -366,15 +366,14 @@ mode are rejected.
 
 ## Build and bundle
 
-The crate is a nested standalone Cargo workspace with `publish = false`. This
-keeps the integration from changing Switchyard's root workspace manifest or
-lockfile. Operators install a binary bundle rather than a Rust crate:
+The crate is a non-publishable member of the Switchyard Cargo workspace.
+Operators install a binary bundle rather than a Rust crate:
 
 ```bash
 cargo build --release \
   --manifest-path crates/switchyard-nemo-relay-plugin/Cargo.toml
 python3 crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
-  --library crates/switchyard-nemo-relay-plugin/target/release/libswitchyard_nemo_relay_plugin.so \
+  --library target/release/libswitchyard_nemo_relay_plugin.so \
   --output build/switchyard-nemo-relay-plugin-linux-x86_64 \
   --archive dist/switchyard-nemo-relay-plugin-0.2.0-linux-x86_64.tar.gz
 ```
