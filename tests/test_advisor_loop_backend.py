@@ -605,6 +605,32 @@ async def test_anthropic_reviewer_hits_messages_endpoint() -> None:
     assert "temperature" not in body
 
 
+@respx.mock
+async def test_anthropic_reviewer_forwards_extra_body_reasoning_settings() -> None:
+    """Advisor-tier extra_body (effort/thinking) reaches the consult body."""
+    route = respx.post("https://inference-api.nvidia.com/v1/messages").mock(
+        return_value=httpx.Response(200, json={
+            "content": [{"type": "text", "text": "APPROVE"}],
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+        })
+    )
+    caller = _AnthropicAdvisorCaller(
+        api_key="secret-key", base_url="https://inference-api.nvidia.com/v1",
+        model="aws/anthropic/bedrock-claude-opus-4-8", max_tokens=256,
+        temperature=None, timeout=5.0,
+        extra_body={
+            "output_config": {"effort": "high"},
+            "thinking": {"type": "adaptive"},
+            "system": "MUST NOT CLOBBER",
+        },
+    )
+    await caller.advise(system="review this", transcript="conversation")
+    body = json.loads(route.calls.last.request.content)
+    assert body["output_config"] == {"effort": "high"}
+    assert body["thinking"] == {"type": "adaptive"}
+    assert body["system"] == "review this"  # core fields protected
+
+
 def test_messages_url_resolution() -> None:
     base = "https://inference-api.nvidia.com"
     assert _messages_url(f"{base}/v1") == f"{base}/v1/messages"

@@ -630,6 +630,7 @@ def _build_advisor_caller(config: AdvisorConfig) -> AdvisorCaller:
             max_tokens=config.advisor_max_tokens,
             temperature=config.advisor_temperature,
             timeout=target.endpoint.timeout_secs,
+            extra_body=dict(target.extra_body) if target.extra_body else None,
         )
     if target.format == BackendFormat.OPENAI:
         return _OpenAiAdvisorCaller(
@@ -644,11 +645,18 @@ def _build_advisor_caller(config: AdvisorConfig) -> AdvisorCaller:
 
 
 class _AnthropicAdvisorCaller:
-    """Reviews via an Anthropic-Messages advisor (``/v1/messages``, Bearer auth)."""
+    """Reviews via an Anthropic-Messages advisor (``/v1/messages``, Bearer auth).
+
+    ``extra_body`` from the advisor target is merged into every consult body,
+    so operators can pin reasoning settings (``output_config.effort``,
+    ``thinking``) per advisor tier, matching what the router profiles can do
+    for their targets.
+    """
 
     def __init__(
         self, *, api_key: str | None, base_url: str | None, model: str,
         max_tokens: int, temperature: float | None, timeout: float | None,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         self._url = _messages_url(base_url)
         self._api_key = api_key
@@ -656,6 +664,7 @@ class _AnthropicAdvisorCaller:
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._timeout = timeout
+        self._extra_body = dict(extra_body) if extra_body else None
 
     async def advise(self, *, system: str, transcript: str) -> tuple[str, Any]:
         body: dict[str, Any] = {
@@ -666,6 +675,12 @@ class _AnthropicAdvisorCaller:
         }
         if self._temperature is not None:
             body["temperature"] = self._temperature
+        if self._extra_body:
+            # Config-supplied fields win over defaults but never clobber the
+            # consult's core fields (model/system/messages/max_tokens).
+            for key, value in self._extra_body.items():
+                if key not in ("model", "system", "messages", "max_tokens"):
+                    body[key] = value
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "anthropic-version": _ANTHROPIC_VERSION,
