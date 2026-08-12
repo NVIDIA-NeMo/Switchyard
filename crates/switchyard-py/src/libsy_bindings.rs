@@ -3,9 +3,11 @@
 
 //! Minimal Python API for running Rust-owned libsy algorithms.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use http::header::{HeaderName, HeaderValue};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde_json::{Value, json};
@@ -16,13 +18,27 @@ use switchyard_libsy::{
 };
 use switchyard_llm_client::ClientRouter;
 use switchyard_protocol::{
-    AggLlmResponse, Context, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
+    AggLlmResponse, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
     RoutedLlmClient,
 };
 
 use crate::errors::py_libsy_error;
-use crate::interop::subagent::header_map_from_python;
 use crate::py_serde::{from_python, to_python};
+
+/// Convert Python-owned headers into the request metadata expected by libsy.
+fn header_map_from_python(headers: &HashMap<String, String>) -> PyResult<http::HeaderMap> {
+    let mut result = http::HeaderMap::new();
+    for (name, value) in headers {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let value = HeaderValue::from_str(value)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        result
+            .try_append(name, value)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    }
+    Ok(result)
+}
 
 /// Adapts a Python object with `async call(request)` to libsy.
 struct PythonLlmClient {
@@ -33,9 +49,8 @@ struct PythonLlmClient {
 impl RoutedLlmClient for PythonLlmClient {
     async fn call(
         &self,
-        _ctx: Context,
         request: Request,
-        _decision: Arc<Decision>,
+        _decision: Decision,
     ) -> Result<Response, LlmClientError> {
         let metadata = request.metadata;
         let future = Python::attach(|py| {
@@ -250,15 +265,10 @@ impl PyAlgorithm {
             metadata: headers.map(|headers| Metadata::from_headers(&headers)),
         };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (decisions, response) = switchyard_llm_client::run(
-                algorithm,
-                client_router,
-                Context::default(),
-                request,
-                None,
-            )
-            .await
-            .map_err(py_libsy_error)?;
+            let (decisions, response) =
+                switchyard_llm_client::run(algorithm, client_router, request, None)
+                    .await
+                    .map_err(py_libsy_error)?;
             let response = response
                 .llm_response
                 .into_agg()

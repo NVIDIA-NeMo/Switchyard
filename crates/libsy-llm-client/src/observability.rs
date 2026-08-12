@@ -176,7 +176,6 @@ fn client_call_error_type(error: &LibsyError) -> Cow<'static, str> {
         LibsyError::NoTargets => Cow::Borrowed("no_targets"),
         LibsyError::AlgorithmError { .. } => Cow::Borrowed("algorithm_error"),
         LibsyError::Driver(_) => Cow::Borrowed("driver_error"),
-        LibsyError::AlgorithmTask { .. } => Cow::Borrowed("algorithm_task_error"),
         LibsyError::MissingFinalResponse => Cow::Borrowed("missing_final_response"),
         LibsyError::AllTargetsExcluded => Cow::Borrowed("context_window_exceeded"),
         LibsyError::External { .. } => Cow::Borrowed("_OTHER"),

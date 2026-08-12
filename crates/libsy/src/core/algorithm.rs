@@ -8,13 +8,14 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
+    panic::AssertUnwindSafe,
     pin::Pin,
     sync::Arc,
     time::Instant,
 };
 
 use async_trait::async_trait;
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -27,9 +28,7 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStreamEvent`] is its host/algorithm envelope; and
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
-use switchyard_protocol::{
-    Context, Decision, LlmClientError, Request, Response, RoutingFallbackReason, Signals,
-};
+use switchyard_protocol::{Decision, LlmClientError, Request, Response, RoutingFallbackReason};
 
 use crate::{DriverError, LibsyError, Result, observability};
 
@@ -38,54 +37,34 @@ use crate::{DriverError, LibsyError, Result, observability};
 /// `Arc<dyn Algorithm>` object-safe.
 pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
 
-/// A request paired with the routing [`Decision`] that produced it — the offload
-/// payload a host reads (via [`CallLlmRequest::get_routed`]) to serve the call.
+/// An offloaded model call, surfaced inside [`Step::CallModel`].
+///
+/// The host reads the public fields, performs (or delegates) the model call, and fulfills it
+/// with [`respond`](Self::respond) — unblocking the algorithm's [`Driver::call_model`] on the
+/// other side. `switchyard-llm-client`'s `run` is the ready-made consumer that does this for
+/// you. A host that only wants the routing outcome can take the contents with
+/// [`into_parts`](Self::into_parts) and never respond; dropping the stream ends the run.
 ///
 /// The selected model and inbound route name live in separate, unambiguous places: the model
 /// identifier is [`decision.selected_model_id()`](Decision::selected_model_id), while
 /// `request.llm_request.model` is the *inbound* name the agent asked for (libsy
 /// never overwrites it). A client maps `selected_model_id()` to the provider model
 /// id it hits.
-#[derive(Clone)]
-pub struct RoutedRequest {
-    /// The request to serve; its `model` is the agent's original name.
+pub struct CallModel {
+    /// The name of the algorithm that produced this call, so a host instrumenting the
+    /// calls it serves can attribute its own spans to the algorithm behind them.
+    pub algorithm: String,
+    /// The request to serve; its `model` is the agent's original name NOT the selected model.
+    /// The caller making the request needs to change it to decision.selected_model_id() before
+    /// sending.
     pub request: Request,
-    /// The routing decision behind this call; `selected_model_id()` identifies the model to hit.
-    pub decision: Arc<Decision>,
-    /// The request's cross-cutting context, carried through the offload so the host
-    /// serving the call can pass it to its client.
-    pub ctx: Context,
-}
-
-/// The host-facing half of an offloaded model call, surfaced inside [`Step::CallLlm`].
-///
-/// The host reads the routed request ([`get_routed`](Self::get_routed)) and the decision
-/// behind it ([`get_decision`](Self::get_decision)), performs (or delegates) the model
-/// call, and fulfills it with [`respond`](Self::respond) — unblocking the algorithm's
-/// [`Driver::call_llm`] on the other side. `switchyard-llm-client`'s `run` is the ready-made
-/// consumer that does this for you.
-pub struct CallLlmRequest {
-    routed: RoutedRequest,
+    /// The routing decision behind this call; `selected_model_id()` identifies the model to use.
+    pub decision: Decision,
+    // How to send the response back to the algorithm
     reply: oneshot::Sender<Result<Response>>,
 }
 
-impl CallLlmRequest {
-    /// The routed request the host should serve; its `decision.selected_model_id()` names
-    /// the model to hit.
-    pub fn get_routed(&self) -> &RoutedRequest {
-        &self.routed
-    }
-
-    /// The model request to perform (the [`Request`] inside the routed request).
-    pub fn get_request(&self) -> &Request {
-        &self.get_routed().request
-    }
-
-    /// The decision that led to this call; its `selected_model_id()` identifies the model to hit.
-    pub fn get_decision(&self) -> &Decision {
-        self.get_routed().decision.as_ref()
-    }
-
+impl CallModel {
     /// Fulfill the promise with the caller's model-call result. Pass `Err(..)` to
     /// propagate a failed model call back to the algorithm. Consumes the promise: it
     /// can only be fulfilled once.
@@ -94,34 +73,61 @@ impl CallLlmRequest {
             .send(result)
             .map_err(|_| DriverError::ResponseDropped.into())
     }
+
+    /// Take the call's contents without answering it, dropping the promise — the routing
+    /// outcome plus the request as the algorithm would have sent it, after any rewriting.
+    ///
+    /// Should only be called if `decision.is_answer_call` is true as that is the final call.
+    /// The algorithm's [`Driver::call_model`] will fail with [`DriverError::Abandoned`] and
+    /// the run ends there. Taking a call the algorithm does not depend on (a judge or
+    /// classifier call) may instead let it fail open and complete with degraded routing.
+    ///
+    /// An abandoned run is not recorded as a failed one. Dropping a [`CallModel`] without
+    /// calling this still yields [`DriverError::ResponseDropped`], which is.
+    pub fn into_parts(self) -> (Request, Decision) {
+        let Self {
+            request,
+            decision,
+            reply,
+            ..
+        } = self;
+        // Tell the algorithm the call was taken deliberately rather than lost, so its
+        // telemetry can tell an abandoned run from a failed one. The receiver is already
+        // gone if the algorithm stopped waiting, which is fine.
+        let _ = reply.send(Err(DriverError::Abandoned.into()));
+        (request, decision)
+    }
 }
 
-/// The offload channel handed to an algorithm's
-/// [`create_run_task`](Algorithm::create_run_task). The algorithm makes model calls
-/// with [`call_llm`](Self::call_llm) and publishes its [`Decision`]s with
-/// [`info`](Self::info); each call is offloaded to the request's [`Step`] stream and
-/// awaits the consumer's response. The step channel is bounded, so the consumer paces
-/// the algorithm one step at a time.
+/// How an algorithm's [`route`](Algorithm::route) makes model calls.
 #[derive(Clone)]
 pub struct Driver {
     step_tx: mpsc::Sender<Result<Step>>,
+    /// The owning algorithm's telemetry label, stamped onto every call and decision
+    /// this driver publishes.
+    algorithm: String,
 }
 
 impl Driver {
     /// Build an empty driver with its step channel ready. Created per call by
     /// [`run_stream`](Algorithm::run_stream). Also returns the Step receiver.
-    pub(crate) fn new() -> (Self, mpsc::Receiver<Result<Step>>) {
+    pub(crate) fn new(algorithm: &str) -> (Self, mpsc::Receiver<Result<Step>>) {
         // Capacity one keeps the algorithm paced by the stream consumer. It limits queued steps,
         // not model calls already pulled from the stream, which can still run at the same time.
         // A larger buffer would use more memory and let the algorithm run farther ahead with
         // little benefit because reading a step is cheap compared with serving a model call.
         let (step_tx, step_rx) = mpsc::channel(1);
-        (Self { step_tx }, step_rx)
+        (
+            Self {
+                step_tx,
+                algorithm: algorithm.to_string(),
+            },
+            step_rx,
+        )
     }
 
-    /// Offload a model call: publish `routed` as a [`Step::CallLlm`] and await the
-    /// consumer's [`Response`]. The call's context travels inside
-    /// [`routed.ctx`](RoutedRequest::ctx). Errors if the stream is closed or the call failed.
+    /// Offload a model call: publish it as a [`Step::CallModel`] and await the consumer's
+    /// [`Response`]. Errors if the stream is closed or the call failed.
     /// The await is wrapped in a `libsy.llm_call` span measuring *fulfillment* as
     /// the algorithm observes it (host queueing/serving included; a streamed
     /// response resolves when its stream handle arrives); latency, outcome, and
@@ -132,8 +138,8 @@ impl Driver {
         name = "libsy.llm_call",
         skip_all,
         fields(
-            algorithm = observability::algorithm_label(&routed.ctx),
-            selected_model = routed.decision.selected_model_id(),
+            algorithm = self.algorithm,
+            selected_model = decision.selected_model_id(),
             openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
             error = tracing::field::Empty,
@@ -143,16 +149,20 @@ impl Driver {
             reasoning_tokens = tracing::field::Empty,
         )
     )]
-    pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response> {
-        let algorithm = observability::algorithm_label(&routed.ctx).to_string();
-        let decision = Arc::clone(&routed.decision);
+    pub async fn call_model(&self, request: Request, decision: Decision) -> Result<Response> {
+        let selected_model_id = decision.selected_model_id().to_string();
         let is_answer_call = decision.is_answer_call();
         let started = Instant::now();
         let (reply, response) = oneshot::channel::<Result<Response>>();
-        let call = CallLlmRequest { routed, reply };
+        let call = CallModel {
+            algorithm: self.algorithm.clone(),
+            request,
+            decision,
+            reply,
+        };
         let result = async {
             self.step_tx
-                .send(Ok(Step::CallLlm(Box::new(call))))
+                .send(Ok(Step::CallModel(Box::new(call))))
                 .await
                 .map_err(|_| DriverError::StreamClosed)?;
             response
@@ -162,8 +172,8 @@ impl Driver {
         .await;
         let elapsed = started.elapsed();
         observability::record_llm_call(
-            &algorithm,
-            decision.selected_model_id(),
+            &self.algorithm,
+            &selected_model_id,
             is_answer_call,
             elapsed,
             &result,
@@ -175,20 +185,20 @@ impl Driver {
     /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
     /// Each successfully published decision is counted and logged with its
     /// reasoning; a decision the stream never accepted is not recorded.
-    pub async fn info(&self, ctx: Context, decision: Arc<Decision>) -> Result<()> {
+    pub async fn decide(&self, decision: Decision) -> Result<()> {
         self.step_tx
             .send(Ok(Step::Decision(decision.clone())))
             .await
             .map_err(|_| DriverError::StreamClosed)?;
-        observability::record_decision(&ctx, decision.as_ref());
+        observability::record_decision(&self.algorithm, &decision);
         Ok(())
     }
 
-    /// Emit the terminal step: [`Step::ReturnToAgent`] on `Ok`, or an `Err` stream
+    /// Emit the terminal step: [`Step::Done`] on `Ok`, or an `Err` stream
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<Response>) -> Result<()> {
-        let step = result.map(|response| Step::ReturnToAgent(Box::new(response)));
+        let step = result.map(|response| Step::Done(Box::new(response)));
         self.step_tx
             .send(step)
             .await
@@ -199,20 +209,20 @@ impl Driver {
 /// One item in the stream returned by [`Algorithm::run_stream`].
 pub enum Step {
     /// The algorithm needs this model call performed. The host serves it and fulfills
-    /// it with [`CallLlmRequest::respond`]. Boxed: it is by far the largest variant.
-    CallLlm(Box<CallLlmRequest>),
-    /// A routing decision the algorithm made, published via [`Driver::info`] as it
+    /// it with [`CallModel::respond`]. Boxed: it is by far the largest variant.
+    CallModel(Box<CallModel>),
+    /// A routing decision the algorithm made, published via [`Driver::decide`] as it
     /// happens (rather than collected into a trace returned at the end).
-    Decision(Arc<Decision>),
+    Decision(Decision),
     /// The algorithm finished with its final response — the last step of a run.
-    ReturnToAgent(Box<Response>),
+    Done(Box<Response>),
 }
 
 /// Drive [`Algorithm::run_stream`] to completion, handing each offloaded call to `serve`.
 ///
 /// Returns the final [`Response`] and the trace of [`Decision`]s the algorithm published.
 /// `serve` owns the call: it performs it however the host likes and must fulfill the promise
-/// with [`CallLlmRequest::respond`]. A failed *model* call belongs in `respond` — the
+/// with [`CallModel::respond`]. A failed *model* call belongs in `respond` — the
 /// algorithm may route around it. Returning `Err` from `serve` aborts the whole run, so
 /// reserve it for infrastructure failures. Calls are served concurrently, so an algorithm
 /// that offloads several at once (hedging, fan-out) gets real parallelism.
@@ -222,34 +232,33 @@ pub enum Step {
 /// is this function plus an HTTP client.
 pub async fn drive<F, Fut>(
     algorithm: Arc<dyn Algorithm>,
-    ctx: Context,
     request: Request,
     serve: F,
-) -> Result<(Vec<Arc<Decision>>, Response)>
+) -> Result<(Vec<Decision>, Response)>
 where
-    F: Fn(CallLlmRequest) -> Fut,
+    F: Fn(CallModel) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let stream = algorithm.run_stream(ctx, request);
+    let stream = algorithm.run_stream(request);
     tokio::pin!(stream);
 
-    let mut trace: Vec<Arc<Decision>> = Vec::new();
+    let mut trace: Vec<Decision> = Vec::new();
     let mut in_flight = futures::stream::FuturesUnordered::new();
     let mut final_response: Option<Response> = None;
 
     loop {
         tokio::select! {
             Some(result) = in_flight.next() => match result {
-                Ok(()) => {}, // CallLlm completed successfully
-                Err(err) => return Err(err), // CallLlm failed, propagate the error
+                Ok(()) => {}, // CallModel completed successfully
+                Err(err) => return Err(err), // CallModel failed, propagate the error
             },
             step = stream.next() => {
                 match step {
                     None => break, // stream has ended, no more steps
                     Some(item) => match item? {
-                        Step::CallLlm(call) => in_flight.push(serve(*call)),
+                        Step::CallModel(call) => in_flight.push(serve(*call)),
                         Step::Decision(decision) => trace.push(decision),
-                        Step::ReturnToAgent(response) => {
+                        Step::Done(response) => {
                             final_response = Some(*response);
                             break;
                         }
@@ -263,6 +272,15 @@ where
         .ok_or(LibsyError::MissingFinalResponse)
 }
 
+/// Recover the message from an algorithm's panic.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&'static str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic payload".to_string())
+}
+
 /// Abort guard
 struct AbortOnDrop(tokio::task::AbortHandle);
 
@@ -274,7 +292,7 @@ impl Drop for AbortOnDrop {
 
 /// A named routing target an algorithm routes by. Serving its calls is the stream
 /// consumer's concern: the selected identifier reaches the consumer as
-/// `decision.selected_model_id()` on the offloaded [`RoutedRequest`].
+/// `decision.selected_model_id()` on the offloaded [`CallModel`].
 #[derive(Clone)]
 pub struct LlmTarget {
     /// The routing label an algorithm selects this target by — a logical tier like
@@ -313,16 +331,16 @@ impl LlmTargetSet {
             })
     }
 
-    /// The named target, or the first one this request is not barred from when it has been
-    /// excluded (see [`Context::exclude_target`]). Errors if every target is excluded.
-    pub fn resolve_target(&self, name: &str, ctx: &Context) -> Result<LlmTarget> {
+    /// The named target, or the first one not in `excluded` when it has been barred.
+    /// Errors if every target is excluded.
+    pub fn resolve_target(&self, name: &str, excluded: &HashSet<String>) -> Result<LlmTarget> {
         let target = self.get_target(name)?;
-        if !ctx.is_excluded(&target.semantic_name) {
+        if !excluded.contains(&target.semantic_name) {
             return Ok(target);
         }
         self.targets
             .iter()
-            .find(|t| !ctx.is_excluded(&t.semantic_name))
+            .find(|t| !excluded.contains(&t.semantic_name))
             .cloned()
             .ok_or(LibsyError::AllTargetsExcluded)
     }
@@ -419,18 +437,18 @@ impl SessionEvictions {
 }
 
 /// How many of `targets` this request is still allowed to reach.
-fn eligible_targets(targets: &LlmTargetSet, ctx: &Context) -> usize {
+fn eligible_targets(targets: &LlmTargetSet, excluded: &HashSet<String>) -> usize {
     targets
         .targets()
         .iter()
-        .filter(|t| !ctx.is_excluded(&t.semantic_name))
+        .filter(|t| !excluded.contains(&t.semantic_name))
         .count()
 }
 
 /// Bars the targets `identity` has already overflowed from this request, so routing does
 /// not select one that is certain to fail again.
 pub(crate) fn exclude_evicted(
-    ctx: &mut Context,
+    excluded: &mut HashSet<String>,
     targets: &LlmTargetSet,
     evictions: &SessionEvictions,
     identity: Option<&RoutingIdentity>,
@@ -438,10 +456,10 @@ pub(crate) fn exclude_evicted(
     for target in evictions.evicted_for(identity) {
         // Never seed the pool empty: a later turn may be small enough to serve, and the
         // caller should get the upstream's answer rather than a routing error.
-        if eligible_targets(targets, ctx) <= 1 {
+        if eligible_targets(targets, excluded) <= 1 {
             break;
         }
-        ctx.exclude_target(target);
+        excluded.insert(target);
     }
 }
 
@@ -473,50 +491,44 @@ fn classify_fallback(error: &LibsyError) -> Option<(&str, RoutingFallbackReason)
 /// `fallback_decision` builds the [`Decision`] published for a `from -> to` hop. Context
 /// overflows are recorded for `identity`; unavailable targets remain request-local.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn call_llm_with_fallback(
-    mut ctx: Context,
+pub(crate) async fn call_model_with_fallback(
+    excluded: &mut HashSet<String>,
     driver: &Driver,
     targets: &LlmTargetSet,
     mut target: LlmTarget,
-    mut decision: Arc<Decision>,
+    mut decision: Decision,
     request: Request,
     identity: Option<&RoutingIdentity>,
     evictions: &SessionEvictions,
     target_unavailable: impl Fn(&Request, &str),
-    fallback_decision: impl Fn(&LlmTarget, &LlmTarget, RoutingFallbackReason) -> Arc<Decision>,
+    fallback_decision: impl Fn(&LlmTarget, &LlmTarget, RoutingFallbackReason) -> Decision,
 ) -> Result<Response> {
     loop {
-        let result = driver
-            .call_llm(RoutedRequest {
-                request: request.clone(),
-                decision: decision.clone(),
-                ctx: ctx.clone(),
-            })
-            .await;
+        let result = driver.call_model(request.clone(), decision.clone()).await;
         let Err(error) = result else { return result };
         let Some((failed, reason)) = classify_fallback(&error) else {
             return Err(error);
         };
         // A target already excluded means the pool is spent; surface the client error
         // so the caller still sees the concrete upstream failure.
-        if !ctx.exclude_target(failed) {
+        if !excluded.insert(failed.to_string()) {
             return Err(error);
         }
         match reason {
             RoutingFallbackReason::ContextWindow => evictions.record(identity, failed),
             RoutingFallbackReason::Unavailable => target_unavailable(&request, failed),
         }
-        let Ok(next) = targets.resolve_target(&target.semantic_name, &ctx) else {
+        let Ok(next) = targets.resolve_target(&target.semantic_name, excluded) else {
             return Err(error);
         };
         decision = fallback_decision(&target, &next, reason);
         target = next;
-        driver.info(ctx.clone(), decision.clone()).await?;
+        driver.decide(decision.clone()).await?;
     }
 }
 
-/// An optimization strategy. Implement [`create_run_task`](Self::create_run_task);
-/// callers drive it with [`run_stream`](Self::run_stream), serving each [`Step::CallLlm`]
+/// An optimization strategy. Implement [`route`](Self::route);
+/// callers drive it with [`run_stream`](Self::run_stream), serving each [`Step::CallModel`]
 /// it emits. `switchyard-llm-client`'s `run` is the ready-made consumer that does this
 /// over HTTP.
 ///
@@ -543,77 +555,46 @@ pub trait Algorithm: Send + Sync + 'static {
     /// emits for its runs.
     fn name(&self) -> &str;
 
-    /// Run one request to completion: make model calls with [`Driver::call_llm`],
-    /// publish [`Decision`]s with [`Driver::info`], and return the final [`Response`].
+    /// Run one request to completion: make model calls with [`Driver::call_model`],
+    /// publish [`Decision`]s with [`Driver::decide`], and return the final [`Response`].
     /// The method an algorithm implements; [`run_stream`](Self::run_stream) drives it.
-    /// `ctx` carries the request's cross-cutting values (today: the algorithm's
-    /// telemetry label in [`Context::values`]).
-    async fn create_run_task(
-        self: Arc<Self>,
-        ctx: Context,
-        driver: Driver,
-        request: Request,
-    ) -> Result<Response>;
-
-    /// Feed the algorithm agentic-stack events (tool results, budgets, etc.). The
-    /// reference algorithms ignore signals; a stateful algorithm updates its own
-    /// (interior-mutable) state. Takes `self: Arc<Self>` like the other run methods.
-    #[allow(unused_variables)]
-    async fn process_signals(self: Arc<Self>, signals: Signals) -> Result<()> {
-        Ok(())
-    }
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response>;
 
     /// Process a request to completion, returning a stream of [`Step`]s.
     ///
-    /// The consumer must fulfill every [`Step::CallLlm`] before the algorithm can
-    /// continue. The bounded step channel applies backpressure when the consumer is
-    /// not polling. A successful run ends with [`Step::ReturnToAgent`]; a failure is
-    /// emitted as an `Err` item. Dropping the stream aborts the spawned algorithm task.
+    /// The consumer must fulfill every [`Step::CallModel`] before the algorithm can
+    /// continue. Every run ends with exactly one terminal item — [`Step::Done`] on
+    /// success, an `Err` item on failure, including when the algorithm panics. Dropping
+    /// the stream aborts the spawned algorithm task.
     ///
     /// Every invocation owns a separate [`Driver`].
-    fn run_stream(self: Arc<Self>, ctx: Context, request: Request) -> StepStream {
-        // Stamp the algorithm's telemetry label into the request context; the
-        // context rides on every driver call, so its telemetry is attributed.
-        let mut ctx = ctx;
-        ctx.values.insert(
-            observability::ALGORITHM_KEY.to_string(),
-            self.name().to_string(),
-        );
-        let (driver, step_rx) = Driver::new();
-        let task_driver = driver.clone();
-        let task_ctx = ctx.clone();
-        let stream = ReceiverStream::new(step_rx);
-        // One `libsy.run` span covers the whole algorithm task; the driver's
-        // `libsy.llm_call` spans and decision logs nest inside it via `tracing`'s
-        // contextual parenting.
+    fn run_stream(self: Arc<Self>, request: Request) -> StepStream {
+        let (driver, step_rx) = Driver::new(self.name());
         let span = observability::run_span(self.name(), &request);
         let handle = tokio::spawn(
             async move {
-                observability::observe_run(
-                    task_ctx.clone(),
-                    self.create_run_task(task_ctx, task_driver, request),
-                )
-                .await
+                let algorithm = self.name().to_string();
+                // Catch a panicking algorithm so the run still publishes a terminal step.
+                let route = AssertUnwindSafe(self.route(driver.clone(), request)).catch_unwind();
+                let result = observability::observe_run(&algorithm, async move {
+                    route.await.unwrap_or_else(|payload| {
+                        Err(LibsyError::AlgorithmError {
+                            message: format!(
+                                "algorithm task panicked: {}",
+                                panic_message(payload.as_ref())
+                            ),
+                        })
+                    })
+                })
+                .await;
+
+                let _ = driver.finish(result).await;
             }
             .instrument(span),
         );
         // Dropping the stream aborts the algorithm task when its consumer goes away.
         let abort_guard = AbortOnDrop(handle.abort_handle());
-
-        let finish_driver = driver.clone();
-        let tail: StepStream = Box::pin(
-            futures::stream::once(async move {
-                let result = match handle.await {
-                    Ok(response) => response,
-                    Err(source) => Err(LibsyError::AlgorithmTask { source }),
-                };
-                finish_driver.finish(result).await
-            })
-            .filter_map(|finish_result| async move { finish_result.err().map(Err) }),
-        );
-
-        let stream: StepStream = Box::pin(stream);
-        Box::pin(futures::stream::select(stream, tail).map(move |step| {
+        Box::pin(ReceiverStream::new(step_rx).map(move |step| {
             // link abort guard to stream
             let _keep_alive = &abort_guard;
             step
@@ -694,8 +675,8 @@ mod tests {
     }
 
     /// Build a routed decision for orchestration tests.
-    fn test_decision(selected_model_id: String) -> Arc<Decision> {
-        Arc::new(Decision::new(selected_model_id, None, true))
+    fn test_decision(selected_model_id: String) -> Decision {
+        Decision::new(selected_model_id, None, true)
     }
 
     /// Trivial algo used only to exercise the orchestrator: calls the first target
@@ -710,12 +691,7 @@ mod tests {
             "test"
         }
 
-        async fn create_run_task(
-            self: Arc<Self>,
-            ctx: Context,
-            driver: Driver,
-            request: Request,
-        ) -> Result<Response> {
+        async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
             let target = self
                 .target_set
                 .targets()
@@ -723,14 +699,8 @@ mod tests {
                 .ok_or(LibsyError::NoTargets)?
                 .clone();
             let decision = test_decision(target.semantic_name.clone());
-            driver.info(ctx.clone(), decision.clone()).await?;
-            driver
-                .call_llm(RoutedRequest {
-                    request,
-                    decision,
-                    ctx,
-                })
-                .await
+            driver.decide(decision.clone()).await?;
+            driver.call_model(request, decision).await
         }
     }
 
@@ -757,32 +727,31 @@ mod tests {
         LlmTargetSet::new(targets)
     }
 
-    fn routed(model: &str) -> RoutedRequest {
-        RoutedRequest {
-            request: request(),
-            decision: test_decision(model.to_string()),
-            ctx: Context::default(),
-        }
-    }
-
     #[tokio::test]
     async fn typed_driver_preserves_call_and_stream_boundaries() -> Result<()> {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             // Distinct oneshots keep reverse-order replies paired with their producers, and a
             // retained call remains pending until the host responds.
-            let (driver, mut step_rx) = Driver::new();
+            let (driver, mut step_rx) = Driver::new("test");
             let first_driver = driver.clone();
-            let mut first =
-                tokio::spawn(async move { first_driver.call_llm(routed("first")).await });
-            let second = tokio::spawn(async move { driver.call_llm(routed("second")).await });
+            let mut first = tokio::spawn(async move {
+                first_driver
+                    .call_model(request(), test_decision("first".to_string()))
+                    .await
+            });
+            let second = tokio::spawn(async move {
+                driver
+                    .call_model(request(), test_decision("second".to_string()))
+                    .await
+            });
 
             let mut calls = HashMap::new();
             for _ in 0..2 {
                 let step = step_rx.recv().await.ok_or(DriverError::StreamClosed)??;
-                let Step::CallLlm(call) = step else {
-                    return Err(test_error("expected a CallLlm step"));
+                let Step::CallModel(call) = step else {
+                    return Err(test_error("expected a CallModel step"));
                 };
-                calls.insert(call.get_decision().selected_model_id().to_string(), call);
+                calls.insert(call.decision.selected_model_id().to_string(), call);
             }
             assert!(
                 tokio::time::timeout(std::time::Duration::from_millis(20), &mut first)
@@ -801,10 +770,10 @@ mod tests {
 
             let first_response = first
                 .await
-                .map_err(|source| LibsyError::AlgorithmTask { source })??;
+                .map_err(|source| LibsyError::external("joining a test task", source))??;
             let second_response = second
                 .await
-                .map_err(|source| LibsyError::AlgorithmTask { source })??;
+                .map_err(|source| LibsyError::external("joining a test task", source))??;
             assert_eq!(
                 first_response.llm_response.as_agg().map(completion_text),
                 Some("first response".to_string())
@@ -815,26 +784,30 @@ mod tests {
             );
 
             // Dropping the host-facing promise closes only that call's reply channel.
-            let (driver, mut step_rx) = Driver::new();
-            let producer = tokio::spawn(async move { driver.call_llm(routed("dropped")).await });
+            let (driver, mut step_rx) = Driver::new("test");
+            let producer = tokio::spawn(async move {
+                driver
+                    .call_model(request(), test_decision("dropped".to_string()))
+                    .await
+            });
             let step = step_rx.recv().await.ok_or(DriverError::StreamClosed)??;
-            let Step::CallLlm(call) = step else {
-                return Err(test_error("expected a CallLlm step"));
+            let Step::CallModel(call) = step else {
+                return Err(test_error("expected a CallModel step"));
             };
             drop(call);
             let result = producer
                 .await
-                .map_err(|source| LibsyError::AlgorithmTask { source })?;
+                .map_err(|source| LibsyError::external("joining a test task", source))?;
             assert!(matches!(
                 result,
                 Err(LibsyError::Driver(DriverError::ResponseDropped))
             ));
 
             // A standalone driver reports the typed step receiver disappearing at its next send.
-            let (driver, step_rx) = Driver::new();
+            let (driver, step_rx) = Driver::new("test");
             drop(step_rx);
             let decision = test_decision("closed".to_string());
-            let result = driver.info(Context::default(), decision).await;
+            let result = driver.decide(decision).await;
             assert!(matches!(
                 result,
                 Err(LibsyError::Driver(DriverError::StreamClosed))
@@ -843,6 +816,50 @@ mod tests {
         })
         .await
         .map_err(|error| LibsyError::external("waiting for typed driver boundaries", error))?
+    }
+
+    /// A consumer that only wants the routing outcome takes the call apart instead of
+    /// answering it: it gets the request as the algorithm would have sent it, and the
+    /// algorithm learns the call was abandoned rather than lost — the distinction that
+    /// keeps a deliberate decision-only run out of the failure counters.
+    #[tokio::test]
+    async fn into_parts_yields_the_call_without_answering_it() -> Result<()> {
+        let (driver, mut step_rx) = Driver::new("test");
+        let decision = test_decision("answer/model".to_string());
+        let producer = tokio::spawn({
+            let decision = decision.clone();
+            async move { driver.call_model(request(), decision).await }
+        });
+
+        let step = step_rx.recv().await.ok_or(DriverError::StreamClosed)??;
+        let Step::CallModel(call) = step else {
+            return Err(test_error("expected a CallModel step"));
+        };
+        let (taken_request, taken_decision) = call.into_parts();
+        assert_eq!(taken_decision.selected_model_id(), "answer/model");
+        assert!(taken_decision.is_answer_call());
+        assert_eq!(taken_request.llm_request, request().llm_request);
+
+        let result = producer
+            .await
+            .map_err(|source| LibsyError::external("joining a test task", source))?;
+        assert!(matches!(
+            result,
+            Err(LibsyError::Driver(DriverError::Abandoned))
+        ));
+        Ok(())
+    }
+
+    /// The two ways a call goes unanswered are told apart: `into_parts` is the consumer's
+    /// choice, a bare drop is the promise being lost.
+    #[test]
+    fn abandoning_and_dropping_a_call_report_different_outcomes() {
+        let abandoned: Result<Response> = Err(DriverError::Abandoned.into());
+        let dropped: Result<Response> = Err(DriverError::ResponseDropped.into());
+        assert_eq!(observability::outcome_value(&abandoned), "abandoned");
+        assert_eq!(observability::outcome_value(&dropped), "error");
+        assert!(observability::is_abandoned(&abandoned));
+        assert!(!observability::is_abandoned(&dropped));
     }
 
     #[test]
@@ -858,7 +875,7 @@ mod tests {
     /// replaying `chunks` in order (as `Ok` items).
     fn streaming_orch(chunks: Vec<LlmResponseChunk>) -> (Arc<dyn Algorithm>, impl Serve) {
         let algo = orch(target_set(&["stream/model"]));
-        let serve = move |_decision: Arc<Decision>, _request: Request| {
+        let serve = move |_decision: Decision, _request: Request| {
             let chunks = chunks.clone();
             async move {
                 let stream =
@@ -874,7 +891,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_returns_a_streamed_response_the_caller_aggregates() -> Result<()> {
-        // A streaming client -> its chunks flow through the promise and `ReturnToAgent`,
+        // A streaming client -> its chunks flow through the promise and `Done`,
         // and `run` returns the live stream untouched for the caller to fold.
         let (orch, serve) = streaming_orch(vec![
             LlmResponseChunk::MessageStart {
@@ -893,7 +910,7 @@ mod tests {
                 reason: Some("stop".to_string()),
             },
         ]);
-        let (trace, response) = test_drive(orch, Context::default(), request(), serve).await?;
+        let (trace, response) = test_drive(orch, request(), serve).await?;
         // The run handed back the live stream; the caller folds it to a buffered aggregate.
         let agg = response
             .llm_response
@@ -919,7 +936,7 @@ mod tests {
                 message: "upstream exploded".to_string(),
             },
         ]);
-        let (_, response) = test_drive(orch, Context::default(), request(), serve).await?;
+        let (_, response) = test_drive(orch, request(), serve).await?;
         match response.llm_response.into_agg().await {
             Ok(_) => panic!("expected a mid-stream error, got an aggregate"),
             Err(err) => {
@@ -930,20 +947,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_offloads_via_promise_then_returns_to_agent() -> Result<()> {
+    async fn run_offloads_via_promise_then_finishes() -> Result<()> {
         // Every call is offloaded via a promise the orchestrator surfaces as a
-        // `CallLlm` step for us to fulfill.
-        let stream = orch(target_set(&["offload/model"])).run_stream(Context::default(), request());
+        // `CallModel` step for us to fulfill.
+        let stream = orch(target_set(&["offload/model"])).run_stream(request());
         tokio::pin!(stream);
 
         let mut saw_call = false;
         let mut final_completion = None;
         while let Some(step) = stream.next().await {
             match step? {
-                Step::CallLlm(call) => {
+                Step::CallModel(call) => {
                     saw_call = true;
                     // The decision rode along with the promise.
-                    assert_eq!(call.get_decision().selected_model_id(), "offload/model");
+                    assert_eq!(call.decision.selected_model_id(), "offload/model");
                     // Fulfilling the promise is the "real" model call the caller makes.
                     call.respond(Ok(Response {
                         llm_response: LlmResponse::Agg(text_response(
@@ -956,7 +973,7 @@ mod tests {
                 Step::Decision(decision) => {
                     assert_eq!(decision.selected_model_id(), "offload/model");
                 }
-                Step::ReturnToAgent(response) => {
+                Step::Done(response) => {
                     final_completion = Some(
                         response
                             .llm_response
@@ -968,9 +985,9 @@ mod tests {
             }
         }
 
-        assert!(saw_call, "expected a CallLlm step before ReturnToAgent");
+        assert!(saw_call, "expected a CallModel step before Done");
         assert_eq!(
-            final_completion.ok_or_else(|| test_error("no ReturnToAgent step"))?,
+            final_completion.ok_or_else(|| test_error("no Done step"))?,
             "fulfilled"
         );
         Ok(())
@@ -978,13 +995,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_driven_run_returns_the_trace_and_the_final_response() -> Result<()> {
-        let (trace, response) = test_drive(
-            orch(target_set(&["direct/model"])),
-            Context::default(),
-            request(),
-            echo(),
-        )
-        .await?;
+        let (trace, response) =
+            test_drive(orch(target_set(&["direct/model"])), request(), echo()).await?;
         // TestAlgo calls the first target; `echo` answers with its name.
         assert_eq!(
             response
@@ -1017,7 +1029,7 @@ mod tests {
         for _ in 0..N {
             let algo = algo.clone();
             let barrier = barrier.clone();
-            let serve = move |decision: Arc<Decision>, _request: Request| {
+            let serve = move |decision: Decision, _request: Request| {
                 let barrier = barrier.clone();
                 async move {
                     barrier.wait().await;
@@ -1025,7 +1037,7 @@ mod tests {
                 }
             };
             handles.push(tokio::spawn(async move {
-                test_drive(algo, Context::default(), request(), serve)
+                test_drive(algo, request(), serve)
                     .await
                     .map(|(_, response)| {
                         response
@@ -1042,7 +1054,7 @@ mod tests {
             let completion = tokio::time::timeout(Duration::from_secs(5), handle)
                 .await
                 .map_err(|error| LibsyError::external("waiting for test task", error))?
-                .map_err(|source| LibsyError::AlgorithmTask { source })??;
+                .map_err(|source| LibsyError::external("joining a test task", source))??;
             assert_eq!(completion, "m");
         }
         Ok(())
@@ -1051,25 +1063,25 @@ mod tests {
     #[tokio::test]
     async fn offload_error_propagates_back_to_the_algorithm() -> Result<()> {
         // A client-less target offloads its call; we fulfill the promise with an
-        // Err, which must flow back through `call_llm_target` into the algorithm and
+        // Err, which must flow back through `call_model_target` into the algorithm and
         // out as an error step — not a response.
-        let stream = orch(target_set(&["offload/model"])).run_stream(Context::default(), request());
+        let stream = orch(target_set(&["offload/model"])).run_stream(request());
         tokio::pin!(stream);
 
         let mut saw_error = false;
         while let Some(step) = stream.next().await {
             match step {
-                Ok(Step::CallLlm(call)) => {
+                Ok(Step::CallModel(call)) => {
                     call.respond(Err(test_error("upstream model call failed")))?;
                 }
                 Ok(Step::Decision(_)) => {}
-                Ok(Step::ReturnToAgent(..)) => {
+                Ok(Step::Done(..)) => {
                     return Err(test_error(
                         "expected the offload error to propagate, got a response",
                     ));
                 }
                 Err(err) => {
-                    // The algorithm's `call_llm_target` saw the error via the promise.
+                    // The algorithm's `call_model_target` saw the error via the promise.
                     assert!(err.to_string().contains("upstream model call failed"));
                     saw_error = true;
                 }
@@ -1106,9 +1118,8 @@ mod tests {
                 "stuck"
             }
 
-            async fn create_run_task(
+            async fn route(
                 self: Arc<Self>,
-                _ctx: Context,
                 _driver: Driver,
                 _request: Request,
             ) -> Result<Response> {
@@ -1127,7 +1138,7 @@ mod tests {
             dropped: dropped.clone(),
         });
 
-        let stream = algo.run_stream(Context::default(), request());
+        let stream = algo.run_stream(request());
         started_rx
             .recv()
             .await
@@ -1143,9 +1154,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_run_task_panic_surfaces_as_a_stream_error() -> Result<()> {
-        // An algorithm whose task panics must surface an `Err` step to the stream
-        // consumer, not abort the process from an unobserved detached task.
+    async fn route_panic_surfaces_as_a_stream_error() -> Result<()> {
+        // An algorithm whose task panics must surface an `Err` step carrying the panic
+        // message, not abort the process from an unobserved detached task.
         struct Panicky;
 
         #[async_trait]
@@ -1154,9 +1165,8 @@ mod tests {
                 "panicky"
             }
 
-            async fn create_run_task(
+            async fn route(
                 self: Arc<Self>,
-                _ctx: Context,
                 _driver: Driver,
                 _request: Request,
             ) -> Result<Response> {
@@ -1165,14 +1175,15 @@ mod tests {
         }
 
         let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
-        let stream = algo.run_stream(Context::default(), request());
+        let stream = algo.run_stream(request());
         tokio::pin!(stream);
 
         let mut saw_error = false;
         while let Some(step) = stream.next().await {
             match step {
                 Err(err) => {
-                    assert!(matches!(err, LibsyError::AlgorithmTask { .. }));
+                    // The panic message is preserved, not flattened into an opaque failure.
+                    assert!(err.to_string().contains("algorithm task panicked: boom"));
                     saw_error = true;
                 }
                 Ok(_) => return Err(test_error("expected the panic to surface as an error step")),
@@ -1183,35 +1194,45 @@ mod tests {
         Ok(())
     }
 
+    /// A panicking algorithm must publish its terminal step even when it left a `Driver`
+    /// clone alive in another task. That clone holds the step channel open, so a run that
+    /// merely unwound would never terminate and the consumer would wait forever.
     #[tokio::test]
-    async fn run_returns_an_error_when_the_algorithm_task_panics() -> Result<()> {
-        // The panic surfaces as an `Err` step inside `run_stream`; `run` propagates it
-        // via `?`, so the caller gets an `Err` rather than a hang or a silent panic.
-        struct Panicky;
+    async fn a_panic_with_a_leaked_driver_clone_still_terminates_the_run() -> Result<()> {
+        struct LeakyPanic;
 
         #[async_trait]
-        impl Algorithm for Panicky {
+        impl Algorithm for LeakyPanic {
             fn name(&self) -> &str {
-                "panicky"
+                "leaky_panic"
             }
 
-            async fn create_run_task(
-                self: Arc<Self>,
-                _ctx: Context,
-                _driver: Driver,
-                _request: Request,
-            ) -> Result<Response> {
+            async fn route(self: Arc<Self>, driver: Driver, _request: Request) -> Result<Response> {
+                tokio::spawn(async move {
+                    // Outlives the panic below, keeping a sender clone alive.
+                    let _keep_alive = driver;
+                    std::future::pending::<()>().await;
+                });
+                tokio::task::yield_now().await;
                 panic!("boom");
             }
         }
 
-        let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
-        match test_drive(algo, Context::default(), request(), echo()).await {
+        let algo: Arc<dyn Algorithm> = Arc::new(LeakyPanic);
+        // The timeout turns the hang this guards against into a failure rather than a hang.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            test_drive(algo, request(), echo()),
+        )
+        .await
+        .map_err(|error| LibsyError::external("waiting for the panicked run to end", error))?;
+
+        match result {
             Ok(_) => Err(test_error(
-                "expected the run to surface the algorithm panic as an error",
+                "expected the panic to end the run with an error",
             )),
             Err(err) => {
-                assert!(matches!(err, LibsyError::AlgorithmTask { .. }));
+                assert!(err.to_string().contains("algorithm task panicked: boom"));
                 Ok(())
             }
         }
@@ -1243,9 +1264,8 @@ mod tests {
                 "stuck"
             }
 
-            async fn create_run_task(
+            async fn route(
                 self: Arc<Self>,
-                _ctx: Context,
                 _driver: Driver,
                 _request: Request,
             ) -> Result<Response> {
@@ -1267,10 +1287,7 @@ mod tests {
 
         // Drive the run on its own task, wait until the algorithm task is up, then cancel
         // it — dropping its future (and the `run_stream` stream it holds).
-        let run_task =
-            tokio::spawn(
-                async move { test_drive(algo, Context::default(), request(), echo()).await },
-            );
+        let run_task = tokio::spawn(async move { test_drive(algo, request(), echo()).await });
         started_rx
             .recv()
             .await
@@ -1300,24 +1317,11 @@ mod tests {
             "hedge"
         }
 
-        async fn create_run_task(
-            self: Arc<Self>,
-            ctx: Context,
-            driver: Driver,
-            request: Request,
-        ) -> Result<Response> {
+        async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
             let dec_w = test_decision(self.winner.semantic_name.clone());
             let dec_l = test_decision(self.loser.semantic_name.clone());
-            let win = driver.call_llm(RoutedRequest {
-                request: request.clone(),
-                decision: dec_w,
-                ctx: ctx.clone(),
-            });
-            let lose = driver.call_llm(RoutedRequest {
-                request,
-                decision: dec_l,
-                ctx,
-            });
+            let win = driver.call_model(request.clone(), dec_w);
+            let lose = driver.call_model(request, dec_l);
             // First to resolve wins; `select!` drops the losing future (and its promise).
             tokio::select! {
                 res = win => res,
@@ -1339,7 +1343,7 @@ mod tests {
                 semantic_name: "loser".to_string(),
             },
         });
-        let serve = move |decision: Arc<Decision>, _request: Request| {
+        let serve = move |decision: Decision, _request: Request| {
             let started = started.clone();
             async move {
                 if decision.selected_model_id() == "loser" {
@@ -1362,7 +1366,7 @@ mod tests {
         // The loser responds 50ms after the winner has already won. `run` must return the
         // winner, not the loser's `respond`-to-a-dropped-receiver error.
         let (algo, serve) = hedge(Some(std::time::Duration::from_millis(50)));
-        let (_trace, response) = test_drive(algo, Context::default(), request(), serve).await?;
+        let (_trace, response) = test_drive(algo, request(), serve).await?;
         assert_eq!(
             response
                 .llm_response
@@ -1379,7 +1383,7 @@ mod tests {
         // The loser never resolves. `run` must return the winner promptly, not hang
         // waiting for the in-flight loser.
         let (algo, serve) = hedge(None);
-        let run = test_drive(algo, Context::default(), request(), serve);
+        let run = test_drive(algo, request(), serve);
         let (_trace, response) = tokio::time::timeout(std::time::Duration::from_secs(1), run)
             .await
             .map_err(|error| LibsyError::external("waiting for pending loser", error))??;
@@ -1415,19 +1419,10 @@ mod tests {
                 "fan_out_then_error"
             }
 
-            async fn create_run_task(
-                self: Arc<Self>,
-                ctx: Context,
-                driver: Driver,
-                request: Request,
-            ) -> Result<Response> {
+            async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
                 let offloads = futures::future::join_all((0..self.n).map(|i| {
                     let decision = test_decision(format!("m{i}"));
-                    driver.call_llm(RoutedRequest {
-                        request: request.clone(),
-                        decision,
-                        ctx: ctx.clone(),
-                    })
+                    driver.call_model(request.clone(), decision)
                 }));
                 tokio::select! {
                     _ = offloads => Err(test_error("offloads unexpectedly completed")),
@@ -1446,7 +1441,7 @@ mod tests {
 
         // Serving enters each call; once all N are in flight it signals, then pends forever.
         let started = Arc::new(AtomicUsize::new(0));
-        let serve = move |_decision: Arc<Decision>, _request: Request| {
+        let serve = move |_decision: Decision, _request: Request| {
             let started = started.clone();
             let all_started = all_started.clone();
             async move {
@@ -1459,7 +1454,7 @@ mod tests {
 
         // With the cap gone, the driver keeps polling the stream even with N calls in
         // flight, so the terminal error surfaces promptly instead of hanging.
-        let run = test_drive(algo, Context::default(), request(), serve);
+        let run = test_drive(algo, request(), serve);
         let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
             .await
             .map_err(|error| {

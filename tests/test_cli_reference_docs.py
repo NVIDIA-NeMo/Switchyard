@@ -38,7 +38,6 @@ def test_reference_documents_launcher_before_server() -> None:
     related = text.index("## Related Documentation")
 
     assert launcher < server < removed < related
-    assert "switchyard serve" not in text
 
 
 def test_reference_marks_removed_setup_commands() -> None:
@@ -48,10 +47,13 @@ def test_reference_marks_removed_setup_commands() -> None:
     removed = text[removed_start:related_start]
     commands = _subparsers(_build_parser())
 
-    assert "`switchyard configure` and `switchyard verify` are not available" in removed
+    assert (
+        "`switchyard configure`, `switchyard serve`, and `switchyard verify` are not"
+        in removed
+    )
     assert "api_key_env" in removed
-    assert "The CLI does not save provider credentials or deployment paths" in removed
-    assert {"configure", "verify"}.isdisjoint(commands)
+    assert "The CLI does not save provider credentials, deployment paths" in removed
+    assert {"configure", "serve", "verify"}.isdisjoint(commands)
 
 
 def test_reference_lists_launcher_contract() -> None:

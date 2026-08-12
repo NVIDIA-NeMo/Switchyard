@@ -67,12 +67,21 @@ the classifier). Raising the threshold shrinks that path; lowering it widens it.
 The picker name says which tier is the **default**: the tier used when the
 signals are ambiguous and no classifier verdict is available.
 
-- **`capable_first`**: capable is the default; drop to efficient only when the
-  signals (or the classifier) clearly say so. Quality-first.
 - **`efficient_first`**: efficient is the default; escalate to capable only when
   the signals (or the classifier) clearly say so. Cost-first.
+- **`capable_first`** *(experimental)*: capable is the default; drop to efficient
+  only when the signals (or the classifier) clearly say so. Quality-first.
 
 Both pickers read the same signals; only the default tier differs.
+
+!!! warning "`capable_first` is experimental"
+
+    Every published threshold and routing result comes from `efficient_first`
+    runs. `capable_first` works and the server accepts it, but it has not been
+    benchmarked, so there are no calibrated thresholds for it and no measured
+    accuracy or cost figures to set expectations against. The server logs a
+    warning at startup when a route selects it. Use `efficient_first` unless you
+    are running your own calibration.
 
 ## Tuning `confidence_threshold`
 
@@ -109,8 +118,8 @@ staying on the default tier.)
 | `1.0` | yes (required) | Classifier-driven. Tool signals only apply hard overrides; other turns reach the classifier. |
 
 The signal-vs-classifier split is dataset-dependent. Measure it in
-production: `/v1/stats` reports traffic by tier and model, while response headers
-and structured decision logs explain individual selections.
+production: `/v1/stats` reports stage-router decisions by source and semantic
+target, while response headers and structured decision logs explain individual selections.
 
 ### Calibrating the threshold from run data
 
@@ -151,31 +160,10 @@ From the overlap tasks (those with both capable and efficient results):
 - `SAFE`   = both pass
 - `HARD`   = both fail
 
-**Running the sweep**
-
-Replay your runs through the real Rust scorer and picker with
-`benchmark/score_staged_run.py` (the `switchyard-stage-router-scorer` skill). It emits
-per-turn scores and per-task routing splits at a given threshold and window —
-the actual `capable_first` / `efficient_first` picker decisions, not a
-counterfactual:
-
-```bash
-# Score a probe run at a candidate threshold
-uv run python benchmark/score_staged_run.py --run benchmark/tb_runs/<your_run> \
-    --threshold 0.5 --window 3
-# → /tmp/<run>-scores.jsonl   (per turn: score, confidence, pick_cf, pick_ef)
-# → /tmp/<run>-per-task.csv   (per task: routing split, mean score/confidence)
-```
-
-Sweep a few candidate thresholds and read the routing split and pass rate off
-the per-task CSV; the lowest threshold that rescues the RESCUE quadrant without
-over-escalating the LOSS quadrant is your calibrated value. Because the scorer
-is corroborative, a `0.5` threshold takes ~1.5 signals of agreement — a policy
-that escalates ~20% of tasks maps roughly to `confidence_threshold: 0.5` with
-`capable_first`.
-
-Signals come from the actual picker replay, so even 15–20 probe tasks give a
-stable result.
+Sweep a few candidate thresholds in representative benchmark runs. Choose the
+lowest threshold that rescues the RESCUE quadrant without over-escalating the
+LOSS quadrant. Because the scorer is corroborative, a `0.5` threshold takes
+roughly 1.5 signals of agreement.
 
 **Caveat on efficient outcomes in stage-router vs. pure-efficient**
 

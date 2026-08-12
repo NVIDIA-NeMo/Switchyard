@@ -20,7 +20,7 @@ serde_json = "1"
 | Tools | [`ToolDefinition`], [`ToolChoice`], [`ToolCall`], [`ToolResult`] |
 | Response | [`AggLlmResponse`], [`ResponseOutput`], [`Usage`], [`StopReason`] |
 | Streaming | [`LlmResponse`], [`LlmResponseStream`], [`LlmResponseStreamEvent`], [`LlmResponseChunk`], [`ProviderStreamEvent`] |
-| Envelope | [`Context`], [`Request`], [`Response`], [`Metadata`] |
+| Envelope | [`Request`], [`Response`], [`Metadata`] |
 | Routing I/O | [`Decision`], [`RoutedLlmClient`], [`LlmClientError`] |
 | Wire identity | [`WireFormat`], [`FormatId`] |
 

@@ -4,6 +4,7 @@
 //! Process-local JSON stats accounting for the Rust server.
 
 mod accumulator;
+mod algorithms;
 mod cache_eligibility;
 
 pub(crate) use accumulator::{StatsAccumulator, StatsSnapshot, TokenUsage};

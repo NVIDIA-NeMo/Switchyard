@@ -80,7 +80,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
 
 ```rust
 use switchyard_llm_client::{LlmClientError, TranslatingLlmClient};
-use switchyard_protocol::{completion_text, text_request, Context, LlmResponse, Request};
+use switchyard_protocol::{completion_text, text_request, LlmResponse, Request};
 
 async fn ask(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<String> {
     let request = Request {
@@ -91,7 +91,7 @@ async fn ask(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<Str
 
     // model_name wins over request.llm_request.model; it is also sent upstream.
     let response = client
-        .call_rewrite_model(Context::default(), request, Some("gpt-4o-mini"))
+        .call_rewrite_model(request, Some("gpt-4o-mini"))
         .await?;
 
     match response.llm_response {
@@ -110,7 +110,7 @@ Set `stream` on the IR request and drive the returned chunk stream:
 ```rust
 use futures_util::StreamExt;
 use switchyard_llm_client::TranslatingLlmClient;
-use switchyard_protocol::{text_request, Context, LlmResponse, LlmResponseChunk, Request};
+use switchyard_protocol::{text_request, LlmResponse, LlmResponseChunk, Request};
 
 async fn stream(
     client: &TranslatingLlmClient,
@@ -120,7 +120,7 @@ async fn stream(
     let request = Request { llm_request, raw_request: None, metadata: None };
 
     let response = client
-        .call_rewrite_model(Context::default(), request, Some("gpt-4o-mini"))
+        .call_rewrite_model(request, Some("gpt-4o-mini"))
         .await?;
 
     if let LlmResponse::Stream(mut chunks) = response.llm_response {
@@ -147,7 +147,7 @@ single-provider case:
 use std::sync::Arc;
 use switchyard_libsy::Algorithm;
 use switchyard_llm_client::{ClientRouter, TranslatingLlmClient};
-use switchyard_protocol::{Context, Request};
+use switchyard_protocol::Request;
 
 async fn route(
     algorithm: Arc<dyn Algorithm>,
@@ -156,7 +156,7 @@ async fn route(
 ) -> switchyard_libsy::Result<String> {
     let clients = ClientRouter::single(client);
     let (trace, _response) =
-        switchyard_llm_client::run(algorithm, clients, Context::default(), request, None).await?;
+        switchyard_llm_client::run(algorithm, clients, request, None).await?;
     Ok(trace
         .last()
         .map(|decision| decision.selected_model_id().to_string())

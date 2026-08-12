@@ -37,7 +37,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver, TranslatingLlmClient};
-use switchyard_protocol::{Context, Decision, LlmClientError, Metadata, Request, Usage};
+use switchyard_protocol::{Decision, LlmClientError, Metadata, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
@@ -219,10 +219,14 @@ impl ServerState {
             return Err(ServerError::new("at least one algorithm route is required"));
         }
         let metrics = metrics::registry().map_err(ServerError::new)?;
+        let stats = StatsAccumulator::new(
+            metrics.clone(),
+            entries.values().map(|entry| entry.algorithm.name()),
+        );
         Ok(Self {
             routes: Arc::new(entries),
             metrics,
-            stats: StatsAccumulator::default(),
+            stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
         })
@@ -693,18 +697,11 @@ async fn handle_llm_request(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
     );
-    let (trace, response) = match switchyard_llm_client::run(
-        algorithm,
-        client_router,
-        Context::default(),
-        request,
-        Some(observer),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => return algorithm_error(error),
-    };
+    let (trace, response) =
+        match switchyard_llm_client::run(algorithm, client_router, request, Some(observer)).await {
+            Ok(result) => result,
+            Err(error) => return algorithm_error(error),
+        };
     // Metrics, response body, and routing header all read the same decision, so
     // the model they name can never disagree. An empty trace leaves the body with
     // the id the upstream reported.
@@ -736,7 +733,7 @@ async fn handle_llm_request(
         Err(error) => return server_error(error.to_string()),
     };
     if let Some(decision) = decision {
-        attach_routing_headers(&mut response, decision.as_ref());
+        attach_routing_headers(&mut response, decision);
     }
     response
 }

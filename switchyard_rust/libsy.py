@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
-from switchyard_rust.core import _load_native
+from switchyard_rust._native import load_native
 
 _EXPORTS = frozenset(
     {
@@ -40,9 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from typing import final
 
-    from switchyard_rust.core import SwitchyardRuntimeError
-
-    class LibsyError(SwitchyardRuntimeError): ...
+    class LibsyError(RuntimeError): ...
 
     @final
     class LlmTarget:
@@ -112,7 +110,7 @@ if TYPE_CHECKING:
 
 def __getattr__(name: str) -> object:
     if name in _EXPORTS:
-        native: Any = _load_native()
+        native: Any = load_native()
         return getattr(native.libsy, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

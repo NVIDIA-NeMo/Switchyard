@@ -38,7 +38,7 @@ import tty
 
 import pytest
 
-from switchyard.server.shell_tui import CSI, ShellTUI
+from switchyard.cli.launchers.shell_tui import CSI, ShellTUI
 
 
 def _make_tui(
@@ -56,7 +56,7 @@ def _make_tui(
 @pytest.fixture
 def fixed_winsize(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "switchyard.server.shell_tui._get_winsize",
+        "switchyard.cli.launchers.shell_tui._get_winsize",
         lambda _fd: (24, 80),
     )
 
@@ -370,7 +370,7 @@ def test_handle_winch_propagates_size_and_repaints(
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
     monkeypatch.setattr(
-        "switchyard.server.shell_tui._get_winsize",
+        "switchyard.cli.launchers.shell_tui._get_winsize",
         lambda _fd: (40, 100),
     )
 
@@ -437,7 +437,7 @@ def test_handle_winch_bumps_activity_ts_to_block_footer_thread_barge(
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
     monkeypatch.setattr(
-        "switchyard.server.shell_tui._get_winsize",
+        "switchyard.cli.launchers.shell_tui._get_winsize",
         lambda _fd: (24, 80),
     )
 

@@ -17,9 +17,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 async-trait.workspace = true
-futures-util.workspace = true
 http.workspace = true
-parking_lot.workspace = true
 switchyard-libsy.workspace = true
 switchyard-llm-client.workspace = true
 pyo3 = { version = "0.28.3", features = ["abi3-py312", "extension-module"] }
@@ -29,7 +27,4 @@ serde.workspace = true
 serde_json.workspace = true
 switchyard-protocol.workspace = true
 switchyard-server.workspace = true
-switchyard-components.workspace = true
-switchyard-translation.workspace = true
 tokio.workspace = true
-tracing.workspace = true

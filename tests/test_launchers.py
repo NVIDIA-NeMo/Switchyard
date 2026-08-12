@@ -22,8 +22,8 @@ def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentP
     return action.choices  # type: ignore[return-value]
 
 
-def test_cli_exposes_only_serve_and_launch() -> None:
-    assert set(_subparsers(_build_parser())) == {"serve", "launch"}
+def test_cli_exposes_only_launch() -> None:
+    assert set(_subparsers(_build_parser())) == {"launch"}
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex", "openclaw"])

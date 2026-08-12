@@ -10,8 +10,8 @@ import logging
 from collections.abc import Mapping
 from typing import cast
 
+from switchyard.cli.launchers.cost_estimator import estimate_model_cost
 from switchyard.cli.launchers.stats_source import StatsSource
-from switchyard.lib.cost_estimator import estimate_model_cost
 
 _RULE = "─" * 51
 _LOG = logging.getLogger(__name__)

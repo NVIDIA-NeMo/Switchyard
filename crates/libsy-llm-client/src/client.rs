@@ -13,7 +13,7 @@ use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value};
 use switchyard_protocol::{
-    Context, Decision, LlmRequest, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
+    Decision, LlmRequest, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
 };
 use switchyard_translation::{
     WireFormat, decode_aggregated_response, decode_request, decode_stream,
@@ -362,7 +362,6 @@ impl TranslatingLlmClient {
     /// models or wire formats are configuration errors.
     pub async fn call_rewrite_model(
         &self,
-        _ctx: Context,
         request: Request,
         model_name: Option<&str>,
     ) -> Result<Response> {
@@ -459,7 +458,6 @@ impl TranslatingLlmClient {
     /// set); pass `None` to forward nothing.
     pub async fn call_rewrite_model_raw(
         &self,
-        ctx: Context,
         raw_http_request: Value,
         http_headers: Option<http::HeaderMap>,
         model: Option<&str>,
@@ -488,7 +486,7 @@ impl TranslatingLlmClient {
                 ..Default::default()
             }),
         };
-        let response = self.call_rewrite_model(ctx, request, model).await?;
+        let response = self.call_rewrite_model(request, model).await?;
 
         match response.llm_response {
             LlmResponse::Agg(agg) => {
@@ -507,14 +505,9 @@ impl TranslatingLlmClient {
 
 #[async_trait]
 impl RoutedLlmClient for TranslatingLlmClient {
-    async fn call(
-        &self,
-        ctx: Context,
-        request: Request,
-        decision: std::sync::Arc<Decision>,
-    ) -> Result<Response> {
+    async fn call(&self, request: Request, decision: Decision) -> Result<Response> {
         let model_name = Some(decision.selected_model_id());
-        self.call_rewrite_model(ctx, request, model_name).await
+        self.call_rewrite_model(request, model_name).await
     }
 }
 
@@ -671,8 +664,7 @@ fn set_json_model(body: &mut Value, model: &str) {
 // later turns from an Anthropic one. Clients such as Claude Code send
 // `context_management` on every turn, so the Anthropic leg must strip it or the
 // upstream rejects the request (for example `clear_thinking_20251015` strategy
-// requires `thinking` to be enabled or adaptive). Mirrors
-// `switchyard-components`' `strip_anthropic_incompatible_fields`.
+// requires `thinking` to be enabled or adaptive).
 fn strip_anthropic_incompatible_fields(body: &mut Value) {
     if let Value::Object(object) = body {
         object.remove("reasoning_effort");
@@ -686,8 +678,7 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
 // turns of a session from an OpenAI-format target whose thinking blocks are
 // unsigned, so the Anthropic leg must drop them or the upstream rejects the
 // request. Bedrock enforces this (surfacing as a SigV4 signature mismatch) where
-// Azure-hosted Anthropic currently does not. Mirrors `switchyard-components`'
-// `strip_unsigned_thinking_blocks`.
+// Azure-hosted Anthropic currently does not.
 fn strip_unsigned_thinking_blocks(body: &mut Value) {
     let Value::Object(object) = body else {
         return;
@@ -970,7 +961,7 @@ mod tests {
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let client = TranslatingLlmClient::new(&[])?;
         let Err(error) = client
-            .call_rewrite_model(Context::default(), request_for(None, false), None)
+            .call_rewrite_model(request_for(None, false), None)
             .await
         else {
             panic!("expected an error");
@@ -987,7 +978,7 @@ mod tests {
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let client = TranslatingLlmClient::new(&[])?;
         let Err(error) = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected an error");
@@ -1007,7 +998,6 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map("https://example.test/v1"))?;
         let Err(error) = client
             .call_rewrite_model(
-                Context::default(),
                 request_with_wire_format("gpt", WireFormat::AnthropicMessages),
                 None,
             )
@@ -1049,7 +1039,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&[])?;
         // Arg "b" is looked up (and reported), not the request's "a".
         let Err(error) = client
-            .call_rewrite_model(Context::default(), request_for(Some("a"), false), Some("b"))
+            .call_rewrite_model(request_for(Some("a"), false), Some("b"))
             .await
         else {
             panic!("expected an error");
@@ -1084,7 +1074,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
         let response = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await?;
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hi there");
@@ -1109,7 +1099,7 @@ mod tests {
         let client =
             TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 2))?;
         let Err(error) = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected invalid JSON to fail");
@@ -1130,7 +1120,7 @@ mod tests {
         let (base_url, server) = truncated_response_server("application/json", "{}")?;
         let client = TranslatingLlmClient::new(&chat_map(&base_url))?;
         let result = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await;
         server
             .join()
@@ -1168,7 +1158,7 @@ mod tests {
                 response_sequence_server(vec![truncated.to_string(), raw_chat_success_response()])?;
             let client = TranslatingLlmClient::new(&chat_map_with_retries(&base_url, 1))?;
             let response = client
-                .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+                .call_rewrite_model(request_for(Some("gpt"), false), None)
                 .await?;
             server
                 .join()
@@ -1189,7 +1179,7 @@ mod tests {
         let (base_url, server) = truncated_response_server("text/event-stream", body)?;
         let client = TranslatingLlmClient::new(&chat_map_with_retries(&base_url, 2))?;
         let response = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), true), None)
+            .call_rewrite_model(request_for(Some("gpt"), true), None)
             .await?;
         let result = response.llm_response.into_agg().await;
         server
@@ -1223,11 +1213,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
         // Inbound model differs from the map key / resolved model.
         client
-            .call_rewrite_model(
-                Context::default(),
-                request_for(Some("switchyard"), false),
-                Some("gpt"),
-            )
+            .call_rewrite_model(request_for(Some("switchyard"), false), Some("gpt"))
             .await?;
         // The body_partial_json matcher asserts the upstream saw model "gpt".
         Ok(())
@@ -1272,13 +1258,7 @@ mod tests {
         });
 
         client
-            .call_rewrite_model_raw(
-                Context::default(),
-                raw,
-                None,
-                Some("gpt"),
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model_raw(raw, None, Some("gpt"), WireFormat::OpenAiChat)
             .await?;
         Ok(())
     }
@@ -1347,13 +1327,7 @@ mod tests {
         });
 
         client
-            .call_rewrite_model_raw(
-                Context::default(),
-                raw,
-                None,
-                Some("claude"),
-                WireFormat::AnthropicMessages,
-            )
+            .call_rewrite_model_raw(raw, None, Some("claude"), WireFormat::AnthropicMessages)
             .await?;
         Ok(())
     }
@@ -1395,13 +1369,7 @@ mod tests {
         });
 
         client
-            .call_rewrite_model_raw(
-                Context::default(),
-                raw,
-                None,
-                Some("claude"),
-                WireFormat::AnthropicMessages,
-            )
+            .call_rewrite_model_raw(raw, None, Some("claude"), WireFormat::AnthropicMessages)
             .await?;
         Ok(())
     }
@@ -1427,7 +1395,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
         let response = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), true), None)
+            .call_rewrite_model(request_for(Some("gpt"), true), None)
             .await?;
         assert!(matches!(response.llm_response, LlmResponse::Stream(_)));
         let agg = response.llm_response.into_agg().await?;
@@ -1463,13 +1431,7 @@ mod tests {
         });
 
         let response = client
-            .call_rewrite_model_raw(
-                Context::default(),
-                raw,
-                None,
-                Some("gpt"),
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model_raw(raw, None, Some("gpt"), WireFormat::OpenAiChat)
             .await?;
         assert!(matches!(response, RawResponse::Stream(_)));
         Ok(())
@@ -1487,7 +1449,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
         let Err(error) = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected an error");
@@ -1521,7 +1483,7 @@ mod tests {
         let client =
             TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 1))?;
         let response = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await?;
         let agg = response.llm_response.into_agg().await?;
 
@@ -1547,7 +1509,7 @@ mod tests {
         let client =
             TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 2))?;
         let Err(error) = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected an upstream error");
@@ -1583,7 +1545,7 @@ mod tests {
         let client =
             TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 2))?;
         let Err(error) = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected retry exhaustion");
@@ -1623,7 +1585,7 @@ mod tests {
             .timeout(Duration::from_millis(100))
             .build()?;
         let response = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await?;
 
         assert_eq!(
@@ -1721,12 +1683,9 @@ mod tests {
         client.client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(10))
             .build()?;
-        let decision = std::sync::Arc::new(fixed_decision("gpt"));
+        let decision = fixed_decision("gpt");
 
-        let Err(error) = client
-            .call(Context::default(), request_for(None, false), decision)
-            .await
-        else {
+        let Err(error) = client.call(request_for(None, false), decision).await else {
             panic!("expected a timeout");
         };
         let LlmClientError::Timeout { source } = error else {
@@ -1753,7 +1712,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
         let Err(error) = client
-            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected an error");
@@ -1813,9 +1772,7 @@ mod tests {
 
         // Matchers assert forwarded x-request-id survives and reserved
         // authorization is the backend's, not the client's.
-        client
-            .call_rewrite_model(Context::default(), request, None)
-            .await?;
+        client.call_rewrite_model(request, None).await?;
         let received = server
             .received_requests()
             .await
@@ -1851,11 +1808,9 @@ mod tests {
             .await;
 
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
-        let decision = std::sync::Arc::new(fixed_decision("gpt"));
+        let decision = fixed_decision("gpt");
         // Called through the trait; the request has no model, so "gpt" comes from the decision.
-        let response = client
-            .call(Context::default(), request_for(None, false), decision)
-            .await?;
+        let response = client.call(request_for(None, false), decision).await?;
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "routed hi");
         Ok(())
@@ -1866,13 +1821,7 @@ mod tests {
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let client = TranslatingLlmClient::new(&[])?;
         let Err(error) = client
-            .call_rewrite_model_raw(
-                Context::default(),
-                json!("invalid"),
-                None,
-                Some("gpt"),
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model_raw(json!("invalid"), None, Some("gpt"), WireFormat::OpenAiChat)
             .await
         else {
             panic!("expected request translation to fail");
@@ -1912,13 +1861,7 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}]
         });
         let RawResponse::Buffered(body) = client
-            .call_rewrite_model_raw(
-                Context::default(),
-                raw,
-                None,
-                Some("gpt"),
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model_raw(raw, None, Some("gpt"), WireFormat::OpenAiChat)
             .await?
         else {
             panic!("expected a buffered response");
@@ -1954,13 +1897,7 @@ mod tests {
             "stream": true
         });
         let RawResponse::Stream(stream) = client
-            .call_rewrite_model_raw(
-                Context::default(),
-                raw,
-                None,
-                Some("gpt"),
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model_raw(raw, None, Some("gpt"), WireFormat::OpenAiChat)
             .await?
         else {
             panic!("expected a streamed response");
@@ -2008,13 +1945,7 @@ mod tests {
         // Matchers assert the forwarded x-request-id survives and reserved
         // authorization is the backend's, not the client's.
         client
-            .call_rewrite_model_raw(
-                Context::default(),
-                raw,
-                Some(headers),
-                Some("gpt"),
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model_raw(raw, Some(headers), Some("gpt"), WireFormat::OpenAiChat)
             .await?;
         Ok(())
     }

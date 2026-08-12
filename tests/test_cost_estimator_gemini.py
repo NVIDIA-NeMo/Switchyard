@@ -10,7 +10,7 @@ fails loudly instead.
 
 from __future__ import annotations
 
-from switchyard.lib.cost_estimator import MODEL_PRICING, estimate_cost
+from switchyard.cli.launchers.cost_estimator import MODEL_PRICING, estimate_cost
 
 _GEMINI_KEYS = (
     "gcp/google/gemini-3.5-flash",

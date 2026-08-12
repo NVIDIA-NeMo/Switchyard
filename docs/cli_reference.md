@@ -9,7 +9,7 @@ Switchyard has two command-line paths:
 
 ## Launcher Path: `switchyard launch`
 
-Install the launcher with `uv tool install --python 3.12 "nemo-switchyard[cli,server]"`. The
+Install the launcher with `uv tool install --python 3.12 "nemo-switchyard[cli]"`. The
 selected coding agent must also be installed and available on `PATH`.
 
 ### Usage
@@ -83,7 +83,8 @@ switchyard-server --config routes.toml \
 
 ## Removed Setup Commands
 
-`switchyard configure` and `switchyard verify` are not available. Export the
+`switchyard configure`, `switchyard serve`, and `switchyard verify` are not
+available. Export the
 environment variable named by `api_key_env` in the native TOML deployment,
 then pass that deployment on each run. For example:
 
@@ -97,7 +98,8 @@ export PROVIDER_API_KEY="your-provider-key"  # pragma: allowlist secret
 switchyard launch claude --model my-route --config routes.toml
 ```
 
-The CLI does not save provider credentials or deployment paths.
+The CLI does not save provider credentials, deployment paths, or host a
+standalone server.
 Use `switchyard-server --config routes.toml --dry-run` to
 validate a native deployment before starting the standalone server.
 

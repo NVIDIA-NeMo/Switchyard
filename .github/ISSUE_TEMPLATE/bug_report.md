@@ -16,7 +16,7 @@ Minimal steps to reproduce. Include the command line, the inbound request shape,
 
 ```bash
 # example
-switchyard serve --routes examples/route.yaml --port 4000
+switchyard-server --config routes.toml --port 4000
 curl -s http://localhost:4000/v1/chat/completions -d '{"model":"...","messages":[...]}'
 ```
 
