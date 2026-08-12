@@ -356,7 +356,7 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
     Ok(())
 }
 
-// Verifies mixed reasoning and content emit reasoning before text for Anthropic clients for Anthropic clients.
+// A mixed chunk must emit reasoning before text, matching the buffered decoder.
 #[test]
 fn openai_chat_mixed_reasoning_and_content_stream_in_reasoning_first_order() -> TestResult {
     let engine = TranslationEngine::default();
