@@ -59,6 +59,8 @@ struct ServerConfig {
     targets: BTreeMap<String, TargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
     #[serde(default)]
+    pricing: BTreeMap<String, PricingConfig>,
+    #[serde(default)]
     savings: Option<SavingsSectionConfig>,
 }
 
@@ -118,45 +120,41 @@ impl ServerConfig {
         self.apply_savings(state)
     }
 
-    /// Enables the savings endpoint when any target declares pricing.
+    /// Enables the savings endpoint when a `[pricing]` table is present.
     ///
-    /// Stats are keyed by the model id the routed call selected, so the
-    /// pricing table is keyed by `target.id`, not the TOML target name.
+    /// Stats are keyed by the model id the routed call selected, so
+    /// `[pricing]` keys are model ids (`target.id`), not TOML target names.
+    /// Purely additive: no `[pricing]` table means no savings endpoints and
+    /// no behavior change.
     fn apply_savings(&self, state: ServerState) -> ServerResult<ServerState> {
-        let mut pricing = BTreeMap::new();
-        for target in self.targets.values() {
-            if let Some(config) = target.pricing {
-                pricing.insert(target.id.clone(), config.into_model_price());
-            }
-        }
-        let baseline = match self
-            .savings
-            .as_ref()
-            .and_then(|s| s.baseline_target.as_ref())
-        {
-            Some(name) => {
-                let target = self.targets.get(name).ok_or_else(|| {
-                    ServerError::new(format!(
-                        "savings baseline_target {name} does not match any [targets.*] entry"
-                    ))
-                })?;
-                if target.pricing.is_none() {
-                    return Err(ServerError::new(format!(
-                        "savings baseline_target {name} has no pricing configured"
-                    )));
-                }
-                Some(target.id.clone())
-            }
-            None => None,
-        };
-        if pricing.is_empty() {
+        if self.pricing.is_empty() {
             if self.savings.is_some() {
                 return Err(ServerError::new(
-                    "[savings] requires at least one target with a [targets.*.pricing] section",
+                    "[savings] requires a [pricing] table with at least one model",
                 ));
             }
             return Ok(state);
         }
+        let pricing: BTreeMap<String, ModelPrice> = self
+            .pricing
+            .iter()
+            .map(|(model, config)| (model.clone(), config.into_model_price()))
+            .collect();
+        let baseline = match self
+            .savings
+            .as_ref()
+            .and_then(|s| s.baseline_model.as_ref())
+        {
+            Some(model) => {
+                if !pricing.contains_key(model) {
+                    return Err(ServerError::new(format!(
+                        "savings baseline_model {model} has no [pricing.\"{model}\"] entry"
+                    )));
+                }
+                Some(model.clone())
+            }
+            None => None,
+        };
         Ok(state.with_savings(SavingsConfig::new(pricing, baseline)))
     }
 
@@ -301,16 +299,13 @@ struct TargetConfig {
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
-    #[serde(default)]
-    pricing: Option<PricingConfig>,
 }
 
-/// Per-target pricing in USD per 1 million tokens.
+/// Per-model pricing in USD per 1 million tokens, keyed by model id.
 ///
-/// `cached` defaults to the cache-read discount being absent (0.0 means
-/// cache reads are free only if explicitly priced so); `cache_write`
-/// defaults to the base input rate when omitted, matching providers with
-/// no cache-write premium.
+/// `cached` defaults to 10% of the base input rate (the common provider
+/// discount); `cache_write` defaults to the base input rate, matching
+/// providers with no cache-write premium.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PricingConfig {
@@ -333,13 +328,13 @@ impl PricingConfig {
     }
 }
 
-/// Optional `[savings]` section selecting the baseline comparison target.
+/// Optional `[savings]` section selecting the baseline comparison model.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavingsSectionConfig {
-    /// Target name (TOML key under `[targets.*]`) to price the baseline
-    /// against. Defaults to the most expensive priced target.
-    baseline_target: Option<String>,
+    /// Model id (a `[pricing]` key) to price the baseline against.
+    /// Defaults to the most expensive priced model.
+    baseline_model: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
