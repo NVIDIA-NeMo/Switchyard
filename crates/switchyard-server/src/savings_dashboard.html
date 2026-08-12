@@ -138,7 +138,7 @@ function renderDist(models){
       return `<div class="row">
         <div class="name" title="${esc(name)}">${esc(name)}</div>
         <div class="bar"><div style="width:${pct.toFixed(1)}%"></div></div>
-        <div class="pct">${m.calls} calls · ${pct.toFixed(1)}%</div>
+        <div class="pct">${fmt(m.calls)} calls · ${pct.toFixed(1)}%</div>
       </div>`;
     }).join("");
 }
@@ -164,7 +164,10 @@ function renderModels(models){
     <tbody>${rows}</tbody></table>`;
 }
 
+let inFlight = false;
 async function refresh(){
+  if(inFlight) return;
+  inFlight = true;
   try {
     const r = await fetch("/v1/savings");
     if(!r.ok) throw new Error(await r.text());
@@ -189,17 +192,25 @@ async function refresh(){
     $("status").textContent = "live";
   } catch(e) {
     $("status").textContent = "fetch failed";
+  } finally {
+    inFlight = false;
   }
 }
 
 $("refresh").addEventListener("click", refresh);
 $("reset").addEventListener("click", async () => {
-  await fetch("/v1/stats/reset", {method:"POST"});
+  try {
+    const r = await fetch("/v1/stats/reset", {method:"POST"});
+    if(!r.ok) throw new Error(await r.text());
+  } catch(e) {
+    $("status").textContent = "reset failed";
+    return;
+  }
   refresh();
 });
 
 refresh();
-setInterval(refresh, 2000);
+setInterval(() => { if(!document.hidden) refresh(); }, 2000);
 </script>
 </body>
 </html>

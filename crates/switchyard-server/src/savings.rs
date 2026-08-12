@@ -42,11 +42,6 @@ impl SavingsConfig {
         Self { pricing, baseline }
     }
 
-    /// True when no pricing has been configured at all.
-    pub fn is_empty(&self) -> bool {
-        self.pricing.is_empty()
-    }
-
     fn price_for(&self, model: &str) -> Option<ModelPrice> {
         self.pricing.get(model).copied()
     }
@@ -95,8 +90,8 @@ impl SavingsConfig {
                     prompt_tokens: m.prompt_tokens,
                     completion_tokens: m.completion_tokens,
                     cached_tokens: m.cached_tokens,
-                    cost,
-                    baseline_cost: would_be,
+                    cost: round6(cost),
+                    baseline_cost: round6(would_be),
                     priced: price.is_some(),
                 },
             );
@@ -112,8 +107,15 @@ impl SavingsConfig {
                 cached: m.cached_tokens,
                 cache_creation: m.cache_creation_tokens,
             };
-            if let Some(price) = self.price_for(model) {
-                classifier_cost += tokens.cost(price);
+            match self.price_for(model) {
+                Some(price) => classifier_cost += tokens.cost(price),
+                // An unpriced judge is under-counted the same way as an
+                // unpriced serving model; surface it rather than hide it.
+                None => {
+                    if !unpriced_models.contains(model) {
+                        unpriced_models.push(model.clone());
+                    }
+                }
             }
         }
         actual_cost += classifier_cost;

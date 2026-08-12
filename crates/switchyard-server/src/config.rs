@@ -135,11 +135,27 @@ impl ServerConfig {
             }
             return Ok(state);
         }
-        let pricing: BTreeMap<String, ModelPrice> = self
-            .pricing
-            .iter()
-            .map(|(model, config)| (model.clone(), config.into_model_price()))
-            .collect();
+        // Reject unusable rates at startup: a NaN or infinite rate would make
+        // the savings snapshot unserializable, and a negative rate produces
+        // negative spend. Matches the build-time validation of other numeric
+        // config in this file.
+        let mut pricing: BTreeMap<String, ModelPrice> = BTreeMap::new();
+        for (model, config) in &self.pricing {
+            let price = config.into_model_price();
+            for (field, rate) in [
+                ("input", price.input),
+                ("output", price.output),
+                ("cached", price.cached),
+                ("cache_write", price.cache_write),
+            ] {
+                if !rate.is_finite() || rate < 0.0 {
+                    return Err(ServerError::new(format!(
+                        "[pricing.\"{model}\"] {field} must be a finite, non-negative rate"
+                    )));
+                }
+            }
+            pricing.insert(model.clone(), price);
+        }
         let baseline = match self
             .savings
             .as_ref()
@@ -1275,6 +1291,17 @@ target = "weak"
         let state = server_state_from_toml(&priced)?;
         assert!(state.savings.is_some());
         Ok(())
+    }
+
+    #[test]
+    fn pricing_rates_must_be_finite_and_non_negative() {
+        let negative =
+            format!("{VALID_CONFIG}\n[pricing.\"weak/model\"]\ninput = -1.0\noutput = 5.0\n");
+        assert!(error_message(&negative).contains("finite, non-negative"));
+
+        let non_finite =
+            format!("{VALID_CONFIG}\n[pricing.\"weak/model\"]\ninput = inf\noutput = 5.0\n");
+        assert!(error_message(&non_finite).contains("finite, non-negative"));
     }
 
     #[test]

@@ -77,3 +77,19 @@ base_threshold = 0.5
 session_affinity = true
 message_hash_fallback = true
 
+
+# Optional cost savings reporting: pricing (USD per 1M tokens) enables
+# GET /v1/savings and the live GET /dashboard page. Purely additive —
+# remove this section and the server behaves exactly as before.
+# See docs/operations/cost_savings.md.
+#
+# [pricing."aws/anthropic/bedrock-claude-opus-4-8"]
+# input = 15.00
+# output = 75.00
+#
+# [pricing."nvidia/zai-org/glm-5.2"]
+# input = 0.60
+# output = 2.20
+#
+# [savings]
+# baseline_model = "aws/anthropic/bedrock-claude-opus-4-8"
