@@ -54,6 +54,7 @@ async def test_random_runs_with_a_python_client() -> None:
             "is_answer_call": True,
         }
     ]
+    assert client.calls[0]["model"] == "fast"
     assert client.calls[0]["messages"][0]["content"] == [
         {"type": "text", "text": "hello"}
     ]

@@ -47,18 +47,16 @@ pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
 /// you. A host that only wants the routing outcome can take the contents with
 /// [`into_parts`](Self::into_parts) and never respond; dropping the stream ends the run.
 ///
-/// The selected model and inbound route name live in separate, unambiguous places: the model
-/// identifier is [`decision.selected_model_id()`](Decision::selected_model_id), while
-/// `request.llm_request.model` is the *inbound* name the agent asked for (libsy
-/// never overwrites it). A client maps `selected_model_id()` to the provider model
-/// id it hits.
+/// The selected model is available both from
+/// [`decision.selected_model_id()`](Decision::selected_model_id) and from
+/// `request.llm_request.model`. [`Driver::call_model`] stamps the decision's model onto the
+/// request before publishing the call, so every consumer receives a request ready for the
+/// selected target.
 pub struct CallModel {
     /// The name of the algorithm that produced this call, so a host instrumenting the
     /// calls it serves can attribute its own spans to the algorithm behind them.
     pub algorithm: String,
-    /// The request to serve; its `model` is the agent's original name NOT the selected model.
-    /// The caller making the request needs to change it to decision.selected_model_id() before
-    /// sending.
+    /// The request to serve; its `model` is the selected model identified by `decision`.
     pub request: Request,
     /// The routing decision behind this call; `selected_model_id()` identifies the model to use.
     pub decision: Decision,
@@ -67,6 +65,16 @@ pub struct CallModel {
 }
 
 impl CallModel {
+    /// The selected model stamped onto this call's request by [`Driver::call_model`].
+    pub fn selected_model_id(&self) -> &str {
+        // Driver stamps the model before constructing CallModel.
+        self.request
+            .llm_request
+            .model
+            .as_deref()
+            .unwrap_or_default()
+    }
+
     /// Fulfill the promise with the caller's model-call result. Pass `Err(..)` to
     /// propagate a failed model call back to the algorithm. Consumes the promise: it
     /// can only be fulfilled once.
@@ -151,8 +159,9 @@ impl Driver {
             reasoning_tokens = tracing::field::Empty,
         )
     )]
-    pub async fn call_model(&self, request: Request, decision: Decision) -> Result<Response> {
+    pub async fn call_model(&self, mut request: Request, decision: Decision) -> Result<Response> {
         let selected_model_id = decision.selected_model_id().to_string();
+        request.llm_request.model = Some(selected_model_id.clone());
         let is_answer_call = decision.is_answer_call();
         let started = Instant::now();
         let (reply, response) = oneshot::channel::<Result<Response>>();
@@ -721,7 +730,8 @@ mod tests {
                 let Step::CallModel(call) = step else {
                     return Err(test_error("expected a CallModel step"));
                 };
-                calls.insert(call.decision.selected_model_id().to_string(), call);
+                let selected_model = call.selected_model_id().to_string();
+                calls.insert(selected_model, call);
             }
             assert!(
                 tokio::time::timeout(std::time::Duration::from_millis(20), &mut first)
@@ -793,7 +803,7 @@ mod tests {
     /// algorithm learns the call was abandoned rather than lost — the distinction that
     /// keeps a deliberate decision-only run out of the failure counters.
     #[tokio::test]
-    async fn into_parts_yields_the_call_without_answering_it() -> Result<()> {
+    async fn into_parts_yields_the_selected_model_without_answering_it() -> Result<()> {
         let (driver, mut step_rx) = Driver::new("test");
         let decision = test_decision(ModelId::from("answer/model"));
         let producer = tokio::spawn({
@@ -808,7 +818,13 @@ mod tests {
         let (taken_request, taken_decision) = call.into_parts();
         assert_eq!(taken_decision.selected_model_id(), "answer/model");
         assert!(taken_decision.is_answer_call());
-        assert_eq!(taken_request.llm_request, request().llm_request);
+        assert_eq!(
+            taken_request.llm_request.model.as_deref(),
+            Some("answer/model")
+        );
+        let mut expected = request().llm_request;
+        expected.model = Some("answer/model".to_string());
+        assert_eq!(taken_request.llm_request, expected);
 
         let result = producer
             .await
@@ -929,8 +945,7 @@ mod tests {
             match step? {
                 Step::CallModel(call) => {
                     saw_call = true;
-                    // The decision rode along with the promise.
-                    assert_eq!(call.decision.selected_model_id(), "offload/model");
+                    assert_eq!(call.selected_model_id(), "offload/model");
                     // Fulfilling the promise is the "real" model call the caller makes.
                     call.respond(Ok(Response {
                         llm_response: LlmResponse::Agg(text_response(

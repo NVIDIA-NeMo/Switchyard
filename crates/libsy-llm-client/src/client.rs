@@ -144,10 +144,11 @@ impl TranslatingLlmClient {
                 message: format!("model {model} has no Anthropic backend for count_tokens"),
             })?;
         let Request {
-            llm_request,
+            mut llm_request,
             metadata,
             ..
         } = request;
+        llm_request.model = Some(model.to_string());
         let http_response = self
             .send_encoded(
                 backend,
@@ -171,9 +172,9 @@ impl TranslatingLlmClient {
         })
     }
 
-    /// Encode `llm_request` (its model restamped to `model`) for `wire_format`,
-    /// POST it to `url` with the request's forwarded headers plus the backend's
-    /// static headers and auth, and return the successful upstream response. A
+    /// Encode `llm_request` for `wire_format`, POST it to `url` with the request's
+    /// forwarded headers plus the backend's static headers and auth, and return the
+    /// successful upstream response. A
     /// buffered response is fully collected within the retry boundary; a streamed
     /// response is returned as soon as its successful headers arrive. A non-success
     /// status maps to a typed error — a 400 is classified as a context-window
@@ -186,13 +187,11 @@ impl TranslatingLlmClient {
         &self,
         backend: &Backend,
         wire_format: WireFormat,
-        mut llm_request: LlmRequest,
+        llm_request: LlmRequest,
         metadata: Option<&Metadata>,
         model: &ModelId,
         endpoint: UpstreamEndpoint,
     ) -> Result<EncodedResponse> {
-        // The resolved name is the upstream model id (per the crate contract).
-        llm_request.model = Some(model.to_string());
         let mut body = encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
@@ -368,7 +367,7 @@ impl TranslatingLlmClient {
         // Own the request's parts so the model can be set without a `mut` param
         // and without cloning the messages. `raw_request` is unused here.
         let Request {
-            llm_request,
+            mut llm_request,
             metadata,
             ..
         } = request;
@@ -379,6 +378,7 @@ impl TranslatingLlmClient {
             .ok_or_else(|| LlmClientError::InvalidRequest {
                 message: "no model given".to_string(),
             })?;
+        llm_request.model = Some(model.to_string());
 
         let orig_format = metadata.as_ref().and_then(|m| m.wire_format);
         let wire_format = orig_format.unwrap_or(
@@ -505,9 +505,8 @@ impl TranslatingLlmClient {
 
 #[async_trait]
 impl RoutedLlmClient for TranslatingLlmClient {
-    async fn call(&self, request: Request, decision: Decision) -> Result<Response> {
-        let model_name = Some(decision.selected_model_id());
-        self.call_rewrite_model(request, model_name).await
+    async fn call(&self, request: Request, _decision: Decision) -> Result<Response> {
+        self.call_rewrite_model(request, None).await
     }
 }
 
@@ -1712,7 +1711,7 @@ mod tests {
             .build()?;
         let decision = fixed_decision("gpt");
 
-        let Err(error) = client.call(request_for(None, false), decision).await else {
+        let Err(error) = client.call(request_for(Some("gpt"), false), decision).await else {
             panic!("expected a timeout");
         };
         let LlmClientError::Timeout { source } = error else {
@@ -1813,10 +1812,10 @@ mod tests {
         Decision::new(target, None, true)
     }
 
-    // Exercises the `RoutedLlmClient` impl: `call` resolves the upstream model from the
-    // decision (the request carries none) and round-trips a buffered response.
+    // Exercises the `RoutedLlmClient` impl: `call` uses the model already materialized in the
+    // request and round-trips a buffered response.
     #[tokio::test]
-    async fn routed_llm_client_serves_the_decision_model()
+    async fn routed_llm_client_serves_the_request_model()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1836,8 +1835,9 @@ mod tests {
 
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
         let decision = fixed_decision("gpt");
-        // Called through the trait; the request has no model, so "gpt" comes from the decision.
-        let response = client.call(request_for(None, false), decision).await?;
+        let response = client
+            .call(request_for(Some("gpt"), false), decision)
+            .await?;
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "routed hi");
         Ok(())

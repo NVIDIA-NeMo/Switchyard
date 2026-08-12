@@ -21,9 +21,10 @@ pub struct Request {
 }
 
 impl Request {
-    /// Returns the model name supplied by the inbound request, when present.
+    /// Returns the model currently carried by the request, when present.
     ///
-    /// This is not necessarily the target selected by a routing decision.
+    /// On ingress this is the name supplied by the client. Before an offloaded model call, the
+    /// routing driver replaces it with the selected target.
     pub fn requested_model(&self) -> Option<&str> {
         self.llm_request.model.as_deref()
     }

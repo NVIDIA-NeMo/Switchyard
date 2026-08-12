@@ -300,7 +300,10 @@ pub struct PreservationMetadata {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmRequest {
-    /// Model requested by the inbound client.
+    /// Model currently addressed by the request.
+    ///
+    /// This initially contains the name supplied by the inbound client. A routing host may
+    /// replace it with the selected target before serving the request.
     pub model: Option<String>,
     /// System and developer instructions separated from conversation turns.
     pub instructions: Vec<InstructionBlock>,
