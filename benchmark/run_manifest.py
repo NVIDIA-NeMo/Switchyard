@@ -16,11 +16,12 @@ import json
 import shutil
 import socket
 import subprocess
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
+UTC = timezone.utc
 
 
 def _iso_timestamp() -> str:
@@ -78,6 +79,14 @@ def _harbor_version(harbor_command: list[str] | None = None) -> str | None:
     return result[1].splitlines()[0] if result[1] else None
 
 
+def _file_digest(path: Path) -> bytes:
+    hasher = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.digest()
+
+
 def path_digest(path: Path) -> str:
     """Return a deterministic sha256 digest for a file or directory."""
     try:
@@ -85,14 +94,12 @@ def path_digest(path: Path) -> str:
         hasher = hashlib.sha256()
         if resolved.is_file():
             hasher.update(resolved.name.encode())
-            with resolved.open("rb") as fh:
-                hasher.update(hashlib.file_digest(fh, "sha256").digest())
+            hasher.update(_file_digest(resolved))
             return f"sha256:{hasher.hexdigest()}"
         if resolved.is_dir():
             for item in sorted(p for p in resolved.rglob("*") if p.is_file()):
                 rel = item.relative_to(resolved).as_posix()
-                with item.open("rb") as fh:
-                    file_hash = hashlib.file_digest(fh, "sha256").hexdigest()
+                file_hash = _file_digest(item).hex()
                 hasher.update(f"{rel}\n{file_hash}\n".encode())
             return f"sha256:{hasher.hexdigest()}"
     except OSError:

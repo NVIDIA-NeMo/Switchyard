@@ -13,15 +13,21 @@ import re
 import shlex
 import shutil
 import subprocess
-import tomllib
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 try:
     import yaml
 except ImportError:  # pragma: no cover - exercised only in a broken environment
     yaml = None
+
+UTC = timezone.utc
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_SOURCE_DATASET = "openthoughts-tblite@2.0"
@@ -87,20 +93,26 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def _file_digest(path: Path) -> bytes:
+    hasher = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.digest()
+
+
 def _path_digest(path: Path) -> str:
     try:
         resolved = path.resolve()
         hasher = hashlib.sha256()
         if resolved.is_file():
             hasher.update(resolved.name.encode())
-            with resolved.open("rb") as fh:
-                hasher.update(hashlib.file_digest(fh, "sha256").digest())
+            hasher.update(_file_digest(resolved))
             return f"sha256:{hasher.hexdigest()}"
         if resolved.is_dir():
             for item in sorted(p for p in resolved.rglob("*") if p.is_file()):
                 rel = item.relative_to(resolved).as_posix()
-                with item.open("rb") as fh:
-                    file_hash = hashlib.file_digest(fh, "sha256").hexdigest()
+                file_hash = _file_digest(item).hex()
                 hasher.update(f"{rel}\n{file_hash}\n".encode())
             return f"sha256:{hasher.hexdigest()}"
     except OSError:

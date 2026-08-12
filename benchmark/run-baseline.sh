@@ -644,8 +644,7 @@ patch_root = Path(sys.argv[3])
 verify_method = sys.argv[4]
 verify_status = sys.argv[5]
 try:
-    with patch_file.open("rb") as fh:
-        digest = "sha256:" + hashlib.file_digest(fh, "sha256").hexdigest()
+    digest = "sha256:" + hashlib.sha256(patch_file.read_bytes()).hexdigest()
 except OSError:
     digest = "sha256:missing"
 print(json.dumps({
