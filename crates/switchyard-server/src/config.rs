@@ -1264,6 +1264,33 @@ target = "weak"
     }
 
     #[test]
+    fn a_pricing_table_enables_savings() -> ServerResult<()> {
+        // Pricing is purely additive: without it the savings endpoints are
+        // not registered and behavior is unchanged.
+        let state = server_state_from_toml(VALID_CONFIG)?;
+        assert!(state.savings.is_none());
+
+        let priced =
+            format!("{VALID_CONFIG}\n[pricing.\"weak/model\"]\ninput = 1.0\noutput = 5.0\n");
+        let state = server_state_from_toml(&priced)?;
+        assert!(state.savings.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn savings_requires_pricing_and_a_priced_baseline() {
+        // A [savings] section without any priced model is a config mistake.
+        let orphan = format!("{VALID_CONFIG}\n[savings]\nbaseline_model = \"strong/model\"\n");
+        assert!(error_message(&orphan).contains("requires a [pricing] table"));
+
+        // The baseline must itself have a pricing entry.
+        let unpriced_baseline = format!(
+            "{VALID_CONFIG}\n[pricing.\"weak/model\"]\ninput = 1.0\noutput = 5.0\n\n[savings]\nbaseline_model = \"strong/model\"\n"
+        );
+        assert!(error_message(&unpriced_baseline).contains("has no [pricing"));
+    }
+
+    #[test]
     fn rejects_unknown_fields_and_algorithm_types() {
         let unknown_field =
             VALID_CONFIG.replace("schema_version = 1", "schema_version = 1\nmagic = true");

@@ -31,6 +31,7 @@ nav:
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
   - Operations:
       - Context-Window Handling: operations/context_window.md
+      - Cost Savings Reporting: operations/cost_savings.md
   - Reference:
       - CLI Reference: cli_reference.md
       - TOML Schema: reference/toml_schema.md

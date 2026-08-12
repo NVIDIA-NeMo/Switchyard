@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Cost savings reporting** — an optional `[pricing]` table in the server
+  TOML enables `GET /v1/savings` and a live `GET /dashboard` page comparing
+  routed spend against a baseline model. Purely additive: without pricing
+  the endpoints are not registered and behavior is unchanged.
+
 ### Removed
 
 - **Deprecated Python server stack** — `switchyard serve`, YAML route bundles,
