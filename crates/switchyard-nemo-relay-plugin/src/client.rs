@@ -4,14 +4,13 @@
 //! Switchyard-owned HTTP clients bound to one semantic routing target.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value as Json;
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_protocol::{
-    ContentBlock, Context, Decision, LlmClientError, Message, Request, Response, Role,
-    RoutedLlmClient, ToolCall, ToolResult, WireFormat,
+    ContentBlock, Decision, LlmClientError, Message, Request, Response, Role, RoutedLlmClient,
+    ToolCall, ToolResult, WireFormat,
 };
 use switchyard_translation::TranslationEngine;
 
@@ -101,13 +100,8 @@ impl TargetClient {
 
 #[async_trait]
 impl RoutedLlmClient for TargetClient {
-    async fn call(
-        &self,
-        ctx: Context,
-        request: Request,
-        decision: Arc<Decision>,
-    ) -> Result<Response, LlmClientError> {
-        let request = self.prepare_request(request, decision.as_ref());
+    async fn call(&self, request: Request, decision: Decision) -> Result<Response, LlmClientError> {
+        let request = self.prepare_request(request, &decision);
         translation::validate_target_request(
             &self.translation,
             self.target_format,
@@ -115,7 +109,7 @@ impl RoutedLlmClient for TargetClient {
         )
         .map_err(LlmClientError::RequestEncoding)?;
         self.inner
-            .call_rewrite_model(ctx, request, Some(&self.provider_model))
+            .call_rewrite_model(request, Some(&self.provider_model))
             .await
     }
 }

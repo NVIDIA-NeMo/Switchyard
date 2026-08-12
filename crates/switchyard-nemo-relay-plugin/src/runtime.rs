@@ -11,7 +11,7 @@ use serde_json::{Map, json};
 use switchyard_libsy::{Algorithm, LibsyError};
 use switchyard_llm_client::{ClientRouter, LlmCallObservation, RunObservation, RunObserver, run};
 use switchyard_protocol::{
-    Context, Decision, LlmClientError, LlmResponse, Metadata, Request, Response, WireFormat,
+    Decision, LlmClientError, LlmResponse, Metadata, Request, Response, WireFormat,
 };
 use switchyard_translation::{TranslationEngine, encode_stream};
 
@@ -312,7 +312,6 @@ impl SwitchyardRuntime {
         marks: &mut Vec<RoutingMark>,
         mark_metadata: &Json,
     ) -> Result<Response, LibsyError> {
-        let context = context_from_metadata(request.metadata.as_ref());
         let observations = Arc::new(Mutex::new(Vec::new()));
         let observed_calls = observations.clone();
         let observer: RunObserver = Arc::new(move |observation| {
@@ -329,18 +328,10 @@ impl SwitchyardRuntime {
                 .map(|(name, target)| (name.clone(), target.client.clone()))
                 .collect::<HashMap<_, _>>(),
         );
-        match run(
-            self.algorithm.clone(),
-            clients,
-            context,
-            request,
-            Some(observer),
-        )
-        .await
-        {
+        match run(self.algorithm.clone(), clients, request, Some(observer)).await {
             Ok((decisions, response)) => {
                 for decision in decisions {
-                    self.emit_decision(marks, decision.as_ref(), attempt, mark_metadata);
+                    self.emit_decision(marks, &decision, attempt, mark_metadata);
                 }
                 self.emit_routing_llm_calls(
                     marks,
@@ -379,15 +370,10 @@ impl SwitchyardRuntime {
             json!({"selected_target": target_name}),
             metadata,
         );
-        let decision = Arc::new(Decision::new(
-            target_name,
-            Some("trusted fallback target".into()),
-            true,
-        ));
-        let context = context_from_metadata(request.metadata.as_ref());
+        let decision = Decision::new(target_name, Some("trusted fallback target".into()), true);
         target
             .client
-            .call(context, request, decision)
+            .call(request, decision)
             .await
             .map_err(|error| public_client_failure("trusted fallback", &error))
     }
@@ -683,44 +669,6 @@ fn identity_metadata(metadata: Option<&Metadata>) -> Json {
         "turn_id": metadata.and_then(|value| value.turn_id.as_deref()),
         "correlation_id": metadata.and_then(|value| value.correlation_id.as_deref()),
     })
-}
-
-fn context_from_metadata(metadata: Option<&Metadata>) -> Context {
-    let Some(metadata) = metadata else {
-        return Context::default();
-    };
-    let mut values = std::collections::HashMap::new();
-    for (name, value) in [
-        ("session_id", metadata.session_id.as_deref()),
-        ("agent_id", metadata.agent_id.as_deref()),
-        ("parent_agent_id", metadata.parent_agent_id.as_deref()),
-        ("agent_kind", metadata.agent_kind.as_deref()),
-        ("agent_role", metadata.agent_role.as_deref()),
-        ("task_id", metadata.task_id.as_deref()),
-        ("task_kind", metadata.task_kind.as_deref()),
-        ("turn_id", metadata.turn_id.as_deref()),
-        ("correlation_id", metadata.correlation_id.as_deref()),
-    ] {
-        if let Some(value) = value {
-            values.insert(name.to_string(), value.to_string());
-        }
-    }
-    values.insert("is_subagent".into(), metadata.is_subagent.to_string());
-    values.insert(
-        "is_delegated_work".into(),
-        metadata.is_delegated_work.to_string(),
-    );
-    if let Some(session_final) = metadata.session_final {
-        values.insert("session_final".into(), session_final.to_string());
-    }
-    if let Some(extra) = &metadata.extra_metadata {
-        for (name, value) in extra {
-            values.entry(name.clone()).or_insert_with(|| value.clone());
-        }
-    }
-    let mut context = Context::default();
-    context.values = values;
-    context
 }
 
 #[cfg(test)]

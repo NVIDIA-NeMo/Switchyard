@@ -36,9 +36,8 @@ fn scripted(behavior: ScriptedBehavior) -> Arc<ScriptedClient> {
 impl RoutedLlmClient for ScriptedClient {
     async fn call(
         &self,
-        _ctx: Context,
         request: Request,
-        _decision: Arc<Decision>,
+        _decision: Decision,
     ) -> Result<Response, LlmClientError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         match self.behavior {
@@ -872,37 +871,4 @@ async fn stage_router_classifier_resolves_an_ambiguous_turn() {
             && mark.data["reasoning"].is_string()
             && mark.data["is_answer_call"] == true
     }));
-}
-
-#[test]
-fn context_carries_identity_without_http_headers() {
-    let context = context_from_metadata(Some(&Metadata {
-        session_id: Some("session-1".into()),
-        agent_id: Some("agent-1".into()),
-        is_subagent: true,
-        extra_metadata: Some(BTreeMap::from([("tenant".into(), "blue".into())])),
-        http_headers: Some(http::HeaderMap::from_iter([(
-            http::HeaderName::from_static("authorization"),
-            http::HeaderValue::from_static("Bearer caller-secret"),
-        )])),
-        ..Metadata::default()
-    }));
-
-    assert_eq!(
-        context.values.get("session_id").map(String::as_str),
-        Some("session-1")
-    );
-    assert_eq!(
-        context.values.get("agent_id").map(String::as_str),
-        Some("agent-1")
-    );
-    assert_eq!(
-        context.values.get("is_subagent").map(String::as_str),
-        Some("true")
-    );
-    assert_eq!(
-        context.values.get("tenant").map(String::as_str),
-        Some("blue")
-    );
-    assert!(!context.values.contains_key("authorization"));
 }
