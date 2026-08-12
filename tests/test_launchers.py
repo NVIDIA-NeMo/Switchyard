@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from switchyard.cli.launch_command import _config_path
+from switchyard.cli.launchers.claude_code_launcher import _claude_env
 from switchyard.cli.launchers.native_server import NativeServer
 from switchyard.cli.switchyard_cli import _build_parser
 
@@ -48,6 +49,17 @@ def test_default_config_is_packaged_openrouter_deployment() -> None:
     config = _config_path(None)
     assert config.name == "openrouter.toml"
     assert "OPENROUTER_API_KEY" in config.read_text()
+
+
+def test_claude_env_preserves_small_fast_model_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_SMALL_FAST_MODEL", "background-route")
+
+    env = _claude_env(4321, "agent-route")
+
+    assert env["ANTHROPIC_MODEL"] == "agent-route"
+    assert env["ANTHROPIC_SMALL_FAST_MODEL"] == "background-route"
 
 
 def test_native_server_passes_config_directly_to_binding(

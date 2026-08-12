@@ -66,8 +66,9 @@ def _claude_env(port: int, model: str) -> dict[str, str]:
     * ``ANTHROPIC_BASE_URL`` — our proxy URL.
     * ``ANTHROPIC_AUTH_TOKEN`` — opaque token; skips Console OAuth.
     * ``ANTHROPIC_API_KEY=""`` — silences the auth-conflict warning.
-    * ``ANTHROPIC_MODEL`` / ``ANTHROPIC_SMALL_FAST_MODEL`` — initial
-      active model for the session.
+    * ``ANTHROPIC_MODEL`` — initial active model for the session.
+    * ``ANTHROPIC_SMALL_FAST_MODEL`` — existing background-model override,
+      falling back to the active model.
     * ``ANTHROPIC_CUSTOM_MODEL_OPTION`` — registers ``model`` as a custom
       slot in ``/model`` so the user can come back to it after toggling
       to a builtin.
@@ -79,7 +80,7 @@ def _claude_env(port: int, model: str) -> dict[str, str]:
         "ANTHROPIC_AUTH_TOKEN": "switchyard",
         "ANTHROPIC_API_KEY": "",
         "ANTHROPIC_MODEL": model,
-        "ANTHROPIC_SMALL_FAST_MODEL": model,
+        "ANTHROPIC_SMALL_FAST_MODEL": os.environ.get("ANTHROPIC_SMALL_FAST_MODEL", model),
         "ANTHROPIC_CUSTOM_MODEL_OPTION": model,
         "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
     }
