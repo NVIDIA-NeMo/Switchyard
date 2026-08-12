@@ -46,7 +46,7 @@ jobs:
     if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
@@ -67,7 +67,7 @@ jobs:
     if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check SPDX headers
         run: |
           set -u
@@ -105,7 +105,7 @@ jobs:
     if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust components
         run: rustup component add rustfmt clippy
       - name: cargo fmt
@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
@@ -145,7 +145,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -170,7 +170,7 @@ jobs:
       SWITCHYARD_DEFAULT_PACKAGE: "nemo-switchyard @ file://${{ github.workspace }}"
       SWITCHYARD_EXTRAS_PACKAGE: "nemo-switchyard[cli] @ file://${{ github.workspace }}"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"

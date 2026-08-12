@@ -26,6 +26,8 @@ on:
 env:
   DEV_PACKAGE_NAME: "nemo-switchyard"
   MATURIN_VERSION: "1.11.5"
+  ZIGBUILD_VERSION: "0.23.0"
+  ZIGLANG_VERSION: "0.16.0"
 
 permissions:
   contents: read
@@ -44,7 +46,7 @@ jobs:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check release tag
         if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
         run: |
@@ -89,7 +91,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -107,7 +109,7 @@ jobs:
     needs: [validate-release-ref]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust components
         run: rustup component add rustfmt clippy
       - name: cargo fmt
@@ -123,7 +125,7 @@ jobs:
     needs: [python-release-checks, rust-release-checks]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
@@ -157,7 +159,7 @@ jobs:
 
           print(f"{archives[0]} contains {', '.join(sorted(expected_suffixes))}")
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nemo-switchyard-sdist
           path: dist/*
@@ -198,8 +200,8 @@ jobs:
             rust_target: aarch64-pc-windows-msvc
             smoke: false
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Stamp dev wheel metadata
@@ -209,7 +211,7 @@ jobs:
           python scripts/release/set_dev_wheel_version.py "${{ inputs.dev_version }}"
       - name: Setup QEMU for Linux cross builds
         if: runner.os == 'Linux' && runner.arch != 'ARM64' && matrix.manylinux_arch == 'aarch64'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
       - name: Install maturin
         if: runner.os != 'Linux'
         shell: bash
@@ -277,7 +279,7 @@ jobs:
           print("switchyard_rust", switchyard_rust.__file__)
           print("rust extension", _switchyard_rust.__name__)
           PY
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: ${{ matrix.smoke }}
         with:
           python-version: "3.14"
@@ -304,18 +306,135 @@ jobs:
           print("switchyard_rust", switchyard_rust.__file__)
           print("rust extension", _switchyard_rust.__name__)
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nemo-switchyard-wheel-${{ matrix.label }}
           path: dist/*
+
+  server-binaries:
+    name: Server binary (${{ matrix.label }})
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
+    needs: [rust-release-checks]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux uses musl through cargo-zigbuild so the binaries are fully static and
+          # carry no glibc floor. macOS always links libSystem dynamically, and Windows
+          # links the CRT statically via +crt-static.
+          - label: linux-x86_64
+            os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+            zigbuild: true
+            archive: tar.gz
+            smoke: true
+          - label: linux-aarch64
+            os: ubuntu-latest
+            rust_target: aarch64-unknown-linux-musl
+            zigbuild: true
+            archive: tar.gz
+            smoke: false
+          - label: macos-x86_64
+            os: macos-15-intel
+            rust_target: x86_64-apple-darwin
+            archive: tar.gz
+            smoke: true
+          - label: macos-arm64
+            os: macos-14
+            rust_target: aarch64-apple-darwin
+            archive: tar.gz
+            smoke: true
+          - label: windows-x86_64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            rustflags: "-C target-feature=+crt-static"
+            archive: zip
+            smoke: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Rust target
+        shell: bash
+        run: rustup target add "${{ matrix.rust_target }}"
+      - name: Install Zig toolchain
+        if: ${{ matrix.zigbuild }}
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "ziglang==${ZIGLANG_VERSION}" "cargo-zigbuild==${ZIGBUILD_VERSION}"
+      - name: Build server binary
+        shell: bash
+        env:
+          # Strip symbols in-toolchain so every target is handled the same way without
+          # needing a target-specific `strip` on the runner.
+          RUSTFLAGS: "-C strip=symbols ${{ matrix.rustflags }}"
+        run: |
+          set -euxo pipefail
+          builder="build"
+          if [[ "${{ matrix.zigbuild }}" == "true" ]]; then
+            builder="zigbuild"
+          fi
+          cargo "${builder}" \
+            --release \
+            --locked \
+            --package switchyard-server \
+            --bin switchyard-server \
+            --target "${{ matrix.rust_target }}"
+      - name: Smoke test server binary
+        if: ${{ matrix.smoke }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            suffix=".exe"
+          fi
+          "target/${{ matrix.rust_target }}/release/switchyard-server${suffix}" --help
+      - name: Package server binary
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(python - <<'PY'
+          import tomllib
+
+          with open("Cargo.toml", "rb") as file:
+              print(tomllib.load(file)["workspace"]["package"]["version"])
+          PY
+          )"
+
+          suffix=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            suffix=".exe"
+          fi
+
+          name="switchyard-server-${version}-${{ matrix.label }}"
+          mkdir -p "staging/${name}" binaries
+          cp LICENSE NOTICE "staging/${name}/"
+          cp "target/${{ matrix.rust_target }}/release/switchyard-server${suffix}" "staging/${name}/"
+
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            (cd staging && 7z a -tzip "../binaries/${name}.zip" "${name}")
+          else
+            tar -czf "binaries/${name}.tar.gz" -C staging "${name}"
+          fi
+          ls -l binaries
+      - uses: actions/upload-artifact@v7
+        with:
+          name: switchyard-server-binary-${{ matrix.label }}
+          path: binaries/*
 
   dev-artifact-wheel:
     name: Dev wheel artifact (linux-x86_64)
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_artifact }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Stamp dev wheel metadata
@@ -345,7 +464,7 @@ jobs:
                 --out dist \
                 --interpreter "${PYTHON}"
             '
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dev-wheel-linux-x86_64
           path: dist/*.whl
@@ -357,13 +476,13 @@ jobs:
     needs: [dev-artifact-wheel]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: dev-wheel-*
           merge-multiple: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Verify wheel metadata
@@ -417,7 +536,7 @@ jobs:
     needs: [source-dist, wheels]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: nemo-switchyard-*
@@ -428,21 +547,26 @@ jobs:
   publish:
     name: Publish distributions
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [source-dist, wheels, publish-rust-crates]
+    needs: [source-dist, wheels, server-binaries, publish-rust-crates]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       contents: write
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: nemo-switchyard-*
           merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          path: binaries
+          pattern: switchyard-server-binary-*
+          merge-multiple: true
       - uses: astral-sh/setup-uv@v6
       - name: List distributions
-        run: ls -l dist
+        run: ls -l dist binaries
 
       - name: Publish to PyPI
         run: |
@@ -451,8 +575,17 @@ jobs:
             --check-url https://pypi.org/simple/ \
             dist/*
 
+      - name: Checksum server binaries
+        run: |
+          set -euo pipefail
+          cd binaries
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
+        with:
+          files: binaries/*
 
   publish-rust-crates:
     name: Publish Rust crates
@@ -460,7 +593,7 @@ jobs:
     needs: [source-dist, wheels]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Publish crates in dependency order

@@ -40,7 +40,7 @@ jobs:
       PERF_REQUEST_COUNT: ${{ inputs.request_count || '200' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v6
         with:
@@ -229,7 +229,7 @@ jobs:
       # Upload results as a build artifact for comparison over time
       # ------------------------------------------------------------------
       - name: Upload perf results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: perf-results-${{ github.sha }}
