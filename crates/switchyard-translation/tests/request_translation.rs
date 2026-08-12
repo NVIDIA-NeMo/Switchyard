@@ -364,6 +364,44 @@ fn anthropic_tool_result_image_splits_to_openai_user_message() -> TestResult {
     Ok(())
 }
 
+// Verifies unknown Anthropic document sources retain their enclosing document block.
+#[test]
+fn anthropic_unknown_document_source_round_trips_complete_block() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let document = json!({
+        "type": "document",
+        "title": "future document",
+        "source": {
+            "type": "future_source",
+            "uri": "provider://document/123"
+        }
+    });
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [document.clone()]
+        }],
+        "max_tokens": 1024
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::AnthropicMessages,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    assert_eq!(output["messages"][0]["content"][0], document);
+    Ok(())
+}
+
 // Verifies parallel tool results stay contiguous before lowered image and document content.
 #[test]
 fn anthropic_parallel_multimodal_tool_results_preserve_openai_message_order() -> TestResult {

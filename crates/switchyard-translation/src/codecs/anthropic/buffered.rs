@@ -644,7 +644,7 @@ fn decode_anthropic_file_source(block: &Map<String, Value>) -> FileSource {
                 .map(ToOwned::to_owned),
         };
     }
-    FileSource::Raw(Value::Object(source.clone()))
+    FileSource::Raw(Value::Object(block.clone()))
 }
 
 // Decodes Anthropic tool definitions into normalized tool definitions.
