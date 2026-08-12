@@ -1,0 +1,10 @@
+.venv
+target
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.worktrees
+benchmark/datasets
+benchmark/tb_runs
+dist
+site
