@@ -1357,7 +1357,7 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 <td><code>extra_headers</code></td>
 <td style="text-align: center;">No</td>
 <td><code>{}</code></td>
-<td>Custom HTTP headers sent to the model server. Set credentials with <code>api_key_env</code>. For OpenAI requests, the client ignores <code>Authorization</code> here and sends the configured key once. For Anthropic requests, it ignores <code>x-api-key</code> and <code>anthropic-version</code> here, then sends the configured key and required Anthropic version. Header names are matched without regard to letter case.</td>
+<td>Custom HTTP headers sent to the model server. When <code>api_key_env</code> and <code>Authorization</code> (OpenAI) or <code>x-api-key</code> (Anthropic) are both set, the key from <code>api_key_env</code> wins. Without <code>api_key_env</code>, the client sends the custom authentication header. Anthropic requests always use the client's required <code>anthropic-version</code>. Header names are matched without regard to letter case.</td>
 </tr>
 <tr>
 <td><code>max_retries</code></td>
