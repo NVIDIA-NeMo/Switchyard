@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Deployment wired to the providers/models configured for Hermes on this host
-# (~/.hermes/config.yaml). OpenRouter is the shared upstream. Route ids mirror
-# the user's model provider setting and aliases so a coding agent (Claude,
-# Codex, OpenClaw, Hermes, OpenCode, ...) can be pointed at a local Switchyard
-# proxy instead of talking to OpenRouter directly.
+# (~/.hermes/config.yaml). OpenRouter is the shared upstream.
+#
+# This deployment exposes FREE OpenRouter models only (:free tier), so a coding
+# agent (Claude, Codex, OpenClaw, Hermes, OpenCode, ...) can be pointed at a
+# local Switchyard proxy without burning funded key quota. Paid models
+# (e.g. the qwen/qwen3.8-max default in ~/.hermes/config.yaml) are intentionally
+# NOT exposed here.
 #
 # Note: entries under model.aliases in ~/.hermes/config.yaml are Hermes
 # "provider/model" qualifiers (e.g. openrouter/nvidia/…); the value sent to the
@@ -18,22 +21,76 @@ format = "openai_chat"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
-# Default model from ~/.hermes/config.yaml (model.default / model.provider).
-# Requires a quota-funded key; add credits at OpenRouter if the upstream 403s.
-[targets.qwen3]
-id = "qwen/qwen3.8-max"
-llm_client = "openrouter"
+# --- Free NVIDIA Nemotron models -------------------------------
 
-# Alias from ~/.hermes/config.yaml (model.aliases.nemotron35l). The :free tier
-# works without funded quota, so this is the default route.
-[targets.nemotron]
+[targets.nemotron-lightning]
 id = "nvidia/nemotron-3.5-lightning:free"
 llm_client = "openrouter"
 
-# Primary route — the :free model works immediately; switch `targets` to
-# ["qwen3"] once the upstream key has quota.
+[targets.nemotron-ultra]
+id = "nvidia/nemotron-3-ultra-550b-a55b:free"
+llm_client = "openrouter"
+
+[targets.nemotron-super]
+id = "nvidia/nemotron-3-super-120b-a12b:free"
+llm_client = "openrouter"
+
+# --- Other free / coding-capable models -------------------------
+
+[targets.gpt-oss]
+id = "openai/gpt-oss-20b:free"
+llm_client = "openrouter"
+
+[targets.gemma]
+id = "google/gemma-4-31b-it:free"
+llm_client = "openrouter"
+
+[targets.laguna]
+id = "poolside/laguna-s-2.1:free"
+llm_client = "openrouter"
+
+# --- Routes -------------------------------------------------------
+
+# Default route (matches ~/.hermes/config.yaml alias nemotron35l).
 [routes.switchyard]
 id = "switchyard"
 type = "random"
-targets = ["nemotron"]
+targets = ["nemotron-lightning"]
+weights = [1]
+
+# Explicit free-model routes so users can pick a specific model.
+[routes.nemotron-lightning]
+id = "nemotron-lightning"
+type = "random"
+targets = ["nemotron-lightning"]
+weights = [1]
+
+[routes.nemotron-ultra]
+id = "nemotron-ultra"
+type = "random"
+targets = ["nemotron-ultra"]
+weights = [1]
+
+[routes.nemotron-super]
+id = "nemotron-super"
+type = "random"
+targets = ["nemotron-super"]
+weights = [1]
+
+[routes.gpt-oss]
+id = "gpt-oss"
+type = "random"
+targets = ["gpt-oss"]
+weights = [1]
+
+[routes.gemma]
+id = "gemma"
+type = "random"
+targets = ["gemma"]
+weights = [1]
+
+[routes.laguna]
+id = "laguna"
+type = "random"
+targets = ["laguna"]
 weights = [1]
