@@ -138,8 +138,10 @@ impl ServerConfig {
             .map(|name| (name.clone(), Vec::new()))
             .collect::<BTreeMap<String, Vec<ModelConfig>>>();
 
-        for name in self.llm_clients.keys() {
+        // Validate every declared client even when no target currently references it.
+        for (name, client_config) in &self.llm_clients {
             validate_value("llm client name", name)?;
+            build_backend(name, client_config, &BTreeMap::new())?;
         }
         for (target_name, target) in &self.targets {
             let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
@@ -1459,6 +1461,21 @@ classify_trigger = "new_session""#,
                 "unexpected error for {base_url}: {message}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_invalid_unreferenced_llm_client() {
+        let invalid = format!(
+            "{VALID_CONFIG}\n\
+             [llm_clients.unused]\n\
+             format = \"openai_chat\"\n\
+             base_url = \"not a url\"\n"
+        );
+        let message = error_message(&invalid);
+        assert!(
+            message.contains("llm client unused base_url"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]
