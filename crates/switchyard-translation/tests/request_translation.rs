@@ -312,61 +312,9 @@ fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult
     Ok(())
 }
 
-// Verifies image content in an Anthropic tool result remains multimodal for OpenAI Chat.
+// Verifies Anthropic multimodal blocks retain provider fields inside tool results.
 #[test]
-fn anthropic_tool_result_image_splits_to_openai_user_message() -> TestResult {
-    let engine = TranslationEngine::default();
-    let body = json!({
-        "model": "claude-sonnet-4-20250514",
-        "messages": [{
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": "toolu_1",
-                "content": [
-                    {"type": "text", "text": "here it is:"},
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": "iVBORw0KGgo="
-                        }
-                    }
-                ]
-            }]
-        }],
-        "max_tokens": 1024
-    });
-
-    let translated = engine.translate_request(
-        WireFormat::AnthropicMessages,
-        WireFormat::OpenAiChat,
-        &body,
-        &TranslationPolicy::default(),
-    )?;
-
-    assert_eq!(
-        translated.body["messages"],
-        json!([
-            {"role": "tool", "tool_call_id": "toolu_1", "content": "here it is:"},
-            {
-                "role": "user",
-                "content": [{
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}
-                }]
-            }
-        ])
-    );
-    assert_eq!(translated.diagnostics.len(), 1);
-    assert_eq!(translated.diagnostics[0].code, "lossy_conversion");
-    Ok(())
-}
-
-// Verifies unknown Anthropic document sources retain their enclosing document block.
-#[test]
-fn anthropic_unknown_document_source_round_trips_complete_block() -> TestResult {
+fn anthropic_tool_result_multimodal_blocks_round_trip_complete() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy {
         preservation: switchyard_translation::PreservationPolicy::Disabled,
@@ -374,17 +322,36 @@ fn anthropic_unknown_document_source_round_trips_complete_block() -> TestResult 
     };
     let document = json!({
         "type": "document",
-        "title": "future document",
+        "title": "report.pdf",
+        "context": "Quarterly results",
+        "citations": {"enabled": true},
         "source": {
-            "type": "future_source",
-            "uri": "provider://document/123"
+            "type": "base64",
+            "media_type": "application/pdf",
+            "data": "ZG9jdW1lbnQ="
+        }
+    });
+    let image = json!({
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "aW1hZ2U="
         }
     });
     let body = json!({
         "model": "claude-sonnet-4-20250514",
         "messages": [{
             "role": "user",
-            "content": [document.clone()]
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_document",
+                "content": [
+                    {"type": "text", "text": "content ready"},
+                    image.clone(),
+                    document.clone()
+                ]
+            }]
         }],
         "max_tokens": 1024
     });
@@ -398,13 +365,64 @@ fn anthropic_unknown_document_source_round_trips_complete_block() -> TestResult 
         )?
         .body;
 
-    assert_eq!(output["messages"][0]["content"][0], document);
+    assert_eq!(
+        output["messages"][0]["content"][0]["content"],
+        json!([
+            {"type": "text", "text": "content ready"},
+            image,
+            document
+        ])
+    );
     Ok(())
 }
 
-// Verifies parallel tool results stay contiguous before lowered image and document content.
+// Verifies provider-managed Anthropic file IDs are not reused as OpenAI file IDs.
 #[test]
-fn anthropic_parallel_multimodal_tool_results_preserve_openai_message_order() -> TestResult {
+fn anthropic_tool_result_file_id_does_not_become_openai_file_id() -> TestResult {
+    let engine = TranslationEngine::default();
+    let document = json!({
+        "type": "document",
+        "source": {
+            "type": "file",
+            "file_id": "file_anthropic_123"
+        }
+    });
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_document",
+                "content": [document.clone()]
+            }]
+        }],
+        "max_tokens": 1024
+    });
+
+    let translated = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &body,
+        &TranslationPolicy::default(),
+    )?;
+
+    assert_eq!(translated.body["messages"][1]["content"][0]["type"], "text");
+    let recovered: Value = serde_json::from_str(
+        translated.body["messages"][1]["content"][0]["text"]
+            .as_str()
+            .ok_or("file fallback should be text")?,
+    )?;
+    assert_eq!(recovered, document);
+    assert!(translated.diagnostics.iter().any(|diagnostic| {
+        diagnostic.message == "OpenAI Chat codec could not map file content"
+    }));
+    Ok(())
+}
+
+// Verifies parallel tool results preserve ordering and obey strict conversion policy.
+#[test]
+fn anthropic_parallel_multimodal_tool_results_preserve_order_and_policy() -> TestResult {
     let engine = TranslationEngine::default();
     let body = json!({
         "model": "claude-sonnet-4-20250514",
@@ -480,32 +498,6 @@ fn anthropic_parallel_multimodal_tool_results_preserve_openai_message_order() ->
             }
         ])
     );
-    Ok(())
-}
-
-// Verifies strict translation policy rejects role-lowering multimodal tool results.
-#[test]
-fn anthropic_multimodal_tool_result_respects_reject_policy() {
-    let engine = TranslationEngine::default();
-    let body = json!({
-        "model": "claude-sonnet-4-20250514",
-        "messages": [{
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": "toolu_1",
-                "content": [{
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": "aW1hZ2U="
-                    }
-                }]
-            }]
-        }],
-        "max_tokens": 1024
-    });
     let policy = TranslationPolicy {
         lossy_conversion_policy: LossyConversionPolicy::Reject,
         ..TranslationPolicy::default()
@@ -522,6 +514,7 @@ fn anthropic_multimodal_tool_result_respects_reject_policy() {
     };
 
     assert_eq!(error.kind(), "LossyConversion");
+    Ok(())
 }
 
 // Verifies structured Anthropic system blocks remain separated in OpenAI system text.

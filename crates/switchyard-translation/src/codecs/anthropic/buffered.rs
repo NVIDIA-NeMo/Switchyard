@@ -554,14 +554,9 @@ fn decode_anthropic_content_block(
             content: decode_tool_result_content(block.get("content").unwrap_or(&Value::Null)),
             is_error: block.get("is_error").and_then(Value::as_bool),
         })],
-        Some("image") => {
-            let source = block
-                .get("source")
-                .cloned()
-                .map(ImageSource::Raw)
-                .unwrap_or_else(|| ImageSource::Raw(Value::Object(block.clone())));
-            vec![ContentBlock::Image { source }]
-        }
+        Some("image") => vec![ContentBlock::Image {
+            source: ImageSource::Raw(Value::Object(block.clone())),
+        }],
         Some("input_image") | Some("image_url") => decode_image_source(block)
             .map(|source| vec![ContentBlock::Image { source }])
             .unwrap_or_default(),
@@ -595,11 +590,7 @@ fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
                                 .to_string(),
                         }),
                         Some("image") => content.push(ContentBlock::Image {
-                            source: block
-                                .get("source")
-                                .cloned()
-                                .map(ImageSource::Raw)
-                                .unwrap_or_else(|| ImageSource::Raw(Value::Object(block.clone()))),
+                            source: ImageSource::Raw(Value::Object(block.clone())),
                         }),
                         Some("document") => content.push(ContentBlock::File {
                             source: decode_anthropic_file_source(block),
@@ -622,28 +613,8 @@ fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
     }
 }
 
-// Decodes Anthropic document sources into normalized file sources.
+// Keeps Anthropic document fields together for same-format re-encoding.
 fn decode_anthropic_file_source(block: &Map<String, Value>) -> FileSource {
-    let Some(source) = block.get("source").and_then(Value::as_object) else {
-        return FileSource::Raw(Value::Object(block.clone()));
-    };
-    if source.get("type").and_then(Value::as_str) == Some("file")
-        && let Some(file_id) = source.get("file_id").and_then(Value::as_str)
-    {
-        return FileSource::FileId(file_id.to_string());
-    }
-    if source.get("type").and_then(Value::as_str) == Some("base64")
-        && let Some(data) = source.get("data").and_then(Value::as_str)
-    {
-        return FileSource::FileData {
-            data: data.to_string(),
-            filename: block
-                .get("title")
-                .or_else(|| source.get("filename"))
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-        };
-    }
     FileSource::Raw(Value::Object(block.clone()))
 }
 
@@ -853,11 +824,29 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
             "name": call.name,
             "input": anthropic_tool_input(&call.arguments),
         })],
-        ContentBlock::ToolResult(result) => vec![json!({
-            "type": "tool_result",
-            "tool_use_id": sanitize_anthropic_tool_use_id(&result.tool_call_id),
-            "content": text_from_blocks(&result.content, " "),
-        })],
+        ContentBlock::ToolResult(result) => {
+            let content = if result.content.iter().all(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
+                )
+            }) {
+                Value::String(text_from_blocks(&result.content, " "))
+            } else {
+                Value::Array(
+                    result
+                        .content
+                        .iter()
+                        .flat_map(encode_one_anthropic_tool_result_block)
+                        .collect(),
+                )
+            };
+            vec![json!({
+                "type": "tool_result",
+                "tool_use_id": sanitize_anthropic_tool_use_id(&result.tool_call_id),
+                "content": content,
+            })]
+        }
         ContentBlock::Image { source } => vec![match source {
             ImageSource::Url { url, .. } => {
                 json!({"type": "image", "source": {"type": "url", "url": url}})
@@ -915,6 +904,29 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
             MediaSource::Raw(raw) => raw.clone(),
         }],
         ContentBlock::Unknown { raw, .. } => vec![raw.clone()],
+    }
+}
+
+// Encodes only provider-safe block shapes inside Anthropic tool results.
+fn encode_one_anthropic_tool_result_block(block: &ContentBlock) -> Vec<Value> {
+    match block {
+        ContentBlock::Text { .. }
+        | ContentBlock::Refusal { .. }
+        | ContentBlock::Image { .. }
+        | ContentBlock::File { .. } => encode_one_anthropic_block(block),
+        ContentBlock::Unknown { provider, raw }
+            if provider.as_str() == WireFormat::AnthropicMessages.as_str() =>
+        {
+            vec![raw.clone()]
+        }
+        ContentBlock::Unknown { raw, .. } => {
+            vec![json!({"type": "text", "text": json_string(raw)})]
+        }
+        ContentBlock::Reasoning { .. }
+        | ContentBlock::Audio { .. }
+        | ContentBlock::Video { .. }
+        | ContentBlock::ToolCall(_)
+        | ContentBlock::ToolResult(_) => Vec::new(),
     }
 }
 
