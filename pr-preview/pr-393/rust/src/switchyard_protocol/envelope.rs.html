@@ -4,7 +4,7 @@
 <a href=#4 id=4 data-nosnippet>4</a></span><span class="doccomment">//! The request/response envelope: the normalized [`LlmRequest`]/[`LlmResponse`] paired
 <a href=#5 id=5 data-nosnippet>5</a>//! with the original provider payload and correlation [`Metadata`].
 <a href=#6 id=6 data-nosnippet>6</a>
-<a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">use </span>crate::{LlmRequest, LlmResponse, Metadata};
+<a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">use </span>crate::{LlmRequest, LlmResponse, Metadata, ModelId};
 <a href=#8 id=8 data-nosnippet>8</a>
 <a href=#9 id=9 data-nosnippet>9</a><span class="doccomment">/// A request an algorithm routes: the normalized [`LlmRequest`] plus optional
 <a href=#10 id=10 data-nosnippet>10</a>/// host-owned raw data and correlation [`Metadata`].
@@ -25,8 +25,8 @@
 <a href=#25 id=25 data-nosnippet>25</a>    ///
 <a href=#26 id=26 data-nosnippet>26</a>    /// On ingress this is the name supplied by the client. Before an offloaded model call, the
 <a href=#27 id=27 data-nosnippet>27</a>    /// routing driver replaces it with the selected target.
-<a href=#28 id=28 data-nosnippet>28</a>    </span><span class="kw">pub fn </span>requested_model(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
-<a href=#29 id=29 data-nosnippet>29</a>        <span class="self">self</span>.llm_request.model.as_deref()
+<a href=#28 id=28 data-nosnippet>28</a>    </span><span class="kw">pub fn </span>model_id(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;ModelId&gt; {
+<a href=#29 id=29 data-nosnippet>29</a>        <span class="self">self</span>.llm_request.model.as_deref().map(ModelId::from)
 <a href=#30 id=30 data-nosnippet>30</a>    }
 <a href=#31 id=31 data-nosnippet>31</a>}
 <a href=#32 id=32 data-nosnippet>32</a>

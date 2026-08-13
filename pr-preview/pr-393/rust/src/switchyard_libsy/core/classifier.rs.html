@@ -193,10 +193,10 @@
 <a href=#193 id=193 data-nosnippet>193</a>            _driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
 <a href=#194 id=194 data-nosnippet>194</a>        ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
 <a href=#195 id=195 data-nosnippet>195</a>            <span class="kw-2">*</span>state = <span class="bool-val">true</span>;
-<a href=#196 id=196 data-nosnippet>196</a>            <span class="kw">let </span>target = request.requested_model().unwrap_or(<span class="string">"auto"</span>).to_string();
+<a href=#196 id=196 data-nosnippet>196</a>            <span class="kw">let </span>target = request.model_id().unwrap_or(ModelId::from(<span class="string">"auto"</span>));
 <a href=#197 id=197 data-nosnippet>197</a>            <span class="prelude-val">Ok</span>((
 <a href=#198 id=198 data-nosnippet>198</a>                Classification::Scores(<span class="macro">vec!</span>[Score {
-<a href=#199 id=199 data-nosnippet>199</a>                    target: target.into(),
+<a href=#199 id=199 data-nosnippet>199</a>                    target,
 <a href=#200 id=200 data-nosnippet>200</a>                    confidence: <span class="number">1.0</span>,
 <a href=#201 id=201 data-nosnippet>201</a>                }]),
 <a href=#202 id=202 data-nosnippet>202</a>                <span class="prelude-val">None</span>,
@@ -261,7 +261,7 @@
 <a href=#261 id=261 data-nosnippet>261</a>
 <a href=#262 id=262 data-nosnippet>262</a>        <span class="comment">// The rewrite outlives the call: later classifiers in the cascade score this value,
 <a href=#263 id=263 data-nosnippet>263</a>        // and it is what reaches the model.
-<a href=#264 id=264 data-nosnippet>264</a>        </span><span class="macro">assert_eq!</span>(request.requested_model(), <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>));
+<a href=#264 id=264 data-nosnippet>264</a>        </span><span class="macro">assert_eq!</span>(request.model_id().as_deref(), <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>));
 <a href=#265 id=265 data-nosnippet>265</a>        <span class="prelude-val">Ok</span>(())
 <a href=#266 id=266 data-nosnippet>266</a>    }
 <a href=#267 id=267 data-nosnippet>267</a>}
