@@ -22,7 +22,8 @@ use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierCon
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
-    record_decision_source, record_routing_decision,
+    max_efficient_confidence, record_decision_source, record_routing_decision,
+    scorer_cannot_leave_default,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
@@ -157,6 +158,24 @@ fn build_route(
                 config.confidence_threshold
             ),
         });
+    }
+    // A threshold above the efficient ceiling silently disables the scorer for
+    // capable_first: every turn reads as "signals were weak" when in fact that
+    // branch cannot fire at all. Warn rather than reject, since the judge and the
+    // hard de-escalation shortcut still work and the setting stays a policy choice.
+    if scorer_cannot_leave_default(config.mode, config.confidence_threshold) {
+        tracing::warn!(
+            confidence_threshold = config.confidence_threshold,
+            efficient_ceiling = max_efficient_confidence(),
+            "stage_router picker \"capable_first\" with confidence_threshold {} cannot de-escalate: \
+             production_intensity is the only signal on the efficient side, so the scorer tops out \
+             at {:.4}. Every turn will fall through to the judge, or to the capable tier when no \
+             judge is configured. Set confidence_threshold at or below {:.4} for the scorer to \
+             reach the efficient tier.",
+            config.confidence_threshold,
+            max_efficient_confidence(),
+            max_efficient_confidence(),
+        );
     }
     // The tiers are a fixed pair; their targets are whatever the deployment calls
     // them, and the classifier scores onto those names.

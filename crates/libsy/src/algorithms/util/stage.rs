@@ -334,6 +334,28 @@ pub fn score_signal(signal: &ToolSignals) -> ScoreResult {
     }
 }
 
+/// Highest confidence the scorer can reach toward the efficient tier.
+///
+/// `production_intensity` is the only dimension on the efficient side and
+/// [`ratio`] bounds it to `1.0`, so the efficient direction has exactly one
+/// signal unit to work with — there is nothing for it to corroborate with. The
+/// `tanh` squash then pulls that unit down from `SCORE_GAIN * SIGNAL_UNIT` to
+/// roughly `0.4621`, which lands just under the commonly used `0.5` threshold.
+pub fn max_efficient_confidence() -> f64 {
+    (SCORE_GAIN * SIGNAL_UNIT).tanh()
+}
+
+/// True when `confidence_threshold` puts every scorer outcome out of reach of
+/// `mode`'s non-default tier, so the scorer can never change a turn's tier.
+///
+/// Only [`PickerMode::CapableFirst`] can hit this: leaving its default means
+/// picking efficient, and that side caps at [`max_efficient_confidence`].
+/// Escalation stacks several dimensions, so `efficient_first` always has some
+/// reachable band and is never reported here.
+pub fn scorer_cannot_leave_default(mode: PickerMode, confidence_threshold: f64) -> bool {
+    matches!(mode, PickerMode::CapableFirst) && confidence_threshold > max_efficient_confidence()
+}
+
 /// Hard **escalate** — force the capable tier no matter what the scorer would
 /// say. Fires on a critical error or a compacted context.
 fn should_escalate(signal: &ToolSignals) -> bool {
@@ -647,6 +669,84 @@ mod tests {
             scored.confidence < 0.5,
             "one signal should not clear 0.5: {scored:?}"
         );
+    }
+
+    #[test]
+    fn production_is_the_only_signal_pushing_toward_efficient() {
+        // The de-escalation ceiling is a property of the dimension set: only
+        // `production_intensity` is negative, and `ratio` bounds it to 1.0. A
+        // turn that is pure production therefore scores the strongest efficient
+        // confidence the scorer can ever produce.
+        let mut signal = signal_from(json!([{"role": "user", "content": "hi"}]));
+        signal.recent_write_count = 3;
+        signal.recent_edit_count = 1;
+        let scored = score_signal(&signal);
+        assert!(scored.score < 0.0, "expected an efficient lean: {scored:?}");
+        assert!(
+            (scored.confidence - max_efficient_confidence()).abs() < 1e-12,
+            "pure production should reach the ceiling: {scored:?}"
+        );
+    }
+
+    #[test]
+    fn the_efficient_ceiling_sits_below_a_half() {
+        // tanh compresses one full signal unit (5.0 × 0.10) to ~0.4621, so the
+        // widely used 0.5 threshold sits above everything the efficient side can
+        // score. This is the constant the capable_first guard is built on.
+        assert!((max_efficient_confidence() - 0.462_117_157_260_009_7).abs() < 1e-12);
+        assert!(max_efficient_confidence() < 0.5);
+    }
+
+    #[test]
+    fn capable_first_reports_an_unreachable_efficient_tier() {
+        // Above the ceiling the scorer cannot leave the capable default, so the
+        // combination is inert rather than merely selective.
+        assert!(scorer_cannot_leave_default(PickerMode::CapableFirst, 0.5));
+        assert!(scorer_cannot_leave_default(PickerMode::CapableFirst, 0.47));
+        assert!(!scorer_cannot_leave_default(PickerMode::CapableFirst, 0.45));
+        // The gate is inclusive, so the ceiling itself still fires.
+        assert!(!scorer_cannot_leave_default(
+            PickerMode::CapableFirst,
+            max_efficient_confidence()
+        ));
+    }
+
+    #[test]
+    fn efficient_first_is_never_reported_as_inert() {
+        // Escalation has more signals to stack, and this guard only speaks to the
+        // efficient direction.
+        assert!(!scorer_cannot_leave_default(
+            PickerMode::EfficientFirst,
+            0.5
+        ));
+        assert!(!scorer_cannot_leave_default(
+            PickerMode::EfficientFirst,
+            1.0
+        ));
+    }
+
+    #[test]
+    fn capable_first_above_the_ceiling_never_picks_efficient() {
+        // End-to-end on `pick_tier`: the strongest possible efficient signal is
+        // still handed on rather than resolved.
+        let mut signal = signal_from(json!([{"role": "user", "content": "hi"}]));
+        signal.recent_write_count = 3;
+        signal.recent_edit_count = 1;
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::CapableFirst, 0.5),
+            PickOutcome::ConsultClassifier {
+                default_tier: Tier::Capable,
+                ..
+            }
+        ));
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::CapableFirst, 0.45),
+            PickOutcome::Resolved {
+                tier: Tier::Efficient,
+                source: DecisionSource::Dimensions,
+                ..
+            }
+        ));
     }
 
     #[test]
