@@ -36,7 +36,10 @@ pub(crate) fn parse_json_sse_frame(
     let data = frame
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with(':'))
-        .filter_map(|line| line.strip_prefix("data: ").map(|l| l.to_string()))
+        .filter_map(|line| {
+            line.strip_prefix("data:")
+                .map(|value| value.strip_prefix(' ').unwrap_or(value).to_string())
+        })
         .fold(String::new(), |mut a, b| {
             a.reserve(b.len() + 1);
             a.push_str(&b);

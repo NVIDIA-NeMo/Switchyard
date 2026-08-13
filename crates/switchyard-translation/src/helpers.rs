@@ -583,6 +583,17 @@ mod tests {
     }
 
     #[test]
+    fn decode_stream_accepts_sse_data_without_optional_space() -> Result<(), LlmClientError> {
+        let sse = b"data:{\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
+             data:[DONE]\n\n"
+            .to_vec();
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
+        let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
+        assert_eq!(text_of(&chunks), "Hello");
+        Ok(())
+    }
+
+    #[test]
     fn stream_helpers_replay_same_format_provider_fields() -> Result<(), BoxError> {
         let provider_event = json!({
             "id": "chatcmpl-test",
