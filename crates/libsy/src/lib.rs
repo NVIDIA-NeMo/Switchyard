@@ -34,7 +34,8 @@ pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
 pub use algorithms::util::stage::{
     CodingAgentDimensions, DECISION_SOURCE_KEY, DecisionSource, HandoffNoteConfig, PickOutcome,
     PickerMode, ScoreResult, StageClassifier, StageTargets, Tier, dimensions_from_signal,
-    max_efficient_confidence, pick_tier, score_signal, scorer_cannot_leave_default,
+    max_capable_confidence, max_efficient_confidence, pick_tier, score_signal,
+    scorer_cannot_leave_default,
 };
 
 mod observability;

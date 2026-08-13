@@ -334,26 +334,48 @@ pub fn score_signal(signal: &ToolSignals) -> ScoreResult {
     }
 }
 
+/// Confidence a turn scoring `units` maxed signals lands on, after the squash.
+fn confidence_for_units(units: f64) -> f64 {
+    (SCORE_GAIN * SIGNAL_UNIT * units).tanh()
+}
+
 /// Highest confidence the scorer can reach toward the efficient tier.
 ///
 /// `production_intensity` is the only dimension on the efficient side and
 /// [`ratio`] bounds it to `1.0`, so the efficient direction has exactly one
 /// signal unit to work with — there is nothing for it to corroborate with. The
-/// `tanh` squash then pulls that unit down from `SCORE_GAIN * SIGNAL_UNIT` to
-/// roughly `0.4621`, which lands just under the commonly used `0.5` threshold.
+/// `tanh` squash then pulls that unit down to roughly `0.4621`, which lands just
+/// under the commonly used `0.5` threshold.
 pub fn max_efficient_confidence() -> f64 {
-    (SCORE_GAIN * SIGNAL_UNIT).tanh()
+    confidence_for_units(1.0)
+}
+
+/// Highest confidence the scorer can reach toward the capable tier.
+///
+/// Escalation stacks two units, not three: `severity` contributes one at its
+/// [`HARD_SEVERITY`] cap (critical is intercepted by the override), and
+/// `spinning` / `exploring` partition the not-producing case so only one of them
+/// can fire. `production_intensity` is zero whenever either does, so nothing
+/// subtracts. That caps escalation confidence at roughly `0.7616`.
+pub fn max_capable_confidence() -> f64 {
+    confidence_for_units(2.0)
 }
 
 /// True when `confidence_threshold` puts every scorer outcome out of reach of
 /// `mode`'s non-default tier, so the scorer can never change a turn's tier.
 ///
-/// Only [`PickerMode::CapableFirst`] can hit this: leaving its default means
-/// picking efficient, and that side caps at [`max_efficient_confidence`].
-/// Escalation stacks several dimensions, so `efficient_first` always has some
-/// reachable band and is never reported here.
+/// Both pickers can hit this, because `tanh` bounds confidence well below `1.0`
+/// in either direction — `capable_first` from
+/// [`max_efficient_confidence`], `efficient_first` from
+/// [`max_capable_confidence`]. Above its ceiling the scorer still runs and still
+/// reports a score, but it can only ever confirm the default tier.
 pub fn scorer_cannot_leave_default(mode: PickerMode, confidence_threshold: f64) -> bool {
-    matches!(mode, PickerMode::CapableFirst) && confidence_threshold > max_efficient_confidence()
+    let ceiling = match mode {
+        // Leaving the capable default means picking efficient, and vice versa.
+        PickerMode::CapableFirst => max_efficient_confidence(),
+        PickerMode::EfficientFirst => max_capable_confidence(),
+    };
+    confidence_threshold > ceiling
 }
 
 /// Hard **escalate** — force the capable tier no matter what the scorer would
@@ -689,12 +711,36 @@ mod tests {
     }
 
     #[test]
-    fn the_efficient_ceiling_sits_below_a_half() {
-        // tanh compresses one full signal unit (5.0 × 0.10) to ~0.4621, so the
-        // widely used 0.5 threshold sits above everything the efficient side can
-        // score. This is the constant the capable_first guard is built on.
+    fn error_and_stall_signals_are_the_only_ones_pushing_toward_capable() {
+        // The escalation ceiling is two units, not three: severity at its hard cap
+        // plus whichever of spinning/exploring fires. A deep turn that errored and
+        // is reading without producing reaches exactly that.
+        let mut signal = signal_from(json!([{"role": "user", "content": "hi"}]));
+        signal.severity = HARD_SEVERITY as f32;
+        signal.turn_depth = STALL_MIN_TURN_DEPTH;
+        signal.recent_read_count = 2;
+        let dimensions = dimensions_from_signal(&signal);
+        assert_eq!(dimensions.exploring, 1.0);
+        assert_eq!(dimensions.spinning, 0.0);
+        let scored = score_signal(&signal);
+        assert!(scored.score > 0.0, "expected a capable lean: {scored:?}");
+        // `severity` is an f32, so the widened 0.7 divides out a few ulps short of
+        // one whole unit. The ceiling itself is exact; the signal reaching it is not.
+        assert!(
+            (scored.confidence - max_capable_confidence()).abs() < 1e-7,
+            "an errored, exploring turn should reach the ceiling: {scored:?}"
+        );
+    }
+
+    #[test]
+    fn both_ceilings_sit_below_the_thresholds_operators_reach_for() {
+        // tanh compresses one signal unit to ~0.4621 and two to ~0.7616, so 0.5
+        // and 1.0 respectively sit above everything each side can score. These are
+        // the constants the picker guard is built on.
         assert!((max_efficient_confidence() - 0.462_117_157_260_009_7).abs() < 1e-12);
+        assert!((max_capable_confidence() - 0.761_594_155_955_764_9).abs() < 1e-12);
         assert!(max_efficient_confidence() < 0.5);
+        assert!(max_capable_confidence() < 1.0);
     }
 
     #[test]
@@ -712,16 +758,43 @@ mod tests {
     }
 
     #[test]
-    fn efficient_first_is_never_reported_as_inert() {
-        // Escalation has more signals to stack, and this guard only speaks to the
-        // efficient direction.
+    fn efficient_first_reports_an_unreachable_capable_tier() {
+        // Escalation has a second unit to stack, so its ceiling is higher — but
+        // `tanh` still keeps it short of 1.0, which the range check accepts.
+        assert!(scorer_cannot_leave_default(PickerMode::EfficientFirst, 1.0));
+        assert!(scorer_cannot_leave_default(PickerMode::EfficientFirst, 0.8));
         assert!(!scorer_cannot_leave_default(
             PickerMode::EfficientFirst,
             0.5
         ));
         assert!(!scorer_cannot_leave_default(
             PickerMode::EfficientFirst,
-            1.0
+            max_capable_confidence()
+        ));
+    }
+
+    #[test]
+    fn efficient_first_at_its_ceiling_never_picks_capable() {
+        // End-to-end on `pick_tier`, mirroring the capable_first case: the
+        // strongest possible escalation signal is handed on rather than resolved.
+        let mut signal = signal_from(json!([{"role": "user", "content": "hi"}]));
+        signal.severity = HARD_SEVERITY as f32;
+        signal.turn_depth = STALL_MIN_TURN_DEPTH;
+        signal.recent_read_count = 2;
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::EfficientFirst, 1.0),
+            PickOutcome::ConsultClassifier {
+                default_tier: Tier::Efficient,
+                ..
+            }
+        ));
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::EfficientFirst, 0.75),
+            PickOutcome::Resolved {
+                tier: Tier::Capable,
+                source: DecisionSource::Dimensions,
+                ..
+            }
         ));
     }
 

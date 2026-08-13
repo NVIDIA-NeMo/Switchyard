@@ -22,8 +22,8 @@ use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierCon
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
-    max_efficient_confidence, record_decision_source, record_routing_decision,
-    scorer_cannot_leave_default,
+    max_capable_confidence, max_efficient_confidence, record_decision_source,
+    record_routing_decision, scorer_cannot_leave_default,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
@@ -159,22 +159,29 @@ fn build_route(
             ),
         });
     }
-    // A threshold above the efficient ceiling silently disables the scorer for
-    // capable_first: every turn reads as "signals were weak" when in fact that
-    // branch cannot fire at all. Warn rather than reject, since the judge and the
-    // hard de-escalation shortcut still work and the setting stays a policy choice.
+    // A threshold above the scorer's ceiling in the direction that leaves the
+    // default tier silently disables the scorer: those turns read as "signals were
+    // weak" when in fact the branch cannot fire at all. Warn rather than reject —
+    // the hard overrides still fire, and the setting stays a policy choice.
     if scorer_cannot_leave_default(config.mode, config.confidence_threshold) {
+        let (picker, other_tier, ceiling) = match config.mode {
+            PickerMode::CapableFirst => ("capable_first", "efficient", max_efficient_confidence()),
+            PickerMode::EfficientFirst => ("efficient_first", "capable", max_capable_confidence()),
+        };
         tracing::warn!(
             confidence_threshold = config.confidence_threshold,
-            efficient_ceiling = max_efficient_confidence(),
-            "stage_router picker \"capable_first\" with confidence_threshold {} cannot de-escalate: \
-             production_intensity is the only signal on the efficient side, so the scorer tops out \
-             at {:.4}. Every turn will fall through to the judge, or to the capable tier when no \
-             judge is configured. Set confidence_threshold at or below {:.4} for the scorer to \
-             reach the efficient tier.",
+            ceiling,
+            "stage_router picker \"{}\" with confidence_threshold {} can never select the {} tier: \
+             the scorer tops out at {:.4} in that direction, so no signal clears the gate. Turns \
+             the hard overrides do not claim fall through to the judge, or to the default tier when \
+             no judge is configured. Set confidence_threshold at or below {:.4} for the scorer to \
+             reach the {} tier.",
+            picker,
             config.confidence_threshold,
-            max_efficient_confidence(),
-            max_efficient_confidence(),
+            other_tier,
+            ceiling,
+            ceiling,
+            other_tier,
         );
     }
     // The tiers are a fixed pair; their targets are whatever the deployment calls
