@@ -5,10 +5,11 @@
 
 from switchyard_rust.libsy import (
     Algorithm,
+    Decision,
     LibsyError,
-    LlmClient,
     LlmFallback,
-    LlmTarget,
+    ModelCall,
+    Step,
     TaskClassifierConfig,
 )
 
@@ -16,10 +17,11 @@ from . import algorithms as algorithms
 
 __all__ = [
     "Algorithm",
+    "Decision",
     "LibsyError",
-    "LlmClient",
     "LlmFallback",
-    "LlmTarget",
+    "ModelCall",
+    "Step",
     "TaskClassifierConfig",
     "algorithms",
 ]
