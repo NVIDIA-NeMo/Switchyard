@@ -4,7 +4,7 @@
 <a href=#4 id=4 data-nosnippet>4</a></span><span class="kw">use </span><span class="kw">crate</span>::core::algorithm::Driver;
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>crate::{LibsyError, <span class="prelude-ty">Result</span>};
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>async_trait::async_trait;
-<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>switchyard_protocol::{Request, Response};
+<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>switchyard_protocol::{ModelId, Request, Response};
 <a href=#8 id=8 data-nosnippet>8</a>
 <a href=#9 id=9 data-nosnippet>9</a><span class="doccomment">/// One classifier's recommendation of a routing `target`, with a `[0.0, 1.0]` confidence.
 <a href=#10 id=10 data-nosnippet>10</a></span><span class="attr">#[derive(Debug, Clone, PartialEq)]
@@ -12,7 +12,7 @@
 <a href=#12 id=12 data-nosnippet>12</a>    <span class="doccomment">/// `[0.0, 1.0]` confidence in `target`.
 <a href=#13 id=13 data-nosnippet>13</a>    </span><span class="kw">pub </span>confidence: f64,
 <a href=#14 id=14 data-nosnippet>14</a>    <span class="doccomment">/// The target (model / tier) being recommended.
-<a href=#15 id=15 data-nosnippet>15</a>    </span><span class="kw">pub </span>target: String,
+<a href=#15 id=15 data-nosnippet>15</a>    </span><span class="kw">pub </span>target: ModelId,
 <a href=#16 id=16 data-nosnippet>16</a>}
 <a href=#17 id=17 data-nosnippet>17</a>
 <a href=#18 id=18 data-nosnippet>18</a><span class="doccomment">/// A classifier's verdict for a request: a set of target [`Score`]s, flagged by how
@@ -72,14 +72,14 @@
 <a href=#72 id=72 data-nosnippet>72</a></span><span class="attr">#[async_trait]
 <a href=#73 id=73 data-nosnippet>73</a></span><span class="kw">pub trait </span>Classifier&lt;S = ()&gt;: Send + Sync {
 <a href=#74 id=74 data-nosnippet>74</a>    <span class="doccomment">/// Stable tier represented by `selected_model_id`, when this classifier defines one.
-<a href=#75 id=75 data-nosnippet>75</a>    </span><span class="kw">fn </span>routing_tier(<span class="kw-2">&amp;</span><span class="self">self</span>, _selected_model_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt; {
+<a href=#75 id=75 data-nosnippet>75</a>    </span><span class="kw">fn </span>routing_tier(<span class="kw-2">&amp;</span><span class="self">self</span>, _selected_model_id: <span class="kw-2">&amp;</span>ModelId) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt; {
 <a href=#76 id=76 data-nosnippet>76</a>        <span class="prelude-val">None
 <a href=#77 id=77 data-nosnippet>77</a>    </span>}
 <a href=#78 id=78 data-nosnippet>78</a>
 <a href=#79 id=79 data-nosnippet>79</a>    <span class="doccomment">/// Drops retained routing state when `target` was unavailable for `request`.
 <a href=#80 id=80 data-nosnippet>80</a>    ///
 <a href=#81 id=81 data-nosnippet>81</a>    /// Stateless classifiers do not need to implement this hook.
-<a href=#82 id=82 data-nosnippet>82</a>    </span><span class="kw">fn </span>target_unavailable(<span class="kw-2">&amp;</span><span class="self">self</span>, _request: <span class="kw-2">&amp;</span>Request, _target: <span class="kw-2">&amp;</span>str) {}
+<a href=#82 id=82 data-nosnippet>82</a>    </span><span class="kw">fn </span>target_unavailable(<span class="kw-2">&amp;</span><span class="self">self</span>, _request: <span class="kw-2">&amp;</span>Request, _target: <span class="kw-2">&amp;</span>ModelId) {}
 <a href=#83 id=83 data-nosnippet>83</a>
 <a href=#84 id=84 data-nosnippet>84</a>    <span class="doccomment">/// Score the classifier's targets given the current state and request.
 <a href=#85 id=85 data-nosnippet>85</a>    ///
@@ -107,7 +107,7 @@
 <a href=#107 id=107 data-nosnippet>107</a>    <span class="doccomment">/// Terse `Score` builder for the assertions below.
 <a href=#108 id=108 data-nosnippet>108</a>    </span><span class="kw">fn </span>score(target: <span class="kw-2">&amp;</span>str, confidence: f64) -&gt; Score {
 <a href=#109 id=109 data-nosnippet>109</a>        Score {
-<a href=#110 id=110 data-nosnippet>110</a>            target: target.to_string(),
+<a href=#110 id=110 data-nosnippet>110</a>            target: ModelId::from(target),
 <a href=#111 id=111 data-nosnippet>111</a>            confidence,
 <a href=#112 id=112 data-nosnippet>112</a>        }
 <a href=#113 id=113 data-nosnippet>113</a>    }
@@ -125,7 +125,7 @@
 <a href=#125 id=125 data-nosnippet>125</a>        <span class="comment">// Equal confidence: the earlier target in cascade order wins the tie.
 <a href=#126 id=126 data-nosnippet>126</a>        </span><span class="kw">let </span>scores = <span class="macro">vec!</span>[score(<span class="string">"first"</span>, <span class="number">0.7</span>), score(<span class="string">"second"</span>, <span class="number">0.7</span>)];
 <a href=#127 id=127 data-nosnippet>127</a>        <span class="kw">let </span>best = Classification::Scores(scores).argmax(<span class="bool-val">false</span>)<span class="question-mark">?</span>;
-<a href=#128 id=128 data-nosnippet>128</a>        <span class="macro">assert_eq!</span>(best.map(|s| s.target), <span class="prelude-val">Some</span>(<span class="string">"first"</span>.to_string()));
+<a href=#128 id=128 data-nosnippet>128</a>        <span class="macro">assert_eq!</span>(best.map(|s| s.target), <span class="prelude-val">Some</span>(ModelId::from(<span class="string">"first"</span>)));
 <a href=#129 id=129 data-nosnippet>129</a>        <span class="prelude-val">Ok</span>(())
 <a href=#130 id=130 data-nosnippet>130</a>    }
 <a href=#131 id=131 data-nosnippet>131</a>
@@ -193,7 +193,7 @@
 <a href=#193 id=193 data-nosnippet>193</a>            _driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
 <a href=#194 id=194 data-nosnippet>194</a>        ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
 <a href=#195 id=195 data-nosnippet>195</a>            <span class="kw-2">*</span>state = <span class="bool-val">true</span>;
-<a href=#196 id=196 data-nosnippet>196</a>            <span class="kw">let </span>target = request.requested_model().unwrap_or(<span class="string">"auto"</span>).to_string();
+<a href=#196 id=196 data-nosnippet>196</a>            <span class="kw">let </span>target = request.model_id().unwrap_or(ModelId::from(<span class="string">"auto"</span>));
 <a href=#197 id=197 data-nosnippet>197</a>            <span class="prelude-val">Ok</span>((
 <a href=#198 id=198 data-nosnippet>198</a>                Classification::Scores(<span class="macro">vec!</span>[Score {
 <a href=#199 id=199 data-nosnippet>199</a>                    target,
@@ -218,7 +218,7 @@
 <a href=#218 id=218 data-nosnippet>218</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#219 id=219 data-nosnippet>219</a>        <span class="macro">assert_eq!</span>(
 <a href=#220 id=220 data-nosnippet>220</a>            classification.argmax(<span class="bool-val">false</span>)<span class="question-mark">?</span>.map(|s| s.target),
-<a href=#221 id=221 data-nosnippet>221</a>            <span class="prelude-val">Some</span>(<span class="string">"strong"</span>.to_string())
+<a href=#221 id=221 data-nosnippet>221</a>            <span class="prelude-val">Some</span>(ModelId::from(<span class="string">"strong"</span>))
 <a href=#222 id=222 data-nosnippet>222</a>        );
 <a href=#223 id=223 data-nosnippet>223</a>        <span class="macro">assert!</span>(state);
 <a href=#224 id=224 data-nosnippet>224</a>        <span class="prelude-val">Ok</span>(())
@@ -238,7 +238,7 @@
 <a href=#238 id=238 data-nosnippet>238</a>            request.llm_request.model = <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>.to_string());
 <a href=#239 id=239 data-nosnippet>239</a>            <span class="prelude-val">Ok</span>((
 <a href=#240 id=240 data-nosnippet>240</a>                Classification::Scores(<span class="macro">vec!</span>[Score {
-<a href=#241 id=241 data-nosnippet>241</a>                    target: <span class="string">"rewritten"</span>.to_string(),
+<a href=#241 id=241 data-nosnippet>241</a>                    target: ModelId::from(<span class="string">"rewritten"</span>),
 <a href=#242 id=242 data-nosnippet>242</a>                    confidence: <span class="number">1.0</span>,
 <a href=#243 id=243 data-nosnippet>243</a>                }]),
 <a href=#244 id=244 data-nosnippet>244</a>                <span class="prelude-val">None</span>,
@@ -261,7 +261,7 @@
 <a href=#261 id=261 data-nosnippet>261</a>
 <a href=#262 id=262 data-nosnippet>262</a>        <span class="comment">// The rewrite outlives the call: later classifiers in the cascade score this value,
 <a href=#263 id=263 data-nosnippet>263</a>        // and it is what reaches the model.
-<a href=#264 id=264 data-nosnippet>264</a>        </span><span class="macro">assert_eq!</span>(request.requested_model(), <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>));
+<a href=#264 id=264 data-nosnippet>264</a>        </span><span class="macro">assert_eq!</span>(request.model_id().as_deref(), <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>));
 <a href=#265 id=265 data-nosnippet>265</a>        <span class="prelude-val">Ok</span>(())
 <a href=#266 id=266 data-nosnippet>266</a>    }
 <a href=#267 id=267 data-nosnippet>267</a>}
