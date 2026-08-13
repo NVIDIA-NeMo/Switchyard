@@ -42,7 +42,7 @@ pub struct HttpBackendConfig {
     pub base_url: String,
     /// API key for the provider, loaded by the caller. `None` sends no configured auth.
     pub api_key: Option<String>,
-    /// Whether to forward the caller's `authorization` or `x-api-key` header instead.
+    /// Whether an Anthropic backend forwards the caller's auth header instead.
     pub forward_auth: bool,
     /// Custom headers added to every outbound call to this backend.
     ///
@@ -138,10 +138,10 @@ impl Backend {
     /// Applies this backend's configured auth and version headers to a request builder.
     ///
     /// OpenAI variants use `Authorization: Bearer <key>`; Anthropic uses
-    /// `x-api-key: <key>` plus the required `anthropic-version` header. A backend
-    /// with `forward_auth` uses the caller's auth instead of its configured key.
+    /// `x-api-key: <key>` plus the required `anthropic-version` header. An Anthropic
+    /// backend with `forward_auth` uses the caller's auth instead of its configured key.
     pub fn apply_auth(&self, mut builder: RequestBuilder) -> RequestBuilder {
-        let api_key = if self.config().forward_auth {
+        let api_key = if self.is_forwarding_auth() {
             None
         } else {
             self.config().api_key.as_deref()
@@ -163,7 +163,7 @@ impl Backend {
     }
 
     pub(crate) fn is_forwarding_auth(&self) -> bool {
-        self.config().forward_auth
+        matches!(self, Backend::Anthropic(config) if config.forward_auth)
     }
 
     /// Custom per-backend headers to forward on every call.
@@ -317,6 +317,15 @@ mod tests {
         assert!(Backend::Anthropic(config("x")).is_anthropic());
         assert!(!Backend::OpenAiChat(config("x")).is_anthropic());
         assert!(!Backend::OpenAiResponses(config("x")).is_anthropic());
+    }
+
+    #[test]
+    fn only_anthropic_backend_forwards_auth() {
+        let mut config = config("x");
+        config.forward_auth = true;
+        assert!(Backend::Anthropic(config.clone()).is_forwarding_auth());
+        assert!(!Backend::OpenAiChat(config.clone()).is_forwarding_auth());
+        assert!(!Backend::OpenAiResponses(config).is_forwarding_auth());
     }
 
     #[test]
