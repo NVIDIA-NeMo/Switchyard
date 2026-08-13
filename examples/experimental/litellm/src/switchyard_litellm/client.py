@@ -213,7 +213,7 @@ def _optional_mapping(
     return _mapping(value, field)
 
 
-def _payload(request: Mapping[str, object]) -> dict[str, Any]:
+async def _payload(request: Mapping[str, object]) -> dict[str, Any]:
     model = request.get("model")
     if not isinstance(model, str) or not model:
         raise ValueError("model must be a non-empty string")
@@ -333,9 +333,10 @@ class LiteLLMSyClient:
         sy_request: Mapping[str, object],
     ) -> Mapping[str, object]:
         """Send one normalized, buffered text request through LiteLLM."""
+        payload = await _payload(sy_request)
         try:
             response = await acompletion(
-                **_payload(sy_request),
+                **payload,
                 api_base=self._base_url,
                 api_key=self._api_key,
                 num_retries=0,
