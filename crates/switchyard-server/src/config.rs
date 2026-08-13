@@ -957,11 +957,30 @@ fn build_backend(
         extra_body: extra_body.clone(),
         max_retries: config.max_retries,
     };
-    Ok(match config.format {
+    let backend = match config.format {
         ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
         ClientFormat::OpenAiResponses => Backend::OpenAiResponses(http),
         ClientFormat::AnthropicMessages => Backend::Anthropic(http),
-    })
+    };
+    validate_backend_url(client_name, &backend)?;
+    Ok(backend)
+}
+
+// Validate the endpoint after the backend applies the same format-specific URL
+// joining used for requests, so dry-run and request construction cannot diverge.
+fn validate_backend_url(client_name: &str, backend: &Backend) -> ServerResult<()> {
+    let endpoint = backend.url();
+    let url = reqwest::Url::parse(&endpoint).map_err(|error| {
+        ServerError::new(format!(
+            "llm client {client_name} base_url must resolve to an absolute HTTP(S) URL: {error}"
+        ))
+    })?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} base_url must resolve to an absolute HTTP(S) URL"
+        )));
+    }
+    Ok(())
 }
 
 const fn default_max_retries() -> u32 {
@@ -1424,6 +1443,22 @@ classify_trigger = "new_session""#,
 
         server_state_from_toml(&configured)?;
         Ok(())
+    }
+
+    #[test]
+    fn rejects_non_http_base_urls_during_construction() {
+        for base_url in ["not a url", "/v1", "ftp://example.test/v1"] {
+            let invalid = VALID_CONFIG.replacen(
+                "base_url = \"https://example.test/v1\"",
+                &format!("base_url = \"{base_url}\""),
+                1,
+            );
+            let message = error_message(&invalid);
+            assert!(
+                message.contains("llm client primary base_url"),
+                "unexpected error for {base_url}: {message}"
+            );
+        }
     }
 
     #[test]
