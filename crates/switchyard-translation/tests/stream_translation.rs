@@ -8,6 +8,7 @@ use serde_json::json;
 use switchyard_protocol::{ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
+    sanitize_anthropic_tool_use_id,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -299,6 +300,50 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
             "index": 0,
             "delta": {"type": "text_delta", "text": "Hi"}
         })
+    );
+    Ok(())
+}
+
+// Verifies unsafe streamed tool IDs use the same reversible Anthropic-safe encoding.
+#[test]
+fn openai_chat_stream_tool_id_is_anthropic_safe() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let raw_id = "functions.list_skills:0";
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "moonshotai/kimi-k2",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": raw_id,
+                    "type": "function",
+                    "function": {"name": "list_skills", "arguments": "{}"}
+                }]
+            },
+            "finish_reason": null
+        }]
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &chunk,
+    )?;
+    let Some(tool_start) = events.iter().find(|event| {
+        event["type"] == "content_block_start" && event["content_block"]["type"] == "tool_use"
+    }) else {
+        return Err("expected an Anthropic tool_use content block".into());
+    };
+
+    assert_eq!(
+        tool_start["content_block"]["id"],
+        sanitize_anthropic_tool_use_id(raw_id)
     );
     Ok(())
 }

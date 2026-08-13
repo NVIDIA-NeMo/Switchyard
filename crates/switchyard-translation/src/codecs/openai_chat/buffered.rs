@@ -21,9 +21,9 @@ use crate::llm::{
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response, json_string, object, push_lossy, stable_id,
-    string_value, validate_request_capabilities,
+    capture_request_preservation, capture_response_preservation, desanitize_anthropic_tool_use_id,
+    embed_preservation, exact_preserved_request, exact_preserved_response, json_string, object,
+    push_lossy, stable_id, string_value, validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Chat Completions payloads.
@@ -709,7 +709,7 @@ fn encode_message_with_tool_results_to_openai(
             )?;
             out.push(json!({
                 "role": "tool",
-                "tool_call_id": result.tool_call_id,
+                "tool_call_id": desanitize_anthropic_tool_use_id(&result.tool_call_id),
                 "content": text_from_blocks(&result.content, " "),
             }));
         } else {
@@ -767,7 +767,7 @@ fn encode_message_without_tool_results_to_openai(
         .iter()
         .filter_map(|block| match block {
             ContentBlock::ToolCall(call) => Some(json!({
-                "id": call.id,
+                "id": desanitize_anthropic_tool_use_id(&call.id),
                 "type": "function",
                 "function": {
                     "name": call.name,
