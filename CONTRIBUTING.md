@@ -181,8 +181,13 @@ See [Architecture](docs/architecture.md) for the request lifecycle and
 supported serving path is native Rust:
 
 ```text
-HTTP request → switchyard-server → libsy → libsy-llm-client
-             → switchyard-translation → upstream model
+HTTP request
+  → switchyard-server
+  → switchyard-translation (decode)
+  → libsy
+  → libsy-llm-client
+  → switchyard-translation (encode)
+  → upstream model
 ```
 
 Before making a change, identify the surface that owns it:
@@ -192,6 +197,10 @@ Before making a change, identify the surface that owns it:
 - Put translated HTTP calls in `crates/libsy-llm-client`.
 - Put wire-format conversion in `crates/switchyard-translation`.
 - Put HTTP serving and deployment configuration in `crates/switchyard-server`.
+- Put source-neutral skill-distillation records and port traits in
+  `crates/switchyard-skill-distillation`; that crate does not own workflow
+  orchestration. Test its public contracts in
+  `crates/switchyard-skill-distillation/tests/contracts.rs`.
 - Put native Python bindings in `crates/switchyard-py`; keep Python wrappers in
   `switchyard/libsy` or `switchyard_rust`.
 - Put launcher behavior in `switchyard/cli`.
