@@ -1357,7 +1357,7 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 <td><code>extra_headers</code></td>
 <td style="text-align: center;">No</td>
 <td><code>{}</code></td>
-<td>Custom HTTP headers sent to the model server. Setting <code>api_key_env</code> together with <code>Authorization</code> (OpenAI) or <code>x-api-key</code> (Anthropic) creates a conflict because both settings define the same outgoing authentication header. The client sends the API key loaded from <code>api_key_env</code> and does not send the conflicting custom value. Without <code>api_key_env</code>, the client sends the custom authentication header. Anthropic requests always use the client's required <code>anthropic-version</code>. Header names are matched without regard to letter case.</td>
+<td>Custom HTTP headers sent to the model server. Set credentials with <code>api_key_env</code>. The server rejects <code>Authorization</code> for OpenAI clients and <code>x-api-key</code> or <code>anthropic-version</code> for Anthropic clients when it loads the config. Header names are case-insensitive.</td>
 </tr>
 <tr>
 <td><code>max_retries</code></td>
