@@ -20,11 +20,11 @@ jobs:
     permissions:
       pull-requests: read
     outputs:
-      full_ci: ${{ github.event_name != 'pull_request' || steps.filter.outputs.full_ci == 'true' }}
+      full_ci: ${{ github.event_name != 'pull_request' || (!startsWith(github.event.pull_request.title, 'docs') && steps.filter.outputs.full_ci == 'true') }}
     steps:
       - name: Detect non-documentation changes
         id: filter
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'docs')
         uses: dorny/paths-filter@v4
         with:
           predicate-quantifier: every
