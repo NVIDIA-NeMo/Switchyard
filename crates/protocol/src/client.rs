@@ -118,7 +118,7 @@ pub enum RoutingFallbackReason {
 }
 
 impl RoutingFallbackReason {
-    /// Stable value embedded in routing reasoning.
+    /// Stable value used when logging a routing fallback.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ContextWindow => "context_window",
@@ -132,22 +132,15 @@ impl RoutingFallbackReason {
 pub struct Decision {
     /// The model identifier selected for the call.
     selected_model_id: ModelId,
-    /// Why, for logs and traces.
-    reasoning: Option<String>,
     /// True for an answer-generating call. False for classifier and judge calls.
     is_answer_call: bool,
 }
 
 impl Decision {
     /// Creates a decision and records whether its call produces the answer.
-    pub fn new(
-        selected_model_id: impl Into<ModelId>,
-        reasoning: Option<String>,
-        is_answer_call: bool,
-    ) -> Self {
+    pub fn new(selected_model_id: impl Into<ModelId>, is_answer_call: bool) -> Self {
         Self {
             selected_model_id: selected_model_id.into(),
-            reasoning,
             is_answer_call,
         }
     }
@@ -155,11 +148,6 @@ impl Decision {
     /// The model identifier selected for the call.
     pub fn selected_model_id(&self) -> &ModelId {
         &self.selected_model_id
-    }
-
-    /// Why this decision was made.
-    pub fn reasoning(&self) -> Option<&str> {
-        self.reasoning.as_deref()
     }
 
     /// Whether this call generates an answer rather than a routing verdict.

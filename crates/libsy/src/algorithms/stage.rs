@@ -511,11 +511,11 @@ mod tests {
             "the selected target should be recorded as an answer call"
         );
         drop(calls);
-        assert!(
+        assert_eq!(
             trace
                 .last()
-                .and_then(|decision| decision.reasoning())
-                .is_some_and(|reasoning| reasoning.contains("routing tier: strong"))
+                .map(|decision| decision.selected_model_id().as_str()),
+            Some("strong")
         );
         Ok(())
     }

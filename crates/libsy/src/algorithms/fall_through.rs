@@ -142,7 +142,7 @@ where
         self
     }
 
-    /// Sets the decision reasoning for an algorithm assembled from this cascade.
+    /// Sets the decision log message for an algorithm assembled from this cascade.
     pub(crate) fn with_decision_reason(mut self, reason: fn(&str, &Score) -> String) -> Self {
         self.decision_reason = reason;
         self
@@ -264,17 +264,15 @@ where
             RoutingFallbackReason::ContextWindow => "exceeded its context window",
             RoutingFallbackReason::Unavailable => "was unavailable",
         };
-        Decision::new(
-            to.clone(),
-            Some(with_routing_tier(
-                format!(
-                    "{from} {failure}; fell back to {to} (fallback reason: {})",
-                    reason.as_str(),
-                ),
-                deciding.routing_tier(to),
-            )),
-            true,
-        )
+        let message = with_routing_tier(
+            format!(
+                "{from} {failure}; fell back to {to} (fallback reason: {})",
+                reason.as_str(),
+            ),
+            deciding.routing_tier(to),
+        );
+        tracing::info!("{message}");
+        Decision::new(to.clone(), true)
     }
 
     /// Returns this request's retained state without holding the registry lock.
@@ -321,10 +319,10 @@ where
             });
         };
 
-        // 3. Resolve the target and publish the decision. When an excluded target sends
-        //    the request elsewhere, the reasoning describes where it actually went.
+        // 3. Resolve the target, log the choice, and publish the decision. When an excluded
+        //    target sends the request elsewhere, the log describes where it actually went.
         let target = algorithm::select_eligible_model(&self.targets, &score.target, excluded)?;
-        let reasoning = if target == score.target {
+        let message = if target == score.target {
             (self.decision_reason)(&self.name, &score)
         } else {
             format!(
@@ -332,11 +330,9 @@ where
                 score.target, target
             )
         };
-        let decision: Decision = Decision::new(
-            target.clone(),
-            Some(with_routing_tier(reasoning, deciding.routing_tier(&target))),
-            true,
-        );
+        let message = with_routing_tier(message, deciding.routing_tier(&target));
+        tracing::info!("{message}");
+        let decision: Decision = Decision::new(target.clone(), true);
         driver.decide(decision.clone()).await?;
 
         // 4. Post-decision replay: every processor sees the decision so stateful ones
@@ -395,11 +391,11 @@ fn default_decision_reason(_name: &str, winner: &Score) -> String {
     )
 }
 
-// Routing tier is not part of Decision struct, so keeping it in reasoning for now. Remove it later if needed from reasoning.
-fn with_routing_tier(reasoning: String, tier: Option<&str>) -> String {
+/// Appends the routing tier to a decision log message when the classifier supplies one.
+fn with_routing_tier(message: String, tier: Option<&str>) -> String {
     match tier {
-        Some(tier) => format!("{reasoning}; routing tier: {tier}"),
-        None => reasoning,
+        Some(tier) => format!("{message}; routing tier: {tier}"),
+        None => message,
     }
 }
 
@@ -836,11 +832,11 @@ mod tests {
         for _ in 0..2 {
             let (model, trace) = run_turn(&router, unavailable(&["weak"], calls.clone())).await?;
             assert_eq!(model, "strong");
-            assert!(
+            assert_eq!(
                 trace
                     .last()
-                    .and_then(|decision| decision.reasoning())
-                    .is_some_and(|reasoning| reasoning.contains("fallback reason: unavailable"))
+                    .map(|decision| decision.selected_model_id().as_str()),
+                Some("strong")
             );
         }
         assert_eq!(&*calls.lock(), &["weak", "strong", "weak", "strong"]);
@@ -848,22 +844,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fallback_decision_preserves_tier_and_cause_in_reasoning() -> Result<()> {
+    async fn fallback_decision_preserves_answer_call_semantics() -> Result<()> {
         struct TieredClassifier;
 
         #[async_trait]
         impl Classifier for TieredClassifier {
-            fn routing_tier(
-                &self,
-                selected_model_id: &switchyard_protocol::ModelId,
-            ) -> Option<&'static str> {
-                match selected_model_id.as_str() {
-                    "weak" => Some("weak"),
-                    "strong" => Some("strong"),
-                    _ => None,
-                }
-            }
-
             async fn score(
                 &self,
                 _state: &mut (),
@@ -881,19 +866,10 @@ mod tests {
         assert_eq!(trace.len(), 2);
         assert_eq!(trace[0].selected_model_id(), "weak");
         assert!(trace[0].is_answer_call());
-        assert!(
-            trace[0]
-                .reasoning()
-                .is_some_and(|reasoning| reasoning.contains("routing tier: weak"))
-        );
 
         let fallback = &trace[1];
         assert_eq!(fallback.selected_model_id(), "strong");
         assert!(fallback.is_answer_call());
-        assert!(fallback.reasoning().is_some_and(|reasoning| {
-            reasoning.contains("fallback reason: unavailable")
-                && reasoning.contains("routing tier: strong")
-        }));
         Ok(())
     }
 
@@ -964,11 +940,6 @@ mod tests {
 
         assert_eq!(text, "strong");
         assert_eq!(trace[0].selected_model_id(), "strong");
-        assert!(
-            trace[0]
-                .reasoning()
-                .is_some_and(|r| r.contains("fell back to strong"))
-        );
         Ok(())
     }
 

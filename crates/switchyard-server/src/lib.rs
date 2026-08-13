@@ -59,7 +59,6 @@ pub const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
-const HEADER_RATIONALE: &str = "x-model-router-rationale";
 const MAX_ROUTING_HEADER_VALUE_LEN: usize = 512;
 const STARTUP_BANNER_ART: &str = include_str!("../assets/startup_banner.txt");
 
@@ -815,9 +814,6 @@ fn attach_routing_headers(response: &mut Response, decision: &Decision) {
         HEADER_SELECTED_MODEL,
         decision.selected_model_id(),
     );
-    if let Some(reasoning) = decision.reasoning() {
-        insert_routing_header(response, HEADER_RATIONALE, reasoning);
-    }
 }
 
 fn insert_routing_header(response: &mut Response, name: &'static str, value: &str) {

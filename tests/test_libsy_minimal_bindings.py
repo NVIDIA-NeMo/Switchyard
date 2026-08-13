@@ -99,7 +99,6 @@ async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() 
     assert variants == ["decision", "call_model", "done"]
     assert len(decisions) == 1
     assert decisions[0].selected_model_id == "fast"
-    assert decisions[0].reasoning == "random routing selected target 'fast'"
     assert decisions[0].is_answer_call is True
     assert client.calls[0]["model"] == "fast"
     assert client.calls[0]["messages"][0]["content"] == [

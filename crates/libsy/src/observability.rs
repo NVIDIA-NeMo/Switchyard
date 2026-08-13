@@ -285,15 +285,13 @@ pub(crate) fn record_llm_call(
     }
 }
 
-/// Records one published routing decision: the decision counter plus a
-/// structured debug event carrying the decision's reasoning.
+/// Records one published routing decision: the decision counter plus a structured debug event.
 pub(crate) fn record_decision(algorithm: &str, decision: &Decision) {
     let selected_model = decision.selected_model_id();
     tracing::debug!(
         target: TRACING_TARGET,
         algorithm,
         selected_model = %selected_model,
-        reasoning = decision.reasoning().unwrap_or(""),
         "routing decision"
     );
     meter().u64_counter("switchyard.decisions").build().add(

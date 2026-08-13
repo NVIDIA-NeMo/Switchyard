@@ -441,7 +441,8 @@ impl Algorithm for SingleCallAlgo {
             .first()
             .ok_or(LibsyError::NoTargets)?
             .clone();
-        let decision = Decision::new(target.clone(), Some(format!("picked '{target}'")), true);
+        tracing::info!("picked '{target}'");
+        let decision = Decision::new(target.clone(), true);
         driver.decide(decision.clone()).await?;
         driver.call_model(request, decision).await
     }
@@ -817,21 +818,15 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         Some("2")
     );
 
-    // Structured debug event: the published decision with its reasoning.
+    // The algorithm logs why it made the decision.
     let events = store.events();
     assert!(
         events.iter().any(|event| {
-            event.target == "libsy"
-                && event.level == "DEBUG"
-                && event.fields.get("selected_model").map(String::as_str) == Some(MODEL)
-                && event
-                    .fields
-                    .get("reasoning")
-                    .is_some_and(|reasoning| reasoning.contains("picked"))
+            event.level == "INFO"
                 && event
                     .fields
                     .get("message")
-                    .is_some_and(|message| message.contains("routing decision"))
+                    .is_some_and(|message| message.contains("picked"))
         }),
         "no routing-decision log event for {MODEL} in {events:?}"
     );
@@ -1229,11 +1224,11 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
 
     let (trace, _response) = run(router, client, classifier_request()).await?;
 
-    assert!(
+    assert_eq!(
         trace
             .last()
-            .and_then(|decision| decision.reasoning())
-            .is_some_and(|reasoning| reasoning.contains("routing tier: weak"))
+            .map(|decision| decision.selected_model_id().as_str()),
+        Some("weak")
     );
 
     let snapshots = flushed_metrics(exporter, provider);

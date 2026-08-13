@@ -82,7 +82,7 @@ mod tests {
         let mut state = TestState::default();
         let mut req = request();
         let response = text_response(None, "ok");
-        let decision = Decision::new("test/model", None, true);
+        let decision = Decision::new("test/model", true);
         // Feed one of every event variant through the processor.
         processor
             .process(&mut state, Event::Request(&mut req))

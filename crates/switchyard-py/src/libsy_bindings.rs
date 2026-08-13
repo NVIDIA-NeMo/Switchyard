@@ -151,12 +151,6 @@ impl PyDecision {
         self.inner.selected_model_id().as_str()
     }
 
-    /// Why the algorithm selected this model, when supplied.
-    #[getter]
-    fn reasoning(&self) -> Option<&str> {
-        self.inner.reasoning()
-    }
-
     /// Whether this call produces the answer rather than a routing verdict.
     #[getter]
     fn is_answer_call(&self) -> bool {
@@ -165,9 +159,8 @@ impl PyDecision {
 
     fn __repr__(&self) -> String {
         format!(
-            "Decision(selected_model_id={:?}, reasoning={:?}, is_answer_call={})",
+            "Decision(selected_model_id={:?}, is_answer_call={})",
             self.inner.selected_model_id(),
-            self.inner.reasoning(),
             self.inner.is_answer_call()
         )
     }

@@ -192,8 +192,8 @@ impl Driver {
     }
 
     /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
-    /// Each successfully published decision is counted and logged with its
-    /// reasoning; a decision the stream never accepted is not recorded.
+    /// Each successfully published decision is counted and logged; a decision
+    /// the stream never accepted is not recorded.
     pub async fn decide(&self, decision: Decision) -> Result<()> {
         self.step_tx
             .send(Ok(Step::Decision(decision.clone())))
@@ -660,7 +660,7 @@ mod tests {
 
     /// Build a routed decision for orchestration tests.
     fn test_decision(selected_model_id: ModelId) -> Decision {
-        Decision::new(selected_model_id, None, true)
+        Decision::new(selected_model_id, true)
     }
 
     /// Trivial algo used only to exercise the orchestrator: calls the first target

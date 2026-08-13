@@ -27,11 +27,8 @@ impl Algorithm for Noop {
         let model_id = request
             .model_id()
             .unwrap_or_else(|| ModelId::from("switchyard/noop"));
-        let decision: Decision = Decision::new(
-            model_id.clone(),
-            Some("noop returned its synthetic response".to_string()),
-            true,
-        );
+        tracing::info!(target = %model_id, "noop returned its synthetic response");
+        let decision: Decision = Decision::new(model_id.clone(), true);
         driver.decide(decision.clone()).await?;
 
         let llm_response = LlmResponse::Agg(AggLlmResponse {
