@@ -92,6 +92,7 @@ if TYPE_CHECKING:
             recent_turn_window: int | None = None,
             max_output_tokens: int = 4096,
             prompt: str | None = None,
+            response_format_type: str = "json_schema",
         ) -> None: ...
 
     @final

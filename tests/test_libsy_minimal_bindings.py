@@ -207,14 +207,22 @@ async def test_classifier_config_accepts_json_object_output() -> None:
             }
 
     judge = JudgeClient("judge")
+    weak = EchoClient("weak")
     algorithm = algorithms.llm_task_classifier(
-        LlmTarget("judge", judge),
-        LlmTarget("weak", EchoClient("weak")),
-        LlmTarget("strong", EchoClient("strong")),
+        "judge",
+        "weak",
+        "strong",
         config=TaskClassifierConfig(0.5, response_format_type="json_object"),
     )
 
-    _, response = await algorithm.run(request_body())
+    _, response = await run_algorithm(
+        algorithm,
+        {
+            "judge": judge,
+            "weak": weak,
+            "strong": EchoClient("strong"),
+        },
+    )
 
     assert judge.calls[0]["output"]["response_format"] == {"type": "json_object"}
     prompt = judge.calls[0]["instructions"][0]["content"][0]["text"]
