@@ -13,6 +13,7 @@ from switchyard_rust._native import load_native
 _EXPORTS = frozenset(
     {
         "Algorithm",
+        "ContextWindowExceededError",
         "Decision",
         "LibsyError",
         "LlmFallback",
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
     from typing import ClassVar, Literal, final
 
     class LibsyError(RuntimeError): ...
+
+    class ContextWindowExceededError(RuntimeError): ...
 
     @final
     class Decision:

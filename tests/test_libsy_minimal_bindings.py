@@ -9,6 +9,7 @@ import pytest
 
 from switchyard.libsy import (
     Algorithm,
+    ContextWindowExceededError,
     Decision,
     LibsyError,
     Step,
@@ -273,3 +274,23 @@ async def test_client_failure_becomes_libsy_error() -> None:
 
     with pytest.raises(LibsyError, match="client failed"):
         await run_algorithm(algorithm, {"broken": FailingClient()})
+
+
+async def test_context_window_failure_falls_back_to_the_next_model() -> None:
+    class OverflowClient:
+        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+            raise ContextWindowExceededError("request exceeds context window")
+
+    algorithm = algorithms.stage_router(
+        "strong",
+        "fast",
+        picker="efficient_first",
+        confidence_threshold=0.5,
+    )
+    decisions, response = await run_algorithm(
+        algorithm,
+        {"fast": OverflowClient(), "strong": EchoClient("strong")},
+    )
+
+    assert [decision.selected_model_id for decision in decisions] == ["fast", "strong"]
+    assert response["model"] == "strong"

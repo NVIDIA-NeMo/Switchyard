@@ -7,8 +7,17 @@ import json
 import httpx
 import pytest
 import respx
-from litellm import AuthenticationError, ModelResponse, RateLimitError
+from litellm import (
+    AuthenticationError,
+    ModelResponse,
+    RateLimitError,
+)
+from litellm.exceptions import (
+    ContextWindowExceededError as LiteLLMContextWindowExceededError,
+)
 from switchyard_litellm import LiteLLMSyClient
+
+from switchyard.libsy import ContextWindowExceededError
 
 BASE_URL = "http://gateway.test/v1"
 
@@ -536,6 +545,27 @@ async def test_retryable_litellm_error_is_not_retried() -> None:
         await client.aclose()
 
     assert route.call_count == 1
+
+
+async def test_context_window_error_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_with_context_window(**_: object) -> ModelResponse:
+        raise LiteLLMContextWindowExceededError(
+            message="request is too large",
+            model="fast",
+            llm_provider="openai",
+        )
+
+    monkeypatch.setattr(
+        "switchyard_litellm.client.acompletion", fail_with_context_window
+    )
+    client = LiteLLMSyClient(base_url=BASE_URL)
+    try:
+        with pytest.raises(ContextWindowExceededError, match="request is too large"):
+            await client.call(request_body())
+    finally:
+        await client.aclose()
 
 
 @respx.mock

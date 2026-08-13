@@ -10,6 +10,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from litellm import ModelResponse, acompletion
+from litellm.exceptions import (
+    ContextWindowExceededError as LiteLLMContextWindowExceededError,
+)
+
+from switchyard.libsy import ContextWindowExceededError
 
 _TEXT_ROLES = {"system", "developer", "user"}
 _STOP_REASONS = {
@@ -229,6 +234,8 @@ def _payload(request: Mapping[str, object]) -> dict[str, Any]:
         raise ValueError("reasoning.raw is not supported")
 
     payload: dict[str, Any] = {
+        # LiteLLM needs this prefix to select its OpenAI-compatible transport,
+        # then strips it before sending the selected alias to the gateway.
         "model": f"openai/{model}",
         "messages": _messages(request),
         "stream": False,
@@ -326,17 +333,20 @@ class LiteLLMSyClient:
         sy_request: Mapping[str, object],
     ) -> Mapping[str, object]:
         """Send one normalized, buffered text request through LiteLLM."""
-        response = await acompletion(
-            **_payload(sy_request),
-            api_base=self._base_url,
-            api_key=self._api_key,
-            num_retries=0,
-            # LiteLLM otherwise imports its optional proxy MCP stack for ordinary
-            # OpenAI function tools before it determines that they are not MCP tools.
-            _skip_mcp_handler=True,
-            allowed_openai_params=["reasoning_effort"],
-            extra_body={"allowed_openai_params": ["reasoning_effort"]},
-        )
+        try:
+            response = await acompletion(
+                **_payload(sy_request),
+                api_base=self._base_url,
+                api_key=self._api_key,
+                num_retries=0,
+                # LiteLLM otherwise imports its optional proxy MCP stack for ordinary
+                # OpenAI function tools before it determines that they are not MCP tools.
+                _skip_mcp_handler=True,
+                allowed_openai_params=["reasoning_effort"],
+                extra_body={"allowed_openai_params": ["reasoning_effort"]},
+            )
+        except LiteLLMContextWindowExceededError as error:
+            raise ContextWindowExceededError(str(error)) from error
         return _response(cast(ModelResponse, response))
 
     async def aclose(self) -> None:

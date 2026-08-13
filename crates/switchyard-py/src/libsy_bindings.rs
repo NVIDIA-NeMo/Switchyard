@@ -21,7 +21,7 @@ use switchyard_protocol::{
 };
 use tokio::sync::Mutex;
 
-use crate::errors::py_libsy_error;
+use crate::errors::{ContextWindowExceededError, py_libsy_error};
 use crate::py_serde::{from_python, to_python};
 
 /// Convert Python-owned headers into the request metadata expected by libsy.
@@ -250,8 +250,15 @@ impl PyModelCall {
         }
         let call = self.take()?;
         let target = call.decision.selected_model_id().clone();
-        let source = LlmClientError::Ffi {
-            source: Box::new(PyErr::from_value(error.clone())),
+        let source = if error.is_instance_of::<ContextWindowExceededError>() {
+            LlmClientError::ContextWindowExceeded {
+                model: target.clone(),
+                message: error.str()?.to_string_lossy().into_owned(),
+            }
+        } else {
+            LlmClientError::Ffi {
+                source: Box::new(PyErr::from_value(error.clone())),
+            }
         };
         call.respond(Err(RustLibsyError::client_call(target, source)))
             .map_err(py_libsy_error)
@@ -505,6 +512,10 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
         &libsy_module
     )?)?;
     libsy_module.add_function(wrap_pyfunction!(stage_router_algorithm, &libsy_module)?)?;
+    libsy_module.add(
+        "ContextWindowExceededError",
+        module.getattr("ContextWindowExceededError")?,
+    )?;
     libsy_module.add("LibsyError", module.getattr("LibsyError")?)?;
     module.add_submodule(&libsy_module)?;
     Ok(())

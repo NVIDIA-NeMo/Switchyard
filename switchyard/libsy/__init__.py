@@ -5,6 +5,7 @@
 
 from switchyard_rust.libsy import (
     Algorithm,
+    ContextWindowExceededError,
     Decision,
     LibsyError,
     LlmFallback,
@@ -17,6 +18,7 @@ from . import algorithms as algorithms
 
 __all__ = [
     "Algorithm",
+    "ContextWindowExceededError",
     "Decision",
     "LibsyError",
     "LlmFallback",
