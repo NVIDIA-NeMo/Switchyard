@@ -193,11 +193,17 @@ impl AggLlmResponse {
                             text,
                         });
                     }
-                    ContentBlock::Reasoning { text, details, .. } => {
+                    ContentBlock::Reasoning {
+                        text,
+                        details,
+                        fallback_text,
+                        ..
+                    } => {
                         if !details.is_empty() {
                             chunks.push(LlmResponseChunk::ReasoningDetailsDelta {
                                 index: output_index,
                                 details,
+                                fallback_text,
                             });
                         } else {
                             chunks.push(LlmResponseChunk::ReasoningDelta {
@@ -285,6 +291,8 @@ pub enum LlmResponseChunk {
         index: usize,
         /// Reasoning detail objects in provider order.
         details: Vec<Value>,
+        /// Plaintext fallback when the details contain no displayable text.
+        fallback_text: Option<String>,
     },
     /// Adds or updates a tool call at one index.
     ToolCallDelta {
@@ -337,6 +345,7 @@ pub struct ResponseAccumulator {
     text: String,
     reasoning: Option<String>,
     reasoning_details: Vec<Value>,
+    reasoning_fallback: Option<String>,
     tool_calls: BTreeMap<usize, PartialToolCall>,
     usage: Usage,
     stop_reason: Option<StopReason>,
@@ -374,8 +383,20 @@ impl ResponseAccumulator {
                     .get_or_insert_with(String::new)
                     .push_str(&text);
             }
-            LlmResponseChunk::ReasoningDetailsDelta { details, .. } => {
+            LlmResponseChunk::ReasoningDetailsDelta {
+                details,
+                fallback_text,
+                ..
+            } => {
                 self.reasoning_details.extend(details);
+                if let Some(text) = fallback_text {
+                    self.reasoning
+                        .get_or_insert_with(String::new)
+                        .push_str(&text);
+                    self.reasoning_fallback
+                        .get_or_insert_with(String::new)
+                        .push_str(&text);
+                }
             }
             LlmResponseChunk::ToolCallDelta {
                 index,
@@ -411,6 +432,7 @@ impl ResponseAccumulator {
                 text: self.reasoning.unwrap_or_default(),
                 signature: None,
                 details: self.reasoning_details,
+                fallback_text: self.reasoning_fallback,
             });
         }
         if !self.text.is_empty() {
@@ -631,6 +653,7 @@ mod tests {
                     text: "think".to_string(),
                     signature: None,
                     details: Vec::new(),
+                    fallback_text: None,
                 },
                 ContentBlock::Text {
                     text: "answer".to_string(),
@@ -667,6 +690,42 @@ mod tests {
             original.outputs[0].stop_reason
         );
         assert_eq!(recovered.outputs[0].content, original.outputs[0].content);
+    }
+
+    #[test]
+    fn into_stream_retains_encrypted_reasoning_and_fallback_text() {
+        let details = vec![json!({
+            "type": "reasoning.encrypted",
+            "data": "opaque-encrypted-reasoning"
+        })];
+        let original = AggLlmResponse {
+            outputs: vec![ResponseOutput {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Reasoning {
+                    text: "fallback reasoning".to_string(),
+                    signature: None,
+                    details: details.clone(),
+                    fallback_text: Some("fallback reasoning".to_string()),
+                }],
+                stop_reason: Some(StopReason::EndTurn),
+            }],
+            ..AggLlmResponse::default()
+        };
+
+        let recovered = block_on(LlmResponse::Stream(original.into_stream()).into_agg())
+            .expect("into_agg failed");
+        let ContentBlock::Reasoning {
+            text,
+            details: recovered_details,
+            fallback_text,
+            ..
+        } = &recovered.outputs[0].content[0]
+        else {
+            panic!("expected reasoning block");
+        };
+        assert_eq!(text, "fallback reasoning");
+        assert_eq!(recovered_details, &details);
+        assert_eq!(fallback_text.as_deref(), Some("fallback reasoning"));
     }
 
     #[test]

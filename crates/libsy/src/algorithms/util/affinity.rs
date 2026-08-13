@@ -521,6 +521,7 @@ mod tests {
                     text: "Internal provider reasoning.".to_string(),
                     signature: Some("provider-signature".to_string()),
                     details: Vec::new(),
+                    fallback_text: None,
                 },
             ],
         });

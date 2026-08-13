@@ -90,6 +90,9 @@ pub enum ContentBlock {
         /// Structured reasoning details that must be replayed without modification.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         details: Vec<Value>,
+        /// Plaintext fallback when structured details contain no displayable text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fallback_text: Option<String>,
     },
     /// Image content.
     Image {

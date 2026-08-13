@@ -6,6 +6,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::LlmResponseChunk;
+use crate::codecs::common::reasoning_text_from_details;
 use crate::codecs::stream::{
     StreamCodec, StreamTranslationState, record_source_identity, state_source_is, string_field,
     target_model_or_source_model,
@@ -110,9 +111,19 @@ fn decode_openai_chat_stream(
                 .and_then(Value::as_array)
                 .filter(|details| !details.is_empty())
             {
+                let fallback_text = if reasoning_text_from_details(details).is_none() {
+                    ["reasoning_content", "reasoning"]
+                        .into_iter()
+                        .find_map(|key| delta.get(key).and_then(Value::as_str))
+                        .filter(|text| !text.is_empty())
+                        .map(ToOwned::to_owned)
+                } else {
+                    None
+                };
                 out.push(LlmResponseChunk::ReasoningDetailsDelta {
                     index: 0,
                     details: details.clone(),
+                    fallback_text,
                 });
             } else {
                 for reasoning_key in ["reasoning_content", "reasoning"] {
@@ -205,13 +216,16 @@ fn encode_openai_chat_stream(
                 None,
             )]
         }
-        LlmResponseChunk::ReasoningDetailsDelta { details, .. } => {
-            vec![openai_stream_chunk(
-                state,
-                json!({"reasoning_details": details}),
-                None,
-                None,
-            )]
+        LlmResponseChunk::ReasoningDetailsDelta {
+            details,
+            fallback_text,
+            ..
+        } => {
+            let mut delta = json!({"reasoning_details": details});
+            if let Some(text) = fallback_text {
+                delta["reasoning"] = Value::String(text);
+            }
+            vec![openai_stream_chunk(state, delta, None, None)]
         }
         LlmResponseChunk::ToolCallDelta {
             index,

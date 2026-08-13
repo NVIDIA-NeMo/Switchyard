@@ -193,8 +193,12 @@ fn encode_anthropic_stream(
             }));
             out
         }
-        LlmResponseChunk::ReasoningDetailsDelta { details, .. } => {
-            let Some(text) = reasoning_text_from_details(&details) else {
+        LlmResponseChunk::ReasoningDetailsDelta {
+            details,
+            fallback_text,
+            ..
+        } => {
+            let Some(text) = reasoning_text_from_details(&details).or(fallback_text) else {
                 return Vec::new();
             };
             let mut out = ensure_anthropic_reasoning_block(state);

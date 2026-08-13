@@ -1104,6 +1104,45 @@ fn openai_chat_reasoning_details_round_trip_in_assistant_history() -> TestResult
     Ok(())
 }
 
+// Verifies encrypted-only Chat details retain the plaintext fallback needed by providers.
+#[test]
+fn openai_chat_encrypted_reasoning_details_retain_fallback() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let details = json!([{
+        "type": "reasoning.encrypted",
+        "data": "opaque-encrypted-reasoning",
+        "id": "reasoning-1",
+        "format": "openai-responses-v1",
+        "index": 0
+    }]);
+    let body = json!({
+        "model": "z-ai/glm-5.2",
+        "messages": [{
+            "role": "assistant",
+            "content": null,
+            "reasoning": "fallback text",
+            "reasoning_details": details
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiChat,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    assert_eq!(output["messages"][0]["reasoning_details"], details);
+    assert_eq!(output["messages"][0]["reasoning"], "fallback text");
+    Ok(())
+}
+
 // Verifies merged reasoning re-emerges as a Responses reasoning item ahead of
 // the turn's function call when encoding back to the Responses format.
 #[test]

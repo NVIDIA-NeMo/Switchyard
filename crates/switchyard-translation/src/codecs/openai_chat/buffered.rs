@@ -401,13 +401,12 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
         .and_then(Value::as_array)
         .filter(|details| !details.is_empty())
     {
-        let text = reasoning_text_from_details(details).or_else(|| {
-            ["reasoning_content", "reasoning"]
-                .into_iter()
-                .find_map(|key| object.get(key).and_then(Value::as_str))
-                .filter(|text| !text.is_empty())
-                .map(ToOwned::to_owned)
-        });
+        let detail_text = reasoning_text_from_details(details);
+        let fallback_text = ["reasoning_content", "reasoning"]
+            .into_iter()
+            .find_map(|key| object.get(key).and_then(Value::as_str))
+            .filter(|text| !text.is_empty())
+            .map(ToOwned::to_owned);
         let signature = details.iter().find_map(|detail| {
             detail
                 .get("signature")
@@ -418,9 +417,17 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
         content.insert(
             0,
             ContentBlock::Reasoning {
-                text: text.unwrap_or_default(),
+                text: detail_text
+                    .clone()
+                    .or_else(|| fallback_text.clone())
+                    .unwrap_or_default(),
                 signature,
                 details: details.clone(),
+                fallback_text: if detail_text.is_none() {
+                    fallback_text
+                } else {
+                    None
+                },
             },
         );
         return;
@@ -434,6 +441,7 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
             text: text.to_string(),
             signature: None,
             details: Vec::new(),
+            fallback_text: None,
         })
         .collect::<Vec<_>>();
     if reasoning.is_empty() {
@@ -875,6 +883,18 @@ fn encode_message_without_tool_results_to_openai(
         }
     } else {
         message_json["reasoning_details"] = Value::Array(reasoning_details);
+        let fallback = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Reasoning { fallback_text, .. } => fallback_text.as_deref(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !fallback.is_empty() {
+            message_json["reasoning"] = Value::String(fallback);
+        }
     }
     if !tool_calls.is_empty() {
         message_json["tool_calls"] = Value::Array(tool_calls);

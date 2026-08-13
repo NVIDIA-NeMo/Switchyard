@@ -49,9 +49,14 @@ pub(crate) fn reasoning_text_from_details(details: &[Value]) -> Option<String> {
         .filter_map(|detail| {
             detail
                 .get("text")
-                .or_else(|| detail.get("summary"))
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
+                .or_else(|| {
+                    detail
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .filter(|summary| !summary.is_empty())
+                })
         })
         .collect::<Vec<_>>();
     (!parts.is_empty()).then(|| parts.join("\n"))

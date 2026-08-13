@@ -569,6 +569,7 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
                     text: "provider reasoning".to_string(),
                     signature: None,
                     details: Vec::new(),
+                    fallback_text: None,
                 }],
             }],
             ..LlmRequest::default()

@@ -171,11 +171,14 @@ fn encode_responses_stream(
         LlmResponseChunk::ReasoningDelta { text, .. } => {
             encode_responses_reasoning_delta(state, text)
         }
-        LlmResponseChunk::ReasoningDetailsDelta { details, .. } => {
-            reasoning_text_from_details(&details)
-                .map(|text| encode_responses_reasoning_delta(state, text))
-                .unwrap_or_default()
-        }
+        LlmResponseChunk::ReasoningDetailsDelta {
+            details,
+            fallback_text,
+            ..
+        } => reasoning_text_from_details(&details)
+            .or(fallback_text)
+            .map(|text| encode_responses_reasoning_delta(state, text))
+            .unwrap_or_default(),
         LlmResponseChunk::ToolCallDelta {
             index,
             id,
