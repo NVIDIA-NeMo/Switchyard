@@ -5,12 +5,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
-import subprocess
 import threading
-import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -137,55 +136,97 @@ def _request_json(
         return json.load(response)
 
 
-def _wait_until_healthy(base_url: str, process: subprocess.Popen[str]) -> None:
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            stdout, stderr = process.communicate()
+async def _wait_until_healthy(base_url: str, process: asyncio.subprocess.Process) -> None:
+    deadline = asyncio.get_running_loop().time() + 10
+    while asyncio.get_running_loop().time() < deadline:
+        if process.returncode is not None:
+            stdout, stderr = await process.communicate()
             raise AssertionError(
-                f"server exited before becoming healthy\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                "server exited before becoming healthy\n"
+                f"stdout:\n{stdout.decode(errors='replace')}\n"
+                f"stderr:\n{stderr.decode(errors='replace')}"
             )
         try:
-            if _request_json(f"{base_url}/health").get("status") == "ok":
+            health = await asyncio.to_thread(_request_json, f"{base_url}/health")
+            if health.get("status") == "ok":
                 return
         except (OSError, urllib.error.URLError):
-            time.sleep(0.05)
+            await asyncio.sleep(0.05)
     raise AssertionError("server did not become healthy within 10 seconds")
 
 
-def _read_listen_url(process: subprocess.Popen[str]) -> str:
+async def _read_listen_url(
+    process: asyncio.subprocess.Process,
+    *,
+    timeout: float = 10,
+) -> str:
     assert process.stdout is not None
-    startup_lines = []
-    for line in process.stdout:
-        startup_lines.append(line)
-        match = re.search(r"listening: (http://127\.0\.0\.1:\d+)", line)
-        if match is not None:
-            return match.group(1)
-        if process.poll() is not None:
-            break
-    stderr = "" if process.stderr is None else process.stderr.read()
+    assert process.stderr is not None
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    readers: dict[
+        asyncio.Task[bytes],
+        tuple[str, asyncio.StreamReader],
+    ] = {
+        asyncio.create_task(process.stdout.read(4096)): ("stdout", process.stdout),
+        asyncio.create_task(process.stderr.read(4096)): ("stderr", process.stderr),
+    }
+    deadline = asyncio.get_running_loop().time() + timeout
+    try:
+        while readers:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            done, _ = await asyncio.wait(
+                readers,
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                break
+            for task in done:
+                label, reader = readers.pop(task)
+                chunk = task.result()
+                if not chunk:
+                    continue
+                buffers[label].extend(chunk)
+                match = re.search(
+                    rb"listening: (http://127\.0\.0\.1:\d+)",
+                    buffers["stdout"],
+                )
+                if match is not None:
+                    return match.group(1).decode()
+                readers[asyncio.create_task(reader.read(4096))] = (label, reader)
+    finally:
+        for task in readers:
+            task.cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
+
+    outcome = "exited" if process.returncode is not None else "timed out"
     raise AssertionError(
-        "server exited without reporting its ephemeral port\n"
-        f"stdout:\n{''.join(startup_lines)}\nstderr:\n{stderr}"
+        f"server {outcome} without reporting its ephemeral port\n"
+        f"stdout:\n{buffers['stdout'].decode(errors='replace')}\n"
+        f"stderr:\n{buffers['stderr'].decode(errors='replace')}"
     )
 
 
-def exercise_documented_server_flow(guide_path: Path, tmp_path: Path) -> None:
+async def exercise_documented_server_flow(guide_path: Path, tmp_path: Path) -> None:
     """Run the documented dry-run, server, endpoints, and completion request."""
 
     repository = guide_path.parents[1]
-    guide = guide_path.read_text()
+    guide = await asyncio.to_thread(guide_path.read_text)
     documented_config = _extract_documented_config(guide)
     documented_request = _extract_documented_completion(guide)
 
-    with _OpenAIStub() as upstream:
+    upstream = await asyncio.to_thread(_OpenAIStub)
+    await asyncio.to_thread(upstream.__enter__)
+    try:
         assert documented_config.count(_DOCUMENTED_BASE_URL) == 1
         config = documented_config.replace(
             _DOCUMENTED_BASE_URL,
             f'base_url = "{upstream.base_url}"',
         )
         config_path = tmp_path / "routes.toml"
-        config_path.write_text(config)
+        await asyncio.to_thread(config_path.write_text, config)
 
         environment = os.environ.copy()
         environment.update(
@@ -195,43 +236,48 @@ def exercise_documented_server_flow(guide_path: Path, tmp_path: Path) -> None:
                 "no_proxy": "127.0.0.1,localhost",
             }
         )
-        binary = _server_binary(repository)
-        dry_run = subprocess.run(
-            [binary, "--config", config_path, "--dry-run"],
+        binary = await asyncio.to_thread(_server_binary, repository)
+        dry_run = await asyncio.create_subprocess_exec(
+            str(binary),
+            "--config",
+            str(config_path),
+            "--dry-run",
             env=environment,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        assert dry_run.returncode == 0, dry_run.stderr
-        assert "server OK: switchyard" in dry_run.stdout
-
-        server = subprocess.Popen(
-            [
-                binary,
-                "--config",
-                config_path,
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "0",
-            ],
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         try:
-            base_url = _read_listen_url(server)
-            _wait_until_healthy(base_url, server)
-            health = _request_json(f"{base_url}/health")
+            dry_stdout, dry_stderr = await asyncio.wait_for(dry_run.communicate(), timeout=10)
+        except TimeoutError:
+            dry_run.kill()
+            await dry_run.communicate()
+            raise AssertionError("dry-run did not finish within 10 seconds") from None
+        assert dry_run.returncode == 0, dry_stderr.decode(errors="replace")
+        assert b"server OK: switchyard" in dry_stdout
+
+        server = await asyncio.create_subprocess_exec(
+            str(binary),
+            "--config",
+            str(config_path),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            env=environment,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            base_url = await _read_listen_url(server)
+            await _wait_until_healthy(base_url, server)
+            health = await asyncio.to_thread(_request_json, f"{base_url}/health")
             assert health["status"] == "ok"
 
-            models = _request_json(f"{base_url}/v1/models")
+            models = await asyncio.to_thread(_request_json, f"{base_url}/v1/models")
             assert "switchyard" in models["model_pool"]
 
-            completion = _request_json(
+            completion = await asyncio.to_thread(
+                _request_json,
                 f"{base_url}/v1/chat/completions",
                 documented_request,
                 timeout=10,
@@ -247,9 +293,12 @@ def exercise_documented_server_flow(guide_path: Path, tmp_path: Path) -> None:
             }
             assert routed_call["messages"] == documented_request["messages"]
         finally:
-            server.terminate()
+            if server.returncode is None:
+                server.terminate()
             try:
-                server.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
+                await asyncio.wait_for(server.communicate(), timeout=5)
+            except TimeoutError:
                 server.kill()
-                server.communicate(timeout=5)
+                await server.communicate()
+    finally:
+        await asyncio.to_thread(upstream.__exit__, None, None, None)

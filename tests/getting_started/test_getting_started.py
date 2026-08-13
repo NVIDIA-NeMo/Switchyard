@@ -27,9 +27,9 @@ def test_getting_started_documents_current_paths() -> None:
         assert legacy_command not in guide
 
 
-def test_getting_started_server_path_is_executable(tmp_path: Path) -> None:
+async def test_getting_started_server_path_is_executable(tmp_path: Path) -> None:
     repository = Path(__file__).resolve().parents[2]
-    exercise_documented_server_flow(
+    await exercise_documented_server_flow(
         repository / "docs" / "getting_started.md",
         tmp_path,
     )
