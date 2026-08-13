@@ -350,6 +350,16 @@ pub fn max_efficient_confidence() -> f64 {
     confidence_for_units(1.0)
 }
 
+/// Signal units `severity` contributes at its hard cap.
+///
+/// A hair under one, not one: [`ToolSignals::severity`] is an `f32`, so the
+/// scorer divides the widened `0.7` by an `f64` [`HARD_SEVERITY`] and lands a few
+/// ulps short. The ceiling has to be built on the value a real signal produces —
+/// on the exact unit, the strongest escalation falls below its own ceiling.
+fn max_severity_units() -> f64 {
+    f64::from(HARD_SEVERITY as f32) / HARD_SEVERITY
+}
+
 /// Highest confidence the scorer can reach toward the capable tier.
 ///
 /// Escalation stacks two units, not three: `severity` contributes one at its
@@ -358,7 +368,7 @@ pub fn max_efficient_confidence() -> f64 {
 /// can fire. `production_intensity` is zero whenever either does, so nothing
 /// subtracts. That caps escalation confidence at roughly `0.7616`.
 pub fn max_capable_confidence() -> f64 {
-    confidence_for_units(2.0)
+    confidence_for_units(max_severity_units() + 1.0)
 }
 
 /// True when `confidence_threshold` puts every scorer outcome out of reach of
@@ -724,10 +734,8 @@ mod tests {
         assert_eq!(dimensions.spinning, 0.0);
         let scored = score_signal(&signal);
         assert!(scored.score > 0.0, "expected a capable lean: {scored:?}");
-        // `severity` is an f32, so the widened 0.7 divides out a few ulps short of
-        // one whole unit. The ceiling itself is exact; the signal reaching it is not.
         assert!(
-            (scored.confidence - max_capable_confidence()).abs() < 1e-7,
+            (scored.confidence - max_capable_confidence()).abs() < 1e-12,
             "an errored, exploring turn should reach the ceiling: {scored:?}"
         );
     }
@@ -738,9 +746,48 @@ mod tests {
         // and 1.0 respectively sit above everything each side can score. These are
         // the constants the picker guard is built on.
         assert!((max_efficient_confidence() - 0.462_117_157_260_009_7).abs() < 1e-12);
-        assert!((max_capable_confidence() - 0.761_594_155_955_764_9).abs() < 1e-12);
+        assert!((max_capable_confidence() - 0.761_594_152_379_704_8).abs() < 1e-12);
         assert!(max_efficient_confidence() < 0.5);
         assert!(max_capable_confidence() < 1.0);
+    }
+
+    #[test]
+    fn a_threshold_at_either_ceiling_still_resolves() {
+        // The guard stays silent at exactly the ceiling, so the strongest signal in
+        // each direction has to clear the inclusive gate there. This is the boundary
+        // an approximate ceiling would quietly break.
+        let mut producing = signal_from(json!([{"role": "user", "content": "hi"}]));
+        producing.recent_write_count = 3;
+        producing.recent_edit_count = 1;
+        assert!(matches!(
+            pick_tier(
+                &producing,
+                PickerMode::CapableFirst,
+                max_efficient_confidence()
+            ),
+            PickOutcome::Resolved {
+                tier: Tier::Efficient,
+                source: DecisionSource::Dimensions,
+                ..
+            }
+        ));
+
+        let mut stalled = signal_from(json!([{"role": "user", "content": "hi"}]));
+        stalled.severity = HARD_SEVERITY as f32;
+        stalled.turn_depth = STALL_MIN_TURN_DEPTH;
+        stalled.recent_read_count = 2;
+        assert!(matches!(
+            pick_tier(
+                &stalled,
+                PickerMode::EfficientFirst,
+                max_capable_confidence()
+            ),
+            PickOutcome::Resolved {
+                tier: Tier::Capable,
+                source: DecisionSource::Dimensions,
+                ..
+            }
+        ));
     }
 
     #[test]
