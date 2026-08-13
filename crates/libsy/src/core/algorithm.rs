@@ -67,12 +67,10 @@ pub struct CallModel {
 impl CallModel {
     /// The selected model stamped onto this call's request by [`Driver::call_model`].
     pub fn selected_model_id(&self) -> &str {
+        let model_id = self.request.llm_request.model.as_deref();
         // Driver stamps the model before constructing CallModel.
-        self.request
-            .llm_request
-            .model
-            .as_deref()
-            .unwrap_or_default()
+        debug_assert!(model_id.is_some());
+        model_id.unwrap_or_default()
     }
 
     /// Fulfill the promise with the caller's model-call result. Pass `Err(..)` to

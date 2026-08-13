@@ -327,19 +327,16 @@ struct UsageClient {
 /// Client that returns a weak classifier verdict. The delays let a test tell
 /// classifier time apart from routed-call time.
 struct ClassifierClient {
+    classifier_model_id: ModelId,
     classifier_delay: Duration,
     routed_delay: Duration,
 }
 
 #[async_trait]
 impl RoutedLlmClient for ClassifierClient {
-    async fn call(
-        &self,
-        _request: Request,
-        decision: Decision,
-    ) -> Result<Response, LlmClientError> {
-        let model = decision.selected_model_id().to_string();
-        let completion = if decision.is_answer_call() {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+        let model_id = request.model_id().unwrap_or_default();
+        let completion = if model_id != self.classifier_model_id {
             tokio::time::sleep(self.routed_delay).await;
             "routed response"
         } else {
@@ -347,7 +344,7 @@ impl RoutedLlmClient for ClassifierClient {
             r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
         };
         Ok(Response {
-            llm_response: LlmResponse::Agg(text_response(Some(model), completion)),
+            llm_response: LlmResponse::Agg(text_response(Some(model_id.to_string()), completion)),
             metadata: None,
         })
     }
@@ -361,20 +358,17 @@ enum JudgeOutcome {
 
 /// Returns one configured judge outcome and serves the selected target normally.
 struct JudgeClient {
+    judge_model: ModelId,
     outcome: JudgeOutcome,
 }
 
 #[async_trait]
 impl RoutedLlmClient for JudgeClient {
-    async fn call(
-        &self,
-        _request: Request,
-        decision: Decision,
-    ) -> Result<Response, LlmClientError> {
-        if decision.is_answer_call() {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+        if request.model_id().as_deref().unwrap_or_default() != self.judge_model {
             return Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
-                    Some(decision.selected_model_id().to_string()),
+                    request.model_id().map(|id| id.to_string()),
                     "routed response",
                 )),
                 metadata: None,
@@ -408,11 +402,10 @@ impl RoutedLlmClient for JudgeClient {
 impl RoutedLlmClient for UsageClient {
     async fn call(
         &self,
-        _request: Request,
-        decision: Decision,
+        request: Request,
     ) -> Result<Response, switchyard_protocol::LlmClientError> {
         let mut response = text_response(
-            Some(decision.selected_model_id().to_string()),
+            request.model_id().map(|s| s.to_string()),
             "observed response",
         );
         response.id = Some("obs-response-1".to_string());
@@ -967,11 +960,7 @@ struct StreamingUsageClient;
 
 #[async_trait]
 impl RoutedLlmClient for StreamingUsageClient {
-    async fn call(
-        &self,
-        _request: Request,
-        decision: Decision,
-    ) -> Result<Response, LlmClientError> {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
         let usage = Usage {
             input_tokens: Some(13),
             output_tokens: Some(5),
@@ -981,7 +970,7 @@ impl RoutedLlmClient for StreamingUsageClient {
         let chunks = vec![Ok(LlmResponseStreamEvent::new(vec![
             LlmResponseChunk::MessageStart {
                 id: Some("obs-stream-response".to_string()),
-                model: Some(decision.selected_model_id().to_string()),
+                model: request.model_id().map(|s| s.to_string()),
             },
             LlmResponseChunk::Usage(usage),
             LlmResponseChunk::MessageStop {
@@ -999,11 +988,7 @@ struct TimeoutClient;
 
 #[async_trait]
 impl RoutedLlmClient for TimeoutClient {
-    async fn call(
-        &self,
-        _request: Request,
-        _decision: Decision,
-    ) -> Result<Response, LlmClientError> {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
         Err(LlmClientError::Timeout {
             source: Box::new(TestError("upstream timed out")),
         })
@@ -1236,6 +1221,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
         u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
 
     let client = Arc::new(ClassifierClient {
+        classifier_model_id: "classifier".into(),
         classifier_delay: Duration::from_millis(60),
         routed_delay: Duration::from_millis(200),
     }) as Arc<dyn RoutedLlmClient>;
@@ -1329,7 +1315,10 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
     ];
 
     for (judge_model, outcome, expected_reason) in cases {
-        let client = Arc::new(JudgeClient { outcome }) as Arc<dyn RoutedLlmClient>;
+        let client = Arc::new(JudgeClient {
+            judge_model: judge_model.into(),
+            outcome,
+        }) as Arc<dyn RoutedLlmClient>;
         run(
             classifier_router(judge_model, "fo-weak", "fo-strong")?,
             client,

@@ -141,14 +141,14 @@ mod tests {
     async fn processor_rewrites_the_request_in_place() -> Result<()> {
         let mut state = ();
         let mut req = request();
-        assert_eq!(req.requested_model(), Some("auto"));
+        assert_eq!(req.model_id(), Some("auto".into()));
 
         RewritingProcessor
             .process(&mut state, Event::Request(&mut req))
             .await?;
 
         // The edit outlives the call, so the next component sees the rewritten request.
-        assert_eq!(req.requested_model(), Some("rewritten"));
+        assert_eq!(req.model_id(), Some("rewritten".into()));
         Ok(())
     }
 }

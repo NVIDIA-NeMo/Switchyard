@@ -18,7 +18,7 @@ use switchyard_libsy::{
 };
 use switchyard_llm_client::ClientRouter;
 use switchyard_protocol::{
-    AggLlmResponse, Decision, LlmClientError, LlmResponse, Metadata, ModelId, Request, Response,
+    AggLlmResponse, LlmClientError, LlmResponse, Metadata, ModelId, Request, Response,
     RoutedLlmClient,
 };
 
@@ -47,11 +47,7 @@ struct PythonLlmClient {
 
 #[async_trait]
 impl RoutedLlmClient for PythonLlmClient {
-    async fn call(
-        &self,
-        request: Request,
-        _decision: Decision,
-    ) -> Result<Response, LlmClientError> {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
         let metadata = request.metadata;
         let future = Python::attach(|py| {
             let request = to_python(py, &request.llm_request)?;

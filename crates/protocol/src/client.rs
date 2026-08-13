@@ -180,10 +180,6 @@ impl Decision {
 /// not serialize requests unless their transport requires it.
 #[async_trait]
 pub trait RoutedLlmClient: Send + Sync {
-    /// Serve the model identified by both
-    /// [`decision.selected_model_id()`](Decision::selected_model_id) and
-    /// `request.llm_request.model`. Routed callers must keep those values equal so the request is
-    /// ready for clients that serialize it directly; `decision` additionally carries routing
-    /// reasoning and whether this call produces the answer.
-    async fn call(&self, request: Request, decision: Decision) -> Result<Response, LlmClientError>;
+    /// Make a request
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError>;
 }

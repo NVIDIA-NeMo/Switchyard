@@ -114,8 +114,8 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
         outcome = tracing::field::Empty,
         error = tracing::field::Empty,
     );
-    if let Some(route) = request.requested_model() {
-        span.record("switchyard.route", route);
+    if let Some(route) = request.model_id() {
+        span.record("switchyard.route", route.as_ref());
     }
     if let Some(metadata) = &request.metadata {
         for (field, value) in [

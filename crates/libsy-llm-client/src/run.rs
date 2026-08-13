@@ -157,14 +157,13 @@ async fn serve(
     }
     let target = ModelId::from(call.selected_model_id());
     let request = call.request.clone();
-    let decision = call.decision.clone();
-    let is_answer_call = decision.is_answer_call();
+    let is_answer_call = call.decision.is_answer_call();
     // Resolved before the clock starts: picking the client is Switchyard's work, not
     // the provider's, so it belongs in the routing overhead.
     let client = clients.route(&target);
     let started = Instant::now();
     let result = match client {
-        Ok(client) => client.call(request, decision).await,
+        Ok(client) => client.call(request).await,
         Err(error) => Err(error),
     }
     .map_err(|source| LibsyError::client_call(target.clone(), source));

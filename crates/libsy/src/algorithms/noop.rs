@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use switchyard_protocol::{
-    AggLlmResponse, ContentBlock, LlmResponse, Request, Response, ResponseOutput, Role, StopReason,
+    AggLlmResponse, ContentBlock, LlmResponse, ModelId, Request, Response, ResponseOutput, Role,
+    StopReason,
 };
 
 use crate::Result;
@@ -23,12 +24,11 @@ impl Algorithm for Noop {
     }
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
-        let model = request
-            .requested_model()
-            .unwrap_or("switchyard/noop")
-            .to_string();
+        let model_id = request
+            .model_id()
+            .unwrap_or_else(|| ModelId::from("switchyard/noop"));
         let decision: Decision = Decision::new(
-            model.clone(),
+            model_id.clone(),
             Some("noop returned its synthetic response".to_string()),
             true,
         );
@@ -36,7 +36,7 @@ impl Algorithm for Noop {
 
         let llm_response = LlmResponse::Agg(AggLlmResponse {
             id: Some("switchyard-noop".to_string()),
-            model: Some(model),
+            model: Some(model_id.to_string()),
             outputs: vec![ResponseOutput {
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text {
