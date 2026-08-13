@@ -6,7 +6,8 @@
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
+    is_known_role_name, provider_extensions, reasoning_text_from_blocks,
+    reasoning_text_from_details, text_from_blocks,
 };
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
@@ -361,6 +362,12 @@ impl FormatCodec for OpenAiChatCodec {
         {
             message["reasoning_content"] = Value::String(reasoning);
         }
+        if let Some(details) = output
+            .map(|output| reasoning_details_from_blocks(&output.content))
+            .filter(|details| !details.is_empty())
+        {
+            message["reasoning_details"] = Value::Array(details);
+        }
         if !tool_calls.is_empty() {
             message["tool_calls"] = Value::Array(tool_calls);
         }
@@ -389,6 +396,36 @@ impl FormatCodec for OpenAiChatCodec {
 
 // Pulls OpenAI-compatible reasoning fields into private reasoning IR blocks.
 fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map<String, Value>) {
+    if let Some(details) = object
+        .get("reasoning_details")
+        .and_then(Value::as_array)
+        .filter(|details| !details.is_empty())
+    {
+        let text = reasoning_text_from_details(details).or_else(|| {
+            ["reasoning_content", "reasoning"]
+                .into_iter()
+                .find_map(|key| object.get(key).and_then(Value::as_str))
+                .filter(|text| !text.is_empty())
+                .map(ToOwned::to_owned)
+        });
+        let signature = details.iter().find_map(|detail| {
+            detail
+                .get("signature")
+                .and_then(Value::as_str)
+                .filter(|signature| !signature.is_empty())
+                .map(ToOwned::to_owned)
+        });
+        content.insert(
+            0,
+            ContentBlock::Reasoning {
+                text: text.unwrap_or_default(),
+                signature,
+                details: details.clone(),
+            },
+        );
+        return;
+    }
+
     let reasoning = ["reasoning_content", "reasoning"]
         .into_iter()
         .filter_map(|key| object.get(key).and_then(Value::as_str))
@@ -396,6 +433,7 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
         .map(|text| ContentBlock::Reasoning {
             text: text.to_string(),
             signature: None,
+            details: Vec::new(),
         })
         .collect::<Vec<_>>();
     if reasoning.is_empty() {
@@ -405,6 +443,19 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
     let mut merged = reasoning;
     merged.append(content);
     *content = merged;
+}
+
+// Returns structured reasoning details in their original order.
+fn reasoning_details_from_blocks(content: &[ContentBlock]) -> Vec<Value> {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Reasoning { details, .. } => Some(details.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .cloned()
+        .collect()
 }
 
 /// Decodes OpenAI role strings into normalized roles.
@@ -804,6 +855,27 @@ fn encode_message_without_tool_results_to_openai(
         "role": role,
         "content": encode_openai_content(&content_blocks, message.role, diagnostics, policy)?,
     });
+    let reasoning_details = reasoning_details_from_blocks(&message.content);
+    if reasoning_details.is_empty() {
+        let reasoning = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Reasoning {
+                    text,
+                    signature: None,
+                    ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !reasoning.is_empty() {
+            message_json["reasoning"] = Value::String(reasoning);
+        }
+    } else {
+        message_json["reasoning_details"] = Value::Array(reasoning_details);
+    }
     if !tool_calls.is_empty() {
         message_json["tool_calls"] = Value::Array(tool_calls);
         if message_json["content"] == Value::String(String::new()) {

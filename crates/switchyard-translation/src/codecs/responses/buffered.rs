@@ -585,6 +585,7 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
     vec![ContentBlock::Reasoning {
         text: parts.join("\n"),
         signature: None,
+        details: Vec::new(),
     }]
 }
 
@@ -649,6 +650,7 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                                 .unwrap_or_default()
                                 .to_string(),
                             signature: None,
+                            details: Vec::new(),
                         });
                     }
                     Some("input_image") => {
@@ -966,6 +968,7 @@ fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
         ContentBlock::Reasoning {
             text,
             signature: None,
+            ..
         } => Some(json!({
             "type": "reasoning",
             "content": [{"type": "reasoning_text", "text": text}],

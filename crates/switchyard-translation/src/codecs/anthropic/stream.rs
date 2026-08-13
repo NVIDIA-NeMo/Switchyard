@@ -6,6 +6,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::LlmResponseChunk;
+use crate::codecs::common::reasoning_text_from_details;
 use crate::codecs::stream::{
     StreamCodec, StreamTranslationState, record_source_identity,
     target_message_id_or_source_message_id, target_model_or_source_model,
@@ -184,6 +185,18 @@ fn encode_anthropic_stream(
             out
         }
         LlmResponseChunk::ReasoningDelta { text, .. } => {
+            let mut out = ensure_anthropic_reasoning_block(state);
+            out.push(json!({
+                "type": "content_block_delta",
+                "index": state.reasoning_block_index.unwrap_or(0),
+                "delta": {"type": "thinking_delta", "thinking": text},
+            }));
+            out
+        }
+        LlmResponseChunk::ReasoningDetailsDelta { details, .. } => {
+            let Some(text) = reasoning_text_from_details(&details) else {
+                return Vec::new();
+            };
             let mut out = ensure_anthropic_reasoning_block(state);
             out.push(json!({
                 "type": "content_block_delta",

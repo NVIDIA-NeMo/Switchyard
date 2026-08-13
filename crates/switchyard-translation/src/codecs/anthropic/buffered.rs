@@ -525,6 +525,7 @@ fn decode_anthropic_content_block(
                 .and_then(Value::as_str)
                 .filter(|signature| !signature.is_empty())
                 .map(ToOwned::to_owned),
+            details: Vec::new(),
         }],
         Some("tool_use") => vec![ContentBlock::ToolCall(ToolCall {
             id: block
@@ -794,6 +795,7 @@ fn encode_one_anthropic_response_block(block: &ContentBlock) -> Vec<Value> {
         ContentBlock::Reasoning {
             text,
             signature: None,
+            ..
         } => vec![json!({
             "type": "thinking",
             "thinking": text,
@@ -812,6 +814,7 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
         ContentBlock::Reasoning {
             text,
             signature: Some(signature),
+            ..
         } if !signature.is_empty() => vec![json!({
             "type": "thinking",
             "thinking": text,

@@ -769,6 +769,58 @@ fn openai_chat_reasoning_stream_fields_do_not_become_anthropic_text() -> TestRes
     Ok(())
 }
 
+// Verifies structured Chat reasoning deltas are replayed without flattening.
+#[test]
+fn openai_chat_stream_round_trips_reasoning_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
+    let details = json!([
+        {
+            "type": "reasoning.text",
+            "text": "Inspect the environment.",
+            "signature": "opaque-signature",
+            "id": "reasoning-1",
+            "format": "anthropic-claude-v1",
+            "index": 0
+        },
+        {
+            "type": "reasoning.encrypted",
+            "data": "opaque-encrypted-reasoning",
+            "id": "reasoning-1",
+            "format": "anthropic-claude-v1",
+            "index": 1
+        }
+    ]);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "z-ai/glm-5.2",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "reasoning": "fallback text",
+                "reasoning_details": details
+            },
+            "finish_reason": null
+        }]
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiChat,
+        &chunk,
+    )?;
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0]["choices"][0]["delta"]["reasoning_details"],
+        details
+    );
+    assert!(events[0]["choices"][0]["delta"].get("reasoning").is_none());
+    Ok(())
+}
+
 // Verifies Anthropic thinking deltas become OpenAI reasoning_content, not content.
 #[test]
 fn anthropic_thinking_stream_deltas_do_not_become_openai_chat_content() -> TestResult {

@@ -105,14 +105,25 @@ fn decode_openai_chat_stream(
                     text: text.to_string(),
                 });
             }
-            for reasoning_key in ["reasoning_content", "reasoning"] {
-                if let Some(text) = delta.get(reasoning_key).and_then(Value::as_str)
-                    && !text.is_empty()
-                {
-                    out.push(LlmResponseChunk::ReasoningDelta {
-                        index: 0,
-                        text: text.to_string(),
-                    });
+            if let Some(details) = delta
+                .get("reasoning_details")
+                .and_then(Value::as_array)
+                .filter(|details| !details.is_empty())
+            {
+                out.push(LlmResponseChunk::ReasoningDetailsDelta {
+                    index: 0,
+                    details: details.clone(),
+                });
+            } else {
+                for reasoning_key in ["reasoning_content", "reasoning"] {
+                    if let Some(text) = delta.get(reasoning_key).and_then(Value::as_str)
+                        && !text.is_empty()
+                    {
+                        out.push(LlmResponseChunk::ReasoningDelta {
+                            index: 0,
+                            text: text.to_string(),
+                        });
+                    }
                 }
             }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
@@ -190,6 +201,14 @@ fn encode_openai_chat_stream(
             vec![openai_stream_chunk(
                 state,
                 json!({"reasoning_content": text}),
+                None,
+                None,
+            )]
+        }
+        LlmResponseChunk::ReasoningDetailsDelta { details, .. } => {
+            vec![openai_stream_chunk(
+                state,
+                json!({"reasoning_details": details}),
                 None,
                 None,
             )]

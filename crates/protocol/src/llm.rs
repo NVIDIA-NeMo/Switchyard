@@ -87,6 +87,9 @@ pub enum ContentBlock {
         text: String,
         /// Provider signature used to validate or continue the reasoning block.
         signature: Option<String>,
+        /// Structured reasoning details that must be replayed without modification.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        details: Vec<Value>,
     },
     /// Image content.
     Image {

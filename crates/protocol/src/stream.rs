@@ -193,11 +193,18 @@ impl AggLlmResponse {
                             text,
                         });
                     }
-                    ContentBlock::Reasoning { text, .. } => {
-                        chunks.push(LlmResponseChunk::ReasoningDelta {
-                            index: output_index,
-                            text,
-                        });
+                    ContentBlock::Reasoning { text, details, .. } => {
+                        if !details.is_empty() {
+                            chunks.push(LlmResponseChunk::ReasoningDetailsDelta {
+                                index: output_index,
+                                details,
+                            });
+                        } else {
+                            chunks.push(LlmResponseChunk::ReasoningDelta {
+                                index: output_index,
+                                text,
+                            });
+                        }
                     }
                     ContentBlock::ToolCall(tool) => {
                         let args = serde_json::to_string(&tool.arguments).unwrap_or_default();
@@ -272,6 +279,13 @@ pub enum LlmResponseChunk {
         /// Reasoning fragment.
         text: String,
     },
+    /// Adds structured reasoning details to one output index.
+    ReasoningDetailsDelta {
+        /// Provider output index.
+        index: usize,
+        /// Reasoning detail objects in provider order.
+        details: Vec<Value>,
+    },
     /// Adds or updates a tool call at one index.
     ToolCallDelta {
         /// Tool-call index within the response.
@@ -322,6 +336,7 @@ pub struct ResponseAccumulator {
     model: Option<String>,
     text: String,
     reasoning: Option<String>,
+    reasoning_details: Vec<Value>,
     tool_calls: BTreeMap<usize, PartialToolCall>,
     usage: Usage,
     stop_reason: Option<StopReason>,
@@ -359,6 +374,9 @@ impl ResponseAccumulator {
                     .get_or_insert_with(String::new)
                     .push_str(&text);
             }
+            LlmResponseChunk::ReasoningDetailsDelta { details, .. } => {
+                self.reasoning_details.extend(details);
+            }
             LlmResponseChunk::ToolCallDelta {
                 index,
                 id,
@@ -388,10 +406,11 @@ impl ResponseAccumulator {
     /// tool calls (by ascending delta index) — a single assistant output.
     pub fn finish(self) -> AggLlmResponse {
         let mut content = Vec::new();
-        if let Some(reasoning) = self.reasoning {
+        if self.reasoning.is_some() || !self.reasoning_details.is_empty() {
             content.push(ContentBlock::Reasoning {
-                text: reasoning,
+                text: self.reasoning.unwrap_or_default(),
                 signature: None,
+                details: self.reasoning_details,
             });
         }
         if !self.text.is_empty() {
@@ -611,6 +630,7 @@ mod tests {
                 ContentBlock::Reasoning {
                     text: "think".to_string(),
                     signature: None,
+                    details: Vec::new(),
                 },
                 ContentBlock::Text {
                     text: "answer".to_string(),

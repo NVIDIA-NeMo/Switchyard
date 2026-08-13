@@ -331,6 +331,71 @@ fn openai_reasoning_response_translates_to_responses_reasoning_item() -> TestRes
     Ok(())
 }
 
+// Verifies structured Chat reasoning survives buffered decode and re-encode.
+#[test]
+fn openai_chat_response_round_trips_reasoning_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let details = json!([
+        {
+            "type": "reasoning.text",
+            "text": "Inspect the tool result.",
+            "signature": "opaque-signature",
+            "id": "reasoning-1",
+            "format": "anthropic-claude-v1",
+            "index": 0
+        },
+        {
+            "type": "reasoning.encrypted",
+            "data": "opaque-encrypted-reasoning",
+            "id": "reasoning-1",
+            "format": "anthropic-claude-v1",
+            "index": 1
+        }
+    ]);
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "z-ai/glm-5.2",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "reasoning": "fallback text",
+                "reasoning_details": details,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "shell", "arguments": "{\"command\":\"pwd\"}"}
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiChat,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    assert_eq!(
+        output["choices"][0]["message"]["reasoning_details"],
+        details
+    );
+    assert_eq!(
+        output["choices"][0]["message"]["reasoning_content"],
+        "Inspect the tool result."
+    );
+    Ok(())
+}
+
 // Verifies reasoning-only responses do not synthesize visible output text.
 #[test]
 fn openai_reasoning_only_response_translates_to_responses_reasoning_only() -> TestResult {
