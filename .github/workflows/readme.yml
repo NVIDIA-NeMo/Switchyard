@@ -12,6 +12,7 @@ on:
       - "README.md"
       - "Cargo.toml"
       - "crates/switchyard-server/**"
+      - "tests/onboarding_smoke.py"
       - "tests/readme/**"
       - "pyproject.toml"
       - "uv.lock"
@@ -22,6 +23,7 @@ on:
       - "README.md"
       - "Cargo.toml"
       - "crates/switchyard-server/**"
+      - "tests/onboarding_smoke.py"
       - "tests/readme/**"
       - "pyproject.toml"
       - "uv.lock"
@@ -47,11 +49,7 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Install
         run: uv sync --locked
+      - name: Build the standalone server
+        run: cargo build --locked -p switchyard-server
       - name: Exercise the README
         run: uv run pytest tests/readme -v
-        # Legacy Python README execution:
-        # run: uv run pytest tests/readme --markdown-docs README.md -v
-        # env:
-        #   OPENAI_API_KEY: sk-test
-        #   NVIDIA_API_KEY: nvapi-test
-        #   ANTHROPIC_API_KEY: sk-ant-test

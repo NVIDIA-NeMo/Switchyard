@@ -5,6 +5,8 @@
 
 from pathlib import Path
 
+from ..onboarding_smoke import exercise_documented_server_flow
+
 
 def test_readme_documents_current_paths() -> None:
     readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
@@ -23,5 +25,12 @@ def test_readme_documents_current_paths() -> None:
         assert legacy_command not in readme
 
 
-# TODO: Add Python snippet coverage when the supported Rust-backed API is finalized.
-# TODO: Add TOML schema coverage if the README includes a complete server config.
+def test_readme_server_path_is_executable(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[2]
+    readme = (repository / "README.md").read_text()
+    assert "[Getting Started](docs/getting_started.md)" in readme
+
+    exercise_documented_server_flow(
+        repository / "docs" / "getting_started.md",
+        tmp_path,
+    )

@@ -5,11 +5,11 @@
 
 from pathlib import Path
 
+from ..onboarding_smoke import exercise_documented_server_flow
+
 
 def test_getting_started_documents_current_paths() -> None:
-    guide = (
-        Path(__file__).resolve().parents[2] / "docs" / "getting_started.md"
-    ).read_text()
+    guide = (Path(__file__).resolve().parents[2] / "docs" / "getting_started.md").read_text()
 
     assert guide.index("## Launcher Path") < guide.index("## Server Path")
     assert 'uv tool install --python 3.10 "nemo-switchyard[cli]"' in guide
@@ -27,5 +27,9 @@ def test_getting_started_documents_current_paths() -> None:
         assert legacy_command not in guide
 
 
-# TODO: Add Python snippet coverage when the supported Rust-backed API is finalized.
-# TODO: Add TOML schema coverage if the guide grows beyond one maintained example.
+def test_getting_started_server_path_is_executable(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[2]
+    exercise_documented_server_flow(
+        repository / "docs" / "getting_started.md",
+        tmp_path,
+    )

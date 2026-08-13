@@ -12,6 +12,7 @@ on:
     paths:
       - "docs/getting_started.md"
       - "crates/**"
+      - "tests/onboarding_smoke.py"
       - "tests/getting_started/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -24,6 +25,7 @@ on:
     paths:
       - "docs/getting_started.md"
       - "crates/**"
+      - "tests/onboarding_smoke.py"
       - "tests/getting_started/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -52,5 +54,7 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Install
         run: uv sync --locked
+      - name: Build the standalone server
+        run: cargo build --locked -p switchyard-server
       - name: Exercise the guide
         run: uv run pytest tests/getting_started -v
