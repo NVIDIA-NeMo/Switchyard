@@ -164,6 +164,13 @@ async fn upstream_chat(
                 .is_some_and(|content| content.contains("invalid verdict"))
         })
     });
+    let requests_schema_invalid_verdict = body["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("schema-invalid verdict"))
+        })
+    });
     let content = if model == "model/classifier" && custom_target_schema {
         if requests_invalid_verdict {
             r#"{"decision":{"target":"unknown"}}"#
@@ -176,6 +183,8 @@ async fn upstream_chat(
             .is_some()
     {
         r#"{"escalate":false,"reason":"making progress"}"#
+    } else if model == "model/classifier" && requests_schema_invalid_verdict {
+        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#
     } else if model == "model/classifier" {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
     } else {
@@ -1119,6 +1128,95 @@ prompt = "CUSTOM STAGE"
             "{route}: missing {schema_field} in {judge_call}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn stage_classifier_can_request_json_object_output() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 1.0
+
+[routes.stage.classifier]
+target = "classifier"
+base_threshold = 0.5
+response_format_type = "json_object"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/stage",
+            "messages": [{"role": "user", "content": "bounded task"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let calls = upstream.calls.lock().await;
+    let judge_call = calls
+        .iter()
+        .find(|call| call["model"] == "model/classifier")
+        .ok_or("classifier target was not called")?;
+    assert_eq!(
+        judge_call["response_format"],
+        json!({"type": "json_object"})
+    );
+    let prompt = judge_call["messages"][0]["content"]
+        .as_str()
+        .ok_or("classifier prompt was not text")?;
+    assert!(prompt.contains("JSON Schema"), "{prompt}");
+    assert!(prompt.contains("\"p_solve\""), "{prompt}");
+
+    drop(calls);
+    let invalid_response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/stage",
+            "messages": [{"role": "user", "content": "return a schema-invalid verdict"}]
+        })),
+    )
+    .await?;
+    assert_eq!(invalid_response.status, StatusCode::OK);
+    assert_eq!(
+        invalid_response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/weak")
+    );
     Ok(())
 }
 

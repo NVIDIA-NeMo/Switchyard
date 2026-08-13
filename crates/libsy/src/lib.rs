@@ -23,7 +23,9 @@ pub use algorithms::passthrough::Passthrough;
 pub use algorithms::rand::{Random, RandomClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::util::affinity::AffinityRouter;
-pub use algorithms::util::classifier_contract::ClassifierContractConfig;
+pub use algorithms::util::classifier_contract::{
+    ClassifierContractConfig, ClassifierResponseFormat,
+};
 pub use algorithms::util::escalation::EscalationJudgeConfig;
 pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
 pub use algorithms::util::subagent::SubagentOverride;

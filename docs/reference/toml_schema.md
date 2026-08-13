@@ -179,6 +179,7 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
 | `capable_system_prompt` | No | unset | System prompt handed to the capable tier. |
 | `efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
+| `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
 
 ## Validation Errors
 

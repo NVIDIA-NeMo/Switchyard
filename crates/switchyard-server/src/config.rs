@@ -9,10 +9,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use libsy::{
-    Algorithm, ClassifierContractConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
-    Noop, Passthrough, PickerMode, Random, StageRouter, StageRouterConfig, TargetPrompts,
-    TaskClassifierConfig,
+    Algorithm, ClassifierContractConfig, ClassifierResponseFormat, CustomClassifierConfig,
+    CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig,
+    LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
+    StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -443,6 +443,8 @@ struct StageClassifierConfig {
     recent_turn_window: Option<usize>,
     #[serde(default)]
     prompt: Option<String>,
+    #[serde(default)]
+    response_format_type: ClassifierResponseFormat,
     #[serde(default = "default_classifier_max_output_tokens")]
     max_output_tokens: u64,
 }
@@ -455,7 +457,8 @@ impl StageClassifierConfig {
             session_affinity: self.session_affinity,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
-            contract: classifier_contract(self.prompt.as_deref()),
+            contract: classifier_contract(self.prompt.as_deref())
+                .with_response_format_type(self.response_format_type),
             max_output_tokens: self.max_output_tokens,
         }
     }
@@ -1158,7 +1161,10 @@ target = "weak"
             "base_threshold = 0.5",
             "base_threshold = 0.5\nprompt = \"{{RESPONSE_SCHEMA}}\"",
         );
-        assert!(error_message(&schema_placeholder).contains("schema is sent separately"));
+        assert!(
+            error_message(&schema_placeholder)
+                .contains("Switchyard supplies the schema automatically")
+        );
         Ok(())
     }
 

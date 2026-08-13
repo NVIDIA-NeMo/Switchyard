@@ -245,11 +245,14 @@ base_threshold = 0.5       # p_solve floor to route efficient; below this → ca
 threshold_step = 0.1       # adds 0.1 for uncertain and 0.2 for unsupported verdicts
 recent_turn_window = 3     # conversation span the judge sees
 prompt = "Estimate whether the efficient target can complete this request."
+response_format_type = "json_object"  # optional; default is "json_schema"
 ```
 
-`prompt` replaces the packaged capability-classifier prompt. The active schema
-is sent separately through the structured-output request. The verdict schema
-and routing thresholds remain unchanged.
+`prompt` replaces the packaged capability-classifier prompt. In the default
+`json_schema` mode, Switchyard sends the verdict schema through the structured-output
+request. Set `response_format_type = "json_object"` for providers that only support
+JSON Object mode; Switchyard then adds the schema to the judge prompt and validates
+the returned object locally. The verdict schema and routing thresholds remain unchanged.
 
 Give the classifier its own LLM client or quota bucket where possible. Sharing
 one provider bucket with the efficient tier adds a request per classified turn

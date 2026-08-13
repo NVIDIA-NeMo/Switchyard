@@ -62,9 +62,19 @@ where
     fn decode(
         &self,
         response: &AggLlmResponse,
-        _contract: &ClassifierContract,
+        contract: &ClassifierContract,
     ) -> Result<Self::Verdict> {
-        parse_json_verdict(response)
+        if !contract.validates_locally() {
+            return parse_json_verdict(response);
+        }
+        let verdict = parse_json_verdict::<Value>(response)?;
+        contract.validate_verdict(&verdict)?;
+        serde_json::from_value(verdict).map_err(|error| LibsyError::AlgorithmError {
+            message: format!(
+                "judge reply did not parse as {}: {error}",
+                std::any::type_name::<Self::Verdict>()
+            ),
+        })
     }
 }
 
@@ -353,6 +363,11 @@ mod tests {
         ok: bool,
     }
 
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct ScoreVerdict {
+        score: f64,
+    }
+
     struct TestJudge;
 
     impl Judge for TestJudge {
@@ -413,6 +428,47 @@ mod tests {
         assert_eq!(parsed, TestVerdict { ok: true });
 
         assert!(parse_json_verdict::<TestVerdict>(&text_response(None, "still thinking")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn typed_decoder_enforces_a_json_object_contract_locally() -> Result<()> {
+        use super::super::classifier_contract::{
+            ClassifierContractConfig, ClassifierResponseFormat,
+        };
+
+        let config = ClassifierContractConfig::default()
+            .with_response_format_type(ClassifierResponseFormat::JsonObject);
+        let contract = ClassifierContract::from_config(
+            &config,
+            "Return one JSON score.",
+            r#"{
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "ScoreVerdict",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"score": {"type": "number"}},
+                        "required": ["score"],
+                        "additionalProperties": false
+                    }
+                }
+            }"#,
+        )?;
+        let decoder = SerdeDecoder::<ScoreVerdict>::new();
+
+        let error = decoder
+            .decode(
+                &text_response(None, r#"{"score":0.5,"unexpected":true}"#),
+                &contract,
+            )
+            .expect_err("an extra property should fail the local schema");
+
+        assert!(error.to_string().contains("did not match response_schema"));
+        assert_eq!(
+            decoder.decode(&text_response(None, r#"{"score":0.5}"#), &contract)?,
+            ScoreVerdict { score: 0.5 }
+        );
         Ok(())
     }
 

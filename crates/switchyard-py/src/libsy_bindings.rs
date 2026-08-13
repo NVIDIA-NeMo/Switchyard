@@ -12,9 +12,9 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde_json::{Value, json};
 use switchyard_libsy::{
-    Algorithm, ClassifierContractConfig, HandoffNoteConfig, LibsyError as RustLibsyError,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, PickerMode, Random, StageRouter,
-    StageRouterConfig, TaskClassifierConfig,
+    Algorithm, ClassifierContractConfig, ClassifierResponseFormat, HandoffNoteConfig,
+    LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
+    PickerMode, Random, StageRouter, StageRouterConfig, TaskClassifierConfig,
 };
 use switchyard_llm_client::ClientRouter;
 use switchyard_protocol::{
@@ -147,7 +147,8 @@ impl PyTaskClassifierConfig {
         message_hash_fallback=false,
         recent_turn_window=None,
         max_output_tokens=4096,
-        prompt=None
+        prompt=None,
+        response_format_type="json_schema"
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -158,12 +159,23 @@ impl PyTaskClassifierConfig {
         recent_turn_window: Option<usize>,
         max_output_tokens: u64,
         prompt: Option<String>,
-    ) -> Self {
+        response_format_type: &str,
+    ) -> PyResult<Self> {
         let mut contract = ClassifierContractConfig::default();
         if let Some(prompt) = prompt {
             contract = contract.with_prompt(prompt);
         }
-        Self {
+        let response_format_type = match response_format_type {
+            "json_schema" => ClassifierResponseFormat::JsonSchema,
+            "json_object" => ClassifierResponseFormat::JsonObject,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "response_format_type must be 'json_schema' or 'json_object', got {other:?}"
+                )));
+            }
+        };
+        contract = contract.with_response_format_type(response_format_type);
+        Ok(Self {
             inner: TaskClassifierConfig {
                 base_threshold,
                 threshold_step,
@@ -173,7 +185,7 @@ impl PyTaskClassifierConfig {
                 contract,
                 max_output_tokens,
             },
-        }
+        })
     }
 }
 

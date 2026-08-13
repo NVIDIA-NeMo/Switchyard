@@ -14,7 +14,9 @@ use switchyard_protocol::{ContentBlock, Decision, Message, ModelId, Role};
 use super::fall_through::{DefaultTarget, FallThrough};
 use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
 use super::util::affinity::AffinityRouter;
-use super::util::classifier_contract::{ClassifierContract, ClassifierContractConfig};
+use super::util::classifier_contract::{
+    ClassifierContract, ClassifierContractConfig, ClassifierResponseFormat,
+};
 use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
 use super::util::llm_judge::{
     ClassifierInput, JsonSchemaDecoder, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
@@ -261,6 +263,8 @@ struct TaskClassifierConfigWire {
     recent_turn_window: Option<usize>,
     #[serde(default)]
     prompt: Option<String>,
+    #[serde(default)]
+    response_format_type: ClassifierResponseFormat,
     #[serde(default = "default_judge_max_output_tokens")]
     max_output_tokens: u64,
 }
@@ -275,6 +279,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
         if let Some(prompt) = wire.prompt {
             contract = contract.with_prompt(prompt);
         }
+        contract = contract.with_response_format_type(wire.response_format_type);
         Ok(Self {
             base_threshold: wire.base_threshold,
             threshold_step: wire.threshold_step,
