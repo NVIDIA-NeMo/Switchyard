@@ -208,7 +208,10 @@ def _optional_mapping(
     return _mapping(value, field)
 
 
-def _payload(request: Mapping[str, object], model: str) -> dict[str, Any]:
+def _payload(request: Mapping[str, object]) -> dict[str, Any]:
+    model = request.get("model")
+    if not isinstance(model, str) or not model:
+        raise ValueError("model must be a non-empty string")
     if request.get("stream") is True:
         raise ValueError("stream=True is not supported")
     _reject_sequence_payload(request, "instructions")
@@ -226,7 +229,7 @@ def _payload(request: Mapping[str, object], model: str) -> dict[str, Any]:
         raise ValueError("reasoning.raw is not supported")
 
     payload: dict[str, Any] = {
-        "model": model,
+        "model": f"openai/{model}",
         "messages": _messages(request),
         "stream": False,
     }
@@ -307,18 +310,14 @@ def _response(response: ModelResponse) -> dict[str, object]:
 
 
 class LiteLLMSyClient:
-    """Call a LiteLLM gateway alias for a libsy target."""
+    """Call the LiteLLM gateway alias selected in a libsy request."""
 
     def __init__(
         self,
-        model: str,
         *,
         base_url: str = "http://127.0.0.1:4000/v1",
         api_key: str = "not-needed",
     ) -> None:
-        if not model:
-            raise ValueError("model must not be empty")
-        self.model = model
         self._base_url = base_url
         self._api_key = api_key
 
@@ -328,7 +327,7 @@ class LiteLLMSyClient:
     ) -> Mapping[str, object]:
         """Send one normalized, buffered text request through LiteLLM."""
         response = await acompletion(
-            **_payload(sy_request, f"openai/{self.model}"),
+            **_payload(sy_request),
             api_base=self._base_url,
             api_key=self._api_key,
             num_retries=0,

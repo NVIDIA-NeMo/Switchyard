@@ -11,8 +11,8 @@ point for your own application.
 LiteLLM provides the OpenAI-compatible gateway, model aliases, and OpenRouter
 provider integration. Switchyard's Stage router makes the routing decision from
 the coding agent's recent tool history.
-`LiteLLMSyClient` connects Switchyard's normalized libsy requests to the
-selected alias through LiteLLM's asynchronous Completion API and the
+`LiteLLMSyClient` connects Switchyard's normalized libsy requests to their
+selected aliases through LiteLLM's asynchronous Completion API and the
 Dockerized gateway. Together, they let an application keep routing policy in
 Switchyard while LiteLLM owns model access and sends Chat Completions inference
 through OpenRouter.
@@ -107,7 +107,7 @@ normalized request shape and routing policy:
 ```python
 import asyncio
 
-from switchyard.libsy import LlmTarget, algorithms
+from switchyard.libsy import Step, algorithms
 from switchyard_litellm import LiteLLMSyClient
 
 
@@ -150,22 +150,30 @@ async def main() -> None:
         "reasoning": {"effort": "low"},
         "output": {"max_output_tokens": 64},
     }
-    strong = LiteLLMSyClient("strong")
-    fast = LiteLLMSyClient("fast")
+    client = LiteLLMSyClient()
     router = algorithms.stage_router(
-        LlmTarget("strong", strong),
-        LlmTarget("fast", fast),
+        "strong",
+        "fast",
         picker="efficient_first",
         confidence_threshold=0.5,
         recent_window=3,
     )
     try:
-        decisions, response = await router.run(request)
-        print(decisions)
-        print(response)
+        async for step in router.run_stream(request):
+            match step:
+                case Step.Decision(decision):
+                    print("Decision:", decision.selected_model_id, decision.reasoning)
+                case Step.CallModel(call):
+                    try:
+                        response = await client.call(call.request)
+                    except Exception as error:
+                        call.fail(error)
+                    else:
+                        call.respond(response)
+                case Step.Done(response):
+                    print("Response:", response)
     finally:
-        await strong.aclose()
-        await fast.aclose()
+        await client.aclose()
 
 
 asyncio.run(main())
