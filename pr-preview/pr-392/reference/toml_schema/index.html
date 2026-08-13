@@ -1357,7 +1357,7 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 <td><code>extra_headers</code></td>
 <td style="text-align: center;">No</td>
 <td><code>{}</code></td>
-<td>Extra HTTP headers sent upstream.</td>
+<td>Custom HTTP headers sent to the model server. Set credentials with <code>api_key_env</code>. The server rejects <code>Authorization</code> for OpenAI clients and <code>x-api-key</code> or <code>anthropic-version</code> for Anthropic clients when it loads the config. Header names are case-insensitive.</td>
 </tr>
 <tr>
 <td><code>max_retries</code></td>
