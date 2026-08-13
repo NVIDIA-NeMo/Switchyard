@@ -10,7 +10,9 @@ from switchyard import __version__
 from switchyard.cli.launch_command import (
     cmd_launch_claude,
     cmd_launch_codex,
+    cmd_launch_hermes,
     cmd_launch_openclaw,
+    cmd_launch_opencode,
 )
 
 
@@ -26,6 +28,8 @@ def _add_launch_parser(
         ("claude", "Launch Claude Code", "claude_args", cmd_launch_claude),
         ("codex", "Launch Codex CLI", "codex_args", cmd_launch_codex),
         ("openclaw", "Launch OpenClaw", "openclaw_args", cmd_launch_openclaw),
+        ("opencode", "Launch OpenCode", "opencode_args", cmd_launch_opencode),
+        ("hermes", "Launch Hermes", "hermes_args", cmd_launch_hermes),
     )
     for name, help_text, args_dest, command in launcher_parsers:
         agent = launch_sub.add_parser(name, help=help_text)

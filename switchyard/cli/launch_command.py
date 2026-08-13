@@ -58,8 +58,36 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_launch_opencode(args: argparse.Namespace) -> None:
+    """Run OpenCode against a native TOML deployment."""
+    from switchyard.cli.launchers.opencode_launcher import launch_opencode_config
+
+    raise SystemExit(
+        launch_opencode_config(
+            config=_config_path(args.config),
+            model=args.model,
+            opencode_args=strip_forwarded_args(args.opencode_args),
+        )
+    )
+
+
+def cmd_launch_hermes(args: argparse.Namespace) -> None:
+    """Run Hermes against a native TOML deployment."""
+    from switchyard.cli.launchers.hermes_launcher import launch_hermes_config
+
+    raise SystemExit(
+        launch_hermes_config(
+            config=_config_path(args.config),
+            model=args.model,
+            hermes_args=strip_forwarded_args(args.hermes_args),
+        )
+    )
+
+
 __all__ = [
     "cmd_launch_claude",
     "cmd_launch_codex",
     "cmd_launch_openclaw",
+    "cmd_launch_opencode",
+    "cmd_launch_hermes",
 ]

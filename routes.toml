@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Deployment wired to the providers/models configured for Hermes on this host
+# (~/.hermes/config.yaml). OpenRouter is the shared upstream. Route ids mirror
+# the user's model provider setting and aliases so a coding agent (Claude,
+# Codex, OpenClaw, Hermes, OpenCode, ...) can be pointed at a local Switchyard
+# proxy instead of talking to OpenRouter directly.
+#
+# Note: entries under model.aliases in ~/.hermes/config.yaml are Hermes
+# "provider/model" qualifiers (e.g. openrouter/nvidia/…); the value sent to the
+# OpenRouter upstream is the model id without that qualifier (nvidia/…).
+
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+# Default model from ~/.hermes/config.yaml (model.default / model.provider).
+# Requires a quota-funded key; add credits at OpenRouter if the upstream 403s.
+[targets.qwen3]
+id = "qwen/qwen3.8-max"
+llm_client = "openrouter"
+
+# Alias from ~/.hermes/config.yaml (model.aliases.nemotron35l). The :free tier
+# works without funded quota, so this is the default route.
+[targets.nemotron]
+id = "nvidia/nemotron-3.5-lightning:free"
+llm_client = "openrouter"
+
+# Primary route — the :free model works immediately; switch `targets` to
+# ["qwen3"] once the upstream key has quota.
+[routes.switchyard]
+id = "switchyard"
+type = "random"
+targets = ["nemotron"]
+weights = [1]

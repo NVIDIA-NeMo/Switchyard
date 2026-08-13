@@ -48,11 +48,13 @@ export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
 switchyard launch claude --model switchyard
 ```
 
-Codex and OpenClaw use the same deployment:
+Codex, OpenClaw, OpenCode, and Hermes use the same deployment:
 
 ```bash
 switchyard launch codex --model switchyard
 switchyard launch openclaw --model switchyard
+switchyard launch opencode --model switchyard
+switchyard launch hermes --model switchyard
 ```
 
 ### Launch with a custom deployment

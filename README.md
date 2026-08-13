@@ -57,6 +57,8 @@ export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
 switchyard launch claude --model switchyard
 switchyard launch codex --model switchyard
 switchyard launch openclaw --model switchyard
+switchyard launch opencode --model switchyard
+switchyard launch hermes --model switchyard
 ```
 
 To use your own native TOML deployment, pass its route ID and configuration:

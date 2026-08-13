@@ -16,9 +16,7 @@ from switchyard.cli.switchyard_cli import _build_parser
 
 def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
     action = next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     )
     return action.choices  # type: ignore[return-value]
 
@@ -27,7 +25,7 @@ def test_cli_exposes_only_launch() -> None:
     assert set(_subparsers(_build_parser())) == {"launch"}
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw"])
+@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes"])
 def test_launcher_surface_is_model_config_and_forwarded_args(agent: str) -> None:
     launch = _subparsers(_build_parser())["launch"]
     parser = _subparsers(launch)[agent]
