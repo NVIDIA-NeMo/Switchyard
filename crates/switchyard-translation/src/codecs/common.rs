@@ -62,6 +62,19 @@ pub(crate) fn reasoning_text_from_details(details: &[Value]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
+/// Returns the first non-empty string stored under the requested keys.
+pub(crate) fn first_nonempty_string<'a>(
+    object: &'a Map<String, Value>,
+    keys: &[&str],
+) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    })
+}
+
 /// Copies unknown provider fields into the IR extension map.
 pub(crate) fn provider_extensions(
     object: &Map<String, Value>,

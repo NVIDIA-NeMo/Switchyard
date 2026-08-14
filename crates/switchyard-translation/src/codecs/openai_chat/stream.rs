@@ -6,7 +6,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::LlmResponseChunk;
-use crate::codecs::common::reasoning_text_from_details;
+use crate::codecs::common::{first_nonempty_string, reasoning_text_from_details};
 use crate::codecs::stream::{
     StreamCodec, StreamTranslationState, record_source_identity, state_source_is, string_field,
     target_model_or_source_model,
@@ -112,10 +112,7 @@ fn decode_openai_chat_stream(
                 .filter(|details| !details.is_empty())
             {
                 let fallback_text = if reasoning_text_from_details(details).is_none() {
-                    ["reasoning_content", "reasoning"]
-                        .into_iter()
-                        .find_map(|key| delta.get(key).and_then(Value::as_str))
-                        .filter(|text| !text.is_empty())
+                    first_nonempty_string(delta, &["reasoning_content", "reasoning"])
                         .map(ToOwned::to_owned)
                 } else {
                     None

@@ -837,6 +837,7 @@ fn openai_chat_stream_retains_encrypted_details_and_fallback() -> TestResult {
         "choices": [{
             "index": 0,
             "delta": {
+                "reasoning_content": "",
                 "reasoning": "fallback text",
                 "reasoning_details": details
             },
