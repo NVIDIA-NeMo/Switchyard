@@ -511,11 +511,11 @@
 <a href=#511 id=511 data-nosnippet>511</a>            <span class="string">"the selected target should be recorded as an answer call"
 <a href=#512 id=512 data-nosnippet>512</a>        </span>);
 <a href=#513 id=513 data-nosnippet>513</a>        drop(calls);
-<a href=#514 id=514 data-nosnippet>514</a>        <span class="macro">assert!</span>(
+<a href=#514 id=514 data-nosnippet>514</a>        <span class="macro">assert_eq!</span>(
 <a href=#515 id=515 data-nosnippet>515</a>            trace
 <a href=#516 id=516 data-nosnippet>516</a>                .last()
-<a href=#517 id=517 data-nosnippet>517</a>                .and_then(|decision| decision.reasoning())
-<a href=#518 id=518 data-nosnippet>518</a>                .is_some_and(|reasoning| reasoning.contains(<span class="string">"routing tier: strong"</span>))
+<a href=#517 id=517 data-nosnippet>517</a>                .map(|decision| decision.selected_model_id().as_str()),
+<a href=#518 id=518 data-nosnippet>518</a>            <span class="prelude-val">Some</span>(<span class="string">"strong"</span>)
 <a href=#519 id=519 data-nosnippet>519</a>        );
 <a href=#520 id=520 data-nosnippet>520</a>        <span class="prelude-val">Ok</span>(())
 <a href=#521 id=521 data-nosnippet>521</a>    }
