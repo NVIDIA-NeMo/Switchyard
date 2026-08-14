@@ -1489,6 +1489,8 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
     Ok(())
 }
 
+// Normalized metadata is authoritative when both ID forms are present;
+// legacy-only callers remain supported for backward compatibility.
 #[tokio::test]
 async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestResult {
     let upstream = MockUpstream::start().await?;
