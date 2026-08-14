@@ -22,7 +22,7 @@ use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Decision, LlmClientError, Request, Response};
+use switchyard_protocol::{LlmClientError, Request, Response};
 
 /// Builds the classifier-specific message view presented to a structured judge.
 pub(crate) trait ClassifierInput: Send + Sync {
@@ -240,7 +240,8 @@ where
         let response = driver
             .call_model(
                 self.judge.build_request(state, request),
-                Decision::new(self.target.to_string(), false),
+                vec![self.target.clone()],
+                false,
             )
             .await
             .inspect_err(|error| report_fail_open(judge_model, error, libsy_error_reason(error)))

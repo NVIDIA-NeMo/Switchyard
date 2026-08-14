@@ -144,9 +144,9 @@ async fn stream(
 ### Routing an algorithm
 
 [`run`] takes a libsy algorithm and a [`ClientRouter`], and returns the final response plus
-the trace of decisions the algorithm published. The router resolves each offloaded call to
-the client for the target the algorithm selected; `ClientRouter::single` is the
-single-provider case:
+the trace of decisions the algorithm published. Each offloaded `CallModel` carries an ordered
+`models` list. The router resolves and tries those candidates in order; `ClientRouter::single`
+is the single-provider case:
 
 ```rust
 use std::sync::Arc;
@@ -249,9 +249,12 @@ fn build_multi_format_client(
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
 
-Retries replay the same upstream request. A transport failure can therefore
-duplicate a request that the provider processed but did not finish returning,
-and the retry budget plus capped `Retry-After` delays determines total latency.
+Retries replay the same upstream request to the same model. Each candidate's
+`max_retries` budget is exhausted before candidate fallback advances to the next
+model. The worst case is `candidates × (max_retries + 1)` upstream requests, and
+total latency includes every candidate's capped `Retry-After` backoff. A transport
+failure can duplicate a request that the provider processed but did not finish
+returning.
 
 ## Errors
 

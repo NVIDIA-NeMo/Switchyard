@@ -9,8 +9,8 @@ mechanical work. Which tier a turn defaults to depends on the picker you choose
 off that default. You configure it with a single knob, `confidence_threshold`,
 plus an optional LLM classifier.
 
-If the selected target exceeds its context window, the router tries the next
-eligible target until one succeeds or all configured targets have been tried. See
+If the selected target exceeds its context window, the client tries the route's
+remaining targets in configured order for that request. See
 [Context-Window Handling](../operations/context_window.md).
 
 ## How it works

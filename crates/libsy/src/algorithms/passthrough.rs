@@ -35,7 +35,9 @@ impl Algorithm for Passthrough {
         tracing::info!(target = %self.target, "passthrough selected target");
         let decision: Decision = Decision::new(self.target.clone(), true);
         driver.decide(decision.clone()).await?;
-        driver.call_model(request, decision).await
+        driver
+            .call_model(request, vec![self.target.clone()], true)
+            .await
     }
 }
 

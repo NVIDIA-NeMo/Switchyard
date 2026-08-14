@@ -219,7 +219,7 @@ mod tests {
     use crate::core::classifier::Score;
     use crate::core::state::StateValue;
     use crate::core::testing::{Serve, reply, test_drive};
-    use switchyard_protocol::{Decision, Metadata, Response};
+    use switchyard_protocol::{Metadata, Response};
 
     /// A classifier that always picks `target`, standing in for a cascade member.
     struct Fixed(&'static str);
@@ -358,10 +358,10 @@ mod tests {
         /// back so the fallback classifier has an answer without a real model.
         fn serve(self: &Arc<Self>) -> impl Serve {
             let recorder = Arc::clone(self);
-            move |decision: Decision, request: Request| {
+            move |target: ModelId, request: Request| {
                 let recorder = Arc::clone(&recorder);
                 async move {
-                    let target = decision.selected_model_id().to_string();
+                    let target = target.to_string();
                     recorder.calls.lock().push(Call {
                         target: target.clone(),
                         messages: request
@@ -370,7 +370,7 @@ mod tests {
                             .iter()
                             .filter_map(|message| message.text_content("|"))
                             .collect(),
-                        is_answer_call: decision.is_answer_call(),
+                        is_answer_call: target != JUDGE,
                     });
                     let completion = if target == JUDGE {
                         let p_solve = *recorder.judge_p_solve.lock();

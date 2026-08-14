@@ -2126,7 +2126,7 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
                 .headers
                 .get("x-model-router-selected-model")
                 .and_then(|value| value.to_str().ok()),
-            Some("model/strong")
+            Some("model/weak")
         );
         let calls = upstream.calls.lock().await;
         assert_eq!(
@@ -2150,7 +2150,7 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(records.len(), 3);
     assert!(records.iter().all(|record| {
-        record["model"] == "model/strong" && record.get("fallback_reason").is_none()
+        record["model"] == "model/weak" && record.get("fallback_reason").is_none()
     }));
 
     let previous_call_count = upstream.calls.lock().await.len();

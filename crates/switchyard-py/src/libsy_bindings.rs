@@ -184,15 +184,21 @@ struct PyModelCall {
     inner: Option<CallModel>,
     algorithm: String,
     request: Py<PyAny>,
+    models: Vec<String>,
     decision: Py<PyDecision>,
 }
 
 impl PyModelCall {
     fn new(py: Python<'_>, call: CallModel) -> PyResult<Self> {
         let request = to_python(py, &call.request.llm_request)?;
-        let decision = Py::new(py, PyDecision::from(call.decision.clone()))?;
+        let selected = call.models[0].clone();
+        let decision = Py::new(
+            py,
+            PyDecision::from(Decision::new(selected, call.is_answer_call)),
+        )?;
         Ok(Self {
             algorithm: call.algorithm.clone(),
+            models: call.models.iter().map(ToString::to_string).collect(),
             inner: Some(call),
             request,
             decision,
@@ -220,6 +226,12 @@ impl PyModelCall {
         self.request.clone_ref(py)
     }
 
+    /// Candidate models in the order the host should try them.
+    #[getter]
+    fn models(&self) -> Vec<String> {
+        self.models.clone()
+    }
+
     /// The routing decision behind this call.
     #[getter]
     fn decision(&self, py: Python<'_>) -> Py<PyDecision> {
@@ -229,11 +241,9 @@ impl PyModelCall {
     /// Consume the answer call without serving it and return its rewritten request and decision.
     #[pyo3(name = "into_parts")]
     fn take_parts(&mut self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyDecision>)> {
-        let (request, decision) = self.take()?.into_parts();
-        Ok((
-            to_python(py, &request.llm_request)?,
-            Py::new(py, PyDecision::from(decision))?,
-        ))
+        let decision = self.decision.clone_ref(py);
+        let (request, _models) = self.take()?.into_parts();
+        Ok((to_python(py, &request.llm_request)?, decision))
     }
 
     /// Fulfill this call with an aggregate normalized response dictionary.
@@ -254,7 +264,7 @@ impl PyModelCall {
             return Err(PyTypeError::new_err("error must derive from BaseException"));
         }
         let call = self.take()?;
-        let target = call.decision.selected_model_id().clone();
+        let target = call.models[0].clone();
         let source = if error.is_instance_of::<ContextWindowExceededError>() {
             LlmClientError::ContextWindowExceeded {
                 model: target.clone(),

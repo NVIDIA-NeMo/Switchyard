@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-use switchyard_protocol::{ContentBlock, Decision, Message, ModelId, Role};
+use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
 
 use super::fall_through::{DefaultTarget, FallThrough};
 use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
@@ -515,15 +515,14 @@ impl Classifier<State> for EscalationClassifier {
 
         // Call efficient model and buffer the response so the judge can read it.
         //
-        // If the efficient model exceeds its context window, fall through to capable: returning
-        // `(decisive(capable), None)` tells FallThrough::execute to call
-        // call_model_with_fallback with the capable target instead of surfacing the error.
+        // If the efficient model exceeds its context window, fall through to capable. This call
+        // deliberately has one candidate so the classifier sees the efficient model's error.
         tracing::info!(
             target = %self.efficient,
             "escalation classifier selected efficient tier"
         );
         let efficient_response = match driver
-            .call_model(request.clone(), Decision::new(self.efficient.clone(), true))
+            .call_model(request.clone(), vec![self.efficient.clone()], true)
             .await
         {
             Ok(r) => r,
@@ -1020,15 +1019,15 @@ mod tests {
 
         fn serve(self: &Arc<Self>) -> impl Serve {
             let recorder = Arc::clone(self);
-            move |decision: Decision, request: Request| {
+            move |model: ModelId, request: Request| {
                 let recorder = Arc::clone(&recorder);
                 async move {
-                    let model = decision.selected_model_id().to_string();
+                    let model = model.to_string();
                     recorder.calls.lock().push(model.clone());
                     recorder
                         .call_roles
                         .lock()
-                        .push((model.clone(), decision.is_answer_call()));
+                        .push((model.clone(), model != "judge"));
                     let completion = if model == "judge" {
                         recorder
                             .judge_max_output_tokens
@@ -1064,8 +1063,8 @@ mod tests {
 
     /// The judge times out; every other target answers normally.
     fn unreachable_judge() -> impl Serve {
-        |decision: Decision, request: Request| async move {
-            let model = decision.selected_model_id().to_string();
+        |model: ModelId, request: Request| async move {
+            let model = model.to_string();
             if model == "judge" {
                 return Err(LlmClientError::Timeout {
                     source: Box::new(std::io::Error::other("judge unreachable")),
@@ -1739,8 +1738,6 @@ mod tests {
 
     use std::collections::VecDeque;
 
-    use switchyard_protocol::Decision;
-
     /// A queue of replies, drained in order.
     struct Queue(Mutex<VecDeque<String>>);
 
@@ -1762,8 +1759,8 @@ mod tests {
     /// Serves the judge target from `judge` and every other target from `model`, each with
     /// its next queued reply.
     fn queued(model: Arc<Queue>, judge: Arc<Queue>) -> impl Serve {
-        move |decision: Decision, request: Request| {
-            let queue = if decision.selected_model_id() == "judge" {
+        move |target: ModelId, request: Request| {
+            let queue = if target == "judge" {
                 Arc::clone(&judge)
             } else {
                 Arc::clone(&model)
@@ -1908,10 +1905,10 @@ mod tests {
         let router = escalation_router()?;
 
         // Efficient overflows, capable answers, and the judge must never be called.
-        let serve = |decision: Decision, _request: Request| async move {
-            match decision.selected_model_id().as_str() {
+        let serve = |target: ModelId, _request: Request| async move {
+            match target.as_str() {
                 "efficient" => Err(LlmClientError::ContextWindowExceeded {
-                    model: decision.selected_model_id().clone(),
+                    model: target,
                     message: "prompt is too long".to_string(),
                 }),
                 "judge" => panic!("the judge must not be consulted when efficient overflows"),
@@ -1940,10 +1937,10 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let serve = {
             let calls = Arc::clone(&calls);
-            move |decision: Decision, _request: Request| {
+            move |model: ModelId, _request: Request| {
                 let calls = Arc::clone(&calls);
                 async move {
-                    let model = decision.selected_model_id().to_string();
+                    let model = model.to_string();
                     calls.lock().push(model.clone());
                     match model.as_str() {
                         "efficient" => Ok(streamed_then_error(LlmClientError::Transport {
@@ -1975,8 +1972,8 @@ mod tests {
     #[tokio::test]
     async fn escalation_classifier_preserves_non_transport_stream_errors() -> Result<()> {
         let router = escalation_router()?;
-        let serve = |decision: Decision, _request: Request| async move {
-            match decision.selected_model_id().as_str() {
+        let serve = |target: ModelId, _request: Request| async move {
+            match target.as_str() {
                 "efficient" => Ok(streamed_then_error(LlmClientError::InvalidResponse {
                     source: Box::new(std::io::Error::other("invalid stream event")),
                 })),

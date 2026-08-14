@@ -60,14 +60,20 @@ async def run_algorithm(
     async for step in algorithm.run_stream(request or request_body(), headers=headers):
         match step:
             case Step.CallModel(call):
-                target = call.decision.selected_model_id
-                client = (clients or {})[target]
-                try:
-                    response = await client.call(call.request)
-                except Exception as error:
-                    call.fail(error)
-                else:
-                    call.respond(response)
+                for index, target in enumerate(call.models):
+                    candidate_request = {**call.request, "model": target}
+                    client = (clients or {})[target]
+                    try:
+                        response = await client.call(candidate_request)
+                    except ContextWindowExceededError as error:
+                        if index + 1 == len(call.models):
+                            call.fail(error)
+                    except Exception as error:
+                        call.fail(error)
+                        break
+                    else:
+                        call.respond(response)
+                        break
             case Step.Decision(decision):
                 decisions.append(decision)
             case Step.Done(response):
@@ -86,6 +92,7 @@ async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() 
         match step:
             case Step.CallModel(call):
                 variants.append("call_model")
+                assert call.models == ["fast"]
                 client_response = await client.call(call.request)
                 call.respond(client_response)
                 with pytest.raises(LibsyError, match="already been completed"):
@@ -118,6 +125,7 @@ async def test_into_parts_supports_decision_only_routing() -> None:
             case Step.CallModel(call) if call.decision.is_answer_call:
                 request, decision = call.into_parts()
                 assert call.algorithm == "random"
+                assert call.models == ["fast"]
                 assert request["messages"] == request_body()["messages"]
                 assert decision.selected_model_id == "fast"
                 assert decision.is_answer_call is True
@@ -351,5 +359,5 @@ async def test_context_window_failure_falls_back_to_the_next_model() -> None:
         {"fast": OverflowClient(), "strong": EchoClient("strong")},
     )
 
-    assert [decision.selected_model_id for decision in decisions] == ["fast", "strong"]
+    assert [decision.selected_model_id for decision in decisions] == ["fast"]
     assert response["model"] == "strong"

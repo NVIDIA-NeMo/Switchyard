@@ -444,7 +444,7 @@ impl Algorithm for SingleCallAlgo {
         tracing::info!("picked '{target}'");
         let decision = Decision::new(target.clone(), true);
         driver.decide(decision.clone()).await?;
-        driver.call_model(request, decision).await
+        driver.call_model(request, vec![target.into()], true).await
     }
 }
 

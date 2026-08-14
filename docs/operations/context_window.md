@@ -1,14 +1,11 @@
 # Context-Window Handling
 
 When an upstream rejects a request because the prompt exceeds the model's
-context window, Switchyard drops that target and calls another target on the
-same route, repeating until a call succeeds or every target has been tried. If
-the request carries `x-switchyard-session-id` or a recognized coding-agent
-session header such as `x-claude-code-session-id`, the target remains excluded
-for the rest of that session. Without a session header, the fallback still
-applies to the current request, but the overflow is not remembered.
-After truncating or resetting context, clients should use a new session ID;
-reusing the old ID preserves its target exclusions.
+context window, Switchyard calls the remaining targets on the same route in
+configured order, stopping when one answers or every target has been tried.
+Fallback applies only to the current request. An overflow is not remembered
+across turns, so the route may select and try the same target again on the next
+request.
 
 ## What counts as an overflow
 
@@ -50,12 +47,8 @@ picker = "efficient_first"
 confidence_threshold = 0.5
 ```
 
-Response headers report where the request actually landed:
-
-```text
-x-model-router-selected-model: openai/gpt-4o-mini
-x-model-router-rationale: openai/gpt-4o exceeded its context window; fell back to openai/gpt-4o-mini
-```
+Routing response headers describe the algorithm's selected model. They do not
+change when the client falls through to a later candidate.
 
 ## When every target overflows
 

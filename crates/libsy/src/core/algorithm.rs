@@ -5,18 +5,10 @@
 //! algorithm implements, and the offload channel it uses to make model calls and
 //! publish [`Decision`]s.
 
-use std::{
-    collections::{HashMap, HashSet},
-    future::Future,
-    panic::AssertUnwindSafe,
-    pin::Pin,
-    sync::Arc,
-    time::Instant,
-};
+use std::{future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use futures::{FutureExt, Stream, StreamExt};
-use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::Instrument;
@@ -28,9 +20,7 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStreamEvent`] is its host/algorithm envelope; and
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
-use switchyard_protocol::{
-    Decision, LlmClientError, ModelId, Request, Response, RoutingFallbackReason,
-};
+use switchyard_protocol::{Decision, ModelId, Request, Response};
 
 use crate::{DriverError, LibsyError, Result, observability};
 
@@ -47,32 +37,23 @@ pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
 /// you. A host that only wants the routing outcome can take the contents with
 /// [`into_parts`](Self::into_parts) and never respond; dropping the stream ends the run.
 ///
-/// The selected model is available both from
-/// [`decision.selected_model_id()`](Decision::selected_model_id) and from
-/// `request.llm_request.model`. [`Driver::call_model`] stamps the decision's model onto the
-/// request before publishing the call, so every consumer receives a request ready for the
-/// selected target.
+/// [`Driver::call_model`] stamps the first candidate model onto the request before publishing
+/// the call. A consumer that falls through to a later candidate must re-stamp it.
 pub struct CallModel {
     /// The name of the algorithm that produced this call, so a host instrumenting the
     /// calls it serves can attribute its own spans to the algorithm behind them.
     pub algorithm: String,
-    /// The request to serve; its `model` is the selected model identified by `decision`.
+    /// The request to serve; its `model` is stamped with `models[0]`.
     pub request: Request,
-    /// The routing decision behind this call; `selected_model_id()` identifies the model to use.
-    pub decision: Decision,
+    /// Candidate models, tried in order until one answers. Never empty.
+    pub models: Vec<ModelId>,
+    /// True for an answer-generating call, false for classifier and judge calls.
+    pub is_answer_call: bool,
     // How to send the response back to the algorithm
     reply: oneshot::Sender<Result<Response>>,
 }
 
 impl CallModel {
-    /// The selected model stamped onto this call's request by [`Driver::call_model`].
-    pub fn selected_model_id(&self) -> &str {
-        let model_id = self.request.llm_request.model.as_deref();
-        // Driver stamps the model before constructing CallModel.
-        debug_assert!(model_id.is_some());
-        model_id.unwrap_or_default()
-    }
-
     /// Fulfill the promise with the caller's model-call result. Pass `Err(..)` to
     /// propagate a failed model call back to the algorithm. Consumes the promise: it
     /// can only be fulfilled once.
@@ -85,17 +66,17 @@ impl CallModel {
     /// Take the call's contents without answering it, dropping the promise — the routing
     /// outcome plus the request as the algorithm would have sent it, after any rewriting.
     ///
-    /// Should only be called if `decision.is_answer_call` is true as that is the final call.
+    /// Should only be called if `is_answer_call` is true as that is the final call.
     /// The algorithm's [`Driver::call_model`] will fail with [`DriverError::Abandoned`] and
     /// the run ends there. Taking a call the algorithm does not depend on (a judge or
     /// classifier call) may instead let it fail open and complete with degraded routing.
     ///
     /// An abandoned run is not recorded as a failed one. Dropping a [`CallModel`] without
     /// calling this still yields [`DriverError::ResponseDropped`], which is.
-    pub fn into_parts(self) -> (Request, Decision) {
+    pub fn into_parts(self) -> (Request, Vec<ModelId>) {
         let Self {
             request,
-            decision,
+            models,
             reply,
             ..
         } = self;
@@ -103,7 +84,7 @@ impl CallModel {
         // telemetry can tell an abandoned run from a failed one. The receiver is already
         // gone if the algorithm stopped waiting, which is fine.
         let _ = reply.send(Err(DriverError::Abandoned.into()));
-        (request, decision)
+        (request, models)
     }
 }
 
@@ -134,8 +115,9 @@ impl Driver {
         )
     }
 
-    /// Offload a model call: publish it as a [`Step::CallModel`] and await the consumer's
-    /// [`Response`]. Errors if the stream is closed or the call failed.
+    /// Publish a model call and await the consumer's response.
+    ///
+    /// Errors if the stream is closed or the call failed.
     /// The await is wrapped in a `libsy.llm_call` span measuring *fulfillment* as
     /// the algorithm observes it (host queueing/serving included; a streamed
     /// response resolves when its stream handle arrives); latency, outcome, and
@@ -147,7 +129,7 @@ impl Driver {
         skip_all,
         fields(
             algorithm = self.algorithm,
-            selected_model = %decision.selected_model_id(),
+            selected_model = %models.first().unwrap_or(&ModelId::from("NoTargets")),
             openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
             error = tracing::field::Empty,
@@ -157,16 +139,23 @@ impl Driver {
             reasoning_tokens = tracing::field::Empty,
         )
     )]
-    pub async fn call_model(&self, mut request: Request, decision: Decision) -> Result<Response> {
-        let selected_model_id = decision.selected_model_id().to_string();
-        request.llm_request.model = Some(selected_model_id.clone());
-        let is_answer_call = decision.is_answer_call();
+    pub async fn call_model(
+        &self,
+        mut request: Request,
+        models: Vec<ModelId>,
+        is_answer_call: bool,
+    ) -> Result<Response> {
+        let Some(selected_model_id) = models.first().cloned() else {
+            return Err(LibsyError::NoTargets);
+        };
+        request.llm_request.model = Some(selected_model_id.to_string());
         let started = Instant::now();
         let (reply, response) = oneshot::channel::<Result<Response>>();
         let call = CallModel {
             algorithm: self.algorithm.clone(),
             request,
-            decision,
+            models,
+            is_answer_call,
             reply,
         };
         let result = async {
@@ -182,7 +171,7 @@ impl Driver {
         let elapsed = started.elapsed();
         observability::record_llm_call(
             &self.algorithm,
-            &selected_model_id,
+            selected_model_id.as_str(),
             is_answer_call,
             elapsed,
             &result,
@@ -313,27 +302,8 @@ pub(crate) fn ensure_model_is_target(targets: &[ModelId], name: &ModelId) -> Res
         })
 }
 
-/// `name` itself, or the first target not in `excluded` when `name` has been barred.
-/// Errors if `name` is unknown, or if every target is excluded.
-pub(crate) fn select_eligible_model(
-    targets: &[ModelId],
-    name: &ModelId,
-    excluded: &HashSet<ModelId>,
-) -> Result<ModelId> {
-    ensure_model_is_target(targets, name)?;
-    if !excluded.contains(name) {
-        return Ok(name.clone());
-    }
-    targets
-        .iter()
-        .find(|target| !excluded.contains(*target))
-        .cloned()
-        .ok_or(LibsyError::AllTargetsExcluded)
-}
-
-/// Key for overflow history: a root request by its session, a child request by its session
-/// and agent. Keying a child finer than its session keeps one child's overflow from evicting
-/// a target for the parent or a sibling sharing the session.
+/// Key for routing affinity: a root request by its session, a child request by its session
+/// and agent.
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub(crate) enum RoutingIdentity {
     /// Root request, keyed by session ID.
@@ -359,155 +329,6 @@ impl RoutingIdentity {
         } else {
             Some(Self::Session(session.to_string()))
         }
-    }
-
-    /// The session this identity belongs to; shared by a session's root and its children.
-    fn session(&self) -> &str {
-        match self {
-            Self::Session(session) | Self::Subagent { session, .. } => session,
-        }
-    }
-}
-
-/// Bounds process-local overflow history. Dropping a live entry costs one rediscovered
-/// overflow, so the victim choice does not need to be exact.
-const MAX_EVICTION_IDENTITIES: usize = 1_024;
-
-/// Per-identity record of the targets that overflowed their context window.
-///
-/// A conversation only grows, so a target that could not fit one turn will not fit a
-/// later one; remembering it lets the next turn skip a call certain to fail. Requests
-/// without a routing identity are not tracked — there is nothing to remember them by.
-#[derive(Default)]
-pub(crate) struct SessionEvictions {
-    by_identity: Mutex<HashMap<RoutingIdentity, HashSet<ModelId>>>,
-}
-
-impl SessionEvictions {
-    /// Forgets overflow history for a completed session, including every child of it.
-    pub(crate) fn remove_session(&self, session: &str) {
-        self.by_identity
-            .lock()
-            .retain(|identity, _| identity.session() != session);
-    }
-
-    /// The targets `identity` has already overflowed; empty for an untracked request.
-    fn evicted_for(&self, identity: Option<&RoutingIdentity>) -> Vec<ModelId> {
-        let Some(identity) = identity else {
-            return Vec::new();
-        };
-        self.by_identity
-            .lock()
-            .get(identity)
-            .map(|targets| targets.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    /// Remembers that `target` overflowed for `identity`, tracking at most
-    /// [`MAX_EVICTION_IDENTITIES`] identities.
-    fn record(&self, identity: Option<&RoutingIdentity>, target: &ModelId) {
-        let Some(identity) = identity else { return };
-        let mut histories = self.by_identity.lock();
-        if histories.len() >= MAX_EVICTION_IDENTITIES
-            && !histories.contains_key(identity)
-            && let Some(oldest) = histories.keys().next().cloned()
-        {
-            histories.remove(&oldest);
-        }
-        histories
-            .entry(identity.clone())
-            .or_default()
-            .insert(target.clone());
-    }
-}
-
-/// How many of `targets` this request is still allowed to reach.
-fn eligible_targets(targets: &[ModelId], excluded: &HashSet<ModelId>) -> usize {
-    targets
-        .iter()
-        .filter(|target| !excluded.contains(*target))
-        .count()
-}
-
-/// Bars the targets `identity` has already overflowed from this request, so routing does
-/// not select one that is certain to fail again.
-pub(crate) fn exclude_evicted(
-    excluded: &mut HashSet<ModelId>,
-    targets: &[ModelId],
-    evictions: &SessionEvictions,
-    identity: Option<&RoutingIdentity>,
-) {
-    for target in evictions.evicted_for(identity) {
-        // Never seed the pool empty: a later turn may be small enough to serve, and the
-        // caller should get the upstream's answer rather than a routing error.
-        if eligible_targets(targets, excluded) <= 1 {
-            break;
-        }
-        excluded.insert(target);
-    }
-}
-
-/// Returns the failed target and routing fallback policy for a terminal client error.
-fn classify_fallback(error: &LibsyError) -> Option<(&ModelId, RoutingFallbackReason)> {
-    let LibsyError::ClientCall { target, source } = error else {
-        return None;
-    };
-    let reason = match source {
-        LlmClientError::ContextWindowExceeded { .. } => RoutingFallbackReason::ContextWindow,
-        LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => {
-            RoutingFallbackReason::Unavailable
-        }
-        LlmClientError::UpstreamHttp { status, .. }
-            if matches!(*status, 403 | 408 | 429) || (500..=599).contains(status) =>
-        {
-            RoutingFallbackReason::Unavailable
-        }
-        _ => return None,
-    };
-    Some((target, reason))
-}
-
-/// Calls `target`, falling back to the next eligible target after a route-level failure,
-/// until a call succeeds or every target has been tried.
-///
-/// Routing is deliberately not re-run: the fallback replaces the target in place, so the
-/// caller's request-side work and retained state still see exactly one turn.
-/// `fallback_decision` builds the [`Decision`] published for a `from -> to` hop. Context
-/// overflows are recorded for `identity`; unavailable targets remain request-local.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn call_model_with_fallback(
-    excluded: &mut HashSet<ModelId>,
-    driver: &Driver,
-    targets: &[ModelId],
-    mut target: ModelId,
-    mut decision: Decision,
-    request: Request,
-    identity: Option<&RoutingIdentity>,
-    evictions: &SessionEvictions,
-    target_unavailable: impl Fn(&Request, &ModelId),
-    fallback_decision: impl Fn(&ModelId, &ModelId, RoutingFallbackReason) -> Decision,
-) -> Result<Response> {
-    loop {
-        let result = driver.call_model(request.clone(), decision.clone()).await;
-        let Err(error) = result else { return result };
-        let Some((failed, reason)) = classify_fallback(&error) else {
-            return Err(error);
-        };
-        // A target already excluded means the pool is spent; surface the client error
-        // so the caller still sees the concrete upstream failure.
-        if !excluded.insert(failed.clone()) {
-            return Err(error);
-        }
-        match reason {
-            RoutingFallbackReason::ContextWindow => evictions.record(identity, failed),
-            RoutingFallbackReason::Unavailable => target_unavailable(&request, failed),
-        }
-        let Ok(next) = select_eligible_model(targets, &target, excluded) else {
-            return Err(error);
-        };
-        decision = fallback_decision(&target, &next, reason);
-        target = next;
-        driver.decide(decision.clone()).await?;
     }
 }
 
@@ -588,6 +409,8 @@ pub trait Algorithm: Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::core::testing::{Serve, ServeResult, echo, reply, test_drive};
     use futures::StreamExt;
@@ -601,61 +424,6 @@ mod tests {
 
     fn test_error(message: &'static str) -> LibsyError {
         LibsyError::external("test", TestError(message))
-    }
-
-    fn classified_client_error(source: LlmClientError) -> Option<RoutingFallbackReason> {
-        classify_fallback(&LibsyError::client_call("target", source)).map(|(_, reason)| reason)
-    }
-
-    #[test]
-    fn route_fallback_only_accepts_context_and_unavailable_failures() {
-        assert_eq!(
-            classified_client_error(LlmClientError::ContextWindowExceeded {
-                model: ModelId::from("target"),
-                message: "too long".to_string(),
-            }),
-            Some(RoutingFallbackReason::ContextWindow)
-        );
-        for source in [
-            LlmClientError::Transport {
-                source: Box::new(std::io::Error::other("connection failed")),
-            },
-            LlmClientError::Timeout {
-                source: Box::new(std::io::Error::other("request timed out")),
-            },
-        ] {
-            assert_eq!(
-                classified_client_error(source),
-                Some(RoutingFallbackReason::Unavailable)
-            );
-        }
-        for (status, expected) in [
-            (400, None),
-            (401, None),
-            (403, Some(RoutingFallbackReason::Unavailable)),
-            (404, None),
-            (408, Some(RoutingFallbackReason::Unavailable)),
-            (409, None),
-            (429, Some(RoutingFallbackReason::Unavailable)),
-            (499, None),
-            (500, Some(RoutingFallbackReason::Unavailable)),
-            (599, Some(RoutingFallbackReason::Unavailable)),
-            (600, None),
-        ] {
-            assert_eq!(
-                classified_client_error(LlmClientError::UpstreamHttp {
-                    status,
-                    body: "failed".to_string(),
-                }),
-                expected
-            );
-        }
-        assert_eq!(
-            classified_client_error(LlmClientError::InvalidResponse {
-                source: Box::new(std::io::Error::other("invalid response")),
-            }),
-            None
-        );
     }
 
     /// Build a routed decision for orchestration tests.
@@ -683,7 +451,7 @@ mod tests {
                 .clone();
             let decision = test_decision(target.clone());
             driver.decide(decision.clone()).await?;
-            driver.call_model(request, decision).await
+            driver.call_model(request, vec![target], true).await
         }
     }
 
@@ -713,12 +481,12 @@ mod tests {
             let first_driver = driver.clone();
             let mut first = tokio::spawn(async move {
                 first_driver
-                    .call_model(request(), test_decision(ModelId::from("first")))
+                    .call_model(request(), vec![ModelId::from("first")], true)
                     .await
             });
             let second = tokio::spawn(async move {
                 driver
-                    .call_model(request(), test_decision(ModelId::from("second")))
+                    .call_model(request(), vec![ModelId::from("second")], true)
                     .await
             });
 
@@ -728,7 +496,7 @@ mod tests {
                 let Step::CallModel(call) = step else {
                     return Err(test_error("expected a CallModel step"));
                 };
-                let selected_model = call.selected_model_id().to_string();
+                let selected_model = call.models[0].to_string();
                 calls.insert(selected_model, call);
             }
             assert!(
@@ -765,7 +533,7 @@ mod tests {
             let (driver, mut step_rx) = Driver::new("test");
             let producer = tokio::spawn(async move {
                 driver
-                    .call_model(request(), test_decision(ModelId::from("dropped")))
+                    .call_model(request(), vec![ModelId::from("dropped")], true)
                     .await
             });
             let step = step_rx.recv().await.ok_or(DriverError::StreamClosed)??;
@@ -803,19 +571,18 @@ mod tests {
     #[tokio::test]
     async fn into_parts_yields_the_selected_model_without_answering_it() -> Result<()> {
         let (driver, mut step_rx) = Driver::new("test");
-        let decision = test_decision(ModelId::from("answer/model"));
-        let producer = tokio::spawn({
-            let decision = decision.clone();
-            async move { driver.call_model(request(), decision).await }
+        let producer = tokio::spawn(async move {
+            driver
+                .call_model(request(), vec![ModelId::from("answer/model")], true)
+                .await
         });
 
         let step = step_rx.recv().await.ok_or(DriverError::StreamClosed)??;
         let Step::CallModel(call) = step else {
             return Err(test_error("expected a CallModel step"));
         };
-        let (taken_request, taken_decision) = call.into_parts();
-        assert_eq!(taken_decision.selected_model_id(), "answer/model");
-        assert!(taken_decision.is_answer_call());
+        let (taken_request, taken_models) = call.into_parts();
+        assert_eq!(taken_models, vec![ModelId::from("answer/model")]);
         assert_eq!(
             taken_request.llm_request.model.as_deref(),
             Some("answer/model")
@@ -859,7 +626,7 @@ mod tests {
     /// replaying `chunks` in order (as `Ok` items).
     fn streaming_orch(chunks: Vec<LlmResponseChunk>) -> (Arc<dyn Algorithm>, impl Serve) {
         let algo = orch(target_set(&["stream/model"]));
-        let serve = move |_decision: Decision, _request: Request| {
+        let serve = move |_target: ModelId, _request: Request| {
             let chunks = chunks.clone();
             async move {
                 let stream =
@@ -943,7 +710,7 @@ mod tests {
             match step? {
                 Step::CallModel(call) => {
                     saw_call = true;
-                    assert_eq!(call.selected_model_id(), "offload/model");
+                    assert_eq!(call.models, vec![ModelId::from("offload/model")]);
                     // Fulfilling the promise is the "real" model call the caller makes.
                     call.respond(Ok(Response {
                         llm_response: LlmResponse::Agg(text_response(
@@ -1012,11 +779,11 @@ mod tests {
         for _ in 0..N {
             let algo = algo.clone();
             let barrier = barrier.clone();
-            let serve = move |decision: Decision, _request: Request| {
+            let serve = move |target: ModelId, _request: Request| {
                 let barrier = barrier.clone();
                 async move {
                     barrier.wait().await;
-                    Ok(reply(decision.selected_model_id()))
+                    Ok(reply(target))
                 }
             };
             handles.push(tokio::spawn(async move {
@@ -1301,10 +1068,8 @@ mod tests {
         }
 
         async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
-            let dec_w = test_decision(self.winner.clone().into());
-            let dec_l = test_decision(self.loser.clone().into());
-            let win = driver.call_model(request.clone(), dec_w);
-            let lose = driver.call_model(request, dec_l);
+            let win = driver.call_model(request.clone(), vec![self.winner.clone().into()], true);
+            let lose = driver.call_model(request, vec![self.loser.clone().into()], true);
             // First to resolve wins; `select!` drops the losing future (and its promise).
             tokio::select! {
                 res = win => res,
@@ -1322,10 +1087,10 @@ mod tests {
             winner: "winner".to_string(),
             loser: "loser".to_string(),
         });
-        let serve = move |decision: Decision, _request: Request| {
+        let serve = move |target: ModelId, _request: Request| {
             let started = started.clone();
             async move {
-                if decision.selected_model_id() == "loser" {
+                if target == "loser" {
                     started.notify_one();
                     match loser_delay {
                         Some(delay) => tokio::time::sleep(delay).await,
@@ -1334,7 +1099,7 @@ mod tests {
                 } else {
                     started.notified().await;
                 }
-                Ok(reply(decision.selected_model_id()))
+                Ok(reply(target))
             }
         };
         (algo, serve)
@@ -1400,8 +1165,7 @@ mod tests {
 
             async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
                 let offloads = futures::future::join_all((0..self.n).map(|i| {
-                    let decision = test_decision(format!("m{i}").into());
-                    driver.call_model(request.clone(), decision)
+                    driver.call_model(request.clone(), vec![format!("m{i}").into()], true)
                 }));
                 tokio::select! {
                     _ = offloads => Err(test_error("offloads unexpectedly completed")),
@@ -1420,7 +1184,7 @@ mod tests {
 
         // Serving enters each call; once all N are in flight it signals, then pends forever.
         let started = Arc::new(AtomicUsize::new(0));
-        let serve = move |_decision: Decision, _request: Request| {
+        let serve = move |_target: ModelId, _request: Request| {
             let started = started.clone();
             let all_started = all_started.clone();
             async move {
