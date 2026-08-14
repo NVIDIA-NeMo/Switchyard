@@ -9,8 +9,8 @@ use serde_json::{Map, Value, json};
 
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
-use crate::format::FormatId;
-use crate::llm::{ContentBlock, LlmRequest, Message, PreservationMetadata};
+use crate::format::{FormatId, WireFormat};
+use crate::llm::{ContentBlock, InstructionBlock, LlmRequest, Message, PreservationMetadata, Role};
 use crate::policy::{
     LossyConversionPolicy, PreservationPolicy, TranslationPolicy, UnknownFieldPolicy,
 };
@@ -269,6 +269,173 @@ pub fn exact_preserved_response(
     (policy.preservation != PreservationPolicy::Disabled)
         .then(|| preservation.responses.get(&format).cloned())
         .flatten()
+}
+
+/// Prepends a system prompt while preserving unrelated fields in built-in request formats.
+///
+/// Exact preserved bodies are patched in place so unrelated provider fields survive. A custom
+/// or malformed preserved body is discarded and will be rebuilt from the normalized request.
+pub fn prepend_system_prompt(request: &mut LlmRequest, prompt: &str) {
+    let is_already_first = request.instructions.first().is_some_and(|instruction| {
+        instruction.role == Role::System
+            && matches!(
+                instruction.content.as_slice(),
+                [ContentBlock::Text { text }] if text_starts_with_prompt(text, prompt)
+            )
+    });
+    if !is_already_first {
+        request.instructions.insert(
+            0,
+            InstructionBlock {
+                role: Role::System,
+                content: vec![ContentBlock::Text {
+                    text: prompt.to_string(),
+                }],
+            },
+        );
+    }
+    let mut embedded_formats = Vec::new();
+    request.preservation.requests.retain(|format, body| {
+        let patched = match format.as_str() {
+            format if format == WireFormat::OpenAiChat.as_str() => {
+                prepend_openai_chat_system_prompt(body, prompt)
+            }
+            format if format == WireFormat::OpenAiResponses.as_str() => {
+                prepend_text_system_prompt(body, "instructions", prompt)
+            }
+            format if format == WireFormat::AnthropicMessages.as_str() => {
+                prepend_anthropic_system_prompt(body, prompt)
+            }
+            _ => false,
+        };
+        if patched && take_embedded_preservation(body) {
+            embedded_formats.push(format.clone());
+        }
+        patched
+    });
+    // Refresh envelopes only on bodies that arrived with one. The snapshot is serialized while
+    // every body is envelope-free, so it cannot recursively nest stale preservation metadata.
+    if !embedded_formats.is_empty()
+        && let Ok(envelope) = serde_json::to_value(&request.preservation)
+    {
+        for format in embedded_formats {
+            if let Some(body) = request.preservation.requests.get_mut(&format) {
+                restore_embedded_preservation(body, &envelope);
+            }
+        }
+    }
+}
+
+// Inserts a system message ahead of an exact Chat Completions message list.
+fn prepend_openai_chat_system_prompt(body: &mut Value, prompt: &str) -> bool {
+    let Some(body) = body.as_object_mut() else {
+        return false;
+    };
+    let messages = body
+        .entry("messages".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(messages) = messages.as_array_mut() else {
+        return false;
+    };
+    if messages.first().is_some_and(|message| {
+        message.get("role").and_then(Value::as_str) == Some("system")
+            && message
+                .get("content")
+                .is_some_and(|content| content_starts_with_prompt(content, prompt))
+    }) {
+        return true;
+    }
+    messages.insert(0, json!({"role": "system", "content": prompt}));
+    true
+}
+
+// Recognizes the scalar and block-array forms accepted for system content.
+fn content_starts_with_prompt(content: &Value, prompt: &str) -> bool {
+    match content {
+        Value::String(text) => text_starts_with_prompt(text, prompt),
+        Value::Array(blocks) => blocks
+            .first()
+            .is_some_and(|block| text_block_matches_prompt(block, prompt)),
+        _ => false,
+    }
+}
+
+fn text_block_matches_prompt(block: &Value, prompt: &str) -> bool {
+    block.get("type").and_then(Value::as_str) == Some("text")
+        && block
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text_starts_with_prompt(text, prompt))
+}
+
+fn text_starts_with_prompt(text: &str, prompt: &str) -> bool {
+    text == prompt
+        || text
+            .strip_prefix(prompt)
+            .is_some_and(|suffix| suffix.starts_with("\n\n"))
+}
+
+// Prepends a prompt to a provider's scalar instruction field.
+fn prepend_text_system_prompt(body: &mut Value, field: &str, prompt: &str) -> bool {
+    let Some(body) = body.as_object_mut() else {
+        return false;
+    };
+    prepend_text_field(body, field, prompt)
+}
+
+fn prepend_text_field(body: &mut Map<String, Value>, field: &str, prompt: &str) -> bool {
+    match body.get_mut(field) {
+        Some(Value::String(existing)) if text_starts_with_prompt(existing, prompt) => {
+            return true;
+        }
+        Some(Value::String(existing)) if existing.is_empty() => {
+            *existing = prompt.to_string();
+        }
+        Some(Value::String(existing)) => {
+            *existing = format!("{prompt}\n\n{existing}");
+        }
+        Some(value @ Value::Null) => {
+            *value = Value::String(prompt.to_string());
+        }
+        None => {
+            body.insert(field.to_string(), Value::String(prompt.to_string()));
+        }
+        Some(_) => return false,
+    }
+    true
+}
+
+// Preserves Anthropic's structured system blocks, including cache-control metadata.
+fn prepend_anthropic_system_prompt(body: &mut Value, prompt: &str) -> bool {
+    let Some(body) = body.as_object_mut() else {
+        return false;
+    };
+    if let Some(Value::Array(blocks)) = body.get_mut("system") {
+        if blocks
+            .first()
+            .is_some_and(|block| text_block_matches_prompt(block, prompt))
+        {
+            return true;
+        }
+        blocks.insert(0, json!({"type": "text", "text": prompt}));
+        return true;
+    }
+    prepend_text_field(body, "system", prompt)
+}
+
+// Removes a stale embedded snapshot and reports whether the caller must refresh it.
+fn take_embedded_preservation(body: &mut Value) -> bool {
+    if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
+        return metadata.remove(SWITCHYARD_METADATA_KEY).is_some();
+    }
+    false
+}
+
+// Attaches the refreshed snapshot to a body that originally carried one.
+fn restore_embedded_preservation(body: &mut Value, envelope: &Value) {
+    if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.insert(SWITCHYARD_METADATA_KEY.to_string(), envelope.clone());
+    }
 }
 
 /// Embeds preservation metadata into a translated wire body when requested.

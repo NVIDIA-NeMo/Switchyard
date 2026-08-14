@@ -31,5 +31,6 @@ pub use llm::*;
 pub use policy::*;
 pub use stream::*;
 pub use util::{
-    PRESERVATION_METADATA_KEY, normalize_anthropic_tool_use_ids, sanitize_anthropic_tool_use_id,
+    PRESERVATION_METADATA_KEY, normalize_anthropic_tool_use_ids, prepend_system_prompt,
+    sanitize_anthropic_tool_use_id,
 };

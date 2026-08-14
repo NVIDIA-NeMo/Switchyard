@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, drive};
+use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, TargetPrompts, drive};
 use switchyard_protocol::{
     Decision, LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
 };
@@ -207,7 +207,6 @@ async fn call_one(
     count: usize,
 ) -> Result<Response> {
     let span = tracing::Span::current();
-    observability::record_gen_ai_request(&span, &request.llm_request);
     if let Some(session_id) = call
         .request
         .metadata
@@ -217,9 +216,13 @@ async fn call_one(
         span.record("gen_ai.conversation.id", session_id);
     }
     let is_answer_call = call.is_answer_call;
-    // Resolved before the clock starts: picking the client is Switchyard's work, not
-    // the provider's, so it belongs in the routing overhead.
+    // Client and prompt selection are Switchyard work, so they remain outside provider latency.
     let client = clients.route(model_id);
+    let mut request = request;
+    if client.is_ok() {
+        clients.apply_target_prompt(model_id, is_answer_call, &mut request);
+    }
+    observability::record_gen_ai_request(&span, &request.llm_request);
     let started = Instant::now();
     let result = match client {
         Ok(client) => client.call(request).await,
@@ -290,7 +293,12 @@ fn request_for(request: &Request, target: &ModelId) -> Request {
 /// Cloning is cheap — the mapping is shared, so one router can serve every request.
 #[derive(Clone)]
 pub struct ClientRouter {
-    routing: Arc<Routing>,
+    inner: Arc<ClientRouterInner>,
+}
+
+struct ClientRouterInner {
+    routing: Routing,
+    prompts: TargetPrompts,
 }
 
 enum Routing {
@@ -300,11 +308,40 @@ enum Routing {
     ByModel(HashMap<ModelId, Arc<dyn RoutedLlmClient>>),
 }
 
+/// One normalized model call resolved to its target client and target-specific prompt.
+pub struct ResolvedLlmCall {
+    client: Arc<dyn RoutedLlmClient>,
+    request: Request,
+}
+
+impl ResolvedLlmCall {
+    /// The request that will be sent, including any selected target's system prompt.
+    pub fn request(&self) -> &Request {
+        &self.request
+    }
+
+    /// Perform the resolved call through its selected client.
+    pub async fn call(self) -> std::result::Result<Response, LlmClientError> {
+        self.client.call(self.request).await
+    }
+}
+
 impl ClientRouter {
     /// Build a router over `model name -> client`, for targets spread across providers.
     pub fn new(by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>) -> Self {
+        Self::new_with_target_prompts(by_model, TargetPrompts::default())
+    }
+
+    /// Build a router with system prompts applied to answer calls by selected target.
+    pub fn new_with_target_prompts(
+        by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>,
+        prompts: TargetPrompts,
+    ) -> Self {
         Self {
-            routing: Arc::new(Routing::ByModel(by_model)),
+            inner: Arc::new(ClientRouterInner {
+                routing: Routing::ByModel(by_model),
+                prompts,
+            }),
         }
     }
 
@@ -315,7 +352,32 @@ impl ClientRouter {
     /// only duplicate that.
     pub fn single(client: Arc<dyn RoutedLlmClient>) -> Self {
         Self {
-            routing: Arc::new(Routing::Single(client)),
+            inner: Arc::new(ClientRouterInner {
+                routing: Routing::Single(client),
+                prompts: TargetPrompts::default(),
+            }),
+        }
+    }
+
+    /// Resolve a candidate model and request into the exact target call a host should perform.
+    ///
+    /// This is the prompt-aware host boundary. It stamps the selected model and prepends
+    /// that target's configured prompt only for answer calls.
+    pub fn resolve_call(
+        &self,
+        target: &ModelId,
+        is_answer_call: bool,
+        mut request: Request,
+    ) -> std::result::Result<ResolvedLlmCall, LlmClientError> {
+        let client = Arc::clone(self.route(target)?);
+        request.llm_request.model = Some(target.to_string());
+        self.apply_target_prompt(target, is_answer_call, &mut request);
+        Ok(ResolvedLlmCall { client, request })
+    }
+
+    fn apply_target_prompt(&self, target: &ModelId, is_answer_call: bool, request: &mut Request) {
+        if is_answer_call && let Some(prompt) = self.inner.prompts.get(target) {
+            switchyard_translation::prepend_system_prompt(&mut request.llm_request, prompt);
         }
     }
 
@@ -327,7 +389,7 @@ impl ClientRouter {
         &self,
         model: &ModelId,
     ) -> std::result::Result<&Arc<dyn RoutedLlmClient>, LlmClientError> {
-        match self.routing.as_ref() {
+        match &self.inner.routing {
             Routing::Single(client) => Ok(client),
             Routing::ByModel(by_model) => {
                 by_model

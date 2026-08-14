@@ -15,10 +15,14 @@ max_retries = 2
 id = "provider/model"
 llm_client = "provider"
 extra_body = { chat_template_kwargs = { enable_thinking = false } }
+system_prompt = "instructions for this model"
 ```
 
 `extra_body` is target-specific. It shallow-merges top-level provider options into
 the outbound request, while explicit request fields win on conflicts.
+`system_prompt` is also target-specific. It is prepended only when that target
+serves an answer call, including a fallback after another target exceeds its
+context window; classifier and judge calls are unchanged.
 
 The `chat_template_kwargs.enable_thinking` example is a provider/model-specific
 vLLM option. It is not a portable Switchyard reasoning switch. Use it on a judge

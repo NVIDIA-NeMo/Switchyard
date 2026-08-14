@@ -83,6 +83,8 @@ client's `base_url` should receive the caller's login. A forwarding route must
 be called through the matching provider API.
 Target-level `extra_body` values are shallow-merged into the upstream request when
 the request does not already contain that key.
+An optional target-level `system_prompt` is prepended when that target serves an
+answer call; it is not added to classifier or judge calls.
 `max_retries` defaults to `2` and applies to transport failures, timeouts, HTTP 408/429, and 5xx
 responses.
 
