@@ -1354,10 +1354,16 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 <td>Name of the environment variable holding the key. Omit to send no authentication.</td>
 </tr>
 <tr>
+<td><code>forward_auth</code></td>
+<td style="text-align: center;">No</td>
+<td><code>false</code></td>
+<td>Forward the caller's provider credential to this upstream.</td>
+</tr>
+<tr>
 <td><code>extra_headers</code></td>
 <td style="text-align: center;">No</td>
 <td><code>{}</code></td>
-<td>Custom HTTP headers sent to the model server. Set credentials with <code>api_key_env</code>. The server rejects <code>Authorization</code> for OpenAI clients and <code>x-api-key</code> or <code>anthropic-version</code> for Anthropic clients when it loads the config. Header names are case-insensitive.</td>
+<td>Custom HTTP headers sent to the model server. Set credentials with <code>api_key_env</code> or <code>forward_auth</code>; the server rejects headers owned by the selected auth mode. Header names are case-insensitive.</td>
 </tr>
 <tr>
 <td><code>max_retries</code></td>
@@ -1369,6 +1375,25 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 </table>
 <p>The TOML never contains the secret itself. <code>api_key_env</code> names a variable that
 must exist and be non-empty when the server loads.</p>
+<p>Set <code>forward_auth = true</code> to use each caller's credential instead of a
+server-owned key:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[llm_clients.claude]</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;anthropic_messages&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.anthropic.com&quot;</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">forward_auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span></code></pre></div>
+<p><code>forward_auth</code> cannot be combined with <code>api_key_env</code>. OpenAI clients forward
+<code>authorization</code>, <code>chatgpt-account-id</code>, and <code>x-openai-fedramp</code>. Anthropic clients
+forward <code>authorization</code> or <code>x-api-key</code>; for Claude subscription OAuth, they also
+forward <code>oauth-*</code> values from <code>anthropic-beta</code> and remove all other inbound beta
+values.</p>
+<p>This setting gives <code>base_url</code> the caller's login. Enable it only when that
+upstream should receive the credential, and use HTTPS unless the upstream runs
+on loopback. Forwarding clients do not follow HTTP redirects. Check every
+forwarding client used by a route, including classifier and judge targets. The
+server rejects an Anthropic forwarding route called through an OpenAI endpoint,
+or an OpenAI forwarding route called through an Anthropic endpoint, before it
+calls an upstream.</p>
 <h2 id="targetsname"><code>[targets.&lt;name&gt;]</code><a class="headerlink" href="#targetsname" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1449,13 +1474,13 @@ must exist and be non-empty when the server loads.</p>
 upstream model. Use it for local smoke tests.</p>
 <p>A noop-only deployment reaches no upstream but still needs the <code>[targets]</code>
 table, which can be empty:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="k">[targets]</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="k">[routes.smoke]</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop-route&quot;</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop&quot;</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">[targets]</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">[routes.smoke]</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop-route&quot;</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop&quot;</span>
 </span></code></pre></div>
 <h3 id="passthrough"><code>passthrough</code><a class="headerlink" href="#passthrough" title="Permanent link">&para;</a></h3>
 <p>Sends every request to one target.</p>
