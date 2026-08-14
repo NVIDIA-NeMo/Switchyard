@@ -2021,6 +2021,7 @@ async fn anthropic_stream_error_does_not_emit_success_terminal_events() -> TestR
     Ok(())
 }
 
+// A transport error must not expose credentials from the configured upstream URL.
 #[tokio::test]
 async fn transport_error_hides_credential_bearing_upstream_url() -> TestResult {
     const CANARY: &str = "CANARY_ADMIN_QUERY_KEY";
