@@ -331,7 +331,10 @@ fn resolve_path(headers: &http::HeaderMap, path: &str) -> Option<String> {
     }
 
     match current {
-        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::String(s) => {
+            let value = s.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        }
         serde_json::Value::Null => None,
         leaf => Some(leaf.to_string()),
     }
@@ -538,6 +541,27 @@ mod tests {
             None
         );
         assert_eq!(sy_header(&headers, "x-not-a-field"), None);
+    }
+
+    // Blank nested metadata must not mask a valid lower-priority session header.
+    #[test]
+    fn nested_metadata_strings_match_flat_header_normalization() {
+        let body = serde_json::json!({ "session_id": "  codex-session  " }).to_string();
+        let headers = slice_to_header_map(&[(CODEX_TURN_METADATA_HEADER, body.as_str())]);
+        assert_eq!(
+            sy_header(&headers, SWITCHYARD_SESSION_ID_HEADER).as_deref(),
+            Some("codex-session")
+        );
+
+        let blank_body = serde_json::json!({ "session_id": "   " }).to_string();
+        let headers = slice_to_header_map(&[
+            (CODEX_TURN_METADATA_HEADER, blank_body.as_str()),
+            (SESSION_ID_HEADER, "fallback-session"),
+        ]);
+        assert_eq!(
+            sy_header(&headers, SWITCHYARD_SESSION_ID_HEADER).as_deref(),
+            Some("fallback-session")
+        );
     }
 
     #[test]
