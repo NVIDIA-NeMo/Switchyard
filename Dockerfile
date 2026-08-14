@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Build the standalone switchyard-server binary against the workspace lockfile.
-FROM rust:1.96-bookworm AS builder
+FROM rust:1.96.1-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .cargo/ .cargo/
 COPY crates/ crates/
 RUN cargo build --release --locked --package switchyard-server
 
