@@ -867,23 +867,30 @@ fn client_error(error: &LlmClientError) -> Response {
             "upstream_error",
             "upstream_error",
         ),
-        LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
-            error_response(
-                StatusCode::BAD_GATEWAY,
-                source.to_string(),
-                "upstream_error",
-                "upstream_error",
-            )
-        }
+        // Transport sources may include the full request URL, including configured
+        // query credentials. Keep transport details out of client-visible errors.
+        LlmClientError::Transport { .. } => error_response(
+            StatusCode::BAD_GATEWAY,
+            "upstream transport error",
+            "upstream_error",
+            "upstream_error",
+        ),
+        LlmClientError::InvalidResponse { source } => error_response(
+            StatusCode::BAD_GATEWAY,
+            source.to_string(),
+            "upstream_error",
+            "upstream_error",
+        ),
         LlmClientError::ResponseTranslation(message) => error_response(
             StatusCode::BAD_GATEWAY,
             message,
             "upstream_error",
             "upstream_error",
         ),
-        LlmClientError::Timeout { source } => error_response(
+        // Timeout sources can carry the same request context as transport errors.
+        LlmClientError::Timeout { .. } => error_response(
             StatusCode::GATEWAY_TIMEOUT,
-            source.to_string(),
+            "upstream request timed out",
             "upstream_error",
             "upstream_timeout",
         ),
@@ -1457,6 +1464,48 @@ mod tests {
             request_log_level(StatusCode::INTERNAL_SERVER_ERROR),
             Level::ERROR
         );
+    }
+
+    // Timeout sources may contain configured upstream URLs, so only a fixed message crosses the
+    // client-facing boundary.
+    #[test]
+    fn client_timeout_error_hides_source_details() {
+        const UPSTREAM_URL: &str =
+            "https://upstream.invalid/v1?key=CANARY_ADMIN_QUERY_KEY/responses";
+        let error = LlmClientError::Timeout {
+            source: Box::new(std::io::Error::other(format!(
+                "request timed out for {UPSTREAM_URL}"
+            ))),
+        };
+
+        let response = client_error(&error);
+        let api_error = response
+            .extensions()
+            .get::<ApiError>()
+            .expect("client error metadata");
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(api_error.message, "upstream request timed out");
+        assert_eq!(api_error.error_type, "upstream_error");
+        assert_eq!(api_error.code, "upstream_timeout");
+        assert!(!api_error.message.contains(UPSTREAM_URL));
+    }
+
+    // Response-decoding details remain client-visible.
+    #[test]
+    fn client_invalid_response_error_preserves_source_detail() {
+        let error = LlmClientError::InvalidResponse {
+            source: Box::new(std::io::Error::other("response body was truncated")),
+        };
+
+        let response = client_error(&error);
+        let api_error = response
+            .extensions()
+            .get::<ApiError>()
+            .expect("client error metadata");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(api_error.message, "response body was truncated");
+        assert_eq!(api_error.error_type, "upstream_error");
+        assert_eq!(api_error.code, "upstream_error");
     }
 
     // Canonical error text remains available without consuming the response body.

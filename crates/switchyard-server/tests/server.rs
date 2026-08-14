@@ -2022,6 +2022,47 @@ async fn anthropic_stream_error_does_not_emit_success_terminal_events() -> TestR
 }
 
 #[tokio::test]
+async fn transport_error_hides_credential_bearing_upstream_url() -> TestResult {
+    const CANARY: &str = "CANARY_ADMIN_QUERY_KEY";
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    drop(listener);
+    let base_url = format!("http://{addr}/v1?key={CANARY}");
+    let upstream_request_url = format!("{base_url}/chat/completions");
+    let app = build_switchyard_router(random_state(&base_url, &[(ROUTE_MODEL, &["model/a"])])?);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::BAD_GATEWAY);
+    let body = response.json()?;
+    assert_eq!(body["error"]["type"], "upstream_error");
+    assert_eq!(body["error"]["code"], "upstream_error");
+    let message = body["error"]["message"]
+        .as_str()
+        .ok_or("transport error message was not text")?;
+    assert_eq!(message, "upstream transport error");
+    assert!(
+        !message.contains(CANARY),
+        "credential leaked in {message:?}"
+    );
+    assert!(
+        !message.contains(&upstream_request_url),
+        "upstream URL leaked in {message:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn request_and_upstream_errors_use_the_inbound_wire_format() -> TestResult {
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
