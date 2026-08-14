@@ -3,6 +3,7 @@
 .pytest_cache
 .ruff_cache
 .venv
+target
 .worktrees
 benchmark/datasets
 benchmark/tb_runs
