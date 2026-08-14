@@ -3,11 +3,15 @@
 
 //! Tests for buffered request translation between provider formats.
 
+pub mod common;
+
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
     LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
 };
+
+use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -1046,14 +1050,11 @@ fn responses_reasoning_item_merges_into_next_assistant_message_for_openai_chat()
     Ok(())
 }
 
-// Verifies Chat reasoning details survive normalization when exact preservation is disabled.
 #[test]
 fn openai_chat_reasoning_details_round_trip_in_assistant_history() -> TestResult {
     let engine = TranslationEngine::default();
-    let policy = TranslationPolicy {
-        preservation: switchyard_translation::PreservationPolicy::Disabled,
-        ..TranslationPolicy::default()
-    };
+    // Exercise the normalized IR path instead of replaying the original JSON.
+    let policy = normalized_policy();
     let details = json!([
         {
             "type": "reasoning.summary",
@@ -1071,7 +1072,7 @@ fn openai_chat_reasoning_details_round_trip_in_assistant_history() -> TestResult
         }
     ]);
     let body = json!({
-        "model": "z-ai/glm-5.2",
+        "model": REASONING_MODEL,
         "messages": [
             {"role": "user", "content": "Inspect the environment"},
             {
@@ -1079,11 +1080,7 @@ fn openai_chat_reasoning_details_round_trip_in_assistant_history() -> TestResult
                 "content": null,
                 "reasoning": "fallback text",
                 "reasoning_details": details,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {"name": "shell", "arguments": "{\"command\":\"pwd\"}"}
-                }]
+                "tool_calls": [shell_tool_call()]
             },
             {"role": "tool", "tool_call_id": "call-1", "content": "/workspace"}
         ]
@@ -1104,14 +1101,10 @@ fn openai_chat_reasoning_details_round_trip_in_assistant_history() -> TestResult
     Ok(())
 }
 
-// Verifies encrypted-only Chat details retain the plaintext fallback needed by providers.
 #[test]
 fn openai_chat_encrypted_reasoning_details_retain_fallback() -> TestResult {
     let engine = TranslationEngine::default();
-    let policy = TranslationPolicy {
-        preservation: switchyard_translation::PreservationPolicy::Disabled,
-        ..TranslationPolicy::default()
-    };
+    let policy = normalized_policy();
     let details = json!([{
         "type": "reasoning.encrypted",
         "data": "opaque-encrypted-reasoning",
@@ -1120,7 +1113,7 @@ fn openai_chat_encrypted_reasoning_details_retain_fallback() -> TestResult {
         "index": 0
     }]);
     let body = json!({
-        "model": "z-ai/glm-5.2",
+        "model": REASONING_MODEL,
         "messages": [{
             "role": "assistant",
             "content": null,

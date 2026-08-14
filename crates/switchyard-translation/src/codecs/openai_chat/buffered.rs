@@ -401,9 +401,12 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
         .and_then(Value::as_array)
         .filter(|details| !details.is_empty())
     {
-        let detail_text = reasoning_text_from_details(details);
-        let fallback_text = first_nonempty_string(object, &["reasoning_content", "reasoning"])
-            .map(ToOwned::to_owned);
+        let text = reasoning_text_from_details(details)
+            .or_else(|| {
+                first_nonempty_string(object, &["reasoning_content", "reasoning"])
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_default();
         let signature = details.iter().find_map(|detail| {
             detail
                 .get("signature")
@@ -414,17 +417,9 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
         content.insert(
             0,
             ContentBlock::Reasoning {
-                text: detail_text
-                    .clone()
-                    .or_else(|| fallback_text.clone())
-                    .unwrap_or_default(),
+                text,
                 signature,
                 details: details.clone(),
-                fallback_text: if detail_text.is_none() {
-                    fallback_text
-                } else {
-                    None
-                },
             },
         );
         return;
@@ -437,7 +432,6 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
                 text: text.to_string(),
                 signature: None,
                 details: Vec::new(),
-                fallback_text: None,
             },
         );
     }
@@ -892,7 +886,7 @@ fn encode_openai_message_plaintext_reasoning(message: &mut Value, content: &[Con
     }
 }
 
-// Adds exact provider details and any plaintext fallback they require.
+// Adds exact provider details and text that cannot be recovered from those details.
 fn encode_openai_message_structured_reasoning(
     message: &mut Value,
     content: &[ContentBlock],
@@ -902,7 +896,13 @@ fn encode_openai_message_structured_reasoning(
     let fallback = content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Reasoning { fallback_text, .. } => fallback_text.as_deref(),
+            ContentBlock::Reasoning { text, details, .. }
+                if !details.is_empty()
+                    && reasoning_text_from_details(details).as_deref() != Some(text.as_str())
+                    && !text.is_empty() =>
+            {
+                Some(text.as_str())
+            }
             _ => None,
         })
         .collect::<Vec<_>>()

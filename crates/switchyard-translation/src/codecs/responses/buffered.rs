@@ -586,7 +586,6 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
         text: parts.join("\n"),
         signature: None,
         details: Vec::new(),
-        fallback_text: None,
     }]
 }
 
@@ -652,7 +651,6 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                                 .to_string(),
                             signature: None,
                             details: Vec::new(),
-                            fallback_text: None,
                         });
                     }
                     Some("input_image") => {

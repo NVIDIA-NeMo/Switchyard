@@ -111,16 +111,16 @@ fn decode_openai_chat_stream(
                 .and_then(Value::as_array)
                 .filter(|details| !details.is_empty())
             {
-                let fallback_text = if reasoning_text_from_details(details).is_none() {
-                    first_nonempty_string(delta, &["reasoning_content", "reasoning"])
-                        .map(ToOwned::to_owned)
-                } else {
-                    None
-                };
+                let text = reasoning_text_from_details(details)
+                    .or_else(|| {
+                        first_nonempty_string(delta, &["reasoning_content", "reasoning"])
+                            .map(ToOwned::to_owned)
+                    })
+                    .unwrap_or_default();
                 out.push(LlmResponseChunk::ReasoningDetailsDelta {
                     index: 0,
                     details: details.clone(),
-                    fallback_text,
+                    text,
                 });
             } else {
                 for reasoning_key in ["reasoning_content", "reasoning"] {
@@ -213,13 +213,10 @@ fn encode_openai_chat_stream(
                 None,
             )]
         }
-        LlmResponseChunk::ReasoningDetailsDelta {
-            details,
-            fallback_text,
-            ..
-        } => {
+        LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
+            let details_text = reasoning_text_from_details(&details);
             let mut delta = json!({"reasoning_details": details});
-            if let Some(text) = fallback_text {
+            if !text.is_empty() && details_text.as_deref() != Some(text.as_str()) {
                 delta["reasoning"] = Value::String(text);
             }
             vec![openai_stream_chunk(state, delta, None, None)]

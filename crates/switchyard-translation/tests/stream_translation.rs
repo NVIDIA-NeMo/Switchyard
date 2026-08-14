@@ -3,12 +3,16 @@
 
 //! Tests for translating streaming provider events through the stream IR.
 
+pub mod common;
+
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use switchyard_protocol::{ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
 };
+
+use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -769,32 +773,15 @@ fn openai_chat_reasoning_stream_fields_do_not_become_anthropic_text() -> TestRes
     Ok(())
 }
 
-// Verifies structured Chat reasoning deltas are replayed without flattening.
 #[test]
 fn openai_chat_stream_round_trips_reasoning_details() -> TestResult {
     let engine = TranslationEngine::default();
     let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
-    let details = json!([
-        {
-            "type": "reasoning.text",
-            "text": "Inspect the environment.",
-            "signature": "opaque-signature",
-            "id": "reasoning-1",
-            "format": "anthropic-claude-v1",
-            "index": 0
-        },
-        {
-            "type": "reasoning.encrypted",
-            "data": "opaque-encrypted-reasoning",
-            "id": "reasoning-1",
-            "format": "anthropic-claude-v1",
-            "index": 1
-        }
-    ]);
+    let details = text_and_encrypted_reasoning_details();
     let chunk = json!({
         "id": "chatcmpl-test",
         "object": "chat.completion.chunk",
-        "model": "z-ai/glm-5.2",
+        "model": REASONING_MODEL,
         "choices": [{
             "index": 0,
             "delta": {
@@ -821,7 +808,6 @@ fn openai_chat_stream_round_trips_reasoning_details() -> TestResult {
     Ok(())
 }
 
-// Verifies encrypted-only Chat deltas retain both opaque details and plaintext fallback.
 #[test]
 fn openai_chat_stream_retains_encrypted_details_and_fallback() -> TestResult {
     let engine = TranslationEngine::default();
@@ -833,7 +819,7 @@ fn openai_chat_stream_retains_encrypted_details_and_fallback() -> TestResult {
     let chunk = json!({
         "id": "chatcmpl-test",
         "object": "chat.completion.chunk",
-        "model": "z-ai/glm-5.2",
+        "model": REASONING_MODEL,
         "choices": [{
             "index": 0,
             "delta": {
@@ -864,7 +850,6 @@ fn openai_chat_stream_retains_encrypted_details_and_fallback() -> TestResult {
     Ok(())
 }
 
-// Verifies an empty detail text does not mask a usable summary.
 #[test]
 fn openai_chat_stream_uses_summary_when_detail_text_is_empty() -> TestResult {
     let engine = TranslationEngine::default();
@@ -873,7 +858,7 @@ fn openai_chat_stream_uses_summary_when_detail_text_is_empty() -> TestResult {
     let chunk = json!({
         "id": "chatcmpl-test",
         "object": "chat.completion.chunk",
-        "model": "z-ai/glm-5.2",
+        "model": REASONING_MODEL,
         "choices": [{
             "index": 0,
             "delta": {

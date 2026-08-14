@@ -3,9 +3,15 @@
 
 //! Tests for buffered response translation between provider formats.
 
+pub mod common;
+
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+
+use common::{
+    REASONING_MODEL, normalized_policy, shell_tool_call, text_and_encrypted_reasoning_details,
+};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -331,34 +337,15 @@ fn openai_reasoning_response_translates_to_responses_reasoning_item() -> TestRes
     Ok(())
 }
 
-// Verifies structured Chat reasoning survives buffered decode and re-encode.
 #[test]
 fn openai_chat_response_round_trips_reasoning_details() -> TestResult {
     let engine = TranslationEngine::default();
-    let policy = TranslationPolicy {
-        preservation: switchyard_translation::PreservationPolicy::Disabled,
-        ..TranslationPolicy::default()
-    };
-    let details = json!([
-        {
-            "type": "reasoning.text",
-            "text": "Inspect the tool result.",
-            "signature": "opaque-signature",
-            "id": "reasoning-1",
-            "format": "anthropic-claude-v1",
-            "index": 0
-        },
-        {
-            "type": "reasoning.encrypted",
-            "data": "opaque-encrypted-reasoning",
-            "id": "reasoning-1",
-            "format": "anthropic-claude-v1",
-            "index": 1
-        }
-    ]);
+    // Exercise the normalized IR path instead of replaying the original JSON.
+    let policy = normalized_policy();
+    let details = text_and_encrypted_reasoning_details();
     let body = json!({
         "id": "chatcmpl-test",
-        "model": "z-ai/glm-5.2",
+        "model": REASONING_MODEL,
         "choices": [{
             "index": 0,
             "message": {
@@ -366,11 +353,7 @@ fn openai_chat_response_round_trips_reasoning_details() -> TestResult {
                 "content": null,
                 "reasoning": "fallback text",
                 "reasoning_details": details,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {"name": "shell", "arguments": "{\"command\":\"pwd\"}"}
-                }]
+                "tool_calls": [shell_tool_call()]
             },
             "finish_reason": "tool_calls"
         }]

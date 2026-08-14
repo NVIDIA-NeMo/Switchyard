@@ -526,7 +526,6 @@ fn decode_anthropic_content_block(
                 .filter(|signature| !signature.is_empty())
                 .map(ToOwned::to_owned),
             details: Vec::new(),
-            fallback_text: None,
         }],
         Some("tool_use") => vec![ContentBlock::ToolCall(ToolCall {
             id: block
