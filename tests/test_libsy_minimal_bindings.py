@@ -231,6 +231,16 @@ async def test_classifier_config_accepts_json_object_output() -> None:
     assert response["model"] == "weak"
 
 
+def test_classifier_config_rejects_unknown_response_format() -> None:
+    invalid_response_format: Any = "yaml"
+
+    with pytest.raises(
+        ValueError,
+        match="response_format_type must be 'json_schema' or 'json_object'",
+    ):
+        TaskClassifierConfig(0.5, response_format_type=invalid_response_format)
+
+
 async def test_random_weights_and_seed_are_reproducible() -> None:
     def algorithm():
         return algorithms.random(
