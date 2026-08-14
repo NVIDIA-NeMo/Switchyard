@@ -191,7 +191,12 @@ struct PyModelCall {
 impl PyModelCall {
     fn new(py: Python<'_>, call: CallModel) -> PyResult<Self> {
         let request = to_python(py, &call.request.llm_request)?;
-        let selected = call.models[0].clone();
+        let selected = call
+            .models
+            .first()
+            .cloned()
+            .ok_or(RustLibsyError::NoTargets)
+            .map_err(py_libsy_error)?;
         let decision = Py::new(
             py,
             PyDecision::from(Decision::new(selected, call.is_answer_call)),
@@ -264,7 +269,12 @@ impl PyModelCall {
             return Err(PyTypeError::new_err("error must derive from BaseException"));
         }
         let call = self.take()?;
-        let target = call.models[0].clone();
+        let target = call
+            .models
+            .first()
+            .cloned()
+            .ok_or(RustLibsyError::NoTargets)
+            .map_err(py_libsy_error)?;
         let source = if error.is_instance_of::<ContextWindowExceededError>() {
             LlmClientError::ContextWindowExceeded {
                 model: target.clone(),

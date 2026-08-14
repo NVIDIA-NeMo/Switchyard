@@ -2126,8 +2126,9 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
                 .headers
                 .get("x-model-router-selected-model")
                 .and_then(|value| value.to_str().ok()),
-            Some("model/weak")
+            Some("model/strong")
         );
+        assert_eq!(response.json()?["model"], "model/strong");
         let calls = upstream.calls.lock().await;
         assert_eq!(
             calls[previous_call_count..]
@@ -2142,6 +2143,8 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
     // Fallback causes are logged rather than accumulated in the legacy stats counters.
     assert_eq!(stats["routing_fallbacks"]["unavailable"], 0);
     assert_eq!(stats["routing_fallbacks"]["context_window"], 0);
+    assert_eq!(stats["models"]["model/strong"]["calls"], 3);
+    assert_eq!(stats["models"]["model/weak"]["errors"], 3);
 
     let records = std::fs::read_to_string(&log_path)?;
     let records = records
@@ -2150,7 +2153,7 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(records.len(), 3);
     assert!(records.iter().all(|record| {
-        record["model"] == "model/weak" && record.get("fallback_reason").is_none()
+        record["model"] == "model/strong" && record.get("fallback_reason").is_none()
     }));
 
     let previous_call_count = upstream.calls.lock().await.len();

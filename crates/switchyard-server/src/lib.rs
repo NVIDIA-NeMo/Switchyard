@@ -37,7 +37,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver, TranslatingLlmClient};
-use switchyard_protocol::{Decision, LlmClientError, Metadata, ModelId, Request, Usage};
+use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
@@ -757,22 +757,21 @@ async fn handle_llm_request(
             Ok(result) => result,
             Err(error) => return algorithm_error(error),
         };
-    // Metrics, response body, and routing header all read the same decision, so
-    // the model they name can never disagree. An empty trace leaves the body with
-    // the id the upstream reported.
     let decision = trace.last();
-    let response = if let Some(decision) = decision {
+    // The response carries the candidate that actually served it. Fall back to the routing
+    // decision for algorithms that return a response without an offloaded model call.
+    let served_model = response
+        .served_model()
+        .cloned()
+        .or_else(|| decision.map(|decision| decision.selected_model_id().clone()));
+    let response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()
-            .map(|probe| {
-                state
-                    .stats
-                    .prefix_eligibility(decision.selected_model_id(), probe)
-            })
+            .map(|probe| state.stats.prefix_eligibility(served_model, probe))
             .unwrap_or(0.0);
         usage_metrics::observe(
             response,
-            decision.selected_model_id(),
+            served_model.as_str(),
             started.0,
             state.stats,
             cache_eligible,
@@ -782,13 +781,13 @@ async fn handle_llm_request(
         response
     };
 
-    let served_model = decision.map(|decision| decision.selected_model_id().to_string());
-    let mut response = match into_http_response(response, wire_format, served_model) {
+    let response_model = served_model.as_ref().map(ToString::to_string);
+    let mut response = match into_http_response(response, wire_format, response_model) {
         Ok(response) => response,
         Err(error) => return server_error(error.to_string()),
     };
-    if let Some(decision) = decision {
-        attach_routing_headers(&mut response, decision);
+    if let Some(served_model) = served_model.as_ref() {
+        attach_routing_headers(&mut response, served_model.as_str());
     }
     response
 }
@@ -864,12 +863,8 @@ fn metadata_from_headers(headers: HeaderMap) -> Metadata {
     metadata
 }
 
-fn attach_routing_headers(response: &mut Response, decision: &Decision) {
-    insert_routing_header(
-        response,
-        HEADER_SELECTED_MODEL,
-        decision.selected_model_id(),
-    );
+fn attach_routing_headers(response: &mut Response, served_model: &str) {
+    insert_routing_header(response, HEADER_SELECTED_MODEL, served_model);
 }
 
 fn insert_routing_header(response: &mut Response, name: &'static str, value: &str) {

@@ -59,7 +59,7 @@ pub(crate) async fn test_drive(
 /// error-shape assertions match production.
 async fn fulfill(serve: Arc<impl Serve>, call: CallModel) -> Result<()> {
     let request = call.request.clone();
-    let target = call.models[0].clone();
+    let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
     let result = serve
         .serve(target.clone(), request)
         .await

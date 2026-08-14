@@ -47,8 +47,9 @@ picker = "efficient_first"
 confidence_threshold = 0.5
 ```
 
-Routing response headers describe the algorithm's selected model. They do not
-change when the client falls through to a later candidate.
+The response body, `x-model-router-selected-model` header, usage metrics, and
+routing log name the candidate that actually served the request, including when
+the client falls through from the algorithm's first choice.
 
 ## When every target overflows
 

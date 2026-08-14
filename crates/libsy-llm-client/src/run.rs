@@ -229,6 +229,10 @@ async fn call_one(
     let ended = Instant::now();
     let duration = ended - started;
 
+    let result = result.map(|mut response| {
+        response.set_served_model(model_id);
+        response
+    });
     let result = observability::observe_client_call(result);
     if let Some(observer) = observer {
         observer(RunObservation::LlmCall(LlmCallObservation {
@@ -517,6 +521,7 @@ mod tests {
                 .map(|response| response.model.as_deref()),
             Some(Some("strong"))
         );
+        assert_eq!(response.served_model().map(ModelId::as_str), Some("strong"));
 
         // Authentication failure is not retryable, so the second candidate is untouched.
         let (client, result) = run_candidates(FirstOutcome::Unauthorized).await;
@@ -593,6 +598,7 @@ mod tests {
         // Receiving a stream handle is a successful call and ends candidate selection.
         let (client, result) = run_candidates(FirstOutcome::StreamSuccess).await;
         let (_, response) = result?;
+        assert_eq!(response.served_model().map(ModelId::as_str), Some("weak"));
         let aggregate = response
             .llm_response
             .into_agg()

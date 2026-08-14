@@ -9,7 +9,7 @@
 
 use std::{collections::BTreeMap, str::FromStr as _};
 
-use crate::WireFormat;
+use crate::{ModelId, WireFormat};
 
 // Dotted paths addressing fields inside Codex's turn-metadata header JSON value.
 const CODEX_SESSION_ID_PATH: &str = "x-codex-turn-metadata.session_id";
@@ -185,6 +185,8 @@ pub struct Metadata {
     pub session_final: Option<bool>,
     /// External trace/request id for joining with the host's telemetry.
     pub correlation_id: Option<String>,
+    /// Switchyard target that successfully served a response.
+    pub served_model: Option<ModelId>,
     /// Arbitrary host-defined key/value metadata.
     pub extra_metadata: Option<BTreeMap<String, String>>,
     /// HTTP headers to attach when forwarding the request/response, if any.

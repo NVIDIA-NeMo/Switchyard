@@ -43,7 +43,7 @@ pub struct CallModel {
     /// The name of the algorithm that produced this call, so a host instrumenting the
     /// calls it serves can attribute its own spans to the algorithm behind them.
     pub algorithm: String,
-    /// The request to serve; its `model` is stamped with `models[0]`.
+    /// The request to serve; its `model` is stamped with the first candidate.
     pub request: Request,
     /// Candidate models, tried in order until one answers. Never empty.
     pub models: Vec<ModelId>,
@@ -129,7 +129,7 @@ impl Driver {
         skip_all,
         fields(
             algorithm = self.algorithm,
-            selected_model = %models.first().unwrap_or(&ModelId::from("NoTargets")),
+            selected_model = %models.first().map(ModelId::as_str).unwrap_or("NoTargets"),
             openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
             error = tracing::field::Empty,
@@ -496,7 +496,11 @@ mod tests {
                 let Step::CallModel(call) = step else {
                     return Err(test_error("expected a CallModel step"));
                 };
-                let selected_model = call.models[0].to_string();
+                let selected_model = call
+                    .models
+                    .first()
+                    .ok_or_else(|| test_error("model call has no candidates"))?
+                    .to_string();
                 calls.insert(selected_model, call);
             }
             assert!(
