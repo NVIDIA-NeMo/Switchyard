@@ -1564,6 +1564,12 @@ table, which can be empty:</p>
 <td><code>4096</code></td>
 <td>Maximum completion tokens for the judge verdict. Must be at least <code>1</code>.</td>
 </tr>
+<tr>
+<td><code>response_format_type</code></td>
+<td style="text-align: center;">No</td>
+<td><code>json_schema</code></td>
+<td>Structured-output mode for capability and escalation judges. Use <code>json_object</code> when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema.</td>
+</tr>
 </tbody>
 </table>
 <p>Capability mode classifies before serving. See
@@ -1741,8 +1747,9 @@ policy selector, and routes to any configured target label.</p>
 </tr>
 </tbody>
 </table>
-<p>Classifier prompts must not contain <code>{{RESPONSE_SCHEMA}}</code>. Switchyard sends the
-schema only through the provider's structured-output request.</p>
+<p>Classifier prompts must not contain <code>{{RESPONSE_SCHEMA}}</code>. Switchyard supplies
+the schema automatically: through the structured-output request in <code>json_schema</code>
+mode, or in the prompt in <code>json_object</code> mode.</p>
 <h3 id="stage_router"><code>stage_router</code><a class="headerlink" href="#stage_router" title="Permanent link">&para;</a></h3>
 <p>Scores tool signals to pick a tier per turn. See
 <a href="../../routing_algorithms/stage_router_routing/">Stage-Router Routing</a> for the
@@ -1798,6 +1805,12 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 <td style="text-align: center;">No</td>
 <td>unset</td>
 <td>System prompt handed to the efficient tier.</td>
+</tr>
+<tr>
+<td><code>classifier.response_format_type</code></td>
+<td style="text-align: center;">No</td>
+<td><code>json_schema</code></td>
+<td>Structured-output mode for the optional classifier judge. Use <code>json_object</code> when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally.</td>
 </tr>
 </tbody>
 </table>
