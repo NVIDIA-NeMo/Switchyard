@@ -147,6 +147,7 @@ third party/**/*.*
 scratch/
 plans/
 .experiments/
+.switchyard/
 
 # Benchmark result directories
 bench_results*/

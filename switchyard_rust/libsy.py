@@ -21,6 +21,7 @@ _EXPORTS = frozenset(
         "Step",
         "TaskClassifierConfig",
         "llm_task_classifier",
+        "model_as_tool",
         "noop",
         "random",
         "stage_router",
@@ -130,6 +131,8 @@ if TYPE_CHECKING:
         *,
         config: TaskClassifierConfig,
     ) -> Algorithm: ...
+
+    def model_as_tool(primary_target: str, media_target: str) -> Algorithm: ...
 
     def stage_router(
         capable_target: str,

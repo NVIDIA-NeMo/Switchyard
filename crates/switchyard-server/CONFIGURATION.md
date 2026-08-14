@@ -28,6 +28,36 @@ outside normal assistant `content`.
 To support another wire format, add its `ClientFormat` variant and explicit construction match in
 `src/config.rs`. Add a client type only when a second implementation exists.
 
+## Route a local Cosmos model as a tool
+
+The demo-only `cosmos_media` client adapts vLLM-Omni's image endpoint to a normal routed model call.
+It writes one PNG to `output_dir`, then returns its path as assistant text. Retries must be disabled
+because generation has file-producing side effects.
+
+```toml
+[llm_clients.cosmos]
+format = "cosmos_media"
+base_url = "http://127.0.0.1:8000/v1"
+max_retries = 0
+output_dir = ".switchyard/media"
+
+[targets.cosmos]
+id = "nvidia/Cosmos3-Nano"
+llm_client = "cosmos"
+
+[routes.media]
+id = "switchyard/media"
+type = "model_as_tool"
+primary_target = "frontier"
+media_target = "cosmos"
+tool_calling = true
+```
+
+`model_as_tool` appends a reserved `generate_media` function with one required string argument,
+`prompt`. A matching tool call becomes a second libsy model call to the media target. Otherwise,
+the primary response passes through unchanged. Python hosts serve both calls through the same
+`Algorithm.run_stream()` interface.
+
 ## Add an algorithm
 
 1. Implement and export the algorithm from `libsy`.

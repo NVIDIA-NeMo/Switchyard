@@ -1,0 +1,41 @@
+schema_version = 1
+
+# Both demo routes use the same frontier target. The only difference is whether
+# local Cosmos is exposed to it through generate_media(prompt).
+
+[llm_clients.nvidia_anthropic]
+format = "anthropic_messages"
+base_url = "https://inference-api.nvidia.com"
+api_key_env = "NVIDIA_API_KEY"
+
+[llm_clients.cosmos]
+format = "cosmos_media"
+base_url = "http://127.0.0.1:8000/v1"
+max_retries = 0
+output_dir = ".switchyard/media"
+
+[targets.frontier]
+id = "aws/anthropic/bedrock-claude-opus-4-8"
+llm_client = "nvidia_anthropic"
+
+[targets.frontier.extra_body.output_config]
+effort = "medium"
+
+[targets.cosmos]
+id = "nvidia/Cosmos3-Nano"
+llm_client = "cosmos"
+
+[routes.plain]
+id = "switchyard/frontier"
+type = "passthrough"
+target = "frontier"
+tool_calling = true
+reasoning = true
+
+[routes.media]
+id = "switchyard/media"
+type = "model_as_tool"
+primary_target = "frontier"
+media_target = "cosmos"
+tool_calling = true
+reasoning = true

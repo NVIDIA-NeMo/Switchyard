@@ -22,6 +22,7 @@ switchyard-protocol.workspace = true
 switchyard-translation.workspace = true
 reqwest.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 futures.workspace = true
 futures-util.workspace = true
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
@@ -38,4 +39,5 @@ tracing-opentelemetry.workspace = true
 opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
 thiserror.workspace = true
 tracing-subscriber.workspace = true
+tempfile = "3"
 wiremock = "0.6"

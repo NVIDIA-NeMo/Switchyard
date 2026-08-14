@@ -24,6 +24,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 | [`Passthrough`] | Always call one configured target. |
 | [`Random`] | Select among any number of targets using uniform or weighted routing. |
 | [`LlmTaskClassifier`] | Ask a judge model to choose an efficient or capable target. |
+| [`ModelAsTool`] | Let a primary model dispatch a prompt to a specialized media model. |
 | [`StageRouter`] | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
 
 [`Noop`] is a test helper, not a production routing algorithm.

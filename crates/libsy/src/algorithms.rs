@@ -8,6 +8,7 @@
 
 pub mod fall_through;
 pub mod llm_class;
+pub mod model_as_tool;
 pub mod noop;
 pub mod passthrough;
 pub mod rand;

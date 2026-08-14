@@ -18,6 +18,7 @@ pub use algorithms::llm_class::{
     CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
     TaskClassifierConfig,
 };
+pub use algorithms::model_as_tool::ModelAsTool;
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
 pub use algorithms::rand::{Random, RandomClassifier};

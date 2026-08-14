@@ -19,6 +19,7 @@
 pub mod backend;
 pub mod client;
 pub mod error;
+pub mod media;
 pub mod metrics;
 mod observability;
 mod observation;
@@ -28,6 +29,7 @@ pub mod run;
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
 pub use client::{ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
+pub use media::{CosmosMediaClient, CosmosMediaConfig};
 pub use observation::{LlmCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
 pub use run::{ClientRouter, run};

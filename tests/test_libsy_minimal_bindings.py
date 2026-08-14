@@ -110,6 +110,57 @@ async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() 
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "fast"}]
 
 
+async def test_model_as_tool_dispatches_selected_media_prompt() -> None:
+    class PrimaryClient(EchoClient):
+        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(request)
+            return {
+                "model": self.model,
+                "outputs": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_call",
+                                "id": "media-1",
+                                "name": "generate_media",
+                                "arguments": {"prompt": "A cinematic robot launch"},
+                            }
+                        ],
+                        "stop_reason": "tool_use",
+                    }
+                ],
+            }
+
+    primary = PrimaryClient("frontier")
+    media = EchoClient("nvidia/Cosmos3-Nano")
+    decisions, response = await run_algorithm(
+        algorithms.model_as_tool("frontier", "nvidia/Cosmos3-Nano"),
+        {"frontier": primary, "nvidia/Cosmos3-Nano": media},
+    )
+
+    assert [decision.selected_model_id for decision in decisions] == [
+        "frontier",
+        "nvidia/Cosmos3-Nano",
+    ]
+    assert primary.calls[0]["tools"][0]["name"] == "generate_media"
+    assert primary.calls[0]["tools"][0]["parameters"] == {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "A complete image generation prompt.",
+            }
+        },
+        "required": ["prompt"],
+        "additionalProperties": False,
+    }
+    assert media.calls[0]["messages"][0]["content"] == [
+        {"type": "text", "text": "A cinematic robot launch"}
+    ]
+    assert response["model"] == "nvidia/Cosmos3-Nano"
+
+
 async def test_into_parts_supports_decision_only_routing() -> None:
     algorithm = algorithms.random(["fast"])
 

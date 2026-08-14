@@ -5,20 +5,20 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use libsy::{
     Algorithm, ClassifierContractConfig, CustomClassifierConfig, CustomClassifierPolicy,
     EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
-    Noop, Passthrough, PickerMode, Random, StageRouter, StageRouterConfig, TargetPrompts,
-    TaskClassifierConfig,
+    ModelAsTool, Noop, Passthrough, PickerMode, Random, StageRouter, StageRouterConfig,
+    TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
 use switchyard_llm_client::{
-    Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    TranslatingLlmClient,
+    Backend, ClientRouter, CosmosMediaClient, CosmosMediaConfig, DEFAULT_MAX_RETRIES,
+    HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
 use switchyard_protocol::{ModelId, RoutedLlmClient};
 
@@ -98,6 +98,7 @@ impl ServerConfig {
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
+            self.validate_specialized_route(route_name, config)?;
             let algorithm = build_algorithm(route_name, config, &targets)?;
             let client = self.build_client_router(config, &clients)?;
             let count_tokens_target = self.build_count_tokens_target(config, &clients);
@@ -112,40 +113,136 @@ impl ServerConfig {
         ServerState::new_with_capabilities(routes)
     }
 
-    fn build_clients(&self) -> ServerResult<BTreeMap<String, Arc<TranslatingLlmClient>>> {
-        let mut models_by_client = self
+    fn validate_specialized_route(
+        &self,
+        route_name: &str,
+        route: &RouteConfig,
+    ) -> ServerResult<()> {
+        let RouteConfig::ModelAsTool {
+            primary_target,
+            media_target,
+            ..
+        } = route
+        else {
+            return Ok(());
+        };
+        if matches!(
+            self.target_client_format(route_name, primary_target)?,
+            ClientFormat::CosmosMedia
+        ) {
+            return Err(ServerError::new(format!(
+                "model_as_tool route {route_name} primary_target must use an LLM client"
+            )));
+        }
+        if !matches!(
+            self.target_client_format(route_name, media_target)?,
+            ClientFormat::CosmosMedia
+        ) {
+            return Err(ServerError::new(format!(
+                "model_as_tool route {route_name} media_target must use a cosmos_media client"
+            )));
+        }
+        Ok(())
+    }
+
+    fn target_client_format(
+        &self,
+        route_name: &str,
+        target_name: &str,
+    ) -> ServerResult<ClientFormat> {
+        let target = self.targets.get(target_name).ok_or_else(|| {
+            ServerError::new(format!(
+                "route {route_name} references unknown target {target_name}"
+            ))
+        })?;
+        self.llm_clients
+            .get(&target.llm_client)
+            .map(|client| client.format)
+            .ok_or_else(|| {
+                ServerError::new(format!(
+                    "target {target_name} references unknown llm client {}",
+                    target.llm_client
+                ))
+            })
+    }
+
+    fn build_clients(&self) -> ServerResult<BTreeMap<String, BuiltClient>> {
+        let mut targets_by_client = self
             .llm_clients
             .keys()
             .map(|name| (name.clone(), Vec::new()))
-            .collect::<BTreeMap<String, Vec<ModelConfig>>>();
+            .collect::<BTreeMap<String, Vec<(&str, &TargetConfig)>>>();
 
         for name in self.llm_clients.keys() {
             validate_value("llm client name", name)?;
         }
         for (target_name, target) in &self.targets {
-            let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
+            self.llm_clients.get(&target.llm_client).ok_or_else(|| {
                 ServerError::new(format!(
                     "target {target_name} references unknown llm client {}",
                     target.llm_client
                 ))
             })?;
-            let model_configs = models_by_client
+            targets_by_client
                 .get_mut(&target.llm_client)
-                .ok_or_else(|| ServerError::new("validated llm client was not initialized"))?;
-            model_configs.push(ModelConfig::new(
-                target.id.clone(),
-                build_backend(&target.llm_client, client_config, &target.extra_body)?,
-                None,
-            ));
+                .ok_or_else(|| ServerError::new("validated llm client was not initialized"))?
+                .push((target_name, target));
         }
 
         let mut clients = BTreeMap::new();
-        for (name, model_configs) in models_by_client {
-            let client = Arc::new(
-                TranslatingLlmClient::new(&model_configs)
-                    .map_err(|error| ServerError::new(error.to_string()))?,
-            );
-            clients.insert(name, client);
+        for (name, config) in &self.llm_clients {
+            let configured_targets = targets_by_client.remove(name).unwrap_or_default();
+            let client = match config.format {
+                ClientFormat::CosmosMedia => {
+                    if config.max_retries != 0 {
+                        return Err(ServerError::new(format!(
+                            "Cosmos media llm client {name} requires max_retries = 0 to avoid duplicate generation"
+                        )));
+                    }
+                    if let Some((target_name, _)) = configured_targets
+                        .iter()
+                        .find(|(_, target)| !target.extra_body.is_empty())
+                    {
+                        return Err(ServerError::new(format!(
+                            "Cosmos media target {target_name} does not support extra_body"
+                        )));
+                    }
+                    BuiltClient::Cosmos(Arc::new(
+                        CosmosMediaClient::new(CosmosMediaConfig {
+                            base_url: config.base_url.clone(),
+                            api_key: resolve_api_key(name, config)?,
+                            extra_headers: config.extra_headers.clone(),
+                            output_dir: config
+                                .output_dir
+                                .clone()
+                                .unwrap_or_else(|| PathBuf::from(".switchyard/media")),
+                        })
+                        .map_err(|error| ServerError::new(error.to_string()))?,
+                    ))
+                }
+                _ => {
+                    if config.output_dir.is_some() {
+                        return Err(ServerError::new(format!(
+                            "llm client {name} output_dir is only valid for cosmos_media"
+                        )));
+                    }
+                    let model_configs = configured_targets
+                        .into_iter()
+                        .map(|(_, target)| {
+                            Ok(ModelConfig::new(
+                                target.id.clone(),
+                                build_backend(name, config, &target.extra_body)?,
+                                None,
+                            ))
+                        })
+                        .collect::<ServerResult<Vec<_>>>()?;
+                    BuiltClient::Translating(Arc::new(
+                        TranslatingLlmClient::new(&model_configs)
+                            .map_err(|error| ServerError::new(error.to_string()))?,
+                    ))
+                }
+            };
+            clients.insert(name.clone(), client);
         }
         Ok(clients)
     }
@@ -171,7 +268,7 @@ impl ServerConfig {
     fn build_client_router(
         &self,
         route: &RouteConfig,
-        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        clients: &BTreeMap<String, BuiltClient>,
     ) -> ServerResult<ClientRouter> {
         let by_model = route
             .callable_target_names()
@@ -183,8 +280,7 @@ impl ServerConfig {
                 let client = clients.get(&target.llm_client).ok_or_else(|| {
                     ServerError::new(format!("target {name} has no constructed llm client"))
                 })?;
-                let client: Arc<dyn RoutedLlmClient> = client.clone();
-                Ok((target.id.clone(), client))
+                Ok((target.id.clone(), client.routed()))
             })
             .collect::<ServerResult<_>>()?;
         Ok(ClientRouter::new(by_model))
@@ -193,7 +289,7 @@ impl ServerConfig {
     fn build_count_tokens_target(
         &self,
         route_config: &RouteConfig,
-        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        clients: &BTreeMap<String, BuiltClient>,
     ) -> Option<CountTokensTarget> {
         route_config
             .routing_target_names()
@@ -202,6 +298,7 @@ impl ServerConfig {
             .filter_map(|(index, name)| {
                 let target = self.targets.get(name)?;
                 let client = clients.get(&target.llm_client)?;
+                let client = client.translating()?;
                 client.supports_count_tokens(&target.id).then_some((
                     count_tokens_priority(name, &target.id),
                     index,
@@ -214,6 +311,27 @@ impl ServerConfig {
                 model: target.id.clone(),
                 client: client.clone(),
             })
+    }
+}
+
+enum BuiltClient {
+    Translating(Arc<TranslatingLlmClient>),
+    Cosmos(Arc<CosmosMediaClient>),
+}
+
+impl BuiltClient {
+    fn routed(&self) -> Arc<dyn RoutedLlmClient> {
+        match self {
+            Self::Translating(client) => client.clone(),
+            Self::Cosmos(client) => client.clone(),
+        }
+    }
+
+    fn translating(&self) -> Option<&Arc<TranslatingLlmClient>> {
+        match self {
+            Self::Translating(client) => Some(client),
+            Self::Cosmos(_) => None,
+        }
     }
 }
 
@@ -237,6 +355,7 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    output_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,6 +375,8 @@ enum ClientFormat {
     OpenAiResponses,
     #[serde(rename = "anthropic_messages")]
     AnthropicMessages,
+    #[serde(rename = "cosmos_media")]
+    CosmosMedia,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -355,6 +476,17 @@ enum RouteConfig {
         #[serde(default)]
         reasoning: Option<bool>,
         target: String,
+    },
+    ModelAsTool {
+        id: ModelId,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
+        primary_target: String,
+        media_target: String,
     },
     LlmClassifier {
         id: ModelId,
@@ -468,6 +600,7 @@ impl RouteConfig {
             Noop { id, .. }
             | Random { id, .. }
             | LlmClassifier { id, .. }
+            | ModelAsTool { id, .. }
             | Passthrough { id, .. }
             | StageRouter { id, .. } => id,
         }
@@ -479,6 +612,7 @@ impl RouteConfig {
             Self::Noop { .. } => Vec::new(),
             Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
             Self::Passthrough { target, .. } => vec![target],
+            Self::ModelAsTool { primary_target, .. } => vec![primary_target],
             Self::LlmClassifier {
                 mode,
                 strong_target,
@@ -525,6 +659,7 @@ impl RouteConfig {
                 classifier: Some(classifier),
                 ..
             } => names.push(&classifier.target),
+            Self::ModelAsTool { media_target, .. } => names.push(media_target),
             _ => {}
         }
         names
@@ -546,6 +681,12 @@ impl RouteConfig {
                 ..
             }
             | Passthrough {
+                context_window,
+                tool_calling,
+                reasoning,
+                ..
+            }
+            | ModelAsTool {
                 context_window,
                 tool_calling,
                 reasoning,
@@ -771,7 +912,26 @@ fn build_backend(
             "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
         )));
     }
-    let api_key = config
+    let api_key = resolve_api_key(client_name, config)?;
+    let http = HttpBackendConfig {
+        base_url: base_url.to_string(),
+        api_key,
+        extra_headers: config.extra_headers.clone(),
+        extra_body: extra_body.clone(),
+        max_retries: config.max_retries,
+    };
+    match config.format {
+        ClientFormat::OpenAiChat => Ok(Backend::OpenAiChat(http)),
+        ClientFormat::OpenAiResponses => Ok(Backend::OpenAiResponses(http)),
+        ClientFormat::AnthropicMessages => Ok(Backend::Anthropic(http)),
+        ClientFormat::CosmosMedia => Err(ServerError::new(format!(
+            "Cosmos media llm client {client_name} cannot be built as a translating backend"
+        ))),
+    }
+}
+
+fn resolve_api_key(client_name: &str, config: &LlmClientConfig) -> ServerResult<Option<String>> {
+    config
         .api_key_env
         .as_deref()
         .map(|variable| {
@@ -792,19 +952,7 @@ fn build_backend(
             }
             Ok(api_key)
         })
-        .transpose()?;
-    let http = HttpBackendConfig {
-        base_url: base_url.to_string(),
-        api_key,
-        extra_headers: config.extra_headers.clone(),
-        extra_body: extra_body.clone(),
-        max_retries: config.max_retries,
-    };
-    Ok(match config.format {
-        ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
-        ClientFormat::OpenAiResponses => Backend::OpenAiResponses(http),
-        ClientFormat::AnthropicMessages => Backend::Anthropic(http),
-    })
+        .transpose()
 }
 
 const fn default_max_retries() -> u32 {
@@ -833,6 +981,15 @@ fn build_algorithm(
         RouteConfig::Passthrough { target, .. } => {
             let target = resolve_target_model_id(route_name, target, targets)?;
             Ok(Arc::new(Passthrough::new(target)))
+        }
+        RouteConfig::ModelAsTool {
+            primary_target,
+            media_target,
+            ..
+        } => {
+            let primary = resolve_target_model_id(route_name, primary_target, targets)?;
+            let media = resolve_target_model_id(route_name, media_target, targets)?;
+            Ok(Arc::new(ModelAsTool::new(primary, media)))
         }
         RouteConfig::LlmClassifier {
             classifier_target, ..
@@ -1095,6 +1252,84 @@ target = "weak"
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn builds_model_as_tool_with_cosmos_media_client() -> ServerResult<()> {
+        let config = r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[llm_clients.cosmos]
+format = "cosmos_media"
+base_url = "http://127.0.0.1:8000/v1"
+max_retries = 0
+output_dir = ".switchyard/test-media"
+
+[targets.primary]
+id = "frontier/model"
+llm_client = "primary"
+
+[targets.cosmos]
+id = "nvidia/Cosmos3-Nano"
+llm_client = "cosmos"
+
+[routes.media]
+id = "switchyard/media"
+type = "model_as_tool"
+primary_target = "primary"
+media_target = "cosmos"
+tool_calling = true
+"#;
+
+        let state = server_state_from_toml(config)?;
+        assert_eq!(state.models().collect::<Vec<_>>(), ["switchyard/media"]);
+        Ok(())
+    }
+
+    #[test]
+    fn validates_model_as_tool_client_roles_and_retry_safety() {
+        let valid = r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[llm_clients.cosmos]
+format = "cosmos_media"
+base_url = "http://127.0.0.1:8000/v1"
+max_retries = 0
+
+[targets.primary]
+id = "frontier/model"
+llm_client = "primary"
+
+[targets.cosmos]
+id = "nvidia/Cosmos3-Nano"
+llm_client = "cosmos"
+
+[routes.media]
+id = "switchyard/media"
+type = "model_as_tool"
+primary_target = "primary"
+media_target = "cosmos"
+"#;
+
+        let retried = valid.replace("max_retries = 0", "max_retries = 1");
+        assert!(error_message(&retried).contains("requires max_retries = 0"));
+
+        let wrong_media = valid.replace("media_target = \"cosmos\"", "media_target = \"primary\"");
+        assert!(error_message(&wrong_media).contains("must use a cosmos_media client"));
+
+        let wrong_primary = valid.replace(
+            "primary_target = \"primary\"",
+            "primary_target = \"cosmos\"",
+        );
+        assert!(error_message(&wrong_primary).contains("must use an LLM client"));
     }
 
     #[test]

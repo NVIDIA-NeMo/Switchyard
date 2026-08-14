@@ -2291,6 +2291,7 @@ name = "switchyard-llm-client"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "base64",
  "futures",
  "futures-util",
  "http",
@@ -2303,6 +2304,7 @@ dependencies = [
  "switchyard-libsy",
  "switchyard-protocol",
  "switchyard-translation",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

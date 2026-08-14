@@ -12,8 +12,8 @@ use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyVal
 use pyo3::prelude::*;
 use switchyard_libsy::{
     Algorithm, CallModel, ClassifierContractConfig, HandoffNoteConfig,
-    LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
-    PickerMode, Random, StageRouter, StageRouterConfig, Step as RustStep, StepStream,
+    LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, ModelAsTool,
+    Noop, PickerMode, Random, StageRouter, StageRouterConfig, Step as RustStep, StepStream,
     TaskClassifierConfig,
 };
 use switchyard_protocol::{
@@ -387,6 +387,14 @@ fn random_algorithm(
     })
 }
 
+/// Construct a model-as-a-tool router for a primary model and specialized media model.
+#[pyfunction(name = "model_as_tool")]
+fn model_as_tool_algorithm(primary_target: String, media_target: String) -> PyAlgorithm {
+    PyAlgorithm {
+        inner: Arc::new(ModelAsTool::new(primary_target, media_target)),
+    }
+}
+
 /// Construct task-level LLM classifier routing.
 #[pyfunction(name = "llm_task_classifier")]
 #[pyo3(signature = (
@@ -500,6 +508,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     libsy_module.add_class::<PyTaskClassifierConfig>()?;
     libsy_module.add_function(wrap_pyfunction!(noop_algorithm, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(random_algorithm, &libsy_module)?)?;
+    libsy_module.add_function(wrap_pyfunction!(model_as_tool_algorithm, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(
         llm_task_classifier_algorithm,
         &libsy_module
