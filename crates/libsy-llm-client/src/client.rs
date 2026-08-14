@@ -29,6 +29,7 @@ use crate::raw::RawResponse;
 
 // Headers this client owns or that are hop-by-hop. Backends apply an explicitly
 // enabled caller credential after generic metadata forwarding skips these.
+// Azure/OpenAI credentials and tenant selectors are also backend-owned.
 const RESERVED_HEADERS: &[&str] = &[
     "host",
     "content-length",
@@ -41,6 +42,9 @@ const RESERVED_HEADERS: &[&str] = &[
     "x-api-key",
     "chatgpt-account-id",
     "x-openai-fedramp",
+    "api-key",
+    "openai-organization",
+    "openai-project",
     "anthropic-beta",
     "anthropic-version",
     "content-type",
@@ -1807,6 +1811,18 @@ mod tests {
             "accept-encoding",
             http::HeaderValue::from_static("gzip, br"),
         );
+        headers.insert(
+            "api-key",
+            http::HeaderValue::from_static("client-azure-key"),
+        );
+        headers.insert(
+            "openai-organization",
+            http::HeaderValue::from_static("org-client"),
+        );
+        headers.insert(
+            "openai-project",
+            http::HeaderValue::from_static("proj-client"),
+        );
         let request = Request {
             llm_request: LlmRequest {
                 model: Some("gpt".to_string()),
@@ -1836,6 +1852,9 @@ mod tests {
             .ok_or("request recording should be enabled")?;
         let received = received.first().ok_or("expected one upstream request")?;
         assert!(!received.headers.contains_key("accept-encoding"));
+        assert!(!received.headers.contains_key("api-key"));
+        assert!(!received.headers.contains_key("openai-organization"));
+        assert!(!received.headers.contains_key("openai-project"));
         Ok(())
     }
 
