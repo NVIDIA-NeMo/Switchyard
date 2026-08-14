@@ -986,6 +986,76 @@ fn openai_chat_stream_usage_without_breakdowns_still_emits_responses_usage_detai
     Ok(())
 }
 
+// Responses terminal snapshots include every field required by strict generated clients.
+#[test]
+fn responses_completed_event_is_schema_complete_and_retains_message_id() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "delta": {"content": "hello"},
+            "finish_reason": "stop"
+        }]
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &chunk,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    for (expected, event) in events.iter().enumerate() {
+        assert_eq!(event["sequence_number"], expected as u64);
+    }
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("expected response.completed")?;
+    let response = completed["response"]
+        .as_object()
+        .ok_or("completed response should be an object")?;
+    for field in [
+        "id",
+        "object",
+        "created_at",
+        "completed_at",
+        "error",
+        "incomplete_details",
+        "instructions",
+        "metadata",
+        "model",
+        "output",
+        "parallel_tool_calls",
+        "frequency_penalty",
+        "presence_penalty",
+        "status",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_p",
+        "usage",
+    ] {
+        assert!(
+            response.contains_key(field),
+            "missing response field {field}"
+        );
+    }
+    assert_eq!(response["output"][0]["id"], "msg_0");
+    let done = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .ok_or("expected response.output_item.done")?;
+    assert_eq!(done["item"]["id"], "msg_0");
+    Ok(())
+}
+
 // Verifies a streamed token-limit stop terminates with response.incomplete.
 #[test]
 fn openai_chat_length_finish_translates_to_responses_incomplete_event() -> TestResult {

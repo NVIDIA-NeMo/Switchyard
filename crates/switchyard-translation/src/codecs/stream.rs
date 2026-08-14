@@ -58,6 +58,7 @@ pub struct StreamTranslationState {
     pub(crate) response_reasoning_output_index: Option<usize>,
     pub(crate) response_reasoning_text: String,
     pub(crate) next_response_output_index: usize,
+    pub(crate) response_sequence_number: u64,
 
     pub(crate) reasoning_block_index: Option<usize>,
     pub(crate) reasoning_block_started: bool,
