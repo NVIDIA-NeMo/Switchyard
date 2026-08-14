@@ -25,6 +25,8 @@ const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
     "context length is only",
     "please reduce the length of the input",
     "exceeds the maximum allowed input length",
+    "exceeds the maximum allowed length",
+    "is longer than the model's context length",
 ];
 
 // Anthropic has no structured `error.code`, so detection is phrase-based only.
@@ -338,6 +340,15 @@ mod tests {
         // Hub GLM (LiteLLM-wrapped): code is "400", detection relies on phrase match.
         assert!(backend.is_context_overflow(
             r#"{"error":{"message":"Input length 877338 exceeds the maximum allowed input length of 639968 tokens","code":"400"}}"#
+        ));
+        // Native SGLang: top-level envelope (no `error` key), caught by the raw-body phrase match.
+        // KV-pool rejection (managers/utils.py) and declared-context rejection
+        // (tokenizer_manager.py); both stable across v0.5.15-v0.5.17.
+        assert!(backend.is_context_overflow(
+            r#"{"object":"error","message":"Input length (700001 tokens) exceeds the maximum allowed length (536826 tokens). Use a shorter input or enable --allow-auto-truncate.","type":"BadRequestError","param":null,"code":400}"#
+        ));
+        assert!(backend.is_context_overflow(
+            r#"{"object":"error","message":"The input (12345 tokens) is longer than the model's context length (8192 tokens).","type":"BadRequestError","param":null,"code":400}"#
         ));
     }
 
