@@ -1349,8 +1349,8 @@ mechanical work. Which tier a turn defaults to depends on the picker you choose
 (<code>capable_first</code> or <code>efficient_first</code>); the signals then move individual turns
 off that default. You configure it with a single knob, <code>confidence_threshold</code>,
 plus an optional LLM classifier.</p>
-<p>If the selected target exceeds its context window, the router tries the next
-eligible target until one succeeds or all configured targets have been tried. See
+<p>If the selected target exceeds its context window, the client tries the route's
+remaining targets in configured order for that request. See
 <a href="../../operations/context_window/">Context-Window Handling</a>.</p>
 <h2 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
 <p>A coding agent's run moves through stages: early on it explores the codebase and

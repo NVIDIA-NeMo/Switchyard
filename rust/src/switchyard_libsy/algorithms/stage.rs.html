@@ -219,7 +219,7 @@
 <a href=#219 id=219 data-nosnippet>219</a>    <span class="kw">use </span><span class="kw">crate</span>::core::classifier::Score;
 <a href=#220 id=220 data-nosnippet>220</a>    <span class="kw">use </span><span class="kw">crate</span>::core::state::StateValue;
 <a href=#221 id=221 data-nosnippet>221</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, reply, test_drive};
-<a href=#222 id=222 data-nosnippet>222</a>    <span class="kw">use </span>switchyard_protocol::{Decision, Metadata, Response};
+<a href=#222 id=222 data-nosnippet>222</a>    <span class="kw">use </span>switchyard_protocol::{Metadata, Response};
 <a href=#223 id=223 data-nosnippet>223</a>
 <a href=#224 id=224 data-nosnippet>224</a>    <span class="doccomment">/// A classifier that always picks `target`, standing in for a cascade member.
 <a href=#225 id=225 data-nosnippet>225</a>    </span><span class="kw">struct </span>Fixed(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str);
@@ -358,10 +358,10 @@
 <a href=#358 id=358 data-nosnippet>358</a>        /// back so the fallback classifier has an answer without a real model.
 <a href=#359 id=359 data-nosnippet>359</a>        </span><span class="kw">fn </span>serve(<span class="self">self</span>: <span class="kw-2">&amp;</span>Arc&lt;<span class="self">Self</span>&gt;) -&gt; <span class="kw">impl </span>Serve {
 <a href=#360 id=360 data-nosnippet>360</a>            <span class="kw">let </span>recorder = Arc::clone(<span class="self">self</span>);
-<a href=#361 id=361 data-nosnippet>361</a>            <span class="kw">move </span>|decision: Decision, request: Request| {
+<a href=#361 id=361 data-nosnippet>361</a>            <span class="kw">move </span>|target: ModelId, request: Request| {
 <a href=#362 id=362 data-nosnippet>362</a>                <span class="kw">let </span>recorder = Arc::clone(<span class="kw-2">&amp;</span>recorder);
 <a href=#363 id=363 data-nosnippet>363</a>                <span class="kw">async move </span>{
-<a href=#364 id=364 data-nosnippet>364</a>                    <span class="kw">let </span>target = decision.selected_model_id().to_string();
+<a href=#364 id=364 data-nosnippet>364</a>                    <span class="kw">let </span>target = target.to_string();
 <a href=#365 id=365 data-nosnippet>365</a>                    recorder.calls.lock().push(Call {
 <a href=#366 id=366 data-nosnippet>366</a>                        target: target.clone(),
 <a href=#367 id=367 data-nosnippet>367</a>                        messages: request
@@ -370,7 +370,7 @@
 <a href=#370 id=370 data-nosnippet>370</a>                            .iter()
 <a href=#371 id=371 data-nosnippet>371</a>                            .filter_map(|message| message.text_content(<span class="string">"|"</span>))
 <a href=#372 id=372 data-nosnippet>372</a>                            .collect(),
-<a href=#373 id=373 data-nosnippet>373</a>                        is_answer_call: decision.is_answer_call(),
+<a href=#373 id=373 data-nosnippet>373</a>                        is_answer_call: target != JUDGE,
 <a href=#374 id=374 data-nosnippet>374</a>                    });
 <a href=#375 id=375 data-nosnippet>375</a>                    <span class="kw">let </span>completion = <span class="kw">if </span>target == JUDGE {
 <a href=#376 id=376 data-nosnippet>376</a>                        <span class="kw">let </span>p_solve = <span class="kw-2">*</span>recorder.judge_p_solve.lock();

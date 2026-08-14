@@ -21,9 +21,10 @@ tokio = { version = &quot;1&quot;, features = [&quot;macros&quot;, &quot;rt&quot
 <p>A target is a bare model id naming a routing destination. An <a href="trait.Algorithm.html" title="trait switchyard_libsy::Algorithm"><code>Algorithm</code></a> selects targets and
 records <a href="../switchyard_protocol/client/struct.Decision.html" title="struct switchyard_protocol::client::Decision"><code>Decision</code></a>s, offloading every model call
 to its caller: <a href="trait.Algorithm.html#method.run_stream" title="method switchyard_libsy::Algorithm::run_stream"><code>Algorithm::run_stream</code></a> yields a <a href="enum.Step.html" title="enum switchyard_libsy::Step"><code>Step</code></a> stream whose
-<a href="enum.Step.html#variant.CallModel" title="variant switchyard_libsy::Step::CallModel"><code>Step::CallModel</code></a> items the host serves over its own transport. libsy makes no
-network calls itself — <code>switchyard-llm-client</code>’s <code>run</code> is a ready-made consumer
-that drives the stream and performs the calls over HTTP.</p>
+<a href="enum.Step.html#variant.CallModel" title="variant switchyard_libsy::Step::CallModel"><code>Step::CallModel</code></a> items the host serves over its own transport. Each call carries
+an ordered, non-empty list of candidate models; the host tries them until one
+answers. libsy makes no network calls itself — <code>switchyard-llm-client</code>’s <code>run</code> is
+a ready-made consumer that drives the stream and performs the calls over HTTP.</p>
 <p>The provider-neutral <a href="../switchyard_protocol/envelope/struct.Request.html" title="struct switchyard_protocol::envelope::Request"><code>Request</code></a>, <a href="../switchyard_protocol/envelope/struct.Response.html" title="struct switchyard_protocol::envelope::Response"><code>Response</code></a>, <a href="../switchyard_protocol/llm/struct.Usage.html" title="struct switchyard_protocol::llm::Usage"><code>Usage</code></a>, and <a href="../switchyard_protocol/stream/enum.LlmResponse.html" title="enum switchyard_protocol::stream::LlmResponse"><code>LlmResponse</code></a>
 contracts come from <code>switchyard-protocol</code>.</p>
 <h3 id="license"><a class="doc-anchor" href="#license">§</a>License</h3>
