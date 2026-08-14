@@ -48,6 +48,8 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         let replayed_terminal = normalized
             .iter()
             .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }));
+        // Exact replay emits `raw` once. Normalized encodings only advance codec state;
+        // their generated events are discarded and must not create sequence-number gaps.
         for chunk in normalized {
             drop(encode_responses_stream(state, chunk));
         }

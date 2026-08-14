@@ -5,7 +5,7 @@
 
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use switchyard_protocol::{ResponseAccumulator, StopReason};
+use switchyard_protocol::{LlmResponseStreamEvent, ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
 };
@@ -179,6 +179,55 @@ fn replayed_nonterminal_event_advances_encoder_state_before_finish() -> TestResu
     assert_eq!(finish[0]["id"], "chatcmpl-clean-eof");
     assert_eq!(finish[0]["model"], "gpt-4o");
     assert_eq!(finish[0]["choices"][0]["finish_reason"], "stop");
+    Ok(())
+}
+
+// Exact replay advances sequencing by the one raw event actually emitted, not discarded
+// synthetic events produced while advancing encoder state.
+#[test]
+fn responses_replay_without_sequence_advances_by_one_emitted_event() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let raw = json!({
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+            "type": "function_call",
+            "id": "fc_0",
+            "call_id": "call_0",
+            "name": "bash",
+            "arguments": ""
+        }
+    });
+    let replayed = LlmResponseStreamEvent::preserved(
+        format,
+        raw.clone(),
+        vec![LlmResponseChunk::ToolCallDelta {
+            index: 0,
+            id: Some("call_0".to_string()),
+            name: Some("bash".to_string()),
+            arguments_delta: None,
+        }],
+    );
+    let mut state = StreamTranslationState::new(format, format);
+
+    assert_eq!(
+        engine.encode_stream_event(&mut state, format, replayed)?,
+        vec![raw]
+    );
+    let generated = engine.encode_stream_event(
+        &mut state,
+        format,
+        LlmResponseStreamEvent::new(vec![LlmResponseChunk::ToolCallDelta {
+            index: 0,
+            id: None,
+            name: None,
+            arguments_delta: Some("{}".to_string()),
+        }]),
+    )?;
+
+    assert_eq!(generated.len(), 1);
+    assert_eq!(generated[0]["sequence_number"], 1);
     Ok(())
 }
 
