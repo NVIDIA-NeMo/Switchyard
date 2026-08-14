@@ -1147,8 +1147,9 @@ target, so the route below needs nothing beyond its two tiers:</p>
 </span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="n">picker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;efficient_first&quot;</span>
 </span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="n">confidence_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
 </span></code></pre></div>
-<p>Routing response headers describe the algorithm's selected model. They do not
-change when the client falls through to a later candidate.</p>
+<p>The response body, <code>x-model-router-selected-model</code> header, usage metrics, and
+routing log name the candidate that actually served the request, including when
+the client falls through from the algorithm's first choice.</p>
 <h2 id="when-every-target-overflows">When every target overflows<a class="headerlink" href="#when-every-target-overflows" title="Permanent link">&para;</a></h2>
 <p>Once no untried target is left — including a single-target <code>passthrough</code> route,
 which has no alternative from the start — the request fails with HTTP 400 and an
