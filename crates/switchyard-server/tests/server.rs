@@ -50,8 +50,13 @@ impl MockUpstream {
             .route("/v1/chat/completions", post(upstream_chat))
             .route(
                 "/v1/messages",
-                post(upstream_messages_requires_forwarded_auth),
+                post(upstream_messages_requires_forwarded_oauth),
             )
+            .route(
+                "/v1/responses",
+                post(upstream_responses_requires_forwarded_auth),
+            )
+            .route("/capture", post(upstream_redirect_capture))
             .route("/v1/messages/count_tokens", post(upstream_count_tokens))
             .layer(DefaultBodyLimit::disable())
             .with_state(Arc::clone(&calls));
@@ -204,32 +209,30 @@ async fn upstream_chat(
     .into_response()
 }
 
-async fn upstream_messages_requires_forwarded_auth(
+async fn upstream_messages_requires_forwarded_oauth(
     State(calls): State<Arc<Mutex<Vec<Value>>>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
-    let has_oauth_auth = headers
+    let has_expected_headers = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         == Some("Bearer claude-oauth-token")
         && headers
             .get("anthropic-beta")
             .and_then(|value| value.to_str().ok())
-            == Some("oauth-2025-04-20");
-    let has_api_key = headers
-        .get("x-api-key")
-        .and_then(|value| value.to_str().ok())
-        == Some("client-api-key");
-    let has_required_version = headers
-        .get("anthropic-version")
-        .and_then(|value| value.to_str().ok())
-        == Some("2023-06-01");
-    if !(has_oauth_auth || has_api_key) || !has_required_version {
+            == Some("oauth-2025-04-20")
+        && headers
+            .get("anthropic-version")
+            .and_then(|value| value.to_str().ok())
+            == Some("2023-06-01")
+        && !headers.contains_key("chatgpt-account-id")
+        && !headers.contains_key("x-openai-fedramp");
+    if !has_expected_headers {
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({"error": {"message": "missing forwarded Anthropic auth"}})),
+            Json(json!({"error": {"message": "missing forwarded Anthropic OAuth headers"}})),
         )
             .into_response();
     }
@@ -244,6 +247,73 @@ async fn upstream_messages_requires_forwarded_auth(
         "usage": {"input_tokens": 1, "output_tokens": 1}
     }))
     .into_response()
+}
+
+async fn upstream_responses_requires_forwarded_auth(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(body.clone());
+    if headers.contains_key("x-test-redirect") {
+        return (StatusCode::TEMPORARY_REDIRECT, [("location", "/capture")]).into_response();
+    }
+    if headers.contains_key("x-test-echo-auth") {
+        let authorization = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": authorization}})),
+        )
+            .into_response();
+    }
+    let has_expected_headers = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        == Some("Bearer codex-login-token")
+        && headers
+            .get("chatgpt-account-id")
+            .and_then(|value| value.to_str().ok())
+            == Some("account-123")
+        && headers
+            .get("x-openai-fedramp")
+            .and_then(|value| value.to_str().ok())
+            == Some("true")
+        && !headers.contains_key("x-api-key")
+        && !headers.contains_key("anthropic-beta");
+    if !has_expected_headers {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "missing forwarded OpenAI login"}})),
+        )
+            .into_response();
+    }
+    Json(json!({
+        "id": "resp_test",
+        "object": "response",
+        "model": body["model"],
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "ok"}]
+        }],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+    }))
+    .into_response()
+}
+
+async fn upstream_redirect_capture(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    headers: HeaderMap,
+) -> HttpResponse {
+    calls.lock().await.push(json!({
+        "redirected": true,
+        "has_authorization": headers.contains_key("authorization")
+    }));
+    StatusCode::OK.into_response()
 }
 
 async fn upstream_count_tokens(
@@ -1218,7 +1288,7 @@ targets = ["other", "strong"]
 }
 
 #[tokio::test]
-async fn anthropic_client_forwards_inbound_auth_when_configured() -> TestResult {
+async fn anthropic_client_forwards_oauth_when_configured() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
         r#"
@@ -1243,33 +1313,112 @@ target = "claude"
     ))?;
     let app = build_switchyard_router(state);
 
-    let credentials = [
-        (
-            "authorization",
-            "Bearer claude-oauth-token",
-            Some("oauth-2025-04-20,unsupported-beta"),
-        ),
-        ("x-api-key", "client-api-key", None),
-    ];
-    for (name, value, beta) in credentials {
-        let mut headers = vec![(name, value)];
-        if let Some(beta) = beta {
-            headers.push(("anthropic-beta", beta));
-        }
-        let response = send_with_headers(
-            &app,
-            "POST",
-            "/v1/messages",
-            Some(json!({
-                "model": "switchyard/claude",
-                "max_tokens": 16,
-                "messages": [{"role": "user", "content": "hello"}]
-            })),
-            &headers,
-        )
-        .await?;
-        assert_eq!(response.status, StatusCode::OK);
-    }
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/messages",
+        Some(json!({
+            "model": "switchyard/claude",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+        &[
+            ("authorization", "Bearer claude-oauth-token"),
+            ("anthropic-beta", "oauth-2025-04-20,unsupported-beta"),
+            ("chatgpt-account-id", "must-not-cross-providers"),
+            ("x-openai-fedramp", "must-not-cross-providers"),
+        ],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    let wrong_api = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({"model": "switchyard/claude", "input": "hello"})),
+        &[("authorization", "Bearer codex-login-token")],
+    )
+    .await?;
+    assert_eq!(wrong_api.status, StatusCode::BAD_REQUEST);
+    assert_eq!(upstream.calls.lock().await.len(), 1);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn responses_client_forwards_openai_login_when_configured() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.openai]
+format = "openai_responses"
+base_url = "{base_url}"
+forward_auth = true
+max_retries = 0
+
+[targets.openai]
+id = "gpt-codex"
+llm_client = "openai"
+
+[routes.openai]
+id = "switchyard/codex"
+type = "passthrough"
+target = "openai"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({"model": "switchyard/codex", "input": "hello"})),
+        &[
+            ("authorization", "Bearer codex-login-token"),
+            ("chatgpt-account-id", "account-123"),
+            ("x-openai-fedramp", "true"),
+            ("x-api-key", "must-not-cross-providers"),
+            ("anthropic-beta", "oauth-must-not-cross-providers"),
+        ],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    let redirect = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({"model": "switchyard/codex", "input": "hello"})),
+        &[
+            ("authorization", "Bearer codex-login-token"),
+            ("chatgpt-account-id", "account-123"),
+            ("x-openai-fedramp", "true"),
+            ("x-test-redirect", "1"),
+        ],
+    )
+    .await?;
+    assert_eq!(redirect.status, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(upstream.calls.lock().await.len(), 2);
+
+    let echoed_auth = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({"model": "switchyard/codex", "input": "hello"})),
+        &[
+            ("authorization", "Bearer codex-login-token"),
+            ("x-test-echo-auth", "1"),
+        ],
+    )
+    .await?;
+    assert_eq!(echoed_auth.status, StatusCode::UNAUTHORIZED);
+    let error = echoed_auth.text()?;
+    assert!(error.contains("[REDACTED]"));
+    assert!(!error.contains("codex-login-token"));
 
     Ok(())
 }

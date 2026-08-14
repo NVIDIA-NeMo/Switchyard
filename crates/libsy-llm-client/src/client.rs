@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::RequestBuilder;
-use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, Metadata, ModelId, Request, Response, RoutedLlmClient,
@@ -26,8 +26,8 @@ use crate::error::{LlmClientError, Result};
 use crate::metrics;
 use crate::raw::RawResponse;
 
-// Headers this client owns or that are hop-by-hop. Explicit auth forwarding
-// admits `authorization`, `x-api-key`, and filtered OAuth beta markers only.
+// Headers this client owns or that are hop-by-hop. Backends apply an explicitly
+// enabled caller credential after generic metadata forwarding skips these.
 const RESERVED_HEADERS: &[&str] = &[
     "host",
     "content-length",
@@ -38,6 +38,8 @@ const RESERVED_HEADERS: &[&str] = &[
     "cookie",
     "set-cookie",
     "x-api-key",
+    "chatgpt-account-id",
+    "x-openai-fedramp",
     "anthropic-beta",
     "anthropic-version",
     "content-type",
@@ -84,6 +86,7 @@ impl ModelConfig {
 pub struct TranslatingLlmClient {
     model_to_config: HashMap<ModelId, ModelConfig>,
     client: reqwest::Client,
+    forward_auth_client: reqwest::Client,
 }
 
 impl TranslatingLlmClient {
@@ -98,12 +101,16 @@ impl TranslatingLlmClient {
                 backend.validate_extra_headers(&config.model_name)?;
             }
         }
-        let client =
-            reqwest::Client::builder()
-                .build()
-                .map_err(|error| LlmClientError::Transport {
-                    source: Box::new(error),
-                })?;
+        let build_client = |builder: reqwest::ClientBuilder| {
+            builder.build().map_err(|error| LlmClientError::Transport {
+                source: Box::new(error),
+            })
+        };
+        let client = build_client(reqwest::Client::builder())?;
+        // A redirect could move provider-specific headers to another origin.
+        // Forwarded credentials are sent only to the configured URL.
+        let forward_auth_client =
+            build_client(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()))?;
         let model_to_config = model_configs
             .iter()
             .map(|config| (config.model_name.clone(), config.clone()))
@@ -112,6 +119,7 @@ impl TranslatingLlmClient {
         Ok(Self {
             model_to_config,
             client,
+            forward_auth_client,
         })
     }
 
@@ -282,8 +290,14 @@ impl TranslatingLlmClient {
         model: &ModelId,
         streaming: bool,
     ) -> std::result::Result<EncodedResponse, AttemptFailure> {
-        let builder = self.client.post(url).json(body);
-        let builder = forward_metadata_headers(builder, metadata, backend.is_forwarding_auth());
+        let client = if backend.is_forwarding_auth() {
+            &self.forward_auth_client
+        } else {
+            &self.client
+        };
+        let builder = client.post(url).json(body);
+        let builder = forward_metadata_headers(builder, metadata);
+        let builder = backend.apply_forwarded_auth(builder, metadata);
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
@@ -335,6 +349,7 @@ impl TranslatingLlmClient {
                 });
             }
         };
+        let body = backend.redact_forwarded_auth(body, metadata);
         metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
@@ -627,25 +642,16 @@ fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     }
 }
 
-// Forwards caller-supplied metadata headers, including auth only when enabled.
+// Forwards caller-supplied metadata headers except credentials and client-owned headers.
 fn forward_metadata_headers(
     mut builder: RequestBuilder,
     metadata: Option<&Metadata>,
-    is_forwarding_auth: bool,
 ) -> RequestBuilder {
     let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) else {
         return builder;
     };
     for (name, value) in headers {
-        if is_forwarding_auth && name.as_str().eq_ignore_ascii_case("anthropic-beta") {
-            if let Some(oauth_betas) = oauth_beta_header(value) {
-                builder = builder.header(name, oauth_betas);
-            }
-            continue;
-        }
-        if is_reserved_header(name.as_str())
-            && !(is_forwarding_auth && is_auth_header(name.as_str()))
-        {
+        if is_reserved_header(name.as_str()) {
             continue;
         }
         builder = builder.header(name, value);
@@ -800,25 +806,6 @@ fn is_reserved_header(name: &str) -> bool {
     RESERVED_HEADERS
         .iter()
         .any(|reserved| name.eq_ignore_ascii_case(reserved))
-}
-
-fn is_auth_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("x-api-key")
-}
-
-// Retains OAuth markers while keeping provider feature betas backend-owned.
-fn oauth_beta_header(value: &HeaderValue) -> Option<String> {
-    let oauth_betas = value
-        .to_str()
-        .ok()?
-        .split(',')
-        .map(str::trim)
-        .filter(|beta| {
-            beta.get(..6)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("oauth-"))
-        });
-    let value = oauth_betas.collect::<Vec<_>>().join(",");
-    (!value.is_empty()).then_some(value)
 }
 
 #[cfg(test)]

@@ -75,8 +75,12 @@ Each target references an entry under `llm_clients`. All configured clients use
 `anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`,
 `llm_classifier`, and `stage_router`. An `api_key_env` value names an environment variable; the TOML
 never contains the secret itself. If omitted, the client sends no authentication.
-An `anthropic_messages` client can set `forward_auth = true` instead of `api_key_env` to send the
-caller's `authorization` or `x-api-key` header to the configured upstream.
+A client can set `forward_auth = true` instead of `api_key_env` to send the
+caller's credential to the configured upstream. OpenAI clients forward
+`authorization`, `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients
+forward `authorization` or `x-api-key`. Enable this only when every forwarding
+client's `base_url` should receive the caller's login. A forwarding route must
+be called through the matching provider API.
 Target-level `extra_body` values are shallow-merged into the upstream request when
 the request does not already contain that key.
 `max_retries` defaults to `2` and applies to transport failures, timeouts, HTTP 408/429, and 5xx

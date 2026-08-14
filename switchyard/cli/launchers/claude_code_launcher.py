@@ -60,11 +60,16 @@ def _wait_ready(port: int, timeout_s: float = _READY_TIMEOUT_S) -> bool:
     return wait_for_proxy_ready(port, timeout_s=timeout_s)
 
 
-def _claude_env(port: int, model: str) -> dict[str, str]:
+def _claude_env(
+    port: int,
+    model: str,
+    use_anthropic_auth: bool = False,
+) -> dict[str, str]:
     """Build the env-var overrides that route Claude Code through our proxy.
 
     * ``ANTHROPIC_BASE_URL`` — our proxy URL.
-    * ``ANTHROPIC_AUTH_TOKEN`` — opaque token; skips Console OAuth.
+    * ``ANTHROPIC_AUTH_TOKEN`` — an opaque local token unless the deployment
+      forwards the caller's Anthropic login.
     * ``ANTHROPIC_API_KEY=""`` — silences the auth-conflict warning.
     * ``ANTHROPIC_MODEL`` — initial active model for the session.
     * ``ANTHROPIC_SMALL_FAST_MODEL`` — existing background-model override,
@@ -75,22 +80,23 @@ def _claude_env(port: int, model: str) -> dict[str, str]:
     * ``CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`` — tells Claude Code
       to populate the picker from ``GET /v1/models``.
     """
-    return {
+    env = {
         "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}",
-        "ANTHROPIC_AUTH_TOKEN": "switchyard",
         "ANTHROPIC_API_KEY": "",
         "ANTHROPIC_MODEL": model,
         "ANTHROPIC_SMALL_FAST_MODEL": os.environ.get("ANTHROPIC_SMALL_FAST_MODEL", model),
         "ANTHROPIC_CUSTOM_MODEL_OPTION": model,
         "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
     }
+    if not use_anthropic_auth:
+        env["ANTHROPIC_AUTH_TOKEN"] = "switchyard"
+    return env
 
 
 def _supervise_claude_plain(
     claude_bin: str,
     claude_args: list[str],
-    port: int,
-    model: str,
+    env_overrides: dict[str, str],
 ) -> int:
     """Run ``claude`` via plain subprocess (non-TTY / headless fallback).
 
@@ -98,7 +104,7 @@ def _supervise_claude_plain(
     ``KeyboardInterrupt`` is translated to exit code 130.
     """
     env = os.environ.copy()
-    env.update(_claude_env(port, model))
+    env.update(env_overrides)
     try:
         result = subprocess.run([claude_bin, *claude_args], env=env, check=False)
         return result.returncode
@@ -134,6 +140,21 @@ def _run_claude_with_switchyard(
     strategy_summary = f"config → {config.name}"
 
     try:
+        try:
+            caller_auth = server.caller_auth_kind(display_model)
+        except ValueError as error:
+            logger.error("%s", error)
+            return 1
+        if caller_auth == "openai":
+            logger.error(
+                "this route forwards an OpenAI login; run it with `switchyard launch codex`"
+            )
+            return 1
+        env_overrides = _claude_env(
+            resolved_port,
+            display_model,
+            use_anthropic_auth=caller_auth == "anthropic",
+        )
         if not _wait_ready(resolved_port):
             print_startup_failure(
                 port=resolved_port,
@@ -155,7 +176,6 @@ def _run_claude_with_switchyard(
             banner_pause()
 
         health = ProxyHealthMonitor(resolved_port)
-        env_overrides = _claude_env(resolved_port, display_model)
         logger.debug(
             "claude env ANTHROPIC_BASE_URL=%s ANTHROPIC_MODEL=%s "
             "ANTHROPIC_CUSTOM_MODEL_OPTION=%s GATEWAY_DISCOVERY=%s",
@@ -177,7 +197,7 @@ def _run_claude_with_switchyard(
             )
             return tui.run()
         return _supervise_claude_plain(
-            claude_bin, claude_args, resolved_port, display_model,
+            claude_bin, claude_args, env_overrides,
         )
     finally:
         print_session_summary(stats)

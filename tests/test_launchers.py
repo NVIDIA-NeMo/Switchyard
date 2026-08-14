@@ -10,6 +10,7 @@ import pytest
 
 from switchyard.cli.launch_command import _config_path
 from switchyard.cli.launchers.claude_code_launcher import _claude_env
+from switchyard.cli.launchers.codex_cli_launcher import _codex_env, _provider_overrides
 from switchyard.cli.launchers.native_server import NativeServer
 from switchyard.cli.switchyard_cli import _build_parser
 
@@ -62,6 +63,26 @@ def test_claude_env_preserves_small_fast_model_override(
     assert env["ANTHROPIC_SMALL_FAST_MODEL"] == "background-route"
 
 
+def test_forward_auth_does_not_replace_the_agent_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "inherited-claude-token")
+    monkeypatch.setenv("OPENAI_API_KEY", "inherited-openai-key")
+
+    claude_auth = _claude_env(4321, "agent-route", use_anthropic_auth=True)
+    claude_local = _claude_env(4321, "agent-route")
+    codex_auth = _codex_env(use_openai_auth=True)
+    codex_local = _codex_env()
+    codex_auth_config = " ".join(_provider_overrides(4321, use_openai_auth=True))
+
+    assert "ANTHROPIC_AUTH_TOKEN" not in claude_auth
+    assert claude_local["ANTHROPIC_AUTH_TOKEN"] == "switchyard"
+    assert codex_auth["OPENAI_API_KEY"] == "inherited-openai-key"
+    assert codex_local["OPENAI_API_KEY"] == "switchyard"
+    assert "requires_openai_auth=true" in codex_auth_config
+    assert "env_key" not in codex_auth_config
+
+
 def test_native_server_passes_config_directly_to_binding(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -74,20 +95,30 @@ def test_native_server_passes_config_directly_to_binding(
         port = 4321
         base_url = "http://127.0.0.1:4321"
 
-        def __init__(self, path: Path, *, port: int) -> None:
+        def __init__(self, path: Path, port: int) -> None:
             captured["path"] = path
             captured["port"] = port
 
         def close(self) -> None:
             captured["closed"] = True
 
+        def caller_auth_kind(self, model: str) -> str | None:
+            captured["model"] = model
+            return "anthropic"
+
     import switchyard_rust.server
 
     monkeypatch.setattr(switchyard_rust.server, "Server", FakeServer)
     server = NativeServer(config)
+    assert server.caller_auth_kind("switchyard/route") == "anthropic"
     server.close()
 
-    assert captured == {"path": config, "port": 0, "closed": True}
+    assert captured == {
+        "path": config,
+        "port": 0,
+        "model": "switchyard/route",
+        "closed": True,
+    }
     assert server.port == 4321
     assert config.exists()
 

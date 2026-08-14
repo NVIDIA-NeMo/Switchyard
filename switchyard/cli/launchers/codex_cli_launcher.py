@@ -61,7 +61,7 @@ def _wait_ready(port: int, timeout_s: float = _READY_TIMEOUT_S) -> bool:
 
 def _provider_overrides(
     port: int,
-    *,
+    use_openai_auth: bool = False,
     model_catalog_json: str | None = None,
 ) -> list[str]:
     """Build transient Codex provider overrides for the local proxy."""
@@ -75,20 +75,30 @@ def _provider_overrides(
         f'model_providers.{_PROVIDER_ID}.base_url="{base_url}"',
         "-c",
         f'model_providers.{_PROVIDER_ID}.wire_api="responses"',
-        "-c",
-        f'model_providers.{_PROVIDER_ID}.env_key="OPENAI_API_KEY"',
-        "-c",
-        f"model_providers.{_PROVIDER_ID}.requires_openai_auth=false",
     ]
+    if use_openai_auth:
+        overrides.extend(
+            ["-c", f"model_providers.{_PROVIDER_ID}.requires_openai_auth=true"]
+        )
+    else:
+        overrides.extend(
+            [
+                "-c",
+                f'model_providers.{_PROVIDER_ID}.env_key="OPENAI_API_KEY"',
+                "-c",
+                f"model_providers.{_PROVIDER_ID}.requires_openai_auth=false",
+            ]
+        )
     if model_catalog_json is not None:
         overrides.extend(["-c", f"model_catalog_json={json.dumps(model_catalog_json)}"])
     return overrides
 
 
-def _codex_env() -> dict[str, str]:
+def _codex_env(use_openai_auth: bool = False) -> dict[str, str]:
     """Return the environment required by the transient provider."""
     env = os.environ.copy()
-    env["OPENAI_API_KEY"] = "switchyard"
+    if not use_openai_auth:
+        env["OPENAI_API_KEY"] = "switchyard"
     return env
 
 
@@ -97,12 +107,17 @@ def _codex_command(
     codex_args: list[str],
     port: int,
     model: str,
+    use_openai_auth: bool = False,
     model_catalog_json: str | None = None,
 ) -> list[str]:
     """Build the exact Codex command for the local proxy."""
     return [
         codex_bin,
-        *_provider_overrides(port, model_catalog_json=model_catalog_json),
+        *_provider_overrides(
+            port,
+            use_openai_auth=use_openai_auth,
+            model_catalog_json=model_catalog_json,
+        ),
         "-m",
         model,
         *codex_args,
@@ -110,25 +125,12 @@ def _codex_command(
 
 
 def _supervise_codex(
-    codex_bin: str,
-    codex_args: list[str],
-    port: int,
-    model: str,
-    model_catalog_json: str | None = None,
+    command: list[str],
+    env: dict[str, str],
 ) -> int:
     """Run Codex and return its exit code."""
     try:
-        result = subprocess.run(
-            _codex_command(
-                codex_bin,
-                codex_args,
-                port,
-                model,
-                model_catalog_json=model_catalog_json,
-            ),
-            env=_codex_env(),
-            check=False,
-        )
+        result = subprocess.run(command, env=env, check=False)
         return result.returncode
     except KeyboardInterrupt:
         return _EXIT_SIGINT
@@ -163,7 +165,27 @@ def _run_codex_with_switchyard(
     strategy_summary = f"config → {config.name}"
 
     try:
+        try:
+            caller_auth = server.caller_auth_kind(display_model)
+        except ValueError as error:
+            logger.error("%s", error)
+            return 1
+        if caller_auth == "anthropic":
+            logger.error(
+                "this route forwards an Anthropic login; run it with `switchyard launch claude`"
+            )
+            return 1
+        use_openai_auth = caller_auth == "openai"
         model_catalog_json = _write_codex_model_catalog(codex_bin, codex_model_catalog)
+        command = _codex_command(
+            codex_bin,
+            codex_args,
+            resolved_port,
+            display_model,
+            use_openai_auth=use_openai_auth,
+            model_catalog_json=model_catalog_json,
+        )
+        env = _codex_env(use_openai_auth)
         if not _wait_ready(resolved_port):
             print_startup_failure(
                 port=resolved_port,
@@ -192,25 +214,13 @@ def _run_codex_with_switchyard(
                 strategy_label="config",
             )
             return ShellTUI(
-                command=_codex_command(
-                    codex_bin,
-                    codex_args,
-                    resolved_port,
-                    display_model,
-                    model_catalog_json=model_catalog_json,
-                ),
+                command=command,
                 footer_fn=footer.as_footer_fn(),
                 footer_height=lambda: footer.height,
-                env=_codex_env(),
+                env=env,
             ).run()
 
-        return _supervise_codex(
-            codex_bin,
-            codex_args,
-            resolved_port,
-            display_model,
-            model_catalog_json=model_catalog_json,
-        )
+        return _supervise_codex(command, env)
     finally:
         print_session_summary(stats)
         server.close()

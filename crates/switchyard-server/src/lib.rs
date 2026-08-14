@@ -109,8 +109,36 @@ struct RouteEntry {
     /// selected. A route is a synthetic model with no upstream of its own, so this is a
     /// per-target lookup, never one client serving the whole route.
     target_clients: ClientRouter,
+    caller_auth: Option<CallerAuthKind>,
     capabilities: ModelCapabilities,
     count_tokens_target: Option<CountTokensTarget>,
+}
+
+/// Caller credential family required by forwarded-auth backends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CallerAuthKind {
+    Anthropic,
+    OpenAi,
+}
+
+impl CallerAuthKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+        }
+    }
+
+    const fn accepts(self, wire_format: WireFormat) -> bool {
+        matches!(
+            (self, wire_format),
+            (Self::Anthropic, WireFormat::AnthropicMessages)
+                | (
+                    Self::OpenAi,
+                    WireFormat::OpenAiChat | WireFormat::OpenAiResponses
+                )
+        )
+    }
 }
 
 /// Exact upstream model used by the server's Anthropic token-count endpoint.
@@ -181,6 +209,7 @@ impl ServerState {
                 model,
                 algorithm,
                 clients,
+                None,
                 ModelCapabilities::default(),
                 None,
             )
@@ -193,13 +222,16 @@ impl ServerState {
                 ModelId,
                 Arc<dyn Algorithm>,
                 ClientRouter,
+                Option<CallerAuthKind>,
                 ModelCapabilities,
                 Option<CountTokensTarget>,
             ),
         >,
     ) -> ServerResult<Self> {
         let mut entries = BTreeMap::new();
-        for (model, algorithm, target_clients, capabilities, count_tokens_target) in routes {
+        for (model, algorithm, target_clients, caller_auth, capabilities, count_tokens_target) in
+            routes
+        {
             let model = ModelId::from(model.trim());
             if model.is_empty() {
                 return Err(ServerError::new("route model must not be empty"));
@@ -207,6 +239,7 @@ impl ServerState {
             let entry = RouteEntry {
                 algorithm,
                 target_clients,
+                caller_auth,
                 capabilities,
                 count_tokens_target,
             };
@@ -240,6 +273,13 @@ impl ServerState {
     /// Returns the route model IDs served by the configured algorithms.
     pub fn models(&self) -> impl Iterator<Item = &str> {
         self.routes.keys().map(ModelId::as_str)
+    }
+
+    /// Returns the caller credential family used by `model`, if any.
+    pub fn caller_auth_kind(&self, model: &str) -> ServerResult<Option<&'static str>> {
+        self.route_for_model(model)
+            .map(|entry| entry.caller_auth.map(CallerAuthKind::as_str))
+            .ok_or_else(|| ServerError::new(format!("unknown route model {model:?}")))
     }
 
     fn route_for_model(&self, model: &str) -> Option<&RouteEntry> {
@@ -669,6 +709,22 @@ fn resolve_route(
             "model_not_found",
         )
     })?;
+    if let Some(caller_auth) = route.caller_auth
+        && !caller_auth.accepts(wire_format)
+    {
+        let (provider, expected_endpoint) = match caller_auth {
+            CallerAuthKind::Anthropic => ("Anthropic", "/v1/messages"),
+            CallerAuthKind::OpenAi => ("OpenAI", "/v1/chat/completions or /v1/responses"),
+        };
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "route {requested_model} forwards an {provider} login; call it through {expected_endpoint}",
+            ),
+            "invalid_request_error",
+            "invalid_request_error",
+        ));
+    }
     let request = Request {
         llm_request,
         raw_request: Some(body),
