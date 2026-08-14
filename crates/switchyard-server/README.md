@@ -88,8 +88,10 @@ for equal weighting. The optional `seed` reproduces the selection sequence for t
 Pass `--routing-log-file PATH` to append one JSON record after each completed routed response.
 Streaming responses are recorded after the stream drains. When enabled,
 `GET /v1/routing/session-stats?session_id=ID` rescans the durable log and returns call and token
-totals for that exact `proxy_x_session_id`, grouped by served model. The endpoint returns `404` when
-the session has no records and is not registered when routing logging is disabled.
+totals for that normalized session ID, normally supplied as `x-switchyard-session-id`, grouped by
+served model. The legacy `proxy_x_session_id` remains a fallback when no normalized session ID is
+present. The endpoint returns `404` when the session has no records and is not registered when
+routing logging is disabled.
 
 An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
 routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only

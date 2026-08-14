@@ -580,11 +580,11 @@ async fn handle_endpoint_inner(
     body: std::result::Result<Json<Value>, JsonRejection>,
     wire_format: WireFormat,
 ) -> Response {
+    let metadata = metadata_from_headers(headers);
     let routing_log_context = state
         .routing_log
         .as_ref()
-        .map(|_| routing_log::RoutingLogContext::from_headers(&headers));
-    let metadata = metadata_from_headers(headers);
+        .map(|_| routing_log::RoutingLogContext::from_metadata(&metadata));
     let request_log = RequestLogContext {
         started: started.0,
         wire_format,
@@ -1318,7 +1318,8 @@ mod tests {
         let log = SharedRoutingLog::new(dir.path().join("routing.jsonl")).expect("routing log");
         let mut headers = HeaderMap::new();
         headers.insert("proxy_x_session_id", "session-1".parse().expect("header"));
-        let context = routing_log::RoutingLogContext::from_headers(&headers);
+        let metadata = metadata_from_headers(headers);
+        let context = routing_log::RoutingLogContext::from_metadata(&metadata);
         let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
 
         let call = |model: &str, is_answer_call: bool| {

@@ -1490,7 +1490,7 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
 }
 
 #[tokio::test]
-async fn routing_log_exposes_session_stats() -> TestResult {
+async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let temp_dir = tempfile::tempdir()?;
     let log_path = temp_dir.path().join("routing.jsonl");
@@ -1502,7 +1502,8 @@ async fn routing_log_exposes_session_stats() -> TestResult {
         .method("POST")
         .uri("/v1/chat/completions")
         .header("content-type", "application/json")
-        .header("proxy_x_session_id", "session-1")
+        .header("x-switchyard-session-id", "canonical-session")
+        .header("proxy_x_session_id", "legacy-session")
         .body(Body::from(serde_json::to_vec(&json!({
             "model": ROUTE_MODEL,
             "messages": [{"role": "user", "content": "hello"}]
@@ -1513,24 +1514,100 @@ async fn routing_log_exposes_session_stats() -> TestResult {
     let stats = send(
         &app,
         "GET",
-        "/v1/routing/session-stats?session_id=session-1",
+        "/v1/routing/session-stats?session_id=canonical-session",
         None,
     )
-    .await?
-    .json()?;
+    .await?;
+    assert_eq!(stats.status, StatusCode::OK);
+    let stats = stats.json()?;
     assert_eq!(stats["total_calls"], 1);
     assert_eq!(stats["total_prompt_tokens"], 10);
     assert_eq!(stats["total_cached_tokens"], 7);
     assert_eq!(stats["models"]["model/a"]["completion_tokens"], 2);
 
+    let legacy = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=legacy-session",
+        None,
+    )
+    .await?;
+    assert_eq!(legacy.status, StatusCode::NOT_FOUND);
+
+    let legacy_only = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+        &[("proxy_x_session_id", "legacy-only-session")],
+    )
+    .await?;
+    assert_eq!(legacy_only.status, StatusCode::OK);
+
+    let legacy_stats = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=legacy-only-session",
+        None,
+    )
+    .await?;
+    assert_eq!(legacy_stats.status, StatusCode::OK);
+    assert_eq!(legacy_stats.json()?["total_calls"], 1);
+
     let records = std::fs::read_to_string(log_path)?;
     let first: Value =
         serde_json::from_str(records.lines().next().ok_or("routing log was empty")?)?;
+    assert_eq!(first["session_id"], "canonical-session");
     assert!(
         first["ts"]
             .as_str()
             .is_some_and(|value| value.ends_with('Z'))
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
+        .with_routing_log(temp_dir.path().join("routing.jsonl"))?;
+    let app = build_switchyard_router(state);
+
+    // `send_with_headers` collects the response body, so the stream wrapper reaches
+    // its terminal usage record before the stats query runs.
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": true
+        })),
+        &[("x-switchyard-session-id", "streaming-session")],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(response.text()?.contains("data: [DONE]"));
+
+    let stats = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=streaming-session",
+        None,
+    )
+    .await?;
+    assert_eq!(stats.status, StatusCode::OK);
+    let stats = stats.json()?;
+    assert_eq!(stats["total_calls"], 1);
+    assert_eq!(stats["total_prompt_tokens"], 12);
+    assert_eq!(stats["total_cached_tokens"], 7);
+    assert_eq!(stats["total_cache_creation_tokens"], 2);
+    assert_eq!(stats["total_completion_tokens"], 5);
     Ok(())
 }
 
