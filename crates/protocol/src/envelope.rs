@@ -4,7 +4,7 @@
 //! The request/response envelope: the normalized [`LlmRequest`]/[`LlmResponse`] paired
 //! with the original provider payload and correlation [`Metadata`].
 
-use crate::{LlmRequest, LlmResponse, Metadata};
+use crate::{LlmRequest, LlmResponse, Metadata, ModelId};
 
 /// A request an algorithm routes: the normalized [`LlmRequest`] plus optional
 /// host-owned raw data and correlation [`Metadata`].
@@ -21,11 +21,12 @@ pub struct Request {
 }
 
 impl Request {
-    /// Returns the model name supplied by the inbound request, when present.
+    /// Returns the model currently carried by the request, when present.
     ///
-    /// This is not necessarily the target selected by a routing decision.
-    pub fn requested_model(&self) -> Option<&str> {
-        self.llm_request.model.as_deref()
+    /// On ingress this is the name supplied by the client. Before an offloaded model call, the
+    /// routing driver replaces it with the selected target.
+    pub fn model_id(&self) -> Option<ModelId> {
+        self.llm_request.model.as_deref().map(ModelId::from)
     }
 }
 

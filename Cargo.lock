@@ -2327,7 +2327,7 @@ dependencies = [
 name = "switchyard-py"
 version = "0.2.0"
 dependencies = [
- "async-trait",
+ "futures",
  "http",
  "pyo3",
  "pyo3-async-runtimes",
@@ -2335,7 +2335,6 @@ dependencies = [
  "serde",
  "serde_json",
  "switchyard-libsy",
- "switchyard-llm-client",
  "switchyard-protocol",
  "switchyard-server",
  "tokio",

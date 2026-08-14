@@ -5,7 +5,7 @@ Switchyard itself. If you only want to **use** the package, see
 [README](README.md).
 
 For deeper architectural docs, see [Agents](AGENTS.md) and
-[Architecture](docs/ARCHITECTURE.md).
+[Architecture](docs/architecture.md).
 
 ## Setup
 
@@ -40,30 +40,21 @@ uv sync --all-extras     # everything (dev group is still included by default)
 ## Project Structure
 
 ```
-switchyard/
-├── switchyard/                    # The package itself
-│   ├── __init__.py                # Public API exports (single source of truth)
-│   ├── lib/                       # Core library
-│   │   ├── roles.py               # RequestProcessor, LLMBackend, ResponseProcessor ABCs
-│   │   ├── switchyard.py          # Switchyard chain executor
-│   │   ├── profiles/              # Profile configs/runtimes (passthrough, random_routing, …)
-│   │   ├── proxy_context.py       # ProxyContext — per-request state
-│   │   ├── chat_request/          # Typed request hierarchy
-│   │   ├── chat_response/         # Typed response hierarchy
-│   │   ├── backends/              # LLMBackend implementations
-│   │   ├── processors/            # RequestProcessor / ResponseProcessor implementations
-│   │   ├── factories/             # MiddlewareFactory implementations + configs
-│   │   └── endpoints/             # FastAPI endpoint wrappers (require [server])
-│   ├── cli/                       # CLI entry point (requires [cli])
-│   └── server/                    # FastAPI app factory + verify helpers (requires [server])
-├── crates/
-│   ├── switchyard-translation/     # Rust request/response/stream translation engine
-│   └── switchyard-py/              # Thin PyO3 bindings plus Python convenience wrapper
-├── tests/                         # Pytest unit tests (no API keys required)
-├── examples/                      # Minimal usage examples
-├── docs/                          # Architecture, getting started, publication
-├── secrets/                       # Local credential template (git-ignored)
-└── pyproject.toml
+switchyard/                       # Python package
+├── cli/                          # CLI and coding-agent launchers
+└── libsy/                        # Typed wrappers for libsy algorithms
+switchyard_rust/                  # Python facades over the PyO3 extension
+crates/
+├── libsy/                         # Routing algorithms and driver
+├── libsy-llm-client/              # Translated HTTP model calls
+├── protocol/                      # Provider-neutral protocol types
+├── switchyard-py/                 # PyO3 bindings for libsy and the server
+├── switchyard-server/             # Native HTTP server and TOML configuration
+├── switchyard-skill-distillation/ # Skill-distillation contracts
+└── switchyard-translation/        # Request, response, and stream translation
+tests/                            # Python tests (no API keys required)
+docs/                             # User and architecture documentation
+pyproject.toml                    # Python package and development tooling
 ```
 
 ## Development Workflow
@@ -78,6 +69,11 @@ uv run pytest tests/ -v
 # Lint and type check
 uv run ruff check .
 uv run mypy switchyard
+
+# Rust formatting, linting, and tests
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 > **Local Git hooks:** install both `pre-commit` and `commit-msg` hooks with

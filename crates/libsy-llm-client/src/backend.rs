@@ -9,7 +9,7 @@ use reqwest::RequestBuilder;
 use serde_json::Value;
 use switchyard_protocol::WireFormat;
 
-use crate::error::is_overflow_body;
+use crate::error::{LlmClientError, Result, is_overflow_body};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -42,7 +42,10 @@ pub struct HttpBackendConfig {
     pub base_url: String,
     /// API key for the provider, loaded by the caller. `None` sends no auth.
     pub api_key: Option<String>,
-    /// Static headers added to every outbound call to this backend.
+    /// Custom headers added to every outbound call to this backend.
+    ///
+    /// OpenAI backends reject `Authorization`. Anthropic backends reject
+    /// `x-api-key` and `anthropic-version`. Header names are case-insensitive.
     pub extra_headers: BTreeMap<String, String>,
     /// Default top-level request fields, applied only when the request omits the key.
     pub extra_body: BTreeMap<String, Value>,
@@ -77,6 +80,27 @@ pub enum Backend {
 }
 
 impl Backend {
+    // Checks custom headers before the client can send a request.
+    pub(crate) fn validate_extra_headers(&self, model_name: &str) -> Result<()> {
+        let invalid_name = self.config().extra_headers.keys().find(|name| match self {
+            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
+                name.eq_ignore_ascii_case("authorization")
+            }
+            Backend::Anthropic(_) => {
+                name.eq_ignore_ascii_case("x-api-key")
+                    || name.eq_ignore_ascii_case("anthropic-version")
+            }
+        });
+        if let Some(name) = invalid_name {
+            return Err(LlmClientError::Configuration {
+                message: format!(
+                    "model {model_name:?} extra_headers cannot set {name:?}; extra_headers is only for additional headers"
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// The wire format the request IR is encoded to for this backend.
     pub fn wire_format(&self) -> WireFormat {
         match self {
@@ -130,7 +154,7 @@ impl Backend {
         builder
     }
 
-    /// Static per-backend headers to forward on every call.
+    /// Custom per-backend headers to forward on every call.
     pub fn extra_headers(&self) -> &BTreeMap<String, String> {
         &self.config().extra_headers
     }

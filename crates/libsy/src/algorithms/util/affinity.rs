@@ -238,7 +238,7 @@ mod tests {
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
     fn fixed_decision(target: &str) -> Decision {
-        Decision::new(target, None, true)
+        Decision::new(target, true)
     }
 
     fn request(metadata: Metadata) -> Request {

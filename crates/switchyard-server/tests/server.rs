@@ -1664,15 +1664,6 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
                 .and_then(|value| value.to_str().ok()),
             Some("model/strong")
         );
-        assert_eq!(
-            response
-                .headers
-                .get("x-model-router-rationale")
-                .and_then(|value| value.to_str().ok()),
-            Some(
-                "model/weak was unavailable; fell back to model/strong (fallback reason: unavailable)"
-            )
-        );
         let calls = upstream.calls.lock().await;
         assert_eq!(
             calls[previous_call_count..]
@@ -1684,7 +1675,7 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
     }
 
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-    // Fallback cause is now carried in decision reasoning rather than structured stats/logs.
+    // Fallback causes are logged rather than accumulated in the legacy stats counters.
     assert_eq!(stats["routing_fallbacks"]["unavailable"], 0);
     assert_eq!(stats["routing_fallbacks"]["context_window"], 0);
 

@@ -513,15 +513,12 @@ impl Classifier<State> for EscalationClassifier {
         // If the efficient model exceeds its context window, fall through to capable: returning
         // `(decisive(capable), None)` tells FallThrough::execute to call
         // call_model_with_fallback with the capable target instead of surfacing the error.
+        tracing::info!(
+            target = %self.efficient,
+            "escalation classifier selected efficient tier"
+        );
         let efficient_response = match driver
-            .call_model(
-                request.clone(),
-                Decision::new(
-                    self.efficient.clone(),
-                    Some("escalation classifier: efficient tier".into()),
-                    true,
-                ),
-            )
+            .call_model(request.clone(), Decision::new(self.efficient.clone(), true))
             .await
         {
             Ok(r) => r,
@@ -1822,12 +1819,6 @@ mod tests {
             trace.last().map(|d| d.selected_model_id().as_str()),
             Some("efficient")
         );
-        assert!(
-            trace
-                .last()
-                .and_then(|decision| decision.reasoning())
-                .is_some_and(|reasoning| reasoning.contains("routing tier: weak"))
-        );
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("efficient answer".to_string())
@@ -1872,12 +1863,6 @@ mod tests {
         assert_eq!(
             trace.last().map(|d| d.selected_model_id().as_str()),
             Some("capable")
-        );
-        assert!(
-            trace
-                .last()
-                .and_then(|decision| decision.reasoning())
-                .is_some_and(|reasoning| reasoning.contains("routing tier: strong"))
         );
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),

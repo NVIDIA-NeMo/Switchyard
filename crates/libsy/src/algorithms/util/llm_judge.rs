@@ -226,14 +226,11 @@ where
     ) -> Option<J::Verdict> {
         let judge_model = self.target.as_str();
 
+        tracing::info!(target = judge_model, "consulting llm judge");
         let response = driver
             .call_model(
                 self.judge.build_request(state, request),
-                Decision::new(
-                    self.target.to_string(),
-                    Some("llm judge consultation".to_string()),
-                    false,
-                ),
+                Decision::new(self.target.to_string(), false),
             )
             .await
             .inspect_err(|error| report_fail_open(judge_model, error, libsy_error_reason(error)))

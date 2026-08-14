@@ -265,7 +265,7 @@ mod tests {
             },
             ..Request::default()
         };
-        let decision = Decision::new(target, None, true);
+        let decision = Decision::new(target, true);
         processor
             .process(
                 &mut (),
@@ -326,7 +326,7 @@ mod tests {
                 text: "you are a coding agent".to_string(),
             }],
         });
-        let decision = Decision::new("strong", None, true);
+        let decision = Decision::new("strong", true);
 
         processor
             .process(

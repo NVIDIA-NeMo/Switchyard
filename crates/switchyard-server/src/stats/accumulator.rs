@@ -325,7 +325,7 @@ pub(crate) struct StatsSnapshot {
 
 /// Legacy fallback counters retained in the stats response shape.
 ///
-/// New decisions carry fallback details in their reasoning instead.
+/// New fallback details are logged instead.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub(crate) struct RoutingFallbackStats {
     pub context_window: u64,

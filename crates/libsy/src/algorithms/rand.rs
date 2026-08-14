@@ -397,12 +397,6 @@ mod tests {
         let decision = &trace[0];
 
         assert_eq!(decision.selected_model_id(), "only/model");
-        assert!(
-            decision
-                .reasoning()
-                .unwrap_or_default()
-                .contains("only/model")
-        );
         assert!(decision.is_answer_call());
         Ok(())
     }

@@ -193,10 +193,10 @@ mod tests {
             _driver: Option<&Driver>,
         ) -> Result<(Classification, Option<Response>)> {
             *state = true;
-            let target = request.requested_model().unwrap_or("auto").to_string();
+            let target = request.model_id().unwrap_or(ModelId::from("auto"));
             Ok((
                 Classification::Scores(vec![Score {
-                    target: target.into(),
+                    target,
                     confidence: 1.0,
                 }]),
                 None,
@@ -261,7 +261,7 @@ mod tests {
 
         // The rewrite outlives the call: later classifiers in the cascade score this value,
         // and it is what reaches the model.
-        assert_eq!(request.requested_model(), Some("rewritten"));
+        assert_eq!(request.model_id().as_deref(), Some("rewritten"));
         Ok(())
     }
 }

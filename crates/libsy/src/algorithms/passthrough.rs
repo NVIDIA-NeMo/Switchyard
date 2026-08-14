@@ -32,11 +32,8 @@ impl Algorithm for Passthrough {
     }
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
-        let decision: Decision = Decision::new(
-            self.target.clone(),
-            Some(format!("passthrough selected target '{}'", self.target)),
-            true,
-        );
+        tracing::info!(target = %self.target, "passthrough selected target");
+        let decision: Decision = Decision::new(self.target.clone(), true);
         driver.decide(decision.clone()).await?;
         driver.call_model(request, decision).await
     }
