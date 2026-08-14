@@ -297,6 +297,7 @@ struct CapabilityClassifierRouteConfig {
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
     prompt: Option<String>,
+    response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
 }
 
@@ -305,6 +306,7 @@ struct EscalationClassifierRouteConfig {
     strong_target: String,
     weak_target: String,
     prompt: Option<String>,
+    response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
     judge: EscalationJudgeConfig,
 }
@@ -383,6 +385,8 @@ enum RouteConfig {
         recent_turn_window: Option<usize>,
         #[serde(default)]
         prompt: Option<String>,
+        #[serde(default)]
+        response_format_type: ClassifierResponseFormat,
         #[serde(default = "default_classifier_max_output_tokens")]
         max_output_tokens: u64,
         #[serde(default)]
@@ -584,6 +588,7 @@ impl RouteConfig {
             message_hash_fallback,
             recent_turn_window,
             prompt,
+            response_format_type,
             max_output_tokens,
             escalation,
             targets,
@@ -641,6 +646,7 @@ impl RouteConfig {
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
                         prompt: prompt.clone(),
+                        response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
                     },
                 ))
@@ -678,6 +684,7 @@ impl RouteConfig {
                             weak_target,
                         )?,
                         prompt: prompt.clone(),
+                        response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
                         judge: required_classifier_field(route_name, "escalation", escalation)?,
                     },
@@ -689,6 +696,7 @@ impl RouteConfig {
                     || base_threshold.is_some()
                     || threshold_step.is_some()
                     || escalation.is_some()
+                    || *response_format_type != ClassifierResponseFormat::JsonSchema
                 {
                     return Err(ServerError::new(format!(
                         "llm_classifier route {route_name} mode custom cannot use capability or escalation fields"
@@ -853,7 +861,8 @@ fn build_algorithm(
                         session_affinity: config.session_affinity,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
-                        contract: classifier_contract(config.prompt.as_deref()),
+                        contract: classifier_contract(config.prompt.as_deref())
+                            .with_response_format_type(config.response_format_type),
                         max_output_tokens: config.max_output_tokens,
                     };
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
@@ -871,7 +880,8 @@ fn build_algorithm(
                         judge_target: classifier,
                         efficient_target: weak,
                         capable_target: strong,
-                        contract: classifier_contract(config.prompt.as_deref()),
+                        contract: classifier_contract(config.prompt.as_deref())
+                            .with_response_format_type(config.response_format_type),
                         config: config.judge,
                         max_output_tokens: config.max_output_tokens,
                     })

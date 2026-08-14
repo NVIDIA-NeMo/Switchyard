@@ -1035,7 +1035,7 @@ selector = "/decision/target"
 }
 
 #[tokio::test]
-async fn classifier_prompt_overrides_reach_every_server_mode() -> TestResult {
+async fn classifier_contract_overrides_reach_every_server_mode() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
         r#"
@@ -1066,6 +1066,7 @@ strong_target = "strong"
 weak_target = "weak"
 base_threshold = 0.5
 prompt = "CUSTOM CAPABILITY"
+response_format_type = "json_object"
 
 [routes.escalation]
 id = "switchyard/escalation"
@@ -1075,6 +1076,7 @@ classifier_target = "classifier"
 strong_target = "strong"
 weak_target = "weak"
 prompt = "CUSTOM ESCALATION"
+response_format_type = "json_object"
 escalation = {{ confirmations = 1 }}
 
 [routes.stage]
@@ -1094,10 +1096,20 @@ prompt = "CUSTOM STAGE"
     ))?;
     let app = build_switchyard_router(state);
 
-    for (route, prompt_prefix, schema_field) in [
-        ("switchyard/capability", "CUSTOM CAPABILITY", "p_solve"),
-        ("switchyard/escalation", "CUSTOM ESCALATION", "escalate"),
-        ("switchyard/stage", "CUSTOM STAGE", "p_solve"),
+    for (route, prompt_prefix, schema_field, json_object) in [
+        (
+            "switchyard/capability",
+            "CUSTOM CAPABILITY",
+            "p_solve",
+            true,
+        ),
+        (
+            "switchyard/escalation",
+            "CUSTOM ESCALATION",
+            "escalate",
+            true,
+        ),
+        ("switchyard/stage", "CUSTOM STAGE", "p_solve", false),
     ] {
         upstream.calls.lock().await.clear();
         let response = send(
@@ -1121,12 +1133,25 @@ prompt = "CUSTOM STAGE"
             .as_str()
             .ok_or("classifier prompt was not text")?;
         assert!(prompt.starts_with(prompt_prefix), "{route}: {prompt}");
-        assert!(
-            judge_call["response_format"]["json_schema"]["schema"]["properties"]
-                .get(schema_field)
-                .is_some(),
-            "{route}: missing {schema_field} in {judge_call}"
-        );
+        if json_object {
+            assert_eq!(
+                judge_call["response_format"],
+                json!({"type": "json_object"}),
+                "{route}: {judge_call}"
+            );
+            assert!(prompt.contains("JSON Schema"), "{route}: {prompt}");
+            assert!(
+                prompt.contains(&format!("\"{schema_field}\"")),
+                "{route}: missing {schema_field} in {prompt}"
+            );
+        } else {
+            assert!(
+                judge_call["response_format"]["json_schema"]["schema"]["properties"]
+                    .get(schema_field)
+                    .is_some(),
+                "{route}: missing {schema_field} in {judge_call}"
+            );
+        }
     }
     Ok(())
 }

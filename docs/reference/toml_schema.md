@@ -118,6 +118,7 @@ Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Yes | — | Target the judge is called through. Not a routing destination. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+| `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
 
 Capability mode classifies before serving. See
 [LLM Classifier Routing](../routing_algorithms/llm_classifier_routing.md).
@@ -161,8 +162,9 @@ policy selector, and routes to any configured target label.
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 
-Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard sends the
-schema only through the provider's structured-output request.
+Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
+the schema automatically: through the structured-output request in `json_schema`
+mode, or in the prompt in `json_object` mode.
 
 ### `stage_router`
 
