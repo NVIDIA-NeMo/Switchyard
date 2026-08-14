@@ -91,7 +91,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import httpx
 
-from switchyard.lib.backends.llm_target import BackendFormat
+from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
 from switchyard.lib.backends.multi_llm_backend import (
     build_native_backend,
     resolve_llm_target,
@@ -172,6 +172,7 @@ class AdvisorLoopBackend(LLMBackend):
         stats_accumulator: StatsAccumulator | None = None,
         executor_backend: LLMBackend | None = None,
         advisor_caller: AdvisorCaller | None = None,
+        takeover_backend: LLMBackend | None = None,
     ) -> None:
         self._config = config
         self._stats = stats_accumulator if config.enable_stats else None
@@ -196,12 +197,17 @@ class AdvisorLoopBackend(LLMBackend):
         self._reviews_by_scope: dict[str, int] = {}
         self._failed_consults_by_scope: dict[str, int] = {}
         self._budget_logged_scopes: set[str] = set()
+        # Scopes handed to the advisor model (``redo_action: escalate``); every
+        # later turn of an escalated scope routes to the takeover backend.
+        self._escalated_scopes: set[str] = set()
+        self._takeover_backend: LLMBackend | None = takeover_backend
         # Resolve format: auto before wire selection; injected fakes must pin
         # a concrete format (probing a fake's endpoint makes no sense).
         executor_target = (
             config.executor if executor_backend is not None
             else resolve_llm_target(config.executor)
         )
+        self._executor_format = executor_target.format
         self._request_type_name = _gate_request_type(executor_target.format)
         self._request_type = cast(
             "ChatRequestType", request_type_enum(self._request_type_name),
@@ -223,6 +229,8 @@ class AdvisorLoopBackend(LLMBackend):
 
     async def shutdown(self) -> None:
         await self._executor_backend.shutdown()
+        if self._takeover_backend is not None:
+            await self._takeover_backend.shutdown()
 
     @property
     def supported_request_types(self) -> list[ChatRequestType]:
@@ -294,6 +302,8 @@ class AdvisorLoopBackend(LLMBackend):
         # included), so it expresses exactly "reviews for *this* task"; callers
         # that send no header fall back to one instance-wide scope.
         scope = self._budget_scope(ctx)
+        if scope in self._escalated_scopes:
+            return await self._takeover(ctx, normalized)
         if self._scope_exhausted(scope):
             if scope not in self._budget_logged_scopes:
                 self._budget_logged_scopes.add(scope)
@@ -371,6 +381,16 @@ class AdvisorLoopBackend(LLMBackend):
         # cost output prices it, mirroring the tool_call strategy's handling
         # of proxy-internal turns.
         await self._record_discarded_turn(ctx, turn)
+        if self._config.redo_action == "escalate":
+            # Hand the session to the advisor model: it regenerates this turn
+            # itself (no advice text) and serves every later turn of the
+            # scope — the gate's trigger discipline with a router's takeover.
+            self._escalated_scopes.add(scope)
+            log.info(
+                "AdvisorLoopBackend: scope %s escalated to advisor model %s",
+                scope, self._config.advisor.model,
+            )
+            return await self._takeover(ctx, normalized)
         # The assistant echo prefers visible text, then the model's own
         # reasoning (its generated tokens, upstream-only), then "" — an empty
         # echo both risks strict-endpoint rejection and gives the executor a
@@ -383,6 +403,48 @@ class AdvisorLoopBackend(LLMBackend):
         redo_body = {**body, "messages": redo_messages}
         redo_request = request_with_type(self._request_type_name, redo_body)
         return await self._passthrough(ctx, redo_request)
+
+    async def _takeover(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
+        """Serve an escalated scope's request with the advisor model."""
+        backend = self._takeover_backend
+        if backend is None:
+            backend = self._build_takeover_backend()
+            await backend.startup()
+            self._takeover_backend = backend
+        started = time.monotonic()
+        try:
+            response = await backend.call(ctx, request)
+        except Exception:
+            if self._stats is not None:
+                await self._stats.record_error(self._config.advisor.model)
+            raise
+        ctx.selected_model = self._config.advisor.model
+        ctx.backend_call_latency_ms = (time.monotonic() - started) * 1000.0
+        if self._stats is not None:
+            await self._stats.record_success(
+                self._config.advisor.model, ctx.backend_call_latency_ms,
+            )
+        return response
+
+    def _build_takeover_backend(self) -> LLMBackend:
+        """Executor-wire native backend serving the advisor model.
+
+        Escalated turns arrive already normalized to the executor's wire, so
+        the takeover target reuses the advisor's endpoint/credentials on THAT
+        wire; the endpoint must serve the advisor model on it (true for
+        OpenAI-compatible gateways fronting both — the consult path itself is
+        unchanged).
+        """
+        adv = resolve_llm_target(self._config.advisor)
+        takeover = LlmTarget(
+            id="takeover",
+            model=adv.model,
+            format=self._executor_format,
+            endpoint=adv.endpoint,
+            extra_body=adv.extra_body,
+            extra_headers=adv.extra_headers,
+        )
+        return build_native_backend(takeover)
 
     def _budget_scope(self, ctx: ProxyContext) -> str:
         """Review-budget key: the caller's session header, else instance-wide."""

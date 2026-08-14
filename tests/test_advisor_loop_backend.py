@@ -926,6 +926,46 @@ def test_advisor_usage_folds_gateway_cache_buckets() -> None:
     }
 
 
+async def test_redo_action_escalate_hands_session_to_advisor_model() -> None:
+    """On REDO with redo_action=escalate, the advisor MODEL takes the session over."""
+    exec_b = _exec_backend(_completion_resp(text="done (wrong)"))
+    takeover = _exec_backend(
+        _completion_resp(text="opus takeover", model="adv-model"),
+        _completion_resp(text="opus again", model="adv-model"),
+    )
+    adv = _reviewer("REDO the output is wrong")
+    backend = AdvisorLoopBackend(
+        _config(redo_action="escalate", max_reviews=1),
+        executor_backend=exec_b, advisor_caller=adv, takeover_backend=takeover,
+    )
+    resp = await backend.call(_ctx("ev_a"), _request())
+    assert _anthropic_text(resp.to_body()) == "opus takeover"
+    # Sticky: later turns of the scope route straight to the takeover backend —
+    # no further consults, executor untouched.
+    resp2 = await backend.call(_ctx("ev_a"), _request())
+    assert _anthropic_text(resp2.to_body()) == "opus again"
+    assert adv.advise.await_count == 1
+    assert exec_b.call.await_count == 1
+    # Other scopes are unaffected (still gated on the executor).
+    exec_b.call.side_effect = [_completion_resp(text="fresh", tool_use=True)]
+    resp3 = await backend.call(_ctx("ev_b"), _request())
+    assert resp3.to_body()["stop_reason"] == "tool_use"
+
+
+async def test_redo_action_escalate_approve_does_not_escalate() -> None:
+    """APPROVE verdicts release the turn normally; no takeover happens."""
+    exec_b = _exec_backend(_completion_resp(text="genuinely done"))
+    takeover = _exec_backend()
+    adv = _reviewer("APPROVE")
+    backend = AdvisorLoopBackend(
+        _config(redo_action="escalate"),
+        executor_backend=exec_b, advisor_caller=adv, takeover_backend=takeover,
+    )
+    resp = await backend.call(_ctx("ev_a"), _request())
+    assert _anthropic_text(resp.to_body()) == "genuinely done"
+    assert takeover.call.await_count == 0
+
+
 def test_parse_verdict_tolerates_wrappers() -> None:
     """Markdown/label wrappers parse; prose before the verdict does not."""
     assert _parse_verdict("**REDO** add error handling")[0] == "REDO"

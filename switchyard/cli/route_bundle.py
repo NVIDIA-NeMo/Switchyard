@@ -271,6 +271,7 @@ _ADVISOR_ROUTE_KEYS = (
         "max_reviews",
         "gate_stall_turns",
         "gate_min_tool_results",
+        "redo_action",
         "seed_plan_advice",
         "seed_advice_prefix",
         "advisor_max_tokens",

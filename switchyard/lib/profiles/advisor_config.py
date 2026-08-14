@@ -120,6 +120,13 @@ class AdvisorConfig(BaseModel):
             trigger: only review a no-tool-call turn when the conversation
             carries at least this many tool results — skips reviewing early
             commentary turns on chatty harnesses. 0 reviews as before.
+        redo_action: (review_gate) What a REDO verdict does. ``"advise"``
+            (default) feeds the advisor's plan back as a user turn and the
+            executor keeps working. ``"escalate"`` hands the session to the
+            advisor MODEL instead: it regenerates the gated turn itself and
+            serves every later turn of the session — the review gate's
+            triggers with a router's takeover. Requires the advisor endpoint
+            to serve the executor's wire format.
 
         seed_plan_advice: (both strategies) Consult the advisor once at the
             start of each session — before the executor's first turn — and
@@ -177,6 +184,7 @@ class AdvisorConfig(BaseModel):
     max_reviews: int = Field(default=1, ge=1)
     gate_stall_turns: int = Field(default=0, ge=0)
     gate_min_tool_results: int = Field(default=0, ge=0)
+    redo_action: Literal["advise", "escalate"] = "advise"
 
     # shared
     seed_plan_advice: bool = False
