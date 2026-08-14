@@ -39,6 +39,33 @@ fn data_field_value(line: &str) -> Option<String> {
     Some(value.strip_prefix(' ').unwrap_or(value).to_string())
 }
 
+/// Returns whether a provider event explicitly completes its wire-format stream.
+pub(crate) fn is_terminal_event(format: WireFormat, event: &Value) -> bool {
+    match format {
+        WireFormat::OpenAiChat => event
+            .get("choices")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|choice| {
+                choice
+                    .get("finish_reason")
+                    .and_then(Value::as_str)
+                    .is_some()
+            }),
+        WireFormat::AnthropicMessages => {
+            event.get("type").and_then(Value::as_str) == Some("message_stop")
+        }
+        WireFormat::OpenAiResponses => matches!(
+            event
+                .get("type")
+                .or_else(|| event.get("event"))
+                .and_then(Value::as_str),
+            Some("response.completed" | "response.incomplete")
+        ),
+    }
+}
+
 pub(crate) fn parse_json_sse_frame(
     frame: &str,
     done_marker: Option<&str>,
@@ -163,5 +190,25 @@ mod tests {
     #[test]
     fn anthropic_accepts_optional_done_marker() {
         assert_eq!(done_marker(WireFormat::AnthropicMessages), Some("[DONE]"));
+    }
+
+    #[test]
+    fn recognizes_provider_terminal_events() {
+        assert!(is_terminal_event(
+            WireFormat::OpenAiChat,
+            &json!({"choices": [{"finish_reason": "stop"}]})
+        ));
+        assert!(is_terminal_event(
+            WireFormat::AnthropicMessages,
+            &json!({"type": "message_stop"})
+        ));
+        assert!(is_terminal_event(
+            WireFormat::OpenAiResponses,
+            &json!({"type": "response.completed"})
+        ));
+        assert!(!is_terminal_event(
+            WireFormat::OpenAiChat,
+            &json!({"choices": [{"finish_reason": null}]})
+        ));
     }
 }
