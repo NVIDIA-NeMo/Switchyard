@@ -12,6 +12,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the FastAPI endpoints and legacy chain, the `switchyard-components` crate,
   and their compatibility PyO3 bindings are removed. Use `switchyard-server`
   with native TOML deployments, or `switchyard launch` for coding agents.
+- **Packaging extras `[server]`, `[gpu]`, and `[all]`** — dropped together
+  with the deprecated Python server stack; only `[cli]` remains. Install
+  server functionality via the standalone `switchyard-server` binary instead.
 
 ## [0.2.0]
 
