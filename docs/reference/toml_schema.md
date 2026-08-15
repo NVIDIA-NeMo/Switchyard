@@ -169,6 +169,7 @@ Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
 |---|:---:|---|---|
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Yes | — | Target the judge is called through. Not a routing destination. |
+| `target_failover` | No | `true` | When false, a failed selected completion target returns its error instead of trying another route target. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
 | `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
 

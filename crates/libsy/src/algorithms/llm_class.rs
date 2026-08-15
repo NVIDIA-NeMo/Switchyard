@@ -705,6 +705,12 @@ impl LlmTaskClassifier {
         self
     }
 
+    /// Controls whether a failed selected target may fall through to another classifier target.
+    pub fn with_target_failover(mut self, enabled: bool) -> Self {
+        self.route = self.route.with_target_failover(enabled);
+        self
+    }
+
     fn build_capability(
         judge_target: ModelId,
         efficient_target: ModelId,

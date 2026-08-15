@@ -113,7 +113,10 @@ async fn upstream_chat(
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
     let prompt = body["messages"][0]["content"].as_str().unwrap_or("");
-    if (model == "model/weak" && prompt == "unavailable") || prompt == "all-unavailable" {
+    if (model == "model/weak" && prompt == "unavailable")
+        || (model == "model/premium" && prompt == "premium-unavailable")
+        || prompt == "all-unavailable"
+    {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"error": {"message": "upstream is unavailable"}})),
@@ -1086,6 +1089,7 @@ mode = "custom"
 classifier_target = "classifier"
 targets = ["weak", "middle", "strong", "premium"]
 default_target = "strong"
+target_failover = false
 prompt = "CUSTOM MULTI TARGET"
 response_schema = '''
 {{
@@ -1136,6 +1140,32 @@ selector = "/decision/target"
             Some(selected)
         );
     }
+
+    let previous_call_count = upstream.calls.lock().await.len();
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/custom",
+            "messages": [{"role": "user", "content": "premium-unavailable"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    let calls = upstream.calls.lock().await;
+    let outage_models = calls[previous_call_count..]
+        .iter()
+        .map(|call| call["model"].as_str().unwrap_or(""))
+        .collect::<Vec<_>>();
+    assert_eq!(outage_models.first(), Some(&"model/classifier"));
+    assert!(outage_models.len() > 1);
+    assert!(
+        outage_models[1..]
+            .iter()
+            .all(|model| *model == "model/premium")
+    );
+    drop(calls);
 
     let calls = upstream.calls.lock().await;
     let judge_call = calls

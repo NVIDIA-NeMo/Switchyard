@@ -468,6 +468,8 @@ enum RouteConfig {
         tool_calling: Option<bool>,
         #[serde(default)]
         reasoning: Option<bool>,
+        #[serde(default = "enabled_by_default")]
+        target_failover: bool,
         classifier_target: String,
         #[serde(default)]
         mode: Option<ClassifierMode>,
@@ -968,7 +970,9 @@ fn build_algorithm(
             Ok(Arc::new(algorithm))
         }
         RouteConfig::LlmClassifier {
-            classifier_target, ..
+            classifier_target,
+            target_failover,
+            ..
         } => {
             let classifier = resolve_target_model_id(route_name, classifier_target, targets)?;
             let mode = config.classifier_mode(route_name)?;
@@ -1044,6 +1048,7 @@ fn build_algorithm(
             .map_err(|error| {
                 ServerError::new(format!("llm_classifier route {route_name}: {error}"))
             })?;
+            algorithm = algorithm.with_target_failover(*target_failover);
             if let Some(target_modalities) = target_modalities {
                 algorithm = algorithm.with_target_modalities(target_modalities);
             }
@@ -1109,6 +1114,10 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 
 fn default_classifier_max_output_tokens() -> u64 {
     TaskClassifierConfig::default().max_output_tokens
+}
+
+const fn enabled_by_default() -> bool {
+    true
 }
 
 /// Keys each configured system prompt by the target it belongs to.

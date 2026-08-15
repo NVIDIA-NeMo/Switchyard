@@ -13,8 +13,9 @@
 //! private state value across turns with the same session ID. Requests without a session ID use
 //! unretained per-run state.
 //!
-//! The selected target is offered first, followed by every other configured target. The consumer
-//! may fall through that ordered candidate list when a model call fails.
+//! By default, the selected target is offered first, followed by every other configured target.
+//! The consumer may fall through that ordered candidate list when a model call fails. Callers may
+//! disable target failover when a routing decision must remain authoritative.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -97,6 +98,7 @@ pub struct FallThrough<S = ()> {
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: Vec<ModelId>,
     target_modalities: Option<TargetModalities>,
+    target_failover: bool,
     session_states: Option<Arc<SessionStates<S>>>,
     cleanup_started: Once,
 }
@@ -111,6 +113,7 @@ impl FallThrough<()> {
             classifiers: Vec::new(),
             targets,
             target_modalities: None,
+            target_failover: true,
             session_states: None,
             cleanup_started: Once::new(),
         }
@@ -130,6 +133,7 @@ where
             classifiers: Vec::new(),
             targets,
             target_modalities: None,
+            target_failover: true,
             session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
             cleanup_started: Once::new(),
         }
@@ -162,6 +166,12 @@ where
     /// Restricts routing and request-local fallback to modality-compatible targets.
     pub fn with_target_modalities(mut self, target_modalities: TargetModalities) -> Self {
         self.target_modalities = Some(target_modalities);
+        self
+    }
+
+    /// Controls whether a failed selected target may fall through to another route target.
+    pub fn with_target_failover(mut self, enabled: bool) -> Self {
+        self.target_failover = enabled;
         self
     }
 
@@ -232,6 +242,9 @@ where
 
     /// The selected target first, then every other configured target as a fallback candidate.
     fn candidates(&self, target: &ModelId, eligible: Option<&[ModelId]>) -> Vec<ModelId> {
+        if !self.target_failover {
+            return vec![target.clone()];
+        }
         let candidates = eligible.unwrap_or(&self.targets);
         std::iter::once(target.clone())
             .chain(
@@ -795,6 +808,27 @@ mod tests {
         while let Some(step) = stream.next().await {
             if let crate::Step::CallModel(call) = step? {
                 assert_eq!(call.models, target_set(&["mid", "weak", "strong"]));
+                assert_eq!(call.request.llm_request.model.as_deref(), Some("mid"));
+                return Ok(());
+            }
+        }
+        Err(test_error("expected a CallModel step"))
+    }
+
+    #[tokio::test]
+    async fn target_failover_can_be_disabled() -> Result<()> {
+        use futures::StreamExt;
+
+        let router = Arc::new(
+            FallThrough::<()>::new(target_set(&["weak", "mid", "strong"]))
+                .with_target_failover(false)
+                .with_classifier(fixed(vec![score("mid", 0.9)])),
+        );
+        let stream = router.run_stream(request());
+        tokio::pin!(stream);
+        while let Some(step) = stream.next().await {
+            if let crate::Step::CallModel(call) = step? {
+                assert_eq!(call.models, target_set(&["mid"]));
                 assert_eq!(call.request.llm_request.model.as_deref(), Some("mid"));
                 return Ok(());
             }
