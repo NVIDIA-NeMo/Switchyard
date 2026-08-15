@@ -210,6 +210,13 @@ impl TranslatingLlmClient {
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
         set_json_model(&mut body, model);
+        if matches!(endpoint, UpstreamEndpoint::Completion) {
+            apply_reasoning_effort_override(
+                &mut body,
+                wire_format,
+                backend.reasoning_effort_override(),
+            );
+        }
         // Strip before `merge_extra_body` so a target can reinstate either field
         // deliberately via `extra_body`.
         if matches!(backend, Backend::Anthropic(_)) {
@@ -677,6 +684,54 @@ fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
+// Replaces the provider-shaped effort field after encoding so the override also
+// applies when same-format request preservation would otherwise retain the
+// caller's original wire body.
+fn apply_reasoning_effort_override(
+    body: &mut Value,
+    wire_format: WireFormat,
+    effort: Option<&str>,
+) {
+    let (Value::Object(object), Some(effort)) = (body, effort) else {
+        return;
+    };
+    match wire_format {
+        WireFormat::OpenAiChat => {
+            object.insert(
+                "reasoning_effort".to_string(),
+                Value::String(effort.to_string()),
+            );
+        }
+        WireFormat::OpenAiResponses => {
+            let reasoning = object
+                .entry("reasoning".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !reasoning.is_object() {
+                *reasoning = Value::Object(Map::new());
+            }
+            reasoning
+                .as_object_mut()
+                .expect("reasoning was normalized to an object")
+                .insert("effort".to_string(), Value::String(effort.to_string()));
+        }
+        WireFormat::AnthropicMessages => {
+            object
+                .entry("thinking".to_string())
+                .or_insert_with(|| serde_json::json!({"type": "adaptive"}));
+            let output_config = object
+                .entry("output_config".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !output_config.is_object() {
+                *output_config = Value::Object(Map::new());
+            }
+            output_config
+                .as_object_mut()
+                .expect("output_config was normalized to an object")
+                .insert("effort".to_string(), Value::String(effort.to_string()));
+        }
+    }
+}
+
 // Drops fields accepted by OpenAI-like APIs but rejected by Anthropic Messages.
 //
 // A router can serve earlier turns of a session from an OpenAI-format target and
@@ -879,6 +934,7 @@ mod tests {
             forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
+            reasoning_effort_override: None,
             max_retries: 0,
         }
     }
@@ -920,6 +976,19 @@ mod tests {
         vec![ModelConfig::new(
             "gpt",
             Backend::OpenAiResponses(config(base_url)),
+            None,
+        )]
+    }
+
+    fn responses_map_with_reasoning_effort_override(
+        base_url: &str,
+        effort: &str,
+    ) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.reasoning_effort_override = Some(effort.to_string());
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(backend),
             None,
         )]
     }
@@ -1238,6 +1307,57 @@ mod tests {
             forwarded["input"][2]["content"],
             json!([{"type": "output_text", "text": "working"}])
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn target_reasoning_effort_override_replaces_preserved_responses_effort()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "gpt",
+                "status": "completed",
+                "output": [{
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&responses_map_with_reasoning_effort_override(
+            &format!("{}/v1", server.uri()),
+            "max",
+        ))?;
+        let body = json!({
+            "model": "ctm-auto",
+            "input": "inspect the image",
+            "reasoning": {"effort": "low", "summary": "auto"}
+        });
+
+        client
+            .call_rewrite_model_raw(
+                body,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?;
+
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let forwarded: Value = serde_json::from_slice(&requests[0].body)?;
+        assert_eq!(forwarded["reasoning"]["effort"], "max");
+        assert_eq!(forwarded["reasoning"]["summary"], "auto");
         Ok(())
     }
 

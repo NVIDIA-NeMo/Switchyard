@@ -52,6 +52,8 @@ pub struct HttpBackendConfig {
     pub extra_headers: BTreeMap<String, String>,
     /// Default top-level request fields, applied only when the request omits the key.
     pub extra_body: BTreeMap<String, Value>,
+    /// Reasoning effort forced onto every outbound request for this target.
+    pub reasoning_effort_override: Option<String>,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
 }
@@ -64,6 +66,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("forward_auth", &self.forward_auth)
             .field("extra_header_names", &self.extra_headers.keys())
             .field("extra_body_keys", &self.extra_body.keys())
+            .field("reasoning_effort_override", &self.reasoning_effort_override)
             .field("max_retries", &self.max_retries)
             .finish()
     }
@@ -248,6 +251,11 @@ impl Backend {
         &self.config().extra_body
     }
 
+    /// Target-specific reasoning effort that replaces a caller-supplied value.
+    pub fn reasoning_effort_override(&self) -> Option<&str> {
+        self.config().reasoning_effort_override.as_deref()
+    }
+
     /// Additional attempts allowed after the initial request.
     pub fn max_retries(&self) -> u32 {
         self.config().max_retries
@@ -343,6 +351,7 @@ mod tests {
             forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
+            reasoning_effort_override: None,
             max_retries: 0,
         }
     }

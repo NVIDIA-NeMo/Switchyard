@@ -209,7 +209,12 @@ impl ServerConfig {
                 .ok_or_else(|| ServerError::new("validated llm client was not initialized"))?;
             model_configs.push(ModelConfig::new(
                 target.id.clone(),
-                build_backend(&target.llm_client, client_config, &target.extra_body)?,
+                build_backend(
+                    &target.llm_client,
+                    client_config,
+                    &target.extra_body,
+                    target.reasoning_effort_override.as_deref(),
+                )?,
                 None,
             ));
         }
@@ -339,6 +344,7 @@ struct TargetConfig {
     input_modalities: Option<Vec<InputModality>>,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
+    reasoning_effort_override: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -880,6 +886,7 @@ fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
     extra_body: &BTreeMap<String, Value>,
+    reasoning_effort_override: Option<&str>,
 ) -> ServerResult<Backend> {
     let base_url = config.base_url.trim();
     if base_url.is_empty() {
@@ -919,12 +926,24 @@ fn build_backend(
             Ok(api_key)
         })
         .transpose()?;
+    let reasoning_effort_override = reasoning_effort_override
+        .map(|effort| {
+            let effort = effort.trim();
+            if effort.is_empty() {
+                return Err(ServerError::new(format!(
+                    "llm client {client_name} reasoning_effort_override must not be empty"
+                )));
+            }
+            Ok(effort.to_string())
+        })
+        .transpose()?;
     let http = HttpBackendConfig {
         base_url: base_url.to_string(),
         api_key,
         forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
+        reasoning_effort_override,
         max_retries: config.max_retries,
     };
     Ok(match config.format {
@@ -1741,12 +1760,13 @@ target = "azure"
     }
 
     #[test]
-    fn target_extra_body_is_parsed_and_applied_to_its_backend() -> ServerResult<()> {
+    fn target_request_settings_are_parsed_and_applied_to_its_backend() -> ServerResult<()> {
         let configured = VALID_CONFIG.replacen(
             "llm_client = \"primary\"",
             "llm_client = \"primary\"\n\
              extra_body = { service_tier = \"priority\", \
-             chat_template_kwargs = { enable_thinking = false } }",
+             chat_template_kwargs = { enable_thinking = false } }\n\
+             reasoning_effort_override = \"max\"",
             1,
         );
         let config: ServerConfig = toml::from_str(&configured)
@@ -1757,7 +1777,12 @@ target = "azure"
         let Some(client) = config.llm_clients.get("primary") else {
             return Err(ServerError::new("primary llm client is missing"));
         };
-        let backend = build_backend("primary", client, &target.extra_body)?;
+        let backend = build_backend(
+            "primary",
+            client,
+            &target.extra_body,
+            target.reasoning_effort_override.as_deref(),
+        )?;
 
         assert_eq!(
             backend.extra_body().get("service_tier"),
@@ -1770,6 +1795,7 @@ target = "azure"
                 .and_then(|value| value.get("enable_thinking")),
             Some(&json!(false))
         );
+        assert_eq!(backend.reasoning_effort_override(), Some("max"));
         Ok(())
     }
 
