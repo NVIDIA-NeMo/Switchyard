@@ -338,7 +338,7 @@ struct LlmClientConfig {
     #[serde(default)]
     eager_load_tool_search: bool,
     #[serde(default)]
-    xai_web_search_compatibility: bool,
+    xai_responses_compatibility: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -955,11 +955,10 @@ fn build_backend(
             "llm client {client_name} eager_load_tool_search requires format openai_responses"
         )));
     }
-    if config.xai_web_search_compatibility
-        && !matches!(config.format, ClientFormat::OpenAiResponses)
+    if config.xai_responses_compatibility && !matches!(config.format, ClientFormat::OpenAiResponses)
     {
         return Err(ServerError::new(format!(
-            "llm client {client_name} xai_web_search_compatibility requires format openai_responses"
+            "llm client {client_name} xai_responses_compatibility requires format openai_responses"
         )));
     }
     let api_key = config
@@ -1004,7 +1003,7 @@ fn build_backend(
         reasoning_effort_override,
         bridge_custom_tools: config.bridge_custom_tools,
         eager_load_tool_search: config.eager_load_tool_search,
-        xai_web_search_compatibility: config.xai_web_search_compatibility,
+        xai_responses_compatibility: config.xai_responses_compatibility,
         max_retries: config.max_retries,
     };
     Ok(match config.format {
@@ -1929,10 +1928,10 @@ target = "azure"
     }
 
     #[test]
-    fn xai_web_search_compatibility_is_explicit_and_format_scoped() -> ServerResult<()> {
+    fn xai_responses_compatibility_is_explicit_and_format_scoped() -> ServerResult<()> {
         let configured = VALID_CONFIG.replace(
             "[llm_clients.responses]\nformat = \"openai_responses\"",
-            "[llm_clients.responses]\nformat = \"openai_responses\"\nxai_web_search_compatibility = true",
+            "[llm_clients.responses]\nformat = \"openai_responses\"\nxai_responses_compatibility = true",
         );
         let config: ServerConfig = toml::from_str(&configured)
             .map_err(|error| ServerError::new(format!("failed to parse config: {error}")))?;
@@ -1948,15 +1947,15 @@ target = "azure"
             &target.extra_body,
             target.reasoning_effort_override.as_deref(),
         )?;
-        assert!(backend.xai_web_search_compatibility());
+        assert!(backend.xai_responses_compatibility());
 
         let invalid = VALID_CONFIG.replace(
             "[llm_clients.primary]\nformat = \"openai_chat\"",
-            "[llm_clients.primary]\nformat = \"openai_chat\"\nxai_web_search_compatibility = true",
+            "[llm_clients.primary]\nformat = \"openai_chat\"\nxai_responses_compatibility = true",
         );
         assert!(
             error_message(&invalid)
-                .contains("xai_web_search_compatibility requires format openai_responses")
+                .contains("xai_responses_compatibility requires format openai_responses")
         );
         Ok(())
     }

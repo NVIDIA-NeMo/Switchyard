@@ -31,7 +31,7 @@ use crate::responses_custom_tool_bridge::{
 };
 use crate::responses_tool_compat::{
     bridge_responses_web_search_to_anthropic, eager_load_responses_tool_search,
-    normalize_xai_responses_web_search, responses_web_search_tool,
+    normalize_xai_responses_request, responses_web_search_tool,
 };
 
 // Headers this client owns or that are hop-by-hop. Backends apply an explicitly
@@ -242,8 +242,8 @@ impl TranslatingLlmClient {
             if backend.eager_load_tool_search() {
                 eager_load_responses_tool_search(&mut body);
             }
-            if backend.xai_web_search_compatibility() {
-                normalize_xai_responses_web_search(&mut body);
+            if backend.xai_responses_compatibility() {
+                normalize_xai_responses_request(&mut body);
             }
             if backend.bridge_custom_tools() {
                 bridge_responses_custom_tool_request(&mut body);
@@ -970,7 +970,7 @@ mod tests {
             reasoning_effort_override: None,
             bridge_custom_tools: false,
             eager_load_tool_search: false,
-            xai_web_search_compatibility: false,
+            xai_responses_compatibility: false,
             max_retries: 0,
         }
     }
