@@ -224,6 +224,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "output_index": output_index,
             "item": {
                 "type": "message",
+                "id": format!("msg_{output_index}"),
                 "role": "assistant",
                 "status": status,
                 "content": [{"type": "output_text", "text": state.response_text}],
@@ -265,6 +266,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             output_index,
             json!({
                 "type": "message",
+                "id": format!("msg_{output_index}"),
                 "role": "assistant",
                 "status": status,
                 "content": [{"type": "output_text", "text": state.response_text}],

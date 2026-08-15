@@ -692,8 +692,8 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
 }
 
 // Normalizes response items that coding agents replay as Responses input.
-// OpenAI rejects response-only `status` metadata and requires replayed reasoning
-// `content` to be empty, including plaintext reasoning emitted by other providers.
+// OpenAI rejects response-only `status` metadata, malformed item IDs, and
+// non-empty reasoning `content` emitted by other providers.
 fn sanitize_openai_responses_replay_items(body: &mut Value) {
     let Some(Value::Array(input)) = body.get_mut("input") else {
         return;
@@ -705,15 +705,33 @@ fn sanitize_openai_responses_replay_items(body: &mut Value) {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => {
                 item.remove("status");
+                strip_invalid_openai_responses_replay_id(item);
             }
             Some("reasoning") => {
                 item.remove("status");
+                strip_invalid_openai_responses_replay_id(item);
                 if item.contains_key("content") {
                     item.insert("content".to_string(), Value::Array(Vec::new()));
                 }
             }
             _ => {}
         }
+    }
+}
+
+// Replay IDs are optional, so discard cross-provider values OpenAI cannot parse.
+fn strip_invalid_openai_responses_replay_id(item: &mut Map<String, Value>) {
+    let Some(id) = item.get("id") else {
+        return;
+    };
+    let valid = id.as_str().is_some_and(|id| {
+        !id.is_empty()
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    });
+    if !valid {
+        item.remove("id");
     }
 }
 
@@ -1166,7 +1184,12 @@ mod tests {
         let body = json!({
             "model": "ctm-auto",
             "input": [
-                {"type": "message", "role": "user", "content": "start"},
+                {
+                    "type": "message",
+                    "id": "msg_valid-0",
+                    "role": "user",
+                    "content": "start"
+                },
                 {
                     "type": "reasoning",
                     "id": "rs_1",
@@ -1180,7 +1203,7 @@ mod tests {
                 },
                 {
                     "type": "message",
-                    "id": "msg_pi_0",
+                    "id": "{\"v\":1}",
                     "role": "assistant",
                     "status": "completed",
                     "content": [{"type": "output_text", "text": "working"}]
@@ -1204,10 +1227,13 @@ mod tests {
             .ok_or("request recording should be enabled")?;
         let forwarded: Value = serde_json::from_slice(&requests[0].body)?;
         assert_eq!(forwarded["model"], "gpt");
+        assert_eq!(forwarded["input"][0]["id"], "msg_valid-0");
         assert_eq!(forwarded["input"][1].get("status"), None);
+        assert_eq!(forwarded["input"][1]["id"], "rs_1");
         assert_eq!(forwarded["input"][1]["content"], json!([]));
         assert_eq!(forwarded["input"][1]["encrypted_content"], "opaque");
         assert_eq!(forwarded["input"][2].get("status"), None);
+        assert_eq!(forwarded["input"][2].get("id"), None);
         assert_eq!(
             forwarded["input"][2]["content"],
             json!([{"type": "output_text", "text": "working"}])

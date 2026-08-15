@@ -434,6 +434,61 @@ fn openai_chat_to_responses_uses_served_model_without_losing_source_model() -> T
     Ok(())
 }
 
+// Pi persists the ID from the final item, so it must match the ID announced at item start.
+#[test]
+fn translated_responses_message_id_survives_terminal_events() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let chunks = [
+        json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "model": "gpt-upstream",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "hello"},
+                "finish_reason": null
+            }]
+        }),
+        json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "model": "gpt-upstream",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+        }),
+    ];
+
+    let mut events = Vec::new();
+    for chunk in chunks {
+        events.extend(engine.translate_event(
+            &mut state,
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &chunk,
+        )?);
+    }
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let added_id = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.added")
+        .and_then(|event| event["item"]["id"].as_str());
+    let done_id = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .and_then(|event| event["item"]["id"].as_str());
+    let completed_id = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .and_then(|event| event["response"]["output"][0]["id"].as_str());
+
+    assert_eq!(added_id, Some("msg_0"));
+    assert_eq!(done_id, added_id);
+    assert_eq!(completed_id, added_id);
+    Ok(())
+}
+
 // Verifies OpenAI Chat finish emits a terminal chunk when the source closes without one.
 #[test]
 fn openai_chat_finish_synthesizes_terminal_chunk_after_incomplete_source() -> TestResult {
