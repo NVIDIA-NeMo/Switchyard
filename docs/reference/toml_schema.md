@@ -93,9 +93,13 @@ search should leave it disabled. Other client formats reject this setting.
 Set `xai_responses_compatibility = true` for an xAI Responses backend. It keeps
 live `web_search` available while removing OpenAI-only options such as
 `external_web_access`; a definition with `external_web_access = false` is removed
-rather than silently upgraded to live search. It also removes provider-bound
-`encrypted_content` from replayed reasoning items while keeping their summaries.
-Other client formats reject this setting.
+rather than silently upgraded to live search. Other client formats reject this
+setting.
+
+For every Responses backend, Switchyard removes provider-bound
+`encrypted_content` from replayed reasoning items while retaining their portable
+summaries. This permits a dynamic route to move a conversation between Responses
+providers without asking one provider to verify another provider's ciphertext.
 
 When a Responses request containing `web_search` is translated to an Anthropic
 backend, Switchyard emits Anthropic's native `web_search_20250305` server tool.

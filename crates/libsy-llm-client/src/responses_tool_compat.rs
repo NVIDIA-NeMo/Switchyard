@@ -127,22 +127,11 @@ fn strip_defer_loading(value: &mut Value) {
 /// Codex annotates `web_search` with OpenAI-only controls such as
 /// `external_web_access` and `search_content_types`. xAI exposes the same hosted tool,
 /// but rejects those fields. A false external-access flag removes the tool instead of
-/// accidentally upgrading a disabled/cached request to live search. Encrypted reasoning
-/// is bound to the provider that created it, so only its opaque ciphertext is removed;
-/// replayable summaries remain available.
+/// accidentally upgrading a disabled/cached request to live search.
 pub(crate) fn normalize_xai_responses_request(body: &mut Value) {
     let Some(object) = body.as_object_mut() else {
         return;
     };
-    if let Some(input) = object.get_mut("input").and_then(Value::as_array_mut) {
-        for item in input {
-            if item.get("type").and_then(Value::as_str) == Some("reasoning")
-                && let Some(item) = item.as_object_mut()
-            {
-                item.remove("encrypted_content");
-            }
-        }
-    }
     let Some(tools) = object.get_mut("tools").and_then(Value::as_array_mut) else {
         return;
     };
@@ -416,32 +405,5 @@ mod tests {
 
         assert_eq!(body.get("tools"), None);
         assert_eq!(body.get("tool_choice"), None);
-    }
-
-    #[test]
-    fn xai_replay_drops_provider_bound_reasoning_ciphertext_only() {
-        let mut body = json!({
-            "input": [
-                {
-                    "type": "reasoning",
-                    "id": "rs_foreign",
-                    "encrypted_content": "provider-bound-ciphertext",
-                    "summary": [{"type": "summary_text", "text": "Reusable summary."}],
-                    "content": []
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "Earlier answer."}]
-                }
-            ]
-        });
-
-        normalize_xai_responses_request(&mut body);
-
-        assert_eq!(body["input"][0].get("encrypted_content"), None);
-        assert_eq!(body["input"][0]["id"], "rs_foreign");
-        assert_eq!(body["input"][0]["summary"][0]["text"], "Reusable summary.");
-        assert_eq!(body["input"][1]["content"][0]["text"], "Earlier answer.");
     }
 }

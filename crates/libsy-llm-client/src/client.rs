@@ -780,8 +780,10 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
 }
 
 // Normalizes response items that coding agents replay as Responses input.
-// OpenAI rejects response-only `status` metadata, malformed item IDs, and
-// non-empty reasoning `content` emitted by other providers.
+// Responses providers reject response-only `status` metadata, malformed item IDs,
+// non-empty reasoning `content`, and encrypted reasoning created by a different
+// provider. Ciphertext provenance is not represented on replay items, so dynamic
+// routes retain the portable summary while discarding the provider-bound blob.
 fn sanitize_openai_responses_replay_items(body: &mut Value) {
     let Some(Value::Array(input)) = body.get_mut("input") else {
         return;
@@ -797,6 +799,7 @@ fn sanitize_openai_responses_replay_items(body: &mut Value) {
             }
             Some("reasoning") => {
                 item.remove("status");
+                item.remove("encrypted_content");
                 strip_invalid_openai_responses_replay_id(item);
                 if item.contains_key("content") {
                     item.insert("content".to_string(), Value::Array(Vec::new()));
@@ -1326,7 +1329,10 @@ mod tests {
                         "type": "reasoning_text",
                         "text": "private provider reasoning"
                     }],
-                    "summary": [],
+                    "summary": [{
+                        "type": "summary_text",
+                        "text": "Portable reasoning summary."
+                    }],
                     "encrypted_content": "opaque"
                 },
                 {
@@ -1359,7 +1365,11 @@ mod tests {
         assert_eq!(forwarded["input"][1].get("status"), None);
         assert_eq!(forwarded["input"][1]["id"], "rs_1");
         assert_eq!(forwarded["input"][1]["content"], json!([]));
-        assert_eq!(forwarded["input"][1]["encrypted_content"], "opaque");
+        assert_eq!(forwarded["input"][1].get("encrypted_content"), None);
+        assert_eq!(
+            forwarded["input"][1]["summary"][0]["text"],
+            "Portable reasoning summary."
+        );
         assert_eq!(forwarded["input"][2].get("status"), None);
         assert_eq!(forwarded["input"][2].get("id"), None);
         assert_eq!(
