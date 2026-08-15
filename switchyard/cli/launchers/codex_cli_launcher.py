@@ -30,7 +30,6 @@ from switchyard.cli.launchers.live_stats_footer import LiveStatsFooter
 from switchyard.cli.launchers.native_server import NativeServer
 from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
 from switchyard.cli.launchers.session_summary import print_session_summary
-from switchyard.cli.launchers.shell_tui import ShellTUI
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +43,11 @@ def _find_codex_binary() -> str | None:
     """Locate the ``codex`` executable."""
     path_hit = shutil.which("codex")
     if path_hit:
+        if os.name == "nt":
+            # npm places a POSIX shim beside the Windows-launchable .cmd shim.
+            cmd_shim = Path(f"{path_hit}.cmd")
+            if cmd_shim.is_file():
+                return str(cmd_shim)
         return path_hit
     for candidate in (
         Path.home() / ".npm-global" / "bin" / "codex",
@@ -97,6 +101,13 @@ def _provider_overrides(
 def _codex_env(use_openai_auth: bool = False) -> dict[str, str]:
     """Return the environment required by the transient provider."""
     env = os.environ.copy()
+    existing_no_proxy = env.get("NO_PROXY") or env.get("no_proxy", "")
+    no_proxy = [item.strip() for item in existing_no_proxy.split(",") if item.strip()]
+    for loopback_host in ("127.0.0.1", "localhost"):
+        if loopback_host not in no_proxy:
+            no_proxy.append(loopback_host)
+    env["NO_PROXY"] = ",".join(no_proxy)
+    env["no_proxy"] = env["NO_PROXY"]
     if not use_openai_auth:
         env["OPENAI_API_KEY"] = "switchyard"
     return env
@@ -203,10 +214,14 @@ def _run_codex_with_switchyard(
             routes=[display_model],
             default_route=display_model,
         )
-        if stdin_is_tty():
+        if stdin_is_tty() and os.name != "nt":
             banner_pause()
 
-        if stdin_is_tty():
+        if stdin_is_tty() and os.name != "nt":
+            # ShellTUI depends on Unix-only pty/fcntl modules. Import it lazily so
+            # native Windows can still launch Codex with the inherited console.
+            from switchyard.cli.launchers.shell_tui import ShellTUI
+
             footer = LiveStatsFooter(
                 stats,
                 display_model,

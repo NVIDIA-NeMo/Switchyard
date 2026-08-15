@@ -79,7 +79,7 @@ def _load_codex_model_template(codex_bin: str) -> dict[str, Any]:
         raw = subprocess.check_output(
             [codex_bin, "debug", "models", "--bundled"],
             stderr=subprocess.DEVNULL,
-            text=True,
+            encoding="utf-8",
             timeout=_CODEX_CATALOG_LOAD_TIMEOUT_S,
         )
         catalog = json.loads(raw)
