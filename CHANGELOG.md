@@ -185,7 +185,7 @@ traffic that sits between client applications and LLM backends.
   `--list-models`), and `verify` / `launch --smoke` round-trip checks.
 - **Observability** — Prometheus `/metrics`, a JSON `/v1/stats`
   (`/v1/routing/stats` alias), and per-request cost/token/latency stats. See
-  [Metrics Reference](docs/METRICS_REFERENCE.md).
+  [Metrics Reference](docs/internal/metrics_reference.md).
 - **Python library** — `SwitchyardRecipes` (`passthrough_recipe`,
   `random_routing_recipe`, `cascade_recipe`, `deterministic_routing_recipe`,
   …) and typed `ChatRequest` / `ChatResponse` containers for in-process use.
