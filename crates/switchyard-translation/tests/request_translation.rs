@@ -6,10 +6,54 @@
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    InputModality, LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+#[test]
+fn openai_request_media_blocks_are_typed_for_modality_routing() -> TestResult {
+    let engine = TranslationEngine::default();
+    let chat = engine.decode_request(
+        WireFormat::OpenAiChat,
+        &json!({
+            "model": "gpt",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "input_audio",
+                    "input_audio": {"data": "AAAA", "format": "wav"}
+                }]
+            }]
+        }),
+        &TranslationPolicy::default(),
+    )?;
+    assert_eq!(
+        chat.request.input_modalities(),
+        [InputModality::Audio].into_iter().collect()
+    );
+
+    let responses = engine.decode_request(
+        WireFormat::OpenAiResponses,
+        &json!({
+            "model": "gpt",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_video",
+                    "video": {"media_type": "video/mp4", "data": "AAAA"}
+                }]
+            }]
+        }),
+        &TranslationPolicy::default(),
+    )?;
+    assert_eq!(
+        responses.request.input_modalities(),
+        [InputModality::Video].into_iter().collect()
+    );
+    Ok(())
+}
 
 // Verifies Anthropic-only request fields are dropped or mapped for OpenAI Chat.
 #[test]

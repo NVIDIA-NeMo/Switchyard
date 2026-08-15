@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 use crate::codecs::common::{
     is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
 };
-use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
+use crate::codecs::openai_chat::{decode_file_source, decode_image_source, decode_media_source};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -659,6 +659,16 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                     Some("input_file") => out.push(ContentBlock::File {
                         source: decode_file_source(block),
                     }),
+                    Some("audio") | Some("audio_url") | Some("input_audio") => {
+                        out.push(ContentBlock::Audio {
+                            source: decode_media_source(block, "audio"),
+                        });
+                    }
+                    Some("video") | Some("video_url") | Some("input_video") => {
+                        out.push(ContentBlock::Video {
+                            source: decode_media_source(block, "video"),
+                        });
+                    }
                     _ => out.push(ContentBlock::Unknown {
                         provider: WireFormat::OpenAiResponses.into(),
                         raw: Value::Object(block.clone()),

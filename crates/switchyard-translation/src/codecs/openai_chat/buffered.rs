@@ -480,6 +480,16 @@ pub(crate) fn decode_openai_content(
                             source: decode_file_source(block),
                         });
                     }
+                    Some("audio") | Some("audio_url") | Some("input_audio") => {
+                        content.push(ContentBlock::Audio {
+                            source: decode_media_source(block, "audio"),
+                        });
+                    }
+                    Some("video") | Some("video_url") | Some("input_video") => {
+                        content.push(ContentBlock::Video {
+                            source: decode_media_source(block, "video"),
+                        });
+                    }
                     _ => content.push(ContentBlock::Unknown {
                         provider: provider.into(),
                         raw: Value::Object(block.clone()),
@@ -559,6 +569,76 @@ pub(crate) fn decode_file_source(block: &Map<String, Value>) -> FileSource {
         return FileSource::FileId(file_id.to_string());
     }
     FileSource::Raw(Value::Object(block.clone()))
+}
+
+/// Decodes common OpenAI audio and video block shapes into normalized media sources.
+pub(crate) fn decode_media_source(block: &Map<String, Value>, kind: &str) -> MediaSource {
+    let url_key = format!("{kind}_url");
+    if let Some(value) = block.get(&url_key) {
+        if let Some(url) = value.as_str() {
+            return MediaSource::Url {
+                url: url.to_string(),
+                media_type: media_type(block, kind),
+            };
+        }
+        if let Some(payload) = value.as_object()
+            && let Some(url) = payload.get("url").and_then(Value::as_str)
+        {
+            return MediaSource::Url {
+                url: url.to_string(),
+                media_type: media_type(payload, kind).or_else(|| media_type(block, kind)),
+            };
+        }
+    }
+
+    let input_key = format!("input_{kind}");
+    for key in [input_key.as_str(), kind] {
+        let Some(value) = block.get(key) else {
+            continue;
+        };
+        if let Some(data) = value.as_str() {
+            return MediaSource::Base64 {
+                media_type: media_type(block, kind),
+                data: data.to_string(),
+            };
+        }
+        if let Some(payload) = value.as_object() {
+            if let Some(url) = payload.get("url").and_then(Value::as_str) {
+                return MediaSource::Url {
+                    url: url.to_string(),
+                    media_type: media_type(payload, kind).or_else(|| media_type(block, kind)),
+                };
+            }
+            if let Some(data) = payload.get("data").and_then(Value::as_str) {
+                return MediaSource::Base64 {
+                    media_type: media_type(payload, kind).or_else(|| media_type(block, kind)),
+                    data: data.to_string(),
+                };
+            }
+        }
+    }
+
+    if let Some(data) = block.get("data").and_then(Value::as_str) {
+        return MediaSource::Base64 {
+            media_type: media_type(block, kind),
+            data: data.to_string(),
+        };
+    }
+    MediaSource::Raw(Value::Object(block.clone()))
+}
+
+fn media_type(object: &Map<String, Value>, kind: &str) -> Option<String> {
+    object
+        .get("media_type")
+        .or_else(|| object.get("format"))
+        .and_then(Value::as_str)
+        .map(|value| {
+            if value.contains('/') {
+                value.to_string()
+            } else {
+                format!("{kind}/{value}")
+            }
+        })
 }
 
 /// Decodes one OpenAI tool call into a normalized tool call.
