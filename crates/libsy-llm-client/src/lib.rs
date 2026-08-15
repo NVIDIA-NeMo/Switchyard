@@ -23,6 +23,7 @@ pub mod metrics;
 mod observability;
 mod observation;
 pub mod raw;
+mod responses_custom_tool_bridge;
 pub mod run;
 
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};

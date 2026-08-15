@@ -333,6 +333,8 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    #[serde(default)]
+    bridge_custom_tools: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -923,6 +925,11 @@ fn build_backend(
             "llm client {client_name} cannot set both forward_auth and api_key_env"
         )));
     }
+    if config.bridge_custom_tools && !matches!(config.format, ClientFormat::OpenAiResponses) {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} bridge_custom_tools requires format openai_responses"
+        )));
+    }
     let api_key = config
         .api_key_env
         .as_deref()
@@ -963,6 +970,7 @@ fn build_backend(
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
         reasoning_effort_override,
+        bridge_custom_tools: config.bridge_custom_tools,
         max_retries: config.max_retries,
     };
     Ok(match config.format {
@@ -1294,6 +1302,7 @@ target = "weak"
         }
     }
 
+    // The bridge is opt-in and cannot silently no-op on another client format.
     #[test]
     fn builds_all_supported_algorithm_types() -> ServerResult<()> {
         let state = server_state_from_toml(VALID_CONFIG)?;
@@ -1816,6 +1825,39 @@ target = "azure"
             Some(&json!(false))
         );
         assert_eq!(backend.reasoning_effort_override(), Some("max"));
+        Ok(())
+    }
+
+    #[test]
+    fn responses_custom_tool_bridge_is_explicit_and_format_scoped() -> ServerResult<()> {
+        let configured = VALID_CONFIG.replace(
+            "[llm_clients.responses]\nformat = \"openai_responses\"",
+            "[llm_clients.responses]\nformat = \"openai_responses\"\nbridge_custom_tools = true",
+        );
+        let config: ServerConfig = toml::from_str(&configured)
+            .map_err(|error| ServerError::new(format!("failed to parse config: {error}")))?;
+        let Some(target) = config.targets.get("strong") else {
+            return Err(ServerError::new("strong target is missing"));
+        };
+        let Some(client) = config.llm_clients.get("responses") else {
+            return Err(ServerError::new("responses llm client is missing"));
+        };
+        let backend = build_backend(
+            "responses",
+            client,
+            &target.extra_body,
+            target.reasoning_effort_override.as_deref(),
+        )?;
+        assert!(backend.bridge_custom_tools());
+
+        let invalid = VALID_CONFIG.replace(
+            "[llm_clients.primary]\nformat = \"openai_chat\"",
+            "[llm_clients.primary]\nformat = \"openai_chat\"\nbridge_custom_tools = true",
+        );
+        assert!(
+            error_message(&invalid)
+                .contains("bridge_custom_tools requires format openai_responses")
+        );
         Ok(())
     }
 

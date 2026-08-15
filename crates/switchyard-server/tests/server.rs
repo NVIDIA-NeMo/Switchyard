@@ -344,6 +344,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
         reasoning_effort_override: None,
+        bridge_custom_tools: false,
         max_retries: 0,
     });
     let target_models = routes

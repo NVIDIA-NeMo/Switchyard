@@ -54,6 +54,8 @@ pub struct HttpBackendConfig {
     pub extra_body: BTreeMap<String, Value>,
     /// Reasoning effort forced onto every outbound request for this target.
     pub reasoning_effort_override: Option<String>,
+    /// Whether Responses custom tools are bridged through upstream function tools.
+    pub bridge_custom_tools: bool,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
 }
@@ -67,6 +69,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("extra_header_names", &self.extra_headers.keys())
             .field("extra_body_keys", &self.extra_body.keys())
             .field("reasoning_effort_override", &self.reasoning_effort_override)
+            .field("bridge_custom_tools", &self.bridge_custom_tools)
             .field("max_retries", &self.max_retries)
             .finish()
     }
@@ -256,6 +259,11 @@ impl Backend {
         self.config().reasoning_effort_override.as_deref()
     }
 
+    /// Whether Responses custom tools must be represented as function tools upstream.
+    pub fn bridge_custom_tools(&self) -> bool {
+        self.config().bridge_custom_tools
+    }
+
     /// Additional attempts allowed after the initial request.
     pub fn max_retries(&self) -> u32 {
         self.config().max_retries
@@ -352,6 +360,7 @@ mod tests {
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             reasoning_effort_override: None,
+            bridge_custom_tools: false,
             max_retries: 0,
         }
     }

@@ -4,7 +4,7 @@
 //! [`TranslatingLlmClient`] — the crate's single public entry point: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
@@ -25,6 +25,10 @@ use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
 use crate::metrics;
 use crate::raw::RawResponse;
+use crate::responses_custom_tool_bridge::{
+    bridge_responses_custom_tool_request, bridge_responses_custom_tool_response,
+    bridge_responses_custom_tool_stream, responses_custom_tool_names,
+};
 
 // Headers this client owns or that are hop-by-hop. Backends apply an explicitly
 // enabled caller credential after generic metadata forwarding skips these.
@@ -225,6 +229,9 @@ impl TranslatingLlmClient {
         }
         if matches!(backend, Backend::OpenAiResponses(_)) {
             sanitize_openai_responses_replay_items(&mut body);
+            if backend.bridge_custom_tools() {
+                bridge_responses_custom_tool_request(&mut body);
+            }
         }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
@@ -421,6 +428,11 @@ impl TranslatingLlmClient {
                 message: format!("model {model_id:?} has no backend for format {wire_format}"),
             }
         })?;
+        let bridged_custom_tools = if backend.bridge_custom_tools() {
+            responses_custom_tool_names(&llm_request)
+        } else {
+            HashSet::new()
+        };
 
         let http_response = self
             .send_encoded(
@@ -451,12 +463,17 @@ impl TranslatingLlmClient {
                     })
                 });
                 let chunks = decode_stream(bytes, wire_format)?;
+                let chunks =
+                    bridge_responses_custom_tool_stream(chunks, wire_format, bridged_custom_tools);
                 LlmResponse::Stream(chunks)
             }
             EncodedResponse::Buffered { body, .. } => {
-                let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
+                let mut body = serde_json::from_slice::<Value>(&body).map_err(|error| {
                     LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
                 })?;
+                if wire_format == WireFormat::OpenAiResponses && !bridged_custom_tools.is_empty() {
+                    bridge_responses_custom_tool_response(&mut body, &bridged_custom_tools);
+                }
                 let agg = decode_aggregated_response(&body, wire_format)
                     .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
                 LlmResponse::Agg(agg)
@@ -935,6 +952,7 @@ mod tests {
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             reasoning_effort_override: None,
+            bridge_custom_tools: false,
             max_retries: 0,
         }
     }
@@ -976,6 +994,16 @@ mod tests {
         vec![ModelConfig::new(
             "gpt",
             Backend::OpenAiResponses(config(base_url)),
+            None,
+        )]
+    }
+
+    fn responses_map_with_custom_tool_bridge(base_url: &str) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.bridge_custom_tools = true;
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(backend),
             None,
         )]
     }
@@ -1097,6 +1125,7 @@ mod tests {
         request
     }
 
+    // Exercises the complete preserved request/response bridge for a buffered call.
     #[tokio::test]
     async fn missing_model_errors()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
@@ -1114,6 +1143,7 @@ mod tests {
         Ok(())
     }
 
+    // Streamed function argument JSON is withheld until it can be restored as raw custom input.
     #[tokio::test]
     async fn unknown_model_errors()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
@@ -1358,6 +1388,166 @@ mod tests {
         let forwarded: Value = serde_json::from_slice(&requests[0].body)?;
         assert_eq!(forwarded["reasoning"]["effort"], "max");
         assert_eq!(forwarded["reasoning"]["summary"], "auto");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_custom_tool_bridge_round_trips_buffered_calls()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "gpt",
+                "status": "completed",
+                "output": [{
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_2",
+                    "name": "apply_patch",
+                    "arguments": "{\"input\":\"*** Begin Patch\\n*** End Patch\"}",
+                    "status": "completed"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&responses_map_with_custom_tool_bridge(&format!(
+            "{}/v1",
+            server.uri()
+        )))?;
+        let raw = json!({
+            "model": "ctm-auto",
+            "input": [
+                {"role": "user", "content": "Continue the research edit."},
+                {
+                    "type": "custom_tool_call",
+                    "id": "ctc_1",
+                    "call_id": "call_1",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch"
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_1",
+                    "output": "Done"
+                }
+            ],
+            "tools": [{
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Edit files",
+                "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.+/"}
+            }],
+            "tool_choice": {"type": "custom", "name": "apply_patch"}
+        });
+
+        let RawResponse::Buffered(body) = client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?
+        else {
+            panic!("expected a buffered response");
+        };
+
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let forwarded: Value = serde_json::from_slice(&requests[0].body)?;
+        assert_eq!(forwarded["tools"][0]["type"], "function");
+        assert_eq!(forwarded["tool_choice"]["type"], "function");
+        assert_eq!(forwarded["input"][1]["type"], "function_call");
+        assert_eq!(forwarded["input"][1].get("id"), None);
+        assert_eq!(forwarded["input"][2]["type"], "function_call_output");
+        assert_eq!(body["output"][0]["type"], "custom_tool_call");
+        assert_eq!(body["output"][0]["input"], "*** Begin Patch\n*** End Patch");
+        assert_eq!(body["model"], "gpt");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_custom_tool_bridge_round_trips_streamed_calls()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use futures::TryStreamExt;
+
+        let server = MockServer::start().await;
+        let arguments = r#"{"input":"*** Begin Patch\n*** End Patch"}"#;
+        let sse = format!(
+            "data: {{\"type\":\"response.created\",\"response\":{{\"id\":\"resp_1\",\"model\":\"gpt\",\"status\":\"in_progress\",\"output\":[]}}}}\n\n\
+             data: {{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"apply_patch\",\"arguments\":\"\"}}}}\n\n\
+             data: {{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_1\",\"delta\":{arguments:?}}}\n\n\
+             data: {{\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"item_id\":\"fc_1\",\"arguments\":{arguments:?}}}\n\n\
+             data: {{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"apply_patch\",\"arguments\":{arguments:?},\"status\":\"completed\"}}}}\n\n\
+             data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"resp_1\",\"model\":\"gpt\",\"status\":\"completed\",\"output\":[{{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"apply_patch\",\"arguments\":{arguments:?},\"status\":\"completed\"}}],\"usage\":{{}}}}}}\n\n\
+             data: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&responses_map_with_custom_tool_bridge(&format!(
+            "{}/v1",
+            server.uri()
+        )))?;
+        let raw = json!({
+            "model": "ctm-auto",
+            "input": "Make the requested research edit.",
+            "stream": true,
+            "tools": [{
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Edit files",
+                "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.+/"}
+            }],
+            "tool_choice": {"type": "custom", "name": "apply_patch"}
+        });
+
+        let RawResponse::Stream(stream) = client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?
+        else {
+            panic!("expected a streamed response");
+        };
+        let events: Vec<Value> = stream.try_collect().await?;
+
+        assert!(!events.iter().any(|event| {
+            event.get("type").and_then(Value::as_str)
+                == Some("response.function_call_arguments.delta")
+        }));
+        assert!(events.iter().any(|event| {
+            event.get("type").and_then(Value::as_str)
+                == Some("response.custom_tool_call_input.done")
+                && event.get("input").and_then(Value::as_str)
+                    == Some("*** Begin Patch\n*** End Patch")
+        }));
+        for event_type in ["response.output_item.added", "response.output_item.done"] {
+            assert!(events.iter().any(|event| {
+                event.get("type").and_then(Value::as_str) == Some(event_type)
+                    && event["item"]["type"] == "custom_tool_call"
+            }));
+        }
+        let completed = events
+            .iter()
+            .find(|event| event.get("type").and_then(Value::as_str) == Some("response.completed"))
+            .ok_or("missing response.completed")?;
+        assert_eq!(
+            completed["response"]["output"][0]["type"],
+            "custom_tool_call"
+        );
+        assert_eq!(completed["response"]["model"], "gpt");
         Ok(())
     }
 

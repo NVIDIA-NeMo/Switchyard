@@ -47,6 +47,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
 | `forward_auth` | No | `false` | Forward the caller's provider credential to this upstream. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
+| `bridge_custom_tools` | No | `false` | For an `openai_responses` backend without native custom-tool support, bridge custom definitions and replay items through function tools, then restore custom-tool responses. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
@@ -75,6 +76,11 @@ forwarding client used by a route, including classifier and judge targets. The
 server rejects an Anthropic forwarding route called through an OpenAI endpoint,
 or an OpenAI forwarding route called through an Anthropic endpoint, before it
 calls an upstream.
+
+Set `bridge_custom_tools = true` only for a Responses-compatible provider that
+accepts function tools but rejects `type = "custom"`. Native custom-tool
+providers should leave it disabled so grammar-constrained tools pass through
+unchanged. Other client formats reject this setting.
 
 ## `[targets.<name>]`
 
