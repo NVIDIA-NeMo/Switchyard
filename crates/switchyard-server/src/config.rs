@@ -174,6 +174,14 @@ impl ServerConfig {
                 .map(|modalities| modalities.iter().copied().collect::<BTreeSet<_>>())
                 .ok_or_else(|| ServerError::new("validated target modalities were missing"))?;
             advertised.extend(modalities.iter().copied());
+            if let Some(existing) = target_modalities.get(&target.id)
+                && existing != &modalities
+            {
+                return Err(ServerError::new(format!(
+                    "route {route_name} maps model id {} to conflicting input_modalities",
+                    target.id
+                )));
+            }
             target_modalities.insert(target.id.clone(), modalities);
         }
         Ok((Some(target_modalities), advertised.into_iter().collect()))
@@ -1316,6 +1324,62 @@ target = "weak"
         assert!(
             error_message(&configured)
                 .contains("must declare input_modalities for every completion target or none")
+        );
+    }
+
+    #[test]
+    fn duplicate_model_ids_require_matching_route_modalities() {
+        const DUPLICATE_MODEL_CONFIG: &str = r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.first]
+id = "shared/model"
+llm_client = "primary"
+input_modalities = ["text", "image"]
+
+[targets.second]
+id = "shared/model"
+llm_client = "primary"
+input_modalities = ["image", "text"]
+
+[routes.shared]
+id = "switchyard/shared"
+type = "random"
+targets = ["first", "second"]
+"#;
+
+        // Repeated declarations for one model id may differ in ordering, but not content.
+        let config: ServerConfig =
+            toml::from_str(DUPLICATE_MODEL_CONFIG).expect("test config should parse");
+        let route = config
+            .routes
+            .get("shared")
+            .expect("test route should exist");
+        let (target_modalities, advertised) = config
+            .route_modalities("shared", route)
+            .expect("matching declarations should be accepted");
+        assert_eq!(
+            target_modalities
+                .expect("target modalities should be declared")
+                .get(&ModelId::from("shared/model")),
+            Some(&BTreeSet::from(
+                [InputModality::Text, InputModality::Image,]
+            ))
+        );
+        assert_eq!(advertised, [InputModality::Text, InputModality::Image]);
+
+        let conflicting = DUPLICATE_MODEL_CONFIG.replace(
+            "input_modalities = [\"image\", \"text\"]",
+            "input_modalities = [\"text\"]",
+        );
+        assert!(
+            error_message(&conflicting).contains(
+                "route shared maps model id shared/model to conflicting input_modalities"
+            )
         );
     }
 

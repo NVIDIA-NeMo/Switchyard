@@ -153,6 +153,79 @@ def test_codex_catalog_uses_route_modalities_and_defaults_undeclared_to_text(
     assert undeclared["models"][0]["input_modalities"] == ["text"]
 
 
+def test_codex_launcher_discovers_modalities_for_every_catalog_entry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import switchyard.cli.launchers.codex_cli_launcher as launcher
+
+    class FakeServer:
+        port = 4321
+        stats = object()
+
+        def __init__(self) -> None:
+            self.queried_models: list[str] = []
+            self.closed = False
+
+        def caller_auth_kind(self, model: str) -> str | None:
+            assert model == "switchyard/text"
+            return None
+
+        def input_modalities(self, model: str) -> list[str]:
+            self.queried_models.append(model)
+            return {
+                "switchyard/text": ["text"],
+                "switchyard/vision": ["text", "image"],
+            }[model]
+
+        def close(self) -> None:
+            self.closed = True
+
+    server = FakeServer()
+    captured_modalities: dict[str, list[str]] = {}
+
+    def write_catalog(
+        _codex_bin: str,
+        _entries: object,
+        input_modalities_by_model: dict[str, list[str]] | None = None,
+    ) -> None:
+        captured_modalities.update(input_modalities_by_model or {})
+
+    monkeypatch.setattr(launcher, "_find_codex_binary", lambda: "codex")
+    monkeypatch.setattr(launcher, "silence_launch_loggers", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        launcher,
+        "configure_debug_file_logging",
+        lambda **_kwargs: tmp_path / "switchyard.log",
+    )
+    monkeypatch.setattr(launcher, "_start_native_server", lambda _config: server)
+    monkeypatch.setattr(launcher, "_write_codex_model_catalog", write_catalog)
+    monkeypatch.setattr(launcher, "_wait_ready", lambda _port: True)
+    monkeypatch.setattr(launcher, "print_ready_banner", lambda **_kwargs: None)
+    monkeypatch.setattr(launcher, "stdin_is_tty", lambda: False)
+    monkeypatch.setattr(launcher, "_supervise_codex", lambda _command, _env: 0)
+    monkeypatch.setattr(launcher, "print_session_summary", lambda _stats: None)
+    monkeypatch.setattr(launcher, "_remove_codex_model_catalog", lambda _path: None)
+
+    result = launcher._run_codex_with_switchyard(
+        tmp_path / "routes.toml",
+        display_model="switchyard/text",
+        codex_args=[],
+        codex_model_catalog=[
+            ("switchyard/text", "Text", "Text route"),
+            ("switchyard/vision", "Vision", "Vision route"),
+        ],
+    )
+
+    assert result == 0
+    assert server.queried_models == ["switchyard/text", "switchyard/vision"]
+    assert captured_modalities == {
+        "switchyard/text": ["text"],
+        "switchyard/vision": ["text", "image"],
+    }
+    assert server.closed
+
+
 def test_native_server_exposes_route_derived_modalities(tmp_path: Path) -> None:
     config = tmp_path / "modalities.toml"
     config.write_text(

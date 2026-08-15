@@ -2069,7 +2069,7 @@ input_modalities = ["text", "image"]
 id = "switchyard/multimodal"
 type = "random"
 targets = ["text", "vision"]
-weights = [1, 0]
+weights = [1, 1]
 "#,
         base_url = upstream.base_url,
     ))?;

@@ -98,10 +98,7 @@ impl RandomClassifier {
     }
 
     /// Samples from compatible targets using their original relative weights.
-    fn select_eligible_target(
-        &self,
-        eligible_targets: &BTreeSet<ModelId>,
-    ) -> Result<Option<ModelId>> {
+    fn select_eligible_target(&self, eligible_targets: &BTreeSet<ModelId>) -> Result<ModelId> {
         let eligible = self
             .targets
             .iter()
@@ -113,13 +110,15 @@ impl RandomClassifier {
             .map(|(_, weight)| **weight)
             .collect::<Vec<_>>();
         if !weights.iter().any(|weight| *weight > 0.0) {
-            return Ok(None);
+            return Err(LibsyError::AlgorithmError {
+                message: "no modality-compatible random target has a positive weight".to_string(),
+            });
         }
         let distribution =
             WeightedIndex::new(weights).map_err(|error| invalid_weights(error.to_string()))?;
         let mut rng = self.rng.lock();
         let index = distribution.sample(&mut *rng);
-        Ok(Some(eligible[index].0.clone()))
+        Ok(eligible[index].0.clone())
     }
 }
 
@@ -134,6 +133,10 @@ impl<S> Classifier<S> for RandomClassifier
 where
     S: Send + 'static,
 {
+    fn needs_single_eligible_scoring(&self) -> bool {
+        true
+    }
+
     async fn score(
         &self,
         _state: &mut S,
@@ -156,15 +159,13 @@ where
         _driver: Option<&Driver>,
         eligible_targets: &BTreeSet<ModelId>,
     ) -> Result<(Classification, Option<Response>)> {
-        let scores = self
-            .select_eligible_target(eligible_targets)?
-            .map(|target| Score {
+        Ok((
+            Classification::Scores(vec![Score {
                 confidence: 1.0,
-                target,
-            })
-            .into_iter()
-            .collect();
-        Ok((Classification::Scores(scores), None))
+                target: self.select_eligible_target(eligible_targets)?,
+            }]),
+            None,
+        ))
     }
 }
 
@@ -448,6 +449,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_a_zero_weight_only_compatible_target() -> Result<()> {
+        // Modality filtering must not re-enable a target disabled by a zero weight.
+        let router: Arc<dyn Algorithm> = Arc::new(
+            algorithm(&["text", "vision"], Some(vec![1.0, 0.0]), Some(42))?.with_target_modalities(
+                target_modalities(&[
+                    ("text", &[InputModality::Text]),
+                    ("vision", &[InputModality::Text, InputModality::Image]),
+                ]),
+            ),
+        );
+
+        let error = test_drive(router, image_request(), echo()).await.err();
+
+        assert!(matches!(
+            error,
+            Some(LibsyError::AlgorithmError { message })
+                if message == "no modality-compatible random target has a positive weight"
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn affinity_reuses_the_initial_random_selection() -> Result<()> {
         let names = ["a/model", "b/model"];
         let affinity = Arc::new(AffinityRouter::new());
@@ -502,7 +525,7 @@ mod tests {
         let affinity = Arc::new(AffinityRouter::new());
         let random = Arc::new(RandomClassifier::new(
             target_set(&names),
-            Some(vec![1.0, 0.0]),
+            Some(vec![100.0, 1.0]),
             Some(42),
         )?);
         let algorithm: Arc<dyn Algorithm> = Arc::new(

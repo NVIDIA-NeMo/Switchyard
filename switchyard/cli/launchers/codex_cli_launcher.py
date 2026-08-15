@@ -177,10 +177,18 @@ def _run_codex_with_switchyard(
             )
             return 1
         use_openai_auth = caller_auth == "openai"
+        modalities_by_model = {display_model: input_modalities}
+        for entry_model, _display, _description in codex_model_catalog:
+            if entry_model in modalities_by_model:
+                continue
+            try:
+                modalities_by_model[entry_model] = server.input_modalities(entry_model)
+            except ValueError:
+                continue
         model_catalog_json = _write_codex_model_catalog(
             codex_bin,
             codex_model_catalog,
-            input_modalities_by_model={display_model: input_modalities},
+            input_modalities_by_model=modalities_by_model,
         )
         command = _codex_command(
             codex_bin,

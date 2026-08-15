@@ -284,7 +284,13 @@ where
                 eligible_targets = ?eligible,
                 "computed modality-compatible targets"
             );
-            if let [target] = eligible.as_slice() {
+            let needs_scoring = self
+                .classifiers
+                .iter()
+                .any(|classifier| classifier.needs_single_eligible_scoring());
+            if let [target] = eligible.as_slice()
+                && !needs_scoring
+            {
                 tracing::info!(
                     target = %target,
                     required_modalities = ?required,

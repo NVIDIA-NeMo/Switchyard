@@ -121,11 +121,7 @@ def _build_codex_model_catalog(
         model["supported_in_api"] = True
         model["availability_nux"] = None
         model["upgrade"] = None
-        modalities = (
-            input_modalities_by_model.get(model_id, ("text",))
-            if input_modalities_by_model is not None
-            else ("text",)
-        )
+        modalities = (input_modalities_by_model or {}).get(model_id, ("text",))
         model["input_modalities"] = list(modalities)
         models.append(model)
     return {"models": models}

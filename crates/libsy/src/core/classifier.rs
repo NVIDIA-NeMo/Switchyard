@@ -92,6 +92,11 @@ pub trait Classifier<S = ()>: Send + Sync {
         None
     }
 
+    /// Whether this classifier must score when modality filtering leaves one eligible target.
+    fn needs_single_eligible_scoring(&self) -> bool {
+        false
+    }
+
     /// Score the classifier's targets given the current state and request.
     ///
     /// When present, `driver` lets a classifier offload model calls. It is `None`
