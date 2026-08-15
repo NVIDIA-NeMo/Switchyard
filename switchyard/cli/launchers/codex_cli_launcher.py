@@ -39,22 +39,26 @@ _EXIT_SIGINT = 130
 _PROVIDER_ID = "switchyard"
 
 
+def _launchable_codex_path(path: str | Path) -> str:
+    """Prefer npm's launchable Windows shim when it is adjacent to ``path``."""
+    if os.name == "nt":
+        cmd_shim = Path(f"{path}.cmd")
+        if cmd_shim.is_file():
+            return str(cmd_shim)
+    return str(path)
+
+
 def _find_codex_binary() -> str | None:
     """Locate the ``codex`` executable."""
     path_hit = shutil.which("codex")
     if path_hit:
-        if os.name == "nt":
-            # npm places a POSIX shim beside the Windows-launchable .cmd shim.
-            cmd_shim = Path(f"{path_hit}.cmd")
-            if cmd_shim.is_file():
-                return str(cmd_shim)
-        return path_hit
+        return _launchable_codex_path(path_hit)
     for candidate in (
         Path.home() / ".npm-global" / "bin" / "codex",
         Path.home() / ".local" / "bin" / "codex",
     ):
         if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+            return _launchable_codex_path(candidate)
     return None
 
 
@@ -101,8 +105,11 @@ def _provider_overrides(
 def _codex_env(use_openai_auth: bool = False) -> dict[str, str]:
     """Return the environment required by the transient provider."""
     env = os.environ.copy()
-    existing_no_proxy = env.get("NO_PROXY") or env.get("no_proxy", "")
-    no_proxy = [item.strip() for item in existing_no_proxy.split(",") if item.strip()]
+    no_proxy: list[str] = []
+    for value in (env.get("NO_PROXY", ""), env.get("no_proxy", "")):
+        for item in (part.strip() for part in value.split(",")):
+            if item and item not in no_proxy:
+                no_proxy.append(item)
     for loopback_host in ("127.0.0.1", "localhost"):
         if loopback_host not in no_proxy:
             no_proxy.append(loopback_host)

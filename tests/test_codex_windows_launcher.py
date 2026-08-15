@@ -49,6 +49,27 @@ def test_posix_finder_keeps_the_existing_lookup(
     assert calls == ["codex"]
 
 
+def test_windows_finder_prefers_cmd_for_fallback_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    codex_shim = tmp_path / ".npm-global" / "bin" / "codex"
+    cmd_shim = Path(f"{codex_shim}.cmd")
+    codex_shim.parent.mkdir(parents=True)
+    codex_shim.write_text("#!/bin/sh\n")
+    cmd_shim.write_text("@node codex.js\n")
+
+    monkeypatch.setattr(codex_cli_launcher.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        codex_cli_launcher,
+        "os",
+        SimpleNamespace(name="nt", access=lambda path, mode: True, X_OK=1),
+    )
+    monkeypatch.setattr(codex_cli_launcher.shutil, "which", lambda executable: None)
+
+    assert codex_cli_launcher._find_codex_binary() == str(cmd_shim)
+
+
 def test_windows_tty_uses_the_plain_supervisor(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -118,12 +139,22 @@ def test_windows_tty_uses_the_plain_supervisor(
 def test_codex_env_bypasses_proxies_for_loopback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("NO_PROXY", raising=False)
-    monkeypatch.setenv("no_proxy", "internal.example")
+    monkeypatch.setattr(
+        codex_cli_launcher,
+        "os",
+        SimpleNamespace(
+            environ={
+                "NO_PROXY": "uppercase.example,shared.example",
+                "no_proxy": "lowercase.example,shared.example",
+            }
+        ),
+    )
 
     env = codex_cli_launcher._codex_env()
 
-    assert env["NO_PROXY"] == "internal.example,127.0.0.1,localhost"
+    assert env["NO_PROXY"] == (
+        "uppercase.example,shared.example,lowercase.example,127.0.0.1,localhost"
+    )
     assert env["no_proxy"] == env["NO_PROXY"]
 
 
