@@ -11,7 +11,7 @@ use std::sync::Arc;
 use libsy::{
     Algorithm, ClassifierContractConfig, ClassifierResponseFormat, CustomClassifierConfig,
     CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig,
-    LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
+    LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, RequestFit, StageRouter,
     StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
@@ -386,6 +386,18 @@ enum RouteConfig {
         reasoning: Option<bool>,
         target: String,
     },
+    RequestFit {
+        id: ModelId,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
+        weak_target: String,
+        strong_target: String,
+        escalate_over_input_tokens: u64,
+    },
     LlmClassifier {
         id: ModelId,
         #[serde(default)]
@@ -504,6 +516,7 @@ impl RouteConfig {
             | Random { id, .. }
             | LlmClassifier { id, .. }
             | Passthrough { id, .. }
+            | RequestFit { id, .. }
             | StageRouter { id, .. } => id,
         }
     }
@@ -514,6 +527,11 @@ impl RouteConfig {
             Self::Noop { .. } => Vec::new(),
             Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
             Self::Passthrough { target, .. } => vec![target],
+            Self::RequestFit {
+                weak_target,
+                strong_target,
+                ..
+            } => vec![weak_target, strong_target],
             Self::LlmClassifier {
                 mode,
                 strong_target,
@@ -581,6 +599,12 @@ impl RouteConfig {
                 ..
             }
             | Passthrough {
+                context_window,
+                tool_calling,
+                reasoning,
+                ..
+            }
+            | RequestFit {
                 context_window,
                 tool_calling,
                 reasoning,
@@ -879,6 +903,20 @@ fn build_algorithm(
             let target = resolve_target_model_id(route_name, target, targets)?;
             Ok(Arc::new(Passthrough::new(target)))
         }
+        RouteConfig::RequestFit {
+            weak_target,
+            strong_target,
+            escalate_over_input_tokens,
+            ..
+        } => {
+            let weak = resolve_target_model_id(route_name, weak_target, targets)?;
+            let strong = resolve_target_model_id(route_name, strong_target, targets)?;
+            let algorithm =
+                RequestFit::new(weak, strong, *escalate_over_input_tokens).map_err(|error| {
+                    ServerError::new(format!("request_fit route {route_name}: {error}"))
+                })?;
+            Ok(Arc::new(algorithm))
+        }
         RouteConfig::LlmClassifier {
             classifier_target, ..
         } => {
@@ -1142,6 +1180,85 @@ target = "weak"
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn request_fit_route_parses_and_resolves_targets() -> ServerResult<()> {
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[routes.fit]
+id = "switchyard/fit"
+type = "request_fit"
+weak_target = "weak"
+strong_target = "strong"
+escalate_over_input_tokens = 24000
+"#
+        );
+        let state = server_state_from_toml(&config)?;
+        assert!(state.models().any(|model| model == "switchyard/fit"));
+        Ok(())
+    }
+
+    #[test]
+    fn request_fit_rejects_invalid_configuration() {
+        let missing_threshold = format!(
+            r#"{VALID_CONFIG}
+
+[routes.fit]
+id = "switchyard/fit"
+type = "request_fit"
+weak_target = "weak"
+strong_target = "strong"
+"#
+        );
+        assert!(
+            error_message(&missing_threshold)
+                .contains("missing field `escalate_over_input_tokens`")
+        );
+
+        let zero_threshold = format!(
+            r#"{VALID_CONFIG}
+
+[routes.fit]
+id = "switchyard/fit"
+type = "request_fit"
+weak_target = "weak"
+strong_target = "strong"
+escalate_over_input_tokens = 0
+"#
+        );
+        assert!(
+            error_message(&zero_threshold)
+                .contains("escalate_over_input_tokens must be greater than zero")
+        );
+
+        let same_targets = format!(
+            r#"{VALID_CONFIG}
+
+[routes.fit]
+id = "switchyard/fit"
+type = "request_fit"
+weak_target = "strong"
+strong_target = "strong"
+escalate_over_input_tokens = 24000
+"#
+        );
+        assert!(error_message(&same_targets).contains("weak_target and strong_target must differ"));
+
+        let unknown_field = format!(
+            r#"{VALID_CONFIG}
+
+[routes.fit]
+id = "switchyard/fit"
+type = "request_fit"
+weak_target = "weak"
+strong_target = "strong"
+escalate_over_input_tokens = 24000
+chars_per_token = 5
+"#
+        );
+        assert!(error_message(&unknown_field).contains("unknown field `chars_per_token`"));
     }
 
     #[test]

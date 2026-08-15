@@ -11,6 +11,7 @@ pub mod llm_class;
 pub mod noop;
 pub mod passthrough;
 pub mod rand;
+pub mod request_fit;
 pub mod stage;
 
 pub mod util;

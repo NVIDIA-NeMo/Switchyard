@@ -21,6 +21,7 @@ pub use algorithms::llm_class::{
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
 pub use algorithms::rand::{Random, RandomClassifier};
+pub use algorithms::request_fit::{RequestFit, RequestFitClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::util::affinity::AffinityRouter;
 pub use algorithms::util::classifier_contract::{
