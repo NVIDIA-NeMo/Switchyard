@@ -1394,6 +1394,60 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
     Ok(())
 }
 
+// Anthropic rejects data URLs in URL sources, so Responses images must become base64 blocks.
+#[test]
+fn responses_data_image_urls_become_anthropic_base64_sources() -> TestResult {
+    let body = json!({
+        "model": "claude-fable-5",
+        "input": [{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Compare these images."},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,aW1hZ2U="
+                },
+                {
+                    "type": "input_image",
+                    "image_url": "https://example.test/image.png"
+                }
+            ]
+        }]
+    });
+
+    let output = TranslationEngine::default()
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["messages"][0]["content"][1],
+        json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "aW1hZ2U="
+            }
+        })
+    );
+    assert_eq!(
+        output["messages"][0]["content"][2],
+        json!({
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": "https://example.test/image.png"
+            }
+        })
+    );
+    Ok(())
+}
+
 // Verifies Anthropic receives its supported schema subset without mutating the neutral contract.
 #[test]
 fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestResult {

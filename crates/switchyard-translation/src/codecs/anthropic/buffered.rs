@@ -803,6 +803,43 @@ fn encode_one_anthropic_response_block(block: &ContentBlock) -> Vec<Value> {
     }
 }
 
+// Splits an image data URL into the media type and base64 payload Anthropic expects.
+fn base64_image_data_url(url: &str) -> Option<(&str, &str)> {
+    let (metadata, data) = url.strip_prefix("data:")?.split_once(',')?;
+    let mut parts = metadata.split(';');
+    let media_type = parts.next()?;
+    (media_type.starts_with("image/") && parts.any(|part| part.eq_ignore_ascii_case("base64")))
+        .then_some((media_type, data))
+}
+
+// Encodes a normalized image source without its surrounding Anthropic image block.
+fn encode_anthropic_image_source(source: &ImageSource) -> Value {
+    match source {
+        ImageSource::Url { url, .. } => match base64_image_data_url(url) {
+            Some((media_type, data)) => json!({
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            }),
+            None => json!({"type": "url", "url": url}),
+        },
+        ImageSource::Base64 { media_type, data } => json!({
+            "type": "base64",
+            "media_type": media_type.clone().unwrap_or_else(|| "image/png".to_string()),
+            "data": data,
+        }),
+        ImageSource::Raw(raw) => raw.clone(),
+    }
+}
+
+// Raw sources already retain the complete Anthropic block and must not be wrapped again.
+fn encode_anthropic_image_block(source: &ImageSource) -> Value {
+    match source {
+        ImageSource::Raw(raw) => raw.clone(),
+        source => json!({"type": "image", "source": encode_anthropic_image_source(source)}),
+    }
+}
+
 // Encodes a single normalized content block into Anthropic block JSON.
 fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
     match block {
@@ -847,20 +884,7 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
                 "content": content,
             })]
         }
-        ContentBlock::Image { source } => vec![match source {
-            ImageSource::Url { url, .. } => {
-                json!({"type": "image", "source": {"type": "url", "url": url}})
-            }
-            ImageSource::Base64 { media_type, data } => json!({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type.clone().unwrap_or_else(|| "image/png".to_string()),
-                    "data": data,
-                },
-            }),
-            ImageSource::Raw(raw) => raw.clone(),
-        }],
+        ContentBlock::Image { source } => vec![encode_anthropic_image_block(source)],
         ContentBlock::File { source } => vec![match source {
             FileSource::FileId(file_id) => {
                 json!({"type": "document", "source": {"type": "file", "file_id": file_id}})
