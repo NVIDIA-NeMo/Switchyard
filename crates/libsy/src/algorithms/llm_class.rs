@@ -148,19 +148,52 @@ fn task_messages(messages: &[Message]) -> Vec<Message> {
     }
 }
 
+fn text_only_classifier_content(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    content
+        .into_iter()
+        .map(|block| match block {
+            ContentBlock::Image { .. } => ContentBlock::Text {
+                text: "[image input omitted from text-only classifier]".to_string(),
+            },
+            ContentBlock::Audio { .. } => ContentBlock::Text {
+                text: "[audio input omitted from text-only classifier]".to_string(),
+            },
+            ContentBlock::Video { .. } => ContentBlock::Text {
+                text: "[video input omitted from text-only classifier]".to_string(),
+            },
+            ContentBlock::File { .. } => ContentBlock::Text {
+                text: "[file input omitted from text-only classifier]".to_string(),
+            },
+            ContentBlock::ToolResult(mut result) => {
+                result.content = text_only_classifier_content(result.content);
+                ContentBlock::ToolResult(result)
+            }
+            block => block,
+        })
+        .collect()
+}
+
 /// Selects the task messages shown to capability and custom-schema classifiers.
 struct TaskInput {
     recent_turn_window: Option<usize>,
+    text_only: bool,
 }
 
 impl ClassifierInput for TaskInput {
     fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
         // The default preserves the whole-task anchor and latest user update. A
         // configured window widens that to the surrounding conversation.
-        match self.recent_turn_window {
+        let mut messages = match self.recent_turn_window {
             Some(window) => trim_messages(&request.llm_request.messages, window),
             None => task_messages(&request.llm_request.messages),
+        };
+        if self.text_only {
+            for message in &mut messages {
+                message.content =
+                    text_only_classifier_content(std::mem::take(&mut message.content));
+            }
         }
+        messages
     }
 }
 
@@ -385,6 +418,8 @@ pub struct CustomClassifierConfig {
     pub message_hash_fallback: bool,
     /// Trailing conversation turns shown to the classifier judge.
     pub recent_turn_window: Option<usize>,
+    /// Replaces media payloads with bounded text placeholders before judging.
+    pub judge_text_only: bool,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
 }
@@ -403,6 +438,7 @@ impl CustomClassifierConfig {
             session_affinity: false,
             message_hash_fallback: false,
             recent_turn_window: None,
+            judge_text_only: false,
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         }
     }
@@ -727,6 +763,7 @@ impl LlmTaskClassifier {
                 StructuredJudge::new(
                     TaskInput {
                         recent_turn_window: config.recent_turn_window,
+                        text_only: false,
                     },
                     contract,
                     SerdeDecoder::new(),
@@ -808,6 +845,7 @@ impl LlmTaskClassifier {
             session_affinity,
             message_hash_fallback,
             recent_turn_window,
+            judge_text_only,
             max_output_tokens,
         } = config;
         let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
@@ -820,7 +858,10 @@ impl LlmTaskClassifier {
         };
         let classifier: Arc<dyn Classifier<State>> = Arc::new(JudgeClassifier::new(
             StructuredJudge::new(
-                TaskInput { recent_turn_window },
+                TaskInput {
+                    recent_turn_window,
+                    text_only: judge_text_only,
+                },
                 contract,
                 JsonSchemaDecoder::new(),
                 JudgeRuntimeConfig::new(max_output_tokens)?,
@@ -989,8 +1030,9 @@ mod tests {
 
     use super::*;
     use switchyard_protocol::{
-        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, LlmResponseChunk, Metadata,
-        ToolCall, ToolResult, completion_text, text_request, text_response,
+        ContentBlock, ImageSource, InputModality, InstructionBlock, LlmClientError, LlmRequest,
+        LlmResponseChunk, Metadata, ToolCall, ToolResult, completion_text, text_request,
+        text_response,
     };
 
     use crate::algorithms::util::llm_judge::Judge;
@@ -1457,7 +1499,10 @@ mod tests {
     /// The no-window case is covered by `capability_judge_builds_a_structured_request`.
     fn capability_judge(recent_turn_window: Option<usize>) -> Result<CapabilityJudge> {
         Ok(StructuredJudge::new(
-            TaskInput { recent_turn_window },
+            TaskInput {
+                recent_turn_window,
+                text_only: false,
+            },
             LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?,
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?,
@@ -1629,6 +1674,81 @@ mod tests {
     }
 
     #[test]
+    fn text_only_judge_replaces_direct_and_tool_result_images() {
+        let request = Request {
+            llm_request: LlmRequest {
+                messages: vec![
+                    Message {
+                        role: Role::User,
+                        content: vec![
+                            ContentBlock::Text {
+                                text: "Inspect this screenshot.".to_string(),
+                            },
+                            ContentBlock::Image {
+                                source: ImageSource::Url {
+                                    url: "https://example.test/private.png".to_string(),
+                                    detail: None,
+                                },
+                            },
+                        ],
+                    },
+                    tool_call("view-image"),
+                    Message {
+                        role: Role::Tool,
+                        content: vec![ContentBlock::ToolResult(ToolResult {
+                            tool_call_id: "view-image".to_string(),
+                            content: vec![
+                                ContentBlock::Text {
+                                    text: "Local render".to_string(),
+                                },
+                                ContentBlock::Image {
+                                    source: ImageSource::Base64 {
+                                        media_type: Some("image/png".to_string()),
+                                        data: "private-image-bytes".to_string(),
+                                    },
+                                },
+                            ],
+                            is_error: None,
+                        })],
+                    },
+                ],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+
+        let messages = TaskInput {
+            recent_turn_window: Some(8),
+            text_only: true,
+        }
+        .build_messages(&State::default(), &request);
+
+        assert!(
+            request
+                .llm_request
+                .input_modalities()
+                .contains(&InputModality::Image),
+            "the completion request must retain its original image"
+        );
+        assert_eq!(
+            messages[0].content[1],
+            ContentBlock::Text {
+                text: "[image input omitted from text-only classifier]".to_string(),
+            }
+        );
+        let ContentBlock::ToolResult(result) = &messages[2].content[0] else {
+            panic!("expected the tool result to remain structured");
+        };
+        assert_eq!(
+            result.content[1],
+            ContentBlock::Text {
+                text: "[image input omitted from text-only classifier]".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn capability_judge_builds_a_structured_request() -> Result<()> {
         let judge = capability_judge(None)?;
         let request = Request {
@@ -1728,6 +1848,7 @@ mod tests {
         let judge: CapabilityJudge = StructuredJudge::new(
             TaskInput {
                 recent_turn_window: None,
+                text_only: false,
             },
             contract,
             SerdeDecoder::new(),

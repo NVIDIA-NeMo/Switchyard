@@ -429,6 +429,7 @@ struct CustomClassifierRouteConfig {
     session_affinity: bool,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
+    judge_text_only: bool,
     max_output_tokens: u64,
 }
 
@@ -493,6 +494,8 @@ enum RouteConfig {
         message_hash_fallback: bool,
         #[serde(default)]
         recent_turn_window: Option<usize>,
+        #[serde(default)]
+        judge_text_only: bool,
         #[serde(default)]
         prompt: Option<String>,
         #[serde(default)]
@@ -703,6 +706,7 @@ impl RouteConfig {
             session_affinity,
             message_hash_fallback,
             recent_turn_window,
+            judge_text_only,
             prompt,
             response_format_type,
             max_output_tokens,
@@ -725,6 +729,13 @@ impl RouteConfig {
 
         match selected_mode {
             ClassifierMode::Capability => {
+                if *judge_text_only {
+                    return Err(classifier_field_error(
+                        route_name,
+                        "judge_text_only",
+                        "capability",
+                    ));
+                }
                 if escalation.is_some() {
                     return Err(classifier_field_error(
                         route_name,
@@ -768,6 +779,13 @@ impl RouteConfig {
                 ))
             }
             ClassifierMode::Escalation => {
+                if *judge_text_only {
+                    return Err(classifier_field_error(
+                        route_name,
+                        "judge_text_only",
+                        "escalation",
+                    ));
+                }
                 reject_custom_fields(
                     route_name,
                     "escalation",
@@ -836,6 +854,7 @@ impl RouteConfig {
                         session_affinity: *session_affinity,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
+                        judge_text_only: *judge_text_only,
                         max_output_tokens: *max_output_tokens,
                     },
                 ))
@@ -1055,6 +1074,7 @@ fn build_algorithm(
                     classifier_config.session_affinity = config.session_affinity;
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
+                    classifier_config.judge_text_only = config.judge_text_only;
                     classifier_config.max_output_tokens = config.max_output_tokens;
                     LlmTaskClassifier::new(LlmClassifierConfig::Custom {
                         judge_target: classifier,

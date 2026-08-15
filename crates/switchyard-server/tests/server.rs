@@ -1192,6 +1192,108 @@ selector = "/decision/target"
 }
 
 #[tokio::test]
+async fn custom_classifier_can_hide_images_from_a_text_only_judge() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+input_modalities = ["text"]
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+input_modalities = ["text", "image"]
+
+[targets.premium]
+id = "model/premium"
+llm_client = "upstream"
+input_modalities = ["text", "image"]
+
+[routes.custom]
+id = "switchyard/custom-image"
+type = "llm_classifier"
+mode = "custom"
+classifier_target = "classifier"
+targets = ["strong", "premium"]
+default_target = "strong"
+judge_text_only = true
+prompt = "CUSTOM IMAGE ROUTER"
+response_schema = '''
+{{
+  "type": "object",
+  "properties": {{
+    "decision": {{
+      "type": "object",
+      "properties": {{
+        "target": {{"type": "string", "enum": ["strong", "premium"]}}
+      }},
+      "required": ["target"],
+      "additionalProperties": false
+    }}
+  }},
+  "required": ["decision"],
+  "additionalProperties": false
+}}
+'''
+
+[routes.custom.policy]
+type = "target_selector"
+selector = "/decision/target"
+"#,
+        base_url = upstream.base_url,
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/custom-image",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Inspect this image carefully."},
+                {"type": "image_url", "image_url": {"url": "https://example.test/private.png"}}
+            ]}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/premium")
+    );
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 2);
+    let judge = calls
+        .iter()
+        .find(|call| call["model"] == "model/classifier")
+        .ok_or("classifier was not called")?;
+    let completion = calls
+        .iter()
+        .find(|call| call["model"] == "model/premium")
+        .ok_or("selected completion target was not called")?;
+    let judge_wire = serde_json::to_string(judge)?;
+    assert!(judge_wire.contains("[image input omitted from text-only classifier]"));
+    assert!(!judge_wire.contains("private.png"));
+    assert!(!judge_wire.contains("image_url"));
+    assert!(serde_json::to_string(completion)?.contains("private.png"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn classifier_contract_overrides_reach_every_server_mode() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
