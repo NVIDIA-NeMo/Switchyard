@@ -15,6 +15,7 @@ from litellm import (
 from litellm.exceptions import (
     ContextWindowExceededError as LiteLLMContextWindowExceededError,
 )
+from litellm.types.utils import Choices, Message, Usage
 from switchyard_litellm import LiteLLMSyClient
 
 from switchyard.libsy import ContextWindowExceededError
@@ -586,21 +587,42 @@ async def test_cached_token_count_preserves_explicit_zero() -> None:
 
 def test_response_content_filter_empty_content() -> None:
     """Empty content with a content_filter finish reason must be normalized."""
-    from types import SimpleNamespace
-
     from switchyard_litellm.client import _response
 
-    response = SimpleNamespace(
+    response = ModelResponse(
         id="chatcmpl-test",
         model="openai/strong",
         choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content=None, tool_calls=None),
+            Choices(
+                message=Message(content=None, tool_calls=None),
                 finish_reason="content_filter",
             )
         ],
-        usage=None,
+        usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
     )
     result = _response(response)
-    assert result["outputs"][0]["content"] == []
-    assert result["outputs"][0]["stop_reason"] == "content_filter"
+    outputs = result["outputs"]
+    assert isinstance(outputs, list)
+    output = outputs[0]
+    assert isinstance(output, dict)
+    assert output["content"] == []
+    assert output["stop_reason"] == "content_filter"
+
+
+def test_response_empty_content_without_content_filter_raises() -> None:
+    """Empty content with any other finish reason must still raise."""
+    from switchyard_litellm.client import _response
+
+    response = ModelResponse(
+        id="chatcmpl-test",
+        model="openai/strong",
+        choices=[
+            Choices(
+                message=Message(content=None, tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+    )
+    with pytest.raises(ValueError, match="LiteLLM returned no text content"):
+        _response(response)
