@@ -201,6 +201,10 @@ fn bridge_function_call_item(item: &mut Value, names: &HashSet<String>) -> bool 
     object.insert("input".to_string(), Value::String(input));
     object.remove("arguments");
     object.remove("status");
+    // `fc_...` identifies an upstream function-call item and is invalid for a
+    // custom-tool item (`ctc...` on OpenAI). The ID is optional; `call_id` retains
+    // the portable tool-call identity used to associate the result.
+    object.remove("id");
     true
 }
 
@@ -411,7 +415,6 @@ mod tests {
             body["output"][0],
             json!({
                 "type": "custom_tool_call",
-                "id": "fc_1",
                 "call_id": "call_1",
                 "name": "apply_patch",
                 "input": "*** Begin Patch\n*** End Patch"

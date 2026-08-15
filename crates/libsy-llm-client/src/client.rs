@@ -780,10 +780,11 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
 }
 
 // Normalizes response items that coding agents replay as Responses input.
-// Responses providers reject response-only `status` metadata, malformed item IDs,
-// non-empty reasoning `content`, and encrypted reasoning created by a different
-// provider. Ciphertext provenance is not represented on replay items, so dynamic
-// routes retain the portable summary while discarding the provider-bound blob.
+// Responses providers reject response-only `status` metadata, malformed or
+// provider-bound item IDs, non-empty reasoning `content`, and encrypted reasoning
+// created by a different provider. Ciphertext and custom-tool item provenance are
+// not represented on replay items, so dynamic routes retain portable summaries and
+// `call_id` linkage while discarding provider-bound metadata.
 fn sanitize_openai_responses_replay_items(body: &mut Value) {
     let Some(Value::Array(input)) = body.get_mut("input") else {
         return;
@@ -804,6 +805,14 @@ fn sanitize_openai_responses_replay_items(body: &mut Value) {
                 if item.contains_key("content") {
                     item.insert("content".to_string(), Value::Array(Vec::new()));
                 }
+            }
+            Some("custom_tool_call") | Some("custom_tool_call_output") => {
+                item.remove("status");
+                // Custom-tool item IDs use provider-specific namespaces (for
+                // example OpenAI requires `ctc...`, while a function-tool bridge
+                // can originate `fc_...`). They are optional on replay; `call_id`
+                // is the portable call/result relationship.
+                item.remove("id");
             }
             _ => {}
         }
@@ -1342,6 +1351,21 @@ mod tests {
                     "status": "completed",
                     "content": [{"type": "output_text", "text": "working"}]
                 },
+                {
+                    "type": "custom_tool_call",
+                    "id": "fc_cross_provider",
+                    "call_id": "call_1",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch",
+                    "status": "completed"
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "id": "cto_cross_provider",
+                    "call_id": "call_1",
+                    "output": "Done",
+                    "status": "completed"
+                },
                 {"type": "message", "role": "user", "content": "continue"}
             ]
         });
@@ -1376,6 +1400,12 @@ mod tests {
             forwarded["input"][2]["content"],
             json!([{"type": "output_text", "text": "working"}])
         );
+        assert_eq!(forwarded["input"][3].get("id"), None);
+        assert_eq!(forwarded["input"][3].get("status"), None);
+        assert_eq!(forwarded["input"][3]["call_id"], "call_1");
+        assert_eq!(forwarded["input"][4].get("id"), None);
+        assert_eq!(forwarded["input"][4].get("status"), None);
+        assert_eq!(forwarded["input"][4]["call_id"], "call_1");
         Ok(())
     }
 
@@ -1507,6 +1537,7 @@ mod tests {
         assert_eq!(forwarded["input"][2]["type"], "function_call_output");
         assert_eq!(body["output"][0]["type"], "custom_tool_call");
         assert_eq!(body["output"][0]["input"], "*** Begin Patch\n*** End Patch");
+        assert_eq!(body["output"][0].get("id"), None);
         assert_eq!(body["model"], "gpt");
         Ok(())
     }
@@ -1748,6 +1779,7 @@ mod tests {
             assert!(events.iter().any(|event| {
                 event.get("type").and_then(Value::as_str) == Some(event_type)
                     && event["item"]["type"] == "custom_tool_call"
+                    && event["item"].get("id").is_none()
             }));
         }
         let completed = events
@@ -1758,6 +1790,7 @@ mod tests {
             completed["response"]["output"][0]["type"],
             "custom_tool_call"
         );
+        assert_eq!(completed["response"]["output"][0].get("id"), None);
         assert_eq!(completed["response"]["model"], "gpt");
         Ok(())
     }
