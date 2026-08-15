@@ -3,7 +3,8 @@
 
 //! Provider-neutral conversation types shared by routing, clients, and translation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -69,6 +70,43 @@ impl Message {
         } else {
             Some(parts.join(separator))
         }
+    }
+}
+
+/// Provider-neutral input types that a completion target may accept.
+///
+/// Declaration order is the canonical order used for discovery and diagnostics.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputModality {
+    /// Text, reasoning, and refusal content.
+    Text,
+    /// Image content.
+    Image,
+    /// Audio content.
+    Audio,
+    /// Video content.
+    Video,
+    /// File content.
+    File,
+}
+
+impl InputModality {
+    /// Returns the stable configuration and discovery name for this modality.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Image => "image",
+            Self::Audio => "audio",
+            Self::Video => "video",
+            Self::File => "file",
+        }
+    }
+}
+
+impl fmt::Display for InputModality {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -329,6 +367,52 @@ pub struct LlmRequest {
     pub preservation: PreservationMetadata,
 }
 
+impl LlmRequest {
+    /// Returns every typed input modality required by this request.
+    ///
+    /// Instructions, conversation history, and nested tool-result content all count.
+    /// Tool calls and unknown provider extension blocks do not imply a modality.
+    pub fn input_modalities(&self) -> BTreeSet<InputModality> {
+        let mut modalities = BTreeSet::new();
+        for instruction in &self.instructions {
+            collect_input_modalities(&instruction.content, &mut modalities);
+        }
+        for message in &self.messages {
+            collect_input_modalities(&message.content, &mut modalities);
+        }
+        modalities
+    }
+}
+
+/// Walks normalized content recursively so media returned by tools remains routable.
+fn collect_input_modalities(content: &[ContentBlock], modalities: &mut BTreeSet<InputModality>) {
+    for block in content {
+        match block {
+            ContentBlock::Text { .. }
+            | ContentBlock::Reasoning { .. }
+            | ContentBlock::Refusal { .. } => {
+                modalities.insert(InputModality::Text);
+            }
+            ContentBlock::Image { .. } => {
+                modalities.insert(InputModality::Image);
+            }
+            ContentBlock::Audio { .. } => {
+                modalities.insert(InputModality::Audio);
+            }
+            ContentBlock::Video { .. } => {
+                modalities.insert(InputModality::Video);
+            }
+            ContentBlock::File { .. } => {
+                modalities.insert(InputModality::File);
+            }
+            ContentBlock::ToolResult(result) => {
+                collect_input_modalities(&result.content, modalities);
+            }
+            ContentBlock::ToolCall(_) | ContentBlock::Unknown { .. } => {}
+        }
+    }
+}
+
 /// Normalized token usage counts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
@@ -489,5 +573,110 @@ mod tests {
             })
         );
         Ok(())
+    }
+
+    #[test]
+    fn input_modalities_cover_instructions_history_and_nested_tool_results() {
+        let request = LlmRequest {
+            instructions: vec![InstructionBlock {
+                role: Role::System,
+                content: vec![ContentBlock::Reasoning {
+                    text: "think carefully".to_string(),
+                    signature: None,
+                }],
+            }],
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: vec![
+                        ContentBlock::Text {
+                            text: "compare these inputs".to_string(),
+                        },
+                        ContentBlock::Image {
+                            source: ImageSource::Url {
+                                url: "https://example.test/image.png".to_string(),
+                                detail: None,
+                            },
+                        },
+                        ContentBlock::Audio {
+                            source: MediaSource::Url {
+                                url: "https://example.test/audio.wav".to_string(),
+                                media_type: Some("audio/wav".to_string()),
+                            },
+                        },
+                    ],
+                },
+                Message {
+                    role: Role::Tool,
+                    content: vec![ContentBlock::ToolResult(ToolResult {
+                        tool_call_id: "call-1".to_string(),
+                        content: vec![
+                            ContentBlock::Video {
+                                source: MediaSource::Base64 {
+                                    media_type: Some("video/mp4".to_string()),
+                                    data: "AAAA".to_string(),
+                                },
+                            },
+                            ContentBlock::ToolResult(ToolResult {
+                                tool_call_id: "call-2".to_string(),
+                                content: vec![ContentBlock::File {
+                                    source: FileSource::FileId("file-1".to_string()),
+                                }],
+                                is_error: None,
+                            }),
+                        ],
+                        is_error: Some(false),
+                    })],
+                },
+            ],
+            ..LlmRequest::default()
+        };
+
+        assert_eq!(
+            request.input_modalities(),
+            BTreeSet::from([
+                InputModality::Text,
+                InputModality::Image,
+                InputModality::Audio,
+                InputModality::Video,
+                InputModality::File,
+            ])
+        );
+    }
+
+    #[test]
+    fn input_modalities_deduplicate_blocks_and_ignore_untyped_extensions() {
+        let request = LlmRequest {
+            messages: vec![Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Refusal {
+                        text: "no".to_string(),
+                    },
+                    ContentBlock::Text {
+                        text: String::new(),
+                    },
+                    ContentBlock::ToolCall(ToolCall {
+                        id: "call-1".to_string(),
+                        name: "inspect_image".to_string(),
+                        arguments: json!({"image": "not-a-typed-media-block"}),
+                    }),
+                    ContentBlock::Unknown {
+                        provider: FormatId::from("extension"),
+                        raw: json!({"type": "input_image"}),
+                    },
+                ],
+            }],
+            extensions: ProviderExtensions {
+                fields: Map::from_iter([("input_audio".to_string(), json!(true))]),
+            },
+            ..LlmRequest::default()
+        };
+
+        assert_eq!(
+            request.input_modalities(),
+            BTreeSet::from([InputModality::Text])
+        );
+        assert!(LlmRequest::default().input_modalities().is_empty());
     }
 }

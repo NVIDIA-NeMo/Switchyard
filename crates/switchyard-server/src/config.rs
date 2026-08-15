@@ -3,7 +3,7 @@
 
 //! Typed TOML configuration and explicit construction for the Rust server.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use libsy::{
     Algorithm, ClassifierContractConfig, ClassifierResponseFormat, CustomClassifierConfig,
     CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig,
     LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
-    StageRouterConfig, TargetPrompts, TaskClassifierConfig,
+    StageRouterConfig, TargetModalities, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -20,7 +20,7 @@ use switchyard_llm_client::{
     Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     TranslatingLlmClient,
 };
-use switchyard_protocol::{ModelId, RoutedLlmClient};
+use switchyard_protocol::{InputModality, ModelId, RoutedLlmClient};
 
 use crate::{
     CallerAuthKind, CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState,
@@ -79,6 +79,7 @@ impl ServerConfig {
         for (target_name, target) in &self.targets {
             validate_value("target name", target_name)?;
             validate_value(&format!("target {target_name} id"), &target.id)?;
+            validate_input_modalities(target_name, target.input_modalities.as_deref())?;
             if !seen_client_model_ids.insert((target.llm_client.as_str(), target.id.as_str())) {
                 tracing::warn!(
                     "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
@@ -94,13 +95,15 @@ impl ServerConfig {
         for (route_name, config) in &self.routes {
             validate_value("route name", route_name)?;
             validate_value(&format!("route {route_name} id"), config.id())?;
-            let capabilities = config.capabilities();
+            let (target_modalities, input_modalities) =
+                self.route_modalities(route_name, config)?;
+            let capabilities = config.capabilities(input_modalities);
             if capabilities.context_window == Some(0) {
                 return Err(ServerError::new(format!(
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
-            let algorithm = build_algorithm(route_name, config, &targets)?;
+            let algorithm = build_algorithm(route_name, config, &targets, target_modalities)?;
             let (client, caller_auth) = self.build_route_clients(route_name, config, &clients)?;
             let count_tokens_target = self.build_count_tokens_target(config, &clients);
             routes.push((
@@ -113,6 +116,67 @@ impl ServerConfig {
             ));
         }
         ServerState::new_with_capabilities(routes)
+    }
+
+    /// Validates per-route declaration completeness and derives routing/discovery metadata.
+    fn route_modalities(
+        &self,
+        route_name: &str,
+        route: &RouteConfig,
+    ) -> ServerResult<(Option<TargetModalities>, Vec<InputModality>)> {
+        for judge_name in route.judge_target_names() {
+            let judge = self.targets.get(judge_name).ok_or_else(|| {
+                ServerError::new(format!("route references unknown target {judge_name}"))
+            })?;
+            if let Some(modalities) = &judge.input_modalities
+                && !modalities.contains(&InputModality::Text)
+            {
+                return Err(ServerError::new(format!(
+                    "judge target {judge_name} for route {route_name} must include text in input_modalities"
+                )));
+            }
+        }
+
+        let target_names = route.routing_target_names();
+        if target_names.is_empty() {
+            return Ok((None, vec![InputModality::Text]));
+        }
+        let targets = target_names
+            .iter()
+            .map(|name| {
+                self.targets
+                    .get(*name)
+                    .map(|target| (*name, target))
+                    .ok_or_else(|| {
+                        ServerError::new(format!("route references unknown target {name}"))
+                    })
+            })
+            .collect::<ServerResult<Vec<_>>>()?;
+        let declared = targets
+            .iter()
+            .filter(|(_, target)| target.input_modalities.is_some())
+            .count();
+        if declared == 0 {
+            return Ok((None, vec![InputModality::Text]));
+        }
+        if declared != targets.len() {
+            return Err(ServerError::new(format!(
+                "route {route_name} must declare input_modalities for every completion target or none"
+            )));
+        }
+
+        let mut target_modalities = TargetModalities::new();
+        let mut advertised = BTreeSet::new();
+        for (_, target) in targets {
+            let modalities = target
+                .input_modalities
+                .as_ref()
+                .map(|modalities| modalities.iter().copied().collect::<BTreeSet<_>>())
+                .ok_or_else(|| ServerError::new("validated target modalities were missing"))?;
+            advertised.extend(modalities.iter().copied());
+            target_modalities.insert(target.id.clone(), modalities);
+        }
+        Ok((Some(target_modalities), advertised.into_iter().collect()))
     }
 
     fn build_clients(&self) -> ServerResult<BTreeMap<String, Arc<TranslatingLlmClient>>> {
@@ -263,6 +327,8 @@ struct LlmClientConfig {
 struct TargetConfig {
     id: ModelId,
     llm_client: String,
+    #[serde(default)]
+    input_modalities: Option<Vec<InputModality>>,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
 }
@@ -552,20 +618,25 @@ impl RouteConfig {
     /// a classifier also calls its judge, and that call needs a client too.
     fn callable_target_names(&self) -> Vec<&str> {
         let mut names = self.routing_target_names();
-        match self {
-            Self::LlmClassifier {
-                classifier_target, ..
-            } => names.push(classifier_target),
-            Self::StageRouter {
-                classifier: Some(classifier),
-                ..
-            } => names.push(&classifier.target),
-            _ => {}
-        }
+        names.extend(self.judge_target_names());
         names
     }
 
-    fn capabilities(&self) -> ModelCapabilities {
+    /// Targets used only to construct routing verdicts.
+    fn judge_target_names(&self) -> Vec<&str> {
+        match self {
+            Self::LlmClassifier {
+                classifier_target, ..
+            } => vec![classifier_target],
+            Self::StageRouter {
+                classifier: Some(classifier),
+                ..
+            } => vec![&classifier.target],
+            _ => Vec::new(),
+        }
+    }
+
+    fn capabilities(&self, input_modalities: Vec<InputModality>) -> ModelCapabilities {
         use RouteConfig::*;
         match self {
             Noop {
@@ -601,6 +672,7 @@ impl RouteConfig {
                 context_window: *context_window,
                 tool_calling: *tool_calling,
                 reasoning: *reasoning,
+                input_modalities,
             },
         }
     }
@@ -860,6 +932,7 @@ fn build_algorithm(
     route_name: &str,
     config: &RouteConfig,
     targets: &BTreeMap<String, ModelId>,
+    target_modalities: Option<TargetModalities>,
 ) -> ServerResult<Arc<dyn Algorithm>> {
     match config {
         RouteConfig::Noop { .. } => Ok(Arc::new(Noop {})),
@@ -871,20 +944,27 @@ fn build_algorithm(
         } => {
             let target_set =
                 resolve_targets(route_name, names.iter().map(String::as_str), targets)?;
-            let algorithm = Random::new(target_set, weights.clone(), *seed)
+            let mut algorithm = Random::new(target_set, weights.clone(), *seed)
                 .map_err(|error| ServerError::new(format!("random route {route_name}: {error}")))?;
+            if let Some(target_modalities) = target_modalities {
+                algorithm = algorithm.with_target_modalities(target_modalities);
+            }
             Ok(Arc::new(algorithm))
         }
         RouteConfig::Passthrough { target, .. } => {
             let target = resolve_target_model_id(route_name, target, targets)?;
-            Ok(Arc::new(Passthrough::new(target)))
+            let mut algorithm = Passthrough::new(target);
+            if let Some(target_modalities) = target_modalities {
+                algorithm = algorithm.with_target_modalities(target_modalities);
+            }
+            Ok(Arc::new(algorithm))
         }
         RouteConfig::LlmClassifier {
             classifier_target, ..
         } => {
             let classifier = resolve_target_model_id(route_name, classifier_target, targets)?;
             let mode = config.classifier_mode(route_name)?;
-            let algorithm = match mode {
+            let mut algorithm = match mode {
                 LlmClassifierModeConfig::Capability(config) => {
                     let strong =
                         resolve_target_model_id(route_name, &config.strong_target, targets)?;
@@ -956,6 +1036,9 @@ fn build_algorithm(
             .map_err(|error| {
                 ServerError::new(format!("llm_classifier route {route_name}: {error}"))
             })?;
+            if let Some(target_modalities) = target_modalities {
+                algorithm = algorithm.with_target_modalities(target_modalities);
+            }
             Ok(Arc::new(algorithm))
         }
         RouteConfig::StageRouter {
@@ -999,9 +1082,12 @@ fn build_algorithm(
                     )
                 })
                 .transpose()?;
-            let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
+            let mut algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
                 ServerError::new(format!("stage_router route {route_name}: {error}"))
             })?;
+            if let Some(target_modalities) = target_modalities {
+                algorithm = algorithm.with_target_modalities(target_modalities);
+            }
             Ok(Arc::new(algorithm))
         }
     }
@@ -1062,6 +1148,30 @@ fn validate_value(label: &str, value: &str) -> ServerResult<()> {
         return Err(ServerError::new(format!(
             "{label} must be non-empty and have no surrounding whitespace"
         )));
+    }
+    Ok(())
+}
+
+/// Rejects declarations that cannot describe a meaningful capability set.
+fn validate_input_modalities(
+    target_name: &str,
+    modalities: Option<&[InputModality]>,
+) -> ServerResult<()> {
+    let Some(modalities) = modalities else {
+        return Ok(());
+    };
+    if modalities.is_empty() {
+        return Err(ServerError::new(format!(
+            "target {target_name} input_modalities must not be empty"
+        )));
+    }
+    let mut unique = BTreeSet::new();
+    for modality in modalities {
+        if !unique.insert(*modality) {
+            return Err(ServerError::new(format!(
+                "target {target_name} input_modalities contains duplicate {modality}"
+            )));
+        }
     }
     Ok(())
 }
@@ -1140,6 +1250,93 @@ target = "weak"
                 "switchyard/passthrough",
                 "switchyard/random",
             ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_complete_target_input_modality_declarations() -> ServerResult<()> {
+        let configured = VALID_CONFIG
+            .replace(
+                "llm_client = \"primary\"\n\n[targets.strong]",
+                "llm_client = \"primary\"\ninput_modalities = [\"text\"]\n\n[targets.strong]",
+            )
+            .replace(
+                "llm_client = \"responses\"\n\n[targets.weak]",
+                "llm_client = \"responses\"\ninput_modalities = [\"text\", \"image\", \"audio\", \"video\", \"file\"]\n\n[targets.weak]",
+            )
+            .replace(
+                "llm_client = \"anthropic\"\n\n[routes.noop]",
+                "llm_client = \"anthropic\"\ninput_modalities = [\"text\", \"image\"]\n\n[routes.noop]",
+            );
+
+        server_state_from_toml(&configured)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_target_input_modality_declarations() {
+        let cases = [
+            (
+                VALID_CONFIG.replace(
+                    "llm_client = \"responses\"",
+                    "llm_client = \"responses\"\ninput_modalities = []",
+                ),
+                "input_modalities must not be empty",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "llm_client = \"responses\"",
+                    "llm_client = \"responses\"\ninput_modalities = [\"text\", \"text\"]",
+                ),
+                "input_modalities contains duplicate text",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "llm_client = \"responses\"",
+                    "llm_client = \"responses\"\ninput_modalities = [\"telepathy\"]",
+                ),
+                "unknown variant `telepathy`",
+            ),
+        ];
+
+        for (configured, expected) in cases {
+            let error = error_message(&configured);
+            assert!(error.contains(expected), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn rejects_partial_route_modality_declarations() {
+        let configured = VALID_CONFIG.replace(
+            "llm_client = \"responses\"",
+            "llm_client = \"responses\"\ninput_modalities = [\"text\", \"image\"]",
+        );
+
+        assert!(
+            error_message(&configured)
+                .contains("must declare input_modalities for every completion target or none")
+        );
+    }
+
+    #[test]
+    fn judge_modality_declarations_require_text_but_are_optional() -> ServerResult<()> {
+        // Undeclared judge capabilities retain the legacy behavior.
+        server_state_from_toml(VALID_CONFIG)?;
+
+        let valid = VALID_CONFIG.replace(
+            "llm_client = \"primary\"",
+            "llm_client = \"primary\"\ninput_modalities = [\"text\"]",
+        );
+        server_state_from_toml(&valid)?;
+
+        let invalid = VALID_CONFIG.replace(
+            "llm_client = \"primary\"",
+            "llm_client = \"primary\"\ninput_modalities = [\"image\"]",
+        );
+        assert!(
+            error_message(&invalid)
+                .contains("judge target classifier for route classifier must include text")
         );
         Ok(())
     }

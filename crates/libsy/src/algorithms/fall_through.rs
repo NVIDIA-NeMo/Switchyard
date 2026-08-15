@@ -17,7 +17,7 @@
 //! may fall through that ordered candidate list when a model call fails.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     sync::{Arc, Once, Weak},
     time::{Duration, Instant},
 };
@@ -29,7 +29,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
-use crate::{LibsyError, Result};
+use crate::target_modalities::eligible_targets;
+use crate::{LibsyError, Result, TargetModalities};
 use switchyard_protocol::{Decision, ModelId, Request, Response};
 
 struct SessionState<S> {
@@ -95,6 +96,7 @@ pub struct FallThrough<S = ()> {
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: Vec<ModelId>,
+    target_modalities: Option<TargetModalities>,
     session_states: Option<Arc<SessionStates<S>>>,
     cleanup_started: Once,
 }
@@ -108,6 +110,7 @@ impl FallThrough<()> {
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
+            target_modalities: None,
             session_states: None,
             cleanup_started: Once::new(),
         }
@@ -126,6 +129,7 @@ where
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
+            target_modalities: None,
             session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
             cleanup_started: Once::new(),
         }
@@ -154,6 +158,13 @@ where
         self.classifiers.push(classifier);
         self
     }
+
+    /// Restricts routing and request-local fallback to modality-compatible targets.
+    pub fn with_target_modalities(mut self, target_modalities: TargetModalities) -> Self {
+        self.target_modalities = Some(target_modalities);
+        self
+    }
+
     /// Executes the processor/classifier/target-call sequence for wrappers and the trait entrypoint.
     pub(crate) async fn execute(&self, driver: Driver, request: Request) -> Result<Response> {
         self.start_cleanup_task();
@@ -186,7 +197,7 @@ where
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
         let session_state = self.session_state(&request);
-        let (target, served) = match session_state {
+        let (target, served, eligible) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
                 self.route(&mut state, &driver, &mut request).await?
@@ -206,7 +217,7 @@ where
             Some(response) => Ok(response),
             None => {
                 driver
-                    .call_model(request, self.candidates(&target), true)
+                    .call_model(request, self.candidates(&target, eligible.as_deref()), true)
                     .await
             }
         }
@@ -220,10 +231,11 @@ where
     }
 
     /// The selected target first, then every other configured target as a fallback candidate.
-    fn candidates(&self, target: &ModelId) -> Vec<ModelId> {
+    fn candidates(&self, target: &ModelId, eligible: Option<&[ModelId]>) -> Vec<ModelId> {
+        let candidates = eligible.unwrap_or(&self.targets);
         std::iter::once(target.clone())
             .chain(
-                self.targets
+                candidates
                     .iter()
                     .filter(|candidate| *candidate != target)
                     .cloned(),
@@ -250,17 +262,57 @@ where
         state: &mut S,
         driver: &Driver,
         request: &mut Request,
-    ) -> Result<(ModelId, Option<Response>)> {
+    ) -> Result<(ModelId, Option<Response>, Option<Vec<ModelId>>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
         for processor in &self.processors {
             processor.process(state, Event::Request(request)).await?;
+        }
+
+        // Eligibility is computed after request processors so classifiers and
+        // fallback candidates see the final request-side content.
+        let eligibility = self
+            .target_modalities
+            .as_ref()
+            .map(|modalities| eligible_targets(&self.targets, modalities, request))
+            .transpose()?;
+        let eligible_set = eligibility
+            .as_ref()
+            .map(|(_, eligible)| eligible.iter().cloned().collect::<BTreeSet<_>>());
+        if let Some((required, eligible)) = &eligibility {
+            tracing::info!(
+                required_modalities = ?required,
+                eligible_targets = ?eligible,
+                "computed modality-compatible targets"
+            );
+            if let [target] = eligible.as_slice() {
+                tracing::info!(
+                    target = %target,
+                    required_modalities = ?required,
+                    "input modalities forced target selection"
+                );
+                let target = target.clone();
+                self.publish_decision(state, driver, request, &target)
+                    .await?;
+                return Ok((target, None, Some(eligible.clone())));
+            }
         }
 
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
         //    per-request driver is offered to each — driver-backed classifiers use it.
         let mut routed = None;
         for classifier in &self.classifiers {
-            let (scores, response) = classifier.score(state, request, Some(driver)).await?;
+            let (scores, response) = match eligible_set.as_ref() {
+                Some(eligible) => {
+                    classifier
+                        .score_with_eligible_targets(state, request, Some(driver), eligible)
+                        .await?
+                }
+                None => classifier.score(state, request, Some(driver)).await?,
+            };
+            let scores = match eligible_set.as_ref() {
+                Some(eligible) => scores.retain_eligible(eligible),
+                None => scores,
+            };
             if let Some(score) = scores.argmax(false)? {
                 // Only the deciding classifier's response answers the turn; an abstaining
                 // classifier selected nothing for it to be the answer to.
@@ -268,10 +320,26 @@ where
                 break;
             }
         }
-        let Some((score, deciding, served)) = routed else {
-            return Err(LibsyError::AlgorithmError {
-                message: "every classifier abstained".to_string(),
-            });
+        let (score, deciding, served) = match routed {
+            Some(routed) => routed,
+            None => {
+                let Some((_, eligible)) = &eligibility else {
+                    return Err(LibsyError::AlgorithmError {
+                        message: "every classifier abstained".to_string(),
+                    });
+                };
+                let Some(target) = eligible.first() else {
+                    return Err(LibsyError::NoTargets);
+                };
+                tracing::info!(
+                    target = %target,
+                    "classifier cascade fell back to first compatible target"
+                );
+                let target = target.clone();
+                self.publish_decision(state, driver, request, &target)
+                    .await?;
+                return Ok((target, None, Some(eligible.clone())));
+            }
         };
 
         // 3. Resolve the target, log the choice, and publish the decision.
@@ -280,10 +348,24 @@ where
         let message = (self.decision_reason)(&self.name, &score);
         let message = with_routing_tier(message, deciding.routing_tier(&target));
         tracing::info!("{message}");
+        self.publish_decision(state, driver, request, &target)
+            .await?;
+
+        Ok((target, served, eligibility.map(|(_, eligible)| eligible)))
+    }
+
+    /// Publishes a choice and replays it through post-decision processors.
+    async fn publish_decision(
+        &self,
+        state: &mut S,
+        driver: &Driver,
+        request: &mut Request,
+        target: &ModelId,
+    ) -> Result<()> {
         let decision: Decision = Decision::new(target.clone(), true);
         driver.decide(decision.clone()).await?;
 
-        // 4. Post-decision replay: every processor sees the decision so stateful ones
+        // Post-decision replay: every processor sees the decision so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
         for processor in &self.processors {
             let event = Event::Decision {
@@ -292,8 +374,7 @@ where
             };
             processor.process(state, event).await?;
         }
-
-        Ok((target, served))
+        Ok(())
     }
 }
 
@@ -362,13 +443,18 @@ where
 }
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use crate::algorithms::util::prompts;
     use crate::core::classifier::Classification;
     use crate::{SystemPromptProcessor, TargetPrompts};
 
     use crate::core::testing::{Serve, echo, reply, test_drive};
-    use switchyard_protocol::{LlmRequest, Message, Metadata, Role, completion_text, text_request};
+    use switchyard_protocol::{
+        ContentBlock, ImageSource, InputModality, LlmRequest, Message, Metadata, Role,
+        completion_text, text_request,
+    };
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
@@ -444,6 +530,40 @@ mod tests {
 
     fn target_set(names: &[&str]) -> Vec<ModelId> {
         names.iter().map(|name| ModelId::from(*name)).collect()
+    }
+
+    fn target_modalities(entries: &[(&str, &[InputModality])]) -> TargetModalities {
+        entries
+            .iter()
+            .map(|(target, modalities)| {
+                (ModelId::from(*target), modalities.iter().copied().collect())
+            })
+            .collect()
+    }
+
+    fn image_request() -> Request {
+        Request {
+            llm_request: LlmRequest {
+                model: Some("auto".to_string()),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: vec![
+                        ContentBlock::Text {
+                            text: "describe this".to_string(),
+                        },
+                        ContentBlock::Image {
+                            source: ImageSource::Url {
+                                url: "https://example.test/image.png".to_string(),
+                                detail: None,
+                            },
+                        },
+                    ],
+                }],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        }
     }
 
     fn target_prompts() -> TargetPrompts {
@@ -961,6 +1081,115 @@ mod tests {
             .expect("stateful router has a session registry")
             .lock();
         assert!(!states.contains_key("session-1"));
+    }
+
+    #[tokio::test]
+    async fn modalities_force_the_only_compatible_target_without_stripping_content() -> Result<()> {
+        let captured = Arc::new(Mutex::new(None));
+        let original = image_request();
+        let router = Arc::new(
+            FallThrough::new(target_set(&["text", "vision"]))
+                .with_target_modalities(target_modalities(&[
+                    ("text", &[InputModality::Text]),
+                    ("vision", &[InputModality::Text, InputModality::Image]),
+                ]))
+                // This incompatible choice must never run because eligibility is decisive.
+                .with_classifier(fixed(vec![score("text", 1.0)])),
+        );
+
+        let (selected, trace) =
+            run_request(&router, original.clone(), capturing(captured.clone())).await?;
+
+        assert_eq!(selected, "vision");
+        assert_eq!(trace[0].selected_model_id(), "vision");
+        let sent = captured.lock().clone().expect("vision target was called");
+        assert_eq!(
+            sent.llm_request.messages[0].content,
+            original.llm_request.messages[0].content
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn incompatible_classifier_scores_are_ignored_during_the_cascade() -> Result<()> {
+        let router = Arc::new(
+            FallThrough::new(target_set(&["vision-first", "vision-second", "text"]))
+                .with_target_modalities(target_modalities(&[
+                    ("vision-first", &[InputModality::Text, InputModality::Image]),
+                    (
+                        "vision-second",
+                        &[InputModality::Text, InputModality::Image],
+                    ),
+                    ("text", &[InputModality::Text]),
+                ]))
+                .with_classifier(fixed(vec![score("text", 1.0)]))
+                .with_classifier(fixed(vec![score("vision-second", 0.5)])),
+        );
+
+        let (selected, _) = run_request(&router, image_request(), echo()).await?;
+
+        assert_eq!(selected, "vision-second");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn incompatible_default_falls_back_to_first_compatible_route_target() -> Result<()> {
+        let router = Arc::new(
+            FallThrough::new(target_set(&["vision-first", "vision-second", "text"]))
+                .with_target_modalities(target_modalities(&[
+                    ("vision-first", &[InputModality::Text, InputModality::Image]),
+                    (
+                        "vision-second",
+                        &[InputModality::Text, InputModality::Image],
+                    ),
+                    ("text", &[InputModality::Text]),
+                ]))
+                .with_classifier(Arc::new(DefaultTarget::new("text"))),
+        );
+
+        let (selected, _) = run_request(&router, image_request(), echo()).await?;
+
+        assert_eq!(selected, "vision-first");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn no_compatible_target_is_typed_and_emits_no_model_call() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = Arc::clone(&calls);
+        let router: Arc<dyn Algorithm> = Arc::new(
+            FallThrough::new(target_set(&["text-a", "text-b"]))
+                .with_target_modalities(target_modalities(&[
+                    ("text-a", &[InputModality::Text]),
+                    ("text-b", &[InputModality::Text]),
+                ]))
+                .with_classifier(Arc::new(DefaultTarget::new("text-a"))),
+        );
+
+        let result = test_drive(router, image_request(), move |target: ModelId, _request| {
+            let called = Arc::clone(&called);
+            async move {
+                called.fetch_add(1, Ordering::Relaxed);
+                Ok(reply(target))
+            }
+        })
+        .await;
+
+        match result {
+            Err(LibsyError::NoCompatibleTargets {
+                required_modalities,
+                target_modalities,
+            }) => {
+                assert_eq!(
+                    required_modalities,
+                    BTreeSet::from([InputModality::Text, InputModality::Image])
+                );
+                assert_eq!(target_modalities.len(), 2);
+            }
+            Err(error) => panic!("expected NoCompatibleTargets, got {error:?}"),
+            Ok(_) => panic!("expected NoCompatibleTargets, routing succeeded"),
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 
     #[test]

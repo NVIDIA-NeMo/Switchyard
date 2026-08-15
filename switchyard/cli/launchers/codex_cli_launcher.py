@@ -167,6 +167,7 @@ def _run_codex_with_switchyard(
     try:
         try:
             caller_auth = server.caller_auth_kind(display_model)
+            input_modalities = server.input_modalities(display_model)
         except ValueError as error:
             logger.error("%s", error)
             return 1
@@ -176,7 +177,11 @@ def _run_codex_with_switchyard(
             )
             return 1
         use_openai_auth = caller_auth == "openai"
-        model_catalog_json = _write_codex_model_catalog(codex_bin, codex_model_catalog)
+        model_catalog_json = _write_codex_model_catalog(
+            codex_bin,
+            codex_model_catalog,
+            input_modalities_by_model={display_model: input_modalities},
+        )
         command = _codex_command(
             codex_bin,
             codex_args,

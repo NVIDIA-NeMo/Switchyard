@@ -50,6 +50,10 @@ class NativeServer:
         """Return which caller credential the route forwards, if any."""
         return self._server.caller_auth_kind(model)
 
+    def input_modalities(self, model: str) -> list[str]:
+        """Return the route's discovered input modalities."""
+        return self._server.input_modalities(model)
+
     def close(self) -> None:
         """Gracefully stop the native server."""
         self._server.close()

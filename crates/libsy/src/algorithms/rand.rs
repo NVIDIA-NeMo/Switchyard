@@ -18,12 +18,13 @@ use rand::rngs::StdRng;
 use crate::algorithms::fall_through::FallThrough;
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
-use crate::{LibsyError, Result};
+use crate::{LibsyError, Result, TargetModalities};
 use switchyard_protocol::{ModelId, Request, Response};
 
 /// Stateless weighted classifier used by random fall-through routing.
 pub struct RandomClassifier {
     targets: Vec<ModelId>,
+    weights: Vec<f64>,
     distribution: WeightedIndex<f64>,
     rng: Mutex<StdRng>,
 }
@@ -76,14 +77,15 @@ impl RandomClassifier {
                 "at least one weight must be positive".to_string(),
             ));
         }
-        let distribution =
-            WeightedIndex::new(weights).map_err(|error| invalid_weights(error.to_string()))?;
+        let distribution = WeightedIndex::new(weights.clone())
+            .map_err(|error| invalid_weights(error.to_string()))?;
         let rng = match seed {
             Some(seed) => StdRng::seed_from_u64(seed),
             None => rand::make_rng(),
         };
         Ok(Self {
             targets,
+            weights,
             distribution,
             rng: Mutex::new(rng),
         })
@@ -93,6 +95,31 @@ impl RandomClassifier {
         let mut rng = self.rng.lock();
         let index = self.distribution.sample(&mut *rng);
         self.targets[index].clone()
+    }
+
+    /// Samples from compatible targets using their original relative weights.
+    fn select_eligible_target(
+        &self,
+        eligible_targets: &BTreeSet<ModelId>,
+    ) -> Result<Option<ModelId>> {
+        let eligible = self
+            .targets
+            .iter()
+            .zip(&self.weights)
+            .filter(|(target, _)| eligible_targets.contains(*target))
+            .collect::<Vec<_>>();
+        let weights = eligible
+            .iter()
+            .map(|(_, weight)| **weight)
+            .collect::<Vec<_>>();
+        if !weights.iter().any(|weight| *weight > 0.0) {
+            return Ok(None);
+        }
+        let distribution =
+            WeightedIndex::new(weights).map_err(|error| invalid_weights(error.to_string()))?;
+        let mut rng = self.rng.lock();
+        let index = distribution.sample(&mut *rng);
+        Ok(Some(eligible[index].0.clone()))
     }
 }
 
@@ -121,6 +148,24 @@ where
             None,
         ))
     }
+
+    async fn score_with_eligible_targets(
+        &self,
+        _state: &mut S,
+        _request: &mut Request,
+        _driver: Option<&Driver>,
+        eligible_targets: &BTreeSet<ModelId>,
+    ) -> Result<(Classification, Option<Response>)> {
+        let scores = self
+            .select_eligible_target(eligible_targets)?
+            .map(|target| Score {
+                confidence: 1.0,
+                target,
+            })
+            .into_iter()
+            .collect();
+        Ok((Classification::Scores(scores), None))
+    }
 }
 
 /// Random router implemented as a stateless fall-through composition.
@@ -146,6 +191,12 @@ impl Random {
             .with_classifier(classifier);
         Ok(Self { inner })
     }
+
+    /// Restricts weighted selection and fallback to modality-compatible targets.
+    pub fn with_target_modalities(mut self, target_modalities: TargetModalities) -> Self {
+        self.inner = self.inner.with_target_modalities(target_modalities);
+        self
+    }
 }
 
 fn random_decision_reason(_name: &str, winner: &Score) -> String {
@@ -168,7 +219,10 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use switchyard_protocol::{Metadata, completion_text, text_request};
+    use switchyard_protocol::{
+        ContentBlock, ImageSource, InputModality, LlmRequest, Message, Metadata, Role,
+        completion_text, text_request,
+    };
 
     use crate::algorithms::util::affinity::AffinityRouter;
     use crate::core::testing::{echo, test_drive};
@@ -194,6 +248,40 @@ mod tests {
 
     fn target_set(names: &[&str]) -> Vec<ModelId> {
         names.iter().map(|name| ModelId::from(*name)).collect()
+    }
+
+    fn target_modalities(entries: &[(&str, &[InputModality])]) -> TargetModalities {
+        entries
+            .iter()
+            .map(|(target, modalities)| {
+                (ModelId::from(*target), modalities.iter().copied().collect())
+            })
+            .collect()
+    }
+
+    fn image_request() -> Request {
+        Request {
+            llm_request: LlmRequest {
+                model: Some("auto".to_string()),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: vec![
+                        ContentBlock::Text {
+                            text: "describe this".to_string(),
+                        },
+                        ContentBlock::Image {
+                            source: ImageSource::Url {
+                                url: "https://example.test/image.png".to_string(),
+                                detail: None,
+                            },
+                        },
+                    ],
+                }],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        }
     }
 
     fn algorithm(names: &[&str], weights: Option<Vec<f64>>, seed: Option<u64>) -> Result<Random> {
@@ -312,6 +400,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn weighted_selection_is_restricted_and_renormalized_over_compatible_targets()
+    -> Result<()> {
+        fn modality_aware_random() -> Result<Arc<dyn Algorithm>> {
+            let router = Random::new(
+                target_set(&["text", "vision-a", "vision-b"]),
+                Some(vec![100.0, 1.0, 3.0]),
+                Some(42),
+            )?
+            .with_target_modalities(target_modalities(&[
+                ("text", &[InputModality::Text]),
+                ("vision-a", &[InputModality::Text, InputModality::Image]),
+                ("vision-b", &[InputModality::Text, InputModality::Image]),
+            ]));
+            Ok(Arc::new(router))
+        }
+
+        async fn selections(router: Arc<dyn Algorithm>) -> Result<Vec<String>> {
+            let mut selected = Vec::new();
+            for _ in 0..1_000 {
+                let (_, response) = test_drive(router.clone(), image_request(), echo()).await?;
+                selected.push(
+                    response
+                        .llm_response
+                        .as_agg()
+                        .map(completion_text)
+                        .unwrap_or_default(),
+                );
+            }
+            Ok(selected)
+        }
+
+        let first = selections(modality_aware_random()?).await?;
+        let second = selections(modality_aware_random()?).await?;
+
+        assert_eq!(first, second);
+        assert!(first.iter().all(|target| target != "text"));
+        let vision_b = first
+            .iter()
+            .filter(|target| target.as_str() == "vision-b")
+            .count();
+        assert!(
+            (700..=800).contains(&vision_b),
+            "expected a roughly 25/75 split, selected vision-b {vision_b} times"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn affinity_reuses_the_initial_random_selection() -> Result<()> {
         let names = ["a/model", "b/model"];
         let affinity = Arc::new(AffinityRouter::new());
@@ -356,6 +492,59 @@ mod tests {
                 .map(completion_text)
                 .unwrap_or_default(),
             selected
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn incompatible_affinity_is_bypassed_for_a_multimodal_turn() -> Result<()> {
+        let names = ["text", "vision"];
+        let affinity = Arc::new(AffinityRouter::new());
+        let random = Arc::new(RandomClassifier::new(
+            target_set(&names),
+            Some(vec![1.0, 0.0]),
+            Some(42),
+        )?);
+        let algorithm: Arc<dyn Algorithm> = Arc::new(
+            FallThrough::<()>::new(target_set(&names))
+                .with_name("affinity_random")
+                .with_target_modalities(target_modalities(&[
+                    ("text", &[InputModality::Text]),
+                    ("vision", &[InputModality::Text, InputModality::Image]),
+                ]))
+                .with_processor(affinity.clone())
+                .with_classifier(affinity)
+                .with_classifier(random),
+        );
+
+        let (_, first) = test_drive(
+            algorithm.clone(),
+            request_for_session("session-modalities"),
+            echo(),
+        )
+        .await?;
+        let mut image = image_request();
+        image.metadata = Some(Metadata {
+            session_id: Some("session-modalities".to_string()),
+            ..Metadata::default()
+        });
+        let (_, second) = test_drive(algorithm, image, echo()).await?;
+
+        assert_eq!(
+            first
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "text"
+        );
+        assert_eq!(
+            second
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "vision"
         );
         Ok(())
     }

@@ -37,7 +37,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver, TranslatingLlmClient};
-use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
+use switchyard_protocol::{InputModality, LlmClientError, Metadata, ModelId, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
@@ -92,7 +92,7 @@ pub type ServerResult<T> = std::result::Result<T, ServerError>;
 ///
 /// An unset capability is undeclared: it serializes as `null` in the OpenAI
 /// `data` entry, and the Codex entry falls back to a safe default for it.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone)]
 struct ModelCapabilities {
     context_window: Option<u32>,
     tool_calling: Option<bool>,
@@ -100,6 +100,20 @@ struct ModelCapabilities {
     // this, so a route opts in via config; undeclared routes advertise as
     // non-reasoning to Codex (fail closed).
     reasoning: Option<bool>,
+    // Always populated. Routes without target declarations use text as the
+    // safe discovery default.
+    input_modalities: Vec<InputModality>,
+}
+
+impl Default for ModelCapabilities {
+    fn default() -> Self {
+        Self {
+            context_window: None,
+            tool_calling: None,
+            reasoning: None,
+            input_modalities: vec![InputModality::Text],
+        }
+    }
 }
 
 /// A registered algorithm route and its server-owned endpoint metadata.
@@ -279,6 +293,13 @@ impl ServerState {
     pub fn caller_auth_kind(&self, model: &str) -> ServerResult<Option<&'static str>> {
         self.route_for_model(model)
             .map(|entry| entry.caller_auth.map(CallerAuthKind::as_str))
+            .ok_or_else(|| ServerError::new(format!("unknown route model {model:?}")))
+    }
+
+    /// Returns the input modalities advertised for one route model.
+    pub fn input_modalities(&self, model: &str) -> ServerResult<Vec<InputModality>> {
+        self.route_for_model(model)
+            .map(|entry| entry.capabilities.input_modalities.clone())
             .ok_or_else(|| ServerError::new(format!("unknown route model {model:?}")))
     }
 
@@ -885,10 +906,16 @@ fn sanitize_routing_header_value(value: &str) -> Option<String> {
 }
 
 fn algorithm_error(error: LibsyError) -> Response {
-    let LibsyError::ClientCall { source, .. } = &error else {
-        return server_error(error.to_string());
-    };
-    client_error(source)
+    match &error {
+        LibsyError::NoCompatibleTargets { .. } => error_response(
+            StatusCode::BAD_REQUEST,
+            error.to_string(),
+            "invalid_request_error",
+            "unsupported_input_modalities",
+        ),
+        LibsyError::ClientCall { source, .. } => client_error(source),
+        _ => server_error(error.to_string()),
+    }
 }
 
 fn client_error(error: &LlmClientError) -> Response {
@@ -1058,12 +1085,9 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(
-        state
-            .routes
-            .iter()
-            .map(|(model, entry)| (model.as_str(), entry.capabilities)),
-    ))
+    Json(model_list_payload(state.routes.iter().map(
+        |(model, entry)| (model.as_str(), entry.capabilities.clone()),
+    )))
 }
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
@@ -1152,11 +1176,11 @@ fn model_list_payload<'a>(
     let last_id = model_ids.last().copied();
     json!({
         "object": "list",
-        "data": entries.iter().map(|(model, caps)| model_entry_json(model, *caps)).collect::<Vec<_>>(),
+        "data": entries.iter().map(|(model, caps)| model_entry_json(model, caps.clone())).collect::<Vec<_>>(),
         "models": entries
             .iter()
             .enumerate()
-            .map(|(priority, (model, caps))| codex_model_entry_json(model, *caps, priority))
+            .map(|(priority, (model, caps))| codex_model_entry_json(model, caps.clone(), priority))
             .collect::<Vec<_>>(),
         "first_id": first_id,
         "last_id": last_id,
@@ -1178,6 +1202,7 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
             "streaming": true,
             "tool_calling": capabilities.tool_calling,
             "context_window": capabilities.context_window,
+            "input_modalities": capabilities.input_modalities,
             "supported_inbound_formats": [
                 "openai-chat-completions",
                 "openai-responses",
@@ -1242,7 +1267,7 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         "max_context_window": capabilities.context_window,
         "effective_context_window_percent": 95,
         "experimental_supported_tools": [],
-        "input_modalities": ["text"],
+        "input_modalities": capabilities.input_modalities,
         "supports_search_tool": false,
     })
 }

@@ -26,6 +26,7 @@ const DEFAULT_SHUTDOWN_TIMEOUT_SECS: f64 = 2.0;
 struct PyServer {
     addr: SocketAddr,
     caller_auth_by_model: HashMap<String, Option<&'static str>>,
+    input_modalities_by_model: HashMap<String, Vec<String>>,
     shutdown: Option<oneshot::Sender<()>>,
     completion: Option<Receiver<ServerResult<()>>>,
     task: Option<JoinHandle<()>>,
@@ -45,6 +46,21 @@ impl PyServer {
                 state
                     .caller_auth_kind(model)
                     .map(|kind| (model.to_string(), kind))
+            })
+            .collect::<ServerResult<HashMap<_, _>>>()
+            .map_err(server_error)?;
+        let input_modalities_by_model = state
+            .models()
+            .map(|model| {
+                state.input_modalities(model).map(|modalities| {
+                    (
+                        model.to_string(),
+                        modalities
+                            .into_iter()
+                            .map(|modality| modality.as_str().to_string())
+                            .collect(),
+                    )
+                })
             })
             .collect::<ServerResult<HashMap<_, _>>>()
             .map_err(server_error)?;
@@ -77,6 +93,7 @@ impl PyServer {
         Ok(Self {
             addr,
             caller_auth_by_model,
+            input_modalities_by_model,
             shutdown: Some(shutdown),
             completion: Some(completion),
             task: Some(task),
@@ -100,6 +117,14 @@ impl PyServer {
         self.caller_auth_by_model
             .get(model)
             .copied()
+            .ok_or_else(|| PyValueError::new_err(format!("unknown route model {model:?}")))
+    }
+
+    /// Returns the input modalities advertised for a route model.
+    fn input_modalities(&self, model: &str) -> PyResult<Vec<String>> {
+        self.input_modalities_by_model
+            .get(model)
+            .cloned()
             .ok_or_else(|| PyValueError::new_err(format!("unknown route model {model:?}")))
     }
 

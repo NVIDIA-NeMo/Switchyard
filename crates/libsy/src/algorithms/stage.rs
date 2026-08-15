@@ -13,6 +13,7 @@
 //! joined in unchanged — and then to the picker's default tier. The judge is
 //! asked per turn and its verdict is never pinned to the session.
 //!
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -28,7 +29,7 @@ use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
-use crate::{LibsyError, Result};
+use crate::{LibsyError, Result, TargetModalities};
 use switchyard_protocol::{ModelId, Request, Response};
 
 /// Telemetry name for a router this module assembles.
@@ -57,6 +58,24 @@ impl Classifier<State> for SourceStamp {
     ) -> Result<(Classification, Option<Response>)> {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
+        if let Some(winner) = classification.argmax(false)? {
+            record_decision_source(state, self.source);
+            record_routing_decision(self.source, &winner.target);
+        }
+        Ok((classification, served))
+    }
+
+    async fn score_with_eligible_targets(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: Option<&Driver>,
+        eligible_targets: &BTreeSet<ModelId>,
+    ) -> Result<(Classification, Option<Response>)> {
+        let (classification, served) = self
+            .inner
+            .score_with_eligible_targets(state, request, driver, eligible_targets)
+            .await?;
         if let Some(winner) = classification.argmax(false)? {
             record_decision_source(state, self.source);
             record_routing_decision(self.source, &winner.target);
@@ -130,6 +149,12 @@ impl StageRouter {
         Ok(Self {
             route: build_route(capable, efficient, config)?,
         })
+    }
+
+    /// Restricts stage decisions, judges, and fallback calls to compatible tiers.
+    pub fn with_target_modalities(mut self, target_modalities: TargetModalities) -> Self {
+        self.route = self.route.with_target_modalities(target_modalities);
+        self
     }
 }
 

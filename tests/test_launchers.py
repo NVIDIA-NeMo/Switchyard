@@ -11,6 +11,7 @@ import pytest
 from switchyard.cli.launch_command import _config_path
 from switchyard.cli.launchers.claude_code_launcher import _claude_env
 from switchyard.cli.launchers.codex_cli_launcher import _codex_env, _provider_overrides
+from switchyard.cli.launchers.codex_model_catalog import _build_codex_model_catalog
 from switchyard.cli.launchers.native_server import NativeServer
 from switchyard.cli.switchyard_cli import _build_parser
 
@@ -106,21 +107,93 @@ def test_native_server_passes_config_directly_to_binding(
             captured["model"] = model
             return "anthropic"
 
+        def input_modalities(self, model: str) -> list[str]:
+            captured["modalities_model"] = model
+            return ["text", "image"]
+
     import switchyard_rust.server
 
     monkeypatch.setattr(switchyard_rust.server, "Server", FakeServer)
     server = NativeServer(config)
     assert server.caller_auth_kind("switchyard/route") == "anthropic"
+    assert server.input_modalities("switchyard/route") == ["text", "image"]
     server.close()
 
     assert captured == {
         "path": config,
         "port": 0,
         "model": "switchyard/route",
+        "modalities_model": "switchyard/route",
         "closed": True,
     }
     assert server.port == 4321
     assert config.exists()
+
+
+def test_codex_catalog_uses_route_modalities_and_defaults_undeclared_to_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import switchyard.cli.launchers.codex_model_catalog as catalog_module
+
+    monkeypatch.setattr(
+        catalog_module,
+        "_load_codex_model_template",
+        lambda _codex_bin: {"input_modalities": ["text", "image", "audio"]},
+    )
+    entries = [("switchyard/route", "Route", "Test route")]
+
+    discovered = _build_codex_model_catalog(
+        "codex",
+        entries,
+        input_modalities_by_model={"switchyard/route": ["text", "image"]},
+    )
+    undeclared = _build_codex_model_catalog("codex", entries)
+
+    assert discovered["models"][0]["input_modalities"] == ["text", "image"]
+    assert undeclared["models"][0]["input_modalities"] == ["text"]
+
+
+def test_native_server_exposes_route_derived_modalities(tmp_path: Path) -> None:
+    config = tmp_path / "modalities.toml"
+    config.write_text(
+        """
+schema_version = 1
+
+[llm_clients.local]
+format = "openai_chat"
+base_url = "http://127.0.0.1:9/v1"
+
+[targets.text]
+id = "model/text"
+llm_client = "local"
+input_modalities = ["text"]
+
+[targets.vision]
+id = "model/vision"
+llm_client = "local"
+input_modalities = ["image", "text"]
+
+[targets.legacy]
+id = "model/legacy"
+llm_client = "local"
+
+[routes.multimodal]
+id = "switchyard/multimodal"
+type = "random"
+targets = ["text", "vision"]
+
+[routes.legacy]
+id = "switchyard/legacy"
+type = "passthrough"
+target = "legacy"
+"""
+    )
+    server = NativeServer(config)
+    try:
+        assert server.input_modalities("switchyard/multimodal") == ["text", "image"]
+        assert server.input_modalities("switchyard/legacy") == ["text"]
+    finally:
+        server.close()
 
 
 def test_missing_explicit_config_is_a_cli_error(tmp_path: Path) -> None:

@@ -82,7 +82,34 @@ calls an upstream.
 |---|:---:|---|---|
 | `id` | Yes | — | Exact model ID sent upstream. |
 | `llm_client` | Yes | — | Key under `[llm_clients]`. |
+| `input_modalities` | No | unset | Non-empty, duplicate-free list of accepted inputs: `text`, `image`, `audio`, `video`, and/or `file`. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
+
+Modality-aware routing is opt-in per route. Either every completion target in a
+route declares `input_modalities`, or none may declare it. Judge-only targets do
+not participate in this completeness rule or in the route's advertised
+capabilities; when a judge does declare modalities, its list must include
+`text` because Switchyard sends it a text verdict prompt.
+
+```toml
+[targets.text]
+id = "deepseek/model"
+llm_client = "local"
+input_modalities = ["text"]
+
+[targets.vision]
+id = "qwen/vision"
+llm_client = "local"
+input_modalities = ["text", "image"]
+```
+
+Switchyard considers typed content in instructions, conversation history, and
+nested tool results. A target is eligible only when it supports every modality
+present in the request; unsupported content is not removed. If no target is
+eligible, the request returns HTTP 400 without an upstream call. `GET /v1/models`
+advertises the canonical union of the completion targets' declarations. Routes
+without declarations, and `noop` routes, advertise `text` and retain their
+existing routing behavior.
 
 ## `[routes.<name>]`
 

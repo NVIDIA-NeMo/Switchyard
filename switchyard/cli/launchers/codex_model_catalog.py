@@ -17,7 +17,7 @@ import logging
 import os
 import subprocess
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, TypeAlias
 
 logger = logging.getLogger(__name__)
@@ -106,6 +106,7 @@ def _load_codex_model_template(codex_bin: str) -> dict[str, Any]:
 def _build_codex_model_catalog(
     codex_bin: str,
     entries: Sequence[CodexModelCatalogEntry],
+    input_modalities_by_model: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Build Codex catalog JSON for Switchyard route ids."""
     template = _load_codex_model_template(codex_bin)
@@ -120,6 +121,12 @@ def _build_codex_model_catalog(
         model["supported_in_api"] = True
         model["availability_nux"] = None
         model["upgrade"] = None
+        modalities = (
+            input_modalities_by_model.get(model_id, ("text",))
+            if input_modalities_by_model is not None
+            else ("text",)
+        )
+        model["input_modalities"] = list(modalities)
         models.append(model)
     return {"models": models}
 
@@ -127,12 +134,17 @@ def _build_codex_model_catalog(
 def _write_codex_model_catalog(
     codex_bin: str,
     entries: Sequence[CodexModelCatalogEntry],
+    input_modalities_by_model: Mapping[str, Sequence[str]] | None = None,
 ) -> str | None:
     """Write a temporary Codex catalog file and return its path."""
     if not entries:
         return None
 
-    catalog = _build_codex_model_catalog(codex_bin, entries)
+    catalog = _build_codex_model_catalog(
+        codex_bin,
+        entries,
+        input_modalities_by_model=input_modalities_by_model,
+    )
     with tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",

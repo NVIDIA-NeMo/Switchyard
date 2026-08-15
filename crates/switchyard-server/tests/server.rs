@@ -1283,6 +1283,127 @@ prompt = "CUSTOM STAGE"
 }
 
 #[tokio::test]
+async fn classifier_and_stage_routes_skip_judges_when_modalities_force_a_target() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+input_modalities = ["text"]
+
+[targets.text]
+id = "model/text"
+llm_client = "upstream"
+input_modalities = ["text"]
+
+[targets.vision]
+id = "model/vision"
+llm_client = "upstream"
+input_modalities = ["text", "image"]
+
+[routes.capability]
+id = "switchyard/capability-modalities"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "classifier"
+strong_target = "vision"
+weak_target = "text"
+base_threshold = 0.5
+
+[routes.escalation]
+id = "switchyard/escalation-modalities"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "classifier"
+strong_target = "vision"
+weak_target = "text"
+escalation = {{ confirmations = 1 }}
+
+[routes.custom]
+id = "switchyard/custom-modalities"
+type = "llm_classifier"
+mode = "custom"
+classifier_target = "classifier"
+targets = ["text", "vision"]
+default_target = "text"
+prompt = "Select a target"
+response_schema = '''
+{{
+  "type": "object",
+  "properties": {{"target": {{"type": "string", "enum": ["text", "vision"]}}}},
+  "required": ["target"],
+  "additionalProperties": false
+}}
+'''
+
+[routes.custom.policy]
+type = "target_selector"
+selector = "/target"
+
+[routes.stage]
+id = "switchyard/stage-modalities"
+type = "stage_router"
+capable_target = "vision"
+efficient_target = "text"
+picker = "efficient_first"
+confidence_threshold = 1.0
+
+[routes.stage.classifier]
+target = "classifier"
+base_threshold = 0.5
+"#,
+        base_url = upstream.base_url,
+    ))?;
+    let app = build_switchyard_router(state);
+
+    for route in [
+        "switchyard/capability-modalities",
+        "switchyard/escalation-modalities",
+        "switchyard/custom-modalities",
+        "switchyard/stage-modalities",
+    ] {
+        upstream.calls.lock().await.clear();
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": route,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "describe this"},
+                    {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}
+                ]}]
+            })),
+        )
+        .await?;
+
+        assert_eq!(response.status, StatusCode::OK, "{route}");
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some("model/vision"),
+            "{route}"
+        );
+        assert_eq!(
+            upstream.models().await,
+            ["model/vision"],
+            "{route} made an unnecessary classifier or efficient-tier call"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn stage_classifier_can_request_json_object_output() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
@@ -1671,6 +1792,21 @@ base_url = "https://example.test/v1"
 id = "nvidia/deepseek-ai/deepseek-v4-pro"
 llm_client = "primary"
 
+[targets.text]
+id = "text/model"
+llm_client = "primary"
+input_modalities = ["text"]
+
+[targets.multimodal]
+id = "multimodal/model"
+llm_client = "primary"
+input_modalities = ["audio", "image", "text"]
+
+[targets.judge]
+id = "judge/model"
+llm_client = "primary"
+input_modalities = ["text", "file"]
+
 [routes.declared]
 id = "declared"
 type = "passthrough"
@@ -1695,6 +1831,19 @@ reasoning = true
 id = "undeclared"
 type = "passthrough"
 target = "shared"
+
+[routes.multimodal]
+id = "multimodal"
+type = "random"
+targets = ["text", "multimodal"]
+
+[routes.judged]
+id = "judged"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "multimodal"
+weak_target = "text"
+base_threshold = 0.5
 "#;
     let app = build_switchyard_router(load_test_config(CONFIG)?);
     let models = send(&app, "GET", "/v1/models", None).await?;
@@ -1712,6 +1861,18 @@ target = "shared"
     assert_eq!(capabilities["restricted"]["tool_calling"], json!(false));
     assert_eq!(capabilities["undeclared"]["context_window"], json!(null));
     assert_eq!(capabilities["undeclared"]["tool_calling"], json!(null));
+    assert_eq!(
+        capabilities["multimodal"]["input_modalities"],
+        json!(["text", "image", "audio"])
+    );
+    assert_eq!(
+        capabilities["judged"]["input_modalities"],
+        json!(["text", "image", "audio"])
+    );
+    assert_eq!(
+        capabilities["undeclared"]["input_modalities"],
+        json!(["text"])
+    );
 
     let codex_models = body["models"].as_array().cloned().unwrap_or_default();
     let codex_metadata = codex_models
@@ -1720,7 +1881,7 @@ target = "shared"
         .collect::<BTreeMap<_, _>>();
     // This checks the shape the server emits. That Codex 0.144.5 actually decodes it
     // (context_window: null included) is verified by a live Codex run in SWITCH-1225.
-    assert_eq!(codex_metadata.len(), 4);
+    assert_eq!(codex_metadata.len(), 6);
     assert_eq!(
         codex_metadata["declared"]["context_window"],
         json!(1_000_000)
@@ -1737,6 +1898,14 @@ target = "shared"
     assert_eq!(
         codex_metadata["declared"]["input_modalities"],
         json!(["text"])
+    );
+    assert_eq!(
+        codex_metadata["multimodal"]["input_modalities"],
+        json!(["text", "image", "audio"])
+    );
+    assert_eq!(
+        codex_metadata["judged"]["input_modalities"],
+        json!(["text", "image", "audio"])
     );
     assert_eq!(
         codex_metadata["declared"]["truncation_policy"],
@@ -1871,6 +2040,197 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
     let calls = upstream.calls.lock().await;
     assert_eq!(calls.len(), 3);
     assert!(calls.iter().all(|call| call["model"] == "model/a"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_requests_route_only_to_vision_targets_and_preserve_the_image() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+
+[targets.text]
+id = "model/text"
+llm_client = "mock"
+input_modalities = ["text"]
+
+[targets.vision]
+id = "model/vision"
+llm_client = "mock"
+input_modalities = ["text", "image"]
+
+[routes.multimodal]
+id = "switchyard/multimodal"
+type = "random"
+targets = ["text", "vision"]
+weights = [1, 0]
+"#,
+        base_url = upstream.base_url,
+    ))?;
+    let app = build_switchyard_router(state);
+    let cases = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": "switchyard/multimodal",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this"},
+                        {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}
+                    ]
+                }]
+            }),
+        ),
+        (
+            "/v1/responses",
+            json!({
+                "model": "switchyard/multimodal",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "describe this"},
+                        {"type": "input_image", "image_url": {"url": "https://example.test/image.png"}}
+                    ]
+                }]
+            }),
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": "switchyard/multimodal",
+                "max_tokens": 16,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this"},
+                        {"type": "image", "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "AAAA"
+                        }}
+                    ]
+                }]
+            }),
+        ),
+    ];
+
+    for (path, body) in cases {
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::OK, "{path}");
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some("model/vision"),
+            "{path}"
+        );
+    }
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 3);
+    for call in calls.iter() {
+        assert_eq!(call["model"], "model/vision");
+        let retained_image = call["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|message| message["content"].as_array())
+            .flatten()
+            .any(|block| block["type"] == "image_url");
+        assert!(
+            retained_image,
+            "image was removed from upstream call: {call}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsupported_images_return_provider_errors_without_upstream_calls() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+
+[targets.text]
+id = "model/text"
+llm_client = "mock"
+input_modalities = ["text"]
+
+[routes.text]
+id = "switchyard/text"
+type = "passthrough"
+target = "text"
+"#,
+        base_url = upstream.base_url,
+    ))?;
+    let app = build_switchyard_router(state);
+    let cases = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": "switchyard/text",
+                "messages": [{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}
+                ]}]
+            }),
+            false,
+        ),
+        (
+            "/v1/responses",
+            json!({
+                "model": "switchyard/text",
+                "input": [{"type": "message", "role": "user", "content": [
+                    {"type": "input_image", "image_url": {"url": "https://example.test/image.png"}}
+                ]}]
+            }),
+            false,
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": "switchyard/text",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": [{"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": "AAAA"
+                }}]}]
+            }),
+            true,
+        ),
+    ];
+
+    for (path, body, anthropic) in cases {
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{path}");
+        let body = response.json()?;
+        if anthropic {
+            assert_eq!(body["type"], "error");
+            assert_eq!(body["error"]["type"], "invalid_request_error");
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| { message.contains("no compatible targets") })
+            );
+        } else {
+            assert_eq!(body["error"]["type"], "invalid_request_error");
+            assert_eq!(body["error"]["code"], "unsupported_input_modalities");
+        }
+    }
+    assert!(upstream.calls.lock().await.is_empty());
     Ok(())
 }
 

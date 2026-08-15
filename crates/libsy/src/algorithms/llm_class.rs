@@ -26,7 +26,7 @@ use super::util::target_selector::TargetSelectorPolicy;
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
-use crate::{LibsyError, Result};
+use crate::{LibsyError, Result, TargetModalities};
 use switchyard_protocol::{AggLlmResponse, LlmClientError, LlmResponse, Request, Response};
 
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
@@ -581,6 +581,28 @@ impl Classifier<State> for EscalationClassifier {
 
         Ok((decisive(&self.efficient), Some(efficient_response)))
     }
+
+    async fn score_with_eligible_targets(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: Option<&Driver>,
+        eligible_targets: &BTreeSet<ModelId>,
+    ) -> Result<(Classification, Option<Response>)> {
+        // The efficient pre-call is part of classification, so it must not run
+        // when that tier cannot accept the request.
+        if !eligible_targets.contains(&self.efficient) {
+            return Ok((
+                if eligible_targets.contains(&self.capable) {
+                    decisive(&self.capable)
+                } else {
+                    Classification::Ambiguous(Vec::new())
+                },
+                None,
+            ));
+        }
+        self.score(state, request, driver).await
+    }
 }
 
 /// Routes requests through a capability, escalation, or custom classifier mode.
@@ -675,6 +697,12 @@ impl LlmTaskClassifier {
                 config,
             } => Self::build_custom(judge_target, targets, default_target, config),
         }
+    }
+
+    /// Restricts classifier decisions and fallback calls to compatible targets.
+    pub fn with_target_modalities(mut self, target_modalities: TargetModalities) -> Self {
+        self.route = self.route.with_target_modalities(target_modalities);
+        self
     }
 
     fn build_capability(
@@ -920,6 +948,18 @@ impl Classifier<State> for LlmTaskClassifier {
         driver: Option<&Driver>,
     ) -> Result<(Classification, Option<Response>)> {
         self.inner.score(state, request, driver).await
+    }
+
+    async fn score_with_eligible_targets(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: Option<&Driver>,
+        eligible_targets: &BTreeSet<ModelId>,
+    ) -> Result<(Classification, Option<Response>)> {
+        self.inner
+            .score_with_eligible_targets(state, request, driver, eligible_targets)
+            .await
     }
 }
 

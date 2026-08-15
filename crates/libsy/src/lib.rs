@@ -13,6 +13,9 @@ pub use core::state::{State, StateValue};
 mod error;
 pub use error::{DriverError, LibsyError, Result};
 
+mod target_modalities;
+pub use target_modalities::TargetModalities;
+
 mod algorithms;
 pub use algorithms::llm_class::{
     CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,

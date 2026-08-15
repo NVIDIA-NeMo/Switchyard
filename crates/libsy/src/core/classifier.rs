@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::BTreeSet;
+
 use crate::core::algorithm::Driver;
 use crate::{LibsyError, Result};
 use async_trait::async_trait;
@@ -41,6 +43,20 @@ impl Classification {
                     Ok(None)
                 }
             }
+        }
+    }
+
+    /// Removes scores for targets unavailable to the current request.
+    pub(crate) fn retain_eligible(self, eligible_targets: &BTreeSet<ModelId>) -> Self {
+        let retain = |scores: Vec<Score>| {
+            scores
+                .into_iter()
+                .filter(|score| eligible_targets.contains(&score.target))
+                .collect()
+        };
+        match self {
+            Self::Scores(scores) => Self::Scores(retain(scores)),
+            Self::Ambiguous(scores) => Self::Ambiguous(retain(scores)),
         }
     }
 }
@@ -92,6 +108,25 @@ pub trait Classifier<S = ()>: Send + Sync {
         request: &mut Request,
         driver: Option<&Driver>,
     ) -> Result<(Classification, Option<Response>)>;
+
+    /// Scores with the completion targets eligible for this request.
+    ///
+    /// The default delegates to [`score`](Self::score), preserving existing
+    /// classifier implementations. Classifiers whose selection itself has side
+    /// effects, such as weighted sampling or pre-calling a tier, can override
+    /// this hook to avoid work for ineligible targets.
+    async fn score_with_eligible_targets(
+        &self,
+        state: &mut S,
+        request: &mut Request,
+        driver: Option<&Driver>,
+        _eligible_targets: &BTreeSet<ModelId>,
+    ) -> Result<(Classification, Option<Response>)>
+    where
+        S: Send,
+    {
+        self.score(state, request, driver).await
+    }
 }
 
 #[cfg(test)]

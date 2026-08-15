@@ -5,8 +5,12 @@
 
 use std::error::Error as StdError;
 
-use switchyard_protocol::{LlmClientError, ModelId};
+use std::collections::BTreeSet;
+
+use switchyard_protocol::{InputModality, LlmClientError, ModelId};
 use thiserror::Error;
+
+use crate::TargetModalities;
 
 /// Result type returned by libsy APIs.
 pub type Result<T> = std::result::Result<T, LibsyError>;
@@ -24,6 +28,17 @@ pub enum LibsyError {
     /// Routing was attempted without any configured targets.
     #[error("no routing targets are configured")]
     NoTargets,
+
+    /// No completion target accepts every modality present in the request.
+    #[error(
+        "no compatible targets for required input modalities {required_modalities:?}; candidate capabilities: {target_modalities:?}"
+    )]
+    NoCompatibleTargets {
+        /// Modalities required by the normalized request.
+        required_modalities: BTreeSet<InputModality>,
+        /// Declared capability sets for the route's completion targets.
+        target_modalities: TargetModalities,
+    },
 
     /// An algorithm could not complete for an algorithm-specific reason.
     #[error("{message}")]
