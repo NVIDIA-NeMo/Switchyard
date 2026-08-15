@@ -225,14 +225,12 @@ references, and route construction without starting the server.
 
 Check health: `curl http://localhost:4000/health`
 
-**Telemetry header opt-out**
+**Telemetry header**
 
-Switchyard adds an `X-Switchyard-Version` header to outbound LLM calls for
-release attribution. No request or response content is included. To disable:
-
-```bash
-export SWITCHYARD_TELEMETRY_OPT_OUT=1
-```
+Switchyard documents an `X-Switchyard-Version` header for release attribution
+on outbound LLM calls. No request or response content is included. The 0.2.0
+native server does not currently send this header upstream (see
+[Known Issues](known_issues.md)), so no opt-out is required at the moment.
 
 ---
 
