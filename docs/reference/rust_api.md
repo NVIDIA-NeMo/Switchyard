@@ -23,6 +23,14 @@ Applications embedding libsy normally depend on both crates:
 
 ```toml
 [dependencies]
+switchyard-libsy = "0.2.0"
+switchyard-protocol = "0.2.0"
+```
+
+For development against unreleased changes, use the git source instead:
+
+```toml
+[dependencies]
 switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
 switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
 ```
