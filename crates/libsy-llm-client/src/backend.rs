@@ -58,6 +58,8 @@ pub struct HttpBackendConfig {
     pub bridge_custom_tools: bool,
     /// Whether Responses deferred tools are made eagerly available upstream.
     pub eager_load_tool_search: bool,
+    /// Whether OpenAI web-search options are normalized for xAI Responses.
+    pub xai_web_search_compatibility: bool,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
 }
@@ -73,6 +75,10 @@ impl fmt::Debug for HttpBackendConfig {
             .field("reasoning_effort_override", &self.reasoning_effort_override)
             .field("bridge_custom_tools", &self.bridge_custom_tools)
             .field("eager_load_tool_search", &self.eager_load_tool_search)
+            .field(
+                "xai_web_search_compatibility",
+                &self.xai_web_search_compatibility,
+            )
             .field("max_retries", &self.max_retries)
             .finish()
     }
@@ -272,6 +278,11 @@ impl Backend {
         self.config().eager_load_tool_search
     }
 
+    /// Whether Responses web-search definitions need xAI compatibility normalization.
+    pub fn xai_web_search_compatibility(&self) -> bool {
+        self.config().xai_web_search_compatibility
+    }
+
     /// Additional attempts allowed after the initial request.
     pub fn max_retries(&self) -> u32 {
         self.config().max_retries
@@ -370,6 +381,7 @@ mod tests {
             reasoning_effort_override: None,
             bridge_custom_tools: false,
             eager_load_tool_search: false,
+            xai_web_search_compatibility: false,
             max_retries: 0,
         }
     }

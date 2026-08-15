@@ -337,6 +337,8 @@ struct LlmClientConfig {
     bridge_custom_tools: bool,
     #[serde(default)]
     eager_load_tool_search: bool,
+    #[serde(default)]
+    xai_web_search_compatibility: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -953,6 +955,13 @@ fn build_backend(
             "llm client {client_name} eager_load_tool_search requires format openai_responses"
         )));
     }
+    if config.xai_web_search_compatibility
+        && !matches!(config.format, ClientFormat::OpenAiResponses)
+    {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} xai_web_search_compatibility requires format openai_responses"
+        )));
+    }
     let api_key = config
         .api_key_env
         .as_deref()
@@ -995,6 +1004,7 @@ fn build_backend(
         reasoning_effort_override,
         bridge_custom_tools: config.bridge_custom_tools,
         eager_load_tool_search: config.eager_load_tool_search,
+        xai_web_search_compatibility: config.xai_web_search_compatibility,
         max_retries: config.max_retries,
     };
     Ok(match config.format {
@@ -1914,6 +1924,39 @@ target = "azure"
         assert!(
             error_message(&invalid)
                 .contains("eager_load_tool_search requires format openai_responses")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xai_web_search_compatibility_is_explicit_and_format_scoped() -> ServerResult<()> {
+        let configured = VALID_CONFIG.replace(
+            "[llm_clients.responses]\nformat = \"openai_responses\"",
+            "[llm_clients.responses]\nformat = \"openai_responses\"\nxai_web_search_compatibility = true",
+        );
+        let config: ServerConfig = toml::from_str(&configured)
+            .map_err(|error| ServerError::new(format!("failed to parse config: {error}")))?;
+        let Some(target) = config.targets.get("strong") else {
+            return Err(ServerError::new("strong target is missing"));
+        };
+        let Some(client) = config.llm_clients.get("responses") else {
+            return Err(ServerError::new("responses llm client is missing"));
+        };
+        let backend = build_backend(
+            "responses",
+            client,
+            &target.extra_body,
+            target.reasoning_effort_override.as_deref(),
+        )?;
+        assert!(backend.xai_web_search_compatibility());
+
+        let invalid = VALID_CONFIG.replace(
+            "[llm_clients.primary]\nformat = \"openai_chat\"",
+            "[llm_clients.primary]\nformat = \"openai_chat\"\nxai_web_search_compatibility = true",
+        );
+        assert!(
+            error_message(&invalid)
+                .contains("xai_web_search_compatibility requires format openai_responses")
         );
         Ok(())
     }

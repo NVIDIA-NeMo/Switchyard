@@ -49,6 +49,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `bridge_custom_tools` | No | `false` | For an `openai_responses` backend without native custom-tool support, bridge custom definitions and replay items through function tools, then restore custom-tool responses. |
 | `eager_load_tool_search` | No | `false` | For an `openai_responses` backend without native `tool_search`, remove discovery records and expose deferred tools eagerly. |
+| `xai_web_search_compatibility` | No | `false` | Normalize OpenAI Responses `web_search` options to xAI's supported tool schema without enabling externally disabled search. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
@@ -89,9 +90,16 @@ and replay items, strips `defer_loading`, and flattens deferred namespaces so
 the same client tools remain callable immediately. Providers with native tool
 search should leave it disabled. Other client formats reject this setting.
 
+Set `xai_web_search_compatibility = true` for an xAI Responses backend. It keeps
+live `web_search` available while removing OpenAI-only options such as
+`external_web_access`; a definition with `external_web_access = false` is removed
+rather than silently upgraded to live search. Other client formats reject this
+setting.
+
 When a Responses request containing `web_search` is translated to an Anthropic
 backend, Switchyard emits Anthropic's native `web_search_20250305` server tool.
-Responses and OpenAI-compatible backends retain their original tool shape.
+Other Responses backends retain their original tool shape unless the xAI
+compatibility setting is enabled.
 
 ## `[targets.<name>]`
 

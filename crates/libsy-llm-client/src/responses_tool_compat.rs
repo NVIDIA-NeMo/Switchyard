@@ -122,6 +122,70 @@ fn strip_defer_loading(value: &mut Value) {
     }
 }
 
+/// Normalizes OpenAI's Responses web-search descriptor for xAI-compatible backends.
+///
+/// Codex annotates `web_search` with OpenAI-only controls such as
+/// `external_web_access` and `search_content_types`. xAI exposes the same hosted tool,
+/// but rejects those fields. A false external-access flag removes the tool instead of
+/// accidentally upgrading a disabled/cached request to live search.
+pub(crate) fn normalize_xai_responses_web_search(body: &mut Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let Some(tools) = object.get_mut("tools").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    let mut normalized = Vec::with_capacity(tools.len());
+    for tool in std::mem::take(tools) {
+        if !matches!(
+            tool.get("type").and_then(Value::as_str),
+            Some("web_search" | "web_search_preview")
+        ) {
+            normalized.push(tool);
+            continue;
+        }
+        if tool.get("external_web_access").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+
+        let mut search =
+            Map::from_iter([("type".to_string(), Value::String("web_search".to_string()))]);
+        if let Some(filters) = normalize_xai_search_filters(&tool) {
+            search.insert("filters".to_string(), filters);
+        }
+        copy_search_field(
+            &tool,
+            &mut search,
+            "enable_image_understanding",
+            "enable_image_understanding",
+        );
+        copy_search_field(
+            &tool,
+            &mut search,
+            "enable_image_search",
+            "enable_image_search",
+        );
+        normalized.push(Value::Object(search));
+    }
+
+    if normalized.is_empty() {
+        object.remove("tools");
+        object.remove("tool_choice");
+    } else {
+        *object.get_mut("tools").expect("tools exists") = Value::Array(normalized);
+    }
+}
+
+fn normalize_xai_search_filters(tool: &Value) -> Option<Value> {
+    let source = tool.get("filters").unwrap_or(tool);
+    let mut filters = Map::new();
+    copy_search_field(source, &mut filters, "allowed_domains", "allowed_domains");
+    copy_search_field(source, &mut filters, "excluded_domains", "excluded_domains");
+    copy_search_field(source, &mut filters, "blocked_domains", "excluded_domains");
+    (!filters.is_empty()).then_some(Value::Object(filters))
+}
+
 /// Returns the first Responses web-search definition preserved on the inbound request.
 pub(crate) fn responses_web_search_tool(request: &LlmRequest) -> Option<Value> {
     let format = WireFormat::OpenAiResponses.into();
@@ -298,5 +362,48 @@ mod tests {
         assert_eq!(body["tools"][0]["name"], "web_search");
         assert_eq!(body["tools"][0]["allowed_domains"], json!(["example.com"]));
         assert_eq!(body["tools"][0]["user_location"]["country"], "US");
+    }
+
+    #[test]
+    fn xai_web_search_drops_openai_only_options_but_stays_live() {
+        let mut body = json!({
+            "tools": [
+                {
+                    "type": "web_search",
+                    "external_web_access": true,
+                    "search_content_types": ["text", "image"],
+                    "search_context_size": "high",
+                    "user_location": {"type": "approximate", "country": "US"},
+                    "filters": {"allowed_domains": ["example.com"]}
+                },
+                {"type": "function", "name": "echo", "parameters": {"type": "object"}}
+            ],
+            "tool_choice": "auto"
+        });
+
+        normalize_xai_responses_web_search(&mut body);
+
+        assert_eq!(
+            body["tools"][0],
+            json!({
+                "type": "web_search",
+                "filters": {"allowed_domains": ["example.com"]}
+            })
+        );
+        assert_eq!(body["tools"][1]["name"], "echo");
+        assert_eq!(body["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn xai_web_search_does_not_enable_disabled_external_access() {
+        let mut body = json!({
+            "tools": [{"type": "web_search", "external_web_access": false}],
+            "tool_choice": "auto"
+        });
+
+        normalize_xai_responses_web_search(&mut body);
+
+        assert_eq!(body.get("tools"), None);
+        assert_eq!(body.get("tool_choice"), None);
     }
 }

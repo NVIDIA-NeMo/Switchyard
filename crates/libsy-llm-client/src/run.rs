@@ -577,6 +577,7 @@ mod tests {
                 reasoning_effort_override: None,
                 bridge_custom_tools: false,
                 eager_load_tool_search: false,
+                xai_web_search_compatibility: false,
                 max_retries: 2,
             })
         };
