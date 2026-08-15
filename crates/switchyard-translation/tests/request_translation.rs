@@ -54,6 +54,49 @@ fn openai_request_media_blocks_are_typed_for_modality_routing() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn responses_function_call_output_media_is_typed_for_modality_routing() -> TestResult {
+    let engine = TranslationEngine::default();
+    let responses = engine.decode_request(
+        WireFormat::OpenAiResponses,
+        &json!({
+            "model": "gpt",
+            "input": [
+                {
+                    "role": "user",
+                    "content": "Inspect the current desk state."
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_view_image",
+                    "name": "view_image",
+                    "arguments": "{\"path\":\"/tmp/desk.png\"}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_view_image",
+                    "output": [
+                        {"type": "input_text", "text": "Local image render"},
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,iVBORw0KGgo="
+                        }
+                    ]
+                }
+            ]
+        }),
+        &TranslationPolicy::default(),
+    )?;
+
+    assert_eq!(
+        responses.request.input_modalities(),
+        [InputModality::Text, InputModality::Image]
+            .into_iter()
+            .collect()
+    );
+    Ok(())
+}
+
 // Verifies Anthropic-only request fields are dropped or mapped for OpenAI Chat.
 #[test]
 fn anthropic_request_translates_to_openai_chat_without_anthropic_only_fields() -> TestResult {

@@ -423,10 +423,18 @@ fn decode_responses_input(
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string();
-                        let output_text = item.get("output").map(json_string).unwrap_or_default();
+                        let content = match item.get("output") {
+                            Some(output @ Value::Array(_)) => decode_responses_content(output),
+                            Some(output) => vec![ContentBlock::Text {
+                                text: json_string(output),
+                            }],
+                            None => vec![ContentBlock::Text {
+                                text: String::new(),
+                            }],
+                        };
                         pending_tool_outputs.push(ToolResult {
                             tool_call_id,
-                            content: vec![ContentBlock::Text { text: output_text }],
+                            content,
                             is_error: None,
                         });
                     }
