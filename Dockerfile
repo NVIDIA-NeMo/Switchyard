@@ -1,23 +1,31 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Build the standalone switchyard-server binary against the workspace lockfile.
-FROM rust:1.96.1-bookworm AS builder
-WORKDIR /app
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY .cargo/ .cargo/
-COPY crates/ crates/
-RUN cargo build --release --locked --package switchyard-server
+# Keep RUST_VERSION in sync with rust-toolchain.toml.
+ARG RUST_VERSION=1.96.1
+FROM rust:${RUST_VERSION}-bookworm AS builder
 
-# Runtime image: binary only, runs unprivileged. Mount a TOML deployment at
-# /etc/switchyard/config.toml and pass provider API keys as env vars.
+WORKDIR /opt/switchyard
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+# .cargo/config.toml carries the workspace rustflags (target-cpu, force-frame-pointers).
+COPY .cargo ./.cargo
+COPY crates ./crates
+
+RUN cargo build --locked --release -p switchyard-server
+
 FROM debian:bookworm-slim
+
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 switchyard
-COPY --from=builder /app/target/release/switchyard-server /usr/local/bin/switchyard-server
-USER switchyard
+    && apt-get install --no-install-recommends -y ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder \
+    /opt/switchyard/target/release/switchyard-server \
+    /usr/local/bin/switchyard-server
+
+ENV HOME=/tmp
+
+USER 1000:1000
 EXPOSE 4000
+
 ENTRYPOINT ["switchyard-server"]
-CMD ["--config", "/etc/switchyard/config.toml"]

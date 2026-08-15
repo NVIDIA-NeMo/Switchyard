@@ -291,7 +291,7 @@ and while the Rust server is still reachable; otherwise the manifest records the
 ## Docker Image Notes
 
 Baseline runs build `switchyard-baseline:local` from
-`benchmark/switchyard-rust-server.Dockerfile`.
+the repository-root `Dockerfile`.
 The default is to rebuild before each run so the container matches the current checkout.
 
 To reuse an already built image:
