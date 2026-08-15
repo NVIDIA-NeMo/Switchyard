@@ -194,6 +194,7 @@ mod tests {
 
     #[test]
     fn recognizes_provider_terminal_events() {
+        // Each source format requires its own protocol-specific terminal event.
         assert!(is_terminal_event(
             WireFormat::OpenAiChat,
             &json!({"choices": [{"finish_reason": "stop"}]})
