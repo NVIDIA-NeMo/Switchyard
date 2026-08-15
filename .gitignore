@@ -130,6 +130,10 @@ benchmark/perf/results/*
 !benchmark/perf/results/.gitkeep
 benchmark/perf/example_report.md
 
+# Perf benchmark output (.github/workflows/perf.yml)
+perf-results/
+perf-input.jsonl
+
 # Terminal-Bench classifier run artifacts (server/harbor logs, agent
 # trajectories, asciinema recordings — re-generated per run)
 benchmark/tb_runs/
