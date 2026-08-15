@@ -217,7 +217,7 @@ impl TranslatingLlmClient {
             strip_unsigned_thinking_blocks(&mut body);
         }
         if matches!(backend, Backend::OpenAiResponses(_)) {
-            strip_openai_responses_replay_status(&mut body);
+            sanitize_openai_responses_replay_items(&mut body);
         }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
@@ -691,10 +691,10 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
     }
 }
 
-// Drops response-only status metadata that coding agents replay as Responses input.
-// OpenAI rejects `status` on replayed assistant messages and reasoning items even
-// though those fields are present on the corresponding response objects.
-fn strip_openai_responses_replay_status(body: &mut Value) {
+// Normalizes response items that coding agents replay as Responses input.
+// OpenAI rejects response-only `status` metadata and requires replayed reasoning
+// `content` to be empty, including plaintext reasoning emitted by other providers.
+fn sanitize_openai_responses_replay_items(body: &mut Value) {
     let Some(Value::Array(input)) = body.get_mut("input") else {
         return;
     };
@@ -702,11 +702,17 @@ fn strip_openai_responses_replay_status(body: &mut Value) {
         let Value::Object(item) = item else {
             continue;
         };
-        if matches!(
-            item.get("type").and_then(Value::as_str),
-            Some("message" | "reasoning")
-        ) {
-            item.remove("status");
+        match item.get("type").and_then(Value::as_str) {
+            Some("message") => {
+                item.remove("status");
+            }
+            Some("reasoning") => {
+                item.remove("status");
+                if item.contains_key("content") {
+                    item.insert("content".to_string(), Value::Array(Vec::new()));
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1135,7 +1141,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn responses_backend_strips_pi_replay_status_before_sending()
+    async fn responses_backend_sanitizes_replayed_response_fields_before_sending()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1165,7 +1171,12 @@ mod tests {
                     "type": "reasoning",
                     "id": "rs_1",
                     "status": "completed",
-                    "summary": []
+                    "content": [{
+                        "type": "reasoning_text",
+                        "text": "private provider reasoning"
+                    }],
+                    "summary": [],
+                    "encrypted_content": "opaque"
                 },
                 {
                     "type": "message",
@@ -1194,7 +1205,13 @@ mod tests {
         let forwarded: Value = serde_json::from_slice(&requests[0].body)?;
         assert_eq!(forwarded["model"], "gpt");
         assert_eq!(forwarded["input"][1].get("status"), None);
+        assert_eq!(forwarded["input"][1]["content"], json!([]));
+        assert_eq!(forwarded["input"][1]["encrypted_content"], "opaque");
         assert_eq!(forwarded["input"][2].get("status"), None);
+        assert_eq!(
+            forwarded["input"][2]["content"],
+            json!([{"type": "output_text", "text": "working"}])
+        );
         Ok(())
     }
 
