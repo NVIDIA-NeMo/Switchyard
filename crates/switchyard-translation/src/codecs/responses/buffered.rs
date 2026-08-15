@@ -327,7 +327,14 @@ fn decode_responses_input(
                     )?;
                     continue;
                 };
-                match item.get("type").and_then(Value::as_str) {
+                // Responses input messages may omit their otherwise constant `type`.
+                let item_type = match item.get("type") {
+                    None if item.contains_key("role") && item.contains_key("content") => {
+                        Some("message")
+                    }
+                    value => value.and_then(Value::as_str),
+                };
+                match item_type {
                     Some("message") => {
                         let role = request_role_from_responses(
                             item.get("role").and_then(Value::as_str),

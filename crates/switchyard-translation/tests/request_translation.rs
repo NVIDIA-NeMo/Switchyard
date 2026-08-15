@@ -38,7 +38,6 @@ fn openai_request_media_blocks_are_typed_for_modality_routing() -> TestResult {
         &json!({
             "model": "gpt",
             "input": [{
-                "type": "message",
                 "role": "user",
                 "content": [{
                     "type": "input_video",
