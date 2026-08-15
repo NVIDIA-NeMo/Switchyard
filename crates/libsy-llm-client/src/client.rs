@@ -216,6 +216,9 @@ impl TranslatingLlmClient {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
         }
+        if matches!(backend, Backend::OpenAiResponses(_)) {
+            strip_openai_responses_replay_status(&mut body);
+        }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
             enable_anthropic_prompt_caching(&mut body);
@@ -688,6 +691,26 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
     }
 }
 
+// Drops response-only status metadata that coding agents replay as Responses input.
+// OpenAI rejects `status` on replayed assistant messages and reasoning items even
+// though those fields are present on the corresponding response objects.
+fn strip_openai_responses_replay_status(body: &mut Value) {
+    let Some(Value::Array(input)) = body.get_mut("input") else {
+        return;
+    };
+    for item in input {
+        let Value::Object(item) = item else {
+            continue;
+        };
+        if matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("message" | "reasoning")
+        ) {
+            item.remove("status");
+        }
+    }
+}
+
 // Removes replayed `thinking` blocks that carry no signature.
 //
 // Anthropic requires signed thinking blocks on replay. A router can serve earlier
@@ -865,6 +888,14 @@ mod tests {
         vec![ModelConfig::new(
             "claude",
             Backend::Anthropic(config(base_url)),
+            None,
+        )]
+    }
+
+    fn responses_map(base_url: &str) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(config(base_url)),
             None,
         )]
     }
@@ -1100,6 +1131,70 @@ mod tests {
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hi there");
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_backend_strips_pi_replay_status_before_sending()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "gpt",
+                "status": "completed",
+                "output": [{
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&responses_map(&format!("{}/v1", server.uri())))?;
+        let body = json!({
+            "model": "ctm-auto",
+            "input": [
+                {"type": "message", "role": "user", "content": "start"},
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "status": "completed",
+                    "summary": []
+                },
+                {
+                    "type": "message",
+                    "id": "msg_pi_0",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "working"}]
+                },
+                {"type": "message", "role": "user", "content": "continue"}
+            ]
+        });
+
+        client
+            .call_rewrite_model_raw(
+                body,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?;
+
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let forwarded: Value = serde_json::from_slice(&requests[0].body)?;
+        assert_eq!(forwarded["model"], "gpt");
+        assert_eq!(forwarded["input"][1].get("status"), None);
+        assert_eq!(forwarded["input"][2].get("status"), None);
         Ok(())
     }
 
