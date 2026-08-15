@@ -335,6 +335,8 @@ struct LlmClientConfig {
     max_retries: u32,
     #[serde(default)]
     bridge_custom_tools: bool,
+    #[serde(default)]
+    eager_load_tool_search: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -446,6 +448,8 @@ enum RouteConfig {
         tool_calling: Option<bool>,
         #[serde(default)]
         reasoning: Option<bool>,
+        #[serde(default)]
+        web_search: Option<bool>,
     },
     Random {
         id: ModelId,
@@ -455,6 +459,8 @@ enum RouteConfig {
         tool_calling: Option<bool>,
         #[serde(default)]
         reasoning: Option<bool>,
+        #[serde(default)]
+        web_search: Option<bool>,
         targets: Vec<String>,
         weights: Option<Vec<f64>>,
         seed: Option<u64>,
@@ -467,6 +473,8 @@ enum RouteConfig {
         tool_calling: Option<bool>,
         #[serde(default)]
         reasoning: Option<bool>,
+        #[serde(default)]
+        web_search: Option<bool>,
         target: String,
     },
     LlmClassifier {
@@ -477,6 +485,8 @@ enum RouteConfig {
         tool_calling: Option<bool>,
         #[serde(default)]
         reasoning: Option<bool>,
+        #[serde(default)]
+        web_search: Option<bool>,
         #[serde(default = "enabled_by_default")]
         target_failover: bool,
         classifier_target: String,
@@ -523,6 +533,8 @@ enum RouteConfig {
         tool_calling: Option<bool>,
         #[serde(default)]
         reasoning: Option<bool>,
+        #[serde(default)]
+        web_search: Option<bool>,
         capable_target: String,
         efficient_target: String,
         /// Tier a turn falls back to when the signals are not confident.
@@ -664,35 +676,41 @@ impl RouteConfig {
                 context_window,
                 tool_calling,
                 reasoning,
+                web_search,
                 ..
             }
             | Random {
                 context_window,
                 tool_calling,
                 reasoning,
+                web_search,
                 ..
             }
             | Passthrough {
                 context_window,
                 tool_calling,
                 reasoning,
+                web_search,
                 ..
             }
             | LlmClassifier {
                 context_window,
                 tool_calling,
                 reasoning,
+                web_search,
                 ..
             }
             | StageRouter {
                 context_window,
                 tool_calling,
                 reasoning,
+                web_search,
                 ..
             } => ModelCapabilities {
                 context_window: *context_window,
                 tool_calling: *tool_calling,
                 reasoning: *reasoning,
+                web_search: *web_search,
                 input_modalities,
             },
         }
@@ -930,6 +948,11 @@ fn build_backend(
             "llm client {client_name} bridge_custom_tools requires format openai_responses"
         )));
     }
+    if config.eager_load_tool_search && !matches!(config.format, ClientFormat::OpenAiResponses) {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} eager_load_tool_search requires format openai_responses"
+        )));
+    }
     let api_key = config
         .api_key_env
         .as_deref()
@@ -971,6 +994,7 @@ fn build_backend(
         extra_body: extra_body.clone(),
         reasoning_effort_override,
         bridge_custom_tools: config.bridge_custom_tools,
+        eager_load_tool_search: config.eager_load_tool_search,
         max_retries: config.max_retries,
     };
     Ok(match config.format {
@@ -1857,6 +1881,39 @@ target = "azure"
         assert!(
             error_message(&invalid)
                 .contains("bridge_custom_tools requires format openai_responses")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn responses_tool_search_eager_loading_is_explicit_and_format_scoped() -> ServerResult<()> {
+        let configured = VALID_CONFIG.replace(
+            "[llm_clients.responses]\nformat = \"openai_responses\"",
+            "[llm_clients.responses]\nformat = \"openai_responses\"\neager_load_tool_search = true",
+        );
+        let config: ServerConfig = toml::from_str(&configured)
+            .map_err(|error| ServerError::new(format!("failed to parse config: {error}")))?;
+        let Some(target) = config.targets.get("strong") else {
+            return Err(ServerError::new("strong target is missing"));
+        };
+        let Some(client) = config.llm_clients.get("responses") else {
+            return Err(ServerError::new("responses llm client is missing"));
+        };
+        let backend = build_backend(
+            "responses",
+            client,
+            &target.extra_body,
+            target.reasoning_effort_override.as_deref(),
+        )?;
+        assert!(backend.eager_load_tool_search());
+
+        let invalid = VALID_CONFIG.replace(
+            "[llm_clients.primary]\nformat = \"openai_chat\"",
+            "[llm_clients.primary]\nformat = \"openai_chat\"\neager_load_tool_search = true",
+        );
+        assert!(
+            error_message(&invalid)
+                .contains("eager_load_tool_search requires format openai_responses")
         );
         Ok(())
     }

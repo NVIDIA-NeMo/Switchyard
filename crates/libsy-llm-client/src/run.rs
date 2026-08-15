@@ -576,6 +576,7 @@ mod tests {
                 extra_body: BTreeMap::new(),
                 reasoning_effort_override: None,
                 bridge_custom_tools: false,
+                eager_load_tool_search: false,
                 max_retries: 2,
             })
         };

@@ -100,6 +100,8 @@ struct ModelCapabilities {
     // this, so a route opts in via config; undeclared routes advertise as
     // non-reasoning to Codex (fail closed).
     reasoning: Option<bool>,
+    // Whether the route can execute provider-hosted or translated web search.
+    web_search: Option<bool>,
     // Always populated. Routes without target declarations use text as the
     // safe discovery default.
     input_modalities: Vec<InputModality>,
@@ -111,6 +113,7 @@ impl Default for ModelCapabilities {
             context_window: None,
             tool_calling: None,
             reasoning: None,
+            web_search: None,
             input_modalities: vec![InputModality::Text],
         }
     }
@@ -1201,6 +1204,7 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
         "capabilities": {
             "streaming": true,
             "tool_calling": capabilities.tool_calling,
+            "web_search": capabilities.web_search,
             "context_window": capabilities.context_window,
             "input_modalities": capabilities.input_modalities,
             "supported_inbound_formats": [
@@ -1268,7 +1272,7 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         "effective_context_window_percent": 95,
         "experimental_supported_tools": [],
         "input_modalities": capabilities.input_modalities,
-        "supports_search_tool": false,
+        "supports_search_tool": capabilities.web_search.unwrap_or(false),
     })
 }
 

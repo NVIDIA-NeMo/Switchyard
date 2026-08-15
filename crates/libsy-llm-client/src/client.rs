@@ -29,6 +29,10 @@ use crate::responses_custom_tool_bridge::{
     bridge_responses_custom_tool_request, bridge_responses_custom_tool_response,
     bridge_responses_custom_tool_stream, responses_custom_tool_names,
 };
+use crate::responses_tool_compat::{
+    bridge_responses_web_search_to_anthropic, eager_load_responses_tool_search,
+    responses_web_search_tool,
+};
 
 // Headers this client owns or that are hop-by-hop. Backends apply an explicitly
 // enabled caller credential after generic metadata forwarding skips these.
@@ -208,6 +212,9 @@ impl TranslatingLlmClient {
         model: &ModelId,
         endpoint: UpstreamEndpoint,
     ) -> Result<EncodedResponse> {
+        let responses_web_search = matches!(backend, Backend::Anthropic(_))
+            .then(|| responses_web_search_tool(&llm_request))
+            .flatten();
         let mut body = encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
@@ -226,9 +233,15 @@ impl TranslatingLlmClient {
         if matches!(backend, Backend::Anthropic(_)) {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
+            if let Some(tool) = &responses_web_search {
+                bridge_responses_web_search_to_anthropic(&mut body, tool);
+            }
         }
         if matches!(backend, Backend::OpenAiResponses(_)) {
             sanitize_openai_responses_replay_items(&mut body);
+            if backend.eager_load_tool_search() {
+                eager_load_responses_tool_search(&mut body);
+            }
             if backend.bridge_custom_tools() {
                 bridge_responses_custom_tool_request(&mut body);
             }
@@ -953,6 +966,7 @@ mod tests {
             extra_body: BTreeMap::new(),
             reasoning_effort_override: None,
             bridge_custom_tools: false,
+            eager_load_tool_search: false,
             max_retries: 0,
         }
     }
@@ -1001,6 +1015,17 @@ mod tests {
     fn responses_map_with_custom_tool_bridge(base_url: &str) -> Vec<ModelConfig> {
         let mut backend = config(base_url);
         backend.bridge_custom_tools = true;
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(backend),
+            None,
+        )]
+    }
+
+    fn responses_map_with_tool_compat(base_url: &str) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.bridge_custom_tools = true;
+        backend.eager_load_tool_search = true;
         vec![ModelConfig::new(
             "gpt",
             Backend::OpenAiResponses(backend),
@@ -1469,6 +1494,178 @@ mod tests {
         assert_eq!(body["output"][0]["type"], "custom_tool_call");
         assert_eq!(body["output"][0]["input"], "*** Begin Patch\n*** End Patch");
         assert_eq!(body["model"], "gpt");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_tool_search_bridge_eagerly_exposes_deferred_tools()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "gpt",
+                "status": "completed",
+                "output": [{
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&responses_map_with_tool_compat(&format!(
+            "{}/v1",
+            server.uri()
+        )))?;
+        let raw = json!({
+            "model": "ctm-auto",
+            "input": [
+                {"role": "user", "content": "Continue."},
+                {
+                    "type": "tool_search_call",
+                    "execution": "client",
+                    "call_id": "search_1",
+                    "status": "completed",
+                    "arguments": {"goal": "Find an editing tool."}
+                },
+                {
+                    "type": "tool_search_output",
+                    "execution": "client",
+                    "call_id": "search_1",
+                    "status": "completed",
+                    "tools": [{
+                        "type": "function",
+                        "name": "write_file",
+                        "defer_loading": true,
+                        "parameters": {"type": "object"}
+                    }]
+                }
+            ],
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "repo",
+                    "tools": [{
+                        "type": "function",
+                        "name": "read_file",
+                        "defer_loading": true,
+                        "parameters": {"type": "object"}
+                    }]
+                },
+                {
+                    "type": "custom",
+                    "name": "apply_patch",
+                    "description": "Edit files",
+                    "defer_loading": true,
+                    "format": {"type": "grammar", "syntax": "regex", "definition": ".+"}
+                },
+                {"type": "web_search"},
+                {"type": "tool_search"}
+            ]
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?;
+
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let forwarded: Value = serde_json::from_slice(&requests[0].body)?;
+        let tools = forwarded["tools"]
+            .as_array()
+            .ok_or("forwarded tools should be an array")?;
+        assert!(tools.iter().all(|tool| {
+            !matches!(
+                tool.get("type").and_then(Value::as_str),
+                Some("namespace" | "tool_search")
+            ) && tool.get("defer_loading").is_none()
+        }));
+        assert!(tools.iter().any(|tool| {
+            tool.get("type").and_then(Value::as_str) == Some("function")
+                && tool.get("name").and_then(Value::as_str) == Some("apply_patch")
+        }));
+        assert!(
+            tools
+                .iter()
+                .any(|tool| { tool.get("type").and_then(Value::as_str) == Some("web_search") })
+        );
+        assert!(forwarded["input"].as_array().is_some_and(|input| {
+            input.iter().all(|item| {
+                !matches!(
+                    item.get("type").and_then(Value::as_str),
+                    Some("tool_search_call" | "tool_search_output")
+                )
+            })
+        }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_web_search_translates_to_anthropic_server_tool()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "searched"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&anthropic_map(&server.uri()))?;
+        let raw = json!({
+            "model": "ctm-auto",
+            "input": "Search current sources.",
+            "tools": [{
+                "type": "web_search",
+                "filters": {"allowed_domains": ["example.com"]},
+                "user_location": {"type": "approximate", "country": "US"}
+            }]
+        });
+
+        let RawResponse::Buffered(body) = client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("claude")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?
+        else {
+            panic!("expected a buffered response");
+        };
+
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let forwarded: Value = serde_json::from_slice(&requests[0].body)?;
+        assert_eq!(forwarded["tools"][0]["type"], "web_search_20250305");
+        assert_eq!(forwarded["tools"][0]["name"], "web_search");
+        assert_eq!(
+            forwarded["tools"][0]["allowed_domains"],
+            json!(["example.com"])
+        );
+        assert_eq!(forwarded["tools"][0]["user_location"]["country"], "US");
+        assert_eq!(body["output"][0]["content"][0]["text"], "searched");
         Ok(())
     }
 

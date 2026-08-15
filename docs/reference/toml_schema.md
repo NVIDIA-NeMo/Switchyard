@@ -48,6 +48,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `forward_auth` | No | `false` | Forward the caller's provider credential to this upstream. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `bridge_custom_tools` | No | `false` | For an `openai_responses` backend without native custom-tool support, bridge custom definitions and replay items through function tools, then restore custom-tool responses. |
+| `eager_load_tool_search` | No | `false` | For an `openai_responses` backend without native `tool_search`, remove discovery records and expose deferred tools eagerly. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
@@ -81,6 +82,16 @@ Set `bridge_custom_tools = true` only for a Responses-compatible provider that
 accepts function tools but rejects `type = "custom"`. Native custom-tool
 providers should leave it disabled so grammar-constrained tools pass through
 unchanged. Other client formats reject this setting.
+
+Set `eager_load_tool_search = true` only for a Responses-compatible provider
+that rejects `type = "tool_search"`. Switchyard removes the discovery-only tool
+and replay items, strips `defer_loading`, and flattens deferred namespaces so
+the same client tools remain callable immediately. Providers with native tool
+search should leave it disabled. Other client formats reject this setting.
+
+When a Responses request containing `web_search` is translated to an Anthropic
+backend, Switchyard emits Anthropic's native `web_search_20250305` server tool.
+Responses and OpenAI-compatible backends retain their original tool shape.
 
 ## `[targets.<name>]`
 
@@ -128,6 +139,7 @@ Every route takes the common keys below, plus the keys for its type.
 | `context_window` | No | unset | Positive token count advertised for this route by `GET /v1/models`. Unset values appear as `null`. This does not enforce a request limit. |
 | `tool_calling` | No | unset | Whether `GET /v1/models` advertises tool-calling support for this route. Unset values appear as `null`. |
 | `reasoning` | No | unset | Whether `GET /v1/models` advertises reasoning support to Codex direct-provider discovery. Unset routes are advertised as non-reasoning. |
+| `web_search` | No | unset | Whether `GET /v1/models` advertises provider-hosted or translated web-search support. Unset routes are advertised to Codex with search disabled. |
 
 ### `noop`
 

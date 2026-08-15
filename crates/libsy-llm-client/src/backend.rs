@@ -56,6 +56,8 @@ pub struct HttpBackendConfig {
     pub reasoning_effort_override: Option<String>,
     /// Whether Responses custom tools are bridged through upstream function tools.
     pub bridge_custom_tools: bool,
+    /// Whether Responses deferred tools are made eagerly available upstream.
+    pub eager_load_tool_search: bool,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
 }
@@ -70,6 +72,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("extra_body_keys", &self.extra_body.keys())
             .field("reasoning_effort_override", &self.reasoning_effort_override)
             .field("bridge_custom_tools", &self.bridge_custom_tools)
+            .field("eager_load_tool_search", &self.eager_load_tool_search)
             .field("max_retries", &self.max_retries)
             .finish()
     }
@@ -264,6 +267,11 @@ impl Backend {
         self.config().bridge_custom_tools
     }
 
+    /// Whether Responses tool discovery must be converted to eager definitions upstream.
+    pub fn eager_load_tool_search(&self) -> bool {
+        self.config().eager_load_tool_search
+    }
+
     /// Additional attempts allowed after the initial request.
     pub fn max_retries(&self) -> u32 {
         self.config().max_retries
@@ -361,6 +369,7 @@ mod tests {
             extra_body: BTreeMap::new(),
             reasoning_effort_override: None,
             bridge_custom_tools: false,
+            eager_load_tool_search: false,
             max_retries: 0,
         }
     }

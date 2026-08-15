@@ -24,6 +24,7 @@ mod observability;
 mod observation;
 pub mod raw;
 mod responses_custom_tool_bridge;
+mod responses_tool_compat;
 pub mod run;
 
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};

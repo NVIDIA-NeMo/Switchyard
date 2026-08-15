@@ -345,6 +345,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
         extra_body: BTreeMap::new(),
         reasoning_effort_override: None,
         bridge_custom_tools: false,
+        eager_load_tool_search: false,
         max_retries: 0,
     });
     let target_models = routes
@@ -1947,6 +1948,7 @@ type = "passthrough"
 target = "shared"
 context_window = 1000000
 tool_calling = true
+web_search = true
 
 [routes.restricted]
 id = "restricted"
@@ -1991,10 +1993,12 @@ base_threshold = 0.5
 
     assert_eq!(capabilities["declared"]["context_window"], json!(1_000_000));
     assert_eq!(capabilities["declared"]["tool_calling"], json!(true));
+    assert_eq!(capabilities["declared"]["web_search"], json!(true));
     assert_eq!(capabilities["restricted"]["context_window"], json!(262_000));
     assert_eq!(capabilities["restricted"]["tool_calling"], json!(false));
     assert_eq!(capabilities["undeclared"]["context_window"], json!(null));
     assert_eq!(capabilities["undeclared"]["tool_calling"], json!(null));
+    assert_eq!(capabilities["undeclared"]["web_search"], json!(null));
     assert_eq!(
         capabilities["multimodal"]["input_modalities"],
         json!(["text", "image", "audio"])
@@ -2029,6 +2033,14 @@ base_threshold = 0.5
     assert_eq!(codex_metadata["declared"]["visibility"], "list");
     assert_eq!(codex_metadata["declared"]["supported_in_api"], json!(true));
     assert_eq!(codex_metadata["declared"]["web_search_tool_type"], "text");
+    assert_eq!(
+        codex_metadata["declared"]["supports_search_tool"],
+        json!(true)
+    );
+    assert_eq!(
+        codex_metadata["undeclared"]["supports_search_tool"],
+        json!(false)
+    );
     assert_eq!(
         codex_metadata["declared"]["input_modalities"],
         json!(["text"])
