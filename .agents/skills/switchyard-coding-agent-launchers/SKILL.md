@@ -1,6 +1,6 @@
 ---
 name: switchyard-coding-agent-launchers
-description: Modify or debug Switchyard's Claude Code, Codex CLI, or OpenClaw launchers. Use for changes under switchyard/cli/launchers, launch_command.py, launcher configuration, temporary agent workspaces, model catalogs, or launcher smoke tests.
+description: Modify or debug Switchyard's Claude Code, Codex CLI, OpenClaw, OpenCode, or Hermes launchers. Use for changes under switchyard/cli/launchers, launch_command.py, launcher configuration, temporary agent workspaces, model catalogs, or launcher smoke tests.
 ---
 
 # Coding-Agent Launchers
@@ -14,6 +14,10 @@ often, while the process-specific contracts below are stable.
 - Claude Code is configured through Anthropic environment variables.
 - Codex receives a temporary provider and model catalog through CLI configuration.
 - OpenClaw receives a temporary state directory and `openclaw.json`.
+- OpenCode receives a temporary config directory (`OPENCODE_CONFIG_DIR`) with an
+  `@ai-sdk/openai-compatible` provider pointing at the local proxy.
+- Hermes is configured through `OPENROUTER_BASE_URL` + `OPENROUTER_API_KEY`
+  environment overrides with `--provider custom -m <route>`; no user config is touched.
 - Temporary files, environment changes, and child processes must be cleaned up on success, error,
   and interruption.
 - Secrets may be passed to child processes but must not be logged, persisted in committed files, or
@@ -45,4 +49,4 @@ authentication, or protocol difference.
 - Building a separate routing stack inside a launcher.
 - Importing server or provider dependencies at module import time.
 - Leaving temporary catalogs, config files, or modified environment variables behind.
-- Assuming the three external agents accept the same configuration mechanism.
+- Assuming the supported external agents accept the same configuration mechanism.

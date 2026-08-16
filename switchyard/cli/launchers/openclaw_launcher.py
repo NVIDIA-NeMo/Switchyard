@@ -152,8 +152,15 @@ def _openclaw_env(workspace: str) -> dict[str, str]:
 
 
 def _openclaw_command(openclaw_bin: str, openclaw_args: list[str]) -> list[str]:
-    """Build the OpenClaw interactive command."""
-    return [openclaw_bin, "chat", *openclaw_args]
+    """Build the OpenClaw command.
+
+    The model is selected through the transient config, so the user's own
+    command (``run``, ``chat``, ``config``, ...) and flags are passed through
+    verbatim. With nothing forwarded, default to interactive ``chat``.
+    """
+    if openclaw_args:
+        return [openclaw_bin, *openclaw_args]
+    return [openclaw_bin, "chat"]
 
 
 def _supervise_openclaw(

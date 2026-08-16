@@ -162,7 +162,7 @@ switchyard/
 │   ├── switchyard_cli.py           # `switchyard` entry point
 │   ├── launch_command.py           # `switchyard launch`
 │   ├── defaults/                   # packaged OpenRouter TOML deployment
-│   └── launchers/                  # Claude, Codex, and OpenClaw launchers
+│   └── launchers/                  # Claude, Codex, OpenClaw, OpenCode, and Hermes launchers
 └── libsy/                          # typed Python wrappers for libsy algorithms
 
 switchyard_rust/                    # Python facades over the PyO3 extension
