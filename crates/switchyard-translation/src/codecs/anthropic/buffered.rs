@@ -28,6 +28,11 @@ use crate::util::{
     json_string, push_lossy, stable_id, string_value, validate_request_capabilities,
 };
 
+// Schema name applied when converting Anthropic structured output to the neutral
+// contract. Anthropic identifies the schema only by position, while the neutral
+// OpenAI shape requires a name, so requests that arrive this way share one.
+const ANTHROPIC_STRUCTURED_OUTPUT_SCHEMA_NAME: &str = "response";
+
 /// Format codec for Anthropic Messages payloads.
 pub struct AnthropicMessagesCodec;
 
@@ -58,7 +63,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 .map(ToOwned::to_owned),
             output: OutputParams {
                 max_output_tokens,
-                response_format: None,
+                response_format: decode_anthropic_output_format(body),
             },
             sampling: SamplingParams {
                 temperature: body.get("temperature").and_then(Value::as_f64),
@@ -146,6 +151,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "top_k",
                 "thinking",
                 "output_config",
+                "output_format",
                 "stream",
             ],
         );
@@ -358,6 +364,32 @@ impl FormatCodec for AnthropicMessagesCodec {
             diagnostics: Vec::new(),
         })
     }
+}
+
+// Reads Anthropic's structured-output schema into the neutral response format.
+//
+// `output_config.format` is the current field; the top-level `output_format` is
+// the earlier beta spelling that Anthropic still accepts, so both are read and
+// the current one wins. The neutral contract is OpenAI-shaped and requires a
+// schema name that Anthropic never sends, so one is supplied here.
+fn decode_anthropic_output_format(body: &Map<String, Value>) -> Option<Value> {
+    let format = body
+        .get("output_config")
+        .and_then(Value::as_object)
+        .and_then(|config| config.get("format"))
+        .or_else(|| body.get("output_format"))
+        .and_then(Value::as_object)?;
+    if format.get("type").and_then(Value::as_str) != Some("json_schema") {
+        return None;
+    }
+    let schema = format.get("schema")?;
+    Some(json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": ANTHROPIC_STRUCTURED_OUTPUT_SCHEMA_NAME,
+            "schema": schema.clone(),
+        },
+    }))
 }
 
 /// Maps the neutral OpenAI-shaped JSON schema to Anthropic's output format.

@@ -1403,6 +1403,131 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
     Ok(())
 }
 
+// Builds an Anthropic request whose structured output uses the given field shape.
+fn anthropic_structured_output_request(output: Value) -> Value {
+    let mut body = json!({
+        "model": "captured-model",
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "ping"}]
+    });
+    let object = body.as_object_mut().expect("request object");
+    for (key, value) in output.as_object().expect("output object") {
+        object.insert(key.clone(), value.clone());
+    }
+    body
+}
+
+fn city_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"city": {"type": "string"}, "ok": {"type": "boolean"}},
+        "required": ["city", "ok"],
+        "additionalProperties": false
+    })
+}
+
+// Anthropic carries structured output in `output_config.format`; the neutral contract
+// is OpenAI-shaped, so an ingress schema has to survive into `response_format` or the
+// upstream is never asked for structured output.
+#[test]
+fn anthropic_output_config_format_reaches_openai_response_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = anthropic_structured_output_request(json!({
+        "output_config": {"format": {"type": "json_schema", "schema": city_schema()}}
+    }));
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["response_format"]["type"], "json_schema");
+    assert_eq!(
+        output["response_format"]["json_schema"]["schema"],
+        city_schema()
+    );
+    assert!(
+        output["response_format"]["json_schema"]["name"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty())
+    );
+    Ok(())
+}
+
+// `output_format` is the earlier beta spelling that Anthropic still accepts, so a
+// client sending it must not silently lose the schema either.
+#[test]
+fn anthropic_legacy_output_format_reaches_openai_response_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = anthropic_structured_output_request(json!({
+        "output_format": {"type": "json_schema", "schema": city_schema()}
+    }));
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["response_format"]["json_schema"]["schema"],
+        city_schema()
+    );
+    Ok(())
+}
+
+// The current field wins so a client migrating off the beta spelling cannot end up
+// sending the stale schema.
+#[test]
+fn anthropic_output_config_format_wins_over_legacy_output_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = anthropic_structured_output_request(json!({
+        "output_config": {"format": {"type": "json_schema", "schema": city_schema()}},
+        "output_format": {"type": "json_schema", "schema": {"type": "object", "properties": {"stale": {"type": "string"}}}}
+    }));
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["response_format"]["json_schema"]["schema"],
+        city_schema()
+    );
+    Ok(())
+}
+
+// A request without structured output must not gain a response format.
+#[test]
+fn anthropic_request_without_structured_output_sends_no_response_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = anthropic_structured_output_request(json!({}));
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert!(output.get("response_format").is_none());
+    Ok(())
+}
+
 // Verifies Anthropic receives its supported schema subset without mutating the neutral contract.
 #[test]
 fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestResult {
