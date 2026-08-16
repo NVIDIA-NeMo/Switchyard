@@ -1509,6 +1509,86 @@ fn anthropic_output_config_format_wins_over_legacy_output_format() -> TestResult
     Ok(())
 }
 
+// A format that cannot be mapped must be reported; the caller asked for constrained
+// output and would otherwise get prose with no indication the constraint was lost.
+#[test]
+fn anthropic_unmappable_output_format_is_reported() -> TestResult {
+    let engine = TranslationEngine::default();
+    for format in [
+        json!({"type": "json_object"}),
+        json!({"type": "json_schema"}),
+        json!("not-an-object"),
+    ] {
+        let body = anthropic_structured_output_request(json!({
+            "output_config": {"format": format}
+        }));
+
+        let translated = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?;
+
+        assert!(translated.body.get("response_format").is_none());
+        assert!(
+            translated
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("Anthropic structured output")),
+            "expected a diagnostic for {body}"
+        );
+    }
+    Ok(())
+}
+
+// Strict callers get an error instead of an unconstrained upstream request.
+#[test]
+fn anthropic_unmappable_output_format_is_rejected_under_strict_policy() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+    let body = anthropic_structured_output_request(json!({
+        "output_config": {"format": {"type": "json_object"}}
+    }));
+
+    let error = match engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &body,
+        &policy,
+    ) {
+        Ok(_) => panic!("an unmappable output format should be rejected by strict policy"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), "LossyConversion");
+    Ok(())
+}
+
+// Reasoning effort shares `output_config`, so reading the schema must not disturb it.
+#[test]
+fn anthropic_output_config_effort_survives_without_a_response_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = anthropic_structured_output_request(json!({
+        "output_config": {"effort": "high"}
+    }));
+
+    let translated = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &body,
+        &TranslationPolicy::default(),
+    )?;
+
+    assert_eq!(translated.body["reasoning_effort"], "high");
+    assert!(translated.body.get("response_format").is_none());
+    assert!(translated.diagnostics.is_empty());
+    Ok(())
+}
+
 // A request without structured output must not gain a response format.
 #[test]
 fn anthropic_request_without_structured_output_sends_no_response_format() -> TestResult {

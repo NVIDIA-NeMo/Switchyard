@@ -55,6 +55,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                     })
             })
             .transpose()?;
+        let response_format = decode_anthropic_output_format(body, &mut diagnostics, policy)?;
         let mut request = LlmRequest {
             model: body
                 .get("model")
@@ -63,7 +64,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 .map(ToOwned::to_owned),
             output: OutputParams {
                 max_output_tokens,
-                response_format: decode_anthropic_output_format(body),
+                response_format,
             },
             sampling: SamplingParams {
                 temperature: body.get("temperature").and_then(Value::as_f64),
@@ -372,24 +373,54 @@ impl FormatCodec for AnthropicMessagesCodec {
 // the earlier beta spelling that Anthropic still accepts, so both are read and
 // the current one wins. The neutral contract is OpenAI-shaped and requires a
 // schema name that Anthropic never sends, so one is supplied here.
-fn decode_anthropic_output_format(body: &Map<String, Value>) -> Option<Value> {
-    let format = body
+//
+// A format that cannot be mapped is reported rather than dropped in silence: the
+// caller asked for constrained output and would otherwise receive prose with no
+// indication that the constraint never reached the upstream.
+fn decode_anthropic_output_format(
+    body: &Map<String, Value>,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Option<Value>> {
+    let Some(format) = body
         .get("output_config")
         .and_then(Value::as_object)
         .and_then(|config| config.get("format"))
         .or_else(|| body.get("output_format"))
-        .and_then(Value::as_object)?;
+    else {
+        return Ok(None);
+    };
+    let Some(format) = format.as_object() else {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output format is not an object; the requested format was dropped",
+        )?;
+        return Ok(None);
+    };
     if format.get("type").and_then(Value::as_str) != Some("json_schema") {
-        return None;
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output maps only a json_schema format; the requested format was dropped",
+        )?;
+        return Ok(None);
     }
-    let schema = format.get("schema")?;
-    Some(json!({
+    let Some(schema) = format.get("schema") else {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output requires format.schema; the requested format was dropped",
+        )?;
+        return Ok(None);
+    };
+    Ok(Some(json!({
         "type": "json_schema",
         "json_schema": {
             "name": ANTHROPIC_STRUCTURED_OUTPUT_SCHEMA_NAME,
             "schema": schema.clone(),
         },
-    }))
+    })))
 }
 
 /// Maps the neutral OpenAI-shaped JSON schema to Anthropic's output format.
