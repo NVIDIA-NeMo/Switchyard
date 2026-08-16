@@ -811,6 +811,12 @@ fn sanitize_openai_responses_replay_items(body: &mut Value) {
                     item.insert("content".to_string(), Value::Array(Vec::new()));
                 }
             }
+            Some("function_call") | Some("function_call_output") => {
+                // Function item IDs are optional replay metadata. `call_id`
+                // carries the portable call/result relationship.
+                item.remove("status");
+                strip_invalid_openai_responses_replay_id(item);
+            }
             Some("custom_tool_call") | Some("custom_tool_call_output") => {
                 item.remove("status");
                 // Custom-tool item IDs use provider-specific namespaces (for
@@ -832,6 +838,7 @@ fn strip_invalid_openai_responses_replay_id(item: &mut Map<String, Value>) {
     };
     let valid = id.as_str().is_some_and(|id| {
         !id.is_empty()
+            && id.len() <= 64
             && id
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
@@ -1304,6 +1311,40 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn responses_replay_sanitizer_drops_overlong_optional_item_ids() {
+        let overlong_id = format!("msg_{}", "a".repeat(80));
+        let mut body = json!({
+            "input": [
+                {"type": "message", "id": overlong_id, "role": "assistant", "content": []},
+                {"type": "reasoning", "id": overlong_id, "summary": [], "content": []},
+                {
+                    "type": "function_call",
+                    "id": overlong_id,
+                    "call_id": "call_1",
+                    "name": "echo",
+                    "arguments": "{}"
+                },
+                {
+                    "type": "function_call_output",
+                    "id": overlong_id,
+                    "call_id": "call_1",
+                    "output": "OK"
+                }
+            ]
+        });
+
+        sanitize_openai_responses_replay_items(&mut body);
+
+        assert!(
+            body["input"]
+                .as_array()
+                .is_some_and(|items| { items.iter().all(|item| item.get("id").is_none()) })
+        );
+        assert_eq!(body["input"][2]["call_id"], "call_1");
+        assert_eq!(body["input"][3]["call_id"], "call_1");
+    }
+
     #[tokio::test]
     async fn responses_backend_sanitizes_replayed_response_fields_before_sending()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
@@ -1373,6 +1414,21 @@ mod tests {
                     "status": "completed"
                 },
                 {
+                    "type": "function_call",
+                    "id": "fc_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_too_long",
+                    "call_id": "call_2",
+                    "name": "echo",
+                    "arguments": "{\"value\":\"OK\"}",
+                    "status": "completed"
+                },
+                {
+                    "type": "function_call_output",
+                    "id": "fco_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_too_long",
+                    "call_id": "call_2",
+                    "output": "OK",
+                    "status": "completed"
+                },
+                {
                     "type": "web_search_call",
                     "id": "ws_cross_provider",
                     "status": "completed",
@@ -1421,13 +1477,19 @@ mod tests {
         assert_eq!(forwarded["input"][4].get("id"), None);
         assert_eq!(forwarded["input"][4].get("status"), None);
         assert_eq!(forwarded["input"][4]["call_id"], "call_1");
-        assert_eq!(forwarded["input"].as_array().map(Vec::len), Some(6));
+        assert_eq!(forwarded["input"][5].get("id"), None);
+        assert_eq!(forwarded["input"][5].get("status"), None);
+        assert_eq!(forwarded["input"][5]["call_id"], "call_2");
+        assert_eq!(forwarded["input"][6].get("id"), None);
+        assert_eq!(forwarded["input"][6].get("status"), None);
+        assert_eq!(forwarded["input"][6]["call_id"], "call_2");
+        assert_eq!(forwarded["input"].as_array().map(Vec::len), Some(8));
         assert!(forwarded["input"].as_array().is_some_and(|items| {
             items
                 .iter()
                 .all(|item| item.get("type").and_then(Value::as_str) != Some("web_search_call"))
         }));
-        assert_eq!(forwarded["input"][5]["content"], "continue");
+        assert_eq!(forwarded["input"][7]["content"], "continue");
         Ok(())
     }
 
