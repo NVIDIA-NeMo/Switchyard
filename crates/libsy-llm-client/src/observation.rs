@@ -6,7 +6,24 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use switchyard_protocol::{Decision, ModelId, Usage};
+use switchyard_protocol::{Decision, LlmRequest, ModelId, Usage};
+
+/// Prompt and model-produced content from one non-answer classifier or judge call.
+#[derive(Clone, Debug)]
+pub struct ClassifierContentObservation {
+    /// Model that produced the routing verdict.
+    pub selected_model: ModelId,
+    /// Exact normalized request sent to the classifier target, excluding transport headers.
+    pub request: LlmRequest,
+    /// Model-produced reasoning content, when the provider returned it separately.
+    pub reasoning: Option<String>,
+    /// Text verdict consumed by the routing policy, including invalid replies.
+    pub verdict: Option<String>,
+    /// Whether the provider call itself completed successfully.
+    pub is_success: bool,
+    /// Time spent waiting for the classifier call to resolve.
+    pub duration: Duration,
+}
 
 /// One model call observed immediately before it is sent to its routed client.
 #[derive(Clone, Debug)]
@@ -39,6 +56,8 @@ pub enum RunObservation {
     RoutingDecision(Decision),
     /// A model call about to start.
     LlmCallStarted(LlmCallStartObservation),
+    /// Prompt, reasoning, and verdict from a classifier or judge call.
+    ClassifierContent(ClassifierContentObservation),
     /// A completed model call.
     LlmCall(LlmCallObservation),
     /// Routing time recorded by the `switchyard.routing_overhead_ms` metric.

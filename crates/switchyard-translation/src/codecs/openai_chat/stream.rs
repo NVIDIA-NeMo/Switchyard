@@ -284,6 +284,7 @@ fn openai_usage(usage: &Map<String, Value>) -> Usage {
                     .get("output_tokens_details")
                     .and_then(|details| details.get("reasoning_tokens"))
             })
+            .or_else(|| usage.get("reasoning_tokens"))
             .and_then(Value::as_u64),
     }
 }

@@ -496,6 +496,43 @@ fn openai_chat_usage_without_breakdowns_still_emits_responses_usage_details() ->
     Ok(())
 }
 
+// vLLM exposes hidden-thinking usage as a top-level extension rather than OpenAI's nested
+// completion detail. Preserve it so classifier telemetry reports the actual reasoning work.
+#[test]
+fn openai_chat_top_level_reasoning_usage_translates_to_responses_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-vllm",
+        "model": "deepseek-v4-flash",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "{\"target\":\"luna\"}"},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 9093,
+            "completion_tokens": 347,
+            "total_tokens": 9440,
+            "reasoning_tokens": 339
+        }
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["usage"]["output_tokens_details"],
+        json!({"reasoning_tokens": 339})
+    );
+    Ok(())
+}
+
 // Verifies a partial breakdown does not suppress the other detail object: an upstream that
 // reports cached tokens but no reasoning tokens must still carry both.
 #[test]

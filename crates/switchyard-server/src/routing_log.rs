@@ -14,6 +14,8 @@ use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use switchyard_llm_client::ClassifierContentObservation;
 use switchyard_protocol::{Metadata, ModelId, Usage};
 
 use crate::usage_metrics::token_usage;
@@ -93,6 +95,36 @@ impl RoutingLog {
             model: model.into(),
             outcome: outcome.unwrap_or("").into(),
             elapsed_ms: Some(elapsed.as_secs_f64() * 1_000.0),
+            ..RoutingRecord::default()
+        };
+        self.write_record(&record)
+    }
+
+    /// Appends the exact normalized classifier request and model-produced response content.
+    pub(crate) fn append_classifier_content(
+        &mut self,
+        context: RoutingLogContext,
+        content: &ClassifierContentObservation,
+        elapsed: Duration,
+    ) -> std::io::Result<()> {
+        let classifier_request =
+            serde_json::to_value(&content.request).map_err(std::io::Error::other)?;
+        let record = RoutingRecord {
+            ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
+            event: "classifier_content".into(),
+            task: context.task.map(Cow::Owned),
+            trial_id: context.trial_id.map(Cow::Owned),
+            session_id: context.session_id.map(Cow::Owned),
+            request_id: Some(context.request_id.into()),
+            correlation_id: context.correlation_id.map(Cow::Owned),
+            model: content.selected_model.as_str().into(),
+            tier: "classifier".into(),
+            outcome: if content.is_success { "ok" } else { "error" }.into(),
+            elapsed_ms: Some(elapsed.as_secs_f64() * 1_000.0),
+            call_duration_ms: Some(content.duration.as_secs_f64() * 1_000.0),
+            classifier_request: Some(classifier_request),
+            classifier_reasoning: content.reasoning.as_deref().map(Cow::Borrowed),
+            classifier_verdict: content.verdict.as_deref().map(Cow::Borrowed),
             ..RoutingRecord::default()
         };
         self.write_record(&record)
@@ -189,6 +221,12 @@ struct RoutingRecord<'a> {
     tier: Cow<'a, str>,
     outcome: Cow<'a, str>,
     elapsed_ms: Option<f64>,
+    call_duration_ms: Option<f64>,
+    classifier_request: Option<Value>,
+    #[serde(borrow)]
+    classifier_reasoning: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    classifier_verdict: Option<Cow<'a, str>>,
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,

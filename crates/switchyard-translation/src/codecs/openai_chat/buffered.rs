@@ -1220,6 +1220,7 @@ pub(crate) fn decode_openai_usage(value: Option<&Value>) -> Usage {
                     .get("output_tokens_details")
                     .and_then(|details| details.get("reasoning_tokens"))
             })
+            .or_else(|| value.get("reasoning_tokens"))
             .and_then(Value::as_u64),
     }
 }

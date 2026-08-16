@@ -30,7 +30,10 @@ pub mod run;
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
 pub use client::{ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
-pub use observation::{LlmCallObservation, LlmCallStartObservation, RunObservation, RunObserver};
+pub use observation::{
+    ClassifierContentObservation, LlmCallObservation, LlmCallStartObservation, RunObservation,
+    RunObserver,
+};
 pub use raw::RawResponse;
-pub use run::{ClientRouter, run};
+pub use run::{ClientRouter, ObservationConfig, run, run_with_observation_config};
 pub use switchyard_translation::RawEventStream;

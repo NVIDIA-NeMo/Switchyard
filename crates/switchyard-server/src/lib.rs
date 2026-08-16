@@ -36,7 +36,9 @@ use libsy::{Algorithm, LibsyError};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver, TranslatingLlmClient};
+use switchyard_llm_client::{
+    ClassifierContentObservation, ClientRouter, RunObservation, RunObserver, TranslatingLlmClient,
+};
 use switchyard_protocol::{InputModality, LlmClientError, Metadata, ModelId, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
@@ -178,6 +180,7 @@ pub struct ServerState {
     metrics: prometheus::Registry,
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
+    routing_log_classifier_content: bool,
     track_cache_eligibility: bool,
 }
 
@@ -219,6 +222,21 @@ impl SharedRoutingLog {
             .writer
             .lock()
             .append_event(context, event, model, elapsed, outcome)
+        {
+            tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
+        }
+    }
+
+    fn append_classifier_content(
+        &self,
+        context: routing_log::RoutingLogContext,
+        content: &ClassifierContentObservation,
+        elapsed: Duration,
+    ) {
+        if let Err(error) = self
+            .writer
+            .lock()
+            .append_classifier_content(context, content, elapsed)
         {
             tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
         }
@@ -294,6 +312,7 @@ impl ServerState {
             metrics,
             stats,
             routing_log: None,
+            routing_log_classifier_content: false,
             track_cache_eligibility: tracking_enabled_from_env(),
         })
     }
@@ -302,6 +321,15 @@ impl ServerState {
     pub fn with_routing_log(mut self, path: impl Into<PathBuf>) -> ServerResult<Self> {
         self.routing_log = Some(SharedRoutingLog::new(path.into())?);
         Ok(self)
+    }
+
+    /// Includes normalized classifier prompts, model reasoning, and verdicts in the routing log.
+    ///
+    /// The content may contain user-supplied secrets and should only be enabled for a protected
+    /// routing log. Transport headers and provider credentials are never part of this payload.
+    pub fn with_routing_log_classifier_content(mut self, enabled: bool) -> Self {
+        self.routing_log_classifier_content = enabled;
+        self
     }
 
     /// Returns the route model IDs served by the configured algorithms.
@@ -490,6 +518,7 @@ fn stats_observer(
     stats: StatsAccumulator,
     routing_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
     started: Instant,
+    log_classifier_content: bool,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
         RunObservation::RoutingDecision(decision) => {
@@ -514,6 +543,11 @@ fn stats_observer(
                     started.elapsed(),
                     None,
                 );
+            }
+        }
+        RunObservation::ClassifierContent(content) => {
+            if log_classifier_content && let Some((log, context)) = routing_log.as_ref() {
+                log.append_classifier_content(context.clone(), &content, started.elapsed());
             }
         }
         RunObservation::LlmCall(call) => {
@@ -833,23 +867,34 @@ async fn handle_llm_request(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
         started.0,
+        state.routing_log_classifier_content,
     );
-    let (trace, response) =
-        match switchyard_llm_client::run(algorithm, client_router, request, Some(observer)).await {
-            Ok(result) => result,
-            Err(error) => {
-                if let Some((log, context)) = lifecycle_log {
-                    log.append_event(
-                        context,
-                        "completion",
-                        &requested_model,
-                        started.0.elapsed(),
-                        Some("error"),
-                    );
-                }
-                return algorithm_error(error);
+    let observation_config = switchyard_llm_client::ObservationConfig {
+        classifier_content: state.routing_log_classifier_content,
+    };
+    let (trace, response) = match switchyard_llm_client::run_with_observation_config(
+        algorithm,
+        client_router,
+        request,
+        Some(observer),
+        observation_config,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some((log, context)) = lifecycle_log {
+                log.append_event(
+                    context,
+                    "completion",
+                    &requested_model,
+                    started.0.elapsed(),
+                    Some("error"),
+                );
             }
-        };
+            return algorithm_error(error);
+        }
+    };
     let decision = trace.last();
     // The response carries the candidate that actually served it. Fall back to the routing
     // decision for algorithms that return a response without an offloaded model call.
@@ -1464,7 +1509,8 @@ mod tests {
     #[test]
     fn stats_observer_logs_judge_calls_to_the_routing_log() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let log = SharedRoutingLog::new(dir.path().join("routing.jsonl")).expect("routing log");
+        let log_path = dir.path().join("routing.jsonl");
+        let log = SharedRoutingLog::new(log_path.clone()).expect("routing log");
         let mut headers = HeaderMap::new();
         headers.insert("proxy_x_session_id", "session-1".parse().expect("header"));
         let metadata = metadata_from_headers(headers);
@@ -1473,7 +1519,22 @@ mod tests {
             StatsAccumulator::default(),
             Some((log.clone(), context)),
             Instant::now(),
+            true,
         );
+
+        observer(RunObservation::ClassifierContent(
+            ClassifierContentObservation {
+                selected_model: ModelId::from("judge-model"),
+                request: switchyard_protocol::text_request(
+                    Some("judge-model".to_string()),
+                    "review code",
+                ),
+                reasoning: Some("This is substantive review work.".to_string()),
+                verdict: Some(r#"{"target":"luna"}"#.to_string()),
+                is_success: true,
+                duration: Duration::from_millis(3),
+            },
+        ));
 
         let call = |model: &str, is_answer_call: bool| {
             RunObservation::LlmCall(LlmCallObservation {
@@ -1500,6 +1561,23 @@ mod tests {
         assert_eq!(snapshot["models"]["judge-model"]["prompt_tokens"], 100);
         assert_eq!(snapshot["models"]["judge-model"]["completion_tokens"], 7);
         assert!(snapshot["models"].get("routed-model").is_none());
+
+        let content_record = std::fs::read_to_string(log_path)
+            .expect("read routing log")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("valid JSONL"))
+            .find(|record| record["event"] == "classifier_content")
+            .expect("classifier content record");
+        assert_eq!(content_record["model"], "judge-model");
+        assert_eq!(
+            content_record["classifier_request"]["messages"][0]["content"][0]["text"],
+            "review code"
+        );
+        assert_eq!(
+            content_record["classifier_reasoning"],
+            "This is substantive review work."
+        );
+        assert_eq!(content_record["classifier_verdict"], r#"{"target":"luna"}"#);
     }
 
     #[derive(Clone)]

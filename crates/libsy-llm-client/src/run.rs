@@ -20,11 +20,13 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, drive_with_decision_observer};
 use switchyard_protocol::{
-    Decision, LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
+    ContentBlock, Decision, LlmClientError, ModelId, Request, Response, RoutedLlmClient,
+    RoutingFallbackReason, completion_text,
 };
 
 use crate::observation::{
-    LlmCallObservation, LlmCallStartObservation, RunObservation, RunObserver,
+    ClassifierContentObservation, LlmCallObservation, LlmCallStartObservation, RunObservation,
+    RunObserver,
 };
 use crate::{metrics, observability};
 
@@ -47,6 +49,31 @@ pub async fn run(
     request: Request,
     observer: Option<RunObserver>,
 ) -> Result<(Vec<Decision>, Response)> {
+    run_with_observation_config(
+        algorithm,
+        clients,
+        request,
+        observer,
+        ObservationConfig::default(),
+    )
+    .await
+}
+
+/// Controls optional content captured for a [`RunObserver`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ObservationConfig {
+    /// Capture normalized prompts, reasoning, and verdicts for non-answer calls.
+    pub classifier_content: bool,
+}
+
+/// Runs one request like [`run`] with explicit observation-content controls.
+pub async fn run_with_observation_config(
+    algorithm: Arc<dyn Algorithm>,
+    clients: ClientRouter,
+    request: Request,
+    observer: Option<RunObserver>,
+    observation_config: ObservationConfig,
+) -> Result<(Vec<Decision>, Response)> {
     let algorithm_name = algorithm.name().to_string();
     // The output from `serve` goes in here: when each successful routed call was in
     // flight. Everything else the run spent time on is routing overhead.
@@ -64,6 +91,7 @@ pub async fn run(
                     clients.clone(),
                     call,
                     observer.clone(),
+                    observation_config,
                     Arc::clone(&routed_calls),
                 )
             }
@@ -122,10 +150,18 @@ async fn serve(
     clients: ClientRouter,
     call: CallModel,
     observer: Option<RunObserver>,
+    observation_config: ObservationConfig,
     // Output parameter because `drive` takes a function that returns a plain `Result<()>`.
     routed_calls: Arc<Mutex<RoutedCallWindows>>,
 ) -> Result<()> {
-    let result = call_first_available(&clients, &call, &observer, &routed_calls).await;
+    let result = call_first_available(
+        &clients,
+        &call,
+        &observer,
+        observation_config,
+        &routed_calls,
+    )
+    .await;
     call.respond(result)
 }
 
@@ -134,6 +170,7 @@ async fn call_first_available(
     clients: &ClientRouter,
     call: &CallModel,
     observer: &Option<RunObserver>,
+    observation_config: ObservationConfig,
     routed_calls: &Arc<Mutex<RoutedCallWindows>>,
 ) -> Result<Response> {
     for (index, target) in call.models.iter().enumerate() {
@@ -144,6 +181,7 @@ async fn call_first_available(
             request,
             call,
             observer,
+            observation_config,
             routed_calls,
             index,
             call.models.len(),
@@ -212,6 +250,7 @@ async fn call_one(
     request: Request,
     call: &CallModel,
     observer: &Option<RunObserver>,
+    observation_config: ObservationConfig,
     routed_calls: &Arc<Mutex<RoutedCallWindows>>,
     // index is for span log
     index: usize,
@@ -229,6 +268,9 @@ async fn call_one(
         span.record("gen_ai.conversation.id", session_id);
     }
     let is_answer_call = call.is_answer_call;
+    let classifier_request =
+        (observer.is_some() && observation_config.classifier_content && !is_answer_call)
+            .then(|| request.llm_request.clone());
     // Resolved before the clock starts: picking the client is Switchyard's work, not
     // the provider's, so it belongs in the routing overhead.
     let client = clients.route(model_id);
@@ -253,6 +295,22 @@ async fn call_one(
     });
     let result = observability::observe_client_call(result);
     if let Some(observer) = observer {
+        if let Some(request) = classifier_request {
+            let aggregate = result
+                .as_ref()
+                .ok()
+                .and_then(|response| response.llm_response.as_agg());
+            observer(RunObservation::ClassifierContent(
+                ClassifierContentObservation {
+                    selected_model: model_id.clone(),
+                    request,
+                    reasoning: aggregate.and_then(classifier_reasoning),
+                    verdict: aggregate.and_then(classifier_verdict),
+                    is_success: result.is_ok(),
+                    duration,
+                },
+            ));
+        }
         observer(RunObservation::LlmCall(LlmCallObservation {
             selected_model: model_id.clone(),
             is_answer_call,
@@ -270,6 +328,28 @@ async fn call_one(
     }
 
     result
+}
+
+fn classifier_reasoning(response: &switchyard_protocol::AggLlmResponse) -> Option<String> {
+    nonempty_join(response.outputs.iter().flat_map(|output| {
+        output.content.iter().filter_map(|block| match block {
+            ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+    }))
+}
+
+fn classifier_verdict(response: &switchyard_protocol::AggLlmResponse) -> Option<String> {
+    let verdict = completion_text(response);
+    (!verdict.is_empty()).then_some(verdict)
+}
+
+fn nonempty_join<'a>(parts: impl Iterator<Item = &'a str>) -> Option<String> {
+    let joined = parts
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!joined.is_empty()).then_some(joined)
 }
 
 /// Whether a failed candidate is worth routing around.

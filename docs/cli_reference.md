@@ -68,6 +68,7 @@ switchyard-server --config <deployment.toml> [options]
 | `--shutdown-timeout SHUTDOWN_TIMEOUT` | `30s` | Maximum time active requests may drain during shutdown. |
 | `--dry-run` | Off | Validate the deployment without binding a socket. |
 | `--routing-log-file PATH` | None | Append durable per-request routing records to this JSONL file. |
+| `--routing-log-classifier-content` | `false` | Include normalized classifier prompts, model reasoning, and verdicts in the routing log. Requires `--routing-log-file`. |
 | `--tls-cert PATH` | None | PEM certificate path; requires `--tls-key`. |
 | `--tls-key PATH` | None | PEM private-key path; requires `--tls-cert`. |
 | `-h, --help` | — | Print command help. |

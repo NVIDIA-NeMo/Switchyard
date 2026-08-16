@@ -343,8 +343,18 @@ impl RoutedLlmClient for ClassifierClient {
             tokio::time::sleep(self.classifier_delay).await;
             r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
         };
+        let mut response = text_response(Some(model_id.to_string()), completion);
+        if model_id == self.classifier_model_id {
+            response.outputs[0].content.insert(
+                0,
+                ContentBlock::Reasoning {
+                    text: "The task is bounded and supported.".to_string(),
+                    signature: None,
+                },
+            );
+        }
         Ok(Response {
-            llm_response: LlmResponse::Agg(text_response(Some(model_id.to_string()), completion)),
+            llm_response: LlmResponse::Agg(response),
             metadata: None,
         })
     }
@@ -1289,6 +1299,57 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
         (60..200).contains(&overhead),
         "expected roughly the classifier's 60ms, got {overhead}ms"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn observed_classifier_call_reports_prompt_reasoning_and_verdict()
+-> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&observations);
+    let observer: RunObserver = Arc::new(move |observation| observed.lock().push(observation));
+    let client = Arc::new(ClassifierClient {
+        classifier_model_id: "classifier".into(),
+        classifier_delay: Duration::ZERO,
+        routed_delay: Duration::ZERO,
+    }) as Arc<dyn RoutedLlmClient>;
+
+    switchyard_llm_client::run_with_observation_config(
+        classifier_router("classifier", "weak", "strong")?,
+        ClientRouter::single(client),
+        classifier_request(),
+        Some(observer),
+        switchyard_llm_client::ObservationConfig {
+            classifier_content: true,
+        },
+    )
+    .await?;
+
+    let observations = observations.lock();
+    let content = observations
+        .iter()
+        .find_map(|observation| match observation {
+            RunObservation::ClassifierContent(content) => Some(content),
+            _ => None,
+        })
+        .ok_or_else(|| test_error("expected classifier content observation"))?;
+    assert_eq!(content.selected_model, "classifier");
+    assert_eq!(
+        content.reasoning.as_deref(),
+        Some("The task is bounded and supported.")
+    );
+    assert_eq!(
+        content.verdict.as_deref(),
+        Some(
+            r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
+        )
+    );
+    assert_eq!(
+        content.request.messages,
+        classifier_request().llm_request.messages
+    );
+    assert!(content.is_success);
     Ok(())
 }
 

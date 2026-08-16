@@ -52,6 +52,10 @@ pub(crate) struct ServerArgs {
     #[arg(long, value_name = "PATH")]
     routing_log_file: Option<PathBuf>,
 
+    /// Include classifier prompts, model reasoning, and verdicts in the routing log.
+    #[arg(long, requires = "routing_log_file")]
+    routing_log_classifier_content: bool,
+
     /// TLS certificate path in PEM format.
     #[arg(long, requires = "tls_key")]
     tls_cert: Option<PathBuf>,
@@ -72,6 +76,7 @@ impl ServerArgs {
         if let Some(path) = self.routing_log_file {
             state = state.with_routing_log(path)?;
         }
+        state = state.with_routing_log_classifier_content(self.routing_log_classifier_content);
         let tls = match (self.tls_cert, self.tls_key) {
             (Some(cert), Some(key)) => {
                 if !cert.exists() || !key.exists() {

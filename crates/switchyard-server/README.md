@@ -102,6 +102,12 @@ served model. The legacy `proxy_x_session_id` remains a fallback when no normali
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
 
+Add `--routing-log-classifier-content` to append a `classifier_content` event containing the
+normalized classifier request, provider-returned reasoning, and raw verdict. This is opt-in
+because the classifier request and reasoning can repeat user-provided secrets. Transport headers
+and provider credentials are never included. Store this log with restricted permissions and
+rotation appropriate for sensitive request content.
+
 An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
 routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only
 `base_threshold` is required, and anything the judge cannot decide routes to `strong_target`:

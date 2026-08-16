@@ -604,6 +604,43 @@ fn openai_chat_stream_reasoning_usage_translates_to_responses_usage_details() ->
     Ok(())
 }
 
+#[test]
+fn openai_chat_stream_top_level_reasoning_usage_translates_to_responses_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let usage = json!({
+        "id": "chatcmpl-vllm",
+        "object": "chat.completion.chunk",
+        "model": "deepseek-v4-flash",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "reasoning_tokens": 3
+        }
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &usage,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("expected final Responses completion event")?;
+    assert_eq!(
+        completed["response"]["usage"]["output_tokens_details"],
+        json!({"reasoning_tokens": 3})
+    );
+    Ok(())
+}
+
 // Verifies streamed cache usage reaches Responses clients in the standard details object.
 #[test]
 fn openai_chat_stream_cache_usage_translates_to_responses_usage_details() -> TestResult {
