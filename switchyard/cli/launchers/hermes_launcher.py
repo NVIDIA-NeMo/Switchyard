@@ -75,14 +75,18 @@ def _hermes_env(port: int) -> dict[str, str]:
 
 
 def _hermes_command(hermes_bin: str, hermes_args: list[str], model: str) -> list[str]:
-    """Build the Hermes command for the local proxy."""
-    # ``hermes chat`` is the interactive surface; ``hermes -q <prompt>`` is
-    # non-interactive. Preserve forwarded flags either way.
-    cmd = [hermes_bin, "chat"]
-    if hermes_args and hermes_args[0] in ("-q", "--query"):
-        cmd = [hermes_bin]
-    cmd.extend(["--provider", "custom", "-m", model, *hermes_args])
-    return cmd
+    """Build the Hermes command for the local proxy.
+
+    ``--provider custom -m <model>`` are global Hermes flags, so they always
+    lead. Forwarded arguments are Hermes' own command — an explicit subcommand
+    (``chat -q ...``, one-shot ``-z ...``, ``resume``, ...) plus any flags —
+    passed through verbatim. With nothing forwarded, default to the interactive
+    ``chat`` surface.
+    """
+    routing = ["--provider", "custom", "-m", model]
+    if not hermes_args:
+        return [hermes_bin, "chat", *routing]
+    return [hermes_bin, *routing, *hermes_args]
 
 
 def _supervise_hermes(

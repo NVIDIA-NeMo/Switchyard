@@ -38,19 +38,40 @@ def test_hermes_command_defaults_to_interactive_chat(monkeypatch) -> None:
 def test_hermes_command_keeps_forwarded_args(monkeypatch) -> None:
     cmd = _hermes_command(
         "/usr/bin/hermes",
-        ["--reasoning", "high", "-p", "build"],
+        ["-z", "summarize this", "--reasoning", "high"],
         "my-route",
     )
-    # Model selector leads; forwarded flags are preserved verbatim afterward.
-    assert cmd[:6] == [
+    # Routing flags lead; Hermes' own command + flags follow verbatim.
+    assert cmd == [
         "/usr/bin/hermes",
-        "chat",
         "--provider",
         "custom",
         "-m",
         "my-route",
+        "-z",
+        "summarize this",
+        "--reasoning",
+        "high",
     ]
-    assert cmd[6:] == ["--reasoning", "high", "-p", "build"]
+
+
+def test_hermes_command_forwards_explicit_subcommand(monkeypatch) -> None:
+    cmd = _hermes_command(
+        "/usr/bin/hermes",
+        ["chat", "-q", "hi", "-Q"],
+        "my-route",
+    )
+    assert cmd == [
+        "/usr/bin/hermes",
+        "--provider",
+        "custom",
+        "-m",
+        "my-route",
+        "chat",
+        "-q",
+        "hi",
+        "-Q",
+    ]
 
 
 def test_opencode_qualified_model_id() -> None:
@@ -82,15 +103,19 @@ def test_opencode_env_selects_config_dir() -> None:
     assert env["OPENCODE_CONFIG_DIR"] == "/tmp/switchyard-opencode-abc"
 
 
-def test_opencode_command_run_injects_model(monkeypatch) -> None:
-    # ``run`` is non-interactive; the model goes after ``-m``.
-    cmd = _opencode_command("/usr/bin/opencode", ["run", "--auto", "fix"], "switchyard/r")
-    assert cmd[:3] == ["/usr/bin/opencode", "run", "-m"]
-    assert "switchyard/r" in cmd
-    # ``--auto`` and the message are preserved in order.
-    assert cmd[cmd.index("switchyard/r") + 1 :] == ["--auto", "fix"]
+def test_opencode_command_forwards_run_verbatim(monkeypatch) -> None:
+    # Model is selected via the transient config, so the CLI carries no model
+    # flag; ``run`` + its own args are forwarded verbatim.
+    cmd = _opencode_command("/usr/bin/opencode", ["run", "--auto", "fix"])
+    assert cmd == ["/usr/bin/opencode", "run", "--auto", "fix"]
+
+
+def test_opencode_command_forwards_arbitrary_subcommand(monkeypatch) -> None:
+    # ``serve`` rejects ``-m``; forwarding the command verbatim keeps it valid.
+    cmd = _opencode_command("/usr/bin/opencode", ["serve", "--port", "4096"])
+    assert cmd == ["/usr/bin/opencode", "serve", "--port", "4096"]
 
 
 def test_opencode_command_defaults_to_tui(monkeypatch) -> None:
-    cmd = _opencode_command("/usr/bin/opencode", [], "switchyard/r")
-    assert cmd == ["/usr/bin/opencode", "-m", "switchyard/r"]
+    cmd = _opencode_command("/usr/bin/opencode", [])
+    assert cmd == ["/usr/bin/opencode"]

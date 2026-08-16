@@ -11,6 +11,7 @@ import pytest
 from switchyard.cli.launch_command import _config_path
 from switchyard.cli.launchers.claude_code_launcher import _claude_env
 from switchyard.cli.launchers.native_server import NativeServer
+from switchyard.cli.launchers.openclaw_launcher import _openclaw_command
 from switchyard.cli.switchyard_cli import _build_parser
 
 
@@ -58,6 +59,18 @@ def test_claude_env_preserves_small_fast_model_override(
 
     assert env["ANTHROPIC_MODEL"] == "agent-route"
     assert env["ANTHROPIC_SMALL_FAST_MODEL"] == "background-route"
+
+
+def test_openclaw_command_defaults_to_interactive_chat() -> None:
+    assert _openclaw_command("/usr/bin/openclaw", []) == ["/usr/bin/openclaw", "chat"]
+
+
+def test_openclaw_command_forwards_agent_command() -> None:
+    assert _openclaw_command("/usr/bin/openclaw", ["run", "do the thing"]) == [
+        "/usr/bin/openclaw",
+        "run",
+        "do the thing",
+    ]
 
 
 def test_native_server_passes_config_directly_to_binding(

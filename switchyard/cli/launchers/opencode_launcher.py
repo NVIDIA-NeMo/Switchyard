@@ -138,25 +138,28 @@ def _opencode_env(workspace: str) -> dict[str, str]:
 def _opencode_command(
     opencode_bin: str,
     opencode_args: list[str],
-    model_id: str,
 ) -> list[str]:
-    """Build the OpenCode command for the local proxy."""
-    # ``run`` is non-interactive; without it OpenCode starts the TUI.
-    if opencode_args and opencode_args[0] == "run":
-        return [opencode_bin, "run", "-m", model_id, *opencode_args[1:]]
-    return [opencode_bin, "-m", model_id, *opencode_args]
+    """Build the OpenCode command for the local proxy.
+
+    OpenCode selects the model through the transient config's ``model`` field
+    (already set to the qualified Switchyard route), so the CLI needs no model
+    flag — injecting ``-m`` breaks subcommands that reject it (``serve``,
+    ``debug``, ``models``, ...). Forwarded arguments are OpenCode's own command
+    plus any flags, passed through verbatim; with nothing forwarded OpenCode
+    starts its interactive TUI.
+    """
+    return [opencode_bin, *opencode_args]
 
 
 def _supervise_opencode(
     opencode_bin: str,
     opencode_args: list[str],
-    model_id: str,
     workspace: str,
 ) -> int:
     """Run OpenCode and return its exit code."""
     try:
         result = subprocess.run(
-            _opencode_command(opencode_bin, opencode_args, model_id),
+            _opencode_command(opencode_bin, opencode_args),
             env=_opencode_env(workspace),
             check=False,
         )
@@ -226,9 +229,8 @@ def _run_opencode_with_switchyard(
                 ProxyHealthMonitor(resolved_port),
                 strategy_label="config",
             )
-            model_id = _qualified_model_id(display_model)
             return ShellTUI(
-                command=_opencode_command(opencode_bin, opencode_args, model_id),
+                command=_opencode_command(opencode_bin, opencode_args),
                 footer_fn=footer.as_footer_fn(),
                 footer_height=lambda: footer.height,
                 env=_opencode_env(workspace_dir),
@@ -237,7 +239,6 @@ def _run_opencode_with_switchyard(
         return _supervise_opencode(
             opencode_bin,
             opencode_args,
-            _qualified_model_id(display_model),
             workspace_dir,
         )
     finally:
