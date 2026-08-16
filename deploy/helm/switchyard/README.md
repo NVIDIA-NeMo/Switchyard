@@ -22,7 +22,9 @@ kubectl create secret generic switchyard-api-key --from-literal=API_KEY=...
 helm upgrade --install switchyard deploy/helm/switchyard \
   --set image.repository=switchyard-server \
   --set image.tag=local
-curl -sS http://switchyard:4000/health
+# Cluster DNS `switchyard` is only reachable in-cluster; from a laptop:
+kubectl port-forward svc/switchyard 4000:4000
+curl -sS http://127.0.0.1:4000/health
 ```
 
 If you use kind, load the image first:

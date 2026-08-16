@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Generic Helm values for switchyard-server. Override image, secret, and
-# routesConfig for your environment. See deploy/examples/routes.passthrough.toml.
+# routesConfig for your environment. See deploy/docker/routes.passthrough.toml.
 
 fullnameOverride: switchyard
 
