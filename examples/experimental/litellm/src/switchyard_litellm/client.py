@@ -10,6 +10,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from litellm import ModelResponse, acompletion
+from litellm.exceptions import (
+    ContextWindowExceededError as LiteLLMContextWindowExceededError,
+)
+
+from switchyard.libsy import ContextWindowExceededError
 
 _TEXT_ROLES = {"system", "developer", "user"}
 _STOP_REASONS = {
@@ -208,7 +213,10 @@ def _optional_mapping(
     return _mapping(value, field)
 
 
-def _payload(request: Mapping[str, object], model: str) -> dict[str, Any]:
+async def _payload(request: Mapping[str, object]) -> dict[str, Any]:
+    model = request.get("model")
+    if not isinstance(model, str) or not model:
+        raise ValueError("model must be a non-empty string")
     if request.get("stream") is True:
         raise ValueError("stream=True is not supported")
     _reject_sequence_payload(request, "instructions")
@@ -226,7 +234,9 @@ def _payload(request: Mapping[str, object], model: str) -> dict[str, Any]:
         raise ValueError("reasoning.raw is not supported")
 
     payload: dict[str, Any] = {
-        "model": model,
+        # LiteLLM needs this prefix to select its OpenAI-compatible transport,
+        # then strips it before sending the selected alias to the gateway.
+        "model": f"openai/{model}",
         "messages": _messages(request),
         "stream": False,
     }
@@ -307,18 +317,14 @@ def _response(response: ModelResponse) -> dict[str, object]:
 
 
 class LiteLLMSyClient:
-    """Call a LiteLLM gateway alias for a libsy target."""
+    """Call the LiteLLM gateway alias selected in a libsy request."""
 
     def __init__(
         self,
-        model: str,
         *,
         base_url: str = "http://127.0.0.1:4000/v1",
         api_key: str = "not-needed",
     ) -> None:
-        if not model:
-            raise ValueError("model must not be empty")
-        self.model = model
         self._base_url = base_url
         self._api_key = api_key
 
@@ -327,17 +333,21 @@ class LiteLLMSyClient:
         sy_request: Mapping[str, object],
     ) -> Mapping[str, object]:
         """Send one normalized, buffered text request through LiteLLM."""
-        response = await acompletion(
-            **_payload(sy_request, f"openai/{self.model}"),
-            api_base=self._base_url,
-            api_key=self._api_key,
-            num_retries=0,
-            # LiteLLM otherwise imports its optional proxy MCP stack for ordinary
-            # OpenAI function tools before it determines that they are not MCP tools.
-            _skip_mcp_handler=True,
-            allowed_openai_params=["reasoning_effort"],
-            extra_body={"allowed_openai_params": ["reasoning_effort"]},
-        )
+        payload = await _payload(sy_request)
+        try:
+            response = await acompletion(
+                **payload,
+                api_base=self._base_url,
+                api_key=self._api_key,
+                num_retries=0,
+                # LiteLLM otherwise imports its optional proxy MCP stack for ordinary
+                # OpenAI function tools before it determines that they are not MCP tools.
+                _skip_mcp_handler=True,
+                allowed_openai_params=["reasoning_effort"],
+                extra_body={"allowed_openai_params": ["reasoning_effort"]},
+            )
+        except LiteLLMContextWindowExceededError as error:
+            raise ContextWindowExceededError(str(error)) from error
         return _response(cast(ModelResponse, response))
 
     async def aclose(self) -> None:

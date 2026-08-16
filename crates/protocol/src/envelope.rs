@@ -4,7 +4,7 @@
 //! The request/response envelope: the normalized [`LlmRequest`]/[`LlmResponse`] paired
 //! with the original provider payload and correlation [`Metadata`].
 
-use crate::{LlmRequest, LlmResponse, Metadata};
+use crate::{LlmRequest, LlmResponse, Metadata, ModelId};
 
 /// A request an algorithm routes: the normalized [`LlmRequest`] plus optional
 /// host-owned raw data and correlation [`Metadata`].
@@ -21,11 +21,12 @@ pub struct Request {
 }
 
 impl Request {
-    /// Returns the model name supplied by the inbound request, when present.
+    /// Returns the model currently carried by the request, when present.
     ///
-    /// This is not necessarily the target selected by a routing decision.
-    pub fn requested_model(&self) -> Option<&str> {
-        self.llm_request.model.as_deref()
+    /// On ingress this is the name supplied by the client. Before an offloaded model call, the
+    /// routing driver replaces it with the selected target.
+    pub fn model_id(&self) -> Option<ModelId> {
+        self.llm_request.model.as_deref().map(ModelId::from)
     }
 }
 
@@ -47,5 +48,41 @@ impl Response {
     /// event would require consuming the stream.
     pub fn selected_model(&self) -> Option<&str> {
         self.llm_response.selected_model()
+    }
+
+    /// Returns the Switchyard target that successfully served this response.
+    ///
+    /// Unlike [`Self::selected_model`], this is available for streamed responses because the
+    /// client records the target when it receives the stream handle.
+    pub fn served_model(&self) -> Option<&ModelId> {
+        self.metadata.as_ref()?.served_model.as_ref()
+    }
+
+    /// Records the Switchyard target that successfully served this response.
+    pub fn set_served_model(&mut self, model: &ModelId) {
+        self.metadata.get_or_insert_default().served_model = Some(model.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text_response;
+
+    #[test]
+    fn served_model_round_trips_through_response_metadata() {
+        let mut response = Response {
+            llm_response: LlmResponse::Agg(text_response(None, "answer")),
+            metadata: None,
+        };
+
+        assert_eq!(response.served_model(), None);
+        response.set_served_model(&ModelId::from("first"));
+        assert_eq!(response.served_model().map(ModelId::as_str), Some("first"));
+        response.set_served_model(&ModelId::from("fallback"));
+        assert_eq!(
+            response.served_model().map(ModelId::as_str),
+            Some("fallback")
+        );
     }
 }

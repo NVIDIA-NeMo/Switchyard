@@ -179,19 +179,6 @@ impl<S> Classifier<S> for AffinityRouter
 where
     S: Send + 'static,
 {
-    fn target_unavailable(&self, request: &Request, target: &ModelId) {
-        let Some(key) = self.affinity_key(request) else {
-            return;
-        };
-        let mut assignments = self.assignments.lock();
-        if assignments
-            .get(&key)
-            .is_some_and(|assigned| assigned == target)
-        {
-            assignments.remove(&key);
-        }
-    }
-
     async fn score(
         &self,
         _state: &mut S,
@@ -238,7 +225,7 @@ mod tests {
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
     fn fixed_decision(target: &str) -> Decision {
-        Decision::new(target, None, true)
+        Decision::new(target, true)
     }
 
     fn request(metadata: Metadata) -> Request {

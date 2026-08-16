@@ -76,11 +76,6 @@ pub trait Classifier<S = ()>: Send + Sync {
         None
     }
 
-    /// Drops retained routing state when `target` was unavailable for `request`.
-    ///
-    /// Stateless classifiers do not need to implement this hook.
-    fn target_unavailable(&self, _request: &Request, _target: &ModelId) {}
-
     /// Score the classifier's targets given the current state and request.
     ///
     /// When present, `driver` lets a classifier offload model calls. It is `None`
@@ -193,10 +188,10 @@ mod tests {
             _driver: Option<&Driver>,
         ) -> Result<(Classification, Option<Response>)> {
             *state = true;
-            let target = request.requested_model().unwrap_or("auto").to_string();
+            let target = request.model_id().unwrap_or(ModelId::from("auto"));
             Ok((
                 Classification::Scores(vec![Score {
-                    target: target.into(),
+                    target,
                     confidence: 1.0,
                 }]),
                 None,
@@ -261,7 +256,7 @@ mod tests {
 
         // The rewrite outlives the call: later classifiers in the cascade score this value,
         // and it is what reaches the model.
-        assert_eq!(request.requested_model(), Some("rewritten"));
+        assert_eq!(request.model_id().as_deref(), Some("rewritten"));
         Ok(())
     }
 }

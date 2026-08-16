@@ -19,6 +19,13 @@ const ROUTING_OVERHEAD_BUCKETS_MS: &[f64] = &[
     0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
 ];
 
+/// Bucket boundaries for model-call and end-to-end LLM latency histograms.
+/// Retains the SDK defaults through 10 seconds and extends them for long generations.
+const LLM_LATENCY_BUCKETS_MS: &[f64] = &[
+    0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0,
+    10_000.0, 15_000.0, 30_000.0, 60_000.0, 120_000.0, 300_000.0,
+];
+
 struct Metrics {
     registry: Registry,
     provider: SdkMeterProvider,
@@ -43,6 +50,7 @@ fn initialize() -> Result<Metrics, String> {
     let mut builder = SdkMeterProvider::builder()
         .with_reader(exporter)
         .with_view(routing_overhead_buckets)
+        .with_view(llm_latency_buckets)
         .with_resource(crate::observability::resource());
     if crate::observability::otlp_enabled("METRICS") {
         let exporter = opentelemetry_otlp::MetricExporter::builder()
@@ -79,6 +87,22 @@ fn routing_overhead_buckets(instrument: &Instrument) -> Option<Stream> {
             boundaries: ROUTING_OVERHEAD_BUCKETS_MS.to_vec(),
             // Cumulative min/max cover the whole process, so they aren't useful.
             record_min_max: false,
+        })
+        .build()
+        .ok()
+}
+
+fn llm_latency_buckets(instrument: &Instrument) -> Option<Stream> {
+    if !matches!(
+        instrument.name(),
+        "switchyard.model_call_latency_ms" | "switchyard.total_latency_ms"
+    ) {
+        return None;
+    }
+    Stream::builder()
+        .with_aggregation(Aggregation::ExplicitBucketHistogram {
+            boundaries: LLM_LATENCY_BUCKETS_MS.to_vec(),
+            record_min_max: true,
         })
         .build()
         .ok()

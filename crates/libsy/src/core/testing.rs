@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use switchyard_protocol::{
-    Decision, LlmClientError, LlmResponse, Request, Response, text_response,
+    Decision, LlmClientError, LlmResponse, ModelId, Request, Response, text_response,
 };
 
 use crate::core::algorithm::{Algorithm, CallModel};
@@ -29,16 +29,16 @@ pub(crate) type ServeResult = std::result::Result<Response, LlmClientError>;
 /// Answers offloaded model calls. Returning `Err` propagates a failed *model* call back into
 /// the algorithm, which may route around it.
 pub(crate) trait Serve: Send + Sync + 'static {
-    fn serve(&self, decision: Decision, request: Request) -> BoxFuture<'static, ServeResult>;
+    fn serve(&self, target: ModelId, request: Request) -> BoxFuture<'static, ServeResult>;
 }
 
 impl<F, Fut> Serve for F
 where
-    F: Fn(Decision, Request) -> Fut + Send + Sync + 'static,
+    F: Fn(ModelId, Request) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ServeResult> + Send + 'static,
 {
-    fn serve(&self, decision: Decision, request: Request) -> BoxFuture<'static, ServeResult> {
-        Box::pin(self(decision, request))
+    fn serve(&self, target: ModelId, request: Request) -> BoxFuture<'static, ServeResult> {
+        Box::pin(self(target, request))
     }
 }
 
@@ -59,10 +59,9 @@ pub(crate) async fn test_drive(
 /// error-shape assertions match production.
 async fn fulfill(serve: Arc<impl Serve>, call: CallModel) -> Result<()> {
     let request = call.request.clone();
-    let decision = call.decision.clone();
-    let target = decision.selected_model_id().to_string();
+    let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
     let result = serve
-        .serve(decision, request)
+        .serve(target.clone(), request)
         .await
         .map_err(|source| LibsyError::client_call(target, source));
     call.respond(result)
@@ -71,7 +70,7 @@ async fn fulfill(serve: Arc<impl Serve>, call: CallModel) -> Result<()> {
 /// Answers with the selected model name as the completion — what most routing tests need,
 /// since they assert on *which* target was called.
 pub(crate) fn echo() -> impl Serve {
-    |decision: Decision, _request: Request| async move { Ok(reply(decision.selected_model_id())) }
+    |target: ModelId, _request: Request| async move { Ok(reply(target)) }
 }
 
 /// A buffered response whose completion text is `completion`.

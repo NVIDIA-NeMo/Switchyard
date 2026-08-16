@@ -75,6 +75,12 @@ Each target references an entry under `llm_clients`. All configured clients use
 `anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`,
 `llm_classifier`, and `stage_router`. An `api_key_env` value names an environment variable; the TOML
 never contains the secret itself. If omitted, the client sends no authentication.
+A client can set `forward_auth = true` instead of `api_key_env` to send the
+caller's credential to the configured upstream. OpenAI clients forward
+`authorization`, `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients
+forward `authorization` or `x-api-key`. Enable this only when every forwarding
+client's `base_url` should receive the caller's login. A forwarding route must
+be called through the matching provider API.
 Target-level `extra_body` values are shallow-merged into the upstream request when
 the request does not already contain that key.
 `max_retries` defaults to `2` and applies to transport failures, timeouts, HTTP 408/429, and 5xx
@@ -88,8 +94,10 @@ for equal weighting. The optional `seed` reproduces the selection sequence for t
 Pass `--routing-log-file PATH` to append one JSON record after each completed routed response.
 Streaming responses are recorded after the stream drains. When enabled,
 `GET /v1/routing/session-stats?session_id=ID` rescans the durable log and returns call and token
-totals for that exact `proxy_x_session_id`, grouped by served model. The endpoint returns `404` when
-the session has no records and is not registered when routing logging is disabled.
+totals for that normalized session ID, normally supplied as `x-switchyard-session-id`, grouped by
+served model. The legacy `proxy_x_session_id` remains a fallback when no normalized session ID is
+present. The endpoint returns `404` when the session has no records and is not registered when
+routing logging is disabled.
 
 An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
 routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only

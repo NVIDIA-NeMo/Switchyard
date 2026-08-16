@@ -33,9 +33,10 @@ tokio = { version = "1", features = ["macros", "rt"] }
 A target is a bare model id naming a routing destination. An [`Algorithm`] selects targets and
 records [`Decision`](switchyard_protocol::Decision)s, offloading every model call
 to its caller: [`Algorithm::run_stream`] yields a [`Step`] stream whose
-[`Step::CallModel`] items the host serves over its own transport. libsy makes no
-network calls itself — `switchyard-llm-client`'s `run` is a ready-made consumer
-that drives the stream and performs the calls over HTTP.
+[`Step::CallModel`] items the host serves over its own transport. Each call carries
+an ordered, non-empty list of candidate models; the host tries them until one
+answers. libsy makes no network calls itself — `switchyard-llm-client`'s `run` is
+a ready-made consumer that drives the stream and performs the calls over HTTP.
 
 The provider-neutral [`Request`], [`Response`], [`Usage`], and [`LlmResponse`]
 contracts come from `switchyard-protocol`.

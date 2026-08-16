@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{Request as HttpRequest, StatusCode};
+use axum::http::{HeaderMap, Request as HttpRequest, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
@@ -48,6 +48,15 @@ impl MockUpstream {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
             .route("/v1/chat/completions", post(upstream_chat))
+            .route(
+                "/v1/messages",
+                post(upstream_messages_requires_forwarded_oauth),
+            )
+            .route(
+                "/v1/responses",
+                post(upstream_responses_requires_forwarded_auth),
+            )
+            .route("/capture", post(upstream_redirect_capture))
             .route("/v1/messages/count_tokens", post(upstream_count_tokens))
             .layer(DefaultBodyLimit::disable())
             .with_state(Arc::clone(&calls));
@@ -164,6 +173,13 @@ async fn upstream_chat(
                 .is_some_and(|content| content.contains("invalid verdict"))
         })
     });
+    let requests_schema_invalid_verdict = body["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("schema-invalid verdict"))
+        })
+    });
     let content = if model == "model/classifier" && custom_target_schema {
         if requests_invalid_verdict {
             r#"{"decision":{"target":"unknown"}}"#
@@ -176,6 +192,8 @@ async fn upstream_chat(
             .is_some()
     {
         r#"{"escalate":false,"reason":"making progress"}"#
+    } else if model == "model/classifier" && requests_schema_invalid_verdict {
+        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#
     } else if model == "model/classifier" {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
     } else {
@@ -200,6 +218,113 @@ async fn upstream_chat(
     .into_response()
 }
 
+async fn upstream_messages_requires_forwarded_oauth(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(body.clone());
+    let has_expected_headers = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        == Some("Bearer claude-oauth-token")
+        && headers
+            .get("anthropic-beta")
+            .and_then(|value| value.to_str().ok())
+            == Some("oauth-2025-04-20")
+        && headers
+            .get("anthropic-version")
+            .and_then(|value| value.to_str().ok())
+            == Some("2023-06-01")
+        && !headers.contains_key("chatgpt-account-id")
+        && !headers.contains_key("x-openai-fedramp");
+    if !has_expected_headers {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "missing forwarded Anthropic OAuth headers"}})),
+        )
+            .into_response();
+    }
+    Json(json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": body["model"],
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+    .into_response()
+}
+
+async fn upstream_responses_requires_forwarded_auth(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(body.clone());
+    if headers.contains_key("x-test-redirect") {
+        return (StatusCode::TEMPORARY_REDIRECT, [("location", "/capture")]).into_response();
+    }
+    if headers.contains_key("x-test-echo-auth") {
+        let authorization = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": authorization}})),
+        )
+            .into_response();
+    }
+    let has_expected_headers = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        == Some("Bearer codex-login-token")
+        && headers
+            .get("chatgpt-account-id")
+            .and_then(|value| value.to_str().ok())
+            == Some("account-123")
+        && headers
+            .get("x-openai-fedramp")
+            .and_then(|value| value.to_str().ok())
+            == Some("true")
+        && !headers.contains_key("x-api-key")
+        && !headers.contains_key("anthropic-beta");
+    if !has_expected_headers {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "missing forwarded OpenAI login"}})),
+        )
+            .into_response();
+    }
+    Json(json!({
+        "id": "resp_test",
+        "object": "response",
+        "model": body["model"],
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "ok"}]
+        }],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+    }))
+    .into_response()
+}
+
+async fn upstream_redirect_capture(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    headers: HeaderMap,
+) -> HttpResponse {
+    calls.lock().await.push(json!({
+        "redirected": true,
+        "has_authorization": headers.contains_key("authorization")
+    }));
+    StatusCode::OK.into_response()
+}
+
 async fn upstream_count_tokens(
     State(calls): State<Arc<Mutex<Vec<Value>>>>,
     Json(body): Json<Value>,
@@ -212,6 +337,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
     let backend = Backend::OpenAiChat(HttpBackendConfig {
         base_url: base_url.to_string(),
         api_key: Some("test-key".to_string()),
+        forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
         max_retries: 0,
@@ -486,6 +612,15 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         )
         .is_some()
     );
+    for metric in [
+        "switchyard_model_call_latency_ms_bucket",
+        "switchyard_total_latency_ms_bucket",
+    ] {
+        assert!(
+            metric_line(metrics, metric, &[("model", MODEL), ("le", "300000")]).is_some(),
+            "missing five-minute bucket for {metric}"
+        );
+    }
     assert!(
         metric_line(
             metrics,
@@ -1026,7 +1161,7 @@ selector = "/decision/target"
 }
 
 #[tokio::test]
-async fn classifier_prompt_overrides_reach_every_server_mode() -> TestResult {
+async fn classifier_contract_overrides_reach_every_server_mode() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
         r#"
@@ -1057,6 +1192,7 @@ strong_target = "strong"
 weak_target = "weak"
 base_threshold = 0.5
 prompt = "CUSTOM CAPABILITY"
+response_format_type = "json_object"
 
 [routes.escalation]
 id = "switchyard/escalation"
@@ -1066,6 +1202,7 @@ classifier_target = "classifier"
 strong_target = "strong"
 weak_target = "weak"
 prompt = "CUSTOM ESCALATION"
+response_format_type = "json_object"
 escalation = {{ confirmations = 1 }}
 
 [routes.stage]
@@ -1085,10 +1222,20 @@ prompt = "CUSTOM STAGE"
     ))?;
     let app = build_switchyard_router(state);
 
-    for (route, prompt_prefix, schema_field) in [
-        ("switchyard/capability", "CUSTOM CAPABILITY", "p_solve"),
-        ("switchyard/escalation", "CUSTOM ESCALATION", "escalate"),
-        ("switchyard/stage", "CUSTOM STAGE", "p_solve"),
+    for (route, prompt_prefix, schema_field, json_object) in [
+        (
+            "switchyard/capability",
+            "CUSTOM CAPABILITY",
+            "p_solve",
+            true,
+        ),
+        (
+            "switchyard/escalation",
+            "CUSTOM ESCALATION",
+            "escalate",
+            true,
+        ),
+        ("switchyard/stage", "CUSTOM STAGE", "p_solve", false),
     ] {
         upstream.calls.lock().await.clear();
         let response = send(
@@ -1112,13 +1259,115 @@ prompt = "CUSTOM STAGE"
             .as_str()
             .ok_or("classifier prompt was not text")?;
         assert!(prompt.starts_with(prompt_prefix), "{route}: {prompt}");
-        assert!(
-            judge_call["response_format"]["json_schema"]["schema"]["properties"]
-                .get(schema_field)
-                .is_some(),
-            "{route}: missing {schema_field} in {judge_call}"
-        );
+        if json_object {
+            assert_eq!(
+                judge_call["response_format"],
+                json!({"type": "json_object"}),
+                "{route}: {judge_call}"
+            );
+            assert!(prompt.contains("JSON Schema"), "{route}: {prompt}");
+            assert!(
+                prompt.contains(&format!("\"{schema_field}\"")),
+                "{route}: missing {schema_field} in {prompt}"
+            );
+        } else {
+            assert!(
+                judge_call["response_format"]["json_schema"]["schema"]["properties"]
+                    .get(schema_field)
+                    .is_some(),
+                "{route}: missing {schema_field} in {judge_call}"
+            );
+        }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn stage_classifier_can_request_json_object_output() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 1.0
+
+[routes.stage.classifier]
+target = "classifier"
+base_threshold = 0.5
+response_format_type = "json_object"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/stage",
+            "messages": [{"role": "user", "content": "bounded task"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let calls = upstream.calls.lock().await;
+    let judge_call = calls
+        .iter()
+        .find(|call| call["model"] == "model/classifier")
+        .ok_or("classifier target was not called")?;
+    assert_eq!(
+        judge_call["response_format"],
+        json!({"type": "json_object"})
+    );
+    let prompt = judge_call["messages"][0]["content"]
+        .as_str()
+        .ok_or("classifier prompt was not text")?;
+    assert!(prompt.contains("JSON Schema"), "{prompt}");
+    assert!(prompt.contains("\"p_solve\""), "{prompt}");
+
+    drop(calls);
+    let invalid_response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/stage",
+            "messages": [{"role": "user", "content": "return a schema-invalid verdict"}]
+        })),
+    )
+    .await?;
+    assert_eq!(invalid_response.status, StatusCode::OK);
+    assert_eq!(
+        invalid_response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/weak")
+    );
     Ok(())
 }
 
@@ -1167,6 +1416,142 @@ targets = ["other", "strong"]
     assert_eq!(calls.len(), 1);
     // The inbound route name is rewritten to the real upstream model.
     assert_eq!(calls[0]["model"], "real/opus");
+    Ok(())
+}
+
+#[tokio::test]
+async fn anthropic_client_forwards_oauth_when_configured() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.claude]
+format = "anthropic_messages"
+base_url = "{base_url}"
+forward_auth = true
+max_retries = 0
+
+[targets.claude]
+id = "claude-opus"
+llm_client = "claude"
+
+[routes.claude]
+id = "switchyard/claude"
+type = "passthrough"
+target = "claude"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/messages",
+        Some(json!({
+            "model": "switchyard/claude",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+        &[
+            ("authorization", "Bearer claude-oauth-token"),
+            ("anthropic-beta", "oauth-2025-04-20,unsupported-beta"),
+            ("chatgpt-account-id", "must-not-cross-providers"),
+            ("x-openai-fedramp", "must-not-cross-providers"),
+        ],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    let wrong_api = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({"model": "switchyard/claude", "input": "hello"})),
+        &[("authorization", "Bearer codex-login-token")],
+    )
+    .await?;
+    assert_eq!(wrong_api.status, StatusCode::BAD_REQUEST);
+    assert_eq!(upstream.calls.lock().await.len(), 1);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn responses_client_forwards_openai_login_when_configured() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.openai]
+format = "openai_responses"
+base_url = "{base_url}"
+forward_auth = true
+max_retries = 0
+
+[targets.openai]
+id = "gpt-codex"
+llm_client = "openai"
+
+[routes.openai]
+id = "switchyard/codex"
+type = "passthrough"
+target = "openai"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({"model": "switchyard/codex", "input": "hello"})),
+        &[
+            ("authorization", "Bearer codex-login-token"),
+            ("chatgpt-account-id", "account-123"),
+            ("x-openai-fedramp", "true"),
+            ("x-api-key", "must-not-cross-providers"),
+            ("anthropic-beta", "oauth-must-not-cross-providers"),
+        ],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    let redirect = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({"model": "switchyard/codex", "input": "hello"})),
+        &[
+            ("authorization", "Bearer codex-login-token"),
+            ("chatgpt-account-id", "account-123"),
+            ("x-openai-fedramp", "true"),
+            ("x-test-redirect", "1"),
+        ],
+    )
+    .await?;
+    assert_eq!(redirect.status, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(upstream.calls.lock().await.len(), 2);
+
+    let echoed_auth = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({"model": "switchyard/codex", "input": "hello"})),
+        &[
+            ("authorization", "Bearer codex-login-token"),
+            ("x-test-echo-auth", "1"),
+        ],
+    )
+    .await?;
+    assert_eq!(echoed_auth.status, StatusCode::UNAUTHORIZED);
+    let error = echoed_auth.text()?;
+    assert!(error.contains("[REDACTED]"));
+    assert!(!error.contains("codex-login-token"));
+
     Ok(())
 }
 
@@ -1489,8 +1874,10 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
     Ok(())
 }
 
+// Normalized metadata is authoritative when both ID forms are present;
+// legacy-only callers remain supported for backward compatibility.
 #[tokio::test]
-async fn routing_log_exposes_session_stats() -> TestResult {
+async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let temp_dir = tempfile::tempdir()?;
     let log_path = temp_dir.path().join("routing.jsonl");
@@ -1502,7 +1889,8 @@ async fn routing_log_exposes_session_stats() -> TestResult {
         .method("POST")
         .uri("/v1/chat/completions")
         .header("content-type", "application/json")
-        .header("proxy_x_session_id", "session-1")
+        .header("x-switchyard-session-id", "canonical-session")
+        .header("proxy_x_session_id", "legacy-session")
         .body(Body::from(serde_json::to_vec(&json!({
             "model": ROUTE_MODEL,
             "messages": [{"role": "user", "content": "hello"}]
@@ -1513,19 +1901,53 @@ async fn routing_log_exposes_session_stats() -> TestResult {
     let stats = send(
         &app,
         "GET",
-        "/v1/routing/session-stats?session_id=session-1",
+        "/v1/routing/session-stats?session_id=canonical-session",
         None,
     )
-    .await?
-    .json()?;
+    .await?;
+    assert_eq!(stats.status, StatusCode::OK);
+    let stats = stats.json()?;
     assert_eq!(stats["total_calls"], 1);
     assert_eq!(stats["total_prompt_tokens"], 10);
     assert_eq!(stats["total_cached_tokens"], 7);
     assert_eq!(stats["models"]["model/a"]["completion_tokens"], 2);
 
+    let legacy = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=legacy-session",
+        None,
+    )
+    .await?;
+    assert_eq!(legacy.status, StatusCode::NOT_FOUND);
+
+    let legacy_only = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+        &[("proxy_x_session_id", "legacy-only-session")],
+    )
+    .await?;
+    assert_eq!(legacy_only.status, StatusCode::OK);
+
+    let legacy_stats = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=legacy-only-session",
+        None,
+    )
+    .await?;
+    assert_eq!(legacy_stats.status, StatusCode::OK);
+    assert_eq!(legacy_stats.json()?["total_calls"], 1);
+
     let records = std::fs::read_to_string(log_path)?;
     let first: Value =
         serde_json::from_str(records.lines().next().ok_or("routing log was empty")?)?;
+    assert_eq!(first["session_id"], "canonical-session");
     assert!(
         first["ts"]
             .as_str()
@@ -1534,93 +1956,45 @@ async fn routing_log_exposes_session_stats() -> TestResult {
     Ok(())
 }
 
-// Overflow history is isolated per child, cleared with the session, and not retained when a
-// child lacks an agent ID.
 #[tokio::test]
-async fn overflow_history_is_scoped_to_agent_and_session_lifetime() -> TestResult {
+async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> TestResult {
     let upstream = MockUpstream::start().await?;
-    let state = fallback_state(&upstream.base_url)?;
+    let temp_dir = tempfile::tempdir()?;
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
+        .with_routing_log(temp_dir.path().join("routing.jsonl"))?;
     let app = build_switchyard_router(state);
-    let child_a = [
-        ("x-switchyard-session-id", "shared-session"),
-        ("x-switchyard-agent-id", "child-a"),
-        ("x-switchyard-is-subagent", "true"),
-    ];
-    let root = [
-        ("x-switchyard-session-id", "shared-session"),
-        ("x-switchyard-agent-id", "root"),
-        ("x-switchyard-is-subagent", "false"),
-    ];
-    let child_b = [
-        ("x-switchyard-session-id", "shared-session"),
-        ("x-switchyard-agent-id", "child-b"),
-        ("x-switchyard-is-subagent", "true"),
-    ];
-    let child_without_agent_id = [
-        ("x-switchyard-session-id", "shared-session"),
-        ("x-switchyard-is-subagent", "true"),
-    ];
-    let final_root = [
-        ("x-switchyard-session-id", "shared-session"),
-        ("x-switchyard-agent-id", "root"),
-        ("x-switchyard-is-subagent", "false"),
-        ("x-switchyard-session-final", "true"),
-    ];
-    type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str]);
-    let cases: [Case<'_>; 8] = [
-        (
-            "overflow",
-            child_a.as_slice(),
-            &["model/weak", "model/strong"],
-        ),
-        ("fits", child_a.as_slice(), &["model/strong"]),
-        ("fits", root.as_slice(), &["model/weak"]),
-        ("fits", child_b.as_slice(), &["model/weak"]),
-        ("fits", final_root.as_slice(), &["model/weak"]),
-        ("fits", child_a.as_slice(), &["model/weak"]),
-        (
-            "overflow",
-            child_without_agent_id.as_slice(),
-            &["model/weak", "model/strong"],
-        ),
-        (
-            "overflow",
-            child_without_agent_id.as_slice(),
-            &["model/weak", "model/strong"],
-        ),
-    ];
 
-    for (content, headers, expected_calls) in cases {
-        let previous_call_count = upstream.calls.lock().await.len();
-        let response = send_with_headers(
-            &app,
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({
-                "model": ROUTE_MODEL,
-                "messages": [{"role": "user", "content": content}]
-            })),
-            headers,
-        )
-        .await?;
-        assert_eq!(response.status, StatusCode::OK);
-        let expected_model = expected_calls.last().copied();
-        assert_eq!(
-            response
-                .headers
-                .get("x-model-router-selected-model")
-                .and_then(|value| value.to_str().ok()),
-            expected_model
-        );
-        let calls = upstream.calls.lock().await;
-        assert_eq!(
-            calls[previous_call_count..]
-                .iter()
-                .map(|call| call["model"].as_str().unwrap_or(""))
-                .collect::<Vec<_>>(),
-            expected_calls
-        );
-    }
+    // `send_with_headers` collects the response body, so the stream wrapper reaches
+    // its terminal usage record before the stats query runs.
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": true
+        })),
+        &[("x-switchyard-session-id", "streaming-session")],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(response.text()?.contains("data: [DONE]"));
+
+    let stats = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=streaming-session",
+        None,
+    )
+    .await?;
+    assert_eq!(stats.status, StatusCode::OK);
+    let stats = stats.json()?;
+    assert_eq!(stats["total_calls"], 1);
+    assert_eq!(stats["total_prompt_tokens"], 12);
+    assert_eq!(stats["total_cached_tokens"], 7);
+    assert_eq!(stats["total_cache_creation_tokens"], 2);
+    assert_eq!(stats["total_completion_tokens"], 5);
     Ok(())
 }
 
@@ -1664,15 +2038,7 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
                 .and_then(|value| value.to_str().ok()),
             Some("model/strong")
         );
-        assert_eq!(
-            response
-                .headers
-                .get("x-model-router-rationale")
-                .and_then(|value| value.to_str().ok()),
-            Some(
-                "model/weak was unavailable; fell back to model/strong (fallback reason: unavailable)"
-            )
-        );
+        assert_eq!(response.json()?["model"], "model/strong");
         let calls = upstream.calls.lock().await;
         assert_eq!(
             calls[previous_call_count..]
@@ -1684,9 +2050,11 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
     }
 
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-    // Fallback cause is now carried in decision reasoning rather than structured stats/logs.
+    // Fallback causes are logged rather than accumulated in the legacy stats counters.
     assert_eq!(stats["routing_fallbacks"]["unavailable"], 0);
     assert_eq!(stats["routing_fallbacks"]["context_window"], 0);
+    assert_eq!(stats["models"]["model/strong"]["calls"], 3);
+    assert_eq!(stats["models"]["model/weak"]["errors"], 3);
 
     let records = std::fs::read_to_string(&log_path)?;
     let records = records

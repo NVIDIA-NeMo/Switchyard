@@ -82,7 +82,7 @@ mod tests {
         let mut state = TestState::default();
         let mut req = request();
         let response = text_response(None, "ok");
-        let decision = Decision::new("test/model", None, true);
+        let decision = Decision::new("test/model", true);
         // Feed one of every event variant through the processor.
         processor
             .process(&mut state, Event::Request(&mut req))
@@ -141,14 +141,14 @@ mod tests {
     async fn processor_rewrites_the_request_in_place() -> Result<()> {
         let mut state = ();
         let mut req = request();
-        assert_eq!(req.requested_model(), Some("auto"));
+        assert_eq!(req.model_id(), Some("auto".into()));
 
         RewritingProcessor
             .process(&mut state, Event::Request(&mut req))
             .await?;
 
         // The edit outlives the call, so the next component sees the rewritten request.
-        assert_eq!(req.requested_model(), Some("rewritten"));
+        assert_eq!(req.model_id(), Some("rewritten".into()));
         Ok(())
     }
 }

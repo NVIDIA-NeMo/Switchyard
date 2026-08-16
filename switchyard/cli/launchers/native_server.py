@@ -3,8 +3,6 @@
 
 """Native Rust server lifecycle for coding-agent launchers."""
 
-from __future__ import annotations
-
 import json
 import logging
 import urllib.request
@@ -47,6 +45,10 @@ class NativeServer:
         self.port: int = self._server.port
         self.base_url: str = self._server.base_url
         self.stats: StatsSource = HttpStatsSource(self.base_url)
+
+    def caller_auth_kind(self, model: str) -> str | None:
+        """Return which caller credential the route forwards, if any."""
+        return self._server.caller_auth_kind(model)
 
     def close(self) -> None:
         """Gracefully stop the native server."""

@@ -8,7 +8,7 @@ import asyncio
 
 from switchyard_litellm import LiteLLMSyClient
 
-from switchyard.libsy import LlmTarget, algorithms
+from switchyard.libsy import Step, algorithms
 
 
 def sy_request() -> dict[str, object]:
@@ -60,21 +60,30 @@ def sy_request() -> dict[str, object]:
 
 async def main() -> None:
     """Run the Stage router and print its normalized result."""
-    strong_client = LiteLLMSyClient("strong")
-    fast_client = LiteLLMSyClient("fast")
+    client = LiteLLMSyClient()
     router = algorithms.stage_router(
-        LlmTarget("strong", strong_client),
-        LlmTarget("fast", fast_client),
+        "strong",
+        "fast",
         picker="efficient_first",
         confidence_threshold=0.5,
         recent_window=3,
     )
     try:
-        decisions, response = await router.run(sy_request())
-        print("Stage router:", decisions, response)
+        async for step in router.run_stream(sy_request()):
+            match step:
+                case Step.Decision(decision):
+                    print("Decision:", decision.selected_model_id, decision.reasoning)
+                case Step.CallModel(call):
+                    try:
+                        response = await client.call(call.request)
+                    except Exception as error:
+                        call.fail(error)
+                    else:
+                        call.respond(response)
+                case Step.Done(response):
+                    print("Response:", response)
     finally:
-        await strong_client.aclose()
-        await fast_client.aclose()
+        await client.aclose()
 
 
 if __name__ == "__main__":

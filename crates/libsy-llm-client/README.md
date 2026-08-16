@@ -65,6 +65,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
     let openai = HttpBackendConfig {
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: std::env::var("OPENAI_API_KEY").ok(),
+        forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
         max_retries: 2,
@@ -143,9 +144,9 @@ async fn stream(
 ### Routing an algorithm
 
 [`run`] takes a libsy algorithm and a [`ClientRouter`], and returns the final response plus
-the trace of decisions the algorithm published. The router resolves each offloaded call to
-the client for the target the algorithm selected; `ClientRouter::single` is the
-single-provider case:
+the trace of decisions the algorithm published. Each offloaded `CallModel` carries an ordered
+`models` list. The router resolves and tries those candidates in order; `ClientRouter::single`
+is the single-provider case:
 
 ```rust
 use std::sync::Arc;
@@ -231,9 +232,16 @@ fn build_multi_format_client(
   Anthropic sends `x-api-key: <key>` plus `anthropic-version`.
 - `request.metadata.http_headers` are forwarded upstream, **except** reserved ones:
   `host`, `content-length`, `connection`, and the backend-owned
-  `authorization` / `x-api-key` / `anthropic-version` / `content-type`. So a
-  caller's placeholder credential never overrides the backend's real key.
-- Per-backend static headers go in `HttpBackendConfig::extra_headers`.
+  login, API-key, version, and content headers. So a caller's placeholder
+  credential never overrides the backend's real key.
+- `HttpBackendConfig::forward_auth` uses the caller's credential instead of the
+  backend's configured key. OpenAI backends forward `authorization`,
+  `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic backends forward
+  `authorization` or `x-api-key`; they also keep `oauth-*` values from
+  `anthropic-beta` and remove other caller-supplied beta values.
+- Per-backend custom headers go in `HttpBackendConfig::extra_headers`. Set credentials with
+  `api_key`. OpenAI backends reject `Authorization`; Anthropic backends reject `x-api-key`
+  and `anthropic-version`. Header names are case-insensitive.
 - Per-target top-level request defaults go in `HttpBackendConfig::extra_body`.
   The merge is shallow and fields already present in the request take precedence.
 - `HttpBackendConfig::max_retries` controls additional attempts after retryable
@@ -241,9 +249,12 @@ fn build_multi_format_client(
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
 
-Retries replay the same upstream request. A transport failure can therefore
-duplicate a request that the provider processed but did not finish returning,
-and the retry budget plus capped `Retry-After` delays determines total latency.
+Retries replay the same upstream request to the same model. Each candidate's
+`max_retries` budget is exhausted before candidate fallback advances to the next
+model. The worst case is `candidates × (max_retries + 1)` upstream requests, and
+total latency includes every candidate's capped `Retry-After` backoff. A transport
+failure can duplicate a request that the provider processed but did not finish
+returning.
 
 ## Errors
 

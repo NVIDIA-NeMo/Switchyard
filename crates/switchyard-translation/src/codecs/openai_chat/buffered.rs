@@ -700,18 +700,30 @@ fn encode_message_with_tool_results_to_openai(
 
     for block in &message.content {
         if let ContentBlock::ToolResult(result) = block {
-            push_pending_openai_message(
-                &mut out,
-                message.role,
-                &mut pending_content,
-                diagnostics,
-                policy,
-            )?;
             out.push(json!({
                 "role": "tool",
                 "tool_call_id": result.tool_call_id,
                 "content": text_from_blocks(&result.content, " "),
             }));
+            let non_text = result
+                .content
+                .iter()
+                .filter(|block| {
+                    !matches!(
+                        block,
+                        ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !non_text.is_empty() {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "OpenAI Chat tool messages only support text; non-text tool-result content was moved to a user message",
+                )?;
+                pending_content.extend(non_text);
+            }
         } else {
             pending_content.push(block.clone());
         }
@@ -956,6 +968,18 @@ fn openai_image_part(source: &ImageSource) -> Option<Value> {
 // Recognizes common raw image shapes emitted by Anthropic and Responses.
 fn openai_raw_image_part(raw: &Value) -> Option<Value> {
     let object = raw.as_object()?;
+    let object = if object.get("type").and_then(Value::as_str) == Some("image") {
+        let source = object.get("source").and_then(Value::as_object)?;
+        if !matches!(
+            source.get("type").and_then(Value::as_str),
+            Some("base64" | "url")
+        ) {
+            return None;
+        }
+        source
+    } else {
+        object
+    };
     if let Some(url) = object.get("url").and_then(Value::as_str) {
         return Some(json!({"type": "image_url", "image_url": {"url": url}}));
     }
@@ -999,8 +1023,26 @@ fn openai_file_part(source: &FileSource) -> Option<Value> {
             }
             Some(json!({"type": "file", "file": file}))
         }
-        FileSource::Raw(_) => None,
+        FileSource::Raw(raw) => openai_raw_file_part(raw),
     }
+}
+
+// Maps portable fields from raw Anthropic documents without forwarding provider-managed IDs.
+fn openai_raw_file_part(raw: &Value) -> Option<Value> {
+    let block = raw.as_object()?;
+    if block.get("type").and_then(Value::as_str) != Some("document") {
+        return None;
+    }
+    let source = block.get("source").and_then(Value::as_object)?;
+    if source.get("type").and_then(Value::as_str) != Some("base64") {
+        return None;
+    }
+    let data = source.get("data").and_then(Value::as_str)?;
+    let mut file = json!({"file_data": data});
+    if let Some(title) = block.get("title").and_then(Value::as_str) {
+        file["filename"] = Value::String(title.to_string());
+    }
+    Some(json!({"type": "file", "file": file}))
 }
 
 // Converts file sources to deterministic text fallback content.

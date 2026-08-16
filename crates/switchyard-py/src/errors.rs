@@ -8,6 +8,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 create_exception!(_switchyard_rust, LibsyError, PyRuntimeError);
+create_exception!(_switchyard_rust, ContextWindowExceededError, PyRuntimeError);
 
 /// Converts libsy execution failures into one stable Python exception.
 pub(crate) fn py_libsy_error(error: impl std::fmt::Display) -> PyErr {
@@ -15,5 +16,9 @@ pub(crate) fn py_libsy_error(error: impl std::fmt::Display) -> PyErr {
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add("LibsyError", module.py().get_type::<LibsyError>())
+    module.add("LibsyError", module.py().get_type::<LibsyError>())?;
+    module.add(
+        "ContextWindowExceededError",
+        module.py().get_type::<ContextWindowExceededError>(),
+    )
 }

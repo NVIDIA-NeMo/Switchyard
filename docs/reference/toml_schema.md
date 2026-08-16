@@ -45,11 +45,36 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `format` | Yes | — | `openai_chat`, `openai_responses`, or `anthropic_messages`. |
 | `base_url` | Yes | — | Upstream base URL. |
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
-| `extra_headers` | No | `{}` | Extra HTTP headers sent upstream. |
+| `forward_auth` | No | `false` | Forward the caller's provider credential to this upstream. |
+| `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.
+
+Set `forward_auth = true` to use each caller's credential instead of a
+server-owned key:
+
+```toml
+[llm_clients.claude]
+format = "anthropic_messages"
+base_url = "https://api.anthropic.com"
+forward_auth = true
+```
+
+`forward_auth` cannot be combined with `api_key_env`. OpenAI clients forward
+`authorization`, `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients
+forward `authorization` or `x-api-key`; for Claude subscription OAuth, they also
+forward `oauth-*` values from `anthropic-beta` and remove all other inbound beta
+values.
+
+This setting gives `base_url` the caller's login. Enable it only when that
+upstream should receive the credential, and use HTTPS unless the upstream runs
+on loopback. Forwarding clients do not follow HTTP redirects. Check every
+forwarding client used by a route, including classifier and judge targets. The
+server rejects an Anthropic forwarding route called through an OpenAI endpoint,
+or an OpenAI forwarding route called through an Anthropic endpoint, before it
+calls an upstream.
 
 ## `[targets.<name>]`
 
@@ -118,6 +143,7 @@ Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Yes | — | Target the judge is called through. Not a routing destination. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+| `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
 
 Capability mode classifies before serving. See
 [LLM Classifier Routing](../routing_algorithms/llm_classifier_routing.md).
@@ -161,8 +187,9 @@ policy selector, and routes to any configured target label.
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 
-Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard sends the
-schema only through the provider's structured-output request.
+Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
+the schema automatically: through the structured-output request in `json_schema`
+mode, or in the prompt in `json_object` mode.
 
 ### `stage_router`
 
@@ -179,6 +206,7 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
 | `capable_system_prompt` | No | unset | System prompt handed to the capable tier. |
 | `efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
+| `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
 
 ## Validation Errors
 

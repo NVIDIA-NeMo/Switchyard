@@ -16,10 +16,9 @@ name = "_switchyard_rust"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-async-trait.workspace = true
+futures.workspace = true
 http.workspace = true
 switchyard-libsy.workspace = true
-switchyard-llm-client.workspace = true
 pyo3 = { version = "0.28.3", features = ["abi3-py310", "extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 pythonize = "0.28.0"

@@ -20,8 +20,10 @@ What else did you try or consider? Why is the proposal preferable?
 
 ## Scope notes
 
-- Is this a new role/component in the chain (RequestProcessor / LLMBackend / ResponseProcessor / ResponseTranslator), or an extension of an existing one?
-- Does it touch a public API listed in `switchyard/__init__.py.__all__`?
+- Which surface owns the change: server API or configuration, routing algorithm,
+  protocol type, translation codec, upstream client, skill-distillation contract,
+  Python binding, or launcher?
+- Does it change a public Rust, PyO3, Python, CLI, or deployment-TOML interface?
 - Backward-compatibility concerns?
 
 ## Additional context
