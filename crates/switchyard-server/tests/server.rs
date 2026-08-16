@@ -2467,8 +2467,9 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
 async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let temp_dir = tempfile::tempdir()?;
+    let log_path = temp_dir.path().join("routing.jsonl");
     let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
-        .with_routing_log(temp_dir.path().join("routing.jsonl"))?;
+        .with_routing_log(&log_path)?;
     let app = build_switchyard_router(state);
 
     // `send_with_headers` collects the response body, so the stream wrapper reaches
@@ -2502,6 +2503,72 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
     assert_eq!(stats["total_cached_tokens"], 7);
     assert_eq!(stats["total_cache_creation_tokens"], 2);
     assert_eq!(stats["total_completion_tokens"], 5);
+
+    let records = std::fs::read_to_string(log_path)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record["event"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>(),
+        [
+            "request_start",
+            "decision",
+            "start",
+            "ttfb",
+            "usage",
+            "completion"
+        ]
+    );
+    assert!(records.iter().all(|record| {
+        record["request_id"].as_str() == records[0]["request_id"].as_str()
+            && record["elapsed_ms"].as_f64().is_some() != (record["event"] == "usage")
+    }));
+    assert_eq!(
+        records.last().and_then(|record| record["outcome"].as_str()),
+        Some("ok")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn routing_log_records_stream_cancellation_without_usage() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let log_path = temp_dir.path().join("routing.jsonl");
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
+        .with_routing_log(&log_path)?;
+    let app = build_switchyard_router(state);
+
+    let request = HttpRequest::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("x-switchyard-session-id", "cancelled-session")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": true
+        }))?))?;
+    let response = app.oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+
+    let records = std::fs::read_to_string(log_path)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record["event"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>(),
+        ["request_start", "decision", "start", "completion"]
+    );
+    assert_eq!(records[3]["outcome"], "cancelled");
+    assert!(records.iter().all(|record| record["event"] != "usage"));
     Ok(())
 }
 
@@ -2568,8 +2635,12 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         .lines()
         .map(serde_json::from_str::<Value>)
         .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(records.len(), 3);
-    assert!(records.iter().all(|record| {
+    let usage_records = records
+        .iter()
+        .filter(|record| record["event"] == "usage")
+        .collect::<Vec<_>>();
+    assert_eq!(usage_records.len(), 3);
+    assert!(usage_records.iter().all(|record| {
         record["model"] == "model/strong" && record.get("fallback_reason").is_none()
     }));
 

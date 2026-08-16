@@ -94,6 +94,7 @@ if TYPE_CHECKING:
             *,
             threshold_step: float = 0.0,
             session_affinity: bool = False,
+            turn_affinity: bool = False,
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
             max_output_tokens: int = 4096,

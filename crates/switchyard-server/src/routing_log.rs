@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
@@ -20,6 +22,7 @@ use crate::{ServerError, ServerResult};
 const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
 const TASK_HEADER: &str = "x-switchyard-intake-task";
 const TRIAL_ID_HEADER: &str = "x-switchyard-trial-id";
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Append-only writer for one routing JSONL file.
 pub(crate) struct RoutingLog(fs::File);
@@ -41,7 +44,7 @@ impl RoutingLog {
         Ok(Self(file))
     }
 
-    pub(crate) fn append(
+    pub(crate) fn append_usage(
         &mut self,
         context: RoutingLogContext,
         model: &str,
@@ -51,9 +54,12 @@ impl RoutingLog {
         let usage = token_usage(usage);
         let record = RoutingRecord {
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
+            event: "usage".into(),
             task: context.task.map(Cow::Owned),
             trial_id: context.trial_id.map(Cow::Owned),
             session_id: context.session_id.map(Cow::Owned),
+            request_id: Some(context.request_id.into()),
+            correlation_id: context.correlation_id.map(Cow::Owned),
             model: model.into(),
             tier: tier.unwrap_or("").into(),
             prompt_tokens: usage.prompt_tokens,
@@ -62,7 +68,37 @@ impl RoutingLog {
             completion_tokens: usage.completion_tokens,
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
+            ..RoutingRecord::default()
         };
+        self.write_record(&record)
+    }
+
+    /// Appends one request-lifecycle event without depending on provider token usage.
+    pub(crate) fn append_event(
+        &mut self,
+        context: RoutingLogContext,
+        event: &str,
+        model: &str,
+        elapsed: Duration,
+        outcome: Option<&str>,
+    ) -> std::io::Result<()> {
+        let record = RoutingRecord {
+            ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
+            event: event.into(),
+            task: context.task.map(Cow::Owned),
+            trial_id: context.trial_id.map(Cow::Owned),
+            session_id: context.session_id.map(Cow::Owned),
+            request_id: Some(context.request_id.into()),
+            correlation_id: context.correlation_id.map(Cow::Owned),
+            model: model.into(),
+            outcome: outcome.unwrap_or("").into(),
+            elapsed_ms: Some(elapsed.as_secs_f64() * 1_000.0),
+            ..RoutingRecord::default()
+        };
+        self.write_record(&record)
+    }
+
+    fn write_record(&mut self, record: &RoutingRecord<'_>) -> std::io::Result<()> {
         let mut line = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
         line.push(b'\n');
 
@@ -101,6 +137,8 @@ pub(crate) struct RoutingLogContext {
     task: Option<String>,
     trial_id: Option<String>,
     session_id: Option<String>,
+    request_id: String,
+    correlation_id: Option<String>,
 }
 
 impl RoutingLogContext {
@@ -119,6 +157,12 @@ impl RoutingLogContext {
                     .and_then(|headers| nonempty_header(headers, LEGACY_SESSION_ID_HEADER))
                     .map(str::to_string)
             }),
+            request_id: format!(
+                "local-{}-{}",
+                std::process::id(),
+                NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            correlation_id: metadata.correlation_id.clone(),
         }
     }
 }
@@ -130,14 +174,21 @@ impl RoutingLogContext {
 #[serde(default)]
 struct RoutingRecord<'a> {
     ts: Cow<'a, str>,
+    event: Cow<'a, str>,
     #[serde(borrow)]
     task: Option<Cow<'a, str>>,
     #[serde(borrow)]
     trial_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
     session_id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    request_id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    correlation_id: Option<Cow<'a, str>>,
     model: Cow<'a, str>,
     tier: Cow<'a, str>,
+    outcome: Cow<'a, str>,
+    elapsed_ms: Option<f64>,
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,
@@ -182,6 +233,9 @@ impl SessionStatsSnapshot {
 
     fn add_record(&mut self, record: &RoutingRecord<'_>, session_id: &str) {
         if record.session_id.as_deref() != Some(session_id) {
+            return;
+        }
+        if !matches!(record.event.as_ref(), "" | "usage") {
             return;
         }
         let model = match record.model.as_ref() {
@@ -244,7 +298,11 @@ mod tests {
         fs::write(
             &path,
             concat!(
+                r#"{"event":"start","session_id":"a","model":"route","elapsed_ms":0.1}"#,
+                "\n",
                 r#"{"session_id":"a","model":"m1","fallback_reason":"unavailable","prompt_tokens":10,"completion_tokens":2}"#,
+                "\n",
+                r#"{"event":"completion","session_id":"a","model":"m1","outcome":"ok","elapsed_ms":1.0}"#,
                 "\n",
                 r#"{"session_id":"b","model":"m1","prompt_tokens":99,"completion_tokens":99}"#,
                 "\n",

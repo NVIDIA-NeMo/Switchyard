@@ -91,10 +91,13 @@ for equal weighting. The optional `seed` reproduces the selection sequence for t
 
 ## Session routing log
 
-Pass `--routing-log-file PATH` to append one JSON record after each completed routed response.
-Streaming responses are recorded after the stream drains. When enabled,
+Pass `--routing-log-file PATH` to append JSON records for `request_start`, routing
+`decision`, upstream `start`, `ttfb`, `usage`, and `completion` events. Completion records do not depend on
+provider usage and report `ok`, `error`, or `cancelled`; streaming responses complete when
+the stream drains or is dropped. When enabled,
 `GET /v1/routing/session-stats?session_id=ID` rescans the durable log and returns call and token
-totals for that normalized session ID, normally supplied as `x-switchyard-session-id`, grouped by
+totals from `usage` records for that normalized session ID, normally supplied as
+`x-switchyard-session-id`, grouped by
 served model. The legacy `proxy_x_session_id` remains a fallback when no normalized session ID is
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
@@ -108,6 +111,7 @@ routes to `weak_target` or `strong_target`. Beyond the three targets it accepts 
 | `base_threshold` | *required* | Lowest solve probability that routes a task to `weak_target`. Raise it to send less traffic to the weak model. |
 | `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `session_affinity` | `false` | Reuses a session's first routing decision on later turns, so the judge is called once per session rather than once per turn. |
+| `turn_affinity` | `false` | Reuses a decision across tool-loop continuations until the next human user message. Requires a session identity and cannot be combined with `session_affinity`; modality filtering can replace an incompatible assignment. |
 | `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `session_affinity = true`. |
 
 Session affinity retains a decision for the process lifetime, including a `strong_target`

@@ -6,7 +6,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use switchyard_protocol::{ModelId, Usage};
+use switchyard_protocol::{Decision, ModelId, Usage};
+
+/// One model call observed immediately before it is sent to its routed client.
+#[derive(Clone, Debug)]
+pub struct LlmCallStartObservation {
+    /// Model selected for the call.
+    pub selected_model: ModelId,
+    /// Whether this call generates an answer rather than a routing verdict.
+    pub is_answer_call: bool,
+}
 
 /// One completed model call observed at the algorithm offload boundary.
 #[derive(Clone, Debug)]
@@ -26,6 +35,10 @@ pub struct LlmCallObservation {
 /// One request-scoped observation emitted by the algorithm runner.
 #[derive(Clone, Debug)]
 pub enum RunObservation {
+    /// A routing decision, observed before its answer call starts.
+    RoutingDecision(Decision),
+    /// A model call about to start.
+    LlmCallStarted(LlmCallStartObservation),
     /// A completed model call.
     LlmCall(LlmCallObservation),
     /// Routing time recorded by the `switchyard.routing_overhead_ms` metric.

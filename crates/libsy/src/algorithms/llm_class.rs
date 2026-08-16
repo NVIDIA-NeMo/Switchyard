@@ -13,7 +13,7 @@ use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
 
 use super::fall_through::{DefaultTarget, FallThrough};
 use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
-use super::util::affinity::AffinityRouter;
+use super::util::affinity::{AffinityRouter, TurnAffinityRouter, is_user_turn_message};
 use super::util::classifier_contract::{
     ClassifierContract, ClassifierContractConfig, ClassifierResponseFormat,
 };
@@ -136,9 +136,11 @@ fn window_start(tail: &[&Message], recent_turn_window: usize) -> usize {
     counted
 }
 
-/// Keeps the opening task and the latest user follow-up when they differ.
+/// Keeps the opening task and latest human user follow-up, excluding tool-loop state.
 fn task_messages(messages: &[Message]) -> Vec<Message> {
-    let mut user_messages = messages.iter().filter(|message| message.role == Role::User);
+    let mut user_messages = messages
+        .iter()
+        .filter(|message| is_user_turn_message(message));
     let Some(opening_task) = user_messages.next() else {
         return Vec::new();
     };
@@ -266,6 +268,8 @@ pub struct TaskClassifierConfig {
     pub threshold_step: f64,
     /// Enables session affinity before the judge-backed classifier.
     pub session_affinity: bool,
+    /// Retains the selected target for tool-loop continuations within one user turn.
+    pub turn_affinity: bool,
     /// Uses the first user message as the SessionKey for sticky routing when session metadata is unavailable.
     pub message_hash_fallback: bool,
     /// Trailing conversation turns the judge sees on top of the client
@@ -290,6 +294,8 @@ struct TaskClassifierConfigWire {
     threshold_step: f64,
     #[serde(default)]
     session_affinity: bool,
+    #[serde(default)]
+    turn_affinity: bool,
     #[serde(default)]
     message_hash_fallback: bool,
     #[serde(default)]
@@ -317,6 +323,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
             base_threshold: wire.base_threshold,
             threshold_step: wire.threshold_step,
             session_affinity: wire.session_affinity,
+            turn_affinity: wire.turn_affinity,
             message_hash_fallback: wire.message_hash_fallback,
             recent_turn_window: wire.recent_turn_window,
             contract,
@@ -335,6 +342,7 @@ impl Default for TaskClassifierConfig {
             base_threshold: 0.0,
             threshold_step: 0.0,
             session_affinity: false,
+            turn_affinity: false,
             message_hash_fallback: false,
             recent_turn_window: None,
             contract: ClassifierContractConfig::default(),
@@ -380,6 +388,11 @@ impl TaskClassifierConfig {
                 message: "message_hash_fallback requires session_affinity".to_string(),
             });
         }
+        if self.session_affinity && self.turn_affinity {
+            return Err(LibsyError::AlgorithmError {
+                message: "session_affinity and turn_affinity cannot both be enabled".to_string(),
+            });
+        }
         Ok(())
     }
 }
@@ -414,6 +427,8 @@ pub struct CustomClassifierConfig {
     pub policy: CustomClassifierPolicy,
     /// Enables session affinity before the judge-backed classifier.
     pub session_affinity: bool,
+    /// Retains the selected target for tool-loop continuations within one user turn.
+    pub turn_affinity: bool,
     /// Uses the first user message when session metadata is unavailable.
     pub message_hash_fallback: bool,
     /// Trailing conversation turns shown to the classifier judge.
@@ -436,6 +451,7 @@ impl CustomClassifierConfig {
             response_schema,
             policy,
             session_affinity: false,
+            turn_affinity: false,
             message_hash_fallback: false,
             recent_turn_window: None,
             judge_text_only: false,
@@ -452,6 +468,11 @@ impl CustomClassifierConfig {
         if self.message_hash_fallback && !self.session_affinity {
             return Err(LibsyError::AlgorithmError {
                 message: "message_hash_fallback requires session_affinity".to_string(),
+            });
+        }
+        if self.session_affinity && self.turn_affinity {
+            return Err(LibsyError::AlgorithmError {
+                message: "session_affinity and turn_affinity cannot both be enabled".to_string(),
             });
         }
         Ok(())
@@ -651,6 +672,7 @@ pub struct LlmTaskClassifier {
 struct ClassifierRouteConfig {
     default_target: ModelId,
     session_affinity: bool,
+    turn_affinity: bool,
     message_hash_fallback: bool,
 }
 
@@ -757,6 +779,7 @@ impl LlmTaskClassifier {
         let contract = Self::load_capability_contract(&config.contract)?;
         let targets = vec![efficient_target.clone(), capable_target.clone()];
         let session_affinity = config.session_affinity;
+        let turn_affinity = config.turn_affinity;
         let message_hash_fallback = config.message_hash_fallback;
         let classifier = Arc::new(TaskClassifier {
             classifier: JudgeClassifier::new(
@@ -786,6 +809,7 @@ impl LlmTaskClassifier {
             ClassifierRouteConfig {
                 default_target: classifier.capable_target.clone(),
                 session_affinity,
+                turn_affinity,
                 message_hash_fallback,
             },
         )
@@ -843,6 +867,7 @@ impl LlmTaskClassifier {
             response_schema,
             policy,
             session_affinity,
+            turn_affinity,
             message_hash_fallback,
             recent_turn_window,
             judge_text_only,
@@ -876,6 +901,7 @@ impl LlmTaskClassifier {
             ClassifierRouteConfig {
                 default_target: default_name,
                 session_affinity,
+                turn_affinity,
                 message_hash_fallback,
             },
         )
@@ -932,6 +958,11 @@ impl LlmTaskClassifier {
                 message: "message_hash_fallback requires session_affinity".to_string(),
             });
         }
+        if config.session_affinity && config.turn_affinity {
+            return Err(LibsyError::AlgorithmError {
+                message: "session_affinity and turn_affinity cannot both be enabled".to_string(),
+            });
+        }
         // Affinity comes first so a retained assignment short-circuits the judge call.
         // Note: when this classifier is embedded inside another cascade (e.g. StageRouter)
         // the affinity processor never fires — only the inner score() is called.
@@ -944,6 +975,12 @@ impl LlmTaskClassifier {
             };
             // Both roles must share one `Arc` so the classifier reads what the processor wrote.
             let affinity = Arc::new(affinity);
+            route = route
+                .with_processor(affinity.clone())
+                .with_classifier(affinity);
+        }
+        if config.turn_affinity {
+            let affinity = Arc::new(TurnAffinityRouter::new());
             route = route
                 .with_processor(affinity.clone())
                 .with_classifier(affinity);
@@ -1312,6 +1349,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turn_affinity_reuses_a_target_until_the_next_user_message() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+            judge_target: ModelId::from("judge"),
+            efficient_target: ModelId::from("efficient"),
+            capable_target: ModelId::from("capable"),
+            config: TaskClassifierConfig {
+                turn_affinity: true,
+                ..test_config(TEST_THRESHOLD)
+            },
+        })?);
+
+        test_drive(router.clone(), classify_session_request(), recorder.serve()).await?;
+
+        let mut continuation = classify_session_request();
+        continuation.llm_request.messages.push(tool_call("call-1"));
+        continuation.llm_request.messages.push(Message {
+            role: Role::User,
+            content: tool_result("call-1").content,
+        });
+        test_drive(router.clone(), continuation, recorder.serve()).await?;
+
+        let mut follow_up = classify_follow_up_request();
+        follow_up.metadata = classify_session_request().metadata;
+        test_drive(router, follow_up, recorder.serve()).await?;
+
+        assert_eq!(
+            recorder.calls(),
+            vec!["judge", "efficient", "efficient", "judge", "efficient"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn turn_affinity_rebinds_when_modalities_make_the_target_ineligible() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        let modalities = BTreeMap::from([
+            (
+                ModelId::from("efficient"),
+                BTreeSet::from([InputModality::Text]),
+            ),
+            (
+                ModelId::from("capable"),
+                BTreeSet::from([InputModality::Text, InputModality::Image]),
+            ),
+        ]);
+        let router = Arc::new(
+            LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                judge_target: ModelId::from("judge"),
+                efficient_target: ModelId::from("efficient"),
+                capable_target: ModelId::from("capable"),
+                config: TaskClassifierConfig {
+                    turn_affinity: true,
+                    ..test_config(TEST_THRESHOLD)
+                },
+            })?
+            .with_target_modalities(modalities),
+        );
+
+        test_drive(router.clone(), classify_session_request(), recorder.serve()).await?;
+
+        let mut image_continuation = classify_session_request();
+        image_continuation.llm_request.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "view-image".to_string(),
+                content: vec![ContentBlock::Image {
+                    source: ImageSource::Url {
+                        url: "https://example.test/image.png".to_string(),
+                        detail: None,
+                    },
+                }],
+                is_error: None,
+            })],
+        });
+        test_drive(router.clone(), image_continuation, recorder.serve()).await?;
+        test_drive(router, classify_session_request(), recorder.serve()).await?;
+
+        assert_eq!(
+            recorder.calls(),
+            vec!["judge", "efficient", "capable", "capable"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn classifier_config_reuses_message_hash_affinity_for_a_follow_up() -> Result<()> {
         let recorder = Arc::new(Recorder::default());
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
@@ -1554,6 +1677,23 @@ mod tests {
         assert!(contents.contains(&"initial task".to_string()));
         assert!(!contents.contains(&"recent 2".to_string()));
         Ok(())
+    }
+
+    #[test]
+    fn default_task_context_excludes_user_role_tool_results() {
+        let messages = vec![
+            Message::text(Role::User, "initial task"),
+            tool_call("call-1"),
+            Message {
+                role: Role::User,
+                content: tool_result("call-1").content,
+            },
+        ];
+
+        assert_eq!(
+            task_messages(&messages),
+            vec![Message::text(Role::User, "initial task")]
+        );
     }
 
     fn tool_call(id: &str) -> Message {

@@ -195,14 +195,31 @@ impl SharedRoutingLog {
         })
     }
 
-    fn append(
+    fn append_usage(
         &self,
         context: routing_log::RoutingLogContext,
         model: &str,
         tier: Option<&str>,
         usage: &Usage,
     ) {
-        if let Err(error) = self.writer.lock().append(context, model, tier, usage) {
+        if let Err(error) = self.writer.lock().append_usage(context, model, tier, usage) {
+            tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
+        }
+    }
+
+    fn append_event(
+        &self,
+        context: routing_log::RoutingLogContext,
+        event: &str,
+        model: &str,
+        elapsed: Duration,
+        outcome: Option<&str>,
+    ) {
+        if let Err(error) = self
+            .writer
+            .lock()
+            .append_event(context, event, model, elapsed, outcome)
+        {
             tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
         }
     }
@@ -466,15 +483,39 @@ const CLASSIFIER_TIER: &str = "classifier";
 /// Maps answer-call observations to backend stats, routing calls to classifier/judge
 /// stats, and records routing overhead once the algorithm run completes.
 ///
-/// Successful classifier/judge calls are also appended to `classifier_log` when one is
-/// configured, so per-session routing snapshots account for judge token overhead. Routed
-/// calls stay off this path: the served call is logged with its terminal usage in
-/// [`usage_metrics::observe`], which would make a second append here a double count.
+/// Decisions and answer-call starts are appended immediately. Successful classifier/judge
+/// calls also append usage so per-session snapshots account for judge overhead. Routed usage
+/// stays on [`usage_metrics::observe`] to avoid double counting.
 fn stats_observer(
     stats: StatsAccumulator,
-    classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
+    routing_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
+    started: Instant,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
+        RunObservation::RoutingDecision(decision) => {
+            if let Some((log, context)) = routing_log.as_ref() {
+                log.append_event(
+                    context.clone(),
+                    "decision",
+                    decision.selected_model_id().as_str(),
+                    started.elapsed(),
+                    None,
+                );
+            }
+        }
+        RunObservation::LlmCallStarted(call) => {
+            if call.is_answer_call
+                && let Some((log, context)) = routing_log.as_ref()
+            {
+                log.append_event(
+                    context.clone(),
+                    "start",
+                    call.selected_model.as_str(),
+                    started.elapsed(),
+                    None,
+                );
+            }
+        }
         RunObservation::LlmCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if call.is_answer_call {
@@ -485,9 +526,9 @@ fn stats_observer(
                 }
             } else if call.is_success {
                 if let (Some((log, context)), Some(usage)) =
-                    (classifier_log.as_ref(), call.usage.as_ref())
+                    (routing_log.as_ref(), call.usage.as_ref())
                 {
-                    log.append(
+                    log.append_usage(
                         context.clone(),
                         &call.selected_model,
                         Some(CLASSIFIER_TIER),
@@ -770,16 +811,44 @@ async fn handle_llm_request(
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
+    let requested_model = request
+        .llm_request
+        .model
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
+    let lifecycle_log = state.routing_log.clone().zip(routing_log_context.clone());
+    if let Some((log, context)) = lifecycle_log.as_ref() {
+        log.append_event(
+            context.clone(),
+            "request_start",
+            &requested_model,
+            started.0.elapsed(),
+            None,
+        );
+    }
     let algorithm = Arc::clone(&route.algorithm);
     let client_router = route.target_clients.clone();
     let observer = stats_observer(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
+        started.0,
     );
     let (trace, response) =
         match switchyard_llm_client::run(algorithm, client_router, request, Some(observer)).await {
             Ok(result) => result,
-            Err(error) => return algorithm_error(error),
+            Err(error) => {
+                if let Some((log, context)) = lifecycle_log {
+                    log.append_event(
+                        context,
+                        "completion",
+                        &requested_model,
+                        started.0.elapsed(),
+                        Some("error"),
+                    );
+                }
+                return algorithm_error(error);
+            }
         };
     let decision = trace.last();
     // The response carries the candidate that actually served it. Fall back to the routing
@@ -799,7 +868,7 @@ async fn handle_llm_request(
             started.0,
             state.stats,
             cache_eligible,
-            state.routing_log.zip(routing_log_context),
+            lifecycle_log,
         )
     } else {
         response
@@ -1400,7 +1469,11 @@ mod tests {
         headers.insert("proxy_x_session_id", "session-1".parse().expect("header"));
         let metadata = metadata_from_headers(headers);
         let context = routing_log::RoutingLogContext::from_metadata(&metadata);
-        let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
+        let observer = stats_observer(
+            StatsAccumulator::default(),
+            Some((log.clone(), context)),
+            Instant::now(),
+        );
 
         let call = |model: &str, is_answer_call: bool| {
             RunObservation::LlmCall(LlmCallObservation {

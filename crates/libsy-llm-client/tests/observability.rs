@@ -935,8 +935,17 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
         Some(Some(MODEL))
     );
     let observations = observations.lock();
-    assert_eq!(observations.len(), 2);
-    let RunObservation::LlmCall(observation) = &observations[0] else {
+    assert_eq!(observations.len(), 4);
+    let RunObservation::RoutingDecision(decision) = &observations[0] else {
+        return Err(test_error("expected a routing decision observation"));
+    };
+    assert_eq!(decision.selected_model_id(), MODEL);
+    let RunObservation::LlmCallStarted(started) = &observations[1] else {
+        return Err(test_error("expected an LLM call start observation"));
+    };
+    assert_eq!(started.selected_model, MODEL);
+    assert!(started.is_answer_call);
+    let RunObservation::LlmCall(observation) = &observations[2] else {
         return Err(test_error("expected an LLM call observation"));
     };
     assert_eq!(observation.selected_model, MODEL);
@@ -944,7 +953,7 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
     assert!(observation.is_success);
     assert!(observation.usage.is_some());
     assert!(matches!(
-        observations[1],
+        observations[3],
         RunObservation::RoutingOverhead(_)
     ));
     Ok(())

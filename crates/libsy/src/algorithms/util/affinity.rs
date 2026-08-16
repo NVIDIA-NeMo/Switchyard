@@ -19,11 +19,14 @@
 
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use switchyard_protocol::{ModelId, Request, Role};
+use serde::Serialize;
+use serde_json::Value;
+use switchyard_protocol::{ContentBlock, ModelId, Request, Role};
 
 use crate::core::algorithm::{Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -58,6 +61,29 @@ pub struct AffinityRouter {
     assignments: Mutex<HashMap<RoutingIdentity, ModelId>>,
     /// Whether the "no identity to key on" warning has already been emitted.
     unkeyed_warning_emitted: AtomicBool,
+}
+
+/// Retains one target for each user turn within a stable routing identity.
+///
+/// An explicit agent turn id wins when present. Otherwise the turn is identified by the
+/// ordinal and content of the latest human user message, excluding tool-loop continuation
+/// items. Register one shared instance as both a processor and classifier.
+#[derive(Default)]
+pub(crate) struct TurnAffinityRouter {
+    assignments: Mutex<HashMap<TurnRoutingIdentity, ModelId>>,
+    unkeyed_warning_emitted: AtomicBool,
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct TurnRoutingIdentity {
+    routing: RoutingIdentity,
+    turn: TurnIdentity,
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+enum TurnIdentity {
+    Explicit(String),
+    UserMessage { ordinal: usize, digest: u64 },
 }
 
 impl AffinityRouter {
@@ -140,6 +166,27 @@ impl AffinityRouter {
     }
 }
 
+impl TurnAffinityRouter {
+    /// Creates a router that latches decisions only for the current user turn.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn affinity_key(&self, request: &Request) -> Option<TurnRoutingIdentity> {
+        let key = RoutingIdentity::from_request(request).and_then(|routing| {
+            turn_identity(request).map(|turn| TurnRoutingIdentity { routing, turn })
+        });
+        if key.is_none() && !self.unkeyed_warning_emitted.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                target: "libsy",
+                "turn affinity is enabled but this request has no usable session and user-turn \
+                 identity, so no turn affinity is applied"
+            );
+        }
+        key
+    }
+}
+
 #[async_trait]
 impl<S> Processor<S> for AffinityRouter
 where
@@ -160,6 +207,27 @@ where
     }
 }
 
+#[async_trait]
+impl<S> Processor<S> for TurnAffinityRouter
+where
+    S: Send + 'static,
+{
+    async fn process(&self, _state: &mut S, event: Event<'_>) -> crate::Result<()> {
+        if let Event::Decision { request, decision } = event
+            && let Some(key) = self.affinity_key(request)
+        {
+            let mut assignments = self.assignments.lock();
+            if !assignments.contains_key(&key) {
+                evict_if_full(&mut assignments);
+            }
+            // Replacing an assignment is intentional: modality filtering may make the
+            // retained target ineligible and force a compatible decision for this turn.
+            assignments.insert(key, decision.selected_model_id().clone());
+        }
+        Ok(())
+    }
+}
+
 /// Hashes the first user message so later turns retain the initial task's affinity.
 /// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we hash the initial user message.
 /// TODO: Have not considered multi-modal payloads yet. That needs to be handled separately.
@@ -172,6 +240,123 @@ fn first_user_message_hash(request: &Request) -> Option<String> {
     let mut hasher = DefaultHasher::new();
     message.text_content("")?.hash(&mut hasher);
     Some(format!("{:016x}", hasher.finish()))
+}
+
+/// Whether a normalized user-role message is authored input rather than tool-loop state.
+pub(crate) fn is_user_turn_message(message: &switchyard_protocol::Message) -> bool {
+    message.role == Role::User
+        && !matches!(
+            message.content.as_slice(),
+            [ContentBlock::Text { text }]
+                if text.starts_with("Tool result ") && text.contains(": ")
+        )
+        && message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { .. }
+                    | ContentBlock::Image { .. }
+                    | ContentBlock::Audio { .. }
+                    | ContentBlock::Video { .. }
+                    | ContentBlock::File { .. }
+            )
+        })
+}
+
+fn turn_identity(request: &Request) -> Option<TurnIdentity> {
+    if let Some(turn_id) = request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.turn_id.as_deref())
+        .filter(|turn_id| !turn_id.is_empty())
+    {
+        return Some(TurnIdentity::Explicit(turn_id.to_string()));
+    }
+
+    raw_user_turn(request)
+        .or_else(|| normalized_user_turn(request))
+        .map(|(ordinal, digest)| TurnIdentity::UserMessage { ordinal, digest })
+}
+
+/// Reads human user turns from the original body so provider-native tool items cannot be
+/// mistaken for a follow-up merely because their normalized fallback role is `user`.
+fn raw_user_turn(request: &Request) -> Option<(usize, u64)> {
+    let body = request.raw_request.as_ref()?;
+    if let Some(input) = body.get("input") {
+        return match input {
+            Value::String(_) => content_digest(input).map(|digest| (1, digest)),
+            Value::Array(items) => latest_raw_user_turn(items),
+            _ => None,
+        };
+    }
+    body.get("messages")
+        .and_then(Value::as_array)
+        .and_then(|messages| latest_raw_user_turn(messages))
+}
+
+fn latest_raw_user_turn(items: &[Value]) -> Option<(usize, u64)> {
+    let mut ordinal = 0;
+    let mut latest = None;
+    for item in items {
+        let Some(object) = item.as_object() else {
+            continue;
+        };
+        if object.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let item_type = object.get("type").and_then(Value::as_str);
+        if item_type.is_some_and(|kind| kind != "message") {
+            continue;
+        }
+        let content = object.get("content").unwrap_or(&Value::Null);
+        if raw_content_is_only_tool_results(&content) {
+            continue;
+        }
+        ordinal += 1;
+        latest = content_digest(content);
+    }
+    latest.map(|digest| (ordinal, digest))
+}
+
+fn raw_content_is_only_tool_results(content: &Value) -> bool {
+    let Some(blocks) = content.as_array() else {
+        return false;
+    };
+    !blocks.is_empty()
+        && blocks
+            .iter()
+            .all(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+}
+
+fn normalized_user_turn(request: &Request) -> Option<(usize, u64)> {
+    let mut ordinal = 0;
+    let mut latest = None;
+    for message in &request.llm_request.messages {
+        if !is_user_turn_message(message) {
+            continue;
+        }
+        ordinal += 1;
+        latest = content_digest(&message.content);
+    }
+    latest.map(|digest| (ordinal, digest))
+}
+
+fn content_digest(content: &impl Serialize) -> Option<u64> {
+    let mut hasher = DefaultHasher::new();
+    serde_json::to_writer(HashWriter(&mut hasher), content).ok()?;
+    Some(hasher.finish())
+}
+
+struct HashWriter<'a>(&'a mut DefaultHasher);
+
+impl Write for HashWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        Hasher::write(self.0, buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -202,8 +387,38 @@ where
     }
 }
 
+#[async_trait]
+impl<S> Classifier<S> for TurnAffinityRouter
+where
+    S: Send + 'static,
+{
+    async fn score(
+        &self,
+        _state: &mut S,
+        request: &mut Request,
+        _driver: Option<&Driver>,
+    ) -> crate::Result<(Classification, Option<switchyard_protocol::Response>)> {
+        let assigned = self
+            .affinity_key(request)
+            .and_then(|key| self.assignments.lock().get(&key).cloned());
+        Ok((
+            Classification::Scores(match assigned {
+                Some(target) => vec![Score {
+                    confidence: 1.0,
+                    target,
+                }],
+                None => Vec::new(),
+            }),
+            None,
+        ))
+    }
+}
+
 /// Evicts one arbitrary assignment when the map has reached [`MAX_ASSIGNMENTS`].
-fn evict_if_full(assignments: &mut HashMap<RoutingIdentity, ModelId>) {
+fn evict_if_full<K, V>(assignments: &mut HashMap<K, V>)
+where
+    K: Clone + Eq + Hash,
+{
     if assignments.len() >= MAX_ASSIGNMENTS
         && let Some(evicted) = assignments.keys().next().cloned()
     {
@@ -764,6 +979,96 @@ mod tests {
                 .first()
                 .map(|s| s.target.as_str()),
             Some("strong")
+        );
+        Ok(())
+    }
+
+    fn responses_turn(input: Value) -> Request {
+        Request {
+            llm_request: text_request(Some("auto".to_string()), "task"),
+            raw_request: Some(serde_json::json!({
+                "model": "auto",
+                "input": input,
+            })),
+            metadata: Some(Metadata {
+                session_id: Some("turn-session".to_string()),
+                ..Metadata::default()
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_affinity_ignores_responses_tool_loop_items_and_resets_on_user_input()
+    -> Result<(), BoxErr> {
+        let router = TurnAffinityRouter::new();
+        let mut state = ();
+        let mut first = responses_turn(serde_json::json!([
+            {"role": "user", "content": "Implement the parser."}
+        ]));
+        router
+            .process(
+                &mut state,
+                Event::Decision {
+                    request: &mut first,
+                    decision: &fixed_decision("model-a"),
+                },
+            )
+            .await?;
+
+        let mut continuation = responses_turn(serde_json::json!([
+            {"role": "user", "content": "Implement the parser."},
+            {"type": "function_call", "call_id": "call-1", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call-1", "output": "source"},
+            {"type": "tool_search_call", "call_id": "search-1", "status": "completed"}
+        ]));
+        assert_eq!(
+            scores(&router, &mut state, &mut continuation)
+                .await?
+                .first()
+                .map(|score| score.target.as_str()),
+            Some("model-a")
+        );
+
+        let mut follow_up = responses_turn(serde_json::json!([
+            {"role": "user", "content": "Implement the parser."},
+            {"type": "function_call", "call_id": "call-1", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call-1", "output": "source"},
+            {"role": "user", "content": "Now add regression tests."}
+        ]));
+        assert!(
+            scores(&router, &mut state, &mut follow_up)
+                .await?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn turn_affinity_can_replace_an_incompatible_assignment() -> Result<(), BoxErr> {
+        let router = TurnAffinityRouter::new();
+        let mut state = ();
+        let mut request = responses_turn(serde_json::json!([
+            {"role": "user", "content": "Inspect the tool output."}
+        ]));
+
+        for model in ["text-model", "vision-model"] {
+            router
+                .process(
+                    &mut state,
+                    Event::Decision {
+                        request: &mut request,
+                        decision: &fixed_decision(model),
+                    },
+                )
+                .await?;
+        }
+
+        assert_eq!(
+            scores(&router, &mut state, &mut request)
+                .await?
+                .first()
+                .map(|score| score.target.as_str()),
+            Some("vision-model")
         );
         Ok(())
     }

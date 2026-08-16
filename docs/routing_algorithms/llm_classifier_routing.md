@@ -105,8 +105,9 @@ for the server merge behavior.
 |---|---|---|
 | `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
 | `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
-| `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
+| `recent_turn_window` | unset | When unset, the judge sees the opening user task and latest human user follow-up when they differ; tool results and provider-native tool items are excluded. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
 | `session_affinity` | `false` | Retains the first selected target for a session and reuses it on later requests. |
+| `turn_affinity` | `false` | Retains a target across tool-loop continuations, then classifies again for the next human user message. An incompatible retained target is replaced by a modality-compatible decision. Cannot be combined with `session_affinity`. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `session_affinity = true`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
@@ -212,6 +213,15 @@ classification, so the judge call is skipped.
 Affinity is process-local. Clients can send `x-switchyard-session-id`, or enable
 `message_hash_fallback` to key requests without session metadata from the first
 user-message text.
+
+With `turn_affinity = true`, only requests belonging to the same human user turn
+reuse the selected target. An explicit `x-switchyard-turn-id` is used when
+available; otherwise Switchyard fingerprints the human user messages within the
+session while excluding tool results and native tool-loop items. The next user
+message is classified again. Modality eligibility remains authoritative, so a
+new image or other supported modality can replace an incompatible retained
+target within the turn. Turn affinity requires a session identity and cannot be
+combined with `session_affinity`.
 
 ## Run the route
 

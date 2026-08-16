@@ -237,6 +237,21 @@ where
     F: Fn(CallModel) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
+    drive_with_decision_observer(algorithm, request, serve, |_| {}).await
+}
+
+/// Drives an algorithm like [`drive`] and observes each decision before its model call.
+pub async fn drive_with_decision_observer<F, Fut, O>(
+    algorithm: Arc<dyn Algorithm>,
+    request: Request,
+    serve: F,
+    observe_decision: O,
+) -> Result<(Vec<Decision>, Response)>
+where
+    F: Fn(CallModel) -> Fut,
+    Fut: Future<Output = Result<()>>,
+    O: Fn(&Decision),
+{
     let stream = algorithm.run_stream(request);
     tokio::pin!(stream);
 
@@ -255,7 +270,10 @@ where
                     None => break, // stream has ended, no more steps
                     Some(item) => match item? {
                         Step::CallModel(call) => in_flight.push(serve(*call)),
-                        Step::Decision(decision) => trace.push(decision),
+                        Step::Decision(decision) => {
+                            observe_decision(&decision);
+                            trace.push(decision);
+                        }
                         Step::Done(response) => {
                             final_response = Some(*response);
                             break;

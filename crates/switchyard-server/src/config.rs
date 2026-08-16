@@ -408,6 +408,7 @@ struct CapabilityClassifierRouteConfig {
     base_threshold: f64,
     threshold_step: f64,
     session_affinity: bool,
+    turn_affinity: bool,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
     prompt: Option<String>,
@@ -433,6 +434,7 @@ struct CustomClassifierRouteConfig {
     response_schema: String,
     policy: ClassifierPolicyConfig,
     session_affinity: bool,
+    turn_affinity: bool,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
     judge_text_only: bool,
@@ -504,6 +506,8 @@ enum RouteConfig {
         threshold_step: Option<f64>,
         #[serde(default)]
         session_affinity: bool,
+        #[serde(default)]
+        turn_affinity: bool,
         #[serde(default)]
         message_hash_fallback: bool,
         #[serde(default)]
@@ -588,6 +592,7 @@ impl StageClassifierConfig {
             base_threshold: self.base_threshold,
             threshold_step: self.threshold_step,
             session_affinity: self.session_affinity,
+            turn_affinity: false,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
             contract: classifier_contract(self.prompt.as_deref())
@@ -726,6 +731,7 @@ impl RouteConfig {
             base_threshold,
             threshold_step,
             session_affinity,
+            turn_affinity,
             message_hash_fallback,
             recent_turn_window,
             judge_text_only,
@@ -792,6 +798,7 @@ impl RouteConfig {
                         )?,
                         threshold_step: threshold_step.unwrap_or_default(),
                         session_affinity: *session_affinity,
+                        turn_affinity: *turn_affinity,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
                         prompt: prompt.clone(),
@@ -820,6 +827,7 @@ impl RouteConfig {
                     && (base_threshold.is_some()
                         || threshold_step.is_some()
                         || *session_affinity
+                        || *turn_affinity
                         || *message_hash_fallback
                         || recent_turn_window.is_some())
                 {
@@ -874,6 +882,7 @@ impl RouteConfig {
                         )?,
                         policy: required_classifier_field(route_name, "policy", policy)?,
                         session_affinity: *session_affinity,
+                        turn_affinity: *turn_affinity,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
                         judge_text_only: *judge_text_only,
@@ -1064,6 +1073,7 @@ fn build_algorithm(
                         base_threshold: config.base_threshold,
                         threshold_step: config.threshold_step,
                         session_affinity: config.session_affinity,
+                        turn_affinity: config.turn_affinity,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
                         contract: classifier_contract(config.prompt.as_deref())
@@ -1113,6 +1123,7 @@ fn build_algorithm(
                         config.policy.into_libsy(),
                     );
                     classifier_config.session_affinity = config.session_affinity;
+                    classifier_config.turn_affinity = config.turn_affinity;
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
                     classifier_config.judge_text_only = config.judge_text_only;
@@ -1700,6 +1711,13 @@ classifier_magic = true
                 "message_hash_fallback requires session_affinity",
             ),
             (
+                VALID_CONFIG.replace(
+                    "base_threshold = 0.5",
+                    "base_threshold = 0.5\nsession_affinity = true\nturn_affinity = true",
+                ),
+                "session_affinity and turn_affinity cannot both be enabled",
+            ),
+            (
                 VALID_CONFIG.replace("schema_version = 1", "schema_version = 2"),
                 "unsupported schema_version 2",
             ),
@@ -1816,6 +1834,16 @@ target = "azure"
         let configured = VALID_CONFIG.replace(
             "base_threshold = 0.5",
             "base_threshold = 0.25\nthreshold_step = 0.1\nsession_affinity = true\nmessage_hash_fallback = true",
+        );
+        server_state_from_toml(&configured)?;
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_turn_affinity() -> ServerResult<()> {
+        let configured = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nturn_affinity = true",
         );
         server_state_from_toml(&configured)?;
         Ok(())

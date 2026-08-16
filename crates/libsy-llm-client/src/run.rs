@@ -18,19 +18,21 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, drive};
+use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, drive_with_decision_observer};
 use switchyard_protocol::{
     Decision, LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
 };
 
-use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
+use crate::observation::{
+    LlmCallObservation, LlmCallStartObservation, RunObservation, RunObserver,
+};
 use crate::{metrics, observability};
 
 /// Run one request to completion, serving every offloaded model call with `client`.
 ///
 /// Returns the final [`Response`] and the trace of [`Decision`]s the algorithm published along
-/// the way. `observer`, when present, receives each completed model call and, after a
-/// successful routed run, its routing overhead.
+/// the way. `observer`, when present, receives decisions and model-call lifecycle events
+/// plus routing overhead after a successful routed run.
 ///
 /// `clients` resolves each offloaded call to the client for the target the algorithm
 /// selected — an algorithm may route among targets served by different providers, so this is
@@ -50,18 +52,28 @@ pub async fn run(
     // flight. Everything else the run spent time on is routing overhead.
     let routed_calls = Arc::new(Mutex::new(RoutedCallWindows::default()));
     let run_started = Instant::now();
-    let result = drive(algorithm, request, {
-        let observer = observer.clone();
-        let routed_calls = Arc::clone(&routed_calls);
-        move |call| {
-            serve(
-                clients.clone(),
-                call,
-                observer.clone(),
-                Arc::clone(&routed_calls),
-            )
-        }
-    })
+    let decision_observer = observer.clone();
+    let result = drive_with_decision_observer(
+        algorithm,
+        request,
+        {
+            let observer = observer.clone();
+            let routed_calls = Arc::clone(&routed_calls);
+            move |call| {
+                serve(
+                    clients.clone(),
+                    call,
+                    observer.clone(),
+                    Arc::clone(&routed_calls),
+                )
+            }
+        },
+        move |decision| {
+            if let Some(observer) = decision_observer.as_ref() {
+                observer(RunObservation::RoutingDecision(decision.clone()));
+            }
+        },
+    )
     .await?;
     if let Some(served) = routed_calls.lock().served() {
         let overhead =
@@ -220,6 +232,12 @@ async fn call_one(
     // Resolved before the clock starts: picking the client is Switchyard's work, not
     // the provider's, so it belongs in the routing overhead.
     let client = clients.route(model_id);
+    if let Some(observer) = observer {
+        observer(RunObservation::LlmCallStarted(LlmCallStartObservation {
+            selected_model: model_id.clone(),
+            is_answer_call,
+        }));
+    }
     let started = Instant::now();
     let result = match client {
         Ok(client) => client.call(request).await,

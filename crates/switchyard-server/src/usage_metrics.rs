@@ -27,19 +27,21 @@ pub(crate) fn observe(
         metadata,
     } = response;
     let model = model.to_string();
+    let mut lifecycle = RoutingLifecycle::new(routing_log, model.clone(), started);
 
     let llm_response = match llm_response {
         LlmResponse::Agg(agg) => {
+            lifecycle.ttfb();
             record_terminal(&stats, &agg.usage, &model, started, cache_eligible);
-            if let Some((log, context)) = routing_log {
-                log.append(context, &model, None, &agg.usage);
-            }
+            lifecycle.append_usage(&agg.usage);
+            lifecycle.complete("ok");
             LlmResponse::Agg(agg)
         }
         LlmResponse::Stream(mut stream) => {
             let wrapped = async_stream::stream! {
                 let mut latest_usage = None;
                 while let Some(item) = stream.next().await {
+                    lifecycle.ttfb();
                     let failed = match &item {
                         Err(_) => true,
                         Ok(event) => event.normalized().iter().any(|chunk| {
@@ -59,6 +61,7 @@ pub(crate) fn observe(
                     }
                     if failed {
                         record_stream_error(&stats, &model);
+                        lifecycle.complete("error");
                     }
                     yield item;
                     if failed {
@@ -67,9 +70,8 @@ pub(crate) fn observe(
                 }
                 let usage = latest_usage.unwrap_or_default();
                 record_terminal(&stats, &usage, &model, started, cache_eligible);
-                if let Some((log, context)) = routing_log {
-                    log.append(context, &model, None, &usage);
-                }
+                lifecycle.append_usage(&usage);
+                lifecycle.complete("ok");
             };
             LlmResponse::Stream(Box::pin(wrapped))
         }
@@ -78,6 +80,77 @@ pub(crate) fn observe(
     Response {
         llm_response,
         metadata,
+    }
+}
+
+/// Durable lifecycle events for one routed response, including cancellation on drop.
+struct RoutingLifecycle {
+    routing_log: Option<(SharedRoutingLog, RoutingLogContext)>,
+    model: String,
+    started: Instant,
+    saw_first_byte: bool,
+    completed: bool,
+}
+
+impl RoutingLifecycle {
+    fn new(
+        routing_log: Option<(SharedRoutingLog, RoutingLogContext)>,
+        model: String,
+        started: Instant,
+    ) -> Self {
+        Self {
+            routing_log,
+            model,
+            started,
+            saw_first_byte: false,
+            completed: false,
+        }
+    }
+
+    fn ttfb(&mut self) {
+        if self.saw_first_byte {
+            return;
+        }
+        self.saw_first_byte = true;
+        if let Some((log, context)) = self.routing_log.as_ref() {
+            log.append_event(
+                context.clone(),
+                "ttfb",
+                &self.model,
+                self.started.elapsed(),
+                None,
+            );
+        }
+    }
+
+    fn append_usage(&self, usage: &Usage) {
+        if let Some((log, context)) = self.routing_log.as_ref() {
+            log.append_usage(context.clone(), &self.model, None, usage);
+        }
+    }
+
+    fn complete(&mut self, outcome: &str) {
+        if self.completed {
+            return;
+        }
+        self.completed = true;
+        if let Some((log, context)) = self.routing_log.as_ref() {
+            log.append_event(
+                context.clone(),
+                "completion",
+                &self.model,
+                self.started.elapsed(),
+                Some(outcome),
+            );
+        }
+    }
+}
+
+impl Drop for RoutingLifecycle {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.complete("cancelled");
+        }
     }
 }
 
