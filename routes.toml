@@ -11,8 +11,8 @@
 # NOT exposed here.
 #
 # Note: entries under model.aliases in ~/.hermes/config.yaml are Hermes
-# "provider/model" qualifiers (e.g. openrouter/nvidia/…); the value sent to the
-# OpenRouter upstream is the model id without that qualifier (nvidia/…).
+# "provider/model" qualifiers (e.g. openrouter/nvidia/...); the value sent to the
+# OpenRouter upstream is the model id without that qualifier (nvidia/...).
 
 schema_version = 1
 
@@ -23,16 +23,36 @@ api_key_env = "OPENROUTER_API_KEY"
 
 # --- Free NVIDIA Nemotron models -------------------------------
 
-[targets.nemotron-lightning]
-id = "nvidia/nemotron-3.5-lightning:free"
+[targets.nemotron-nano-30b-a3b]
+id = "nvidia/nemotron-3-nano-30b-a3b:free"
+llm_client = "openrouter"
+
+[targets.nemotron-nano-omni-30b-reasoning]
+id = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+llm_client = "openrouter"
+
+[targets.nemotron-super]
+id = "nvidia/nemotron-3-super-120b-a12b:free"
 llm_client = "openrouter"
 
 [targets.nemotron-ultra]
 id = "nvidia/nemotron-3-ultra-550b-a55b:free"
 llm_client = "openrouter"
 
-[targets.nemotron-super]
-id = "nvidia/nemotron-3-super-120b-a12b:free"
+[targets.nemotron-3-5-content-safety]
+id = "nvidia/nemotron-3.5-content-safety:free"
+llm_client = "openrouter"
+
+[targets.nemotron-lightning]
+id = "nvidia/nemotron-3.5-lightning:free"
+llm_client = "openrouter"
+
+[targets.nemotron-nano-12b-v2-vl]
+id = "nvidia/nemotron-nano-12b-v2-vl:free"
+llm_client = "openrouter"
+
+[targets.nemotron-nano-9b-v2]
+id = "nvidia/nemotron-nano-9b-v2:free"
 llm_client = "openrouter"
 
 # --- Other free / coding-capable models -------------------------
@@ -65,16 +85,46 @@ type = "random"
 targets = ["nemotron-lightning"]
 weights = [1]
 
-[routes.nemotron-ultra]
-id = "nemotron-ultra"
+[routes.nemotron-nano-30b-a3b]
+id = "nemotron-nano-30b-a3b"
 type = "random"
-targets = ["nemotron-ultra"]
+targets = ["nemotron-nano-30b-a3b"]
+weights = [1]
+
+[routes.nemotron-nano-omni-30b-reasoning]
+id = "nemotron-nano-omni-30b-reasoning"
+type = "random"
+targets = ["nemotron-nano-omni-30b-reasoning"]
 weights = [1]
 
 [routes.nemotron-super]
 id = "nemotron-super"
 type = "random"
 targets = ["nemotron-super"]
+weights = [1]
+
+[routes.nemotron-ultra]
+id = "nemotron-ultra"
+type = "random"
+targets = ["nemotron-ultra"]
+weights = [1]
+
+[routes.nemotron-3-5-content-safety]
+id = "nemotron-3-5-content-safety"
+type = "random"
+targets = ["nemotron-3-5-content-safety"]
+weights = [1]
+
+[routes.nemotron-nano-12b-v2-vl]
+id = "nemotron-nano-12b-v2-vl"
+type = "random"
+targets = ["nemotron-nano-12b-v2-vl"]
+weights = [1]
+
+[routes.nemotron-nano-9b-v2]
+id = "nemotron-nano-9b-v2"
+type = "random"
+targets = ["nemotron-nano-9b-v2"]
 weights = [1]
 
 [routes.gpt-oss]

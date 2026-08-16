@@ -1,6 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+# Default deployment wired to the providers configured for Hermes on this host
+# (~/.hermes/config.yaml).
+#
+# The default ("strong") model comes from Qwen Cloud (DashScope) — the Hermes
+# provider that serves qwen3.8-max here. The classifier and weak targets use
+# FREE OpenRouter models only (:free tier), so they never burn funded quota.
+# Anthropic models are intentionally NOT exposed (OpenRouter free tier includes
+# no Anthropic models here).
+#
+# Note: model ids in ~/.hermes/config.yaml are "provider/model" qualifiers
+# (e.g. qwen/qwen3.8-max); the value sent to the Qwen Cloud upstream is the bare
+# model id (qwen3.8-max).
+
 schema_version = 1
 
 [llm_clients.openrouter]
@@ -8,16 +21,30 @@ format = "openai_chat"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
+# Qwen Cloud — the default Hermes model provider on this host.
+[llm_clients.qwencloud]
+format = "openai_chat"
+base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+
+# Classifier: free fast OpenRouter model.
 [targets.classifier]
-id = "google/gemini-3.5-flash"
+id = "nvidia/nemotron-3.5-lightning:free"
 llm_client = "openrouter"
 
+# Default ("strong") model: the Hermes default, served via Qwen Cloud.
 [targets.strong]
-id = "anthropic/claude-opus-4.7"
-llm_client = "openrouter"
+id = "qwen3.8-max"
+llm_client = "qwencloud"
 
+# Weak target: free OpenRouter model.
+[targets.mild]
+id = "deepseek/deepseek-v4-flash-0731"
+llm_client = "qwencloud"
+
+# Weak target: free OpenRouter model.
 [targets.weak]
-id = "moonshotai/kimi-k2.7-code"
+id = "nvidia/nemotron-3.5-lightning:free"
 llm_client = "openrouter"
 
 [routes.switchyard]
@@ -30,3 +57,29 @@ base_threshold = 0.5
 threshold_step = 0.0
 session_affinity = true
 message_hash_fallback = true
+
+[routes.random]
+id = "random"
+type = "random"
+targets = ["strong", "mild", "weak"]
+weights = [2, 3, 5]
+seed = 42
+
+[routes.stage]
+id = "stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 3          # optional, defaults to 3
+
+[routes.agent]
+id = "agent"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+prompt = "Judge whether the weak model is stuck. Return the required structured verdict."
+escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars = 500 }
