@@ -22,6 +22,10 @@ often, while the process-specific contracts below are stable.
   and interruption.
 - Secrets may be passed to child processes but must not be logged, persisted in committed files, or
   rendered in status output.
+- Launchers must run on Windows without a PTY: POSIX-only modules (`pty`, `fcntl`, `termios`,
+  `tty`, `SIGWINCH`) are imported under an `os.name` guard, `stdin_is_tty()` is False off-POSIX so
+  the interactive footer is skipped, and `*.cmd`/`*.bat` shims are launched with
+  `subprocess.run(..., shell=is_windows_batch_shim(bin))`.
 
 ## Workflow
 

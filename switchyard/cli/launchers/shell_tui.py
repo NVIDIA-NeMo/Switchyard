@@ -18,19 +18,24 @@ lines that contain colour codes or multi-cell emoji.
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
-import pty
 import select
 import signal
 import struct
 import sys
-import termios
 import threading
 import time
-import tty
 import types
 from collections.abc import Callable
+
+# POSIX-only modules backing the PTY footer. Windows has no pseudo-terminal,
+# so the launchers never construct ShellTUI there (`stdin_is_tty()` is False);
+# these imports stay guarded so the module still imports cleanly on Windows.
+if os.name != "nt":
+    import fcntl
+    import pty
+    import termios
+    import tty
 
 ESC = b"\x1b"
 CSI = ESC + b"["

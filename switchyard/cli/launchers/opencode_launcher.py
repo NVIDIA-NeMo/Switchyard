@@ -24,6 +24,8 @@ from typing import TypeAlias
 from switchyard.cli.launchers.launcher_runtime import (
     banner_pause,
     configure_debug_file_logging,
+    is_executable_file,
+    is_windows_batch_shim,
     print_ready_banner,
     print_startup_failure,
     silence_launch_loggers,
@@ -57,7 +59,7 @@ def _find_opencode_binary() -> str | None:
         Path.home() / ".npm-global" / "bin" / "opencode",
         Path.home() / ".local" / "bin" / "opencode",
     ):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        if is_executable_file(candidate):
             return str(candidate)
     return None
 
@@ -162,6 +164,7 @@ def _supervise_opencode(
             _opencode_command(opencode_bin, opencode_args),
             env=_opencode_env(workspace),
             check=False,
+            shell=is_windows_batch_shim(opencode_bin),
         )
         return result.returncode
     except KeyboardInterrupt:

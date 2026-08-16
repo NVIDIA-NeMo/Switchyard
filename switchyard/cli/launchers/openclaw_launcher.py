@@ -16,6 +16,8 @@ from typing import Any, TypeAlias
 from switchyard.cli.launchers.launcher_runtime import (
     banner_pause,
     configure_debug_file_logging,
+    is_executable_file,
+    is_windows_batch_shim,
     print_ready_banner,
     print_startup_failure,
     silence_launch_loggers,
@@ -49,13 +51,13 @@ def _find_openclaw_binary() -> str | None:
         Path.home() / ".npm-global" / "bin" / "openclaw",
         Path.home() / ".local" / "bin" / "openclaw",
     ):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        if is_executable_file(candidate):
             return str(candidate)
     nvm_root = Path.home() / ".nvm" / "versions" / "node"
     if nvm_root.is_dir():
         for node_version in sorted(nvm_root.iterdir(), reverse=True):
             candidate = node_version / "bin" / "openclaw"
-            if candidate.is_file() and os.access(candidate, os.X_OK):
+            if is_executable_file(candidate):
                 return str(candidate)
     return None
 
@@ -174,6 +176,7 @@ def _supervise_openclaw(
             _openclaw_command(openclaw_bin, openclaw_args),
             env=_openclaw_env(workspace),
             check=False,
+            shell=is_windows_batch_shim(openclaw_bin),
         )
         return result.returncode
     except KeyboardInterrupt:

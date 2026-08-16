@@ -13,9 +13,55 @@ from pathlib import Path
 _debug_file_handler: logging.FileHandler | None = None
 log = logging.getLogger(__name__)
 
+#: Platform flags resolved once at import; ``os.name`` never changes at
+#: runtime. Read via these module constants so launcher helpers stay testable
+#: without mutating the real ``os`` module (which would also flip pathlib's
+#: ``WindowsPath``/``PosixPath`` selection).
+_IS_WINDOWS = os.name == "nt"
+_IS_POSIX = os.name == "posix"
+
 #: Opener that ignores env proxies — loopback probes to the in-process proxy
 #: must never be routed through a configured HTTP_PROXY.
 _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+#: File suffixes that mark a Windows batch shim rather than a native executable.
+_WINDOWS_BATCH_SUFFIXES = (".bat", ".cmd")
+
+
+def is_windows_batch_shim(program: str) -> bool:
+    """Return whether *program* is a Windows ``.bat``/``.cmd`` shim.
+
+    Agent CLIs installed through npm on Windows are batch shims that
+    ``CreateProcess`` cannot exec directly; they must run through the shell.
+    """
+    return _IS_WINDOWS and program.lower().endswith(_WINDOWS_BATCH_SUFFIXES)
+
+
+def is_executable_file(path: Path) -> bool:
+    """Return whether *path* is a runnable file on this platform.
+
+    Windows has no executable permission bit, so any existing file under a
+    candidate directory may be a shim; POSIX additionally requires the
+    executable bit via :func:`os.access`.
+    """
+    if not path.is_file():
+        return False
+    if _IS_WINDOWS:
+        return True
+    return os.access(path, os.X_OK)
+
+
+def _default_state_dir() -> Path:
+    """Return the platform-appropriate state directory.
+
+    On Windows, launcher diagnostics live under ``%LOCALAPPDATA%`` rather than
+    a POSIX dot-directory; ``Path.home()`` is the fallback when that variable
+    is unset.
+    """
+    if _IS_WINDOWS:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        return Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    return Path.home() / ".local" / "state"
 
 
 def wait_for_proxy_ready(port: int, *, timeout_s: float) -> bool:
@@ -41,7 +87,7 @@ def configure_debug_file_logging(*, display_model: str) -> Path:
     state_dir = (
         Path(state_home).expanduser()
         if state_home
-        else Path.home() / ".local" / "state"
+        else _default_state_dir()
     )
     log_dir = state_dir / "switchyard" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +138,15 @@ def silence_launch_loggers(*, local_logger: logging.Logger) -> None:
 
 
 def stdin_is_tty() -> bool:
-    """Return whether stdin is a usable TTY."""
+    """Return whether stdin is a usable TTY.
+
+    The interactive footer (ShellTUI) and the raw-mode key-press pause both
+    require a POSIX pseudo-terminal, so on Windows this always returns False
+    and launchers fall back to a plain ``subprocess`` child that inherits the
+    console directly.
+    """
+    if not _IS_POSIX:
+        return False
     try:
         return os.isatty(sys.stdin.fileno())
     except Exception:
@@ -219,8 +273,11 @@ def banner_pause(timeout: float = 10.0) -> None:
     """Hold the banner on screen for up to *timeout* seconds.
 
     Returns early if the user presses any key. Only call when stdin is a TTY.
+    The raw-mode key wait is POSIX-only; on Windows this is a no-op (the
+    console passes keystrokes straight to the child process anyway).
     """
-    import os
+    if not _IS_POSIX:
+        return
     import select
     import termios
     import tty

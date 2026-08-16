@@ -20,6 +20,8 @@ from pathlib import Path
 from switchyard.cli.launchers.launcher_runtime import (
     banner_pause,
     configure_debug_file_logging,
+    is_executable_file,
+    is_windows_batch_shim,
     print_ready_banner,
     print_startup_failure,
     silence_launch_loggers,
@@ -49,7 +51,7 @@ def _find_hermes_binary() -> str | None:
         Path.home() / ".local" / "bin" / "hermes",
         Path.home() / ".hermes" / "hermes-agent" / "venv" / "bin" / "hermes",
     ):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        if is_executable_file(candidate):
             return str(candidate)
     return None
 
@@ -101,6 +103,7 @@ def _supervise_hermes(
             _hermes_command(hermes_bin, hermes_args, model),
             env=_hermes_env(port),
             check=False,
+            shell=is_windows_batch_shim(hermes_bin),
         )
         return result.returncode
     except KeyboardInterrupt:
