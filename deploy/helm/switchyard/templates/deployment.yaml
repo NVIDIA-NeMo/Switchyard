@@ -1,0 +1,88 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.fullnameOverride }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.fullnameOverride }}
+    app.kubernetes.io/component: switchyard
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Values.fullnameOverride }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Values.fullnameOverride }}
+        app.kubernetes.io/component: switchyard
+      annotations:
+        # Roll pods when routes.toml changes (ConfigMap updates alone do not).
+        switchyard.nvidia.com/routes-checksum: {{ .Values.routesConfig | sha256sum | trunc 16 | quote }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: switchyard
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          args:
+            - --config
+            - /etc/switchyard/routes.toml
+            - --host
+            - 0.0.0.0
+            - --port
+            - "{{ .Values.service.port }}"
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          env:
+            - name: {{ .Values.apiKeySecret.envName | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.apiKeySecret.name }}
+                  key: {{ .Values.apiKeySecret.key }}
+          volumeMounts:
+            - name: routes
+              mountPath: /etc/switchyard
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: routes
+          configMap:
+            name: {{ .Values.fullnameOverride }}-routes
+        - name: tmp
+          emptyDir: {}

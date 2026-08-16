@@ -50,6 +50,37 @@ See [Getting Started](docs/getting_started.md#server-path) for a complete TOML
 deployment and [`switchyard-server`](crates/switchyard-server/README.md) for the
 configuration reference.
 
+### Container image
+
+Build a production image from this repository (matches the checked-out commit):
+
+```bash
+docker build -t switchyard-server:local .
+docker run --rm -p 4000:4000 \
+  -e API_KEY \
+  -v "$PWD/deploy/examples/routes.passthrough.toml:/etc/switchyard/routes.toml:ro" \
+  switchyard-server:local
+```
+
+The root `Dockerfile` compiles `switchyard-server` with `cargo build --locked
+--release`. Replace the example routes file and `API_KEY` with your upstream.
+`benchmark/switchyard-rust-server.Dockerfile` remains available for benchmark
+pipelines that prefer a smaller context.
+
+### Helm chart
+
+A minimal chart lives under `deploy/helm/switchyard`:
+
+```bash
+kubectl create secret generic switchyard-api-key --from-literal=API_KEY=...
+helm upgrade --install switchyard deploy/helm/switchyard \
+  --set image.repository=switchyard-server \
+  --set image.tag=local
+```
+
+Override `routesConfig` for a real deployment. Optional NetworkPolicy support is
+documented in `deploy/helm/switchyard/README.md`.
+
 ## Rust Libraries
 
 Add the crates needed by an embedded application:

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Minimal passthrough routes.toml for local docker / helm smoke tests.
+# Replace base_url, api_key_env, and target ids with your upstream.
+
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "https://example.com/v1"
+api_key_env = "API_KEY"
+max_retries = 2
+
+[targets.default]
+id = "example/model"
+llm_client = "upstream"
+
+[routes.passthrough]
+id = "example/model"
+type = "passthrough"
+target = "default"

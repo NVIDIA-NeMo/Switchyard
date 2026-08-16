@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Generic Helm values for switchyard-server. Override image, secret, and
+# routesConfig for your environment. See deploy/examples/routes.passthrough.toml.
+
+fullnameOverride: switchyard
+
+replicaCount: 1
+
+image:
+  repository: switchyard-server
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  port: 4000
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+    ephemeral-storage: 128Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+    ephemeral-storage: 512Mi
+
+# Secret holding the upstream API key named by routesConfig api_key_env.
+# Create before install, e.g.:
+#   kubectl create secret generic switchyard-api-key --from-literal=API_KEY=...
+apiKeySecret:
+  name: switchyard-api-key
+  key: API_KEY
+  envName: API_KEY
+
+# Optional NetworkPolicy. Disabled by default so the chart stays usable in
+# clusters without a CNI NetworkPolicy implementation. When enabled, require
+# either (callerPodSelectors + sandboxNamespaces) or extraIngressFrom.
+networkPolicy:
+  enabled: false
+  sandboxNamespaces: []
+  callerPodSelectors: []
+  extraIngressFrom: []
+
+# Mounted at /etc/switchyard/routes.toml. Replace with a real deployment.
+routesConfig: |
+  schema_version = 1
+
+  [llm_clients.upstream]
+  format = "openai_chat"
+  base_url = "https://example.com/v1"
+  api_key_env = "API_KEY"
+  max_retries = 2
+
+  [targets.default]
+  id = "example/model"
+  llm_client = "upstream"
+
+  [routes.passthrough]
+  id = "example/model"
+  type = "passthrough"
+  target = "default"

@@ -1,0 +1,49 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Optional ingress lock-down. Switchyard has no inbound authentication; when
+enabled, bound callers so arbitrary pods cannot spend the upstream key.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $hasSelectorIngress := and (not (empty .Values.networkPolicy.callerPodSelectors)) (not (empty .Values.networkPolicy.sandboxNamespaces)) }}
+{{- if and (not $hasSelectorIngress) (empty .Values.networkPolicy.extraIngressFrom) }}
+{{- fail "networkPolicy.enabled requires either (callerPodSelectors + sandboxNamespaces) or extraIngressFrom; otherwise it renders a deny-all policy" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.fullnameOverride }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.fullnameOverride }}
+    app.kubernetes.io/component: switchyard
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Values.fullnameOverride }}
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- $ns := .Values.networkPolicy.sandboxNamespaces }}
+    {{- range $selector := .Values.networkPolicy.callerPodSelectors }}
+    {{- range $namespace := $ns }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $selector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.service.port }}
+    {{- end }}
+    {{- end }}
+    {{- with .Values.networkPolicy.extraIngressFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.service.port }}
+    {{- end }}
+{{- end }}
