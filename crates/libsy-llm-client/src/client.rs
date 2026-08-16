@@ -781,19 +781,24 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
 
 // Normalizes response items that coding agents replay as Responses input.
 // Responses providers reject response-only `status` metadata, malformed or
-// provider-bound item IDs, non-empty reasoning `content`, and encrypted reasoning
-// created by a different provider. Ciphertext and custom-tool item provenance are
-// not represented on replay items, so dynamic routes retain portable summaries and
-// `call_id` linkage while discarding provider-bound metadata.
+// provider-bound hosted-tool records, non-empty reasoning `content`, and encrypted
+// reasoning created by a different provider. Ciphertext and tool provenance are not
+// represented on replay items, so dynamic routes retain portable summaries,
+// assistant messages, and `call_id` linkage while discarding provider-bound data.
 fn sanitize_openai_responses_replay_items(body: &mut Value) {
     let Some(Value::Array(input)) = body.get_mut("input") else {
         return;
     };
-    for item in input {
+    input.retain_mut(|item| {
         let Value::Object(item) = item else {
-            continue;
+            return true;
         };
         match item.get("type").and_then(Value::as_str) {
+            // A hosted search is represented by its provider-specific call item
+            // followed by a portable assistant message containing the answer and
+            // citations. Replaying the call itself to another provider is both
+            // unnecessary and rejected by OpenAI-compatible local backends.
+            Some("web_search_call") => return false,
             Some("message") => {
                 item.remove("status");
                 strip_invalid_openai_responses_replay_id(item);
@@ -816,7 +821,8 @@ fn sanitize_openai_responses_replay_items(body: &mut Value) {
             }
             _ => {}
         }
-    }
+        true
+    });
 }
 
 // Replay IDs are optional, so discard cross-provider values OpenAI cannot parse.
@@ -1366,6 +1372,15 @@ mod tests {
                     "output": "Done",
                     "status": "completed"
                 },
+                {
+                    "type": "web_search_call",
+                    "id": "ws_cross_provider",
+                    "status": "completed",
+                    "action": {
+                        "type": "search",
+                        "query": "current Rust release"
+                    }
+                },
                 {"type": "message", "role": "user", "content": "continue"}
             ]
         });
@@ -1406,6 +1421,13 @@ mod tests {
         assert_eq!(forwarded["input"][4].get("id"), None);
         assert_eq!(forwarded["input"][4].get("status"), None);
         assert_eq!(forwarded["input"][4]["call_id"], "call_1");
+        assert_eq!(forwarded["input"].as_array().map(Vec::len), Some(6));
+        assert!(forwarded["input"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .all(|item| item.get("type").and_then(Value::as_str) != Some("web_search_call"))
+        }));
+        assert_eq!(forwarded["input"][5]["content"], "continue");
         Ok(())
     }
 
