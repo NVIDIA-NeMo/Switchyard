@@ -5,10 +5,11 @@
 # Builds from this workspace (not crates.io) so the image matches the
 # checked-out commit. Prefer this over cargo install for reproducible deploys.
 #
-#   docker build -t switchyard-server:local .
+# Build from the repository root (Cargo workspace context):
+#   docker build -f deploy/docker/Dockerfile -t switchyard-server:local .
 #   docker run --rm -p 4000:4000 \
 #     -e API_KEY \
-#     -v "$PWD/deploy/examples/routes.passthrough.toml:/etc/switchyard/routes.toml:ro" \
+#     -v "$PWD/deploy/docker/routes.passthrough.toml:/etc/switchyard/routes.toml:ro" \
 #     switchyard-server:local
 
 ARG RUST_VERSION=1.96.1

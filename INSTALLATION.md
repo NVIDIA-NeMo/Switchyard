@@ -52,20 +52,22 @@ configuration reference.
 
 ### Container image
 
-Build a production image from this repository (matches the checked-out commit):
+Build a production image from this repository (matches the checked-out commit).
+The Dockerfile lives under `deploy/docker/`; use the repo root as the build
+context:
 
 ```bash
-docker build -t switchyard-server:local .
+docker build -f deploy/docker/Dockerfile -t switchyard-server:local .
 docker run --rm -p 4000:4000 \
   -e API_KEY \
-  -v "$PWD/deploy/examples/routes.passthrough.toml:/etc/switchyard/routes.toml:ro" \
+  -v "$PWD/deploy/docker/routes.passthrough.toml:/etc/switchyard/routes.toml:ro" \
   switchyard-server:local
 ```
 
-The root `Dockerfile` compiles `switchyard-server` with `cargo build --locked
---release`. Replace the example routes file and `API_KEY` with your upstream.
-`benchmark/switchyard-rust-server.Dockerfile` remains available for benchmark
-pipelines that prefer a smaller context.
+`deploy/docker/Dockerfile` compiles `switchyard-server` with `cargo build
+--locked --release`. Replace the example routes file and `API_KEY` with your
+upstream. `benchmark/switchyard-rust-server.Dockerfile` remains available for
+benchmark pipelines that prefer a smaller context.
 
 ### Helm chart
 
