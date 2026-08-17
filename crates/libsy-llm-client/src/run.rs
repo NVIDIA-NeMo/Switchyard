@@ -48,6 +48,8 @@ pub async fn run(
     let algorithm_name = algorithm.name().to_string();
     let run_started = Instant::now();
     let routing_clients = clients.clone();
+    // This says if we have an observer, put Some(..) in routing_observations.
+    // No observer means we don't want any routing_observations.
     let routing_observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
     let outcome = drive(algorithm, request, {
         let routing_observations = routing_observations.clone();
@@ -85,7 +87,14 @@ pub async fn run(
             &observe,
         )
         .await;
-        (result, Some(answer_started.elapsed()))
+        let answer_duration = answer_started.elapsed();
+        metrics::record_answer_call(
+            &algorithm_name,
+            &selected_model_id,
+            answer_duration,
+            &result,
+        );
+        (result, Some(answer_duration))
     };
     metrics::record_routed_request(&selected_model_id, answer_duration, &result);
     if let Some(observer) = &observer {

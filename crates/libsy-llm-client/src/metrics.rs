@@ -104,6 +104,29 @@ pub(crate) fn record_routing_overhead(algorithm: &str, overhead: Duration) {
         );
 }
 
+/// Records one terminal model call made after routing, preserving the libsy call metric surface.
+pub(crate) fn record_answer_call(
+    algorithm: &str,
+    selected_model: &ModelId,
+    duration: Duration,
+    result: &Result<Response>,
+) {
+    let attributes = [
+        KeyValue::new("algorithm", algorithm.to_string()),
+        KeyValue::new("selected_model", selected_model.to_string()),
+        KeyValue::new("outcome", if result.is_ok() { "ok" } else { "error" }),
+    ];
+    let meter = global::meter("switchyard");
+    meter
+        .u64_counter("switchyard.llm_calls")
+        .build()
+        .add(1, &attributes);
+    meter
+        .f64_histogram("switchyard.llm_call_duration_ms")
+        .build()
+        .record(duration.as_secs_f64() * 1000.0, &attributes);
+}
+
 /// Records one terminal routed request after the algorithm has produced an outcome.
 pub(crate) fn record_routed_request(
     selected_model: &ModelId,

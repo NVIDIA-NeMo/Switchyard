@@ -73,7 +73,9 @@ pub struct RoutingOutcome {
 }
 
 impl RoutingOutcome {
-    /// Leaves the terminal call to the client.
+    /// The decision is that client should send this `request`. The `selected_model_id`
+    /// will be written into it by this function.
+    /// If that fails client should try the `fallback_models` in order.
     pub fn route_to(
         selected_model_id: ModelId,
         fallback_models: Vec<ModelId>,
@@ -88,7 +90,8 @@ impl RoutingOutcome {
         }
     }
 
-    /// Returns a response that routing work already produced.
+    /// Algorithm generated the response as part of the routing decision. Here it is.
+    /// The `request` will have the `selected_model_id` written into it by this function.
     pub fn answered(selected_model_id: ModelId, mut request: Request, response: Response) -> Self {
         request.llm_request.model = Some(selected_model_id.to_string());
         Self {

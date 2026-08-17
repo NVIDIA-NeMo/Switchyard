@@ -751,6 +751,11 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     // plus one published decision.
     let snapshots = flushed_metrics(exporter, provider);
     let run_attrs = [("algorithm", ALGO), ("outcome", "ok")];
+    let call_attrs = [
+        ("algorithm", ALGO),
+        ("selected_model", MODEL),
+        ("outcome", "ok"),
+    ];
     let token_attrs = [("algorithm", ALGO), ("selected_model", MODEL)];
     assert_eq!(
         u64_counter_value(&snapshots, "switchyard.runs", &run_attrs),
@@ -758,6 +763,14 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     );
     assert_eq!(
         f64_histogram_count(&snapshots, "switchyard.run_duration_ms", &run_attrs),
+        Some(1)
+    );
+    assert_eq!(
+        u64_counter_value(&snapshots, "switchyard.llm_calls", &call_attrs),
+        Some(1)
+    );
+    assert_eq!(
+        f64_histogram_count(&snapshots, "switchyard.llm_call_duration_ms", &call_attrs),
         Some(1)
     );
     assert_eq!(
@@ -1279,7 +1292,7 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
 }
 
 #[tokio::test]
-async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_libsy::Result<()> {
+async fn classifier_metrics_count_routing_and_answer_calls_once() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (_store, exporter, provider, _, _) = telemetry();
     let before = flushed_metrics(exporter, provider);
@@ -1305,6 +1318,18 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
             &[
                 ("algorithm", "llm_task_classifier"),
                 ("selected_model", "classifier"),
+                ("outcome", "ok"),
+            ],
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.llm_calls",
+            &[
+                ("algorithm", "llm_task_classifier"),
+                ("selected_model", "weak"),
                 ("outcome", "ok"),
             ],
         ),
