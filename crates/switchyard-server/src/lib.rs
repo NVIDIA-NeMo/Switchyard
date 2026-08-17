@@ -913,7 +913,7 @@ fn client_error(error: &LlmClientError) -> Response {
             "context_length_exceeded",
         ),
         LlmClientError::UpstreamHttp { status, body } => error_response(
-            StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
+            *status,
             upstream_error_message(body),
             "upstream_error",
             "upstream_error",

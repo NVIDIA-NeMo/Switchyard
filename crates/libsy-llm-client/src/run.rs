@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use http::StatusCode;
 use parking_lot::Mutex;
 use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, drive};
 use switchyard_protocol::{
@@ -265,7 +266,10 @@ fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
             Some(RoutingFallbackReason::Unavailable)
         }
         LlmClientError::UpstreamHttp { status, .. }
-            if matches!(*status, 403 | 408 | 429) || (500..=599).contains(status) =>
+            if matches!(
+                *status,
+                StatusCode::FORBIDDEN | StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+            ) || status.is_server_error() =>
         {
             Some(RoutingFallbackReason::Unavailable)
         }
@@ -353,6 +357,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures::StreamExt;
+    use http::StatusCode;
     use switchyard_libsy::Driver;
     use switchyard_protocol::{
         LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, completion_text, text_request,
@@ -403,7 +408,7 @@ mod tests {
                         message: "too long".to_string(),
                     }),
                     FirstOutcome::Unauthorized => Err(LlmClientError::UpstreamHttp {
-                        status: 401,
+                        status: StatusCode::UNAUTHORIZED,
                         body: "unauthorized".to_string(),
                     }),
                     FirstOutcome::StreamSuccess => Ok(stream_response(vec![
@@ -485,7 +490,13 @@ mod tests {
             })),
             Some(RoutingFallbackReason::ContextWindow)
         );
-        for status in [403, 408, 429, 500, 599] {
+        for status in [
+            StatusCode::FORBIDDEN,
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::from_u16(599).expect("599 is a valid status"),
+        ] {
             assert_eq!(
                 fallback_reason(&error(LlmClientError::UpstreamHttp {
                     status,
@@ -494,7 +505,14 @@ mod tests {
                 Some(RoutingFallbackReason::Unavailable)
             );
         }
-        for status in [400, 401, 404, 409, 499, 600] {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::NOT_FOUND,
+            StatusCode::CONFLICT,
+            StatusCode::from_u16(499).expect("499 is a valid status"),
+            StatusCode::from_u16(600).expect("600 is a valid status"),
+        ] {
             assert_eq!(
                 fallback_reason(&error(LlmClientError::UpstreamHttp {
                     status,
@@ -528,7 +546,10 @@ mod tests {
         assert!(matches!(
             result,
             Err(LibsyError::ClientCall {
-                source: LlmClientError::UpstreamHttp { status: 401, .. },
+                source: LlmClientError::UpstreamHttp {
+                    status: StatusCode::UNAUTHORIZED,
+                    ..
+                },
                 ..
             })
         ));

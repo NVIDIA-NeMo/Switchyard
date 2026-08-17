@@ -284,9 +284,7 @@ fn client_error_reason(error: &LlmClientError) -> &'static str {
     match error {
         LlmClientError::Timeout { .. } => "timeout",
         LlmClientError::Transport { .. } => "transport",
-        LlmClientError::UpstreamHttp { status, .. } if (500..=599).contains(status) => {
-            "upstream_5xx"
-        }
+        LlmClientError::UpstreamHttp { status, .. } if status.is_server_error() => "upstream_5xx",
         LlmClientError::UpstreamHttp { .. } => "upstream_non_5xx",
         LlmClientError::InvalidResponse { .. } | LlmClientError::ResponseTranslation(_) => {
             "invalid_response"
@@ -347,6 +345,7 @@ mod tests {
     use super::*;
 
     use futures::StreamExt;
+    use http::StatusCode;
     use serde::Deserialize;
     use switchyard_protocol::{ContentBlock, LlmClientError, text_request, text_response};
 
@@ -615,14 +614,14 @@ mod tests {
             ),
             (
                 LlmClientError::UpstreamHttp {
-                    status: 500,
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
                     body: "server error".to_string(),
                 },
                 "upstream_5xx",
             ),
             (
                 LlmClientError::UpstreamHttp {
-                    status: 302,
+                    status: StatusCode::FOUND,
                     body: "redirect".to_string(),
                 },
                 "upstream_non_5xx",

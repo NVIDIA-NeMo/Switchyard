@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value};
@@ -262,7 +263,7 @@ impl TranslatingLlmClient {
                     let will_retry = attempt < max_retries && failure.is_retryable();
                     span.record("outcome", "error");
                     if let Some(status) = failure.status {
-                        span.record("status_code", status);
+                        span.record("status_code", status.as_u16());
                     }
                     span.record("will_retry", will_retry);
                     if !will_retry {
@@ -325,7 +326,7 @@ impl TranslatingLlmClient {
                     metrics::record_upstream_attempt(None);
                     return Err(AttemptFailure {
                         error: convert_reqwest_error(error),
-                        status: Some(status.as_u16()),
+                        status: Some(status),
                         retry_after: None,
                     });
                 }
@@ -344,7 +345,7 @@ impl TranslatingLlmClient {
                 metrics::record_upstream_attempt(None);
                 return Err(AttemptFailure {
                     error: convert_reqwest_error(error),
-                    status: Some(status.as_u16()),
+                    status: Some(status),
                     retry_after,
                 });
             }
@@ -358,14 +359,11 @@ impl TranslatingLlmClient {
                     message: body,
                 }
             } else {
-                LlmClientError::UpstreamHttp {
-                    status: status.as_u16(),
-                    body,
-                }
+                LlmClientError::UpstreamHttp { status, body }
             };
         Err(AttemptFailure {
             error,
-            status: Some(status.as_u16()),
+            status: Some(status),
             retry_after,
         })
     }
@@ -564,7 +562,7 @@ impl EncodedResponse {
 // attempt telemetry and delay selection.
 struct AttemptFailure {
     error: LlmClientError,
-    status: Option<u16>,
+    status: Option<StatusCode>,
     retry_after: Option<Duration>,
 }
 
@@ -573,7 +571,7 @@ impl AttemptFailure {
         match &self.error {
             LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
             LlmClientError::UpstreamHttp { status, .. } => {
-                metrics::is_retryable_http_status(*status)
+                metrics::is_retryable_http_status(status.as_u16())
             }
             _ => false,
         }
@@ -1500,7 +1498,10 @@ mod tests {
         };
         assert!(matches!(
             error,
-            LlmClientError::UpstreamHttp { status: 500, .. }
+            LlmClientError::UpstreamHttp {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                ..
+            }
         ));
         Ok(())
     }
@@ -1562,7 +1563,7 @@ mod tests {
         assert!(matches!(
             error,
             LlmClientError::UpstreamHttp {
-                status: 401,
+                status: StatusCode::UNAUTHORIZED,
                 body
             } if body == "invalid key"
         ));
@@ -1598,7 +1599,7 @@ mod tests {
         assert!(matches!(
             error,
             LlmClientError::UpstreamHttp {
-                status: 500,
+                status: StatusCode::INTERNAL_SERVER_ERROR,
                 body
             } if body == "attempt 3"
         ));
@@ -1651,7 +1652,14 @@ mod tests {
         };
         assert!(transport.is_retryable());
 
-        for status in [408, 429, 500, 503, 599] {
+        for status in [
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::from_u16(599)
+                .expect("599 is a syntactically valid HTTP code in the http crate"),
+        ] {
             let failure = AttemptFailure {
                 error: LlmClientError::UpstreamHttp {
                     status,
@@ -1662,7 +1670,13 @@ mod tests {
             };
             assert!(failure.is_retryable(), "HTTP {status} should retry");
         }
-        for status in [400, 401, 409, 600] {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::CONFLICT,
+            StatusCode::from_u16(600)
+                .expect("600 is a syntactically valid HTTP code in the http crate"),
+        ] {
             let failure = AttemptFailure {
                 error: LlmClientError::UpstreamHttp {
                     status,
@@ -1688,7 +1702,7 @@ mod tests {
                 model: ModelId::from("gpt"),
                 message: "too long".to_string(),
             },
-            status: Some(400),
+            status: Some(StatusCode::BAD_REQUEST),
             retry_after: None,
         };
         assert!(!context_window.is_retryable());
