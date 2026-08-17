@@ -146,10 +146,16 @@ impl CallerAuthKind {
 struct CountTokensTarget {
     model: ModelId,
     client: Arc<TranslatingLlmClient>,
+    system_prompt: Option<String>,
 }
 
 impl CountTokensTarget {
-    async fn count_tokens(&self, request: Request) -> Result<Value, LlmClientError> {
+    async fn count_tokens(&self, mut request: Request) -> Result<Value, LlmClientError> {
+        switchyard_translation::prepare_request_for_target(
+            &mut request.llm_request,
+            &self.model,
+            self.system_prompt.as_deref(),
+        );
         self.client.count_tokens(&self.model, request).await
     }
 }
