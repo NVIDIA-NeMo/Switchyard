@@ -166,11 +166,30 @@ async fn upstream_chat(
     let custom_target_schema = body
         .pointer("/response_format/json_schema/schema/properties/decision/properties/target")
         .is_some();
+    // The conversation example's scoring-card schema names its tiers
+    // "efficient"/"capable"; return a capable verdict so the checked-in example
+    // config can be exercised end-to-end.
+    let conversation_target_schema = body
+        .pointer("/response_format/json_schema/schema/properties/decision/properties/target/enum")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values == &vec![json!("efficient"), json!("capable")]);
     let requests_invalid_verdict = body["messages"].as_array().is_some_and(|messages| {
         messages.iter().any(|message| {
             message["content"]
                 .as_str()
                 .is_some_and(|content| content.contains("invalid verdict"))
+        })
+    });
+    // The conversation example's regret route escalates when the judge sees the
+    // user push back; "wrong" stands in for that correction in the condensed
+    // trajectory the judge reads. System messages are skipped — the regret
+    // prompt itself names correction phrases like "wrong".
+    let requests_regret = body["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["role"] == "user"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("wrong"))
         })
     });
     let requests_schema_invalid_verdict = body["messages"].as_array().is_some_and(|messages| {
@@ -180,12 +199,21 @@ async fn upstream_chat(
                 .is_some_and(|content| content.contains("schema-invalid verdict"))
         })
     });
-    let content = if model == "model/classifier" && custom_target_schema {
+    let content = if model == "model/classifier" && conversation_target_schema {
+        r#"{"decision":{"target":"capable"},"crux":"unstated audience","primary_rule":"CONV-4","p_solve":0.3}"#
+    } else if model == "model/classifier" && custom_target_schema {
         if requests_invalid_verdict {
             r#"{"decision":{"target":"unknown"}}"#
         } else {
             r#"{"decision":{"target":"premium"}}"#
         }
+    } else if model == "model/classifier"
+        && body
+            .pointer("/response_format/json_schema/schema/properties/escalate")
+            .is_some()
+        && requests_regret
+    {
+        r#"{"escalate":true,"reason":"the user says the answer is wrong"}"#
     } else if model == "model/classifier"
         && body
             .pointer("/response_format/json_schema/schema/properties/escalate")
@@ -1157,6 +1185,150 @@ selector = "/decision/target"
             ["target"]["enum"],
         json!(["weak", "middle", "strong", "premium"])
     );
+    Ok(())
+}
+
+/// Model ids the checked-in conversation example config pins its tiers to.
+const CONVERSATION_CAPABLE: &str = "anthropic/claude-opus-4.7";
+const CONVERSATION_EFFICIENT: &str = "moonshotai/kimi-k2.7-code";
+
+const CONVERSATION_EXAMPLE: &str =
+    include_str!("../../../examples/conversation-routing/conversation-routing.toml");
+
+/// The checked-in conversation example must parse and build both routes as is
+/// (the API key env reference is stripped so the build needs no environment).
+#[tokio::test]
+async fn conversation_example_config_builds_both_routes() -> TestResult {
+    let toml = CONVERSATION_EXAMPLE.replace("api_key_env = \"OPENROUTER_API_KEY\"", "");
+    let state = load_test_config(&toml)?;
+    let models = state.models().collect::<Vec<_>>();
+    assert!(models.contains(&"switchyard/conversation"), "{models:?}");
+    assert!(
+        models.contains(&"switchyard/conversation-regret"),
+        "{models:?}"
+    );
+    Ok(())
+}
+
+/// The checked-in conversation example drives both config-only routes
+/// end-to-end against a mock upstream: the scoring card routes an unstated-
+/// audience question to capable, and the regret route escalates on a user
+/// correction and stays capable for the rest of the session.
+#[tokio::test]
+async fn conversation_example_routes_by_card_and_escalates_on_regret() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    // The mock upstream answers classifier calls addressed to "model/classifier";
+    // the checked-in example names a real provider model, so swap just that id.
+    let toml = CONVERSATION_EXAMPLE
+        .replace("https://openrouter.ai/api/v1", &upstream.base_url)
+        .replace("api_key_env = \"OPENROUTER_API_KEY\"", "")
+        .replace(
+            "id = \"google/gemini-3.5-flash\"",
+            "id = \"model/classifier\"",
+        );
+    let state = load_test_config(&toml)?;
+    let app = build_switchyard_router(state);
+
+    let selected_model = |response: &Response| {
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+
+    // Scoring-card route: the judge's verdict names capable, so the frontier
+    // tier answers.
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/conversation",
+            "messages": [{"role": "user", "content": "explain what a quasar is"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        selected_model(&response).as_deref(),
+        Some(CONVERSATION_CAPABLE)
+    );
+
+    // Regret route: turn 1 has no regret, so the efficient tier answers.
+    let session: &[(&str, &str)] = &[("x-switchyard-session-id", "conversation-session")];
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/conversation-regret",
+            "messages": [{"role": "user", "content": "explain what a quasar is"}]
+        })),
+        session,
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        selected_model(&response).as_deref(),
+        Some(CONVERSATION_EFFICIENT)
+    );
+
+    // Turn 2 corrects the answer; the judge confirms regret and the session
+    // escalates on this same turn, dropping the efficient reply.
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/conversation-regret",
+            "messages": [
+                {"role": "user", "content": "explain what a quasar is"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "no, that's wrong — explain it again"}
+            ]
+        })),
+        session,
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        selected_model(&response).as_deref(),
+        Some(CONVERSATION_CAPABLE)
+    );
+
+    // Turn 3 stays capable without another judge call: escalation is one-way.
+    upstream.calls.lock().await.clear();
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/conversation-regret",
+            "messages": [
+                {"role": "user", "content": "explain what a quasar is"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "no, that's wrong — explain it again"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "thanks, now tell me about pulsars"}
+            ]
+        })),
+        session,
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        selected_model(&response).as_deref(),
+        Some(CONVERSATION_CAPABLE)
+    );
+    assert!(
+        !upstream
+            .models()
+            .await
+            .contains(&"model/classifier".to_string()),
+        "a latched session must not consult the judge again"
+    );
+
     Ok(())
 }
 
