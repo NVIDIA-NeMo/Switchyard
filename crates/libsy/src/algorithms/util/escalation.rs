@@ -17,6 +17,7 @@ use super::llm_judge::{
 };
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
+use crate::observability::record_escalation_verdict;
 use crate::{LibsyError, Result};
 use switchyard_protocol::Request;
 
@@ -119,21 +120,36 @@ pub(crate) type EscalationJudge = StructuredJudge<EscalationInput, SerdeDecoder<
 pub(crate) struct EscalationPolicy {
     capable: ModelId,
     efficient: ModelId,
+    /// Judge target, for the `judge_model` label on the verdict counter.
+    judge_model: ModelId,
 }
 
 impl JudgePolicy for EscalationPolicy {
     type Verdict = EscalationVerdict;
 
+    /// Counts the verdict here, off the judge's own boolean, rather than off the tier the
+    /// verdict resolves to. The two are not interchangeable: a deployment that points
+    /// `capable` and `efficient` at the same model — which [`Classifier::routing_tier`] already
+    /// accepts — makes a decline indistinguishable from an escalation by target alone.
     fn to_classification(&self, verdict: Option<&EscalationVerdict>) -> Classification {
         match verdict {
-            Some(verdict) if verdict.escalate => Classification::Scores(vec![Score {
-                target: self.capable.clone(),
-                confidence: 1.0,
-            }]),
-            Some(_) => Classification::Scores(vec![Score {
-                target: self.efficient.clone(),
-                confidence: 1.0,
-            }]),
+            Some(verdict) if verdict.escalate => {
+                record_escalation_verdict(self.judge_model.as_str(), "escalate");
+                Classification::Scores(vec![Score {
+                    target: self.capable.clone(),
+                    confidence: 1.0,
+                }])
+            }
+            Some(_) => {
+                record_escalation_verdict(self.judge_model.as_str(), "hold");
+                Classification::Scores(vec![Score {
+                    target: self.efficient.clone(),
+                    confidence: 1.0,
+                }])
+            }
+            // No verdict: the judge failed open and `switchyard.classifier_fail_open` already
+            // counted it. Recording it here would report an opinion the judge never gave, and
+            // would count one consultation under both metrics.
             None => Classification::Ambiguous(Vec::new()),
         }
     }
@@ -161,8 +177,12 @@ pub(crate) fn build_judge(
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(max_output_tokens)?,
         ),
-        judge_target,
-        EscalationPolicy { capable, efficient },
+        judge_target.clone(),
+        EscalationPolicy {
+            capable,
+            efficient,
+            judge_model: judge_target,
+        },
     ))
 }
 

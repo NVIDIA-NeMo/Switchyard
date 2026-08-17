@@ -69,6 +69,26 @@ Each histogram emits `_bucket`, `_sum`, and `_count` series. Use
 `upstream_5xx`, `upstream_non_5xx`, `invalid_response`, `parse_error`, `client_error`, or
 `call_error`. The labels never include request or response text.
 
+## Escalation judge verdict counter
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `switchyard_escalation_judge_verdicts_total{judge_model,verdict}` | counter | Escalation judge consultations that produced a verdict. `verdict` is `escalate` or `hold`. |
+
+Counts **consultations, not served traffic**. An escalation route consults the judge on
+every unlatched turn; once the consecutive-escalate streak reaches `confirmations` the
+session routes to the capable tier without consulting the judge again, so later turns
+increment `switchyard_decisions_total` and not this. The two diverge by design, and the gap
+widens with session length.
+
+A consultation that produced no usable verdict is counted by
+`switchyard_classifier_fail_open_total` and never here, so the two metrics partition every
+consultation exactly once.
+
+The verdict is taken from the judge's own boolean rather than from the tier it resolves to.
+A deployment may point the capable and efficient targets at the same model, in which case a
+decline and an escalation are indistinguishable by target.
+
 ## Outcome counters for error-rate ratios
 
 The `outcome` label takes exactly three values:
@@ -151,8 +171,9 @@ into label space.
 | `le` | The configured histogram bucket boundaries. | Histogram buckets |
 | `algorithm` | One stable value per configured algorithm. | Routing-overhead histogram |
 | `tier` | Small enumerated set, optional. | Per-endpoint counters and histograms on algorithms that supply it |
-| `judge_model` | One per configured judge target. | Classifier fail-open counter |
+| `judge_model` | One per configured judge target. | Classifier fail-open counter, escalation verdict counter |
 | `reason` | Exactly 8 fixed error categories. | Classifier fail-open counter |
+| `verdict` | Exactly 2: `escalate`, `hold`. | Escalation verdict counter |
 
 ## Triage cheatsheet
 
@@ -162,4 +183,5 @@ into label space.
 | All counters at 0 after warm-up | Server just started with no traffic, or the scraper is hitting the wrong port. |
 | `switchyard_routing_overhead_ms_count` stuck at `0` | No successful algorithm run has recorded a successful routed model call. |
 | `switchyard_classifier_fail_open_total` rising | The judge target is failing or returning a response the classifier cannot parse. Check `judge_model` and `reason`. |
+| `switchyard_escalation_judge_verdicts_total{verdict="escalate"}` rising while the capable tier stays at zero | The streak is resetting before it reaches `confirmations`. Requests without a session id use unretained per-run state, so check that clients send `x-switchyard-session-id`, or lower `confirmations`. |
 | `switchyard_client_responses_total{outcome="retryable_error"}` rising | Either the upstream is genuinely flaky, or retries are exhausting; compare client responses with retryable upstream attempts. |

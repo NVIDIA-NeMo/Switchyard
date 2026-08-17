@@ -33,8 +33,9 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    AffinityRouter, Algorithm, Classifier, Driver, LibsyError, LlmClassifierConfig,
-    LlmTaskClassifier, PickerMode, StageRouter, StageRouterConfig, Step, TaskClassifierConfig,
+    AffinityRouter, Algorithm, Classifier, ClassifierContractConfig, Driver, EscalationJudgeConfig,
+    LibsyError, LlmClassifierConfig, LlmTaskClassifier, PickerMode, StageRouter, StageRouterConfig,
+    Step, TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::ModelId;
@@ -495,6 +496,26 @@ fn classifier_router(
                 base_threshold: 0.5,
                 ..TaskClassifierConfig::default()
             },
+        },
+    )?))
+}
+
+/// Escalation-mode counterpart to [`classifier_router`], on the packaged prompt and
+/// contract. `EscalationJudgeConfig::default()` requires two consecutive escalate
+/// verdicts to latch, so a single verdict is recorded without moving any traffic.
+fn escalation_router(
+    judge_model: &str,
+    efficient_model: &str,
+    capable_model: &str,
+) -> switchyard_libsy::Result<Arc<dyn Algorithm>> {
+    Ok(Arc::new(LlmTaskClassifier::new(
+        LlmClassifierConfig::Escalation {
+            judge_target: ModelId::from(judge_model),
+            efficient_target: ModelId::from(efficient_model),
+            capable_target: ModelId::from(capable_model),
+            contract: ClassifierContractConfig::default(),
+            config: EscalationJudgeConfig::default(),
+            max_output_tokens: 256,
         },
     )?))
 }
@@ -1342,6 +1363,112 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
                 None,
                 "a valid verdict was counted as a fail-open"
             ),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn escalation_judge_verdicts_are_counted_per_consultation() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_store, exporter, provider, _, _) = telemetry();
+    const ESCALATE: &str = r#"{"escalate": true, "reason": "same error four times"}"#;
+    const DECLINE: &str = r#"{"escalate": false, "reason": "tests passing, work landing"}"#;
+
+    // (judge_model, efficient, capable, judge outcome, expected verdict label)
+    let cases = [
+        (
+            "esc-escalate",
+            "esc-efficient",
+            "esc-capable",
+            JudgeOutcome::Reply(ESCALATE),
+            Some("escalate"),
+        ),
+        (
+            "esc-hold",
+            "esc-efficient",
+            "esc-capable",
+            JudgeOutcome::Reply(DECLINE),
+            Some("hold"),
+        ),
+        (
+            "esc-failed",
+            "esc-efficient",
+            "esc-capable",
+            JudgeOutcome::CallFailure,
+            None,
+        ),
+        // Both tiers on one model. `Classifier::routing_tier` already accepts this, and a
+        // decline then resolves to the same target an escalation would, so a verdict inferred
+        // from the routed target would be reported as an escalation. Counting the judge's own
+        // boolean is what keeps this correct.
+        (
+            "esc-same-target",
+            "esc-shared",
+            "esc-shared",
+            JudgeOutcome::Reply(DECLINE),
+            Some("hold"),
+        ),
+    ];
+
+    for (judge_model, efficient, capable, outcome, expected_verdict) in cases {
+        let client = Arc::new(JudgeClient {
+            judge_model: judge_model.into(),
+            outcome,
+        }) as Arc<dyn RoutedLlmClient>;
+        let (trace, _) = run(
+            escalation_router(judge_model, efficient, capable)?,
+            client,
+            classifier_request(),
+        )
+        .await?;
+
+        let snapshots = flushed_metrics(exporter, provider);
+        match expected_verdict {
+            Some(verdict) => {
+                assert_eq!(
+                    u64_counter_value(
+                        &snapshots,
+                        "switchyard.escalation_judge_verdicts",
+                        &[("judge_model", judge_model), ("verdict", verdict)],
+                    ),
+                    Some(1),
+                    "case {judge_model} did not count the verdict"
+                );
+                // The default `confirmations` is 2, so one escalate verdict is counted
+                // without latching. A verdict existing while traffic stays on the
+                // efficient tier is the property this metric exists to expose, and the
+                // reason it is not a duplicate of `switchyard.decisions`.
+                assert_eq!(
+                    trace[0].selected_model_id(),
+                    efficient,
+                    "case {judge_model} moved traffic on a single verdict"
+                );
+            }
+            // A judge that produced no verdict failed open. It belongs to
+            // `classifier_fail_open` and must leave the verdict counter untouched,
+            // otherwise the two metrics double-count the same consultation and the
+            // failure is reported as an opinion the judge never gave.
+            None => {
+                assert_eq!(
+                    u64_counter_value(
+                        &snapshots,
+                        "switchyard.escalation_judge_verdicts",
+                        &[("judge_model", judge_model)],
+                    ),
+                    None,
+                    "a failed judge call was counted as a verdict"
+                );
+                assert_eq!(
+                    u64_counter_value(
+                        &snapshots,
+                        "switchyard.classifier_fail_open",
+                        &[("judge_model", judge_model)],
+                    ),
+                    Some(1),
+                    "a failed judge call was not counted as a fail-open"
+                );
+            }
         }
     }
     Ok(())

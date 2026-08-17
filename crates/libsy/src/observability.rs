@@ -201,6 +201,26 @@ pub(crate) fn record_classifier_fail_open(judge_model: &str, reason: &'static st
         );
 }
 
+/// Records an escalation judge verdict that resolved.
+///
+/// Counts judge *consultations*, not served traffic: a session stops consulting the judge
+/// once its streak reaches `confirmations`, so later turns route capable without
+/// incrementing this. A consultation that produced no usable verdict is counted by
+/// [`record_classifier_fail_open`] instead and never reaches here, so the two metrics
+/// partition every consultation exactly once.
+pub(crate) fn record_escalation_verdict(judge_model: &str, verdict: &'static str) {
+    meter()
+        .u64_counter("switchyard.escalation_judge_verdicts")
+        .build()
+        .add(
+            1,
+            &[
+                KeyValue::new("judge_model", judge_model.to_string()),
+                KeyValue::new("verdict", verdict),
+            ],
+        );
+}
+
 /// Records the resolution of one offloaded model call: the call counter and
 /// latency histogram, the `outcome`/`error`/token fields on `span`, and a warn
 /// log when the call failed.
