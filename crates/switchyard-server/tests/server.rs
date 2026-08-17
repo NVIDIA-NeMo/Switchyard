@@ -956,6 +956,85 @@ base_threshold = 0.5
     Ok(())
 }
 
+/// Decision-only routing executes the judge, stops before the selected model call, and
+/// returns only the non-secret connection settings needed by an external caller.
+#[tokio::test]
+async fn decision_returns_callable_target_without_calling_it() -> TestResult {
+    let judge_upstream = MockUpstream::start().await?;
+    let model_upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.judge_provider]
+format = "openai_chat"
+base_url = "{judge_url}"
+
+[llm_clients.model_provider]
+format = "openai_chat"
+base_url = "{model_url}"
+
+[targets.judge]
+id = "model/classifier"
+llm_client = "judge_provider"
+
+[targets.quality]
+id = "model/strong"
+llm_client = "model_provider"
+
+[targets.economy]
+id = "model/weak"
+llm_client = "model_provider"
+extra_body = {{ service_tier = "priority" }}
+
+[routes.classify]
+id = "switchyard/classify"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "quality"
+weak_target = "economy"
+base_threshold = 0.5
+"#,
+        judge_url = judge_upstream.base_url,
+        model_url = model_upstream.base_url,
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/decision",
+        Some(json!({
+            "input_format": "openai_chat",
+            "request": {
+                "model": "switchyard/classify",
+                "messages": [{"role": "user", "content": "bounded task"}]
+            }
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.json()?,
+        json!({
+            "target": "economy",
+            "model": "model/weak",
+            "llm_client": {
+                "format": "openai_chat",
+                "base_url": model_upstream.base_url,
+            },
+            "extra_body": {"service_tier": "priority"},
+        })
+    );
+    assert_eq!(
+        judge_upstream.models().await,
+        vec!["model/classifier".to_string()]
+    );
+    assert!(model_upstream.models().await.is_empty());
+    Ok(())
+}
+
 /// A critical tool error must reach the stage router's signal scorer, which reads
 /// the decoded conversation. The endpoint records no inbound wire format, so a
 /// scorer that parsed the raw body instead would find nothing and route every turn

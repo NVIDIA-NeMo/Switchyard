@@ -32,9 +32,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, LibsyError};
+use futures_util::StreamExt;
+use libsy::{Algorithm, CallModel, LibsyError, Step};
 use parking_lot::Mutex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
@@ -112,6 +113,23 @@ struct RouteEntry {
     caller_auth: Option<CallerAuthKind>,
     capabilities: ModelCapabilities,
     count_tokens_target: Option<CountTokensTarget>,
+    decision_targets: BTreeMap<ModelId, DecisionTarget>,
+}
+
+/// Public connection details for a target selected by the decision endpoint.
+#[derive(Clone, Serialize)]
+struct DecisionTarget {
+    target: String,
+    model: ModelId,
+    llm_client: DecisionLlmClient,
+    extra_body: BTreeMap<String, Value>,
+}
+
+/// Non-secret client settings needed to call a selected model.
+#[derive(Clone, Serialize)]
+struct DecisionLlmClient {
+    format: WireFormat,
+    base_url: String,
 }
 
 /// Caller credential family required by forwarded-auth backends.
@@ -212,6 +230,7 @@ impl ServerState {
                 None,
                 ModelCapabilities::default(),
                 None,
+                BTreeMap::new(),
             )
         }))
     }
@@ -225,12 +244,20 @@ impl ServerState {
                 Option<CallerAuthKind>,
                 ModelCapabilities,
                 Option<CountTokensTarget>,
+                BTreeMap<ModelId, DecisionTarget>,
             ),
         >,
     ) -> ServerResult<Self> {
         let mut entries = BTreeMap::new();
-        for (model, algorithm, target_clients, caller_auth, capabilities, count_tokens_target) in
-            routes
+        for (
+            model,
+            algorithm,
+            target_clients,
+            caller_auth,
+            capabilities,
+            count_tokens_target,
+            decision_targets,
+        ) in routes
         {
             let model = ModelId::from(model.trim());
             if model.is_empty() {
@@ -242,6 +269,7 @@ impl ServerState {
                 caller_auth,
                 capabilities,
                 count_tokens_target,
+                decision_targets,
             };
             if entries.insert(model.clone(), entry).is_some() {
                 return Err(ServerError::new(format!("duplicate route model {model}")));
@@ -503,6 +531,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
+        .route("/v1/decision", post(decision))
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/models", get(models))
         .route("/v1/stats", get(get_stats))
@@ -562,6 +591,88 @@ async fn openai_responses(
     body: std::result::Result<Json<Value>, JsonRejection>,
 ) -> Response {
     handle_endpoint(state, started, headers, body, WireFormat::OpenAiResponses).await
+}
+
+/// One provider request submitted for a routing decision without an answer-model call.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionEndpointRequest {
+    input_format: WireFormat,
+    request: Value,
+}
+
+/// Selects a target while still allowing the algorithm's classifier and judge calls.
+async fn decision(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<DecisionEndpointRequest>, JsonRejection>,
+) -> Response {
+    let body = match body {
+        Ok(Json(body)) if body.request.is_object() => body,
+        Ok(_) => return invalid_body_error("request must be a JSON object"),
+        Err(error) => {
+            return invalid_body_error(format!("Request body must be valid JSON: {error}"));
+        }
+    };
+    let (route, request) = match resolve_route(
+        &state,
+        metadata_from_headers(headers),
+        body.request,
+        body.input_format,
+    ) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+    let selected_model = match run_decision_only(route, request).await {
+        Ok(model) => model,
+        Err(error) => return algorithm_error(error),
+    };
+    match route.decision_targets.get(&selected_model) {
+        Some(target) => Json(target.clone()).into_response(),
+        None => error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("selected model {selected_model} has no callable target configuration"),
+            "invalid_request_error",
+            "decision_not_callable",
+        ),
+    }
+}
+
+/// Drives an algorithm until its answer call is known, without executing that final call.
+async fn run_decision_only(route: &RouteEntry, request: Request) -> libsy::Result<ModelId> {
+    let stream = Arc::clone(&route.algorithm).run_stream(request);
+    tokio::pin!(stream);
+
+    while let Some(step) = stream.next().await {
+        match step? {
+            // Decision-only behavior: take the selected answer call and stop before model I/O.
+            Step::CallModel(call) if call.is_answer_call => {
+                let (_, models) = call.into_parts();
+                return models.into_iter().next().ok_or(LibsyError::NoTargets);
+            }
+            // Normal algorithm execution: classifiers and judges must answer before a final
+            // target can be selected.
+            Step::CallModel(call) => serve_decision_dependency(route, *call).await?,
+            // Published decisions are observability events. The answer CallModel above is the
+            // executable selection and therefore the endpoint's source of truth.
+            Step::Decision(_) => {}
+            Step::Done(_) => return Err(LibsyError::MissingFinalResponse),
+        }
+    }
+    Err(LibsyError::MissingFinalResponse)
+}
+
+/// Serves a classifier or judge call that the decision depends on.
+async fn serve_decision_dependency(route: &RouteEntry, call: CallModel) -> libsy::Result<()> {
+    let model = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
+    let result = match route.target_clients.route(&model) {
+        Ok(client) => client
+            .call(call.request.clone())
+            .await
+            .map_err(|source| LibsyError::client_call(model, source)),
+        Err(source) => Err(LibsyError::client_call(model, source)),
+    };
+    call.respond(result)
 }
 
 /// Anthropic token counting against the route's explicitly configured target.

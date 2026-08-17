@@ -20,10 +20,11 @@ use switchyard_llm_client::{
     Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     TranslatingLlmClient,
 };
-use switchyard_protocol::{ModelId, RoutedLlmClient};
+use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
 use crate::{
-    CallerAuthKind, CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState,
+    CallerAuthKind, CountTokensTarget, DecisionLlmClient, DecisionTarget, ModelCapabilities,
+    ServerError, ServerResult, ServerState,
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -103,6 +104,7 @@ impl ServerConfig {
             let algorithm = build_algorithm(route_name, config, &targets)?;
             let (client, caller_auth) = self.build_route_clients(route_name, config, &clients)?;
             let count_tokens_target = self.build_count_tokens_target(config, &clients);
+            let decision_targets = self.build_decision_targets(config)?;
             routes.push((
                 config.id().clone(),
                 algorithm,
@@ -110,6 +112,7 @@ impl ServerConfig {
                 caller_auth,
                 capabilities,
                 count_tokens_target,
+                decision_targets,
             ));
         }
         ServerState::new_with_capabilities(routes)
@@ -232,6 +235,40 @@ impl ServerConfig {
                 client: client.clone(),
             })
     }
+
+    /// Retains only the non-secret settings an external caller needs after routing.
+    fn build_decision_targets(
+        &self,
+        route: &RouteConfig,
+    ) -> ServerResult<BTreeMap<ModelId, DecisionTarget>> {
+        route
+            .routing_target_names()
+            .into_iter()
+            .map(|target_name| {
+                let target = self.targets.get(target_name).ok_or_else(|| {
+                    ServerError::new(format!("route references unknown target {target_name}"))
+                })?;
+                let client = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
+                    ServerError::new(format!(
+                        "target {target_name} references unknown llm client {}",
+                        target.llm_client
+                    ))
+                })?;
+                Ok((
+                    target.id.clone(),
+                    DecisionTarget {
+                        target: target_name.to_string(),
+                        model: target.id.clone(),
+                        llm_client: DecisionLlmClient {
+                            format: client.format.wire_format(),
+                            base_url: client.base_url.clone(),
+                        },
+                        extra_body: target.extra_body.clone(),
+                    },
+                ))
+            })
+            .collect()
+    }
 }
 
 // Prefer known Claude families, then preserve the route's target order.
@@ -278,6 +315,14 @@ enum ClientFormat {
 }
 
 impl ClientFormat {
+    const fn wire_format(self) -> WireFormat {
+        match self {
+            Self::OpenAiChat => WireFormat::OpenAiChat,
+            Self::OpenAiResponses => WireFormat::OpenAiResponses,
+            Self::AnthropicMessages => WireFormat::AnthropicMessages,
+        }
+    }
+
     const fn caller_auth_kind(self) -> CallerAuthKind {
         match self {
             Self::AnthropicMessages => CallerAuthKind::Anthropic,
