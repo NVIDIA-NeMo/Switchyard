@@ -597,6 +597,7 @@ struct ClassifierRouteConfig {
 }
 
 /// Complete construction settings for one LLM classifier mode.
+#[derive(Clone)]
 #[non_exhaustive]
 pub enum LlmClassifierConfig {
     /// Routes between efficient and capable targets from a task-level verdict.

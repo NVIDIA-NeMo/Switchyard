@@ -14,12 +14,16 @@ _EXPORTS = frozenset(
     {
         "Algorithm",
         "ContextWindowExceededError",
+        "CustomClassifierConfig",
         "Decision",
+        "EscalationClassifierConfig",
         "LibsyError",
+        "LlmClassifierConfig",
         "LlmFallback",
         "ModelCall",
         "Step",
         "TaskClassifierConfig",
+        "llm_classifier",
         "llm_task_classifier",
         "noop",
         "random",
@@ -34,6 +38,45 @@ if TYPE_CHECKING:
     class LibsyError(RuntimeError): ...
 
     class ContextWindowExceededError(RuntimeError): ...
+
+    @final
+    class CustomClassifierConfig:
+        """Configure schema-validated routing across named targets.
+
+        ``max_output_tokens`` must be positive. Enabling ``message_hash_fallback``
+        requires ``session_affinity``.
+        """
+
+        def __init__(
+            self,
+            prompt: str,
+            response_schema: Mapping[str, object],
+            selector: str,
+            *,
+            session_affinity: bool = False,
+            message_hash_fallback: bool = False,
+            recent_turn_window: int | None = None,
+            max_output_tokens: int = 4096,
+        ) -> None: ...
+
+    @final
+    class EscalationClassifierConfig:
+        """Configure response-based escalation between two targets.
+
+        Counts and token limits must be positive, and ``window_message_chars``
+        must be at least 50.
+        """
+
+        def __init__(
+            self,
+            *,
+            confirmations: int = 2,
+            recent_turn_window: int = 28,
+            window_message_chars: int = 500,
+            max_output_tokens: int = 4096,
+            prompt: str | None = None,
+            response_format_type: Literal["json_schema", "json_object"] = "json_schema",
+        ) -> None: ...
 
     @final
     class Decision:
@@ -88,6 +131,12 @@ if TYPE_CHECKING:
 
     @final
     class TaskClassifierConfig:
+        """Configure capability classification between efficient and capable targets.
+
+        Thresholds must remain within ``[0, 1]``, ``max_output_tokens`` must be
+        positive, and ``message_hash_fallback`` requires ``session_affinity``.
+        """
+
         def __init__(
             self,
             base_threshold: float,
@@ -100,6 +149,46 @@ if TYPE_CHECKING:
             prompt: str | None = None,
             response_format_type: Literal["json_schema", "json_object"] = "json_schema",
         ) -> None: ...
+
+    class LlmClassifierConfig:
+        """Select one supported LLM classifier mode.
+
+        Target names and each nested mode configuration must satisfy the selected
+        classifier's invariants.
+        """
+
+        @staticmethod
+        def capability(
+            judge_target: str,
+            efficient_target: str,
+            capable_target: str,
+            *,
+            config: TaskClassifierConfig,
+        ) -> LlmClassifierConfig:
+            """Route by predicted task capability."""
+            ...
+
+        @staticmethod
+        def escalation(
+            judge_target: str,
+            efficient_target: str,
+            capable_target: str,
+            *,
+            config: EscalationClassifierConfig,
+        ) -> LlmClassifierConfig:
+            """Call the efficient target first and escalate judged responses."""
+            ...
+
+        @staticmethod
+        def custom(
+            judge_target: str,
+            targets: Sequence[tuple[str, str]],
+            *,
+            default_target: str,
+            config: CustomClassifierConfig,
+        ) -> LlmClassifierConfig:
+            """Route among named targets using a schema-selected label."""
+            ...
 
     @final
     class LlmFallback:
@@ -126,6 +215,10 @@ if TYPE_CHECKING:
         weights: Sequence[float] | None = None,
         seed: int | None = None,
     ) -> Algorithm: ...
+
+    def llm_classifier(config: LlmClassifierConfig) -> Algorithm:
+        """Build a classifier, raising ValueError when its configuration is invalid."""
+        ...
 
     def llm_task_classifier(
         judge_target: str,

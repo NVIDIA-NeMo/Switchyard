@@ -10,8 +10,10 @@ import pytest
 from switchyard.libsy import (
     Algorithm,
     ContextWindowExceededError,
+    CustomClassifierConfig,
     Decision,
     LibsyError,
+    LlmClassifierConfig,
     Step,
     TaskClassifierConfig,
     algorithms,
@@ -161,14 +163,16 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
 
     judge = JudgeClient("judge")
     weak = EchoClient("weak")
-    algorithm = algorithms.llm_task_classifier(
-        "judge",
-        "weak",
-        "strong",
-        config=TaskClassifierConfig(
-            0.5,
-            threshold_step=0.1,
-            prompt="Custom capability rubric.",
+    algorithm = algorithms.llm_classifier(
+        LlmClassifierConfig.capability(
+            "judge",
+            "weak",
+            "strong",
+            config=TaskClassifierConfig(
+                0.5,
+                threshold_step=0.1,
+                prompt="Custom capability rubric.",
+            ),
         ),
     )
 
@@ -187,6 +191,49 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
         "properties"
     ]["p_solve"]
     assert response["model"] == "weak"
+
+
+async def test_custom_classifier_routes_across_named_targets() -> None:
+    class JudgeClient(EchoClient):
+        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(request)
+            return {
+                "model": self.model,
+                "outputs": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": '{"target":"balanced"}'}],
+                        "stop_reason": "end_turn",
+                    }
+                ],
+            }
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["target"],
+        "properties": {"target": {"type": "string", "enum": ["fast", "balanced", "best"]}},
+    }
+    algorithm = algorithms.llm_classifier(
+        LlmClassifierConfig.custom(
+            "judge",
+            [("fast", "model-a"), ("balanced", "model-b"), ("best", "model-c")],
+            default_target="fast",
+            config=CustomClassifierConfig("Choose a target.", schema, "/target"),
+        )
+    )
+
+    _, response = await run_algorithm(
+        algorithm,
+        {
+            "judge": JudgeClient("judge"),
+            "model-a": EchoClient("model-a"),
+            "model-b": EchoClient("model-b"),
+            "model-c": EchoClient("model-c"),
+        },
+    )
+
+    assert response["model"] == "model-b"
 
 
 async def test_classifier_config_accepts_json_object_output() -> None:
