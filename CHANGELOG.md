@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **NeMo Relay native plugin** — a dynamically loaded integration that runs
+  libsy's weighted-random, LLM-classifier, escalation, and stage-router
+  algorithms in process while Switchyard owns provider HTTP dispatch,
+  credentials, translation, retries, and fallback. Managed calls require NeMo
+  Relay 0.7 or newer and do not depend on `switchyard-server`. Target bindings
+  accept non-secret `extra_body` provider defaults, preserved requests are
+  re-encoded after routing mutations, and synthetic Relay gateway identities do
+  not become shared router session state.
+
+- **NeMo Relay routing-model usage marks** — classifier judges, escalation
+  judges and discarded weak candidates, and failed routing candidates now emit
+  `switchyard.routing.llm_call` ATOF marks with normalized token usage and
+  latency. The final serving call remains represented only by Relay's outer LLM
+  lifecycle event to prevent double-counting.
+
 ### Removed
 
 - **Deprecated Python server stack** — `switchyard serve`, YAML route bundles,
