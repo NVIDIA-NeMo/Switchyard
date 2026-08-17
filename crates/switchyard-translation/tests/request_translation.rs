@@ -1213,6 +1213,7 @@ fn openai_chat_encrypted_reasoning_details_retain_fallback() -> TestResult {
 
     assert_eq!(output["messages"][0]["reasoning_details"], details);
     assert_eq!(output["messages"][0]["reasoning"], "fallback text");
+    assert_eq!(output["messages"][0]["reasoning_content"], "fallback text");
     Ok(())
 }
 
