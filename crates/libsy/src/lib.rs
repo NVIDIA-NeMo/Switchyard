@@ -5,7 +5,10 @@
 #![doc = include_str!("../README.md")]
 
 mod core;
-pub use core::algorithm::{Algorithm, CallModel, Driver, RoutingOutcome, Step, StepStream, drive};
+pub use core::TargetPrompts;
+pub use core::algorithm::{
+    Algorithm, CallModel, Driver, RoutingOutcome, Step, StepStream, drive, with_target_prompts,
+};
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::processor::{Event, Processor};
 pub use core::state::{State, StateValue};
@@ -28,7 +31,7 @@ pub use algorithms::util::classifier_contract::{
     ClassifierContractConfig, ClassifierResponseFormat,
 };
 pub use algorithms::util::escalation::EscalationJudgeConfig;
-pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
+pub use algorithms::util::prompts::{SystemPromptProcessor, append_note};
 pub use algorithms::util::subagent::SubagentOverride;
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
 

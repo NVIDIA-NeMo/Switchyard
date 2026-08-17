@@ -62,17 +62,17 @@ pub async fn run(
         .and_then(|outcome| outcome.response.as_ref())
         .and_then(Response::served_model);
     emit_routing_observations(&observer, &routing_observations, answered_model);
-    let outcome = outcome?;
+    let mut outcome = outcome?;
     let overhead = run_started.elapsed();
     metrics::record_routing_overhead(&algorithm_name, overhead);
 
-    let selected_model_id = outcome.selected_model_id;
-    let (result, answer_duration) = if let Some(response) = outcome.response {
+    let selected_model_id = outcome.selected_model_id.clone();
+    let (result, answer_duration) = if let Some(response) = outcome.response.take() {
         (Ok(response), None)
     } else {
         let mut models = Vec::with_capacity(1 + outcome.fallback_models.len());
         models.push(selected_model_id.clone());
-        models.extend(outcome.fallback_models);
+        models.extend(outcome.fallback_models.iter().cloned());
         let answer_started = Instant::now();
         let observe = |observation| {
             if let Some(observer) = &observer {
@@ -82,8 +82,8 @@ pub async fn run(
         let result = call_first_available(
             &clients,
             &algorithm_name,
-            &outcome.request,
             &models,
+            move |target| outcome.request_for(target),
             &observe,
         )
         .await;
@@ -142,8 +142,8 @@ async fn serve(
     let result = call_first_available(
         &clients,
         &call.algorithm,
-        &call.request,
         &call.models,
+        |target| call.request_for(target),
         &observe,
     )
     .await;
@@ -154,12 +154,12 @@ async fn serve(
 async fn call_first_available(
     clients: &ClientRouter,
     algorithm: &str,
-    request: &Request,
     models: &[ModelId],
+    request_for: impl Fn(&ModelId) -> Result<Request> + Send,
     observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
 ) -> Result<Response> {
     for (index, target) in models.iter().enumerate() {
-        let request = request_for(request, target);
+        let request = request_for(target)?;
         match call_one(
             clients,
             target,
@@ -298,13 +298,6 @@ fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
     }
 }
 
-/// Clone a request and stamp the candidate model that should receive it.
-fn request_for(request: &Request, target: &ModelId) -> Request {
-    let mut request = request.clone();
-    request.llm_request.model = Some(target.to_string());
-    request
-}
-
 /// Resolves a routed call's selected model to the client that serves it.
 ///
 /// An algorithm routes among named targets; which provider each target lives on is the
@@ -379,10 +372,10 @@ mod tests {
     use async_trait::async_trait;
     use futures::StreamExt;
     use http::StatusCode;
-    use switchyard_libsy::{Driver, RoutingOutcome};
+    use switchyard_libsy::{Driver, RoutingOutcome, TargetPrompts, with_target_prompts};
     use switchyard_protocol::{
-        LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, completion_text, text_request,
-        text_response,
+        ContentBlock, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, completion_text,
+        text_request, text_response,
     };
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -429,7 +422,7 @@ mod tests {
             request: Request,
         ) -> Result<RoutingOutcome> {
             let response = driver
-                .call_model(request.clone(), vec![self.model.clone()])
+                .call_answer_model(request.clone(), self.model.clone())
                 .await?;
             Ok(RoutingOutcome::answered(
                 self.model.clone(),
@@ -449,6 +442,7 @@ mod tests {
 
     struct CandidateClient {
         calls: Mutex<Vec<ModelId>>,
+        prompts: Mutex<Vec<Vec<String>>>,
         first: FirstOutcome,
     }
 
@@ -457,6 +451,18 @@ mod tests {
         async fn call(&self, request: Request) -> std::result::Result<Response, LlmClientError> {
             let model = request.model_id().unwrap_or_default();
             self.calls.lock().push(model.clone());
+            self.prompts.lock().push(
+                request
+                    .llm_request
+                    .instructions
+                    .iter()
+                    .flat_map(|instruction| &instruction.content)
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            );
             if model == "weak" {
                 return match self.first {
                     FirstOutcome::ContextWindow => Err(LlmClientError::ContextWindowExceeded {
@@ -521,11 +527,16 @@ mod tests {
     ) -> (Arc<CandidateClient>, Result<(ModelId, Response)>) {
         let client = Arc::new(CandidateClient {
             calls: Mutex::new(Vec::new()),
+            prompts: Mutex::new(Vec::new()),
             first,
         });
-        let algorithm = Arc::new(CandidateAlgorithm {
+        let inner: Arc<dyn Algorithm> = Arc::new(CandidateAlgorithm {
             models: vec!["weak".into(), "strong".into()],
         });
+        let prompts = TargetPrompts::default()
+            .with("weak", "weak prompt")
+            .with("strong", "strong prompt");
+        let algorithm = with_target_prompts(inner, prompts);
         let result = run(
             algorithm,
             ClientRouter::single(client.clone()),
@@ -540,6 +551,7 @@ mod tests {
     async fn answered_outcome_does_not_make_a_second_model_call() -> Result<()> {
         let client = Arc::new(CandidateClient {
             calls: Mutex::new(Vec::new()),
+            prompts: Mutex::new(Vec::new()),
             first: FirstOutcome::StreamSuccess,
         });
         let observations = Arc::new(Mutex::new(Vec::new()));
@@ -620,6 +632,13 @@ mod tests {
         assert_eq!(
             &*client.calls.lock(),
             &[ModelId::from("weak"), "strong".into()]
+        );
+        assert_eq!(
+            &*client.prompts.lock(),
+            &[
+                vec!["weak prompt".to_string()],
+                vec!["strong prompt".to_string()]
+            ]
         );
         assert_eq!(
             response

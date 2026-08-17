@@ -19,7 +19,6 @@ use async_trait::async_trait;
 
 use super::fall_through::{DefaultTarget, FallThrough};
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
-use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
     record_decision_source, record_routing_decision,
@@ -28,7 +27,7 @@ use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
-use crate::{LibsyError, Result};
+use crate::{LibsyError, Result, TargetPrompts};
 use switchyard_protocol::{ModelId, Request, Response};
 
 /// Telemetry name for a router this module assembles.
@@ -118,6 +117,7 @@ impl StageRouterConfig {
 /// the picker's default tier closes the cascade so a turn is never left unrouted.
 pub struct StageRouter {
     route: FallThrough<State>,
+    tier_prompts: Option<Arc<TargetPrompts>>,
 }
 
 impl StageRouter {
@@ -126,9 +126,16 @@ impl StageRouter {
     /// routing destination.
     ///
     /// Errors if either threshold in `config` is outside `[0.0, 1.0]`.
-    pub fn new(capable: ModelId, efficient: ModelId, config: StageRouterConfig) -> Result<Self> {
+    pub fn new(
+        capable: ModelId,
+        efficient: ModelId,
+        mut config: StageRouterConfig,
+    ) -> Result<Self> {
+        let tier_prompts = std::mem::take(&mut config.tier_prompts);
+        let tier_prompts = (!tier_prompts.is_empty()).then(|| Arc::new(tier_prompts));
         Ok(Self {
             route: build_route(capable, efficient, config)?,
+            tier_prompts,
         })
     }
 }
@@ -144,7 +151,11 @@ impl Algorithm for StageRouter {
         driver: Driver,
         request: Request,
     ) -> Result<crate::RoutingOutcome> {
-        self.route.execute(driver, request).await
+        let outcome = self.route.execute(driver, request).await?;
+        Ok(match &self.tier_prompts {
+            Some(prompts) => outcome.with_target_prompts(Arc::clone(prompts)),
+            None => outcome,
+        })
     }
 }
 
@@ -200,10 +211,6 @@ fn build_route(
         inner: Arc::new(DefaultTarget::new(fall_open)),
         source: DecisionSource::FallOpen,
     }));
-    // Runs on the post-decision hook, so it applies to the target the cascade
-    // settled on, whichever classifier picked it. With no prompts configured it
-    // is a no-op, so there is nothing to branch on.
-    router = router.with_processor(Arc::new(SystemPromptProcessor::new(config.tier_prompts)));
     Ok(router)
 }
 
@@ -337,6 +344,7 @@ mod tests {
     #[derive(Clone, Debug)]
     struct Call {
         target: String,
+        instructions: Vec<String>,
         messages: Vec<String>,
     }
 
@@ -367,6 +375,16 @@ mod tests {
                     let target = target.to_string();
                     recorder.calls.lock().push(Call {
                         target: target.clone(),
+                        instructions: request
+                            .llm_request
+                            .instructions
+                            .iter()
+                            .flat_map(|instruction| &instruction.content)
+                            .filter_map(|block| match block {
+                                ContentBlock::Text { text } => Some(text.clone()),
+                                _ => None,
+                            })
+                            .collect(),
                         messages: request
                             .llm_request
                             .messages
@@ -493,22 +511,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_judge_decides_a_turn_the_signals_leave_undecided() -> Result<()> {
+    async fn the_judge_selects_a_target_without_receiving_its_answer_prompt() -> Result<()> {
         let recorder = Arc::new(Recorder::default());
-        let router = recording_router(config_with_judge(&recorder, 0.1))?;
+        let mut config = config_with_judge(&recorder, 0.1);
+        config.tier_prompts = TargetPrompts::default().with("strong", "answer-only strong prompt");
+        let router = recording_router(config)?;
 
-        let (selected_model, _) =
-            test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
+        let (selected_model, _) = test_drive(router, turn_request(false), recorder.serve()).await?;
 
         let calls = recorder.calls.lock();
+        let Some(judge) = calls.iter().find(|call| call.target == JUDGE) else {
+            panic!("the judge was never called");
+        };
         assert!(
-            calls.iter().any(|call| call.target == JUDGE),
-            "the judge should be recorded as a routing side call"
+            !judge
+                .instructions
+                .iter()
+                .any(|instruction| instruction == "answer-only strong prompt")
         );
-        assert!(
-            calls.iter().any(|call| call.target == "strong"),
-            "the selected target should be recorded as an answer call"
-        );
+        let Some(strong) = calls.iter().find(|call| call.target == "strong") else {
+            panic!("the selected target was never called");
+        };
+        assert_eq!(strong.instructions, ["answer-only strong prompt"]);
         drop(calls);
         assert_eq!(selected_model, "strong");
         Ok(())

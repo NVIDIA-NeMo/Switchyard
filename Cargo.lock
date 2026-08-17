@@ -2280,6 +2280,7 @@ dependencies = [
  "serde",
  "serde_json",
  "switchyard-protocol",
+ "switchyard-translation",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -2331,6 +2332,7 @@ version = "0.2.0"
 dependencies = [
  "futures",
  "http",
+ "parking_lot",
  "pyo3",
  "pyo3-async-runtimes",
  "pythonize",

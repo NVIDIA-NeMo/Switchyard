@@ -89,6 +89,8 @@ if TYPE_CHECKING:
         @property
         def models(self) -> list[str]: ...
 
+        def request_for(self, model: str) -> dict[str, object]: ...
+
         def respond(self, response: Mapping[str, object]) -> None: ...
 
         def fail(self, error: BaseException) -> None: ...
@@ -103,6 +105,8 @@ if TYPE_CHECKING:
 
         @property
         def request(self) -> dict[str, object]: ...
+
+        def request_for(self, model: str) -> dict[str, object]: ...
 
         @property
         def response(self) -> dict[str, object] | None: ...
@@ -190,6 +194,8 @@ if TYPE_CHECKING:
 
     @final
     class Algorithm:
+        def with_target_prompts(self, prompts: Mapping[str, str]) -> Algorithm: ...
+
         def run_stream(
             self,
             request: Mapping[str, object],

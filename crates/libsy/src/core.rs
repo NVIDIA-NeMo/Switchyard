@@ -12,3 +12,5 @@ pub mod algorithm;
 pub mod classifier;
 pub mod processor;
 pub mod state;
+mod target_prompts;
+pub use target_prompts::TargetPrompts;

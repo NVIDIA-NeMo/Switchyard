@@ -19,14 +19,19 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStreamEvent`] is its host/algorithm envelope; and
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{LlmRequest, ModelId, Request, Response};
 
+use super::TargetPrompts;
 use crate::{DriverError, LibsyError, Result, observability};
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
 /// `Arc<dyn Algorithm>` object-safe.
 pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
+
+fn target_prompt<'a>(prompts: &'a [Arc<TargetPrompts>], target: &ModelId) -> Option<&'a str> {
+    prompts.iter().find_map(|prompts| prompts.get(target))
+}
 
 /// An offloaded model call, surfaced inside [`Step::CallModel`].
 ///
@@ -50,6 +55,14 @@ pub struct CallModel {
 }
 
 impl CallModel {
+    /// Build the request for one candidate in this routing-time call.
+    pub fn request_for(&self, target: &ModelId) -> Result<Request> {
+        ensure_model_is_target(&self.models, target)?;
+        let mut request = self.request.clone();
+        switchyard_translation::prepare_request_for_target(&mut request.llm_request, target, None);
+        Ok(request)
+    }
+
     /// Fulfill the promise with the caller's model-call result. Pass `Err(..)` to
     /// propagate a failed model call back to the algorithm. Consumes the promise: it
     /// can only be fulfilled once.
@@ -61,6 +74,10 @@ impl CallModel {
 }
 
 /// The terminal result of routing.
+///
+/// Hosts making the answer call should use [`request_for`](Self::request_for) for the selected
+/// model and every fallback. This keeps target-specific request preparation inside libsy.
+#[non_exhaustive]
 pub struct RoutingOutcome {
     /// The model selected by the algorithm and tried first by the client.
     pub selected_model_id: ModelId,
@@ -70,6 +87,11 @@ pub struct RoutingOutcome {
     pub request: Request,
     /// A response produced while routing, or `None` when the client must make the answer call.
     pub response: Option<Response>,
+    // Request state before the selected target's prompt was applied. Retained only when a
+    // prompted selection has fallbacks, so a fallback cannot inherit the selected prompt.
+    base_llm_request: Option<Box<LlmRequest>>,
+    // Outer prompt layers precede inner layers, so deployment policy overrides router defaults.
+    target_prompts: Vec<Arc<TargetPrompts>>,
 }
 
 impl RoutingOutcome {
@@ -81,25 +103,82 @@ impl RoutingOutcome {
         fallback_models: Vec<ModelId>,
         mut request: Request,
     ) -> Self {
-        request.llm_request.model = Some(selected_model_id.to_string());
+        switchyard_translation::prepare_request_for_target(
+            &mut request.llm_request,
+            &selected_model_id,
+            None,
+        );
         Self {
             selected_model_id,
             fallback_models,
             request,
             response: None,
+            base_llm_request: None,
+            target_prompts: Vec::new(),
         }
     }
 
     /// Algorithm generated the response as part of the routing decision. Here it is.
     /// The `request` will have the `selected_model_id` written into it by this function.
     pub fn answered(selected_model_id: ModelId, mut request: Request, response: Response) -> Self {
-        request.llm_request.model = Some(selected_model_id.to_string());
+        switchyard_translation::prepare_request_for_target(
+            &mut request.llm_request,
+            &selected_model_id,
+            None,
+        );
         Self {
             selected_model_id,
             fallback_models: Vec::new(),
             request,
             response: Some(response),
+            base_llm_request: None,
+            target_prompts: Vec::new(),
         }
+    }
+
+    /// Build the answer request for the selected target or one of its fallbacks.
+    pub fn request_for(&self, target: &ModelId) -> Result<Request> {
+        if target != &self.selected_model_id && !self.fallback_models.contains(target) {
+            return Err(LibsyError::TargetNotFound {
+                target: target.clone(),
+            });
+        }
+        if target == &self.selected_model_id {
+            return Ok(self.request.clone());
+        }
+        let mut request = match &self.base_llm_request {
+            Some(base) => Request {
+                llm_request: base.as_ref().clone(),
+                raw_request: self.request.raw_request.clone(),
+                metadata: self.request.metadata.clone(),
+            },
+            None => self.request.clone(),
+        };
+        switchyard_translation::prepare_request_for_target(
+            &mut request.llm_request,
+            target,
+            target_prompt(&self.target_prompts, target),
+        );
+        Ok(request)
+    }
+
+    pub(crate) fn with_target_prompts(mut self, prompts: Arc<TargetPrompts>) -> Self {
+        self.target_prompts.insert(0, prompts);
+        self
+    }
+
+    fn prepare_selected_request(&mut self) {
+        let Some(prompt) = target_prompt(&self.target_prompts, &self.selected_model_id) else {
+            return;
+        };
+        if !self.fallback_models.is_empty() {
+            self.base_llm_request = Some(Box::new(self.request.llm_request.clone()));
+        }
+        switchyard_translation::prepare_request_for_target(
+            &mut self.request.llm_request,
+            &self.selected_model_id,
+            Some(prompt),
+        );
     }
 }
 
@@ -109,6 +188,8 @@ pub struct Driver {
     step_tx: mpsc::Sender<Result<Step>>,
     /// The owning algorithm's telemetry label, stamped onto every call this driver publishes.
     algorithm: String,
+    // Prompt policy is shared with answer calls made while an algorithm is still routing.
+    target_prompts: Vec<Arc<TargetPrompts>>,
 }
 
 impl Driver {
@@ -124,9 +205,15 @@ impl Driver {
             Self {
                 step_tx,
                 algorithm: algorithm.to_string(),
+                target_prompts: Vec::new(),
             },
             step_rx,
         )
+    }
+
+    pub(crate) fn with_target_prompts(mut self, prompts: Arc<TargetPrompts>) -> Self {
+        self.target_prompts.push(prompts);
+        self
     }
 
     /// Publish a model call and await the consumer's response.
@@ -137,13 +224,45 @@ impl Driver {
     /// response resolves when its stream handle arrives); latency, outcome, and
     /// token usage are recorded when it resolves. The provider call itself is the
     /// host's, and is instrumented by whoever makes it.
+    pub async fn call_model(&self, mut request: Request, models: Vec<ModelId>) -> Result<Response> {
+        let Some(selected_model_id) = models.first().cloned() else {
+            return Err(LibsyError::NoTargets);
+        };
+        switchyard_translation::prepare_request_for_target(
+            &mut request.llm_request,
+            &selected_model_id,
+            None,
+        );
+        self.call_prepared_model(request, models, selected_model_id)
+            .await
+    }
+
+    /// Publish a single model call whose response may become the client-visible answer.
+    ///
+    /// Classifier and judge calls should use [`call_model`](Self::call_model), which deliberately
+    /// does not receive an answer target's prompt.
+    pub async fn call_answer_model(
+        &self,
+        mut request: Request,
+        model: ModelId,
+    ) -> Result<Response> {
+        switchyard_translation::prepare_request_for_target(
+            &mut request.llm_request,
+            &model,
+            target_prompt(&self.target_prompts, &model),
+        );
+        let selected_model_id = model.clone();
+        self.call_prepared_model(request, vec![model], selected_model_id)
+            .await
+    }
+
     #[tracing::instrument(
         target = "libsy",
         name = "libsy.llm_call",
         skip_all,
         fields(
             algorithm = self.algorithm,
-            selected_model = %models.first().map(ModelId::as_str).unwrap_or("NoTargets"),
+            selected_model = %selected_model_id,
             openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
             error = tracing::field::Empty,
@@ -153,11 +272,12 @@ impl Driver {
             reasoning_tokens = tracing::field::Empty,
         )
     )]
-    pub async fn call_model(&self, mut request: Request, models: Vec<ModelId>) -> Result<Response> {
-        let Some(selected_model_id) = models.first().cloned() else {
-            return Err(LibsyError::NoTargets);
-        };
-        request.llm_request.model = Some(selected_model_id.to_string());
+    async fn call_prepared_model(
+        &self,
+        request: Request,
+        models: Vec<ModelId>,
+        selected_model_id: ModelId,
+    ) -> Result<Response> {
         let started = Instant::now();
         let (reply, response) = oneshot::channel::<Result<Response>>();
         let call = CallModel {
@@ -357,7 +477,9 @@ pub trait Algorithm: Send + Sync + 'static {
     fn name(&self) -> &str;
 
     /// Run one request to completion: make routing-time model calls with
-    /// [`Driver::call_model`] and return the terminal [`RoutingOutcome`].
+    /// [`Driver::call_model`] and return the terminal [`RoutingOutcome`]. A model call whose
+    /// response may be returned in [`RoutingOutcome::response`] must use
+    /// [`Driver::call_answer_model`] so answer-target policy is applied before the call.
     /// The method an algorithm implements; [`run_stream`](Self::run_stream) drives it.
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome>;
 
@@ -387,7 +509,11 @@ pub trait Algorithm: Send + Sync + 'static {
                         })
                     })
                 })
-                .await;
+                .await
+                .map(|mut outcome| {
+                    outcome.prepare_selected_request();
+                    outcome
+                });
 
                 let _ = driver.finish(result).await;
             }
@@ -403,6 +529,44 @@ pub trait Algorithm: Send + Sync + 'static {
     }
 }
 
+struct TargetPromptAlgorithm {
+    inner: Arc<dyn Algorithm>,
+    prompts: Arc<TargetPrompts>,
+}
+
+#[async_trait]
+impl Algorithm for TargetPromptAlgorithm {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
+        let prompts = Arc::clone(&self.prompts);
+        let outcome = Arc::clone(&self.inner)
+            .route(driver.with_target_prompts(Arc::clone(&prompts)), request)
+            .await?;
+        Ok(outcome.with_target_prompts(prompts))
+    }
+}
+
+/// Decorates `inner` with answer-target prompt policy.
+///
+/// The policy applies to answer calls made during routing and to terminal selected and fallback
+/// requests. An algorithm that produces an answer while routing must make that call with
+/// [`Driver::call_answer_model`].
+pub fn with_target_prompts(
+    inner: Arc<dyn Algorithm>,
+    prompts: TargetPrompts,
+) -> Arc<dyn Algorithm> {
+    if prompts.is_empty() {
+        return inner;
+    }
+    Arc::new(TargetPromptAlgorithm {
+        inner,
+        prompts: Arc::new(prompts),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -410,8 +574,9 @@ mod tests {
     use super::*;
     use crate::core::testing::{Serve, ServeResult, echo, reply, test_drive};
     use futures::StreamExt;
+    use serde_json::json;
     use switchyard_protocol::{
-        LlmResponse, LlmResponseChunk, completion_text, text_request, text_response,
+        ContentBlock, LlmResponse, LlmResponseChunk, completion_text, text_request, text_response,
     };
 
     #[derive(Debug, thiserror::Error)]
@@ -445,7 +610,7 @@ mod tests {
                 .ok_or(LibsyError::NoTargets)?
                 .clone();
             let response = driver
-                .call_model(request.clone(), vec![target.clone()])
+                .call_answer_model(request.clone(), target.clone())
                 .await?;
             Ok(RoutingOutcome::answered(target, request, response))
         }
@@ -507,6 +672,65 @@ mod tests {
 
     fn target_set(names: &[&str]) -> Vec<ModelId> {
         names.iter().map(|name| ModelId::from(*name)).collect()
+    }
+
+    fn instruction_text(request: &Request) -> Vec<&str> {
+        request
+            .llm_request
+            .instructions
+            .iter()
+            .flat_map(|instruction| &instruction.content)
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn target_prompts_follow_selected_and_fallback_targets() -> Result<()> {
+        let algorithm: Arc<dyn Algorithm> = Arc::new(crate::Random::new(
+            target_set(&["weak", "strong", "plain", "bare"]),
+            Some(vec![1.0, 0.0, 0.0, 0.0]),
+            Some(1),
+        )?);
+        let algorithm = with_target_prompts(
+            algorithm,
+            TargetPrompts::default()
+                .with("weak", "legacy weak prompt")
+                .with("plain", "plain prompt"),
+        );
+        let algorithm = with_target_prompts(
+            algorithm,
+            TargetPrompts::default()
+                .with("weak", "weak prompt")
+                .with("strong", "strong prompt"),
+        );
+
+        let mut request = request();
+        request.llm_request.preservation.requests.insert(
+            "openai_chat".into(),
+            json!({"model": "auto", "messages": [{"role": "user", "content": "hi"}]}),
+        );
+        let outcome = drive(algorithm, request, |_call| async {
+            Err(test_error("route-only algorithm emitted a model call"))
+        })
+        .await?;
+
+        assert_eq!(instruction_text(&outcome.request), ["weak prompt"]);
+        let strong = outcome.request_for(&ModelId::from("strong"))?;
+        assert_eq!(instruction_text(&strong), ["strong prompt"]);
+        assert!(strong.llm_request.preservation.requests.is_empty());
+        assert_eq!(
+            instruction_text(&outcome.request_for(&ModelId::from("plain"))?),
+            ["plain prompt"]
+        );
+        assert!(instruction_text(&outcome.request_for(&ModelId::from("bare"))?).is_empty());
+        assert!(matches!(
+            outcome.request_for(&ModelId::from("missing")),
+            Err(LibsyError::TargetNotFound { target }) if target == "missing"
+        ));
+        Ok(())
     }
 
     #[tokio::test]
