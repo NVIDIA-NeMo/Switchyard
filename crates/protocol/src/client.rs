@@ -81,7 +81,7 @@ pub enum LlmClientError {
     #[error("upstream returned HTTP {status}: {body}")]
     UpstreamHttp {
         /// Upstream HTTP status code.
-        status: u16,
+        status: http::StatusCode,
         /// Raw upstream error body.
         body: String,
     },

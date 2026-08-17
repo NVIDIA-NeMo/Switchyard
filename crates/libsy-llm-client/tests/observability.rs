@@ -376,7 +376,7 @@ impl RoutedLlmClient for JudgeClient {
         }
         match &self.outcome {
             JudgeOutcome::CallFailure => Err(LlmClientError::UpstreamHttp {
-                status: 500,
+                status: http::StatusCode::INTERNAL_SERVER_ERROR,
                 body: "server error".to_string(),
             }),
             JudgeOutcome::Reply(text) => Ok(Response {
