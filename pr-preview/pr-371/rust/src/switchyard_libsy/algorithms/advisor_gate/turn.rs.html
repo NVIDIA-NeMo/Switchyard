@@ -69,7 +69,7 @@
 <a href=#69 id=69 data-nosnippet>69</a>                        }
 <a href=#70 id=70 data-nosnippet>70</a>                        LlmResponseChunk::StreamError { message } =&gt; {
 <a href=#71 id=71 data-nosnippet>71</a>                            <span class="prelude-val">Some</span>(LlmClientError::UpstreamHttp {
-<a href=#72 id=72 data-nosnippet>72</a>                                status: <span class="number">502</span>,
+<a href=#72 id=72 data-nosnippet>72</a>                                status: http::StatusCode::BAD_GATEWAY,
 <a href=#73 id=73 data-nosnippet>73</a>                                body: message.clone(),
 <a href=#74 id=74 data-nosnippet>74</a>                            })
 <a href=#75 id=75 data-nosnippet>75</a>                        }

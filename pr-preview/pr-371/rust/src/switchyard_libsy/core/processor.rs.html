@@ -82,7 +82,7 @@
 <a href=#82 id=82 data-nosnippet>82</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = TestState::default();
 <a href=#83 id=83 data-nosnippet>83</a>        <span class="kw">let </span><span class="kw-2">mut </span>req = request();
 <a href=#84 id=84 data-nosnippet>84</a>        <span class="kw">let </span>response = text_response(<span class="prelude-val">None</span>, <span class="string">"ok"</span>);
-<a href=#85 id=85 data-nosnippet>85</a>        <span class="kw">let </span>decision = Decision::new(<span class="string">"test/model"</span>, <span class="prelude-val">None</span>, <span class="bool-val">true</span>);
+<a href=#85 id=85 data-nosnippet>85</a>        <span class="kw">let </span>decision = Decision::new(<span class="string">"test/model"</span>, <span class="bool-val">true</span>);
 <a href=#86 id=86 data-nosnippet>86</a>        <span class="comment">// Feed one of every event variant through the processor.
 <a href=#87 id=87 data-nosnippet>87</a>        </span>processor
 <a href=#88 id=88 data-nosnippet>88</a>            .process(<span class="kw-2">&amp;mut </span>state, Event::Request(<span class="kw-2">&amp;mut </span>req))
@@ -141,14 +141,14 @@
 <a href=#141 id=141 data-nosnippet>141</a>    </span><span class="kw">async fn </span>processor_rewrites_the_request_in_place() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
 <a href=#142 id=142 data-nosnippet>142</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = ();
 <a href=#143 id=143 data-nosnippet>143</a>        <span class="kw">let </span><span class="kw-2">mut </span>req = request();
-<a href=#144 id=144 data-nosnippet>144</a>        <span class="macro">assert_eq!</span>(req.requested_model(), <span class="prelude-val">Some</span>(<span class="string">"auto"</span>));
+<a href=#144 id=144 data-nosnippet>144</a>        <span class="macro">assert_eq!</span>(req.model_id(), <span class="prelude-val">Some</span>(<span class="string">"auto"</span>.into()));
 <a href=#145 id=145 data-nosnippet>145</a>
 <a href=#146 id=146 data-nosnippet>146</a>        RewritingProcessor
 <a href=#147 id=147 data-nosnippet>147</a>            .process(<span class="kw-2">&amp;mut </span>state, Event::Request(<span class="kw-2">&amp;mut </span>req))
 <a href=#148 id=148 data-nosnippet>148</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#149 id=149 data-nosnippet>149</a>
 <a href=#150 id=150 data-nosnippet>150</a>        <span class="comment">// The edit outlives the call, so the next component sees the rewritten request.
-<a href=#151 id=151 data-nosnippet>151</a>        </span><span class="macro">assert_eq!</span>(req.requested_model(), <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>));
+<a href=#151 id=151 data-nosnippet>151</a>        </span><span class="macro">assert_eq!</span>(req.model_id(), <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>.into()));
 <a href=#152 id=152 data-nosnippet>152</a>        <span class="prelude-val">Ok</span>(())
 <a href=#153 id=153 data-nosnippet>153</a>    }
 <a href=#154 id=154 data-nosnippet>154</a>}

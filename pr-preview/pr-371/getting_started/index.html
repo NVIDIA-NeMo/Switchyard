@@ -1572,7 +1572,13 @@ continuing. Verify the tools:</p>
 </span></code></pre></div>
 <p><code>format</code> selects the upstream protocol and must be <code>openai_chat</code>,
 <code>openai_responses</code>, or <code>anthropic_messages</code>. <code>api_key_env</code> names the environment
-variable the server reads; the secret does not belong in the TOML file.</p>
+variable the server reads; the secret does not belong in the TOML file.
+A client can set <code>forward_auth = true</code> instead of <code>api_key_env</code> to send each
+caller's credential to that upstream. OpenAI clients forward <code>authorization</code>,
+<code>chatgpt-account-id</code>, and <code>x-openai-fedramp</code>. Anthropic clients forward
+<code>authorization</code> or <code>x-api-key</code>. Enable this only for an upstream that should
+receive the caller's login. The server rejects a forwarding route called
+through the other provider's API.</p>
 <h3 id="run-the-server">Run the server<a class="headerlink" href="#run-the-server" title="Permanent link">&para;</a></h3>
 <p>Export the provider credential, validate the configuration without binding a
 socket, then start the release binary:</p>
@@ -1624,7 +1630,7 @@ request should use the weak or strong target. The Rust server also supports:</p>
 <code>routes.smart</code>, is a local configuration name; each route's <code>id</code> is exposed as a
 model on <code>GET /v1/models</code>.</p>
 <p>See <a href="../routing_algorithms/overview/">Routing Overview</a> to compare strategies,
-and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d50e1e755561e625a41b54c96c396c4de6677a7a/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
+and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b1481c4bd5fab45ad324613b8c3550e818f4bfff/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
 the complete TOML schema, route options, TLS, and metrics.</p>
 <h3 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h3>
 <p><strong>No API key / auth error</strong></p>
@@ -1691,16 +1697,16 @@ host performs over its own transport, and the run ends with
 is what lets libsy embed in a host that already owns its HTTP stack, retries,
 and credentials.</p>
 <p>For the request, response, and streaming types the steps carry, see
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d50e1e755561e625a41b54c96c396c4de6677a7a/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b1481c4bd5fab45ad324613b8c3550e818f4bfff/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
 <hr />
 <h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../core_concepts/">Core Concepts</a>: LLM clients, targets, and routes</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d50e1e755561e625a41b54c96c396c4de6677a7a/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b1481c4bd5fab45ad324613b8c3550e818f4bfff/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
   routing algorithms, TLS, and metrics</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol
   documentation, crate setup, and API boundaries</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d50e1e755561e625a41b54c96c396c4de6677a7a/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b1481c4bd5fab45ad324613b8c3550e818f4bfff/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
   request, response, and stream translation</li>
 </ul>
 
