@@ -1358,6 +1358,10 @@ Switchyard does not parse provider-specific reasoning fields such as
 <code>reasoning_content</code>. If <code>content</code> is empty or unparseable, the route falls back
 to <code>strong_target</code> even when the judge request returned HTTP 200. With session
 affinity, that fallback can be reused without another judge call.</p>
+<p>Capability and escalation routes use JSON Schema structured output by default.
+For a provider that supports JSON Object mode but not JSON Schema, set
+<code>response_format_type = "json_object"</code> on the route. Switchyard then adds the
+verdict schema to the judge prompt and validates the returned object locally.</p>
 <p>When a vLLM-compatible provider supports <code>enable_thinking</code>, configure it on the
 judge target through <code>extra_body</code>:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[targets.classifier]</span>
@@ -1368,7 +1372,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9be04455b74538737ff0924b37ac3bbc3dcacbcb/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7190ed6dc41bfe7ed69dd9b409b8eb5aee61edf0/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1411,6 +1415,11 @@ for the server merge behavior.</p>
 <td>Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active.</td>
 </tr>
 <tr>
+<td><code>response_format_type</code></td>
+<td><code>json_schema</code></td>
+<td>Structured-output mode for capability and escalation judges. Use <code>json_object</code> for providers without JSON Schema support.</td>
+</tr>
+<tr>
 <td><code>max_output_tokens</code></td>
 <td><code>4096</code></td>
 <td>Maximum completion tokens available to the classifier verdict. Must be at least <code>1</code>.</td>
@@ -1419,8 +1428,8 @@ for the server merge behavior.</p>
 </table>
 <h3 id="override-the-classifier-prompt">Override the classifier prompt<a class="headerlink" href="#override-the-classifier-prompt" title="Permanent link">&para;</a></h3>
 <p>Set <code>prompt</code> on the route when the packaged capability rubric does not describe
-your weak model. Switchyard sends the response schema separately through the
-provider's structured-output request; do not copy it into the prompt.</p>
+your weak model. Do not copy the response schema into the prompt: Switchyard
+supplies it according to <code>response_format_type</code>.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[routes.smart]</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;smart&quot;</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>

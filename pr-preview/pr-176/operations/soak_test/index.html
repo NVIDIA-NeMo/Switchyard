@@ -884,21 +884,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#rehearse-against-a-mock-backend" class="md-nav__link">
+  <a href="#rehearse-the-complete-local-stack" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Rehearse against a mock backend
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#raw-throughput-with-vegeta" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Raw throughput with vegeta
+        Rehearse the complete local stack
       
     </span>
   </a>
@@ -1148,21 +1137,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#rehearse-against-a-mock-backend" class="md-nav__link">
+  <a href="#rehearse-the-complete-local-stack" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Rehearse against a mock backend
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#raw-throughput-with-vegeta" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Raw throughput with vegeta
+        Rehearse the complete local stack
       
     </span>
   </a>
@@ -1239,92 +1217,121 @@ routing, streaming, translation, or server lifecycle behavior.</p>
 minutes, it sends an invalid Chat Completions request, expects HTTP 400, and
 then confirms the server is still live.</p>
 <h2 id="prepare-the-server">Prepare the server<a class="headerlink" href="#prepare-the-server" title="Permanent link">&para;</a></h2>
-<p>Run the exact commit, build, route bundle, backend, and model planned for the
+<p>Run the exact commit, build, server config, backend, and model planned for the
 release. Do not use a development server in front of a different Switchyard
 build.</p>
-<p>For the Python server:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>sync
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>release-routes.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span><span class="w"> </span><span class="se">\</span>
+<p>Start the standalone server and its libsy algorithms:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-server
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>release-routes.toml<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>&gt;<span class="w"> </span>switchyard-soak.log<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="p">&amp;</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nv">SOAK_SERVER_PID</span><span class="o">=</span><span class="nv">$!</span>
-</span></code></pre></div>
-<p>For the Rust server and its libsy algorithms:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-server
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>release-routes.toml<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>&gt;<span class="w"> </span>switchyard-soak.log<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="p">&amp;</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="nv">SOAK_SERVER_PID</span><span class="o">=</span><span class="nv">$!</span>
 </span></code></pre></div>
 <p>Wait for <code>GET http://127.0.0.1:4000/health</code> to return HTTP 200 with the JSON
 body <code>{"status": "ok"}</code>; the runner requires both before it starts. Check
 <code>GET http://127.0.0.1:4000/v1/models</code> and choose the model id that represents
-the release workload.</p>
+the release workload. Pass that exact id with <code>--model</code>.</p>
 <p>Run the server and test from a dedicated host, job scheduler, or terminal
 multiplexer that will stay alive for the full test. Confirm that the host will
 not suspend or restart and has enough disk space for the server log.</p>
 <h2 id="build-the-soak-tester">Build the soak tester<a class="headerlink" href="#build-the-soak-tester" title="Permanent link">&para;</a></h2>
 <p>The soak tester is a Rust binary. Build it once from the same checkout as the
 release, then run it directly:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-soak
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-soak
 </span></code></pre></div>
-<h2 id="rehearse-against-a-mock-backend">Rehearse against a mock backend<a class="headerlink" href="#rehearse-against-a-mock-backend" title="Permanent link">&para;</a></h2>
-<p>Rehearse the soak with no live-provider credentials or cost by running
-<a href="https://github.com/vidaiUK/VidaiMock">VidaiMock</a> — an Apache-2.0 mock LLM server that speaks the
-OpenAI, Anthropic, and Responses wire formats with realistic streaming — as the backend behind
-<code>switchyard-server</code>. <code>scripts/soak-rehearsal.sh</code> starts the mock, points a passthrough
-<code>switchyard-server</code> at it, waits for both to report healthy, and runs the soak against the local
-stack:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Requires the vidaimock binary on PATH (github.com/vidaiUK/VidaiMock/releases) and release builds</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="c1"># of switchyard-server and switchyard-soak.</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>scripts/soak-rehearsal.sh<span class="w"> </span>--duration<span class="w"> </span>5m<span class="w"> </span>--concurrency<span class="w"> </span><span class="m">8</span><span class="w"> </span>--invalid-canary-interval<span class="w"> </span><span class="m">0</span>
+<h2 id="rehearse-the-complete-local-stack">Rehearse the complete local stack<a class="headerlink" href="#rehearse-the-complete-local-stack" title="Permanent link">&para;</a></h2>
+<p>The rehearsal embeds <a href="https://github.com/vidaiUK/VidaiMock">VidaiMock</a> as a Rust library, so it
+does not need a separate <code>vidaimock</code> command. Build the server, soak tester, and mock helper from
+the commit under test:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-server<span class="w"> </span>-p<span class="w"> </span>switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--bins<span class="w"> </span>--example<span class="w"> </span>switchyard-soak-mock
 </span></code></pre></div>
-<p>Disable the invalid-request canary (<code>--invalid-canary-interval 0</code>) against a mock backend: the
-canary checks that invalid input is rejected with HTTP 400, which a permissive mock does not do.</p>
-<p>To rehearse the failure gates, degrade the backend and confirm the soak fails closed. For example,
-raise the mock's latency past the request timeout and every request times out:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nv">MOCK_LATENCY_MS</span><span class="o">=</span><span class="m">2500</span><span class="w"> </span>scripts/soak-rehearsal.sh<span class="w"> </span>--duration<span class="w"> </span>30s<span class="w"> </span>--request-timeout<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--invalid-canary-interval<span class="w"> </span><span class="m">0</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># Soak FAIL: ... error_rate=100.0000% ...  (error_kinds: timeout), exit 1</span>
+<p>Install <a href="https://github.com/hatoo/oha">oha</a> and
+<a href="https://docs.nvidia.com/aiperf/reference/command-line-options">NVIDIA AIPerf</a>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>oha
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>aiperf
 </span></code></pre></div>
-<h2 id="raw-throughput-with-vegeta">Raw throughput with vegeta<a class="headerlink" href="#raw-throughput-with-vegeta" title="Permanent link">&para;</a></h2>
-<p>The soak test is closed-loop and validates every response body and stream. For a quick open-loop
-capacity figure — a fixed request rate, HTTP status only — <a href="https://github.com/tsenart/vegeta">vegeta</a>
-is a useful companion. It does not validate response bodies or streaming, so it complements the soak
-rather than replacing it.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;POST http://127.0.0.1:4000/v1/chat/completions\nContent-Type: application/json\n@body.json\n&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>targets.txt
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;RELEASE_MODEL_ID&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;ping&quot;}],&quot;max_tokens&quot;:8}&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>body.json
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>vegeta<span class="w"> </span>attack<span class="w"> </span>-targets<span class="o">=</span>targets.txt<span class="w"> </span>-rate<span class="o">=</span><span class="m">100</span><span class="w"> </span>-duration<span class="o">=</span>30s<span class="w"> </span><span class="p">|</span><span class="w"> </span>vegeta<span class="w"> </span>report
+<p>Then run the Python rehearsal from the repository root:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>python3.12<span class="w"> </span>scripts/soak_rehearsal.py<span class="w"> </span>--duration<span class="w"> </span>10s<span class="w"> </span>--concurrency<span class="w"> </span><span class="m">4</span>
 </span></code></pre></div>
+<p><code>--duration</code> controls the Rust soak phase. The route smoke, oha, and AIPerf phases are short and
+bounded by request count. <code>--help</code> explains every rehearsal flag. Set <code>OHA_BIN</code>, <code>AIPERF_BIN</code>,
+<code>SWITCHYARD_SERVER_BIN</code>, <code>SWITCHYARD_SOAK_BIN</code>, or <code>SWITCHYARD_SOAK_MOCK_BIN</code> when a command is not
+on <code>PATH</code> or not under <code>target/release</code>.</p>
+<p>The script checks all five commands before starting a process. A missing command prints a warning,
+the build or install command, and the matching environment-variable override. Cargo compiles the
+embedded VidaiMock library, but it does not install the unrelated oha or AIPerf executables during
+a normal build.</p>
+<p>The script gives each tool one job:</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Job in the rehearsal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Embedded VidaiMock</td>
+<td>Supplies local OpenAI-compatible model responses with configurable latency and no provider cost.</td>
+</tr>
+<tr>
+<td>oha</td>
+<td>Sends raw concurrent HTTP requests through the random route and writes a status and latency distribution.</td>
+</tr>
+<tr>
+<td>Python route smoke</td>
+<td>Sends one Chat Completions request through each route. The stage request includes a critical tool failure so the signal scorer takes its escalation path.</td>
+</tr>
+<tr>
+<td>AIPerf</td>
+<td>Sends streaming Chat Completions through passthrough routing and records LLM and token latency artifacts.</td>
+</tr>
+<tr>
+<td><code>switchyard-soak</code></td>
+<td>Runs passthrough routing through Chat Completions, Messages, and Responses, with streaming on and off, while checking liveness, metrics, process sampling, and result gates.</td>
+</tr>
+</tbody>
+</table>
+<p>The checked-in rehearsal config exercises <code>noop</code>, <code>random</code>, <code>passthrough</code>, <code>llm_classifier</code>, and
+<code>stage_router</code>. It uses the accepted maximum retry count (10), a zero-weight random target, and the
+upper classifier and stage thresholds (1.0). The config is validated with
+<code>switchyard-server --dry-run</code> before either service starts.</p>
+<p>The runner does not invent operational maxima for unbounded values such as target count or recent
+turn window. Focused Rust tests cover the real bounded structures at cap plus one: 4,096 affinity
+assignments, 100,000 retained latency samples, and 10,000 recorded error details. Server tests
+cover invalid thresholds, malformed classifier verdicts, missing subagent identifiers, target
+failures, and the retry value immediately above the maximum.</p>
 <h2 id="run-the-48-hour-test">Run the 48-hour test<a class="headerlink" href="#run-the-48-hour-test" title="Permanent link">&para;</a></h2>
 <p>Choose concurrency from the release capacity plan. Increase it in short
 rehearsals until you find the highest expected steady load that remains below
 the backend's rate limit. Use that load for the 48-hour run. An overload test
 that spends most of its time throttled does not measure release stability.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--duration<span class="w"> </span>48h<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span>--server-pid<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SOAK_SERVER_PID</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span>--max-rss-growth-mib<span class="w"> </span><span class="m">512</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--duration<span class="w"> </span>48h<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span>--server-pid<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SOAK_SERVER_PID</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">  </span>--max-rss-growth-mib<span class="w"> </span><span class="m">512</span>
 </span></code></pre></div>
 <p>The runner keeps 16 requests in flight until the test ends. This can generate
 large usage charges against a metered backend. Use a dedicated test deployment,
 estimate the request volume first with a short run, and get approval for any
 paid-provider cost.</p>
 <p>Use a five-minute rehearsal to confirm the route and result files:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--duration<span class="w"> </span>5m<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span>--report-interval<span class="w"> </span><span class="m">10</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--duration<span class="w"> </span>5m<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span>--report-interval<span class="w"> </span><span class="m">10</span>
 </span></code></pre></div>
 <p>If the Switchyard endpoint requires a bearer token, pass the environment
 variable name instead of putting the token on the command line:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_SOAK_TOKEN</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--api-key-env<span class="w"> </span>SWITCHYARD_SOAK_TOKEN<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_SOAK_TOKEN</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--api-key-env<span class="w"> </span>SWITCHYARD_SOAK_TOKEN<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID
 </span></code></pre></div>
 <h2 id="pass-criteria">Pass criteria<a class="headerlink" href="#pass-criteria" title="Permanent link">&para;</a></h2>
 <p>The command exits with status 0 only when:</p>
@@ -1357,20 +1364,14 @@ memory and restart data from that host's monitoring system.</p>
   read it as a long-run average rather than a spike detector.</li>
 <li><code>errors.jsonl</code> records up to 10,000 request and canary failures.</li>
 <li><code>summary.json</code> records the final pass result and any failed gates.</li>
-<li><code>status.json</code> is overwritten atomically each interval with a one-object live snapshot — progress
-  toward the target duration, cumulative requests, cumulative error rate, health, detected restarts,
-  and a <code>status</code> of <code>ok</code>, <code>degraded</code>, or <code>stalled</code>. Read it (or tail the run log, whose interval line
-  carries the same fields and status token) to monitor a run in progress; on a remote host,
-  <code>cat &lt;results-dir&gt;/status.json</code> gives an at-a-glance confidence check without parsing <code>intervals.csv</code>.</li>
 </ul>
-<p>When the run ends the command also prints a latency percentile table (p50 through
-p99.9) and an ASCII latency histogram to the terminal, for a quick read of the
-distribution without opening the result files.</p>
+<p>Tail the run log to monitor progress, cumulative error rate, health, RSS, and the
+<code>OK</code>, <code>DEGRADED</code>, or <code>STALLED</code> interval status while the test runs.</p>
 <p>Before approving the release, check <code>intervals.csv</code> for late failures, falling
 throughput, increasing p95 or p99 latency, and steady RSS growth. Compare the
 first and last several hours, not only the run-wide averages. Attach
 <code>summary.json</code>, the interval chart, the Switchyard log, the tested commit, and
-the route bundle to the release record.</p>
+the server config to the release record.</p>
 
 
 

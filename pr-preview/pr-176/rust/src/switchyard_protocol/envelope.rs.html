@@ -4,57 +4,86 @@
 <a href=#4 id=4 data-nosnippet>4</a></span><span class="doccomment">//! The request/response envelope: the normalized [`LlmRequest`]/[`LlmResponse`] paired
 <a href=#5 id=5 data-nosnippet>5</a>//! with the original provider payload and correlation [`Metadata`].
 <a href=#6 id=6 data-nosnippet>6</a>
-<a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">use </span>crate::{LlmRequest, LlmResponse, Metadata};
+<a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">use </span>crate::{LlmRequest, LlmResponse, Metadata, ModelId};
 <a href=#8 id=8 data-nosnippet>8</a>
-<a href=#9 id=9 data-nosnippet>9</a><span class="doccomment">/// Agentic-stack events fed to an algorithm out of band (e.g. tool results, budget
-<a href=#10 id=10 data-nosnippet>10</a>/// updates) — in libsy, via `Algorithm::process_signals`.
-<a href=#11 id=11 data-nosnippet>11</a>///
-<a href=#12 id=12 data-nosnippet>12</a>/// A placeholder today; a stateful algorithm can begin consuming signals as the enum
-<a href=#13 id=13 data-nosnippet>13</a>/// grows without changing the orchestrator contract.
-<a href=#14 id=14 data-nosnippet>14</a></span><span class="attr">#[derive(Clone)]
-<a href=#15 id=15 data-nosnippet>15</a></span><span class="kw">pub struct </span>Signals {}
-<a href=#16 id=16 data-nosnippet>16</a>
-<a href=#17 id=17 data-nosnippet>17</a><span class="doccomment">/// A request an algorithm routes: the normalized [`LlmRequest`] plus optional
-<a href=#18 id=18 data-nosnippet>18</a>/// host-owned raw data and correlation [`Metadata`].
-<a href=#19 id=19 data-nosnippet>19</a></span><span class="attr">#[derive(Clone, Default)]
-<a href=#20 id=20 data-nosnippet>20</a></span><span class="kw">pub struct </span>Request {
-<a href=#21 id=21 data-nosnippet>21</a>    <span class="doccomment">/// The normalized request an algorithm routes.
-<a href=#22 id=22 data-nosnippet>22</a>    </span><span class="kw">pub </span>llm_request: LlmRequest,
-<a href=#23 id=23 data-nosnippet>23</a>    <span class="doccomment">/// An optional whole request body retained by the host. libsy and the translation
-<a href=#24 id=24 data-nosnippet>24</a>    /// codecs do not read it. Exact same-format codec replay instead uses
-<a href=#25 id=25 data-nosnippet>25</a>    /// [`LlmRequest::preservation`].
-<a href=#26 id=26 data-nosnippet>26</a>    </span><span class="kw">pub </span>raw_request: <span class="prelude-ty">Option</span>&lt;serde_json::Value&gt;,
-<a href=#27 id=27 data-nosnippet>27</a>    <span class="doccomment">/// Correlation metadata carried through the request.
-<a href=#28 id=28 data-nosnippet>28</a>    </span><span class="kw">pub </span>metadata: <span class="prelude-ty">Option</span>&lt;Metadata&gt;,
-<a href=#29 id=29 data-nosnippet>29</a>}
-<a href=#30 id=30 data-nosnippet>30</a>
-<a href=#31 id=31 data-nosnippet>31</a><span class="kw">impl </span>Request {
-<a href=#32 id=32 data-nosnippet>32</a>    <span class="doccomment">/// Returns the model name supplied by the inbound request, when present.
-<a href=#33 id=33 data-nosnippet>33</a>    ///
-<a href=#34 id=34 data-nosnippet>34</a>    /// This is not necessarily the target selected by a routing decision.
-<a href=#35 id=35 data-nosnippet>35</a>    </span><span class="kw">pub fn </span>requested_model(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
-<a href=#36 id=36 data-nosnippet>36</a>        <span class="self">self</span>.llm_request.model.as_deref()
-<a href=#37 id=37 data-nosnippet>37</a>    }
-<a href=#38 id=38 data-nosnippet>38</a>}
-<a href=#39 id=39 data-nosnippet>39</a>
-<a href=#40 id=40 data-nosnippet>40</a><span class="doccomment">/// A response an algorithm returns: the [`LlmResponse`] (streamed or aggregate) plus
-<a href=#41 id=41 data-nosnippet>41</a>/// optional correlation [`Metadata`].
-<a href=#42 id=42 data-nosnippet>42</a>///
-<a href=#43 id=43 data-nosnippet>43</a>/// Not `Clone` — `llm_response` may own a live stream.
-<a href=#44 id=44 data-nosnippet>44</a></span><span class="kw">pub struct </span>Response {
-<a href=#45 id=45 data-nosnippet>45</a>    <span class="doccomment">/// The neutral model response — a chunk stream or the buffered aggregate.
-<a href=#46 id=46 data-nosnippet>46</a>    </span><span class="kw">pub </span>llm_response: LlmResponse,
-<a href=#47 id=47 data-nosnippet>47</a>    <span class="doccomment">/// Correlation metadata carried through the response.
-<a href=#48 id=48 data-nosnippet>48</a>    </span><span class="kw">pub </span>metadata: <span class="prelude-ty">Option</span>&lt;Metadata&gt;,
-<a href=#49 id=49 data-nosnippet>49</a>}
-<a href=#50 id=50 data-nosnippet>50</a>
-<a href=#51 id=51 data-nosnippet>51</a><span class="kw">impl </span>Response {
-<a href=#52 id=52 data-nosnippet>52</a>    <span class="doccomment">/// Returns the model recorded by a buffered response.
-<a href=#53 id=53 data-nosnippet>53</a>    ///
-<a href=#54 id=54 data-nosnippet>54</a>    /// Returns `None` for a live stream because inspecting its `MessageStart`
-<a href=#55 id=55 data-nosnippet>55</a>    /// event would require consuming the stream.
-<a href=#56 id=56 data-nosnippet>56</a>    </span><span class="kw">pub fn </span>selected_model(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
-<a href=#57 id=57 data-nosnippet>57</a>        <span class="self">self</span>.llm_response.selected_model()
-<a href=#58 id=58 data-nosnippet>58</a>    }
-<a href=#59 id=59 data-nosnippet>59</a>}
+<a href=#9 id=9 data-nosnippet>9</a><span class="doccomment">/// A request an algorithm routes: the normalized [`LlmRequest`] plus optional
+<a href=#10 id=10 data-nosnippet>10</a>/// host-owned raw data and correlation [`Metadata`].
+<a href=#11 id=11 data-nosnippet>11</a></span><span class="attr">#[derive(Clone, Default)]
+<a href=#12 id=12 data-nosnippet>12</a></span><span class="kw">pub struct </span>Request {
+<a href=#13 id=13 data-nosnippet>13</a>    <span class="doccomment">/// The normalized request an algorithm routes.
+<a href=#14 id=14 data-nosnippet>14</a>    </span><span class="kw">pub </span>llm_request: LlmRequest,
+<a href=#15 id=15 data-nosnippet>15</a>    <span class="doccomment">/// An optional whole request body retained by the host. libsy and the translation
+<a href=#16 id=16 data-nosnippet>16</a>    /// codecs do not read it. Exact same-format codec replay instead uses
+<a href=#17 id=17 data-nosnippet>17</a>    /// [`LlmRequest::preservation`].
+<a href=#18 id=18 data-nosnippet>18</a>    </span><span class="kw">pub </span>raw_request: <span class="prelude-ty">Option</span>&lt;serde_json::Value&gt;,
+<a href=#19 id=19 data-nosnippet>19</a>    <span class="doccomment">/// Correlation metadata carried through the request.
+<a href=#20 id=20 data-nosnippet>20</a>    </span><span class="kw">pub </span>metadata: <span class="prelude-ty">Option</span>&lt;Metadata&gt;,
+<a href=#21 id=21 data-nosnippet>21</a>}
+<a href=#22 id=22 data-nosnippet>22</a>
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">impl </span>Request {
+<a href=#24 id=24 data-nosnippet>24</a>    <span class="doccomment">/// Returns the model currently carried by the request, when present.
+<a href=#25 id=25 data-nosnippet>25</a>    ///
+<a href=#26 id=26 data-nosnippet>26</a>    /// On ingress this is the name supplied by the client. Before an offloaded model call, the
+<a href=#27 id=27 data-nosnippet>27</a>    /// routing driver replaces it with the selected target.
+<a href=#28 id=28 data-nosnippet>28</a>    </span><span class="kw">pub fn </span>model_id(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;ModelId&gt; {
+<a href=#29 id=29 data-nosnippet>29</a>        <span class="self">self</span>.llm_request.model.as_deref().map(ModelId::from)
+<a href=#30 id=30 data-nosnippet>30</a>    }
+<a href=#31 id=31 data-nosnippet>31</a>}
+<a href=#32 id=32 data-nosnippet>32</a>
+<a href=#33 id=33 data-nosnippet>33</a><span class="doccomment">/// A response an algorithm returns: the [`LlmResponse`] (streamed or aggregate) plus
+<a href=#34 id=34 data-nosnippet>34</a>/// optional correlation [`Metadata`].
+<a href=#35 id=35 data-nosnippet>35</a>///
+<a href=#36 id=36 data-nosnippet>36</a>/// Not `Clone` — `llm_response` may own a live stream.
+<a href=#37 id=37 data-nosnippet>37</a></span><span class="kw">pub struct </span>Response {
+<a href=#38 id=38 data-nosnippet>38</a>    <span class="doccomment">/// The neutral model response — a chunk stream or the buffered aggregate.
+<a href=#39 id=39 data-nosnippet>39</a>    </span><span class="kw">pub </span>llm_response: LlmResponse,
+<a href=#40 id=40 data-nosnippet>40</a>    <span class="doccomment">/// Correlation metadata carried through the response.
+<a href=#41 id=41 data-nosnippet>41</a>    </span><span class="kw">pub </span>metadata: <span class="prelude-ty">Option</span>&lt;Metadata&gt;,
+<a href=#42 id=42 data-nosnippet>42</a>}
+<a href=#43 id=43 data-nosnippet>43</a>
+<a href=#44 id=44 data-nosnippet>44</a><span class="kw">impl </span>Response {
+<a href=#45 id=45 data-nosnippet>45</a>    <span class="doccomment">/// Returns the model recorded by a buffered response.
+<a href=#46 id=46 data-nosnippet>46</a>    ///
+<a href=#47 id=47 data-nosnippet>47</a>    /// Returns `None` for a live stream because inspecting its `MessageStart`
+<a href=#48 id=48 data-nosnippet>48</a>    /// event would require consuming the stream.
+<a href=#49 id=49 data-nosnippet>49</a>    </span><span class="kw">pub fn </span>selected_model(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
+<a href=#50 id=50 data-nosnippet>50</a>        <span class="self">self</span>.llm_response.selected_model()
+<a href=#51 id=51 data-nosnippet>51</a>    }
+<a href=#52 id=52 data-nosnippet>52</a>
+<a href=#53 id=53 data-nosnippet>53</a>    <span class="doccomment">/// Returns the Switchyard target that successfully served this response.
+<a href=#54 id=54 data-nosnippet>54</a>    ///
+<a href=#55 id=55 data-nosnippet>55</a>    /// Unlike [`Self::selected_model`], this is available for streamed responses because the
+<a href=#56 id=56 data-nosnippet>56</a>    /// client records the target when it receives the stream handle.
+<a href=#57 id=57 data-nosnippet>57</a>    </span><span class="kw">pub fn </span>served_model(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>ModelId&gt; {
+<a href=#58 id=58 data-nosnippet>58</a>        <span class="self">self</span>.metadata.as_ref()<span class="question-mark">?</span>.served_model.as_ref()
+<a href=#59 id=59 data-nosnippet>59</a>    }
+<a href=#60 id=60 data-nosnippet>60</a>
+<a href=#61 id=61 data-nosnippet>61</a>    <span class="doccomment">/// Records the Switchyard target that successfully served this response.
+<a href=#62 id=62 data-nosnippet>62</a>    </span><span class="kw">pub fn </span>set_served_model(<span class="kw-2">&amp;mut </span><span class="self">self</span>, model: <span class="kw-2">&amp;</span>ModelId) {
+<a href=#63 id=63 data-nosnippet>63</a>        <span class="self">self</span>.metadata.get_or_insert_default().served_model = <span class="prelude-val">Some</span>(model.clone());
+<a href=#64 id=64 data-nosnippet>64</a>    }
+<a href=#65 id=65 data-nosnippet>65</a>}
+<a href=#66 id=66 data-nosnippet>66</a>
+<a href=#67 id=67 data-nosnippet>67</a><span class="attr">#[cfg(test)]
+<a href=#68 id=68 data-nosnippet>68</a></span><span class="kw">mod </span>tests {
+<a href=#69 id=69 data-nosnippet>69</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#70 id=70 data-nosnippet>70</a>    <span class="kw">use </span><span class="kw">crate</span>::text_response;
+<a href=#71 id=71 data-nosnippet>71</a>
+<a href=#72 id=72 data-nosnippet>72</a>    <span class="attr">#[test]
+<a href=#73 id=73 data-nosnippet>73</a>    </span><span class="kw">fn </span>served_model_round_trips_through_response_metadata() {
+<a href=#74 id=74 data-nosnippet>74</a>        <span class="kw">let </span><span class="kw-2">mut </span>response = Response {
+<a href=#75 id=75 data-nosnippet>75</a>            llm_response: LlmResponse::Agg(text_response(<span class="prelude-val">None</span>, <span class="string">"answer"</span>)),
+<a href=#76 id=76 data-nosnippet>76</a>            metadata: <span class="prelude-val">None</span>,
+<a href=#77 id=77 data-nosnippet>77</a>        };
+<a href=#78 id=78 data-nosnippet>78</a>
+<a href=#79 id=79 data-nosnippet>79</a>        <span class="macro">assert_eq!</span>(response.served_model(), <span class="prelude-val">None</span>);
+<a href=#80 id=80 data-nosnippet>80</a>        response.set_served_model(<span class="kw-2">&amp;</span>ModelId::from(<span class="string">"first"</span>));
+<a href=#81 id=81 data-nosnippet>81</a>        <span class="macro">assert_eq!</span>(response.served_model().map(ModelId::as_str), <span class="prelude-val">Some</span>(<span class="string">"first"</span>));
+<a href=#82 id=82 data-nosnippet>82</a>        response.set_served_model(<span class="kw-2">&amp;</span>ModelId::from(<span class="string">"fallback"</span>));
+<a href=#83 id=83 data-nosnippet>83</a>        <span class="macro">assert_eq!</span>(
+<a href=#84 id=84 data-nosnippet>84</a>            response.served_model().map(ModelId::as_str),
+<a href=#85 id=85 data-nosnippet>85</a>            <span class="prelude-val">Some</span>(<span class="string">"fallback"</span>)
+<a href=#86 id=86 data-nosnippet>86</a>        );
+<a href=#87 id=87 data-nosnippet>87</a>    }
+<a href=#88 id=88 data-nosnippet>88</a>}
 </code></pre></div></section></main></body></html>

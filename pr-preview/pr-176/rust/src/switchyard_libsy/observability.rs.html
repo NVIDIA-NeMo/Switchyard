@@ -90,7 +90,7 @@
 <a href=#90 id=90 data-nosnippet>90</a>    }
 <a href=#91 id=91 data-nosnippet>91</a>}
 <a href=#92 id=92 data-nosnippet>92</a>
-<a href=#93 id=93 data-nosnippet>93</a><span class="doccomment">/// Span covering one algorithm run (the whole `create_run_task` execution).
+<a href=#93 id=93 data-nosnippet>93</a><span class="doccomment">/// Span covering one algorithm run (the whole `route` execution).
 <a href=#94 id=94 data-nosnippet>94</a>///
 <a href=#95 id=95 data-nosnippet>95</a>/// Correlation ids from the request [`switchyard_protocol::Metadata`] are recorded as span fields
 <a href=#96 id=96 data-nosnippet>96</a>/// when present. `tracing` spans cannot grow field names at runtime, so
@@ -114,8 +114,8 @@
 <a href=#114 id=114 data-nosnippet>114</a>        outcome = tracing::field::Empty,
 <a href=#115 id=115 data-nosnippet>115</a>        error = tracing::field::Empty,
 <a href=#116 id=116 data-nosnippet>116</a>    );
-<a href=#117 id=117 data-nosnippet>117</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(route) = request.requested_model() {
-<a href=#118 id=118 data-nosnippet>118</a>        span.record(<span class="string">"switchyard.route"</span>, route);
+<a href=#117 id=117 data-nosnippet>117</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(route) = request.model_id() {
+<a href=#118 id=118 data-nosnippet>118</a>        span.record(<span class="string">"switchyard.route"</span>, route.as_ref());
 <a href=#119 id=119 data-nosnippet>119</a>    }
 <a href=#120 id=120 data-nosnippet>120</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(metadata) = <span class="kw-2">&amp;</span>request.metadata {
 <a href=#121 id=121 data-nosnippet>121</a>        <span class="kw">for </span>(field, value) <span class="kw">in </span>[
@@ -285,23 +285,21 @@
 <a href=#285 id=285 data-nosnippet>285</a>    }
 <a href=#286 id=286 data-nosnippet>286</a>}
 <a href=#287 id=287 data-nosnippet>287</a>
-<a href=#288 id=288 data-nosnippet>288</a><span class="doccomment">/// Records one published routing decision: the decision counter plus a
-<a href=#289 id=289 data-nosnippet>289</a>/// structured debug event carrying the decision's reasoning.
-<a href=#290 id=290 data-nosnippet>290</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>record_decision(algorithm: <span class="kw-2">&amp;</span>str, decision: <span class="kw-2">&amp;</span>Decision) {
-<a href=#291 id=291 data-nosnippet>291</a>    <span class="kw">let </span>selected_model = decision.selected_model_id();
-<a href=#292 id=292 data-nosnippet>292</a>    <span class="macro">tracing::debug!</span>(
-<a href=#293 id=293 data-nosnippet>293</a>        target: TRACING_TARGET,
-<a href=#294 id=294 data-nosnippet>294</a>        algorithm,
-<a href=#295 id=295 data-nosnippet>295</a>        selected_model,
-<a href=#296 id=296 data-nosnippet>296</a>        reasoning = decision.reasoning().unwrap_or(<span class="string">""</span>),
-<a href=#297 id=297 data-nosnippet>297</a>        <span class="string">"routing decision"
-<a href=#298 id=298 data-nosnippet>298</a>    </span>);
-<a href=#299 id=299 data-nosnippet>299</a>    meter().u64_counter(<span class="string">"switchyard.decisions"</span>).build().add(
-<a href=#300 id=300 data-nosnippet>300</a>        <span class="number">1</span>,
-<a href=#301 id=301 data-nosnippet>301</a>        <span class="kw-2">&amp;</span>[
-<a href=#302 id=302 data-nosnippet>302</a>            KeyValue::new(<span class="string">"algorithm"</span>, algorithm.to_string()),
-<a href=#303 id=303 data-nosnippet>303</a>            KeyValue::new(<span class="string">"selected_model"</span>, selected_model.to_string()),
-<a href=#304 id=304 data-nosnippet>304</a>        ],
-<a href=#305 id=305 data-nosnippet>305</a>    );
-<a href=#306 id=306 data-nosnippet>306</a>}
+<a href=#288 id=288 data-nosnippet>288</a><span class="doccomment">/// Records one published routing decision: the decision counter plus a structured debug event.
+<a href=#289 id=289 data-nosnippet>289</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>record_decision(algorithm: <span class="kw-2">&amp;</span>str, decision: <span class="kw-2">&amp;</span>Decision) {
+<a href=#290 id=290 data-nosnippet>290</a>    <span class="kw">let </span>selected_model = decision.selected_model_id();
+<a href=#291 id=291 data-nosnippet>291</a>    <span class="macro">tracing::debug!</span>(
+<a href=#292 id=292 data-nosnippet>292</a>        target: TRACING_TARGET,
+<a href=#293 id=293 data-nosnippet>293</a>        algorithm,
+<a href=#294 id=294 data-nosnippet>294</a>        selected_model = %selected_model,
+<a href=#295 id=295 data-nosnippet>295</a>        <span class="string">"routing decision"
+<a href=#296 id=296 data-nosnippet>296</a>    </span>);
+<a href=#297 id=297 data-nosnippet>297</a>    meter().u64_counter(<span class="string">"switchyard.decisions"</span>).build().add(
+<a href=#298 id=298 data-nosnippet>298</a>        <span class="number">1</span>,
+<a href=#299 id=299 data-nosnippet>299</a>        <span class="kw-2">&amp;</span>[
+<a href=#300 id=300 data-nosnippet>300</a>            KeyValue::new(<span class="string">"algorithm"</span>, algorithm.to_string()),
+<a href=#301 id=301 data-nosnippet>301</a>            KeyValue::new(<span class="string">"selected_model"</span>, selected_model.to_string()),
+<a href=#302 id=302 data-nosnippet>302</a>        ],
+<a href=#303 id=303 data-nosnippet>303</a>    );
+<a href=#304 id=304 data-nosnippet>304</a>}
 </code></pre></div></section></main></body></html>
