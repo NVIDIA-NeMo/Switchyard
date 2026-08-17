@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "http://127.0.0.1:8100/v1"
+max_retries = 10
+
+[targets.classifier]
+id = "mock/classifier"
+llm_client = "mock"
+
+[targets.strong]
+id = "mock/strong"
+llm_client = "mock"
+
+[targets.weak]
+id = "mock/weak"
+llm_client = "mock"
+
+[routes.noop]
+id = "switchyard/noop"
+type = "noop"
+
+[routes.random]
+id = "switchyard/random"
+type = "random"
+targets = ["weak", "strong"]
+weights = [1, 0]
+seed = 42
+
+[routes.passthrough]
+id = "switchyard/passthrough"
+type = "passthrough"
+target = "weak"
+
+[routes.classifier]
+id = "switchyard/classifier"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 1.0
+session_affinity = true
+message_hash_fallback = true
+max_output_tokens = 1
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 1.0

@@ -1,15 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Sustained, closed-loop load test against a live Switchyard server.
-//!
-//! Workers keep a fixed number of inference requests in flight while a reporter samples
-//! liveness, metrics, and process resources, and a canary confirms invalid input is rejected.
-//! The run writes result files and exits non-zero when a release gate fails.
+#![doc = include_str!("../README.md")]
 
-pub mod client;
-pub mod report;
-pub mod stats;
+mod client;
+mod report;
+mod stats;
 
 use std::fs;
 use std::future::Future;
@@ -21,8 +17,6 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use parking_lot::Mutex;
-use rand::rngs::StdRng;
-use rand::{RngExt, SeedableRng};
 use reqwest::Client;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde_json::json;
@@ -31,8 +25,7 @@ use tokio::sync::Notify;
 use crate::client::{Endpoint, preflight, request_body, send_request};
 use crate::report::{ResultsWriter, invalid_request_canary, reporter};
 use crate::stats::{
-    RunStats, build_prompt_pool, build_summary, latency_report, now_utc_string, round3,
-    utc_dir_stamp,
+    RunStats, build_prompt_pool, build_summary, now_utc_string, round3, utc_dir_stamp,
 };
 
 /// Command-line arguments for the soak test.
@@ -40,102 +33,88 @@ use crate::stats::{
 #[command(
     name = "switchyard-soak",
     about = "Run a sustained, closed-loop load test against a live Switchyard server",
+    after_long_help = "Examples:\n  switchyard-soak --model switchyard/general --duration 5m --concurrency 4\n  switchyard-soak --model switchyard/general --duration 48h --server-pid 1234 --max-rss-growth-mib 512\n\nThis command does not require VidaiMock, oha, or AIPerf. The optional scripts/soak_rehearsal.py command uses an embedded VidaiMock helper and warns before it starts when oha or AIPerf is missing.",
     version
 )]
 pub struct Args {
-    /// Base URL of the Switchyard server.
+    /// HTTP base URL of the Switchyard server under test.
     #[arg(long, default_value = "http://127.0.0.1:4000")]
     base_url: String,
 
-    /// Model id from GET /v1/models; defaults to its first model.
+    /// Exact route id advertised by GET /v1/models.
     #[arg(long)]
-    model: Option<String>,
+    model: String,
 
-    /// Run time with an s, m, or h suffix.
+    /// Time to keep sending load; use an s, m, or h suffix.
     #[arg(long, value_parser = stats::parse_duration, default_value = "48h")]
     duration: f64,
 
-    /// Number of closed-loop inference workers.
+    /// Requests kept in flight; each worker sends its next request after the last one ends.
     #[arg(long, default_value_t = 16)]
     concurrency: usize,
 
-    /// Public APIs to exercise; defaults to all three.
-    #[arg(long, value_enum, num_args = 1..)]
-    endpoints: Vec<Endpoint>,
-
-    /// Fraction of inference requests that use streaming.
-    #[arg(long, default_value_t = 0.5)]
-    stream_ratio: f64,
-
-    /// Maximum output tokens requested from the backend.
+    /// Output-token limit sent with every inference request.
     #[arg(long, default_value_t = 32)]
     max_output_tokens: u32,
 
-    /// Repeated-prefix payload size for each prompt.
+    /// Bytes of repeated prefix added to each prompt to exercise request memory and caching.
     #[arg(long, default_value_t = 1024)]
     prompt_bytes: usize,
 
-    /// Timeout in seconds for one inference request.
+    /// Seconds allowed to connect or wait between response bytes; an active stream may run longer.
     #[arg(long, default_value_t = 120.0)]
     request_timeout: f64,
 
-    /// Seconds between health, metrics, and result samples.
+    /// Seconds between health, metrics, process, and result samples.
     #[arg(long, default_value_t = 60.0)]
     report_interval: f64,
 
-    /// Seconds between invalid-request recovery checks; zero disables them.
+    /// Seconds between malformed-request checks; 0 turns this check off.
     #[arg(long, default_value_t = 300.0)]
     invalid_canary_interval: f64,
 
-    /// Largest allowed inference error fraction.
+    /// Largest passing request-error fraction, from 0 (none) through 1 (all).
     #[arg(long, default_value_t = 0.0)]
     max_error_rate: f64,
 
-    /// Local Switchyard PID to sample for RSS and CPU.
+    /// PID of a local switchyard-server process whose RSS and CPU should be sampled.
     #[arg(long)]
     server_pid: Option<u32>,
 
-    /// Largest allowed first-to-last RSS increase in MiB.
+    /// Largest passing first-to-last RSS increase in MiB; requires --server-pid.
     #[arg(long, requires = "server_pid")]
     max_rss_growth_mib: Option<f64>,
 
-    /// Environment variable holding a bearer token for the Switchyard endpoint.
+    /// Name of an environment variable that holds the endpoint's bearer token.
     #[arg(long)]
     api_key_env: Option<String>,
 
-    /// New directory for the run result files.
+    /// New directory to create for config, interval, error, and summary files.
     #[arg(long)]
     results_dir: Option<PathBuf>,
 }
 
 impl Args {
-    /// Reject inputs clap's types cannot, matching the Python runner's checks.
+    /// Reject invalid numeric combinations after clap parses their types.
     pub fn validate(&self) -> Result<(), String> {
         if self.concurrency == 0 {
             return Err("--concurrency must be greater than zero".to_string());
-        }
-        let mut seen = std::collections::HashSet::new();
-        if !self
-            .endpoints
-            .iter()
-            .all(|endpoint| seen.insert(endpoint.as_str()))
-        {
-            return Err("--endpoints must not repeat a value".to_string());
-        }
-        if !(0.0..=1.0).contains(&self.stream_ratio) {
-            return Err("--stream-ratio must be between 0 and 1".to_string());
         }
         if self.max_output_tokens == 0 || self.prompt_bytes == 0 {
             return Err(
                 "--max-output-tokens and --prompt-bytes must be greater than zero".to_string(),
             );
         }
-        if self.request_timeout <= 0.0 || self.report_interval <= 0.0 {
+        if !self.request_timeout.is_finite()
+            || !self.report_interval.is_finite()
+            || self.request_timeout <= 0.0
+            || self.report_interval <= 0.0
+        {
             return Err(
                 "--request-timeout and --report-interval must be greater than zero".to_string(),
             );
         }
-        if self.invalid_canary_interval < 0.0 {
+        if !self.invalid_canary_interval.is_finite() || self.invalid_canary_interval < 0.0 {
             return Err("--invalid-canary-interval must be zero or greater".to_string());
         }
         if !(0.0..=1.0).contains(&self.max_error_rate) {
@@ -144,46 +123,56 @@ impl Args {
         if self.server_pid == Some(0) {
             return Err("--server-pid must be greater than zero".to_string());
         }
-        if self.max_rss_growth_mib.is_some_and(|growth| growth < 0.0) {
+        if self
+            .max_rss_growth_mib
+            .is_some_and(|growth| !growth.is_finite() || growth < 0.0)
+        {
             return Err("--max-rss-growth-mib must be zero or greater".to_string());
         }
         Ok(())
     }
+}
 
-    fn endpoints(&self) -> Vec<Endpoint> {
-        if self.endpoints.is_empty() {
-            Endpoint::ALL.to_vec()
-        } else {
-            self.endpoints.clone()
-        }
-    }
+#[derive(Clone)]
+struct RunContext {
+    client: Client,
+    base_url: String,
+    stop: Arc<Stop>,
+    stats: Arc<Mutex<RunStats>>,
+    writer: Arc<Mutex<ResultsWriter>>,
+}
+
+struct Workload {
+    model: String,
+    prompts: Vec<String>,
+    max_output_tokens: u32,
 }
 
 /// A one-shot stop signal that many tasks can wait on and any task can raise.
-pub struct Stop {
+struct Stop {
     flag: AtomicBool,
     notify: Notify,
 }
 
 impl Stop {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             flag: AtomicBool::new(false),
             notify: Notify::new(),
         }
     }
 
-    pub fn set(&self) {
+    fn set(&self) {
         self.flag.store(true, Ordering::SeqCst);
         self.notify.notify_waiters();
     }
 
-    pub fn is_set(&self) -> bool {
+    fn is_set(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
     }
 
     /// Resolve once the signal is raised, now or later.
-    pub async fn wait(&self) {
+    async fn wait(&self) {
         loop {
             if self.is_set() {
                 return;
@@ -200,48 +189,35 @@ impl Stop {
     }
 }
 
-impl Default for Stop {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Send closed-loop traffic until the run stops.
-#[allow(clippy::too_many_arguments)]
 async fn worker(
-    client: Client,
-    base_url: String,
+    context: RunContext,
+    workload: Arc<Workload>,
     worker_id: usize,
-    model: String,
-    endpoints: Vec<Endpoint>,
-    prompt_pool: Vec<String>,
-    max_output_tokens: u32,
-    stream_ratio: f64,
-    stop: Arc<Stop>,
     request_numbers: Arc<AtomicU64>,
-    stats: Arc<Mutex<RunStats>>,
-    writer: Arc<Mutex<ResultsWriter>>,
 ) -> Result<(), String> {
-    let mut rng = StdRng::seed_from_u64(10_000 + worker_id as u64);
-    while !stop.is_set() {
+    while !context.stop.is_set() {
         let request_number = request_numbers.fetch_add(1, Ordering::Relaxed) as usize;
-        let endpoint = endpoints[request_number % endpoints.len()];
-        let stream = rng.random::<f64>() < stream_ratio;
+        let endpoint = Endpoint::ALL[request_number % Endpoint::ALL.len()];
+        let stream = (request_number / Endpoint::ALL.len()).is_multiple_of(2);
         let body = request_body(
             endpoint,
-            &model,
-            &prompt_pool[request_number % prompt_pool.len()],
-            max_output_tokens,
+            &workload.model,
+            &workload.prompts[request_number % workload.prompts.len()],
+            workload.max_output_tokens,
             stream,
         );
         let started = Instant::now();
-        let (error_kind, detail) = send_request(&client, &base_url, endpoint, &body).await;
+        let result = send_request(&context.client, &context.base_url, endpoint, &body).await;
         let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
-        stats
-            .lock()
-            .record(endpoint.as_str(), latency_ms, error_kind.as_deref());
-        if let Some(kind) = &error_kind {
-            writer
+        context.stats.lock().record(
+            endpoint.as_str(),
+            latency_ms,
+            result.as_ref().err().map(|error| error.kind.as_str()),
+        );
+        if let Err(error) = result {
+            context
+                .writer
                 .lock()
                 .write_error(&json!({
                     "timestamp_utc": now_utc_string(),
@@ -249,8 +225,8 @@ async fn worker(
                     "endpoint": endpoint.as_str(),
                     "stream": stream,
                     "latency_ms": round3(latency_ms),
-                    "error": kind,
-                    "detail": detail,
+                    "error": error.kind,
+                    "detail": error.detail,
                 }))
                 .map_err(|error| error.to_string())?;
         }
@@ -258,10 +234,7 @@ async fn worker(
     Ok(())
 }
 
-/// Run a background task and raise the stop signal unless it returns `Ok`, so the run ends
-/// fail-closed. The drop guard fires on an `Err` return and on a panic unwinding through the
-/// await, matching the Python runner, which stopped the run on any task exception; a task that
-/// returns `Ok` (a worker/reporter after stop, or a disabled canary) leaves the guard disarmed.
+/// Stop the run when a background task fails or panics.
 async fn guard_stop(
     stop: Arc<Stop>,
     task: impl Future<Output = Result<(), String>>,
@@ -280,7 +253,7 @@ async fn guard_stop(
     result
 }
 
-/// Fold one joined task's outcome into the failure reasons; cancelled tasks are expected.
+/// Add one joined task's error to the failure reasons; cancelled tasks are expected.
 fn collect_failure(
     name: &str,
     result: Result<Result<(), String>, tokio::task::JoinError>,
@@ -295,7 +268,7 @@ fn collect_failure(
 }
 
 /// Raise *stop* on SIGINT or SIGTERM so an operator can end the run cleanly.
-fn spawn_signal_listener(stop: Arc<Stop>) {
+fn spawn_signal_listener(stop: Arc<Stop>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         #[cfg(unix)]
         {
@@ -329,18 +302,18 @@ fn spawn_signal_listener(stop: Arc<Stop>) {
             let _ = tokio::signal::ctrl_c().await;
             stop.set();
         }
-    });
+    })
 }
 
-/// Record every non-secret input, plus the resolved model and the seconds duration.
+/// Record every non-secret input with the normalized duration and fixed request variants.
 fn write_config(results_dir: &Path, args: &Args, model: &str) -> Result<(), String> {
     let config = json!({
         "base_url": args.base_url,
         "model": model,
         "duration_seconds": args.duration,
         "concurrency": args.concurrency,
-        "endpoints": args.endpoints().iter().map(|endpoint| endpoint.as_str()).collect::<Vec<_>>(),
-        "stream_ratio": args.stream_ratio,
+        "endpoints": Endpoint::ALL.map(Endpoint::as_str),
+        "streaming": [true, false],
         "max_output_tokens": args.max_output_tokens,
         "prompt_bytes": args.prompt_bytes,
         "request_timeout": args.request_timeout,
@@ -358,6 +331,8 @@ fn write_config(results_dir: &Path, args: &Args, model: &str) -> Result<(), Stri
 
 /// Run the configured soak test and return a process exit code (0 pass, 1 fail).
 pub async fn run(args: Args) -> Result<i32, String> {
+    args.validate()?;
+
     let token = match &args.api_key_env {
         Some(var) => {
             let token = std::env::var(var).ok().filter(|value| !value.is_empty());
@@ -387,7 +362,7 @@ pub async fn run(args: Args) -> Result<i32, String> {
     let client = builder.build().map_err(|error| error.to_string())?;
     let base_url = args.base_url.trim_end_matches('/').to_string();
 
-    let model = preflight(&client, &base_url, args.model.as_deref()).await?;
+    preflight(&client, &base_url, &args.model).await?;
     let results_dir = args
         .results_dir
         .clone()
@@ -395,14 +370,14 @@ pub async fn run(args: Args) -> Result<i32, String> {
     let writer = Arc::new(Mutex::new(
         ResultsWriter::new(&results_dir).map_err(|error| error.to_string())?,
     ));
-    write_config(&results_dir, &args, &model)?;
+    write_config(&results_dir, &args, &args.model)?;
 
-    let endpoints = args.endpoints();
     println!(
-        "Soak started: model={model} duration={}s concurrency={} endpoints={} results={}",
+        "Soak started: model={} duration={}s concurrency={} endpoints={} results={}",
+        args.model,
         args.duration,
         args.concurrency,
-        endpoints
+        Endpoint::ALL
             .iter()
             .map(|endpoint| endpoint.as_str())
             .collect::<Vec<_>>()
@@ -415,8 +390,15 @@ pub async fn run(args: Args) -> Result<i32, String> {
     let stop = Arc::new(Stop::new());
     let workers_done = Arc::new(Stop::new());
     let request_numbers = Arc::new(AtomicU64::new(0));
+    let context = RunContext {
+        client,
+        base_url,
+        stop: stop.clone(),
+        stats: stats.clone(),
+        writer: writer.clone(),
+    };
 
-    spawn_signal_listener(stop.clone());
+    let signal_listener = spawn_signal_listener(stop.clone());
 
     let deadline = {
         let stop = stop.clone();
@@ -429,24 +411,20 @@ pub async fn run(args: Args) -> Result<i32, String> {
         })
     };
 
-    let prompt_pool = build_prompt_pool(args.prompt_bytes);
+    let workload = Arc::new(Workload {
+        model: args.model.clone(),
+        prompts: build_prompt_pool(args.prompt_bytes),
+        max_output_tokens: args.max_output_tokens,
+    });
     let mut worker_handles = Vec::new();
     for worker_id in 0..args.concurrency {
         let handle = tokio::spawn(guard_stop(
             stop.clone(),
             worker(
-                client.clone(),
-                base_url.clone(),
+                context.clone(),
+                workload.clone(),
                 worker_id,
-                model.clone(),
-                endpoints.clone(),
-                prompt_pool.clone(),
-                args.max_output_tokens,
-                args.stream_ratio,
-                stop.clone(),
                 request_numbers.clone(),
-                stats.clone(),
-                writer.clone(),
             ),
         ));
         worker_handles.push((format!("worker-{worker_id}"), handle));
@@ -454,33 +432,22 @@ pub async fn run(args: Args) -> Result<i32, String> {
     let reporter_handle = tokio::spawn(guard_stop(
         stop.clone(),
         reporter(
-            client.clone(),
-            base_url.clone(),
+            context.clone(),
             started,
             Duration::from_secs_f64(args.report_interval),
             args.duration,
             args.server_pid,
-            stop.clone(),
             workers_done.clone(),
-            stats.clone(),
-            writer.clone(),
         ),
     ));
     let canary_handle = tokio::spawn(guard_stop(
         stop.clone(),
-        invalid_request_canary(
-            client.clone(),
-            base_url.clone(),
-            args.invalid_canary_interval,
-            model.clone(),
-            stop.clone(),
-            stats.clone(),
-            writer.clone(),
-        ),
+        invalid_request_canary(context, args.invalid_canary_interval, workload),
     ));
 
     stop.wait().await;
     deadline.abort();
+    signal_listener.abort();
 
     // A crashed worker/reporter/canary must not discard the run: record it as a failure reason
     // so the summary is still written and the run fails closed.
@@ -497,10 +464,7 @@ pub async fn run(args: Args) -> Result<i32, String> {
     );
 
     let elapsed = started.elapsed().as_secs_f64();
-    let (error_records, dropped_error_records) = {
-        let writer = writer.lock();
-        (writer.error_records, writer.dropped_error_records)
-    };
+    let (error_records, dropped_error_records) = { writer.lock().error_counts() };
     let summary = build_summary(
         &stats.lock(),
         elapsed,
@@ -510,10 +474,8 @@ pub async fn run(args: Args) -> Result<i32, String> {
         dropped_error_records,
         &task_failures,
     );
-    let latency_block = latency_report(stats.lock().latency_samples());
     let summary_path = results_dir.join("summary.json");
-    let summary_body =
-        serde_json::to_string_pretty(&summary.json).map_err(|error| error.to_string())?;
+    let summary_body = serde_json::to_string_pretty(&summary).map_err(|error| error.to_string())?;
     fs::write(&summary_path, format!("{summary_body}\n")).map_err(|error| error.to_string())?;
 
     let label = if summary.passed { "PASS" } else { "FAIL" };
@@ -527,11 +489,8 @@ pub async fn run(args: Args) -> Result<i32, String> {
             .unwrap_or_default(),
         summary_path.display(),
     );
-    for reason in &summary.reasons {
+    for reason in &summary.failure_reasons {
         println!("- {reason}");
-    }
-    if !latency_block.is_empty() {
-        print!("{latency_block}");
     }
     Ok(if summary.passed { 0 } else { 1 })
 }

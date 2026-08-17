@@ -19,20 +19,11 @@ then confirms the server is still live.
 
 ## Prepare the server
 
-Run the exact commit, build, route bundle, backend, and model planned for the
+Run the exact commit, build, server config, backend, and model planned for the
 release. Do not use a development server in front of a different Switchyard
 build.
 
-For the Python server:
-
-```bash
-uv sync
-uv run switchyard --routing-profiles release-routes.yaml -- serve --port 4000 \
-  > switchyard-soak.log 2>&1 &
-SOAK_SERVER_PID=$!
-```
-
-For the Rust server and its libsy algorithms:
+Start the standalone server and its libsy algorithms:
 
 ```bash
 cargo build --release -p switchyard-server
@@ -44,7 +35,7 @@ SOAK_SERVER_PID=$!
 Wait for `GET http://127.0.0.1:4000/health` to return HTTP 200 with the JSON
 body `{"status": "ok"}`; the runner requires both before it starts. Check
 `GET http://127.0.0.1:4000/v1/models` and choose the model id that represents
-the release workload.
+the release workload. Pass that exact id with `--model`.
 
 Run the server and test from a dedicated host, job scheduler, or terminal
 multiplexer that will stay alive for the full test. Confirm that the host will
@@ -59,45 +50,61 @@ release, then run it directly:
 cargo build --release -p switchyard-soak
 ```
 
-## Rehearse against a mock backend
+## Rehearse the complete local stack
 
-Rehearse the soak with no live-provider credentials or cost by running
-[VidaiMock](https://github.com/vidaiUK/VidaiMock) — an Apache-2.0 mock LLM server that speaks the
-OpenAI, Anthropic, and Responses wire formats with realistic streaming — as the backend behind
-`switchyard-server`. `scripts/soak-rehearsal.sh` starts the mock, points a passthrough
-`switchyard-server` at it, waits for both to report healthy, and runs the soak against the local
-stack:
+The rehearsal embeds [VidaiMock](https://github.com/vidaiUK/VidaiMock) as a Rust library, so it
+does not need a separate `vidaimock` command. Build the server, soak tester, and mock helper from
+the commit under test:
 
 ```bash
-# Requires the vidaimock binary on PATH (github.com/vidaiUK/VidaiMock/releases) and release builds
-# of switchyard-server and switchyard-soak.
-scripts/soak-rehearsal.sh --duration 5m --concurrency 8 --invalid-canary-interval 0
+cargo build --release -p switchyard-server -p switchyard-soak \
+  --bins --example switchyard-soak-mock
 ```
 
-Disable the invalid-request canary (`--invalid-canary-interval 0`) against a mock backend: the
-canary checks that invalid input is rejected with HTTP 400, which a permissive mock does not do.
-
-To rehearse the failure gates, degrade the backend and confirm the soak fails closed. For example,
-raise the mock's latency past the request timeout and every request times out:
+Install [oha](https://github.com/hatoo/oha) and
+[NVIDIA AIPerf](https://docs.nvidia.com/aiperf/reference/command-line-options):
 
 ```bash
-MOCK_LATENCY_MS=2500 scripts/soak-rehearsal.sh --duration 30s --request-timeout 1 \
-  --invalid-canary-interval 0
-# Soak FAIL: ... error_rate=100.0000% ...  (error_kinds: timeout), exit 1
+cargo install oha
+uv tool install aiperf
 ```
 
-## Raw throughput with vegeta
-
-The soak test is closed-loop and validates every response body and stream. For a quick open-loop
-capacity figure — a fixed request rate, HTTP status only — [vegeta](https://github.com/tsenart/vegeta)
-is a useful companion. It does not validate response bodies or streaming, so it complements the soak
-rather than replacing it.
+Then run the Python rehearsal from the repository root:
 
 ```bash
-printf 'POST http://127.0.0.1:4000/v1/chat/completions\nContent-Type: application/json\n@body.json\n' > targets.txt
-printf '{"model":"RELEASE_MODEL_ID","messages":[{"role":"user","content":"ping"}],"max_tokens":8}' > body.json
-vegeta attack -targets=targets.txt -rate=100 -duration=30s | vegeta report
+python3.12 scripts/soak_rehearsal.py --duration 10s --concurrency 4
 ```
+
+`--duration` controls the Rust soak phase. The route smoke, oha, and AIPerf phases are short and
+bounded by request count. `--help` explains every rehearsal flag. Set `OHA_BIN`, `AIPERF_BIN`,
+`SWITCHYARD_SERVER_BIN`, `SWITCHYARD_SOAK_BIN`, or `SWITCHYARD_SOAK_MOCK_BIN` when a command is not
+on `PATH` or not under `target/release`.
+
+The script checks all five commands before starting a process. A missing command prints a warning,
+the build or install command, and the matching environment-variable override. Cargo compiles the
+embedded VidaiMock library, but it does not install the unrelated oha or AIPerf executables during
+a normal build.
+
+The script gives each tool one job:
+
+| Tool | Job in the rehearsal |
+|---|---|
+| Embedded VidaiMock | Supplies local OpenAI-compatible model responses with configurable latency and no provider cost. |
+| oha | Sends raw concurrent HTTP requests through the random route and writes a status and latency distribution. |
+| Python route smoke | Sends one Chat Completions request through each route. The stage request includes a critical tool failure so the signal scorer takes its escalation path. |
+| AIPerf | Sends streaming Chat Completions through passthrough routing and records LLM and token latency artifacts. |
+| `switchyard-soak` | Runs passthrough routing through Chat Completions, Messages, and Responses, with streaming on and off, while checking liveness, metrics, process sampling, and result gates. |
+
+The checked-in rehearsal config exercises `noop`, `random`, `passthrough`, `llm_classifier`, and
+`stage_router`. It uses the accepted maximum retry count (10), a zero-weight random target, and the
+upper classifier and stage thresholds (1.0). The config is validated with
+`switchyard-server --dry-run` before either service starts.
+
+The runner does not invent operational maxima for unbounded values such as target count or recent
+turn window. Focused Rust tests cover the real bounded structures at cap plus one: 1,024 routing
+overflow identities, 4,096 affinity assignments, 100,000 retained latency samples, and 10,000
+recorded error details. Server tests cover invalid thresholds, malformed classifier verdicts,
+missing subagent identifiers, target failures, and the retry value immediately above the maximum.
 
 ## Run the 48-hour test
 
@@ -177,18 +184,12 @@ Each run creates a timestamped directory under `soak-results/`:
   read it as a long-run average rather than a spike detector.
 - `errors.jsonl` records up to 10,000 request and canary failures.
 - `summary.json` records the final pass result and any failed gates.
-- `status.json` is overwritten atomically each interval with a one-object live snapshot — progress
-  toward the target duration, cumulative requests, cumulative error rate, health, detected restarts,
-  and a `status` of `ok`, `degraded`, or `stalled`. Read it (or tail the run log, whose interval line
-  carries the same fields and status token) to monitor a run in progress; on a remote host,
-  `cat <results-dir>/status.json` gives an at-a-glance confidence check without parsing `intervals.csv`.
 
-When the run ends the command also prints a latency percentile table (p50 through
-p99.9) and an ASCII latency histogram to the terminal, for a quick read of the
-distribution without opening the result files.
+Tail the run log to monitor progress, cumulative error rate, health, RSS, and the
+`OK`, `DEGRADED`, or `STALLED` interval status while the test runs.
 
 Before approving the release, check `intervals.csv` for late failures, falling
 throughput, increasing p95 or p99 latency, and steady RSS growth. Compare the
 first and last several hours, not only the run-wide averages. Attach
 `summary.json`, the interval chart, the Switchyard log, the tested commit, and
-the route bundle to the release record.
+the server config to the release record.

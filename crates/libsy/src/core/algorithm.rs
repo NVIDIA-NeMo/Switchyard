@@ -422,6 +422,10 @@ mod tests {
         LibsyError::external("test", TestError(message))
     }
 
+    /// Build a routed decision for orchestration tests.
+    fn test_decision(selected_model_id: String) -> Decision {
+        Decision::new(selected_model_id, None, true)
+    }
     /// Trivial algo used only to exercise the orchestrator: calls the first target
     /// and returns its response as the routing outcome.
     struct TestAlgo {

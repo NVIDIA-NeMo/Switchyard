@@ -3,18 +3,16 @@
 
 //! HTTP against the public Switchyard APIs: preflight, one request, and server-state reads.
 
-use std::collections::BTreeMap;
-
-use clap::ValueEnum;
 use futures_util::StreamExt;
 use reqwest::Client;
 use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
 
-use crate::stats::{SERVER_ERRORS_METRIC, SERVER_REQUESTS_METRIC};
+const SERVER_REQUESTS_METRIC: &str = "switchyard_total_requests";
+const SERVER_ERRORS_METRIC: &str = "switchyard_total_errors";
 
 /// One public Switchyard API the soak test exercises.
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Endpoint {
     Chat,
     Messages,
@@ -55,15 +53,12 @@ fn truncate(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
-/// Map a transport-level reqwest error to a short, stable error kind.
 fn transport_error_kind(error: &reqwest::Error) -> &'static str {
     if error.is_timeout() {
         "timeout"
     } else if error.is_decode() {
-        // A body decode failure mirrors httpx's DecodingError, which reported "request_error".
         "request_error"
     } else if error.is_connect() || error.is_request() || error.is_body() {
-        // Connect, send, and mid-stream read failures are httpx TransportError -> "transport".
         "transport"
     } else {
         "request_error"
@@ -96,10 +91,14 @@ pub fn request_body(
     }
 }
 
-/// Read the process-wide Switchyard counters from Prometheus text.
-pub fn parse_metrics(text: &str) -> BTreeMap<String, f64> {
-    let wanted = [SERVER_REQUESTS_METRIC, SERVER_ERRORS_METRIC];
-    let mut parsed = BTreeMap::new();
+#[derive(Default)]
+struct Metrics {
+    requests: Option<f64>,
+    errors: Option<f64>,
+}
+
+fn parse_metrics(text: &str) -> Metrics {
+    let mut metrics = Metrics::default();
     for line in text.lines() {
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -108,45 +107,62 @@ pub fn parse_metrics(text: &str) -> BTreeMap<String, f64> {
             continue;
         };
         let name = name_part.split('{').next().unwrap_or(name_part);
-        if !wanted.contains(&name) {
-            continue;
-        }
         if let Some(token) = rest.split_whitespace().next()
             && let Ok(value) = token.parse::<f64>()
         {
-            parsed.insert(name.to_string(), value);
+            match name {
+                SERVER_REQUESTS_METRIC => metrics.requests = Some(value),
+                SERVER_ERRORS_METRIC => metrics.errors = Some(value),
+                _ => {}
+            }
         }
     }
-    parsed
+    metrics
 }
 
-/// Send one request and return an error kind and detail, if any.
+pub struct RequestError {
+    pub kind: String,
+    pub detail: String,
+}
+
+impl RequestError {
+    fn new(kind: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            detail: detail.into(),
+        }
+    }
+
+    fn transport(error: &reqwest::Error) -> Self {
+        Self::new(
+            transport_error_kind(error),
+            truncate(&error.to_string(), 500),
+        )
+    }
+}
+
+/// Send one request and validate its response body or event stream.
 pub async fn send_request(
     client: &Client,
     base_url: &str,
     endpoint: Endpoint,
     body: &Value,
-) -> (Option<String>, Option<String>) {
+) -> Result<(), RequestError> {
     let url = format!("{base_url}{}", endpoint.path());
     let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let response = match client.post(&url).json(body).send().await {
         Ok(response) => response,
-        Err(error) => {
-            return (
-                Some(transport_error_kind(&error).to_string()),
-                Some(truncate(&error.to_string(), 500)),
-            );
-        }
+        Err(error) => return Err(RequestError::transport(&error)),
     };
 
     if stream {
         let status = response.status();
         if !status.is_success() {
             let content = response.text().await.unwrap_or_default();
-            return (
-                Some(format!("http_{}", status.as_u16())),
-                Some(truncate(&content, 500)),
-            );
+            return Err(RequestError::new(
+                format!("http_{}", status.as_u16()),
+                truncate(&content, 500),
+            ));
         }
         let content_type = response
             .headers()
@@ -156,13 +172,13 @@ pub async fn send_request(
             .to_string();
         if !content_type.contains("text/event-stream") {
             let content = response.text().await.unwrap_or_default();
-            return (
-                Some("invalid_stream".to_string()),
-                Some(format!(
+            return Err(RequestError::new(
+                "invalid_stream",
+                format!(
                     "expected text/event-stream, received {content_type:?}: {}",
                     truncate(&content, 300)
-                )),
-            );
+                ),
+            ));
         }
         let mut bytes = response.bytes_stream();
         let mut received_data = false;
@@ -173,69 +189,54 @@ pub async fn send_request(
                         received_data || chunk.iter().any(|byte| !byte.is_ascii_whitespace());
                 }
                 Err(error) => {
-                    return (
-                        Some(transport_error_kind(&error).to_string()),
-                        Some(truncate(&error.to_string(), 500)),
-                    );
+                    return Err(RequestError::transport(&error));
                 }
             }
         }
         if !received_data {
-            return (
-                Some("empty_stream".to_string()),
-                Some("successful streaming response contained no data".to_string()),
-            );
+            return Err(RequestError::new(
+                "empty_stream",
+                "successful streaming response contained no data",
+            ));
         }
-        return (None, None);
+        return Ok(());
     }
 
     let status = response.status();
     if !status.is_success() {
         let content = response.text().await.unwrap_or_default();
-        return (
-            Some(format!("http_{}", status.as_u16())),
-            Some(truncate(&content, 500)),
-        );
+        return Err(RequestError::new(
+            format!("http_{}", status.as_u16()),
+            truncate(&content, 500),
+        ));
     }
     let text = match response.text().await {
         Ok(text) => text,
-        Err(error) => {
-            return (
-                Some(transport_error_kind(&error).to_string()),
-                Some(truncate(&error.to_string(), 500)),
-            );
-        }
+        Err(error) => return Err(RequestError::transport(&error)),
     };
     let payload: Value = match serde_json::from_str(&text) {
         Ok(payload) => payload,
-        Err(error) => return (Some("invalid_json".to_string()), Some(error.to_string())),
+        Err(error) => return Err(RequestError::new("invalid_json", error.to_string())),
     };
     if !payload.is_object() || payload.get("error").is_some() {
-        return (
-            Some("invalid_response".to_string()),
-            Some(truncate(&text, 500)),
-        );
+        return Err(RequestError::new("invalid_response", truncate(&text, 500)));
     }
     let field = endpoint.required_field();
     if payload.get(field).is_none() {
-        return (
-            Some("invalid_response".to_string()),
-            Some(format!(
+        return Err(RequestError::new(
+            "invalid_response",
+            format!(
                 "successful {} response did not contain {field:?}: {}",
                 endpoint.as_str(),
                 truncate(&text, 300)
-            )),
-        );
+            ),
+        ));
     }
-    (None, None)
+    Ok(())
 }
 
-/// Check liveness and model discovery, then return the selected model.
-pub async fn preflight(
-    client: &Client,
-    base_url: &str,
-    requested_model: Option<&str>,
-) -> Result<String, String> {
+/// Check liveness and verify that the requested model is advertised.
+pub async fn preflight(client: &Client, base_url: &str, model: &str) -> Result<(), String> {
     let health = client
         .get(format!("{base_url}/health"))
         .send()
@@ -277,32 +278,23 @@ pub async fn preflight(
             truncate(&text, 300)
         )
     })?;
-    let model_ids: Vec<String> = entries
+    if !entries
         .iter()
-        .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(str::to_string))
-        .collect();
-    let default_model = body
-        .get("default_model")
-        .and_then(Value::as_str)
-        .filter(|id| model_ids.iter().any(|known| known == id));
-
-    let model = requested_model
-        .map(str::to_string)
-        .or_else(|| default_model.map(str::to_string))
-        .or_else(|| model_ids.first().cloned())
-        .ok_or_else(|| "GET /v1/models returned no model to test".to_string())?;
-    if let Some(requested) = requested_model
-        && !model_ids.iter().any(|known| known == requested)
+        .any(|entry| entry.get("id").and_then(Value::as_str) == Some(model))
     {
-        return Err(format!(
-            "model {requested:?} is not listed by GET /v1/models"
-        ));
+        return Err(format!("model {model:?} is not listed by GET /v1/models"));
     }
-    Ok(model)
+    Ok(())
 }
 
-/// Read liveness and cumulative server metrics; never errors, so one bad read is one failed sample.
-pub async fn read_server_state(client: &Client, base_url: &str) -> (bool, BTreeMap<String, f64>) {
+pub struct ServerState {
+    pub healthy: bool,
+    pub requests: Option<f64>,
+    pub errors: Option<f64>,
+}
+
+/// Read liveness and cumulative metrics; one bad read becomes one failed sample.
+pub async fn read_server_state(client: &Client, base_url: &str) -> ServerState {
     let healthy = match client.get(format!("{base_url}/health")).send().await {
         Ok(response) if response.status() == reqwest::StatusCode::OK => response
             .text()
@@ -323,9 +315,13 @@ pub async fn read_server_state(client: &Client, base_url: &str) -> (bool, BTreeM
             .await
             .map(|text| parse_metrics(&text))
             .unwrap_or_default(),
-        _ => BTreeMap::new(),
+        _ => Metrics::default(),
     };
-    (healthy, metrics)
+    ServerState {
+        healthy,
+        requests: metrics.requests,
+        errors: metrics.errors,
+    }
 }
 
 #[cfg(test)]
@@ -349,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_metrics_reads_counter_names_and_ignores_labelled_series() {
+    fn parse_metrics_reads_only_required_counters() {
         let metrics = parse_metrics(
             "# TYPE switchyard_total_requests gauge\n\
              switchyard_total_requests 42\n\
@@ -357,8 +353,7 @@ mod tests {
              switchyard_requests_total{model=\"route\"} 10\n",
         );
 
-        assert_eq!(metrics.get("switchyard_total_requests"), Some(&42.0));
-        assert_eq!(metrics.get("switchyard_total_errors"), Some(&3.0));
-        assert_eq!(metrics.get("switchyard_requests_total"), None);
+        assert_eq!(metrics.requests, Some(42.0));
+        assert_eq!(metrics.errors, Some(3.0));
     }
 }
