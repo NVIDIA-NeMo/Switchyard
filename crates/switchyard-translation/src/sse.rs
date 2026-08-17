@@ -36,7 +36,18 @@ pub(crate) fn parse_json_sse_frame(
     let data = frame
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with(':'))
-        .filter_map(|line| line.strip_prefix("data: ").map(|l| l.to_string()))
+        .filter_map(|line| {
+            // Per the SSE spec the space after the colon is optional framing:
+            // the field name is everything before the first colon, and a single
+            // leading space is stripped from the value. A field line with no
+            // colon at all carries an empty value.
+            let value = match line.split_once(':') {
+                Some(("data", value)) => value,
+                None if line == "data" => "",
+                _ => return None,
+            };
+            Some(value.strip_prefix(' ').unwrap_or(value).to_string())
+        })
         .fold(String::new(), |mut a, b| {
             a.reserve(b.len() + 1);
             a.push_str(&b);
@@ -80,6 +91,35 @@ mod tests {
             return Err("expected a payload".into());
         };
         assert_eq!(value, json!({"n": 1}));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_a_data_line_without_a_space_after_the_colon() -> Result<(), BoxError> {
+        // The space after `data:` is optional framing, not part of the value.
+        let SseFrame::Data(value) = parse_json_sse_frame("data:{\"text\":\"hi\"}\n", DONE)? else {
+            return Err("expected a payload".into());
+        };
+        assert_eq!(value, json!({"text": "hi"}));
+        Ok(())
+    }
+
+    #[test]
+    fn done_marker_is_recognised_without_a_space() -> Result<(), BoxError> {
+        assert!(matches!(
+            parse_json_sse_frame("data:[DONE]\n", DONE)?,
+            SseFrame::Done
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn field_names_are_matched_exactly() -> Result<(), BoxError> {
+        // `database:` must not be read as a `data` field.
+        assert!(matches!(
+            parse_json_sse_frame("database: {\"n\":1}\n", DONE)?,
+            SseFrame::Empty
+        ));
         Ok(())
     }
 
