@@ -23,8 +23,7 @@ use switchyard_llm_client::{
 use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
 use crate::{
-    CallerAuthKind, CountTokensTarget, DecisionLlmClient, DecisionTarget, ModelCapabilities,
-    ServerError, ServerResult, ServerState,
+    CallerAuthKind, CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState,
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -45,22 +44,31 @@ pub fn load_server_state(path: impl AsRef<Path>) -> ServerResult<ServerState> {
 }
 
 fn server_state_from_toml(toml: &str) -> ServerResult<ServerState> {
-    let config: ServerConfig = toml::from_str(toml)
-        .map_err(|error| ServerError::new(format!("failed to parse TOML: {error}")))?;
-    config.build()
+    let config: Arc<ServerConfig> = Arc::new(
+        toml::from_str(toml)
+            .map_err(|error| ServerError::new(format!("failed to parse TOML: {error}")))?,
+    );
+    let state = config.build()?;
+    Ok(state.with_config(config))
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ServerConfig {
+pub(crate) struct ServerConfig {
     schema_version: u32,
     #[serde(default)]
-    llm_clients: BTreeMap<String, LlmClientConfig>,
-    targets: BTreeMap<String, TargetConfig>,
+    pub(crate) llm_clients: BTreeMap<String, LlmClientConfig>,
+    pub(crate) targets: BTreeMap<String, TargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
 }
 
 impl ServerConfig {
+    pub(crate) fn routing_target_names(&self, route_name: &str) -> Option<Vec<&str>> {
+        self.routes
+            .get(route_name)
+            .map(RouteConfig::routing_target_names)
+    }
+
     fn build(&self) -> ServerResult<ServerState> {
         if self.schema_version != SUPPORTED_SCHEMA_VERSION {
             return Err(ServerError::new(format!(
@@ -104,7 +112,6 @@ impl ServerConfig {
             let algorithm = build_algorithm(route_name, config, &targets)?;
             let (client, caller_auth) = self.build_route_clients(route_name, config, &clients)?;
             let count_tokens_target = self.build_count_tokens_target(config, &clients);
-            let decision_targets = self.build_decision_targets(config)?;
             routes.push((
                 config.id().clone(),
                 algorithm,
@@ -112,7 +119,7 @@ impl ServerConfig {
                 caller_auth,
                 capabilities,
                 count_tokens_target,
-                decision_targets,
+                Some(route_name.clone()),
             ));
         }
         ServerState::new_with_capabilities(routes)
@@ -235,40 +242,6 @@ impl ServerConfig {
                 client: client.clone(),
             })
     }
-
-    /// Retains only the non-secret settings an external caller needs after routing.
-    fn build_decision_targets(
-        &self,
-        route: &RouteConfig,
-    ) -> ServerResult<BTreeMap<ModelId, DecisionTarget>> {
-        route
-            .routing_target_names()
-            .into_iter()
-            .map(|target_name| {
-                let target = self.targets.get(target_name).ok_or_else(|| {
-                    ServerError::new(format!("route references unknown target {target_name}"))
-                })?;
-                let client = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
-                    ServerError::new(format!(
-                        "target {target_name} references unknown llm client {}",
-                        target.llm_client
-                    ))
-                })?;
-                Ok((
-                    target.id.clone(),
-                    DecisionTarget {
-                        target: target_name.to_string(),
-                        model: target.id.clone(),
-                        llm_client: DecisionLlmClient {
-                            format: client.format.wire_format(),
-                            base_url: client.base_url.clone(),
-                        },
-                        extra_body: target.extra_body.clone(),
-                    },
-                ))
-            })
-            .collect()
-    }
 }
 
 // Prefer known Claude families, then preserve the route's target order.
@@ -283,9 +256,9 @@ fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LlmClientConfig {
-    format: ClientFormat,
-    base_url: String,
+pub(crate) struct LlmClientConfig {
+    pub(crate) format: ClientFormat,
+    pub(crate) base_url: String,
     api_key_env: Option<String>,
     #[serde(default)]
     forward_auth: bool,
@@ -297,15 +270,15 @@ struct LlmClientConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TargetConfig {
-    id: ModelId,
-    llm_client: String,
+pub(crate) struct TargetConfig {
+    pub(crate) id: ModelId,
+    pub(crate) llm_client: String,
     #[serde(default)]
-    extra_body: BTreeMap<String, Value>,
+    pub(crate) extra_body: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
-enum ClientFormat {
+pub(crate) enum ClientFormat {
     #[serde(rename = "openai_chat")]
     OpenAiChat,
     #[serde(rename = "openai_responses")]
@@ -315,7 +288,7 @@ enum ClientFormat {
 }
 
 impl ClientFormat {
-    const fn wire_format(self) -> WireFormat {
+    pub(crate) const fn wire_format(self) -> WireFormat {
         match self {
             Self::OpenAiChat => WireFormat::OpenAiChat,
             Self::OpenAiResponses => WireFormat::OpenAiResponses,

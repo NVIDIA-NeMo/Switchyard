@@ -45,6 +45,7 @@ use tracing::{Instrument, Level};
 
 use switchyard_translation::{WireFormat, decode_request};
 
+use crate::config::ServerConfig;
 use crate::response::into_http_response;
 use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
 
@@ -113,23 +114,23 @@ struct RouteEntry {
     caller_auth: Option<CallerAuthKind>,
     capabilities: ModelCapabilities,
     count_tokens_target: Option<CountTokensTarget>,
-    decision_targets: BTreeMap<ModelId, DecisionTarget>,
+    config_name: Option<String>,
 }
 
-/// Public connection details for a target selected by the decision endpoint.
-#[derive(Clone, Serialize)]
-struct DecisionTarget {
-    target: String,
-    model: ModelId,
-    llm_client: DecisionLlmClient,
-    extra_body: BTreeMap<String, Value>,
+/// Borrowed response view over the selected target's existing configuration.
+#[derive(Serialize)]
+struct DecisionResponse<'a> {
+    target: &'a str,
+    model: &'a ModelId,
+    llm_client: DecisionLlmClientResponse<'a>,
+    extra_body: &'a BTreeMap<String, Value>,
 }
 
 /// Non-secret client settings needed to call a selected model.
-#[derive(Clone, Serialize)]
-struct DecisionLlmClient {
+#[derive(Serialize)]
+struct DecisionLlmClientResponse<'a> {
     format: WireFormat,
-    base_url: String,
+    base_url: &'a str,
 }
 
 /// Caller credential family required by forwarded-auth backends.
@@ -176,6 +177,7 @@ impl CountTokensTarget {
 #[derive(Clone)]
 pub struct ServerState {
     routes: Arc<BTreeMap<ModelId, RouteEntry>>,
+    config: Option<Arc<ServerConfig>>,
     metrics: prometheus::Registry,
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
@@ -230,7 +232,7 @@ impl ServerState {
                 None,
                 ModelCapabilities::default(),
                 None,
-                BTreeMap::new(),
+                None,
             )
         }))
     }
@@ -244,7 +246,7 @@ impl ServerState {
                 Option<CallerAuthKind>,
                 ModelCapabilities,
                 Option<CountTokensTarget>,
-                BTreeMap<ModelId, DecisionTarget>,
+                Option<String>,
             ),
         >,
     ) -> ServerResult<Self> {
@@ -256,7 +258,7 @@ impl ServerState {
             caller_auth,
             capabilities,
             count_tokens_target,
-            decision_targets,
+            config_name,
         ) in routes
         {
             let model = ModelId::from(model.trim());
@@ -269,7 +271,7 @@ impl ServerState {
                 caller_auth,
                 capabilities,
                 count_tokens_target,
-                decision_targets,
+                config_name,
             };
             if entries.insert(model.clone(), entry).is_some() {
                 return Err(ServerError::new(format!("duplicate route model {model}")));
@@ -285,11 +287,18 @@ impl ServerState {
         );
         Ok(Self {
             routes: Arc::new(entries),
+            config: None,
             metrics,
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
         })
+    }
+
+    /// Retains the validated configuration used to describe decision results.
+    fn with_config(mut self, config: Arc<ServerConfig>) -> Self {
+        self.config = Some(config);
+        self
     }
 
     /// Enables durable per-request routing records at `path`.
@@ -312,6 +321,31 @@ impl ServerState {
 
     fn route_for_model(&self, model: &str) -> Option<&RouteEntry> {
         self.routes.get(model)
+    }
+
+    /// Resolves one selected model through the target names configured for its route.
+    fn decision_response<'a>(
+        &'a self,
+        route: &'a RouteEntry,
+        selected_model: &ModelId,
+    ) -> Option<DecisionResponse<'a>> {
+        let config = self.config.as_ref()?;
+        let (target_name, target) = config
+            .routing_target_names(route.config_name.as_ref()?)?
+            .into_iter()
+            .rev()
+            .filter_map(|name| config.targets.get_key_value(name))
+            .find(|(_, target)| target.id == *selected_model)?;
+        let client = config.llm_clients.get(&target.llm_client)?;
+        Some(DecisionResponse {
+            target: target_name,
+            model: &target.id,
+            llm_client: DecisionLlmClientResponse {
+                format: client.format.wire_format(),
+                base_url: &client.base_url,
+            },
+            extra_body: &target.extra_body,
+        })
     }
 }
 
@@ -627,8 +661,8 @@ async fn decision(
         Ok(model) => model,
         Err(error) => return algorithm_error(error),
     };
-    match route.decision_targets.get(&selected_model) {
-        Some(target) => Json(target.clone()).into_response(),
+    match state.decision_response(route, &selected_model) {
+        Some(target) => Json(target).into_response(),
         None => error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("selected model {selected_model} has no callable target configuration"),
