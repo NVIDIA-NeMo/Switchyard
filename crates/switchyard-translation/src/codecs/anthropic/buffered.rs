@@ -406,11 +406,14 @@ fn decode_anthropic_output_format(
         )?;
         return Ok(None);
     }
-    let Some(schema) = format.get("schema") else {
+    // A non-object schema would be forwarded verbatim into the neutral contract and
+    // reach the upstream as a malformed `json_schema.schema`, so it is refused here
+    // rather than handed on.
+    let Some(schema) = format.get("schema").filter(|schema| schema.is_object()) else {
         push_lossy(
             diagnostics,
             policy,
-            "Anthropic structured output requires format.schema; the requested format was dropped",
+            "Anthropic structured output requires format.schema to be an object; the requested format was dropped",
         )?;
         return Ok(None);
     };

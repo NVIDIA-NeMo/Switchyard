@@ -1517,6 +1517,10 @@ fn anthropic_unmappable_output_format_is_reported() -> TestResult {
     for format in [
         json!({"type": "json_object"}),
         json!({"type": "json_schema"}),
+        json!({"type": "json_schema", "schema": "not-a-schema"}),
+        json!({"type": "json_schema", "schema": 42}),
+        json!({"type": "json_schema", "schema": [1, 2]}),
+        json!({"type": "json_schema", "schema": null}),
         json!("not-an-object"),
     ] {
         let body = anthropic_structured_output_request(json!({
