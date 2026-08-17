@@ -29,6 +29,16 @@ pub(crate) fn done_marker(_format: WireFormat) -> Option<&'static str> {
     Some("[DONE]")
 }
 
+/// Value of a `data` field line; the space after the colon is optional framing.
+fn data_field_value(line: &str) -> Option<String> {
+    let value = match line.split_once(':') {
+        Some(("data", value)) => value,
+        None if line == "data" => "",
+        _ => return None,
+    };
+    Some(value.strip_prefix(' ').unwrap_or(value).to_string())
+}
+
 pub(crate) fn parse_json_sse_frame(
     frame: &str,
     done_marker: Option<&str>,
@@ -36,18 +46,7 @@ pub(crate) fn parse_json_sse_frame(
     let data = frame
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with(':'))
-        .filter_map(|line| {
-            // Per the SSE spec the space after the colon is optional framing:
-            // the field name is everything before the first colon, and a single
-            // leading space is stripped from the value. A field line with no
-            // colon at all carries an empty value.
-            let value = match line.split_once(':') {
-                Some(("data", value)) => value,
-                None if line == "data" => "",
-                _ => return None,
-            };
-            Some(value.strip_prefix(' ').unwrap_or(value).to_string())
-        })
+        .filter_map(data_field_value)
         .fold(String::new(), |mut a, b| {
             a.reserve(b.len() + 1);
             a.push_str(&b);
