@@ -235,12 +235,8 @@ impl AdvisorGate {
 
     /// One executor Decision; published immediately before each executor call
     /// so `trace.last()` always names the executor on every return path.
-    fn executor_decision(&self, reasoning: &str) -> Decision {
-        Decision::new(
-            self.executor.clone(),
-            Some(format!("advisor gate: {reasoning}")),
-            true,
-        )
+    fn executor_decision(&self) -> Decision {
+        Decision::new(self.executor.clone(), true)
     }
 
     // ── Scope ledger ────────────────────────────────────────────────────────
@@ -334,16 +330,18 @@ impl AdvisorGate {
         // (including ContextWindowExceeded) propagate for the host's
         // client-visible mapping.
         if self.check_exhausted(scope) {
-            let decision = self.executor_decision("review budget spent; passthrough");
-            driver.decide(decision.clone()).await?;
-            return driver.call_model(request, decision).await;
+            driver.decide(self.executor_decision()).await?;
+            return driver
+                .call_model(request, vec![self.executor.clone()], true)
+                .await;
         }
 
         // Gated phase: generate the turn once, fully buffered, so the gate
         // can inspect it before the client sees anything.
-        let decision = self.executor_decision("executor turn");
-        driver.decide(decision.clone()).await?;
-        let response = driver.call_model(request.clone(), decision).await?;
+        driver.decide(self.executor_decision()).await?;
+        let response = driver
+            .call_model(request.clone(), vec![self.executor.clone()], true)
+            .await?;
         let turn = buffer_turn(self.executor.as_str(), response).await?;
 
         // The stall checkpoint fires once per conversation regardless of the
@@ -427,9 +425,10 @@ impl AdvisorGate {
         // preserved pre-surgery body verbatim and the feedback never reaches
         // the executor.
         crate::algorithms::util::prompts::drop_exact_replay(&mut redo);
-        let decision = self.executor_decision("REDO continuation");
-        driver.decide(decision.clone()).await?;
-        driver.call_model(redo, decision).await
+        driver.decide(self.executor_decision()).await?;
+        driver
+            .call_model(redo, vec![self.executor.clone()], true)
+            .await
     }
 
     /// Consults the advisor over the buffered transcript and parses the
@@ -462,13 +461,13 @@ impl AdvisorGate {
             self.config.transcript_max_chars,
         );
         let consult_request = self.build_consult_request(base, transcript);
-        let decision = Decision::new(
-            self.advisor.clone(),
-            Some("advisor gate: review consult".to_string()),
-            false,
-        );
         let started = Instant::now();
-        let reply = match driver.call_model(consult_request, decision).await {
+        // Judge-style call: the advisor never produces the client's answer,
+        // so no Decision is published for it.
+        let reply = match driver
+            .call_model(consult_request, vec![self.advisor.clone()], false)
+            .await
+        {
             Ok(response) => response
                 .llm_response
                 .into_agg()

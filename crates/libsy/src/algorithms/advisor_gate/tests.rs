@@ -104,6 +104,7 @@ fn reasoning_only_turn() -> Response {
                 content: vec![ContentBlock::Reasoning {
                     text: "thinking about it".to_string(),
                     signature: None,
+                    details: Vec::new(),
                 }],
                 stop_reason: None,
             }],
@@ -206,7 +207,7 @@ impl Script {
         verdict: &str,
         executor: impl Fn(usize) -> Response + Send + Sync + 'static,
     ) -> impl Fn(
-        Decision,
+        ModelId,
         Request,
     ) -> futures::future::BoxFuture<
         'static,
@@ -218,13 +219,13 @@ impl Script {
         let executor_calls = Arc::clone(&self.executor_calls);
         let verdict = verdict.to_string();
         let executor = Arc::new(executor);
-        move |decision: Decision, request: Request| {
+        move |model: ModelId, request: Request| {
             let calls = Arc::clone(&calls);
             let executor_calls = Arc::clone(&executor_calls);
             let verdict = verdict.clone();
             let executor = Arc::clone(&executor);
             Box::pin(async move {
-                let model = decision.selected_model_id().to_string();
+                let model = model.to_string();
                 calls.lock().push((model.clone(), request));
                 if model == ADVISOR {
                     Ok(reply(verdict))
@@ -285,32 +286,25 @@ async fn approved_terminal_turn_returns_buffered_body() {
 }
 
 #[tokio::test]
-async fn advisor_consult_is_not_an_answer_call() {
+async fn advisor_consult_publishes_no_decision() {
     let script = Script::new();
     let gate = gate(AdvisorGateConfig::default());
-    let consult_shape = Arc::new(parking_lot::Mutex::new(None));
-    let shape = Arc::clone(&consult_shape);
-    let calls = Arc::clone(&script.calls);
-    let serve = move |decision: Decision, request: Request| {
-        let shape = Arc::clone(&shape);
-        let calls = Arc::clone(&calls);
-        Box::pin(async move {
-            calls
-                .lock()
-                .push((decision.selected_model_id().to_string(), request));
-            if decision.selected_model_id() == ADVISOR {
-                *shape.lock() = Some(decision.is_answer_call());
-                Ok(reply("APPROVE"))
-            } else {
-                Ok(reply("done"))
-            }
-        })
-            as futures::future::BoxFuture<'static, std::result::Result<Response, LlmClientError>>
-    };
-    test_drive(gate, task_request(), serve)
+    let serve = script.serve("APPROVE", |_| reply("done"));
+    let (trace, _) = test_drive(gate, task_request(), serve)
         .await
         .expect("routes");
-    assert_eq!(*consult_shape.lock(), Some(false));
+    // The advisor was consulted...
+    assert_eq!(
+        script.models(),
+        vec![EXECUTOR.to_string(), ADVISOR.to_string()]
+    );
+    // ...but as a judge-style call: no Decision is published for it, so
+    // hosts never attribute the served model to the advisor.
+    assert!(!trace.is_empty());
+    for decision in &trace {
+        assert_eq!(decision.selected_model_id(), EXECUTOR);
+        assert!(decision.is_answer_call());
+    }
 }
 
 #[tokio::test]
@@ -463,17 +457,17 @@ fn failing_advisor(
     script: &Script,
     executor_reply: &'static str,
 ) -> impl Fn(
-    Decision,
+    ModelId,
     Request,
 ) -> futures::future::BoxFuture<'static, std::result::Result<Response, LlmClientError>>
 + Send
 + Sync
 + 'static {
     let calls = Arc::clone(&script.calls);
-    move |decision: Decision, request: Request| {
+    move |model: ModelId, request: Request| {
         let calls = Arc::clone(&calls);
         Box::pin(async move {
-            let model = decision.selected_model_id().to_string();
+            let model = model.to_string();
             calls.lock().push((model.clone(), request));
             if model == ADVISOR {
                 Err(LlmClientError::General("advisor down".to_string()))
@@ -572,7 +566,7 @@ async fn unparseable_verdict_refunds_and_approves() {
 #[tokio::test]
 async fn context_window_error_propagates() {
     let gate = gate(AdvisorGateConfig::default());
-    let serve = |_decision: Decision, _request: Request| async move {
+    let serve = |_model: ModelId, _request: Request| async move {
         Err(LlmClientError::ContextWindowExceeded {
             model: "exec-upstream".into(),
             message: "prompt is too long".to_string(),
@@ -594,7 +588,7 @@ async fn context_window_error_propagates() {
 #[tokio::test]
 async fn mid_stream_error_propagates_while_buffering() {
     let gate = gate(AdvisorGateConfig::default());
-    let serve = |_decision: Decision, _request: Request| async move {
+    let serve = |_model: ModelId, _request: Request| async move {
         Ok(streamed(vec![
             LlmResponseStreamEvent::new(vec![LlmResponseChunk::TextDelta {
                 index: 0,
@@ -609,13 +603,13 @@ async fn mid_stream_error_propagates_while_buffering() {
         Err(error) => error,
         Ok(_) => panic!("mid-stream error propagates"),
     };
-    assert!(matches!(
-        error,
+    match error {
         LibsyError::ClientCall {
-            source: LlmClientError::UpstreamHttp { status: 502, .. },
+            source: LlmClientError::UpstreamHttp { status, .. },
             ..
-        }
-    ));
+        } => assert_eq!(status, http::StatusCode::BAD_GATEWAY),
+        other => panic!("mid-stream error surfaced as {other:?}"),
+    }
 }
 
 // ── Streaming ───────────────────────────────────────────────────────────
@@ -976,11 +970,11 @@ async fn concurrent_same_scope_requests_consult_once() {
     let calls = Arc::clone(&script.calls);
     let serve = {
         let barrier = Arc::clone(&barrier);
-        move |decision: Decision, request: Request| {
+        move |model: ModelId, request: Request| {
             let barrier = Arc::clone(&barrier);
             let calls = Arc::clone(&calls);
             Box::pin(async move {
-                let model = decision.selected_model_id().to_string();
+                let model = model.to_string();
                 calls.lock().push((model.clone(), request));
                 if model == ADVISOR {
                     Ok(reply("APPROVE"))

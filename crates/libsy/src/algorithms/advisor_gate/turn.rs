@@ -69,7 +69,7 @@ pub(super) async fn buffer_turn(executor: &str, response: Response) -> Result<Ga
                         }
                         LlmResponseChunk::StreamError { message } => {
                             Some(LlmClientError::UpstreamHttp {
-                                status: 502,
+                                status: http::StatusCode::BAD_GATEWAY,
                                 body: message.clone(),
                             })
                         }
