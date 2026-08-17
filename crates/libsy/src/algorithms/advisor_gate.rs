@@ -334,7 +334,7 @@ impl AdvisorGate {
         // Gated phase: generate the turn once, fully buffered, so the gate
         // can inspect it before the client sees anything.
         let response = driver
-            .call_model(request.clone(), vec![self.executor.clone()])
+            .call_answer_model(request.clone(), self.executor.clone())
             .await?;
         let turn = buffer_turn(self.executor.as_str(), response).await?;
 
