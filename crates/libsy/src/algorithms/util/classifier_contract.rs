@@ -4,13 +4,13 @@
 //! Prompt and structured-output contracts shared by LLM classifiers.
 
 use jsonschema::Validator;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{LibsyError, Result};
 
 /// Provider-side structured-output mode used by a classifier judge.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClassifierResponseFormat {
     /// Send the verdict schema through the provider's strict JSON Schema wrapper.

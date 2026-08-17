@@ -158,6 +158,7 @@ impl CountTokensTarget {
 #[derive(Clone)]
 pub struct ServerState {
     routes: Arc<BTreeMap<ModelId, RouteEntry>>,
+    deployment_config: Option<Arc<Value>>,
     metrics: prometheus::Registry,
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
@@ -257,11 +258,18 @@ impl ServerState {
         );
         Ok(Self {
             routes: Arc::new(entries),
+            deployment_config: None,
             metrics,
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
         })
+    }
+
+    // Retains the validated source deployment for the config discovery endpoint.
+    fn with_deployment_config(mut self, config: Value) -> Self {
+        self.deployment_config = Some(Arc::new(config));
+        self
     }
 
     /// Enables durable per-request routing records at `path`.
@@ -502,6 +510,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
+        .route("/v1/config", get(get_config))
         .route("/v1/models", get(models))
         .route("/v1/stats", get(get_stats))
         .route("/v1/stats/reset", post(reset_stats))
@@ -1066,6 +1075,19 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
     ))
 }
 
+// Returns the source TOML deployment represented as JSON.
+async fn get_config(State(state): State<ServerState>) -> Response {
+    match state.deployment_config {
+        Some(config) => Json((*config).clone()).into_response(),
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            "server was not loaded from a TOML deployment",
+            "not_found_error",
+            "config_not_found",
+        ),
+    }
+}
+
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
     Json(state.stats.snapshot())
 }
@@ -1339,6 +1361,7 @@ fn endpoint_listing(has_routing_log: bool) -> String {
         "  POST /v1/messages            Anthropic Messages",
         "  POST /v1/responses           OpenAI Responses",
         "  POST /v1/messages/count_tokens",
+        "  GET  /v1/config              deployment config",
         "  GET  /v1/models              configured routes",
         "  GET  /v1/stats               routing stats",
         "  POST /v1/stats/reset",

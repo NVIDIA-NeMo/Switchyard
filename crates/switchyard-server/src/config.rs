@@ -14,7 +14,7 @@ use libsy::{
     LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
     StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use switchyard_llm_client::{
     Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
@@ -46,10 +46,14 @@ pub fn load_server_state(path: impl AsRef<Path>) -> ServerResult<ServerState> {
 fn server_state_from_toml(toml: &str) -> ServerResult<ServerState> {
     let config: ServerConfig = toml::from_str(toml)
         .map_err(|error| ServerError::new(format!("failed to parse TOML: {error}")))?;
-    config.build()
+    let deployment_config = serde_json::to_value(&config)
+        .map_err(|error| ServerError::new(format!("failed to encode config as JSON: {error}")))?;
+    config
+        .build()
+        .map(|state| state.with_deployment_config(deployment_config))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ServerConfig {
     schema_version: u32,
@@ -244,11 +248,12 @@ fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
         .unwrap_or(3)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LlmClientConfig {
     format: ClientFormat,
     base_url: String,
+    #[serde(skip_serializing)]
     api_key_env: Option<String>,
     #[serde(default)]
     forward_auth: bool,
@@ -258,7 +263,7 @@ struct LlmClientConfig {
     max_retries: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TargetConfig {
     id: ModelId,
@@ -267,7 +272,7 @@ struct TargetConfig {
     extra_body: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 enum ClientFormat {
     #[serde(rename = "openai_chat")]
     OpenAiChat,
@@ -286,13 +291,13 @@ impl ClientFormat {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ClassifierPolicyConfig {
     TargetSelector { selector: String },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ClassifierMode {
     Capability,
@@ -352,7 +357,7 @@ struct CustomClassifierRouteConfig {
     max_output_tokens: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum RouteConfig {
     Noop {
@@ -459,7 +464,7 @@ enum RouteConfig {
 }
 
 /// The judge a `stage_router` route falls through to, and how it routes.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StageClassifierConfig {
     /// Target the judge is called through. Not a routing destination.

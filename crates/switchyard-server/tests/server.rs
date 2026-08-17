@@ -680,6 +680,45 @@ fn load_test_config(toml: &str) -> TestResult<ServerState> {
     Ok(load_server_state(config.path())?)
 }
 
+#[tokio::test]
+async fn config_endpoint_returns_loaded_toml_as_json() -> TestResult {
+    let state = load_test_config(
+        r#"
+schema_version = 1
+
+[llm_clients.provider]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+api_key_env = "PATH"
+
+[targets.fast]
+id = "model/fast"
+llm_client = "provider"
+
+[routes.default]
+id = "switchyard/default"
+type = "passthrough"
+target = "fast"
+"#,
+    )?;
+    let response = send(&build_switchyard_router(state), "GET", "/v1/config", None).await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let config = response.json()?;
+    assert_eq!(config["schema_version"], 1);
+    assert_eq!(config["llm_clients"]["provider"]["format"], "openai_chat");
+    assert!(
+        config["llm_clients"]["provider"]
+            .get("api_key_env")
+            .is_none()
+    );
+    assert_eq!(config["targets"]["fast"]["id"], "model/fast");
+    assert_eq!(config["targets"]["fast"]["llm_client"], "provider");
+    assert_eq!(config["routes"]["default"]["type"], "passthrough");
+    assert_eq!(config["routes"]["default"]["target"], "fast");
+    Ok(())
+}
+
 /// A `random` route that selects `first` before any request-local fallback.
 fn fallback_state(base_url: &str) -> TestResult<ServerState> {
     load_test_config(&format!(

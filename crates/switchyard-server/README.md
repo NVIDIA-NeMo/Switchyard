@@ -129,11 +129,14 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 | `POST` | `/v1/messages` | Anthropic Messages |
 | `POST` | `/v1/responses` | OpenAI Responses |
 | `POST` | `/v1/messages/count_tokens` | Token count from a route's Anthropic target |
+| `GET` | `/v1/config` | Loaded TOML deployment represented as JSON |
 | `GET` | `/v1/models` | Routes served by this deployment |
 | `GET` | `/v1/stats` | Per-model usage plus curated algorithm stats |
 | `POST` | `/v1/stats/reset` | Clear accumulated stats |
 | `GET` | `/metrics` | Prometheus text, see [Metrics](#metrics) |
 | `GET` | `/health` | Liveness |
+
+`GET /v1/config` omits the environment variable name configured by `api_key_env`.
 
 Requests name a route by its `id`, so `POST /v1/chat/completions` with `"model": "switchyard/general"`
 routes through the `[routes.general]` entry above. Any of the three request formats can address any

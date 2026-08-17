@@ -7,7 +7,7 @@
 //! [`build_judge`] is the whole surface; the confirmation policy that consumes its verdicts
 //! lives with the assembled algorithm in [`crate::algorithms::escalation`].
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
 
 use super::classifier_contract::{ClassifierContract, ClassifierContractConfig};
@@ -43,7 +43,7 @@ const MAX_REQUEST_CHARS: usize = 18_000;
 ///
 /// The routing settings retain their benchmarked defaults. Everything else is a fixed invariant
 /// (the constants above).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EscalationJudgeConfig {
     /// Consecutive escalate verdicts required before a turn moves to the capable tier, which

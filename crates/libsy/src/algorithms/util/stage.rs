@@ -19,7 +19,7 @@
 
 use async_trait::async_trait;
 use opentelemetry::KeyValue;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::prompts;
 use super::tool_signals::ToolSignals;
@@ -131,7 +131,7 @@ impl StageTargets {
 }
 
 /// Which tier to default to when the scorer is not confident.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PickerMode {
     /// Default to capable unless the scorer confidently picks efficient.
@@ -436,7 +436,7 @@ fn ratio(numerator: u32, denominator: u32) -> f64 {
 /// Stateless: a note describes the turn's own signals, so every turn they drive
 /// carries one. It rides in the forwarded request only, never in the caller's
 /// conversation, so notes cannot accumulate across turns.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HandoffNoteConfig {
     /// Note handed to the capable tier on a signal-driven escalation.
     escalation_note: String,
