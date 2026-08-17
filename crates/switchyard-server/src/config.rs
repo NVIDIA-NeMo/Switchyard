@@ -13,6 +13,7 @@ use libsy::{
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger,
     HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
     PickerMode, Random, StageRouter, StageRouterConfig, TargetPrompts, TaskClassifierConfig,
+    with_target_prompts,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -101,8 +102,11 @@ impl ServerConfig {
                 )));
             }
             let algorithm = build_algorithm(route_name, config, &targets)?;
+            let target_prompts = self.build_route_target_prompts(route_name, config)?;
             let (client, caller_auth) = self.build_route_clients(route_name, config, &clients)?;
-            let count_tokens_target = self.build_count_tokens_target(config, &clients);
+            let count_tokens_target =
+                self.build_count_tokens_target(config, &clients, &target_prompts);
+            let algorithm = with_target_prompts(algorithm, target_prompts);
             routes.push((
                 config.id().clone(),
                 algorithm,
@@ -207,10 +211,40 @@ impl ServerConfig {
         Ok((ClientRouter::new(by_model), caller_auth))
     }
 
+    /// Builds answer-target prompt policy and rejects aliases that lose prompt identity.
+    fn build_route_target_prompts(
+        &self,
+        route_name: &str,
+        route: &RouteConfig,
+    ) -> ServerResult<TargetPrompts> {
+        let mut prompts = TargetPrompts::default();
+        let mut by_model = HashMap::<&ModelId, (&str, Option<&str>)>::new();
+        for (name, legacy_prompt) in route.routing_targets_with_legacy_prompts() {
+            let target = self.targets.get(name).ok_or_else(|| {
+                ServerError::new(format!("route references unknown target {name}"))
+            })?;
+            let effective = target.system_prompt.as_deref().or(legacy_prompt);
+            if let Some((previous, previous_prompt)) =
+                by_model.insert(&target.id, (name, effective))
+                && previous_prompt != effective
+            {
+                return Err(ServerError::new(format!(
+                    "route {route_name} maps answer targets {previous} and {name} to model {} with different system prompts",
+                    target.id
+                )));
+            }
+            if let Some(prompt) = effective {
+                prompts = prompts.with(target.id.clone(), prompt);
+            }
+        }
+        Ok(prompts)
+    }
+
     fn build_count_tokens_target(
         &self,
         route_config: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        target_prompts: &TargetPrompts,
     ) -> Option<CountTokensTarget> {
         route_config
             .routing_target_names()
@@ -230,6 +264,7 @@ impl ServerConfig {
             .map(|(_, _, target, client)| CountTokensTarget {
                 model: target.id.clone(),
                 client: client.clone(),
+                system_prompt: target_prompts.get(&target.id).map(str::to_owned),
             })
     }
 }
@@ -265,6 +300,7 @@ struct TargetConfig {
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
+    system_prompt: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -596,6 +632,27 @@ impl RouteConfig {
             Self::Advisor {
                 executor_target, ..
             } => vec![executor_target],
+        }
+    }
+
+    /// Completion targets paired with the legacy Stage prompt for that role, when present.
+    fn routing_targets_with_legacy_prompts(&self) -> Vec<(&str, Option<&str>)> {
+        match self {
+            Self::StageRouter {
+                capable_target,
+                efficient_target,
+                capable_system_prompt,
+                efficient_system_prompt,
+                ..
+            } => vec![
+                (capable_target, capable_system_prompt.as_deref()),
+                (efficient_target, efficient_system_prompt.as_deref()),
+            ],
+            _ => self
+                .routing_target_names()
+                .into_iter()
+                .map(|name| (name, None))
+                .collect(),
         }
     }
 
@@ -1025,8 +1082,6 @@ fn build_algorithm(
             confidence_threshold,
             recent_turn_window,
             handoff_notes,
-            capable_system_prompt,
-            efficient_system_prompt,
             classifier,
             ..
         } => {
@@ -1040,12 +1095,6 @@ fn build_algorithm(
             let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
             config.recent_window = *recent_turn_window;
             config.handoff_notes = handoff_notes.clone();
-            config.tier_prompts = tier_prompts(
-                &capable,
-                capable_system_prompt.as_deref(),
-                &efficient,
-                efficient_system_prompt.as_deref(),
-            );
             // The judge is called through its own target, so it is not a routing
             // destination and stays out of the tier pair.
             config.llm_fallback = classifier
@@ -1142,23 +1191,6 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 
 fn default_classifier_max_output_tokens() -> u64 {
     TaskClassifierConfig::default().max_output_tokens
-}
-
-/// Keys each configured system prompt by the target it belongs to.
-fn tier_prompts(
-    capable: &str,
-    capable_prompt: Option<&str>,
-    efficient: &str,
-    efficient_prompt: Option<&str>,
-) -> TargetPrompts {
-    let mut prompts = TargetPrompts::default();
-    if let Some(prompt) = capable_prompt {
-        prompts = prompts.with(capable, prompt);
-    }
-    if let Some(prompt) = efficient_prompt {
-        prompts = prompts.with(efficient, prompt);
-    }
-    prompts
 }
 
 fn resolve_targets<'a>(
@@ -1497,6 +1529,34 @@ classifier_magic = true
                 error_message(&toml).contains(expected),
                 "expected error containing {expected}"
             );
+        }
+    }
+
+    #[test]
+    fn rejects_conflicting_prompts_for_answer_aliases_of_one_model() {
+        let target_conflict = VALID_CONFIG
+            .replace("id = \"weak/model\"", "id = \"strong/model\"")
+            .replace(
+                "id = \"strong/model\"\nllm_client = \"responses\"",
+                "id = \"strong/model\"\nllm_client = \"responses\"\nsystem_prompt = \"strong prompt\"",
+            );
+        let stage_conflict = VALID_CONFIG.replace(
+            "[routes.noop]",
+            r#"[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "strong"
+picker = "efficient_first"
+confidence_threshold = 0.5
+capable_system_prompt = "capable prompt"
+efficient_system_prompt = "efficient prompt"
+
+[routes.noop]"#,
+        );
+        for config in [target_conflict, stage_conflict] {
+            let error = error_message(&config);
+            assert!(error.contains("with different system prompts"), "{error}");
         }
     }
 

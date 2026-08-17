@@ -96,14 +96,25 @@ async fn upstream_chat(
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
-    if body["messages"][0]["content"] == "fail" {
+    let user_prompt = body["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find_map(|message| match message["role"].as_str() {
+                    Some("user") => message["content"].as_str(),
+                    _ => None,
+                })
+        })
+        .unwrap_or("");
+    if user_prompt == "fail" {
         return (
             StatusCode::IM_A_TEAPOT,
             Json(json!({"error": {"message": "upstream rejected request"}})),
         )
             .into_response();
     }
-    if body["messages"][0]["content"] == "auth-fail" {
+    if user_prompt == "auth-fail" {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": {"message": "upstream authentication failed"}})),
@@ -112,15 +123,14 @@ async fn upstream_chat(
     }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
-    let prompt = body["messages"][0]["content"].as_str().unwrap_or("");
-    if (model == "model/weak" && prompt == "unavailable") || prompt == "all-unavailable" {
+    if (model == "model/weak" && user_prompt == "unavailable") || user_prompt == "all-unavailable" {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"error": {"message": "upstream is unavailable"}})),
         )
             .into_response();
     }
-    if model == "model/weak" && body["messages"][0]["content"] == "overflow" {
+    if model == "model/weak" && user_prompt == "overflow" {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -133,7 +143,7 @@ async fn upstream_chat(
             .into_response();
     }
     if body["stream"].as_bool() == Some(true) {
-        if body["messages"][0]["content"] == "stream-error" {
+        if user_prompt == "stream-error" {
             let events = [
                 json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}).to_string(),
                 json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"content": "before"}}]}).to_string(),
@@ -727,6 +737,7 @@ llm_client = "mock"
 [targets.second]
 id = "{second}"
 llm_client = "mock"
+system_prompt = "strong target prompt"
 
 [routes.random]
 id = "{ROUTE_MODEL}"
@@ -915,6 +926,7 @@ base_url = "{base_url}"
 [targets.strong]
 id = "model/stats-strong"
 llm_client = "upstream"
+system_prompt = "strong target prompt"
 
 [targets.weak]
 id = "model/stats-weak"
@@ -927,6 +939,7 @@ capable_target = "strong"
 efficient_target = "weak"
 picker = "efficient_first"
 confidence_threshold = 0.5
+capable_system_prompt = "strong stage prompt"
 "#,
         base_url = upstream.base_url
     ))?;
@@ -960,6 +973,13 @@ confidence_threshold = 0.5
         Some("model/stats-strong"),
         "a critical error should escalate on the signals alone"
     );
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0]["messages"][0],
+        json!({"role": "system", "content": "strong target prompt"})
+    );
+    drop(calls);
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(
         stats["algorithm_stats"]["stage_router"]["routing_decisions"]["override"]["targets"]["model/stats-strong"],
@@ -1091,6 +1111,7 @@ base_url = "{base_url}"
 [targets.classifier]
 id = "model/classifier"
 llm_client = "upstream"
+system_prompt = "must not reach judge calls"
 
 [targets.strong]
 id = "model/strong"
@@ -1491,6 +1512,11 @@ base_url = "{base_url}"
 [targets.strong]
 id = "real/opus"
 llm_client = "claude"
+system_prompt = "count target instructions"
+
+[targets.legacy]
+id = "real/opus-legacy"
+llm_client = "claude"
 
 [targets.other]
 id = "real/sonnet"
@@ -1500,28 +1526,43 @@ llm_client = "claude"
 id = "switchyard/random"
 type = "random"
 targets = ["other", "strong"]
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "legacy"
+efficient_target = "other"
+picker = "efficient_first"
+confidence_threshold = 0.5
+capable_system_prompt = "count legacy instructions"
 "#,
         base_url = upstream.base_url
     ))?;
     let app = build_switchyard_router(state);
 
-    let response = send(
-        &app,
-        "POST",
-        "/v1/messages/count_tokens",
-        Some(json!({
-            "model": "switchyard/random",
-            "messages": [{"role": "user", "content": "hi"}]
-        })),
-    )
-    .await?;
-    assert_eq!(response.status, StatusCode::OK);
-    assert_eq!(response.json()?["input_tokens"], 7);
+    for route in ["switchyard/random", "switchyard/stage"] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/messages/count_tokens",
+            Some(json!({
+                "model": route,
+                "messages": [{"role": "user", "content": "hi"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.json()?["input_tokens"], 7);
+    }
 
     let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 1);
-    // The inbound route name is rewritten to the real upstream model.
+    assert_eq!(calls.len(), 2);
+    // The target-level prompt follows the preferred Opus target in the random route.
     assert_eq!(calls[0]["model"], "real/opus");
+    assert_eq!(calls[0]["system"], "count target instructions");
+    // Stage's legacy capable prompt uses the same effective policy on this bypass path.
+    assert_eq!(calls[1]["model"], "real/opus-legacy");
+    assert_eq!(calls[1]["system"], "count legacy instructions");
     Ok(())
 }
 
@@ -2146,12 +2187,17 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         );
         assert_eq!(response.json()?["model"], "model/strong");
         let calls = upstream.calls.lock().await;
+        let fallback_calls = &calls[previous_call_count..];
         assert_eq!(
-            calls[previous_call_count..]
+            fallback_calls
                 .iter()
-                .map(|call| call["model"].as_str().unwrap_or(""))
+                .filter_map(|call| call["model"].as_str())
                 .collect::<Vec<_>>(),
             ["model/weak", "model/strong"]
+        );
+        assert_eq!(
+            fallback_calls[1]["messages"][0]["content"],
+            "strong target prompt"
         );
     }
 
@@ -2620,10 +2666,12 @@ base_url = "{base_url}"
 [targets.executor]
 id = "model/executor"
 llm_client = "upstream"
+system_prompt = "executor target prompt"
 
 [targets.advisor]
 id = "model/advisor"
 llm_client = "upstream"
+system_prompt = "must not reach advisor calls"
 
 [routes.gated]
 id = "switchyard/advisor"
@@ -2664,6 +2712,17 @@ async fn advisor_route_approve_flow_and_stats() -> TestResult {
     );
     // Executor turn first, then the review consult.
     assert_eq!(upstream.models().await, ["model/executor", "model/advisor"]);
+    let calls = upstream.calls.lock().await;
+    assert_eq!(
+        calls[0]["messages"][0],
+        json!({"role": "system", "content": "executor target prompt"})
+    );
+    assert!(
+        !calls[1]
+            .to_string()
+            .contains("must not reach advisor calls")
+    );
+    drop(calls);
 
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(stats["models"]["model/executor"]["calls"], 1);
