@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -34,12 +35,13 @@ use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
     AffinityRouter, Algorithm, Classifier, Driver, LibsyError, LlmClassifierConfig,
-    LlmTaskClassifier, PickerMode, StageRouter, StageRouterConfig, Step, TaskClassifierConfig,
+    LlmTaskClassifier, PickerMode, RoutingOutcome, StageRouter, StageRouterConfig, Step,
+    TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::ModelId;
 use switchyard_protocol::{
-    ContentBlock, Decision, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
+    ContentBlock, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
     RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
 };
 use switchyard_protocol::{
@@ -182,7 +184,7 @@ fn telemetry() -> &'static Telemetry {
         let reader = PeriodicReader::builder(exporter.clone()).build();
         let provider = SdkMeterProvider::builder().with_reader(reader).build();
         opentelemetry::global::set_meter_provider(provider.clone());
-        switchyard_libsy::initialize_metrics();
+        switchyard_llm_client::initialize_metrics();
 
         let span_exporter = InMemorySpanExporter::default();
         let tracer_provider = SdkTracerProvider::builder()
@@ -332,6 +334,39 @@ struct ClassifierClient {
     routed_delay: Duration,
 }
 
+/// Fails the first efficient answer so candidate fallback can be compared with affinity.
+struct AffinityFallbackClient {
+    calls: Mutex<Vec<ModelId>>,
+    efficient_available: AtomicBool,
+}
+
+#[async_trait]
+impl RoutedLlmClient for AffinityFallbackClient {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+        let model = request.model_id().unwrap_or_default();
+        self.calls.lock().push(model.clone());
+        if model == "affinity-fallback-judge" {
+            return Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    Some(model.to_string()),
+                    r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#,
+                )),
+                metadata: None,
+            });
+        }
+        if model == "affinity-fallback-weak" && !self.efficient_available.load(Ordering::Relaxed) {
+            return Err(LlmClientError::ContextWindowExceeded {
+                model,
+                message: "too long".to_string(),
+            });
+        }
+        Ok(Response {
+            llm_response: LlmResponse::Agg(text_response(Some(model.to_string()), "answer")),
+            metadata: None,
+        })
+    }
+}
+
 #[async_trait]
 impl RoutedLlmClient for ClassifierClient {
     async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
@@ -418,8 +453,7 @@ impl RoutedLlmClient for UsageClient {
     }
 }
 
-/// Publishes one decision for the first target, then calls it — the smallest
-/// algorithm exercising both instrumented driver paths.
+/// Selects the first target and leaves the terminal call to the client.
 struct SingleCallAlgo {
     name: String,
     target_set: Vec<String>,
@@ -433,18 +467,44 @@ impl Algorithm for SingleCallAlgo {
 
     async fn route(
         self: Arc<Self>,
-        driver: Driver,
+        _driver: Driver,
         request: Request,
-    ) -> switchyard_libsy::Result<Response> {
+    ) -> switchyard_libsy::Result<RoutingOutcome> {
         let target = self
             .target_set
             .first()
             .ok_or(LibsyError::NoTargets)?
             .clone();
         tracing::info!("picked '{target}'");
-        let decision = Decision::new(target.clone(), true);
-        driver.decide(decision.clone()).await?;
-        driver.call_model(request, vec![target.into()], true).await
+        Ok(RoutingOutcome::route_to(target.into(), Vec::new(), request))
+    }
+}
+
+/// Makes one routing-time model call and returns its response as the answer.
+struct RoutingCallAlgo {
+    name: String,
+    target: ModelId,
+}
+
+#[async_trait]
+impl Algorithm for RoutingCallAlgo {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn route(
+        self: Arc<Self>,
+        driver: Driver,
+        request: Request,
+    ) -> switchyard_libsy::Result<RoutingOutcome> {
+        let response = driver
+            .call_model(request.clone(), vec![self.target.clone()])
+            .await?;
+        Ok(RoutingOutcome::answered(
+            self.target.clone(),
+            request,
+            response,
+        ))
     }
 }
 
@@ -479,7 +539,7 @@ async fn run(
     algorithm: Arc<dyn Algorithm>,
     client: Arc<dyn RoutedLlmClient>,
     request: Request,
-) -> switchyard_libsy::Result<(Vec<Decision>, Response)> {
+) -> switchyard_libsy::Result<(ModelId, Response)> {
     switchyard_llm_client::run(algorithm, ClientRouter::single(client), request, None).await
 }
 
@@ -603,6 +663,60 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
 }
 
 #[tokio::test]
+async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
+-> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let client = Arc::new(AffinityFallbackClient {
+        calls: Mutex::new(Vec::new()),
+        efficient_available: AtomicBool::new(false),
+    });
+    let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+        judge_target: "affinity-fallback-judge".into(),
+        efficient_target: "affinity-fallback-weak".into(),
+        capable_target: "affinity-fallback-strong".into(),
+        config: TaskClassifierConfig {
+            base_threshold: 0.5,
+            session_affinity: true,
+            ..TaskClassifierConfig::default()
+        },
+    })?) as Arc<dyn Algorithm>;
+    let request = request_with_metadata("affinity-fallback-session", "affinity-fallback-first");
+
+    let (selected, first_response) = switchyard_llm_client::run(
+        Arc::clone(&router),
+        ClientRouter::single(client.clone()),
+        request.clone(),
+        None,
+    )
+    .await?;
+    assert_eq!(selected, "affinity-fallback-weak");
+    assert_eq!(
+        first_response.served_model().map(ModelId::as_str),
+        Some("affinity-fallback-strong")
+    );
+
+    client.efficient_available.store(true, Ordering::Relaxed);
+    let (selected, second_response) =
+        switchyard_llm_client::run(router, ClientRouter::single(client.clone()), request, None)
+            .await?;
+    assert_eq!(selected, "affinity-fallback-weak");
+    assert_eq!(
+        second_response.served_model().map(ModelId::as_str),
+        Some("affinity-fallback-weak")
+    );
+    assert_eq!(
+        &*client.calls.lock(),
+        &[
+            ModelId::from("affinity-fallback-judge"),
+            ModelId::from("affinity-fallback-weak"),
+            ModelId::from("affinity-fallback-strong"),
+            ModelId::from("affinity-fallback-weak"),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (store, exporter, provider, span_exporter, _) = telemetry();
@@ -630,33 +744,20 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     request.llm_request.output.max_output_tokens = Some(512);
     request.llm_request.output.response_format = Some(json!({"type": "json_schema"}));
     request.llm_request.reasoning.effort = Some("high".to_string());
-    let (trace, _response) = run(algo(ALGO, MODEL), client, request).await?;
-    assert_eq!(trace.len(), 1);
+    let (selected_model, _response) = run(algo(ALGO, MODEL), client, request).await?;
+    assert_eq!(selected_model, MODEL);
 
     // Metrics: run/call counters and latency histograms keyed by algorithm,
     // plus one published decision.
     let snapshots = flushed_metrics(exporter, provider);
     let run_attrs = [("algorithm", ALGO), ("outcome", "ok")];
-    let call_attrs = [
-        ("algorithm", ALGO),
-        ("selected_model", MODEL),
-        ("outcome", "ok"),
-    ];
     let token_attrs = [("algorithm", ALGO), ("selected_model", MODEL)];
     assert_eq!(
         u64_counter_value(&snapshots, "switchyard.runs", &run_attrs),
         Some(1)
     );
     assert_eq!(
-        u64_counter_value(&snapshots, "switchyard.llm_calls", &call_attrs),
-        Some(1)
-    );
-    assert_eq!(
         f64_histogram_count(&snapshots, "switchyard.run_duration_ms", &run_attrs),
-        Some(1)
-    );
-    assert_eq!(
-        f64_histogram_count(&snapshots, "switchyard.llm_call_duration_ms", &call_attrs),
         Some(1)
     );
     assert_eq!(
@@ -803,33 +904,6 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         Some(&OtelValue::I64(18))
     );
 
-    let call_span = find_span(&spans, "libsy.llm_call", "selected_model", MODEL);
-    assert_eq!(call_span.parent.as_deref(), Some("libsy.run"));
-    assert_eq!(
-        call_span.fields.get("algorithm").map(String::as_str),
-        Some(ALGO)
-    );
-    assert_eq!(
-        call_span.fields.get("outcome").map(String::as_str),
-        Some("ok")
-    );
-    assert_eq!(
-        call_span.fields.get("input_tokens").map(String::as_str),
-        Some("11")
-    );
-    assert_eq!(
-        call_span.fields.get("output_tokens").map(String::as_str),
-        Some("7")
-    );
-    assert_eq!(
-        call_span.fields.get("total_tokens").map(String::as_str),
-        Some("25")
-    );
-    assert_eq!(
-        call_span.fields.get("reasoning_tokens").map(String::as_str),
-        Some("2")
-    );
-
     // The algorithm logs why it made the decision.
     let events = store.events();
     assert!(
@@ -894,8 +968,8 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
         usage: Usage::default(),
     }) as Arc<dyn RoutedLlmClient>;
 
-    let (trace, _) = run(algorithm, client, request).await?;
-    assert_eq!(trace[0].selected_model_id(), STRONG);
+    let (selected_model, _) = run(algorithm, client, request).await?;
+    assert_eq!(selected_model, STRONG);
 
     let snapshots = flushed_metrics(exporter, provider);
     assert_eq!(
@@ -948,11 +1022,10 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
     );
     let observations = observations.lock();
     assert_eq!(observations.len(), 2);
-    let RunObservation::LlmCall(observation) = &observations[0] else {
-        return Err(test_error("expected an LLM call observation"));
+    let RunObservation::AnswerCall(observation) = &observations[0] else {
+        return Err(test_error("expected an answer-call observation"));
     };
     assert_eq!(observation.selected_model, MODEL);
-    assert!(observation.is_answer_call);
     assert!(observation.is_success);
     assert!(observation.usage.is_some());
     assert!(matches!(
@@ -1105,14 +1178,12 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
     let (store, exporter, provider, _, _) = telemetry();
     const ALGO: &str = "obs-failure-algo";
     const MODEL: &str = "obs-failure-model";
-    let before = flushed_metrics(exporter, provider);
-    let total_requests_before =
-        u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
-    let total_errors_before =
-        u64_gauge_value(&before, "switchyard.total_errors").unwrap_or_default();
-
-    // The call is offloaded and we fail it by hand, without a client.
-    let stream = algo(ALGO, MODEL).run_stream(request_with_metadata("obs-session-2", "obs-corr-2"));
+    // The routing call is offloaded and we fail it by hand, without a client.
+    let algorithm = Arc::new(RoutingCallAlgo {
+        name: ALGO.to_string(),
+        target: MODEL.into(),
+    });
+    let stream = algorithm.run_stream(request_with_metadata("obs-session-2", "obs-corr-2"));
     tokio::pin!(stream);
 
     let mut saw_error_step = false;
@@ -1121,7 +1192,6 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
             Ok(Step::CallModel(call)) => {
                 call.respond(Err(test_error("synthetic upstream failure")))?;
             }
-            Ok(Step::Decision(_)) => {}
             Ok(Step::Done(_)) => {
                 return Err(test_error("expected the failed call to fail the run"));
             }
@@ -1133,7 +1203,8 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
         "expected an error step from the failed call"
     );
 
-    // Metrics: the call and the run both count under outcome=error.
+    // The routing call and algorithm run fail, but no terminal outcome exists to attribute as a
+    // routed request.
     let snapshots = flushed_metrics(exporter, provider);
     let run_attrs = [("algorithm", ALGO), ("outcome", "error")];
     let call_attrs = [
@@ -1148,18 +1219,6 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
     assert_eq!(
         u64_counter_value(&snapshots, "switchyard.llm_calls", &call_attrs),
         Some(1)
-    );
-    assert_eq!(
-        u64_counter_value(&snapshots, "switchyard.errors", &[("model", MODEL)]),
-        Some(1)
-    );
-    assert_eq!(
-        u64_gauge_value(&snapshots, "switchyard.total_requests"),
-        Some(total_requests_before + 1)
-    );
-    assert_eq!(
-        u64_gauge_value(&snapshots, "switchyard.total_errors"),
-        Some(total_errors_before + 1)
     );
     // Nothing was served, so there is nothing to measure routing against.
     assert_eq!(
@@ -1234,14 +1293,9 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     }) as Arc<dyn RoutedLlmClient>;
     let router = classifier_router("classifier", "weak", "strong")?;
 
-    let (trace, _response) = run(router, client, classifier_request()).await?;
+    let (selected_model, _response) = run(router, client, classifier_request()).await?;
 
-    assert_eq!(
-        trace
-            .last()
-            .map(|decision| decision.selected_model_id().as_str()),
-        Some("weak")
-    );
+    assert_eq!(selected_model, "weak");
 
     let snapshots = flushed_metrics(exporter, provider);
     assert_eq!(

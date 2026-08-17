@@ -21,7 +21,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 
 | Type | Purpose |
 |---|---|
-| [`Passthrough`] | Always call one configured target. |
+| [`Passthrough`] | Always select one configured target. |
 | [`Random`] | Select among any number of targets using uniform or weighted routing. |
 | [`LlmTaskClassifier`] | Ask a judge model to choose an efficient or capable target. |
 | [`StageRouter`] | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
@@ -30,13 +30,13 @@ tokio = { version = "1", features = ["macros", "rt"] }
 
 ## How it fits together
 
-A target is a bare model id naming a routing destination. An [`Algorithm`] selects targets and
-records [`Decision`](switchyard_protocol::Decision)s, offloading every model call
-to its caller: [`Algorithm::run_stream`] yields a [`Step`] stream whose
-[`Step::CallModel`] items the host serves over its own transport. Each call carries
-an ordered, non-empty list of candidate models; the host tries them until one
-answers. libsy makes no network calls itself — `switchyard-llm-client`'s `run` is
-a ready-made consumer that drives the stream and performs the calls over HTTP.
+A target is a bare model id naming a routing destination. An [`Algorithm`] may offload
+routing-time classifier or judge calls to its caller: [`Algorithm::run_stream`] yields a [`Step`]
+stream whose [`Step::CallModel`] items the host serves over its own transport. The stream ends
+with [`Step::Done`] carrying a [`RoutingOutcome`]: the algorithm-selected model, ordered
+fallbacks, rewritten request, and an optional response already produced while routing. libsy
+makes no network calls itself — `switchyard-llm-client`'s `run` is a ready-made consumer that
+drives the stream and performs the terminal answer call, retries, and fallback over HTTP.
 
 The provider-neutral [`Request`], [`Response`], [`Usage`], and [`LlmResponse`]
 contracts come from `switchyard-protocol`.

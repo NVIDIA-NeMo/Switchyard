@@ -12,9 +12,9 @@
 //! streamed responses.
 //!
 //! [`run()`] pairs the client with a libsy algorithm: it drives
-//! [`switchyard_libsy::Algorithm::run_stream`] and serves every model call the algorithm
-//! offloads, so a host that just wants the answer does not have to drive the step stream
-//! itself.
+//! [`switchyard_libsy::Algorithm::run_stream`], serves routing-time calls, and makes the terminal
+//! answer call from the routing outcome when needed. A host that just wants the answer does not
+//! have to drive the step stream itself.
 
 pub mod backend;
 pub mod client;
@@ -32,3 +32,8 @@ pub use observation::{LlmCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
 pub use run::{ClientRouter, run};
 pub use switchyard_translation::RawEventStream;
+
+/// Registers process-wide compatibility gauges with the global meter provider.
+pub fn initialize_metrics() {
+    metrics::initialize();
+}

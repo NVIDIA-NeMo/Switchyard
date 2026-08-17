@@ -451,15 +451,17 @@ fn stats_observer(
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
+        RunObservation::AnswerCall(call) => {
+            let latency_ms = call.duration.as_secs_f64() * 1_000.0;
+            if call.is_success {
+                stats.record_success(&call.selected_model, latency_ms);
+            } else {
+                stats.record_error(&call.selected_model);
+            }
+        }
         RunObservation::LlmCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
-            if call.is_answer_call {
-                if call.is_success {
-                    stats.record_success(&call.selected_model, latency_ms);
-                } else {
-                    stats.record_error(&call.selected_model);
-                }
-            } else if call.is_success {
+            if call.is_success {
                 if let (Some((log, context)), Some(usage)) =
                     (classifier_log.as_ref(), call.usage.as_ref())
                 {
@@ -752,18 +754,14 @@ async fn handle_llm_request(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
     );
-    let (trace, response) =
+    let (selected_model, response) =
         match switchyard_llm_client::run(algorithm, client_router, request, Some(observer)).await {
             Ok(result) => result,
             Err(error) => return algorithm_error(error),
         };
-    let decision = trace.last();
     // The response carries the candidate that actually served it. Fall back to the routing
-    // decision for algorithms that return a response without an offloaded model call.
-    let served_model = response
-        .served_model()
-        .cloned()
-        .or_else(|| decision.map(|decision| decision.selected_model_id().clone()));
+    // selection for algorithms that return a response without an offloaded model call.
+    let served_model = response.served_model().cloned().or(Some(selected_model));
     let response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()
@@ -1373,10 +1371,9 @@ mod tests {
         let context = routing_log::RoutingLogContext::from_metadata(&metadata);
         let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
 
-        let call = |model: &str, is_answer_call: bool| {
-            RunObservation::LlmCall(LlmCallObservation {
+        let call = |model: &str, answer: bool| {
+            let observation = LlmCallObservation {
                 selected_model: ModelId::from(model),
-                is_answer_call,
                 is_success: true,
                 duration: Duration::from_millis(3),
                 usage: Some(Usage {
@@ -1384,7 +1381,12 @@ mod tests {
                     output_tokens: Some(7),
                     ..Usage::default()
                 }),
-            })
+            };
+            if answer {
+                RunObservation::AnswerCall(observation)
+            } else {
+                RunObservation::LlmCall(observation)
+            }
         };
         observer(call("judge-model", false));
         observer(call("routed-model", true));

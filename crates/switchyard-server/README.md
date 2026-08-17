@@ -165,7 +165,7 @@ Routed-call compatibility metrics are:
 | `switchyard_cache_creation_tokens_total` | counter | `model` | Cache-creation input tokens |
 | `switchyard_reasoning_tokens_total` | counter | `model` | Reasoning output tokens |
 | `switchyard_total_latency_ms` | histogram | `model` | Full-turn latency for successful routed responses |
-| `switchyard_routing_overhead_ms` | histogram | `algorithm` | Algorithm run time minus the call that served it |
+| `switchyard_routing_overhead_ms` | histogram | `algorithm` | Time spent producing the terminal routing outcome |
 | `switchyard_classifier_fail_open_total` | counter | `judge_model`, `reason` | Judge failures that made a classifier route without a verdict |
 | `switchyard_client_responses_total` | counter | `outcome` | Final LLM-route responses |
 | `switchyard_upstream_attempts_total` | counter | `outcome`, `code` | Actual upstream HTTP attempts |

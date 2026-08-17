@@ -510,7 +510,7 @@ async fn stats_accumulates_buffered_success_error_and_shared_routes() -> TestRes
     assert_eq!(stats["models"]["gemini-3.5-flash"]["calls"], 1);
     assert_eq!(stats["models"]["gemini-3.5-flash"]["errors"], 1);
     assert_eq!(stats["models"]["model/unknown"]["calls"], 1);
-    assert_eq!(stats["routing_overhead"]["count"], 2);
+    assert_eq!(stats["routing_overhead"]["count"], 3);
     Ok(())
 }
 
@@ -606,9 +606,7 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         "switchyard_client_responses_total{outcome=\"success\",",
         "switchyard_upstream_attempts_total{code=\"200\",outcome=\"success\",",
         "# TYPE switchyard_runs_total counter",
-        "# TYPE switchyard_llm_calls_total counter",
         "# TYPE switchyard_run_duration_ms histogram",
-        "# TYPE switchyard_llm_call_duration_ms histogram",
         "# TYPE switchyard_prompt_tokens_total counter",
         "# TYPE switchyard_completion_tokens_total counter",
         "# TYPE switchyard_cached_tokens_total counter",
@@ -1310,6 +1308,83 @@ prompt = "CUSTOM STAGE"
             );
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn accepted_escalation_response_is_logged_once_as_the_final_answer() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.escalation]
+id = "switchyard/escalation"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+escalation = {{ confirmations = 1 }}
+"#,
+        base_url = upstream.base_url
+    ))?
+    .with_routing_log(temp_dir.path().join("routing.jsonl"))?;
+    let app = build_switchyard_router(state);
+
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/escalation",
+            "messages": [{"role": "user", "content": "bounded task"}]
+        })),
+        &[("x-switchyard-session-id", "accepted-escalation")],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(upstream.models().await, ["model/weak", "model/classifier"]);
+
+    let stats = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=accepted-escalation",
+        None,
+    )
+    .await?;
+    assert_eq!(stats.status, StatusCode::OK);
+    let stats = stats.json()?;
+    assert_eq!(stats["total_calls"], 2);
+    assert_eq!(stats["total_prompt_tokens"], 20);
+    assert_eq!(stats["total_completion_tokens"], 4);
+    assert_eq!(stats["models"]["model/weak"]["calls"], 1);
+    assert_eq!(stats["models"]["model/classifier"]["calls"], 1);
+
+    let process_stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(process_stats["total_requests"], 1);
+    assert_eq!(process_stats["models"]["model/weak"]["calls"], 1);
+    assert_eq!(
+        process_stats["models"]["model/weak"]["model_call_latency"]["count"],
+        1
+    );
     Ok(())
 }
 
