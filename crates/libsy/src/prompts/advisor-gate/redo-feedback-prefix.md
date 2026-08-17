@@ -1,1 +1,1 @@
-A senior reviewer examined your work and determined the task is NOT yet complete or correct. Do not stop here — address the following, then keep working until it is genuinely done:
+A senior reviewer examined your work and determined the task is NOT yet complete or correct. Do not stop here. First record the reviewer's points below in your todo list or working notes so they survive your next steps; then address them by continuing to work with your tools — act, don't just reply with prose — until the task is genuinely done:
