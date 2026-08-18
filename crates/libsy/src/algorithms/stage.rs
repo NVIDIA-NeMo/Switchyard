@@ -19,7 +19,6 @@ use async_trait::async_trait;
 
 use super::fall_through::{DefaultTarget, FallThrough};
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
-use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
     record_decision_source, record_routing_decision,
@@ -28,7 +27,7 @@ use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
-use crate::{LibsyError, Result};
+use crate::{LibsyError, Result, TargetPrompts, with_target_prompts};
 use switchyard_protocol::{ModelId, Request, Response};
 
 /// Telemetry name for a router this module assembles.
@@ -117,7 +116,7 @@ impl StageRouterConfig {
 /// decide first, an optional capability judge takes the turns they cannot, and
 /// the picker's default tier closes the cascade so a turn is never left unrouted.
 pub struct StageRouter {
-    route: FallThrough<State>,
+    route: Arc<dyn Algorithm>,
 }
 
 impl StageRouter {
@@ -126,9 +125,15 @@ impl StageRouter {
     /// routing destination.
     ///
     /// Errors if either threshold in `config` is outside `[0.0, 1.0]`.
-    pub fn new(capable: ModelId, efficient: ModelId, config: StageRouterConfig) -> Result<Self> {
+    pub fn new(
+        capable: ModelId,
+        efficient: ModelId,
+        mut config: StageRouterConfig,
+    ) -> Result<Self> {
+        let tier_prompts = std::mem::take(&mut config.tier_prompts);
+        let route = Arc::new(build_route(capable, efficient, config)?);
         Ok(Self {
-            route: build_route(capable, efficient, config)?,
+            route: with_target_prompts(route, tier_prompts),
         })
     }
 }
@@ -144,7 +149,7 @@ impl Algorithm for StageRouter {
         driver: Driver,
         request: Request,
     ) -> Result<crate::RoutingOutcome> {
-        self.route.execute(driver, request).await
+        Arc::clone(&self.route).route(driver, request).await
     }
 }
 
@@ -200,10 +205,6 @@ fn build_route(
         inner: Arc::new(DefaultTarget::new(fall_open)),
         source: DecisionSource::FallOpen,
     }));
-    // Runs on the post-decision hook, so it applies to the target the cascade
-    // settled on, whichever classifier picked it. With no prompts configured it
-    // is a no-op, so there is nothing to branch on.
-    router = router.with_processor(Arc::new(SystemPromptProcessor::new(config.tier_prompts)));
     Ok(router)
 }
 

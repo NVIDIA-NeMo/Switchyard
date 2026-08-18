@@ -8,15 +8,17 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use http::header::{HeaderName, HeaderValue};
+use parking_lot::Mutex as SyncMutex;
 use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyMapping, PyMappingMethods};
 use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat,
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
     PickerMode, Random, RoutingOutcome, StageRouter, StageRouterConfig, Step as RustStep,
-    StepStream, TaskClassifierConfig,
+    StepStream, TargetPrompts, TaskClassifierConfig, with_target_prompts,
 };
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, Metadata, ModelId, Request, Response,
@@ -382,6 +384,18 @@ impl PyModelCall {
         self.models.clone()
     }
 
+    /// Prepare the normalized request for one routing-time candidate.
+    fn request_for(&self, py: Python<'_>, model: String) -> PyResult<Py<PyAny>> {
+        let call = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| py_libsy_error("model call has already been completed"))?;
+        let request = call
+            .request_for(&ModelId::new(model))
+            .map_err(py_libsy_error)?;
+        to_python(py, &request.llm_request)
+    }
+
     /// Fulfill this call with an aggregate normalized response dictionary.
     fn respond(&mut self, response: &Bound<'_, PyAny>) -> PyResult<()> {
         let aggregate = from_python::<AggLlmResponse>(response)?;
@@ -424,9 +438,7 @@ impl PyModelCall {
 /// The terminal routing selection, rewritten request, and optional existing response.
 #[pyclass(name = "RoutingOutcome", module = "switchyard.libsy", frozen)]
 struct PyRoutingOutcome {
-    selected_model_id: String,
-    fallback_models: Vec<String>,
-    request: Py<PyAny>,
+    inner: SyncMutex<RoutingOutcome>,
     response: Option<Py<PyAny>>,
 }
 
@@ -434,20 +446,36 @@ struct PyRoutingOutcome {
 impl PyRoutingOutcome {
     /// The model selected by the algorithm and tried first by the host.
     #[getter]
-    fn selected_model_id(&self) -> &str {
-        &self.selected_model_id
+    fn selected_model_id(&self) -> String {
+        self.inner.lock().selected_model_id.to_string()
     }
 
     /// Additional models the host may try in order after an eligible failure.
     #[getter]
     fn fallback_models(&self) -> Vec<String> {
-        self.fallback_models.clone()
+        self.inner
+            .lock()
+            .fallback_models
+            .iter()
+            .map(ToString::to_string)
+            .collect()
     }
 
     /// The normalized request after routing-time rewrites.
     #[getter]
-    fn request(&self, py: Python<'_>) -> Py<PyAny> {
-        self.request.clone_ref(py)
+    fn request(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let request = self.inner.lock().request.llm_request.clone();
+        to_python(py, &request)
+    }
+
+    /// Prepare the normalized answer request for the selected model or a fallback.
+    fn request_for(&self, py: Python<'_>, model: String) -> PyResult<Py<PyAny>> {
+        let request = {
+            let outcome = self.inner.lock();
+            outcome.request_for(&ModelId::new(model))
+        }
+        .map_err(py_libsy_error)?;
+        to_python(py, &request.llm_request)
     }
 
     /// An answer produced while routing, when one already exists.
@@ -501,6 +529,20 @@ struct PyAlgorithm {
 
 #[pymethods]
 impl PyAlgorithm {
+    /// Return an algorithm that applies system prompts by answer target.
+    fn with_target_prompts(&self, prompts: &Bound<'_, PyMapping>) -> PyResult<Self> {
+        let prompts = prompts
+            .items()?
+            .extract::<Vec<(String, String)>>()?
+            .into_iter()
+            .fold(TargetPrompts::default(), |prompts, (target, prompt)| {
+                prompts.with(target, prompt)
+            });
+        Ok(Self {
+            inner: with_target_prompts(Arc::clone(&self.inner), prompts),
+        })
+    }
+
     /// Run the algorithm as routing-time model calls followed by one terminal outcome.
     ///
     /// `headers`, when given, is normalized into the request's correlation
@@ -541,13 +583,8 @@ async fn step_to_python(step: RustStep) -> PyResult<PyStep> {
             })
         }),
         RustStep::Done(outcome) => {
-            let RoutingOutcome {
-                selected_model_id,
-                fallback_models,
-                request,
-                response,
-            } = *outcome;
-            let response = match response {
+            let mut outcome = *outcome;
+            let response = match outcome.response.take() {
                 Some(response) => Some(
                     response
                         .llm_response
@@ -562,12 +599,7 @@ async fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                     outcome: Py::new(
                         py,
                         PyRoutingOutcome {
-                            selected_model_id: selected_model_id.to_string(),
-                            fallback_models: fallback_models
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect(),
-                            request: to_python(py, &request.llm_request)?,
+                            inner: SyncMutex::new(outcome),
                             response: response
                                 .as_ref()
                                 .map(|response| to_python(py, response))

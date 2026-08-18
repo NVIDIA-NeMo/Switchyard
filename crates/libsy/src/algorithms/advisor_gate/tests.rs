@@ -16,6 +16,7 @@ use switchyard_protocol::{
 use super::transcript::{NO_TEXT_PLACEHOLDER, TRUNCATION_MARKER, middle_drop};
 use super::*;
 use crate::core::testing::{reply, test_drive};
+use crate::{TargetPrompts, with_target_prompts};
 
 const EXECUTOR: &str = "executor";
 const ADVISOR: &str = "advisor";
@@ -268,7 +269,12 @@ async fn tool_call_turn_replays_without_review() {
 #[tokio::test]
 async fn approved_terminal_turn_returns_buffered_body() {
     let script = Script::new();
-    let gate = gate(AdvisorGateConfig::default());
+    let gate = with_target_prompts(
+        gate(AdvisorGateConfig::default()),
+        TargetPrompts::default()
+            .with(EXECUTOR, "executor prompt")
+            .with(ADVISOR, "answer-only advisor prompt"),
+    );
     let serve = script.serve("APPROVE", |_| reply("all done"));
     let (selected_model, response) = test_drive(gate, task_request(), serve)
         .await
@@ -279,6 +285,19 @@ async fn approved_terminal_turn_returns_buffered_body() {
     );
     assert_eq!(completion_text(&agg_of(response).await), "all done");
     assert_eq!(selected_model, EXECUTOR);
+    let executor = script.call(0);
+    assert_eq!(
+        executor.llm_request.instructions[0].content,
+        vec![ContentBlock::Text {
+            text: "executor prompt".to_string(),
+        }]
+    );
+    let advisor = script.call(1);
+    assert!(!advisor.llm_request.instructions.iter().any(|instruction| {
+        instruction.content.iter().any(|block| {
+            matches!(block, ContentBlock::Text { text } if text == "answer-only advisor prompt")
+        })
+    }));
 }
 
 #[tokio::test]

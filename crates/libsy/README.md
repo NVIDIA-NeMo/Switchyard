@@ -38,6 +38,15 @@ fallbacks, rewritten request, and an optional response already produced while ro
 makes no network calls itself — `switchyard-llm-client`'s `run` is a ready-made consumer that
 drives the stream and performs the terminal answer call, retries, and fallback over HTTP.
 
+[`RoutingOutcome`]'s `request` field is ready for the selected answer target. A custom host
+trying the selected target or a fallback should call [`RoutingOutcome::request_for`]; that
+prepares the candidate's model and any prompt configured with [`with_target_prompts`] as one
+operation.
+
+Routing-time [`CallModel`] requests are likewise ready for their first candidate. Hosts trying
+a later classifier or judge candidate should use [`CallModel::request_for`] so exact provider
+bodies receive the candidate model together with the normalized request.
+
 The provider-neutral [`Request`], [`Response`], [`Usage`], and [`LlmResponse`]
 contracts come from `switchyard-protocol`.
 

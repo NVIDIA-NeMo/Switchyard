@@ -49,17 +49,20 @@ pub(crate) async fn test_drive(
 ) -> Result<(ModelId, Response)> {
     let serve = Arc::new(serve);
     let routing_serve = Arc::clone(&serve);
-    let outcome = crate::drive(algorithm, request, move |call| {
+    let mut outcome = crate::drive(algorithm, request, move |call| {
         fulfill(Arc::clone(&routing_serve), call)
     })
     .await?;
     let selected_model = outcome.selected_model_id.clone();
-    let response = match outcome.response {
+    let response = match outcome.response.take() {
         Some(response) => response,
-        None => serve
-            .serve(selected_model.clone(), outcome.request)
-            .await
-            .map_err(|source| LibsyError::client_call(selected_model.clone(), source))?,
+        None => {
+            let request = outcome.request_for(&selected_model)?;
+            serve
+                .serve(selected_model.clone(), request)
+                .await
+                .map_err(|source| LibsyError::client_call(selected_model.clone(), source))?
+        }
     };
     Ok((selected_model, response))
 }

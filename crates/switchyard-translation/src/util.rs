@@ -6,11 +6,12 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
+use switchyard_protocol::ModelId;
 
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
-use crate::format::FormatId;
-use crate::llm::{ContentBlock, LlmRequest, Message, PreservationMetadata};
+use crate::format::{FormatId, WireFormat};
+use crate::llm::{ContentBlock, InstructionBlock, LlmRequest, Message, PreservationMetadata, Role};
 use crate::policy::{
     LossyConversionPolicy, PreservationPolicy, TranslationPolicy, UnknownFieldPolicy,
 };
@@ -269,6 +270,150 @@ pub fn exact_preserved_response(
     (policy.preservation != PreservationPolicy::Disabled)
         .then(|| preservation.responses.get(&format).cloned())
         .flatten()
+}
+
+/// Applies a selected target model and optionally prepends its system prompt.
+///
+/// Built-in exact preserved bodies are patched together with the normalized request, so a
+/// same-format encode cannot replay the route alias or omit the target-specific prompt. Exact
+/// bodies for custom formats remain untouched when no prompt is configured; when a prompt cannot
+/// be patched into a custom format safely, its exact body is discarded in favor of normalized
+/// encoding. A custom codec replaying an untouched body remains responsible for stamping its
+/// wire-level model.
+///
+/// Call this once per candidate using a request that has not already received a target prompt;
+/// applying it repeatedly prepends the prompt repeatedly.
+pub fn prepare_request_for_target(
+    request: &mut LlmRequest,
+    target: &ModelId,
+    prompt: Option<&str>,
+) {
+    let target = target.to_string();
+    request.model = Some(target.clone());
+    if let Some(prompt) = prompt {
+        request.instructions.insert(
+            0,
+            InstructionBlock {
+                role: Role::System,
+                content: vec![ContentBlock::Text {
+                    text: prompt.to_string(),
+                }],
+            },
+        );
+    }
+    patch_preserved_requests(request, &target, prompt);
+}
+
+enum PreservedRequestAction {
+    Keep,
+    Patched,
+    Discard,
+}
+
+fn patch_preserved_request(
+    format: &FormatId,
+    body: &mut Value,
+    target: &str,
+    prompt: Option<&str>,
+) -> PreservedRequestAction {
+    let patch_prompt: fn(&mut Map<String, Value>, &str) -> bool = match format.as_str() {
+        id if id == WireFormat::OpenAiChat.as_str() => prepend_openai_chat_system_prompt,
+        id if id == WireFormat::OpenAiResponses.as_str() => {
+            |body, prompt| prepend_text_field(body, "instructions", prompt)
+        }
+        id if id == WireFormat::AnthropicMessages.as_str() => prepend_anthropic_system_prompt,
+        _ if prompt.is_none() => return PreservedRequestAction::Keep,
+        _ => return PreservedRequestAction::Discard,
+    };
+    let Some(body) = body.as_object_mut() else {
+        return PreservedRequestAction::Discard;
+    };
+    body.insert("model".to_string(), Value::String(target.to_string()));
+    let Some(prompt) = prompt else {
+        return PreservedRequestAction::Patched;
+    };
+    if patch_prompt(body, prompt) {
+        PreservedRequestAction::Patched
+    } else {
+        PreservedRequestAction::Discard
+    }
+}
+
+// Patches exact built-in bodies and refreshes existing embedded preservation envelopes once.
+fn patch_preserved_requests(request: &mut LlmRequest, target: &str, prompt: Option<&str>) {
+    let mut embedded_formats = Vec::new();
+    request.preservation.requests.retain(|format, body| {
+        match patch_preserved_request(format, body, target, prompt) {
+            PreservedRequestAction::Keep => true,
+            PreservedRequestAction::Patched => {
+                if take_embedded_preservation(body) {
+                    embedded_formats.push(format.clone());
+                }
+                true
+            }
+            PreservedRequestAction::Discard => false,
+        }
+    });
+    // Refresh envelopes only on bodies that arrived with one. Patched request bodies are
+    // envelope-free while the snapshot is serialized, preventing direct recursive nesting.
+    if !embedded_formats.is_empty()
+        && let Ok(envelope) = serde_json::to_value(&request.preservation)
+    {
+        for format in embedded_formats {
+            if let Some(body) = request.preservation.requests.get_mut(&format) {
+                restore_embedded_preservation(body, &envelope);
+            }
+        }
+    }
+}
+
+fn prepend_openai_chat_system_prompt(body: &mut Map<String, Value>, prompt: &str) -> bool {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    messages.insert(0, json!({"role": "system", "content": prompt}));
+    true
+}
+
+fn prepend_text_field(body: &mut Map<String, Value>, field: &str, prompt: &str) -> bool {
+    match body.get_mut(field) {
+        Some(Value::String(existing)) if existing.is_empty() => {
+            *existing = prompt.to_string();
+        }
+        Some(Value::String(existing)) => {
+            *existing = format!("{prompt}\n\n{existing}");
+        }
+        Some(value @ Value::Null) => {
+            *value = Value::String(prompt.to_string());
+        }
+        None => {
+            body.insert(field.to_string(), Value::String(prompt.to_string()));
+        }
+        Some(_) => return false,
+    }
+    true
+}
+
+// Structured system blocks may carry cache-control metadata that must remain intact.
+fn prepend_anthropic_system_prompt(body: &mut Map<String, Value>, prompt: &str) -> bool {
+    if let Some(Value::Array(blocks)) = body.get_mut("system") {
+        blocks.insert(0, json!({"type": "text", "text": prompt}));
+        return true;
+    }
+    prepend_text_field(body, "system", prompt)
+}
+
+fn take_embedded_preservation(body: &mut Value) -> bool {
+    if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
+        return metadata.remove(SWITCHYARD_METADATA_KEY).is_some();
+    }
+    false
+}
+
+fn restore_embedded_preservation(body: &mut Value, envelope: &Value) {
+    if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.insert(SWITCHYARD_METADATA_KEY.to_string(), envelope.clone());
+    }
 }
 
 /// Embeds preservation metadata into a translated wire body when requested.
