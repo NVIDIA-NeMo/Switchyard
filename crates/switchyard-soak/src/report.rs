@@ -268,7 +268,7 @@ pub async fn invalid_request_canary(
             let invalid = context
                 .client
                 .post(format!("{}/v1/chat/completions", context.base_url))
-                .json(&json!({"model": workload.model, "messages": []}))
+                .json(&json!({"model": workload.model, "messages": "invalid"}))
                 .send()
                 .await?;
             let health = context

@@ -67,11 +67,12 @@ fn switchyard(is_chat_broken: bool) -> (Router, Arc<Mutex<HashSet<String>>>) {
         Json(json!({"data": [{"id": "soak-route"}]})).into_response()
     }
     async fn chat(State(state): State<MockState>, Json(body): Json<Value>) -> Response {
-        let empty = body
-            .get("messages")
-            .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty);
-        if empty {
+        let invalid_messages = body.get("messages").is_some_and(|messages| {
+            messages
+                .as_array()
+                .is_none_or(|messages| messages.is_empty())
+        });
+        if invalid_messages {
             return if state.is_chat_broken {
                 Json(json!({"choices": []})).into_response()
             } else {

@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
@@ -272,7 +272,7 @@ def smoke_routes(base_url: str, output_path: Path) -> None:
 
 def default_output_dir(repo_root: Path) -> Path:
     """Choose a new timestamped directory under the repository."""
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return repo_root / "soak-rehearsal-results" / stamp
 
 
