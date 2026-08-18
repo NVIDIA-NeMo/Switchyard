@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Advisor-gate routing** — new `advisor` route type pairing the serving
+  executor with a stronger judge-only advisor that reviews terminal turns:
+  APPROVE releases the buffered turn, REDO discards it and feeds the advisor's
+  plan back to the executor. Includes per-session review budgets scoped by
+  `proxy_x_session_id`, stall checkpoints, a pattern trigger for text-protocol
+  harnesses, middle-out transcript truncation, fail-open consults, and an
+  `advisor_gate` block in `/v1/stats` covering verdicts, consult failures, and
+  REDO-discarded turns.
+
 ### Removed
 
 - **Deprecated Python server stack** — `switchyard serve`, YAML route bundles,
