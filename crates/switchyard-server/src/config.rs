@@ -103,19 +103,10 @@ impl ServerConfig {
         for (route_name, config) in &self.routes {
             validate_value("route name", route_name)?;
             validate_value(&format!("route {route_name} id"), config.id())?;
-            let mut target_names_by_model = HashMap::new();
             for target_name in config.callable_target_names() {
-                let target = self.targets.get(target_name).ok_or_else(|| {
+                self.targets.get(target_name).ok_or_else(|| {
                     ServerError::new(format!("route references unknown target {target_name}"))
                 })?;
-                if let Some(previous_name) = target_names_by_model.insert(&target.id, target_name)
-                    && previous_name != target_name
-                {
-                    return Err(ServerError::new(format!(
-                        "route {route_name} targets {previous_name} and {target_name} share model id {}; model ids must be unique within a route",
-                        target.id
-                    )));
-                }
             }
             let capabilities = config.capabilities();
             if capabilities.context_window == Some(0) {
@@ -1521,10 +1512,6 @@ classifier_magic = true
                     "targets = [\"strong\", \"weak\"]\ncontext_window = 0",
                 ),
                 "route random context_window must be greater than zero",
-            ),
-            (
-                VALID_CONFIG.replace("id = \"weak/model\"", "id = \"strong/model\""),
-                "targets weak and strong share model id strong/model",
             ),
         ];
 
