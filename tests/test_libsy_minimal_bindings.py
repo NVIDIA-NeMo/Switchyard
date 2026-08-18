@@ -61,7 +61,7 @@ async def run_algorithm(
         match step:
             case Step.CallModel(call):
                 for index, target in enumerate(call.models):
-                    candidate_request = {**call.request, "model": target}
+                    candidate_request = call.request_for(target)
                     client = (clients or {})[target]
                     try:
                         response = await client.call(candidate_request)
@@ -79,7 +79,7 @@ async def run_algorithm(
                     return outcome.selected_model_id, outcome.response
                 candidates = [outcome.selected_model_id, *outcome.fallback_models]
                 for index, target in enumerate(candidates):
-                    candidate_request = {**outcome.request, "model": target}
+                    candidate_request = outcome.request_for(target)
                     client = (clients or {})[target]
                     try:
                         response = await client.call(candidate_request)
@@ -93,7 +93,7 @@ async def run_algorithm(
 
 async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() -> None:
     client = EchoClient("fast")
-    algorithm = algorithms.random(["fast"])
+    algorithm = algorithms.random(["fast"]).with_target_prompts({"fast": "fast prompt"})
     outcome: RoutingOutcome | None = None
     variants: list[str] = []
 
@@ -110,6 +110,7 @@ async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() 
     assert outcome.response is None
     response = await client.call(outcome.request)
     assert client.calls[0]["model"] == "fast"
+    assert client.calls[0]["instructions"][0]["content"][0]["text"] == "fast prompt"
     assert client.calls[0]["messages"][0]["content"] == [
         {"type": "text", "text": "hello"}
     ]
@@ -361,8 +362,9 @@ def test_invalid_request_is_rejected_at_the_boundary() -> None:
 
 
 async def test_context_window_failure_falls_back_to_the_next_model() -> None:
-    class OverflowClient:
+    class OverflowClient(EchoClient):
         async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(request)
             raise ContextWindowExceededError("request exceeds context window")
 
     algorithm = algorithms.stage_router(
@@ -370,11 +372,18 @@ async def test_context_window_failure_falls_back_to_the_next_model() -> None:
         "fast",
         picker="efficient_first",
         confidence_threshold=0.5,
+        capable_system_prompt="strong prompt",
+        efficient_system_prompt="fast prompt",
     )
+    fast = OverflowClient("fast")
+    strong = EchoClient("strong")
     selected_model, response = await run_algorithm(
         algorithm,
-        {"fast": OverflowClient(), "strong": EchoClient("strong")},
+        {"fast": fast, "strong": strong},
     )
 
     assert selected_model == "fast"
+    assert fast.calls[0]["instructions"][0]["content"][0]["text"] == "fast prompt"
+    assert strong.calls[0]["instructions"][0]["content"][0]["text"] == "strong prompt"
+    assert len(strong.calls[0]["instructions"]) == 1
     assert response["model"] == "strong"

@@ -225,11 +225,19 @@ escalation_note = "the previous model was stalling; pick up the diagnosis"
 ### Optional: per-tier system prompts
 
 ```toml
-[routes.stage]
+[targets.strong]
 # ...
-capable_system_prompt = "diagnose before you edit"
-efficient_system_prompt = "follow the settled plan"
+system_prompt = "diagnose before you edit"
+
+[targets.weak]
+# ...
+system_prompt = "follow the settled plan"
 ```
+
+The existing `capable_system_prompt` and `efficient_system_prompt` route fields
+remain supported for stage routes. Target-level prompts also work with the other
+routing algorithms and follow the selected target when a call falls back. A
+target-level prompt takes precedence over the matching legacy route field.
 
 ### Optional: LLM classifier fallback
 

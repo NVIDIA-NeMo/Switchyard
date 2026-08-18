@@ -8,12 +8,174 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    FormatId, LlmRequest, LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    prepare_request_for_target,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
-type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+fn prepare_and_encode(format: WireFormat, body: &Value, prompt: Option<&str>) -> TestResult<Value> {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let mut request = engine.decode_request(format, body, &policy)?.request;
+    prepare_request_for_target(&mut request, &"selected/model".into(), prompt);
+    Ok(engine.encode_request(format, &request, &policy)?.body)
+}
+
+// Keeps target mutations aligned with exact replay for each built-in request format.
+#[test]
+fn preparing_a_target_preserves_builtin_provider_fields() -> TestResult {
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({
+                "model": "route",
+                "messages": [
+                    {"role": "system", "name": "caller", "content": "client prompt"},
+                    {"role": "user", "content": "hi"}
+                ]
+            }),
+            "/messages/0/content",
+            json!("target prompt"),
+            "/messages/1/name",
+            json!("caller"),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({
+                "model": "route",
+                "instructions": "client prompt",
+                "input": "hi",
+                "metadata": {
+                    "tenant": "example",
+                    "_switchyard_translation": {
+                        "requests": {
+                            "anthropic_messages": {
+                                "model": "claude",
+                                "max_tokens": 64,
+                                "messages": [{"role": "user", "content": "hi"}]
+                            }
+                        }
+                    }
+                }
+            }),
+            "/instructions",
+            json!("target prompt\n\nclient prompt"),
+            "/metadata/tenant",
+            json!("example"),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({
+                "model": "route",
+                "max_tokens": 64,
+                "system": [{
+                    "type": "text",
+                    "text": "client prompt",
+                    "cache_control": {"type": "ephemeral"}
+                }],
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+            "/system/0",
+            json!({"type": "text", "text": "target prompt"}),
+            "/system/1/cache_control/type",
+            json!("ephemeral"),
+        ),
+    ];
+
+    for (format, body, prompt_path, expected_prompt, preserved_path, expected_preserved) in cases {
+        let encoded = prepare_and_encode(format, &body, Some("target prompt"))?;
+
+        assert_eq!(encoded["model"], "selected/model", "{format}");
+        assert_eq!(
+            encoded.pointer(prompt_path),
+            Some(&expected_prompt),
+            "{format}"
+        );
+        assert_eq!(
+            encoded.pointer(preserved_path),
+            Some(&expected_preserved),
+            "{format}"
+        );
+        if format == WireFormat::OpenAiResponses {
+            let relayed = TranslationEngine::default()
+                .translate_request(
+                    format,
+                    WireFormat::AnthropicMessages,
+                    &encoded,
+                    &TranslationPolicy::default(),
+                )?
+                .body;
+            assert_eq!(relayed["model"], "selected/model");
+            assert_eq!(relayed["system"], "target prompt");
+        }
+    }
+
+    let body = json!({
+        "model": "route",
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let encoded = prepare_and_encode(WireFormat::OpenAiChat, &body, None)?;
+    assert_eq!(encoded["model"], "selected/model");
+    assert_eq!(encoded["messages"], body["messages"]);
+    Ok(())
+}
+
+// Discards exact bodies only when they cannot represent the requested preparation safely.
+#[test]
+fn preparing_a_target_handles_unpatchable_exact_bodies() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "route",
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+        .request;
+    request.preservation.requests.insert(
+        WireFormat::OpenAiChat.into(),
+        json!({"model": "route", "provider_field": true}),
+    );
+    prepare_request_for_target(
+        &mut request,
+        &"selected/model".into(),
+        Some("target prompt"),
+    );
+    let rebuilt = engine
+        .encode_request(WireFormat::OpenAiChat, &request, &policy)?
+        .body;
+    assert_eq!(rebuilt["messages"][0]["content"], "target prompt");
+    assert_eq!(rebuilt["messages"][1]["content"], "hi");
+    assert!(rebuilt.get("provider_field").is_none());
+
+    let custom_format = FormatId::new("custom");
+    let custom_body = json!({"model": "route", "vendor_field": true});
+    let mut custom_request = LlmRequest::default();
+    custom_request
+        .preservation
+        .requests
+        .insert(custom_format.clone(), custom_body.clone());
+    prepare_request_for_target(&mut custom_request, &"selected/model".into(), None);
+    assert_eq!(
+        custom_request.preservation.requests[&custom_format],
+        custom_body
+    );
+    prepare_request_for_target(
+        &mut custom_request,
+        &"selected/model".into(),
+        Some("target prompt"),
+    );
+    assert!(
+        !custom_request
+            .preservation
+            .requests
+            .contains_key(&custom_format)
+    );
+    Ok(())
+}
 
 // Verifies Anthropic-only request fields are dropped or mapped for OpenAI Chat.
 #[test]

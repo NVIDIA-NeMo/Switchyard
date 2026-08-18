@@ -32,6 +32,7 @@ parking_lot.workspace = true
 rand.workspace = true
 regex.workspace = true
 switchyard-protocol.workspace = true
+switchyard-translation.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream = "0.1"

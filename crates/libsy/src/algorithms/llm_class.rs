@@ -522,7 +522,7 @@ impl Classifier<State> for EscalationClassifier {
             "escalation classifier selected efficient tier"
         );
         let efficient_response = match driver
-            .call_model(request.clone(), vec![self.efficient.clone()])
+            .call_answer_model(request.clone(), self.efficient.clone())
             .await
         {
             Ok(r) => r,
@@ -1812,18 +1812,48 @@ mod tests {
     #[tokio::test]
     async fn escalation_router_serves_efficient_when_judge_declines() -> Result<()> {
         // Judge: no escalation. Expect the efficient response to be returned directly.
-        let judge = Queue::new([r#"{"escalate":false,"reason":"progressing"}"#]);
-        let model = Queue::new(["efficient answer"]);
-        let router = escalation_router()?;
+        let prompted = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&prompted);
+        let serve = move |target: ModelId, request: Request| {
+            let recorded = Arc::clone(&recorded);
+            async move {
+                let answer_prompt = if target == "judge" {
+                    "answer-only judge prompt"
+                } else {
+                    "efficient prompt"
+                };
+                let found = request.llm_request.instructions.iter().any(|instruction| {
+                    instruction.content.iter().any(
+                        |block| matches!(block, ContentBlock::Text { text } if text == answer_prompt),
+                    )
+                });
+                recorded.lock().push((target.clone(), found));
+                let completion = if target == "judge" {
+                    r#"{"escalate":false,"reason":"progressing"}"#
+                } else {
+                    "efficient answer"
+                };
+                Ok(reply(completion))
+            }
+        };
+        let router = crate::with_target_prompts(
+            escalation_router()?,
+            crate::TargetPrompts::default()
+                .with("efficient", "efficient prompt")
+                .with("judge", "answer-only judge prompt"),
+        );
 
-        let (selected_model, response) =
-            test_drive(router, classify_request(), queued(model, judge)).await?;
+        let (selected_model, response) = test_drive(router, classify_request(), serve).await?;
 
         // The efficient model is the serving target, and the response comes from its call.
         assert_eq!(selected_model, "efficient");
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("efficient answer".to_string())
+        );
+        assert_eq!(
+            &*prompted.lock(),
+            &[(ModelId::from("efficient"), true), ("judge".into(), false)]
         );
         Ok(())
     }

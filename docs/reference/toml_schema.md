@@ -83,6 +83,7 @@ calls an upstream.
 | `id` | Yes | — | Exact model ID sent upstream. |
 | `llm_client` | Yes | — | Key under `[llm_clients]`. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
+| `system_prompt` | No | unset | System prompt prepended when this target serves an answer call. Classifier and judge calls are unchanged. |
 
 ## `[routes.<name>]`
 
