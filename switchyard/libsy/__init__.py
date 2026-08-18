@@ -6,8 +6,11 @@
 from switchyard_rust.libsy import (
     Algorithm,
     ContextWindowExceededError,
+    CustomClassifierConfig,
     Decision,
+    EscalationClassifierConfig,
     LibsyError,
+    LlmClassifierConfig,
     LlmFallback,
     ModelCall,
     Step,
@@ -19,8 +22,11 @@ from . import algorithms as algorithms
 __all__ = [
     "Algorithm",
     "ContextWindowExceededError",
+    "CustomClassifierConfig",
     "Decision",
+    "EscalationClassifierConfig",
     "LibsyError",
+    "LlmClassifierConfig",
     "LlmFallback",
     "ModelCall",
     "Step",
