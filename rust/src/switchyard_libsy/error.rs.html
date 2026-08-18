@@ -36,8 +36,8 @@
 <a href=#36 id=36 data-nosnippet>36</a>    </span><span class="attr">#[error(transparent)]
 <a href=#37 id=37 data-nosnippet>37</a>    </span>Driver(<span class="attr">#[from] </span>DriverError),
 <a href=#38 id=38 data-nosnippet>38</a>
-<a href=#39 id=39 data-nosnippet>39</a>    <span class="doccomment">/// An algorithm's step stream ended without a terminal response.
-<a href=#40 id=40 data-nosnippet>40</a>    </span><span class="attr">#[error(<span class="string">"algorithm run ended without a final response"</span>)]
+<a href=#39 id=39 data-nosnippet>39</a>    <span class="doccomment">/// An algorithm's step stream ended without a terminal routing outcome.
+<a href=#40 id=40 data-nosnippet>40</a>    </span><span class="attr">#[error(<span class="string">"algorithm run ended without a routing outcome"</span>)]
 <a href=#41 id=41 data-nosnippet>41</a>    </span>MissingFinalResponse,
 <a href=#42 id=42 data-nosnippet>42</a>
 <a href=#43 id=43 data-nosnippet>43</a>    <span class="doccomment">/// A target's protocol client failed while serving a routed request.
@@ -92,51 +92,45 @@
 <a href=#92 id=92 data-nosnippet>92</a>    <span class="doccomment">/// One side of a response promise was dropped before delivery.
 <a href=#93 id=93 data-nosnippet>93</a>    </span><span class="attr">#[error(<span class="string">"driver response promise was dropped"</span>)]
 <a href=#94 id=94 data-nosnippet>94</a>    </span>ResponseDropped,
-<a href=#95 id=95 data-nosnippet>95</a>
-<a href=#96 id=96 data-nosnippet>96</a>    <span class="doccomment">/// The consumer took the call's contents with `CallModel::into_parts` instead of
-<a href=#97 id=97 data-nosnippet>97</a>    /// answering it, so the run ends here by the consumer's choice. Distinct from
-<a href=#98 id=98 data-nosnippet>98</a>    /// [`ResponseDropped`](Self::ResponseDropped), which means the promise was lost.
-<a href=#99 id=99 data-nosnippet>99</a>    </span><span class="attr">#[error(<span class="string">"model call was abandoned by the consumer"</span>)]
-<a href=#100 id=100 data-nosnippet>100</a>    </span>Abandoned,
-<a href=#101 id=101 data-nosnippet>101</a>}
-<a href=#102 id=102 data-nosnippet>102</a>
-<a href=#103 id=103 data-nosnippet>103</a><span class="attr">#[cfg(test)]
-<a href=#104 id=104 data-nosnippet>104</a></span><span class="kw">mod </span>tests {
-<a href=#105 id=105 data-nosnippet>105</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#106 id=106 data-nosnippet>106</a>
-<a href=#107 id=107 data-nosnippet>107</a>    <span class="attr">#[test]
-<a href=#108 id=108 data-nosnippet>108</a>    </span><span class="kw">fn </span>client_call_preserves_target_and_source() {
-<a href=#109 id=109 data-nosnippet>109</a>        <span class="kw">let </span>error = LibsyError::client_call(
-<a href=#110 id=110 data-nosnippet>110</a>            <span class="string">"strong"</span>,
-<a href=#111 id=111 data-nosnippet>111</a>            LlmClientError::General(<span class="string">"upstream down"</span>.to_string()),
-<a href=#112 id=112 data-nosnippet>112</a>        );
-<a href=#113 id=113 data-nosnippet>113</a>        <span class="kw">match </span><span class="kw-2">&amp;</span>error {
-<a href=#114 id=114 data-nosnippet>114</a>            LibsyError::ClientCall { target, source } =&gt; {
-<a href=#115 id=115 data-nosnippet>115</a>                <span class="macro">assert_eq!</span>(target, <span class="string">"strong"</span>);
-<a href=#116 id=116 data-nosnippet>116</a>                <span class="macro">assert_eq!</span>(source.to_string(), <span class="string">"upstream down"</span>);
-<a href=#117 id=117 data-nosnippet>117</a>            }
-<a href=#118 id=118 data-nosnippet>118</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected ClientCall, got {other:?}"</span>),
-<a href=#119 id=119 data-nosnippet>119</a>        }
-<a href=#120 id=120 data-nosnippet>120</a>        <span class="macro">assert_eq!</span>(
-<a href=#121 id=121 data-nosnippet>121</a>            StdError::source(<span class="kw-2">&amp;</span>error).map(ToString::to_string),
-<a href=#122 id=122 data-nosnippet>122</a>            <span class="prelude-val">Some</span>(<span class="string">"upstream down"</span>.to_string())
-<a href=#123 id=123 data-nosnippet>123</a>        );
-<a href=#124 id=124 data-nosnippet>124</a>    }
-<a href=#125 id=125 data-nosnippet>125</a>
-<a href=#126 id=126 data-nosnippet>126</a>    <span class="attr">#[test]
-<a href=#127 id=127 data-nosnippet>127</a>    </span><span class="kw">fn </span>external_preserves_operation_and_source() {
-<a href=#128 id=128 data-nosnippet>128</a>        <span class="kw">let </span>error = LibsyError::external(
-<a href=#129 id=129 data-nosnippet>129</a>            <span class="string">"loading extension"</span>,
-<a href=#130 id=130 data-nosnippet>130</a>            std::io::Error::other(<span class="string">"bad configuration"</span>),
-<a href=#131 id=131 data-nosnippet>131</a>        );
-<a href=#132 id=132 data-nosnippet>132</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
-<a href=#133 id=133 data-nosnippet>133</a>            <span class="kw-2">&amp;</span>error,
-<a href=#134 id=134 data-nosnippet>134</a>            LibsyError::External { operation, .. } <span class="kw">if </span><span class="kw-2">*</span>operation == <span class="string">"loading extension"
-<a href=#135 id=135 data-nosnippet>135</a>        </span>));
-<a href=#136 id=136 data-nosnippet>136</a>        <span class="macro">assert_eq!</span>(
-<a href=#137 id=137 data-nosnippet>137</a>            StdError::source(<span class="kw-2">&amp;</span>error).map(ToString::to_string),
-<a href=#138 id=138 data-nosnippet>138</a>            <span class="prelude-val">Some</span>(<span class="string">"bad configuration"</span>.to_string())
-<a href=#139 id=139 data-nosnippet>139</a>        );
-<a href=#140 id=140 data-nosnippet>140</a>    }
-<a href=#141 id=141 data-nosnippet>141</a>}
+<a href=#95 id=95 data-nosnippet>95</a>}
+<a href=#96 id=96 data-nosnippet>96</a>
+<a href=#97 id=97 data-nosnippet>97</a><span class="attr">#[cfg(test)]
+<a href=#98 id=98 data-nosnippet>98</a></span><span class="kw">mod </span>tests {
+<a href=#99 id=99 data-nosnippet>99</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#100 id=100 data-nosnippet>100</a>
+<a href=#101 id=101 data-nosnippet>101</a>    <span class="attr">#[test]
+<a href=#102 id=102 data-nosnippet>102</a>    </span><span class="kw">fn </span>client_call_preserves_target_and_source() {
+<a href=#103 id=103 data-nosnippet>103</a>        <span class="kw">let </span>error = LibsyError::client_call(
+<a href=#104 id=104 data-nosnippet>104</a>            <span class="string">"strong"</span>,
+<a href=#105 id=105 data-nosnippet>105</a>            LlmClientError::General(<span class="string">"upstream down"</span>.to_string()),
+<a href=#106 id=106 data-nosnippet>106</a>        );
+<a href=#107 id=107 data-nosnippet>107</a>        <span class="kw">match </span><span class="kw-2">&amp;</span>error {
+<a href=#108 id=108 data-nosnippet>108</a>            LibsyError::ClientCall { target, source } =&gt; {
+<a href=#109 id=109 data-nosnippet>109</a>                <span class="macro">assert_eq!</span>(target, <span class="string">"strong"</span>);
+<a href=#110 id=110 data-nosnippet>110</a>                <span class="macro">assert_eq!</span>(source.to_string(), <span class="string">"upstream down"</span>);
+<a href=#111 id=111 data-nosnippet>111</a>            }
+<a href=#112 id=112 data-nosnippet>112</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected ClientCall, got {other:?}"</span>),
+<a href=#113 id=113 data-nosnippet>113</a>        }
+<a href=#114 id=114 data-nosnippet>114</a>        <span class="macro">assert_eq!</span>(
+<a href=#115 id=115 data-nosnippet>115</a>            StdError::source(<span class="kw-2">&amp;</span>error).map(ToString::to_string),
+<a href=#116 id=116 data-nosnippet>116</a>            <span class="prelude-val">Some</span>(<span class="string">"upstream down"</span>.to_string())
+<a href=#117 id=117 data-nosnippet>117</a>        );
+<a href=#118 id=118 data-nosnippet>118</a>    }
+<a href=#119 id=119 data-nosnippet>119</a>
+<a href=#120 id=120 data-nosnippet>120</a>    <span class="attr">#[test]
+<a href=#121 id=121 data-nosnippet>121</a>    </span><span class="kw">fn </span>external_preserves_operation_and_source() {
+<a href=#122 id=122 data-nosnippet>122</a>        <span class="kw">let </span>error = LibsyError::external(
+<a href=#123 id=123 data-nosnippet>123</a>            <span class="string">"loading extension"</span>,
+<a href=#124 id=124 data-nosnippet>124</a>            std::io::Error::other(<span class="string">"bad configuration"</span>),
+<a href=#125 id=125 data-nosnippet>125</a>        );
+<a href=#126 id=126 data-nosnippet>126</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#127 id=127 data-nosnippet>127</a>            <span class="kw-2">&amp;</span>error,
+<a href=#128 id=128 data-nosnippet>128</a>            LibsyError::External { operation, .. } <span class="kw">if </span><span class="kw-2">*</span>operation == <span class="string">"loading extension"
+<a href=#129 id=129 data-nosnippet>129</a>        </span>));
+<a href=#130 id=130 data-nosnippet>130</a>        <span class="macro">assert_eq!</span>(
+<a href=#131 id=131 data-nosnippet>131</a>            StdError::source(<span class="kw-2">&amp;</span>error).map(ToString::to_string),
+<a href=#132 id=132 data-nosnippet>132</a>            <span class="prelude-val">Some</span>(<span class="string">"bad configuration"</span>.to_string())
+<a href=#133 id=133 data-nosnippet>133</a>        );
+<a href=#134 id=134 data-nosnippet>134</a>    }
+<a href=#135 id=135 data-nosnippet>135</a>}
 </code></pre></div></section></main></body></html>

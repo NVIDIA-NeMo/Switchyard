@@ -146,86 +146,86 @@
 <a href=#146 id=146 data-nosnippet>146</a>    </span>S: Send + <span class="lifetime">'static</span>,
 <a href=#147 id=147 data-nosnippet>147</a>{
 <a href=#148 id=148 data-nosnippet>148</a>    <span class="kw">async fn </span>process(<span class="kw-2">&amp;</span><span class="self">self</span>, _state: <span class="kw-2">&amp;mut </span>S, event: Event&lt;<span class="lifetime">'_</span>&gt;) -&gt; <span class="kw">crate</span>::Result&lt;()&gt; {
-<a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">if let </span>Event::Decision { request, decision } = event
-<a href=#150 id=150 data-nosnippet>150</a>            &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(key) = <span class="self">self</span>.affinity_key(request)
-<a href=#151 id=151 data-nosnippet>151</a>        {
-<a href=#152 id=152 data-nosnippet>152</a>            <span class="kw">let </span>model = decision.selected_model_id();
-<a href=#153 id=153 data-nosnippet>153</a>            <span class="kw">let </span><span class="kw-2">mut </span>assignments = <span class="self">self</span>.assignments.lock();
-<a href=#154 id=154 data-nosnippet>154</a>            <span class="kw">if </span><span class="self">self</span>.should_latch(model) &amp;&amp; !assignments.contains_key(<span class="kw-2">&amp;</span>key) {
-<a href=#155 id=155 data-nosnippet>155</a>                evict_if_full(<span class="kw-2">&amp;mut </span>assignments);
-<a href=#156 id=156 data-nosnippet>156</a>                assignments.insert(key, model.clone());
-<a href=#157 id=157 data-nosnippet>157</a>            }
-<a href=#158 id=158 data-nosnippet>158</a>        }
-<a href=#159 id=159 data-nosnippet>159</a>        <span class="prelude-val">Ok</span>(())
-<a href=#160 id=160 data-nosnippet>160</a>    }
-<a href=#161 id=161 data-nosnippet>161</a>}
-<a href=#162 id=162 data-nosnippet>162</a>
-<a href=#163 id=163 data-nosnippet>163</a><span class="doccomment">/// Hashes the first user message so later turns retain the initial task's affinity.
-<a href=#164 id=164 data-nosnippet>164</a>/// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we hash the initial user message.
-<a href=#165 id=165 data-nosnippet>165</a>/// TODO: Have not considered multi-modal payloads yet. That needs to be handled separately.
-<a href=#166 id=166 data-nosnippet>166</a></span><span class="kw">fn </span>first_user_message_hash(request: <span class="kw-2">&amp;</span>Request) -&gt; <span class="prelude-ty">Option</span>&lt;String&gt; {
-<a href=#167 id=167 data-nosnippet>167</a>    <span class="kw">let </span>message = request
-<a href=#168 id=168 data-nosnippet>168</a>        .llm_request
-<a href=#169 id=169 data-nosnippet>169</a>        .messages
-<a href=#170 id=170 data-nosnippet>170</a>        .iter()
-<a href=#171 id=171 data-nosnippet>171</a>        .find(|message| message.role == Role::User)<span class="question-mark">?</span>;
-<a href=#172 id=172 data-nosnippet>172</a>    <span class="kw">let </span><span class="kw-2">mut </span>hasher = DefaultHasher::new();
-<a href=#173 id=173 data-nosnippet>173</a>    message.text_content(<span class="string">""</span>)<span class="question-mark">?</span>.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#174 id=174 data-nosnippet>174</a>    <span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"{:016x}"</span>, hasher.finish()))
-<a href=#175 id=175 data-nosnippet>175</a>}
-<a href=#176 id=176 data-nosnippet>176</a>
-<a href=#177 id=177 data-nosnippet>177</a><span class="attr">#[async_trait]
-<a href=#178 id=178 data-nosnippet>178</a></span><span class="kw">impl</span>&lt;S&gt; Classifier&lt;S&gt; <span class="kw">for </span>AffinityRouter
-<a href=#179 id=179 data-nosnippet>179</a><span class="kw">where
-<a href=#180 id=180 data-nosnippet>180</a>    </span>S: Send + <span class="lifetime">'static</span>,
-<a href=#181 id=181 data-nosnippet>181</a>{
-<a href=#182 id=182 data-nosnippet>182</a>    <span class="kw">async fn </span>score(
-<a href=#183 id=183 data-nosnippet>183</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#184 id=184 data-nosnippet>184</a>        _state: <span class="kw-2">&amp;mut </span>S,
-<a href=#185 id=185 data-nosnippet>185</a>        request: <span class="kw-2">&amp;mut </span>Request,
-<a href=#186 id=186 data-nosnippet>186</a>        _driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
-<a href=#187 id=187 data-nosnippet>187</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;(Classification, <span class="prelude-ty">Option</span>&lt;switchyard_protocol::Response&gt;)&gt; {
-<a href=#188 id=188 data-nosnippet>188</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(key) = <span class="self">self</span>.affinity_key(request) <span class="kw">else </span>{
-<a href=#189 id=189 data-nosnippet>189</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>((Classification::Scores(Vec::new()), <span class="prelude-val">None</span>));
-<a href=#190 id=190 data-nosnippet>190</a>        };
-<a href=#191 id=191 data-nosnippet>191</a>        <span class="kw">let </span>assigned = <span class="self">self</span>.assignments.lock().get(<span class="kw-2">&amp;</span>key).cloned();
-<a href=#192 id=192 data-nosnippet>192</a>        <span class="prelude-val">Ok</span>((
-<a href=#193 id=193 data-nosnippet>193</a>            Classification::Scores(<span class="kw">match </span>assigned {
-<a href=#194 id=194 data-nosnippet>194</a>                <span class="prelude-val">Some</span>(target) =&gt; <span class="macro">vec!</span>[Score {
-<a href=#195 id=195 data-nosnippet>195</a>                    confidence: <span class="number">1.0</span>,
-<a href=#196 id=196 data-nosnippet>196</a>                    target,
-<a href=#197 id=197 data-nosnippet>197</a>                }],
-<a href=#198 id=198 data-nosnippet>198</a>                <span class="prelude-val">None </span>=&gt; Vec::new(),
-<a href=#199 id=199 data-nosnippet>199</a>            }),
-<a href=#200 id=200 data-nosnippet>200</a>            <span class="prelude-val">None</span>,
-<a href=#201 id=201 data-nosnippet>201</a>        ))
-<a href=#202 id=202 data-nosnippet>202</a>    }
-<a href=#203 id=203 data-nosnippet>203</a>}
-<a href=#204 id=204 data-nosnippet>204</a>
-<a href=#205 id=205 data-nosnippet>205</a><span class="doccomment">/// Evicts one arbitrary assignment when the map has reached [`MAX_ASSIGNMENTS`].
-<a href=#206 id=206 data-nosnippet>206</a></span><span class="kw">fn </span>evict_if_full(assignments: <span class="kw-2">&amp;mut </span>HashMap&lt;RoutingIdentity, ModelId&gt;) {
-<a href=#207 id=207 data-nosnippet>207</a>    <span class="kw">if </span>assignments.len() &gt;= MAX_ASSIGNMENTS
-<a href=#208 id=208 data-nosnippet>208</a>        &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(evicted) = assignments.keys().next().cloned()
-<a href=#209 id=209 data-nosnippet>209</a>    {
-<a href=#210 id=210 data-nosnippet>210</a>        assignments.remove(<span class="kw-2">&amp;</span>evicted);
-<a href=#211 id=211 data-nosnippet>211</a>    }
-<a href=#212 id=212 data-nosnippet>212</a>}
-<a href=#213 id=213 data-nosnippet>213</a>
-<a href=#214 id=214 data-nosnippet>214</a><span class="attr">#[cfg(test)]
-<a href=#215 id=215 data-nosnippet>215</a></span><span class="kw">mod </span>tests {
-<a href=#216 id=216 data-nosnippet>216</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#217 id=217 data-nosnippet>217</a>
-<a href=#218 id=218 data-nosnippet>218</a>    <span class="kw">use </span>std::sync::Arc;
+<a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">if let </span>Event::Decision {
+<a href=#150 id=150 data-nosnippet>150</a>            request,
+<a href=#151 id=151 data-nosnippet>151</a>            selected_model_id,
+<a href=#152 id=152 data-nosnippet>152</a>        } = event
+<a href=#153 id=153 data-nosnippet>153</a>            &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(key) = <span class="self">self</span>.affinity_key(request)
+<a href=#154 id=154 data-nosnippet>154</a>        {
+<a href=#155 id=155 data-nosnippet>155</a>            <span class="kw">let </span><span class="kw-2">mut </span>assignments = <span class="self">self</span>.assignments.lock();
+<a href=#156 id=156 data-nosnippet>156</a>            <span class="kw">if </span><span class="self">self</span>.should_latch(selected_model_id) &amp;&amp; !assignments.contains_key(<span class="kw-2">&amp;</span>key) {
+<a href=#157 id=157 data-nosnippet>157</a>                evict_if_full(<span class="kw-2">&amp;mut </span>assignments);
+<a href=#158 id=158 data-nosnippet>158</a>                assignments.insert(key, selected_model_id.clone());
+<a href=#159 id=159 data-nosnippet>159</a>            }
+<a href=#160 id=160 data-nosnippet>160</a>        }
+<a href=#161 id=161 data-nosnippet>161</a>        <span class="prelude-val">Ok</span>(())
+<a href=#162 id=162 data-nosnippet>162</a>    }
+<a href=#163 id=163 data-nosnippet>163</a>}
+<a href=#164 id=164 data-nosnippet>164</a>
+<a href=#165 id=165 data-nosnippet>165</a><span class="doccomment">/// Hashes the first user message so later turns retain the initial task's affinity.
+<a href=#166 id=166 data-nosnippet>166</a>/// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we hash the initial user message.
+<a href=#167 id=167 data-nosnippet>167</a>/// TODO: Have not considered multi-modal payloads yet. That needs to be handled separately.
+<a href=#168 id=168 data-nosnippet>168</a></span><span class="kw">fn </span>first_user_message_hash(request: <span class="kw-2">&amp;</span>Request) -&gt; <span class="prelude-ty">Option</span>&lt;String&gt; {
+<a href=#169 id=169 data-nosnippet>169</a>    <span class="kw">let </span>message = request
+<a href=#170 id=170 data-nosnippet>170</a>        .llm_request
+<a href=#171 id=171 data-nosnippet>171</a>        .messages
+<a href=#172 id=172 data-nosnippet>172</a>        .iter()
+<a href=#173 id=173 data-nosnippet>173</a>        .find(|message| message.role == Role::User)<span class="question-mark">?</span>;
+<a href=#174 id=174 data-nosnippet>174</a>    <span class="kw">let </span><span class="kw-2">mut </span>hasher = DefaultHasher::new();
+<a href=#175 id=175 data-nosnippet>175</a>    message.text_content(<span class="string">""</span>)<span class="question-mark">?</span>.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#176 id=176 data-nosnippet>176</a>    <span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"{:016x}"</span>, hasher.finish()))
+<a href=#177 id=177 data-nosnippet>177</a>}
+<a href=#178 id=178 data-nosnippet>178</a>
+<a href=#179 id=179 data-nosnippet>179</a><span class="attr">#[async_trait]
+<a href=#180 id=180 data-nosnippet>180</a></span><span class="kw">impl</span>&lt;S&gt; Classifier&lt;S&gt; <span class="kw">for </span>AffinityRouter
+<a href=#181 id=181 data-nosnippet>181</a><span class="kw">where
+<a href=#182 id=182 data-nosnippet>182</a>    </span>S: Send + <span class="lifetime">'static</span>,
+<a href=#183 id=183 data-nosnippet>183</a>{
+<a href=#184 id=184 data-nosnippet>184</a>    <span class="kw">async fn </span>score(
+<a href=#185 id=185 data-nosnippet>185</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#186 id=186 data-nosnippet>186</a>        _state: <span class="kw-2">&amp;mut </span>S,
+<a href=#187 id=187 data-nosnippet>187</a>        request: <span class="kw-2">&amp;mut </span>Request,
+<a href=#188 id=188 data-nosnippet>188</a>        _driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
+<a href=#189 id=189 data-nosnippet>189</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;(Classification, <span class="prelude-ty">Option</span>&lt;switchyard_protocol::Response&gt;)&gt; {
+<a href=#190 id=190 data-nosnippet>190</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(key) = <span class="self">self</span>.affinity_key(request) <span class="kw">else </span>{
+<a href=#191 id=191 data-nosnippet>191</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>((Classification::Scores(Vec::new()), <span class="prelude-val">None</span>));
+<a href=#192 id=192 data-nosnippet>192</a>        };
+<a href=#193 id=193 data-nosnippet>193</a>        <span class="kw">let </span>assigned = <span class="self">self</span>.assignments.lock().get(<span class="kw-2">&amp;</span>key).cloned();
+<a href=#194 id=194 data-nosnippet>194</a>        <span class="prelude-val">Ok</span>((
+<a href=#195 id=195 data-nosnippet>195</a>            Classification::Scores(<span class="kw">match </span>assigned {
+<a href=#196 id=196 data-nosnippet>196</a>                <span class="prelude-val">Some</span>(target) =&gt; <span class="macro">vec!</span>[Score {
+<a href=#197 id=197 data-nosnippet>197</a>                    confidence: <span class="number">1.0</span>,
+<a href=#198 id=198 data-nosnippet>198</a>                    target,
+<a href=#199 id=199 data-nosnippet>199</a>                }],
+<a href=#200 id=200 data-nosnippet>200</a>                <span class="prelude-val">None </span>=&gt; Vec::new(),
+<a href=#201 id=201 data-nosnippet>201</a>            }),
+<a href=#202 id=202 data-nosnippet>202</a>            <span class="prelude-val">None</span>,
+<a href=#203 id=203 data-nosnippet>203</a>        ))
+<a href=#204 id=204 data-nosnippet>204</a>    }
+<a href=#205 id=205 data-nosnippet>205</a>}
+<a href=#206 id=206 data-nosnippet>206</a>
+<a href=#207 id=207 data-nosnippet>207</a><span class="doccomment">/// Evicts one arbitrary assignment when the map has reached [`MAX_ASSIGNMENTS`].
+<a href=#208 id=208 data-nosnippet>208</a></span><span class="kw">fn </span>evict_if_full(assignments: <span class="kw-2">&amp;mut </span>HashMap&lt;RoutingIdentity, ModelId&gt;) {
+<a href=#209 id=209 data-nosnippet>209</a>    <span class="kw">if </span>assignments.len() &gt;= MAX_ASSIGNMENTS
+<a href=#210 id=210 data-nosnippet>210</a>        &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(evicted) = assignments.keys().next().cloned()
+<a href=#211 id=211 data-nosnippet>211</a>    {
+<a href=#212 id=212 data-nosnippet>212</a>        assignments.remove(<span class="kw-2">&amp;</span>evicted);
+<a href=#213 id=213 data-nosnippet>213</a>    }
+<a href=#214 id=214 data-nosnippet>214</a>}
+<a href=#215 id=215 data-nosnippet>215</a>
+<a href=#216 id=216 data-nosnippet>216</a><span class="attr">#[cfg(test)]
+<a href=#217 id=217 data-nosnippet>217</a></span><span class="kw">mod </span>tests {
+<a href=#218 id=218 data-nosnippet>218</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#219 id=219 data-nosnippet>219</a>
-<a href=#220 id=220 data-nosnippet>220</a>    <span class="kw">use </span>switchyard_protocol::{
-<a href=#221 id=221 data-nosnippet>221</a>        ContentBlock, Decision, LlmRequest, Message, Metadata, text_request,
-<a href=#222 id=222 data-nosnippet>222</a>    };
+<a href=#220 id=220 data-nosnippet>220</a>    <span class="kw">use </span>std::sync::Arc;
+<a href=#221 id=221 data-nosnippet>221</a>
+<a href=#222 id=222 data-nosnippet>222</a>    <span class="kw">use </span>switchyard_protocol::{ContentBlock, LlmRequest, Message, Metadata, text_request};
 <a href=#223 id=223 data-nosnippet>223</a>
 <a href=#224 id=224 data-nosnippet>224</a>    <span class="doccomment">/// Boxed, thread-safe error type keeping the test helpers ergonomic.
 <a href=#225 id=225 data-nosnippet>225</a>    </span><span class="kw">type </span>BoxErr = Box&lt;<span class="kw">dyn </span>std::error::Error + Send + Sync&gt;;
 <a href=#226 id=226 data-nosnippet>226</a>
-<a href=#227 id=227 data-nosnippet>227</a>    <span class="kw">fn </span>fixed_decision(target: <span class="kw-2">&amp;</span>str) -&gt; Decision {
-<a href=#228 id=228 data-nosnippet>228</a>        Decision::new(target, <span class="bool-val">true</span>)
+<a href=#227 id=227 data-nosnippet>227</a>    <span class="kw">fn </span>fixed_model(target: <span class="kw-2">&amp;</span>str) -&gt; ModelId {
+<a href=#228 id=228 data-nosnippet>228</a>        ModelId::from(target)
 <a href=#229 id=229 data-nosnippet>229</a>    }
 <a href=#230 id=230 data-nosnippet>230</a>
 <a href=#231 id=231 data-nosnippet>231</a>    <span class="kw">fn </span>request(metadata: Metadata) -&gt; Request {
@@ -285,13 +285,13 @@
 <a href=#285 id=285 data-nosnippet>285</a>        request: <span class="kw-2">&amp;mut </span>Request,
 <a href=#286 id=286 data-nosnippet>286</a>        model: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
 <a href=#287 id=287 data-nosnippet>287</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(), BoxErr&gt; {
-<a href=#288 id=288 data-nosnippet>288</a>        <span class="kw">let </span>decision = fixed_decision(model);
+<a href=#288 id=288 data-nosnippet>288</a>        <span class="kw">let </span>selected_model_id = ModelId::from(model);
 <a href=#289 id=289 data-nosnippet>289</a>        router
 <a href=#290 id=290 data-nosnippet>290</a>            .process(
 <a href=#291 id=291 data-nosnippet>291</a>                state,
 <a href=#292 id=292 data-nosnippet>292</a>                Event::Decision {
 <a href=#293 id=293 data-nosnippet>293</a>                    request,
-<a href=#294 id=294 data-nosnippet>294</a>                    decision: <span class="kw-2">&amp;</span>decision,
+<a href=#294 id=294 data-nosnippet>294</a>                    selected_model_id: <span class="kw-2">&amp;</span>selected_model_id,
 <a href=#295 id=295 data-nosnippet>295</a>                },
 <a href=#296 id=296 data-nosnippet>296</a>            )
 <a href=#297 id=297 data-nosnippet>297</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
@@ -584,7 +584,7 @@
 <a href=#584 id=584 data-nosnippet>584</a>                <span class="kw-2">&amp;mut </span>state,
 <a href=#585 id=585 data-nosnippet>585</a>                Event::Decision {
 <a href=#586 id=586 data-nosnippet>586</a>                    request: <span class="kw-2">&amp;mut </span>first,
-<a href=#587 id=587 data-nosnippet>587</a>                    decision: <span class="kw-2">&amp;</span>fixed_decision(<span class="string">"model-a"</span>),
+<a href=#587 id=587 data-nosnippet>587</a>                    selected_model_id: <span class="kw-2">&amp;</span>fixed_model(<span class="string">"model-a"</span>),
 <a href=#588 id=588 data-nosnippet>588</a>                },
 <a href=#589 id=589 data-nosnippet>589</a>            )
 <a href=#590 id=590 data-nosnippet>590</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
@@ -609,7 +609,7 @@
 <a href=#609 id=609 data-nosnippet>609</a>                <span class="kw-2">&amp;mut </span>state,
 <a href=#610 id=610 data-nosnippet>610</a>                Event::Decision {
 <a href=#611 id=611 data-nosnippet>611</a>                    request: <span class="kw-2">&amp;mut </span>unkeyed,
-<a href=#612 id=612 data-nosnippet>612</a>                    decision: <span class="kw-2">&amp;</span>fixed_decision(<span class="string">"model-a"</span>),
+<a href=#612 id=612 data-nosnippet>612</a>                    selected_model_id: <span class="kw-2">&amp;</span>fixed_model(<span class="string">"model-a"</span>),
 <a href=#613 id=613 data-nosnippet>613</a>                },
 <a href=#614 id=614 data-nosnippet>614</a>            )
 <a href=#615 id=615 data-nosnippet>615</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
@@ -633,7 +633,7 @@
 <a href=#633 id=633 data-nosnippet>633</a>                <span class="kw-2">&amp;mut </span>state,
 <a href=#634 id=634 data-nosnippet>634</a>                Event::Decision {
 <a href=#635 id=635 data-nosnippet>635</a>                    request: <span class="kw-2">&amp;mut </span>second,
-<a href=#636 id=636 data-nosnippet>636</a>                    decision: <span class="kw-2">&amp;</span>fixed_decision(<span class="string">"model-b"</span>),
+<a href=#636 id=636 data-nosnippet>636</a>                    selected_model_id: <span class="kw-2">&amp;</span>fixed_model(<span class="string">"model-b"</span>),
 <a href=#637 id=637 data-nosnippet>637</a>                },
 <a href=#638 id=638 data-nosnippet>638</a>            )
 <a href=#639 id=639 data-nosnippet>639</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
@@ -642,7 +642,7 @@
 <a href=#642 id=642 data-nosnippet>642</a>                <span class="kw-2">&amp;mut </span>state,
 <a href=#643 id=643 data-nosnippet>643</a>                Event::Decision {
 <a href=#644 id=644 data-nosnippet>644</a>                    request: <span class="kw-2">&amp;mut </span>first,
-<a href=#645 id=645 data-nosnippet>645</a>                    decision: <span class="kw-2">&amp;</span>fixed_decision(<span class="string">"model-a"</span>),
+<a href=#645 id=645 data-nosnippet>645</a>                    selected_model_id: <span class="kw-2">&amp;</span>fixed_model(<span class="string">"model-a"</span>),
 <a href=#646 id=646 data-nosnippet>646</a>                },
 <a href=#647 id=647 data-nosnippet>647</a>            )
 <a href=#648 id=648 data-nosnippet>648</a>            .<span class="kw">await</span><span class="question-mark">?</span>;

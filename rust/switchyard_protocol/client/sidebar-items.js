@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["LlmClientError","RoutingFallbackReason"],"struct":["Decision"],"trait":["RoutedLlmClient"],"type":["BoxError"]};
+window.SIDEBAR_ITEMS = {"enum":["LlmClientError","RoutingFallbackReason"],"trait":["RoutedLlmClient"],"type":["BoxError"]};
