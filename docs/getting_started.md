@@ -244,16 +244,14 @@ picks a target and hands the model call back to you.
 
 ### Add the dependencies
 
-<!-- BEGIN GENERATED: Rust dependencies -->
 ```toml
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
-switchyard-libsy = "=0.2.0"
-switchyard-protocol = "=0.2.0"
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
-<!-- END GENERATED: Rust dependencies -->
 
 ### Choose an algorithm
 

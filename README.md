@@ -105,13 +105,11 @@ hands every model call back to you, so it drops into an existing proxy, gateway,
 or agent runtime without owning an HTTP stack. Pair it with
 `switchyard-llm-client` when you want the calls made for you.
 
-<!-- BEGIN GENERATED: Rust dependencies -->
 ```toml
 [dependencies]
-switchyard-libsy = "=0.2.0"
-switchyard-protocol = "=0.2.0"
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
 ```
-<!-- END GENERATED: Rust dependencies -->
 
 See [Getting Started](docs/getting_started.md#library-path) for setup and the
 algorithm list, or the [`switchyard-libsy`](crates/libsy/README.md) crate docs.
