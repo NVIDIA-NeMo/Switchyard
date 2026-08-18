@@ -1,0 +1,5027 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AnthropicCreateMessageParams",
+  "$ref": "#/$defs/CreateMessageParams",
+  "$defs": {
+    "CreateMessageParams": {
+      "additionalProperties": false,
+      "example": {
+        "max_tokens": 1024,
+        "messages": [
+          {
+            "content": "Hello, world",
+            "role": "user"
+          }
+        ],
+        "model": "claude-opus-4-6"
+      },
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/Model"
+        },
+        "messages": {
+          "description": "Input messages.\n\nOur models are trained to operate on alternating `user` and `assistant` conversational turns. When creating a new `Message`, you specify the prior conversational turns with the `messages` parameter, and the model then generates the next `Message` in the conversation. Consecutive `user` or `assistant` turns in your request will be combined into a single turn.\n\nEach input message must be an object with a `role` and `content`. You can specify a single `user`-role message, or you can include multiple `user` and `assistant` messages.\n\nIf the final message uses the `assistant` role, the response content will continue immediately from the content in that message. This can be used to constrain part of the model's response.\n\nExample with a single `user` message:\n\n```json\n[{\"role\": \"user\", \"content\": \"Hello, Claude\"}]\n```\n\nExample with multiple conversational turns:\n\n```json\n[\n  {\"role\": \"user\", \"content\": \"Hello there.\"},\n  {\"role\": \"assistant\", \"content\": \"Hi, I'm Claude. How can I help you?\"},\n  {\"role\": \"user\", \"content\": \"Can you explain LLMs in plain English?\"},\n]\n```\n\nExample with a partially-filled response from Claude:\n\n```json\n[\n  {\"role\": \"user\", \"content\": \"What's the Greek name for Sun? (A) Sol (B) Helios (C) Sun\"},\n  {\"role\": \"assistant\", \"content\": \"The best answer is (\"},\n]\n```\n\nEach input message `content` may be either a single `string` or an array of content blocks, where each block has a specific `type`. Using a `string` for `content` is shorthand for an array of one content block of type `\"text\"`. The following input messages are equivalent:\n\n```json\n{\"role\": \"user\", \"content\": \"Hello, Claude\"}\n```\n\n```json\n{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Hello, Claude\"}]}\n```\n\nSee [input examples](https://platform.claude.com/docs/en/build-with-claude/working-with-messages).\n\nNote that if you want to include a [system prompt](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices#give-claude-a-role), you can use the top-level `system` parameter — there is no `\"system\"` role for input messages in the Messages API.\n\nThere is a limit of 100,000 messages in a single request.",
+          "items": {
+            "$ref": "#/$defs/InputMessage"
+          },
+          "title": "Messages",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Top-level cache control automatically applies a cache_control marker to the last cacheable block in the request.",
+          "title": "Cache Control"
+        },
+        "container": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Container identifier for reuse across requests.",
+          "title": "Container"
+        },
+        "inference_geo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Specifies the geographic region for inference processing. If not specified, the workspace's `default_inference_geo` is used.",
+          "title": "Inference Geo"
+        },
+        "max_tokens": {
+          "description": "The maximum number of tokens to generate before stopping.\n\nNote that our models may stop _before_ reaching this maximum. This parameter only specifies the absolute maximum number of tokens to generate.\n\nSet to `0` to populate the [prompt cache](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pre-warming-the-cache) without generating a response.\n\nDifferent models have different maximum values for this parameter.  See [models](https://platform.claude.com/docs/en/about-claude/models/overview) for details.",
+          "examples": [
+            1024
+          ],
+          "minimum": 0,
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "metadata": {
+          "$ref": "#/$defs/Metadata",
+          "description": "An object describing metadata about the request."
+        },
+        "output_config": {
+          "$ref": "#/$defs/OutputConfig",
+          "description": "Configuration options for the model's output, such as the output format."
+        },
+        "service_tier": {
+          "description": "Determines whether to use priority capacity (if available) or standard capacity for this request.\n\nAnthropic offers different levels of service for your API requests. See [service-tiers](https://platform.claude.com/docs/en/api/service-tiers) for details.",
+          "enum": [
+            "auto",
+            "standard_only"
+          ],
+          "title": "Service Tier",
+          "type": "string"
+        },
+        "stop_sequences": {
+          "description": "Custom text sequences that will cause the model to stop generating.\n\nOur models will normally stop when they have naturally completed their turn, which will result in a response `stop_reason` of `\"end_turn\"`.\n\nIf you want the model to stop generating when it encounters custom strings of text, you can use the `stop_sequences` parameter. If the model encounters one of the custom sequences, the response `stop_reason` value will be `\"stop_sequence\"` and the response `stop_sequence` value will contain the matched stop sequence.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Stop Sequences",
+          "type": "array"
+        },
+        "stream": {
+          "description": "Whether to incrementally stream the response using server-sent events.\n\nSee [streaming](https://platform.claude.com/docs/en/build-with-claude/streaming) for details.",
+          "title": "Stream",
+          "type": "boolean",
+          "example": false
+        },
+        "system": {
+          "anyOf": [
+            {
+              "type": "string",
+              "x-stainless-skip": [
+                "go"
+              ]
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/RequestTextBlock"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "System prompt.\n\nA system prompt is a way of providing context and instructions to Claude, such as specifying a particular goal or role. See our [guide to system prompts](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices#give-claude-a-role).",
+          "examples": [
+            [
+              {
+                "text": "Today's date is 2024-06-01.",
+                "type": "text"
+              }
+            ],
+            "Today's date is 2023-01-01."
+          ],
+          "title": "System"
+        },
+        "temperature": {
+          "deprecated": true,
+          "description": "Amount of randomness injected into the response.\n\nDefaults to `1.0`. Ranges from `0.0` to `1.0`. Use `temperature` closer to `0.0` for analytical / multiple choice, and closer to `1.0` for creative and generative tasks.\n\nNote that even with `temperature` of `0.0`, the results will not be fully deterministic.",
+          "examples": [
+            1
+          ],
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Temperature",
+          "type": "number",
+          "x-stainless-deprecation-message": "Deprecated. Models released after Claude Opus 4.6 do not support setting temperature. A value of 1.0 of will be accepted for backwards compatibility, all other values will be rejected with a 400 error."
+        },
+        "thinking": {
+          "$ref": "#/$defs/ThinkingConfigParam"
+        },
+        "tool_choice": {
+          "$ref": "#/$defs/ToolChoice"
+        },
+        "tools": {
+          "description": "Definitions of tools that the model may use.\n\nIf you include `tools` in your API request, the model may return `tool_use` content blocks that represent the model's use of those tools. You can then run those tools using the tool input generated by the model and then optionally return results back to the model using `tool_result` content blocks.\n\nThere are two types of tools: **client tools** and **server tools**. The behavior described below applies to client tools. For [server tools](https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools), see their individual documentation as each has its own behavior (e.g., the [web search tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)).\n\nEach tool definition includes:\n\n* `name`: Name of the tool.\n* `description`: Optional, but strongly-recommended description of the tool.\n* `input_schema`: [JSON schema](https://json-schema.org/draft/2020-12) for the tool `input` shape that the model will produce in `tool_use` output content blocks.\n\nFor example, if you defined `tools` as:\n\n```json\n[\n  {\n    \"name\": \"get_stock_price\",\n    \"description\": \"Get the current stock price for a given ticker symbol.\",\n    \"input_schema\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"ticker\": {\n          \"type\": \"string\",\n          \"description\": \"The stock ticker symbol, e.g. AAPL for Apple Inc.\"\n        }\n      },\n      \"required\": [\"ticker\"]\n    }\n  }\n]\n```\n\nAnd then asked the model \"What's the S&P 500 at today?\", the model might produce `tool_use` content blocks in the response like this:\n\n```json\n[\n  {\n    \"type\": \"tool_use\",\n    \"id\": \"toolu_01D7FLrfh4GYq7yT1ULFeyMV\",\n    \"name\": \"get_stock_price\",\n    \"input\": { \"ticker\": \"^GSPC\" }\n  }\n]\n```\n\nYou might then run your `get_stock_price` tool with `{\"ticker\": \"^GSPC\"}` as an input, and return the following back to the model in a subsequent `user` message:\n\n```json\n[\n  {\n    \"type\": \"tool_result\",\n    \"tool_use_id\": \"toolu_01D7FLrfh4GYq7yT1ULFeyMV\",\n    \"content\": \"259.75 USD\"\n  }\n]\n```\n\nTools can be used for workflows that include running client-side tools and functions, or more generally whenever you want the model to produce a particular JSON structure of output.\n\nSee our [guide](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview) for more details.",
+          "examples": [
+            {
+              "description": "Get the current weather in a given location",
+              "input_schema": {
+                "properties": {
+                  "location": {
+                    "description": "The city and state, e.g. San Francisco, CA",
+                    "type": "string"
+                  },
+                  "unit": {
+                    "description": "Unit for the output - one of (celsius, fahrenheit)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "location"
+                ],
+                "type": "object"
+              },
+              "name": "get_weather"
+            }
+          ],
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Tool"
+              },
+              {
+                "$ref": "#/$defs/BashTool_20250124"
+              },
+              {
+                "$ref": "#/$defs/CodeExecutionTool_20250522"
+              },
+              {
+                "$ref": "#/$defs/CodeExecutionTool_20250825"
+              },
+              {
+                "$ref": "#/$defs/CodeExecutionTool_20260120"
+              },
+              {
+                "$ref": "#/$defs/CodeExecutionTool_20260521"
+              },
+              {
+                "$ref": "#/$defs/MemoryTool_20250818"
+              },
+              {
+                "$ref": "#/$defs/TextEditor_20250124"
+              },
+              {
+                "$ref": "#/$defs/TextEditor_20250429"
+              },
+              {
+                "$ref": "#/$defs/TextEditor_20250728"
+              },
+              {
+                "$ref": "#/$defs/WebSearchTool_20250305"
+              },
+              {
+                "$ref": "#/$defs/WebFetchTool_20250910"
+              },
+              {
+                "$ref": "#/$defs/WebSearchTool_20260209"
+              },
+              {
+                "$ref": "#/$defs/WebFetchTool_20260209"
+              },
+              {
+                "$ref": "#/$defs/WebFetchTool_20260309"
+              },
+              {
+                "$ref": "#/$defs/WebSearchTool_20260318"
+              },
+              {
+                "$ref": "#/$defs/WebFetchTool_20260318"
+              },
+              {
+                "$ref": "#/$defs/ToolSearchToolBM25_20251119"
+              },
+              {
+                "$ref": "#/$defs/ToolSearchToolRegex_20251119"
+              }
+            ]
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "top_k": {
+          "deprecated": true,
+          "description": "Only sample from the top K options for each subsequent token.\n\nUsed to remove \"long tail\" low probability responses. [Learn more technical details here](https://towardsdatascience.com/how-to-sample-from-language-models-682bceb97277).\n\nRecommended for advanced use cases only.",
+          "examples": [
+            5
+          ],
+          "minimum": 0,
+          "title": "Top K",
+          "type": "integer",
+          "x-stainless-deprecation-message": "Deprecated. Models released after Claude Opus 4.6 do not accept top_k; any value will be rejected with a 400 error."
+        },
+        "top_p": {
+          "deprecated": true,
+          "description": "Use nucleus sampling.\n\nIn nucleus sampling, we compute the cumulative distribution over all the options for each subsequent token in decreasing probability order and cut it off once it reaches a particular probability specified by `top_p`.\n\nRecommended for advanced use cases only.",
+          "examples": [
+            0.7
+          ],
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Top P",
+          "type": "number",
+          "x-stainless-deprecation-message": "Deprecated. Models released after Claude Opus 4.6 do not support setting top_p. A value >= 0.99 will be accepted for backwards compatibility, all other values will be rejected with a 400 error."
+        }
+      },
+      "required": [
+        "model",
+        "messages",
+        "max_tokens"
+      ],
+      "title": "CreateMessageParams",
+      "type": "object"
+    },
+    "BashTool_20250124": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "input_examples": {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          "title": "Input Examples",
+          "type": "array"
+        },
+        "name": {
+          "const": "bash",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "bash_20250124",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "BashTool_20250124",
+      "type": "object"
+    },
+    "CacheControlEphemeral": {
+      "additionalProperties": false,
+      "properties": {
+        "ttl": {
+          "description": "The time-to-live for the cache control breakpoint.\n\nThis may be one the following values:\n- `5m`: 5 minutes\n- `1h`: 1 hour\n\nDefaults to `5m`. See [prompt caching pricing](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) for details.",
+          "enum": [
+            "5m",
+            "1h"
+          ],
+          "title": "Ttl",
+          "type": "string",
+          "x-stainless-renameMap": {
+            "ttl_5m": "5m",
+            "ttl_1h": "1h"
+          }
+        },
+        "type": {
+          "const": "ephemeral",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "CacheControlEphemeral",
+      "type": "object",
+      "x-stainless-go-constant-constructor": true
+    },
+    "CodeExecutionTool_20250522": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "name": {
+          "const": "code_execution",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "code_execution_20250522",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "CodeExecutionTool_20250522",
+      "type": "object"
+    },
+    "CodeExecutionTool_20250825": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "name": {
+          "const": "code_execution",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "code_execution_20250825",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "CodeExecutionTool_20250825",
+      "type": "object"
+    },
+    "CodeExecutionTool_20260120": {
+      "additionalProperties": false,
+      "description": "Code execution tool with REPL state persistence (daemon mode + gVisor checkpoint).",
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "name": {
+          "const": "code_execution",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "code_execution_20260120",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "CodeExecutionTool_20260120",
+      "type": "object"
+    },
+    "CodeExecutionTool_20260521": {
+      "additionalProperties": false,
+      "description": "Code execution tool with REPL state persistence.",
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "name": {
+          "const": "code_execution",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "code_execution_20260521",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "CodeExecutionTool_20260521",
+      "type": "object"
+    },
+    "InputMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "anyOf": [
+            {
+              "type": "string",
+              "x-stainless-skip": [
+                "go",
+                "cli"
+              ]
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/InputContentBlock"
+              },
+              "type": "array",
+              "example": [
+                {
+                  "type": "text",
+                  "text": "What is a quaternion?"
+                }
+              ]
+            }
+          ],
+          "title": "Content"
+        },
+        "role": {
+          "enum": [
+            "user",
+            "assistant",
+            "system"
+          ],
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "role"
+      ],
+      "title": "InputMessage",
+      "type": "object",
+      "discriminator": {
+        "propertyName": "role"
+      }
+    },
+    "MemoryTool_20250818": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "input_examples": {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          "title": "Input Examples",
+          "type": "array"
+        },
+        "name": {
+          "const": "memory",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "memory_20250818",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "MemoryTool_20250818",
+      "type": "object"
+    },
+    "Metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "user_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An external identifier for the user who is associated with the request.\n\nThis should be a uuid, hash value, or other opaque identifier. Anthropic may use this id to help detect abuse. Do not include any identifying information such as name, email address, or phone number.",
+          "examples": [
+            "13803d75-b4b5-4c3e-b2a2-6f21399b021b"
+          ],
+          "title": "User Id"
+        }
+      },
+      "title": "Metadata",
+      "type": "object"
+    },
+    "Model": {
+      "title": "Model",
+      "description": "The model that will complete your prompt.\n\nSee [models](https://docs.anthropic.com/en/docs/models-overview) for additional details and options.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "const": "claude-sonnet-5",
+          "description": "High-performance model for coding and agents",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-fable-5",
+          "description": "Next generation of intelligence for the hardest knowledge work and coding problems",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-mythos-5",
+          "description": "Most capable model for cybersecurity and biology research",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-opus-5",
+          "description": "Powerful intelligence for long-running agents and coding",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-opus-4-8",
+          "description": "Powerful intelligence for long-running agents and coding",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-opus-4-7",
+          "description": "Powerful intelligence for long-running agents and coding",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-mythos-preview",
+          "description": "New class of intelligence, strongest in coding and cybersecurity",
+          "x-stainless-nominal": false,
+          "deprecated": true,
+          "x-stainless-deprecation-message": "Will reach end-of-life on June 30, 2026. Please migrate to claude-mythos-5. Visit https://docs.anthropic.com/en/docs/resources/model-deprecations for more information."
+        },
+        {
+          "const": "claude-opus-4-6",
+          "description": "Powerful intelligence for long-running agents and coding",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-sonnet-4-6",
+          "description": "Best combination of speed and intelligence",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-haiku-4-5",
+          "description": "Fastest model with near-frontier intelligence",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-haiku-4-5-20251001",
+          "description": "Fastest model with near-frontier intelligence",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-opus-4-5",
+          "description": "Powerful intelligence for long-running agents and coding",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-opus-4-5-20251101",
+          "description": "Powerful intelligence for long-running agents and coding",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-sonnet-4-5",
+          "description": "High-performance model for agents and coding",
+          "x-stainless-nominal": false
+        },
+        {
+          "const": "claude-sonnet-4-5-20250929",
+          "description": "High-performance model for agents and coding",
+          "x-stainless-nominal": false
+        }
+      ]
+    },
+    "OutputConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffortLevel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How much effort the model should put into its response. Higher effort levels may result in more thorough analysis but take longer.\n\nValid values are `low`, `medium`, `high`, `xhigh`, or `max`."
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonOutputFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A schema to specify Claude's output format in responses. See [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)"
+        }
+      },
+      "title": "OutputConfig",
+      "type": "object"
+    },
+    "RequestTextBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "citations": {
+          "anyOf": [
+            {
+              "items": {
+                "discriminator": {
+                  "mapping": {
+                    "char_location": "#/components/schemas/RequestCharLocationCitation",
+                    "content_block_location": "#/components/schemas/RequestContentBlockLocationCitation",
+                    "page_location": "#/components/schemas/RequestPageLocationCitation",
+                    "search_result_location": "#/components/schemas/RequestSearchResultLocationCitation",
+                    "web_search_result_location": "#/components/schemas/RequestWebSearchResultLocationCitation"
+                  },
+                  "propertyName": "type"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/RequestCharLocationCitation"
+                  },
+                  {
+                    "$ref": "#/$defs/RequestPageLocationCitation"
+                  },
+                  {
+                    "$ref": "#/$defs/RequestContentBlockLocationCitation"
+                  },
+                  {
+                    "$ref": "#/$defs/RequestWebSearchResultLocationCitation"
+                  },
+                  {
+                    "$ref": "#/$defs/RequestSearchResultLocationCitation"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Citations"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "text",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "type"
+      ],
+      "title": "RequestTextBlock",
+      "type": "object"
+    },
+    "TextEditor_20250124": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "input_examples": {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          "title": "Input Examples",
+          "type": "array"
+        },
+        "name": {
+          "const": "str_replace_editor",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "text_editor_20250124",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "TextEditor_20250124",
+      "type": "object"
+    },
+    "TextEditor_20250429": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "input_examples": {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          "title": "Input Examples",
+          "type": "array"
+        },
+        "name": {
+          "const": "str_replace_based_edit_tool",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "text_editor_20250429",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "TextEditor_20250429",
+      "type": "object"
+    },
+    "TextEditor_20250728": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "input_examples": {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          "title": "Input Examples",
+          "type": "array"
+        },
+        "max_characters": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of characters to display when viewing a file. If not specified, defaults to displaying the full file.",
+          "title": "Max Characters"
+        },
+        "name": {
+          "const": "str_replace_based_edit_tool",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "text_editor_20250728",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "TextEditor_20250728",
+      "type": "object"
+    },
+    "ThinkingConfigParam": {
+      "description": "Configuration for enabling Claude's extended thinking.\n\nWhen enabled, responses include `thinking` content blocks showing Claude's thinking process before the final answer. Requires a minimum budget of 1,024 tokens and counts towards your `max_tokens` limit.\n\nSee [extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking) for details.",
+      "discriminator": {
+        "mapping": {
+          "adaptive": "#/components/schemas/ThinkingConfigAdaptive",
+          "disabled": "#/components/schemas/ThinkingConfigDisabled",
+          "enabled": "#/components/schemas/ThinkingConfigEnabled"
+        },
+        "propertyName": "type"
+      },
+      "examples": [
+        {
+          "type": "adaptive"
+        }
+      ],
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ThinkingConfigEnabled"
+        },
+        {
+          "$ref": "#/$defs/ThinkingConfigDisabled"
+        },
+        {
+          "$ref": "#/$defs/ThinkingConfigAdaptive"
+        }
+      ],
+      "title": "Thinking"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "const": "custom",
+              "type": "string"
+            }
+          ],
+          "title": "Type"
+        },
+        "description": {
+          "description": "Description of what this tool does.\n\nTool descriptions should be as detailed as possible. The more information that the model has about what the tool is and how to use it, the better it will perform. You can use natural language descriptions to reinforce important aspects of the tool input JSON schema.",
+          "examples": [
+            "Get the current weather in a given location"
+          ],
+          "title": "Description",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_-]{1,128}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "input_schema": {
+          "$ref": "#/$defs/InputSchema",
+          "description": "[JSON schema](https://json-schema.org/draft/2020-12) for this tool's input.\n\nThis defines the shape of the `input` that your tool accepts and that the model will produce.",
+          "examples": [
+            {
+              "properties": {
+                "location": {
+                  "description": "The city and state, e.g. San Francisco, CA",
+                  "type": "string"
+                },
+                "unit": {
+                  "description": "Unit for the output - one of (celsius, fahrenheit)",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "location"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "eager_input_streaming": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Enable eager input streaming for this tool. When true, tool input parameters will be streamed incrementally as they are generated, and types will be inferred on-the-fly rather than buffering the full JSON output. When false, streaming is disabled for this tool even if the fine-grained-tool-streaming beta is active. When null (default), uses the default behavior based on beta headers.",
+          "title": "Eager Input Streaming"
+        },
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "input_examples": {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          "title": "Input Examples",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "input_schema"
+      ],
+      "title": "Tool",
+      "type": "object"
+    },
+    "ToolChoice": {
+      "description": "How the model should use the provided tools. The model can use a specific tool, any available tool, decide by itself, or not use tools at all.",
+      "discriminator": {
+        "mapping": {
+          "any": "#/components/schemas/ToolChoiceAny",
+          "auto": "#/components/schemas/ToolChoiceAuto",
+          "none": "#/components/schemas/ToolChoiceNone",
+          "tool": "#/components/schemas/ToolChoiceTool"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ToolChoiceAuto"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceAny"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceTool"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceNone"
+        }
+      ],
+      "title": "Tool Choice"
+    },
+    "ToolSearchToolBM25_20251119": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "name": {
+          "const": "tool_search_tool_bm25",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "enum": [
+            "tool_search_tool_bm25_20251119",
+            "tool_search_tool_bm25"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "ToolSearchToolBM25_20251119",
+      "type": "object"
+    },
+    "ToolSearchToolRegex_20251119": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "name": {
+          "const": "tool_search_tool_regex",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "enum": [
+            "tool_search_tool_regex_20251119",
+            "tool_search_tool_regex"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "ToolSearchToolRegex_20251119",
+      "type": "object"
+    },
+    "WebFetchTool_20250910": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "allowed_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "List of domains to allow fetching from",
+          "title": "Allowed Domains"
+        },
+        "blocked_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "List of domains to block fetching from",
+          "title": "Blocked Domains"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "citations": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestCitationsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Citations configuration for fetched documents. Citations are disabled by default."
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "max_content_tokens": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of tokens used by including web page text content in the context. The limit is approximate and does not apply to binary content such as PDFs.",
+          "title": "Max Content Tokens"
+        },
+        "max_uses": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of times the tool can be used in the API request.",
+          "title": "Max Uses"
+        },
+        "name": {
+          "const": "web_fetch",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "web_fetch_20250910",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "WebFetchTool_20250910",
+      "type": "object"
+    },
+    "WebFetchTool_20260209": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "allowed_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "List of domains to allow fetching from",
+          "title": "Allowed Domains"
+        },
+        "blocked_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "List of domains to block fetching from",
+          "title": "Blocked Domains"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "citations": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestCitationsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Citations configuration for fetched documents. Citations are disabled by default."
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "max_content_tokens": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of tokens used by including web page text content in the context. The limit is approximate and does not apply to binary content such as PDFs.",
+          "title": "Max Content Tokens"
+        },
+        "max_uses": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of times the tool can be used in the API request.",
+          "title": "Max Uses"
+        },
+        "name": {
+          "const": "web_fetch",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "web_fetch_20260209",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "WebFetchTool_20260209",
+      "type": "object"
+    },
+    "WebFetchTool_20260309": {
+      "additionalProperties": false,
+      "description": "Web fetch tool with use_cache parameter for bypassing cached content.",
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "allowed_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "List of domains to allow fetching from",
+          "title": "Allowed Domains"
+        },
+        "blocked_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "List of domains to block fetching from",
+          "title": "Blocked Domains"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "citations": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestCitationsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Citations configuration for fetched documents. Citations are disabled by default."
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "max_content_tokens": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of tokens used by including web page text content in the context. The limit is approximate and does not apply to binary content such as PDFs.",
+          "title": "Max Content Tokens"
+        },
+        "max_uses": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of times the tool can be used in the API request.",
+          "title": "Max Uses"
+        },
+        "name": {
+          "const": "web_fetch",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "web_fetch_20260309",
+          "title": "Type",
+          "type": "string"
+        },
+        "use_cache": {
+          "description": "Whether to use cached content. Set to false to bypass the cache and fetch fresh content. Only set to false when the user explicitly requests fresh content or when fetching rapidly-changing sources.",
+          "title": "Use Cache",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "WebFetchTool_20260309",
+      "type": "object"
+    },
+    "WebFetchTool_20260318": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "allowed_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "List of domains to allow fetching from",
+          "title": "Allowed Domains"
+        },
+        "blocked_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "List of domains to block fetching from",
+          "title": "Blocked Domains"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "citations": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestCitationsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Citations configuration for fetched documents. Citations are disabled by default."
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "max_content_tokens": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of tokens used by including web page text content in the context. The limit is approximate and does not apply to binary content such as PDFs.",
+          "title": "Max Content Tokens"
+        },
+        "max_uses": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of times the tool can be used in the API request.",
+          "title": "Max Uses"
+        },
+        "name": {
+          "const": "web_fetch",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "response_inclusion": {
+          "description": "How this tool's result blocks appear in the API response when the result was consumed by a completed code_execution call in the same turn. 'full' returns the complete content (default). 'excluded' drops the nested server_tool_use and result block pair entirely. Results from direct calls, or from code_execution calls that paused before completing, are always returned in full so they can be sent back on the next turn.",
+          "enum": [
+            "full",
+            "excluded"
+          ],
+          "title": "Response Inclusion",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "web_fetch_20260318",
+          "title": "Type",
+          "type": "string"
+        },
+        "use_cache": {
+          "description": "Whether to use cached content. Set to false to bypass the cache and fetch fresh content. Only set to false when the user explicitly requests fresh content or when fetching rapidly-changing sources.",
+          "title": "Use Cache",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "WebFetchTool_20260318",
+      "type": "object"
+    },
+    "WebSearchTool_20250305": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "allowed_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "If provided, only these domains will be included in results. Cannot be used alongside `blocked_domains`.",
+          "title": "Allowed Domains"
+        },
+        "blocked_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "If provided, these domains will never appear in results. Cannot be used alongside `allowed_domains`.",
+          "title": "Blocked Domains"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "max_uses": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of times the tool can be used in the API request.",
+          "title": "Max Uses"
+        },
+        "name": {
+          "const": "web_search",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "web_search_20250305",
+          "title": "Type",
+          "type": "string"
+        },
+        "user_location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UserLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Parameters for the user's location. Used to provide more relevant search results."
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "WebSearchTool_20250305",
+      "type": "object"
+    },
+    "WebSearchTool_20260209": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "allowed_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "If provided, only these domains will be included in results. Cannot be used alongside `blocked_domains`.",
+          "title": "Allowed Domains"
+        },
+        "blocked_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "If provided, these domains will never appear in results. Cannot be used alongside `allowed_domains`.",
+          "title": "Blocked Domains"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "max_uses": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of times the tool can be used in the API request.",
+          "title": "Max Uses"
+        },
+        "name": {
+          "const": "web_search",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "web_search_20260209",
+          "title": "Type",
+          "type": "string"
+        },
+        "user_location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UserLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Parameters for the user's location. Used to provide more relevant search results."
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "WebSearchTool_20260209",
+      "type": "object"
+    },
+    "WebSearchTool_20260318": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_callers": {
+          "items": {
+            "$ref": "#/$defs/AllowedCaller"
+          },
+          "title": "Allowed Callers",
+          "type": "array"
+        },
+        "allowed_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "If provided, only these domains will be included in results. Cannot be used alongside `blocked_domains`.",
+          "title": "Allowed Domains"
+        },
+        "blocked_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "If provided, these domains will never appear in results. Cannot be used alongside `allowed_domains`.",
+          "title": "Blocked Domains"
+        },
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "defer_loading": {
+          "description": "If true, tool will not be included in initial system prompt. Only loaded when returned via tool_reference from tool search.",
+          "title": "Defer Loading",
+          "type": "boolean"
+        },
+        "max_uses": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum number of times the tool can be used in the API request.",
+          "title": "Max Uses"
+        },
+        "name": {
+          "const": "web_search",
+          "description": "Name of the tool.\n\nThis is how the tool will be called by the model and in `tool_use` blocks.",
+          "title": "Name",
+          "type": "string"
+        },
+        "response_inclusion": {
+          "description": "How this tool's result blocks appear in the API response when the result was consumed by a completed code_execution call in the same turn. 'full' returns the complete content (default). 'excluded' drops the nested server_tool_use and result block pair entirely. Results from direct calls, or from code_execution calls that paused before completing, are always returned in full so they can be sent back on the next turn.",
+          "enum": [
+            "full",
+            "excluded"
+          ],
+          "title": "Response Inclusion",
+          "type": "string"
+        },
+        "strict": {
+          "description": "When true, guarantees schema validation on tool names and inputs",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "web_search_20260318",
+          "title": "Type",
+          "type": "string"
+        },
+        "user_location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UserLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Parameters for the user's location. Used to provide more relevant search results."
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "WebSearchTool_20260318",
+      "type": "object"
+    },
+    "AllowedCaller": {
+      "description": "Specifies who can invoke a tool.\n\nValues:\n    direct: The model can call this tool directly.\n    code_execution_20250825: The tool can be called from the code execution environment (v1).\n    code_execution_20260120: The tool can be called from the code execution environment (v2 with persistence).\n    code_execution_20260521: The tool can be called from the code execution environment (v2 with persistence).",
+      "enum": [
+        "direct",
+        "code_execution_20250825",
+        "code_execution_20260120",
+        "code_execution_20260521"
+      ],
+      "title": "AllowedCaller",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "InputContentBlock": {
+      "discriminator": {
+        "mapping": {
+          "bash_code_execution_tool_result": "#/components/schemas/RequestBashCodeExecutionToolResultBlock",
+          "code_execution_tool_result": "#/components/schemas/RequestCodeExecutionToolResultBlock",
+          "container_upload": "#/components/schemas/RequestContainerUploadBlock",
+          "document": "#/components/schemas/RequestDocumentBlock",
+          "image": "#/components/schemas/RequestImageBlock",
+          "mid_conv_system": "#/components/schemas/RequestMidConvSystemBlock",
+          "redacted_thinking": "#/components/schemas/RequestRedactedThinkingBlock",
+          "search_result": "#/components/schemas/RequestSearchResultBlock",
+          "server_tool_use": "#/components/schemas/RequestServerToolUseBlock",
+          "text": "#/components/schemas/RequestTextBlock",
+          "text_editor_code_execution_tool_result": "#/components/schemas/RequestTextEditorCodeExecutionToolResultBlock",
+          "thinking": "#/components/schemas/RequestThinkingBlock",
+          "tool_result": "#/components/schemas/RequestToolResultBlock",
+          "tool_search_tool_result": "#/components/schemas/RequestToolSearchToolResultBlock",
+          "tool_use": "#/components/schemas/RequestToolUseBlock",
+          "web_fetch_tool_result": "#/components/schemas/RequestWebFetchToolResultBlock",
+          "web_search_tool_result": "#/components/schemas/RequestWebSearchToolResultBlock"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/RequestTextBlock",
+          "description": "Regular text content."
+        },
+        {
+          "$ref": "#/$defs/RequestImageBlock",
+          "description": "Image content specified directly as base64 data or as a reference via a URL."
+        },
+        {
+          "$ref": "#/$defs/RequestDocumentBlock",
+          "description": "Document content, either specified directly as base64 data, as text, or as a reference via a URL."
+        },
+        {
+          "$ref": "#/$defs/RequestSearchResultBlock",
+          "description": "A search result block containing source, title, and content from search operations."
+        },
+        {
+          "$ref": "#/$defs/RequestThinkingBlock",
+          "description": "A block specifying internal thinking by the model."
+        },
+        {
+          "$ref": "#/$defs/RequestRedactedThinkingBlock",
+          "description": "A block specifying internal, redacted thinking by the model."
+        },
+        {
+          "$ref": "#/$defs/RequestToolUseBlock",
+          "description": "A block indicating a tool use by the model."
+        },
+        {
+          "$ref": "#/$defs/RequestToolResultBlock",
+          "description": "A block specifying the results of a tool use by the model."
+        },
+        {
+          "$ref": "#/$defs/RequestServerToolUseBlock"
+        },
+        {
+          "$ref": "#/$defs/RequestWebSearchToolResultBlock"
+        },
+        {
+          "$ref": "#/$defs/RequestWebFetchToolResultBlock"
+        },
+        {
+          "$ref": "#/$defs/RequestCodeExecutionToolResultBlock"
+        },
+        {
+          "$ref": "#/$defs/RequestBashCodeExecutionToolResultBlock"
+        },
+        {
+          "$ref": "#/$defs/RequestTextEditorCodeExecutionToolResultBlock"
+        },
+        {
+          "$ref": "#/$defs/RequestToolSearchToolResultBlock"
+        },
+        {
+          "$ref": "#/$defs/RequestContainerUploadBlock"
+        },
+        {
+          "$ref": "#/$defs/RequestMidConvSystemBlock"
+        }
+      ],
+      "x-stainless-python-extend-union": [
+        "ContentBlock"
+      ],
+      "x-stainless-python-extend-union-imports": [
+        "from .content_block import ContentBlock"
+      ],
+      "x-stainless-go-variant-constructor": {
+        "naming": "new_{variant}_block"
+      }
+    },
+    "EffortLevel": {
+      "description": "All possible effort levels.",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "title": "EffortLevel",
+      "type": "string"
+    },
+    "JsonOutputFormat": {
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "additionalProperties": true,
+          "description": "The JSON schema of the format",
+          "title": "Schema",
+          "type": "object"
+        },
+        "type": {
+          "const": "json_schema",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "type"
+      ],
+      "title": "JsonOutputFormat",
+      "type": "object"
+    },
+    "RequestCharLocationCitation": {
+      "additionalProperties": false,
+      "properties": {
+        "cited_text": {
+          "examples": [
+            "The grass is green. The sky is blue."
+          ],
+          "title": "Cited Text",
+          "type": "string"
+        },
+        "document_index": {
+          "minimum": 0,
+          "title": "Document Index",
+          "type": "integer"
+        },
+        "document_title": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Document Title"
+        },
+        "end_char_index": {
+          "title": "End Char Index",
+          "type": "integer"
+        },
+        "start_char_index": {
+          "minimum": 0,
+          "title": "Start Char Index",
+          "type": "integer"
+        },
+        "type": {
+          "const": "char_location",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cited_text",
+        "document_index",
+        "document_title",
+        "end_char_index",
+        "start_char_index",
+        "type"
+      ],
+      "title": "RequestCharLocationCitation",
+      "type": "object"
+    },
+    "RequestContentBlockLocationCitation": {
+      "additionalProperties": false,
+      "properties": {
+        "cited_text": {
+          "description": "The full text of the cited block range, concatenated.\n\nAlways equals the contents of `content[start_block_index:end_block_index]` joined together. The text block is the minimal citable unit; this field is never a substring of a single block. Not counted toward output tokens, and not counted toward input tokens when sent back in subsequent turns.",
+          "examples": [
+            "The grass is green. The sky is blue."
+          ],
+          "title": "Cited Text",
+          "type": "string"
+        },
+        "document_index": {
+          "minimum": 0,
+          "title": "Document Index",
+          "type": "integer"
+        },
+        "document_title": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Document Title"
+        },
+        "end_block_index": {
+          "description": "Exclusive 0-based end index of the cited block range in the source's `content` array.\n\nAlways greater than `start_block_index`; a single-block citation has `end_block_index = start_block_index + 1`.",
+          "title": "End Block Index",
+          "type": "integer"
+        },
+        "start_block_index": {
+          "description": "0-based index of the first cited block in the source's `content` array.",
+          "minimum": 0,
+          "title": "Start Block Index",
+          "type": "integer"
+        },
+        "type": {
+          "const": "content_block_location",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cited_text",
+        "document_index",
+        "document_title",
+        "end_block_index",
+        "start_block_index",
+        "type"
+      ],
+      "title": "RequestContentBlockLocationCitation",
+      "type": "object"
+    },
+    "RequestPageLocationCitation": {
+      "additionalProperties": false,
+      "properties": {
+        "cited_text": {
+          "examples": [
+            "The grass is green. The sky is blue."
+          ],
+          "title": "Cited Text",
+          "type": "string"
+        },
+        "document_index": {
+          "minimum": 0,
+          "title": "Document Index",
+          "type": "integer"
+        },
+        "document_title": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Document Title"
+        },
+        "end_page_number": {
+          "title": "End Page Number",
+          "type": "integer"
+        },
+        "start_page_number": {
+          "minimum": 1,
+          "title": "Start Page Number",
+          "type": "integer"
+        },
+        "type": {
+          "const": "page_location",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cited_text",
+        "document_index",
+        "document_title",
+        "end_page_number",
+        "start_page_number",
+        "type"
+      ],
+      "title": "RequestPageLocationCitation",
+      "type": "object"
+    },
+    "RequestSearchResultLocationCitation": {
+      "additionalProperties": false,
+      "properties": {
+        "cited_text": {
+          "description": "The full text of the cited block range, concatenated.\n\nAlways equals the contents of `content[start_block_index:end_block_index]` joined together. The text block is the minimal citable unit; this field is never a substring of a single block. Not counted toward output tokens, and not counted toward input tokens when sent back in subsequent turns.",
+          "examples": [
+            "The grass is green. The sky is blue."
+          ],
+          "title": "Cited Text",
+          "type": "string"
+        },
+        "end_block_index": {
+          "description": "Exclusive 0-based end index of the cited block range in the source's `content` array.\n\nAlways greater than `start_block_index`; a single-block citation has `end_block_index = start_block_index + 1`.",
+          "title": "End Block Index",
+          "type": "integer"
+        },
+        "search_result_index": {
+          "description": "0-based index of the cited search result among all `search_result` content blocks in the request, in the order they appear across messages and tool results.\n\nCounted separately from `document_index`; server-side web search results are not included in this count.",
+          "minimum": 0,
+          "title": "Search Result Index",
+          "type": "integer"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "start_block_index": {
+          "description": "0-based index of the first cited block in the source's `content` array.",
+          "minimum": 0,
+          "title": "Start Block Index",
+          "type": "integer"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Title"
+        },
+        "type": {
+          "const": "search_result_location",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cited_text",
+        "end_block_index",
+        "search_result_index",
+        "source",
+        "start_block_index",
+        "title",
+        "type"
+      ],
+      "title": "RequestSearchResultLocationCitation",
+      "type": "object"
+    },
+    "RequestWebSearchResultLocationCitation": {
+      "additionalProperties": false,
+      "properties": {
+        "cited_text": {
+          "examples": [
+            "The grass is green. The sky is blue."
+          ],
+          "title": "Cited Text",
+          "type": "string"
+        },
+        "encrypted_index": {
+          "title": "Encrypted Index",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Title"
+        },
+        "type": {
+          "const": "web_search_result_location",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cited_text",
+        "encrypted_index",
+        "title",
+        "type",
+        "url"
+      ],
+      "title": "RequestWebSearchResultLocationCitation",
+      "type": "object"
+    },
+    "ThinkingConfigAdaptive": {
+      "additionalProperties": false,
+      "properties": {
+        "display": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThinkingDisplayMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Controls how thinking content appears in the response. When set to `summarized`, thinking is returned normally. When set to `omitted`, thinking content is redacted but a signature is returned for multi-turn continuity. Defaults to `summarized`."
+        },
+        "type": {
+          "const": "adaptive",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ThinkingConfigAdaptive",
+      "type": "object"
+    },
+    "ThinkingConfigDisabled": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "disabled",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ThinkingConfigDisabled",
+      "type": "object",
+      "x-stainless-go-constant-constructor": true
+    },
+    "ThinkingConfigEnabled": {
+      "additionalProperties": false,
+      "properties": {
+        "budget_tokens": {
+          "description": "Determines how many tokens Claude can use for its internal reasoning process. Larger budgets can enable more thorough analysis for complex problems, improving response quality.\n\nMust be ≥1024 and less than `max_tokens`.\n\nSee [extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking) for details.",
+          "minimum": 1024,
+          "title": "Budget Tokens",
+          "type": "integer"
+        },
+        "display": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThinkingDisplayMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Controls how thinking content appears in the response. When set to `summarized`, thinking is returned normally. When set to `omitted`, thinking content is redacted but a signature is returned for multi-turn continuity. Defaults to `summarized`."
+        },
+        "type": {
+          "const": "enabled",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "budget_tokens",
+        "type"
+      ],
+      "title": "ThinkingConfigEnabled",
+      "type": "object"
+    },
+    "InputSchema": {
+      "additionalProperties": true,
+      "properties": {
+        "properties": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Properties"
+        },
+        "required": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Required"
+        },
+        "type": {
+          "const": "object",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "InputSchema",
+      "type": "object"
+    },
+    "ToolChoiceAny": {
+      "additionalProperties": false,
+      "description": "The model will use any available tools.",
+      "properties": {
+        "disable_parallel_tool_use": {
+          "description": "Whether to disable parallel tool use.\n\nDefaults to `false`. If set to `true`, the model will output exactly one tool use.",
+          "title": "Disable Parallel Tool Use",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "any",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ToolChoiceAny",
+      "type": "object"
+    },
+    "ToolChoiceAuto": {
+      "additionalProperties": false,
+      "description": "The model will automatically decide whether to use tools.",
+      "properties": {
+        "disable_parallel_tool_use": {
+          "description": "Whether to disable parallel tool use.\n\nDefaults to `false`. If set to `true`, the model will output at most one tool use.",
+          "title": "Disable Parallel Tool Use",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "auto",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ToolChoiceAuto",
+      "type": "object"
+    },
+    "ToolChoiceNone": {
+      "additionalProperties": false,
+      "description": "The model will not be allowed to use tools.",
+      "properties": {
+        "type": {
+          "const": "none",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ToolChoiceNone",
+      "type": "object",
+      "x-stainless-go-constant-constructor": true
+    },
+    "ToolChoiceTool": {
+      "additionalProperties": false,
+      "description": "The model will use the specified tool with `tool_choice.name`.",
+      "properties": {
+        "disable_parallel_tool_use": {
+          "description": "Whether to disable parallel tool use.\n\nDefaults to `false`. If set to `true`, the model will output exactly one tool use.",
+          "title": "Disable Parallel Tool Use",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "The name of the tool to use.",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "ToolChoiceTool",
+      "type": "object"
+    },
+    "RequestCitationsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "RequestCitationsConfig",
+      "type": "object"
+    },
+    "UserLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "city": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The city of the user.",
+          "examples": [
+            "New York",
+            "Tokyo",
+            "Los Angeles"
+          ],
+          "title": "City"
+        },
+        "country": {
+          "anyOf": [
+            {
+              "maxLength": 2,
+              "minLength": 2,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The two letter [ISO country code](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2) of the user.",
+          "examples": [
+            "US",
+            "JP",
+            "GB"
+          ],
+          "title": "Country"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The region of the user.",
+          "examples": [
+            "California",
+            "Ontario",
+            "Wales"
+          ],
+          "title": "Region"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The [IANA timezone](https://nodatime.org/TimeZones) of the user.",
+          "examples": [
+            "America/New_York",
+            "Asia/Tokyo",
+            "Europe/London"
+          ],
+          "title": "Timezone"
+        },
+        "type": {
+          "const": "approximate",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "UserLocation",
+      "type": "object"
+    },
+    "RequestBashCodeExecutionToolResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestBashCodeExecutionToolResultError"
+            },
+            {
+              "$ref": "#/$defs/RequestBashCodeExecutionResultBlock"
+            }
+          ],
+          "title": "Content"
+        },
+        "tool_use_id": {
+          "pattern": "^srvtoolu_[a-zA-Z0-9_]+$",
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "bash_code_execution_tool_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "tool_use_id",
+        "type"
+      ],
+      "title": "RequestBashCodeExecutionToolResultBlock",
+      "type": "object"
+    },
+    "RequestCodeExecutionToolResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestCodeExecutionToolResultError"
+            },
+            {
+              "$ref": "#/$defs/RequestCodeExecutionResultBlock"
+            },
+            {
+              "$ref": "#/$defs/RequestEncryptedCodeExecutionResultBlock"
+            }
+          ],
+          "title": "Content"
+        },
+        "tool_use_id": {
+          "pattern": "^srvtoolu_[a-zA-Z0-9_]+$",
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "code_execution_tool_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "tool_use_id",
+        "type"
+      ],
+      "title": "RequestCodeExecutionToolResultBlock",
+      "type": "object"
+    },
+    "RequestContainerUploadBlock": {
+      "additionalProperties": false,
+      "description": "A content block that represents a file to be uploaded to the container\nFiles uploaded via this block will be available in the container's input directory.",
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "file_id": {
+          "title": "File Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "container_upload",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_id",
+        "type"
+      ],
+      "title": "RequestContainerUploadBlock",
+      "type": "object"
+    },
+    "RequestDocumentBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "citations": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestCitationsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "context": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Context"
+        },
+        "source": {
+          "discriminator": {
+            "mapping": {
+              "base64": "#/components/schemas/Base64PDFSource",
+              "content": "#/components/schemas/ContentBlockSource",
+              "text": "#/components/schemas/PlainTextSource",
+              "url": "#/components/schemas/URLPDFSource"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Base64PDFSource"
+            },
+            {
+              "$ref": "#/$defs/PlainTextSource"
+            },
+            {
+              "$ref": "#/$defs/ContentBlockSource"
+            },
+            {
+              "$ref": "#/$defs/URLPDFSource"
+            }
+          ],
+          "title": "Source"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Title"
+        },
+        "type": {
+          "const": "document",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "type"
+      ],
+      "title": "RequestDocumentBlock",
+      "type": "object"
+    },
+    "RequestImageBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "source": {
+          "discriminator": {
+            "mapping": {
+              "base64": "#/components/schemas/Base64ImageSource",
+              "url": "#/components/schemas/URLImageSource"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Base64ImageSource"
+            },
+            {
+              "$ref": "#/$defs/URLImageSource"
+            }
+          ],
+          "title": "Source"
+        },
+        "type": {
+          "const": "image",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "type"
+      ],
+      "title": "RequestImageBlock",
+      "type": "object"
+    },
+    "RequestMidConvSystemBlock": {
+      "additionalProperties": false,
+      "description": "System instructions that appear mid-conversation.\n\nUse this block to provide or update system-level instructions at a specific\npoint in the conversation, rather than only via the top-level `system` parameter.",
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "content": {
+          "description": "System instruction text blocks.",
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "text": "#/components/schemas/RequestTextBlock"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/RequestTextBlock"
+              }
+            ]
+          },
+          "title": "Content",
+          "type": "array"
+        },
+        "type": {
+          "const": "mid_conv_system",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "type"
+      ],
+      "title": "RequestMidConvSystemBlock",
+      "type": "object"
+    },
+    "RequestRedactedThinkingBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "description": "The `data` value of this redacted thinking block, exactly as returned by the API in a previous response. Opaque and encrypted; pass it back unchanged.",
+          "title": "Data",
+          "type": "string"
+        },
+        "type": {
+          "const": "redacted_thinking",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "type"
+      ],
+      "title": "RequestRedactedThinkingBlock",
+      "type": "object"
+    },
+    "RequestSearchResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "citations": {
+          "$ref": "#/$defs/RequestCitationsConfig"
+        },
+        "content": {
+          "items": {
+            "$ref": "#/$defs/RequestTextBlock"
+          },
+          "title": "Content",
+          "type": "array"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "search_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "source",
+        "title",
+        "type"
+      ],
+      "title": "RequestSearchResultBlock",
+      "type": "object"
+    },
+    "RequestServerToolUseBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "caller": {
+          "discriminator": {
+            "mapping": {
+              "code_execution_20250825": "#/components/schemas/ServerToolCaller",
+              "code_execution_20260120": "#/components/schemas/ServerToolCaller_20260120",
+              "direct": "#/components/schemas/DirectCaller"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DirectCaller"
+            },
+            {
+              "$ref": "#/$defs/ServerToolCaller"
+            },
+            {
+              "$ref": "#/$defs/ServerToolCaller_20260120"
+            }
+          ],
+          "title": "Caller"
+        },
+        "id": {
+          "pattern": "^srvtoolu_[a-zA-Z0-9_]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "input": {
+          "additionalProperties": true,
+          "title": "Input",
+          "type": "object"
+        },
+        "name": {
+          "enum": [
+            "web_search",
+            "web_fetch",
+            "code_execution",
+            "bash_code_execution",
+            "text_editor_code_execution",
+            "tool_search_tool_regex",
+            "tool_search_tool_bm25"
+          ],
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "server_tool_use",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "input",
+        "name",
+        "type"
+      ],
+      "title": "RequestServerToolUseBlock",
+      "type": "object"
+    },
+    "RequestTextEditorCodeExecutionToolResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestTextEditorCodeExecutionToolResultError"
+            },
+            {
+              "$ref": "#/$defs/RequestTextEditorCodeExecutionViewResultBlock"
+            },
+            {
+              "$ref": "#/$defs/RequestTextEditorCodeExecutionCreateResultBlock"
+            },
+            {
+              "$ref": "#/$defs/RequestTextEditorCodeExecutionStrReplaceResultBlock"
+            }
+          ],
+          "title": "Content"
+        },
+        "tool_use_id": {
+          "pattern": "^srvtoolu_[a-zA-Z0-9_]+$",
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "text_editor_code_execution_tool_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "tool_use_id",
+        "type"
+      ],
+      "title": "RequestTextEditorCodeExecutionToolResultBlock",
+      "type": "object"
+    },
+    "RequestThinkingBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "signature": {
+          "description": "The `signature` value of this thinking block, exactly as returned by the API in a previous response. Used to verify that the block was generated by Claude.\n\nThinking blocks must be passed back unmodified and in their original order; a modified block results in a 400 `invalid_request_error`.",
+          "title": "Signature",
+          "type": "string"
+        },
+        "thinking": {
+          "description": "The `thinking` text of this block as returned by the API.",
+          "title": "Thinking",
+          "type": "string"
+        },
+        "type": {
+          "const": "thinking",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "signature",
+        "thinking",
+        "type"
+      ],
+      "title": "RequestThinkingBlock",
+      "type": "object"
+    },
+    "RequestToolResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string",
+              "x-stainless-skip": [
+                "go",
+                "cli"
+              ]
+            },
+            {
+              "items": {
+                "discriminator": {
+                  "mapping": {
+                    "document": "#/components/schemas/RequestDocumentBlock",
+                    "image": "#/components/schemas/RequestImageBlock",
+                    "search_result": "#/components/schemas/RequestSearchResultBlock",
+                    "text": "#/components/schemas/RequestTextBlock",
+                    "tool_reference": "#/components/schemas/RequestToolReferenceBlock"
+                  },
+                  "propertyName": "type"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/RequestTextBlock"
+                  },
+                  {
+                    "$ref": "#/$defs/RequestImageBlock"
+                  },
+                  {
+                    "$ref": "#/$defs/RequestSearchResultBlock"
+                  },
+                  {
+                    "$ref": "#/$defs/RequestDocumentBlock"
+                  },
+                  {
+                    "$ref": "#/$defs/RequestToolReferenceBlock"
+                  }
+                ],
+                "title": "Block"
+              },
+              "type": "array",
+              "x-stainless-naming": {
+                "python": {
+                  "type_name": "Content"
+                },
+                "ruby": {
+                  "type_name": "Content"
+                },
+                "php": {
+                  "type_name": "Content"
+                }
+              }
+            }
+          ],
+          "title": "Content"
+        },
+        "is_error": {
+          "title": "Is Error",
+          "type": "boolean"
+        },
+        "tool_use_id": {
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_use_id",
+        "type"
+      ],
+      "title": "RequestToolResultBlock",
+      "type": "object"
+    },
+    "RequestToolSearchToolResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestToolSearchToolResultError"
+            },
+            {
+              "$ref": "#/$defs/RequestToolSearchToolSearchResultBlock"
+            }
+          ],
+          "title": "Content"
+        },
+        "tool_use_id": {
+          "pattern": "^srvtoolu_[a-zA-Z0-9_]+$",
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_search_tool_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "tool_use_id",
+        "type"
+      ],
+      "title": "RequestToolSearchToolResultBlock",
+      "type": "object"
+    },
+    "RequestToolUseBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "caller": {
+          "discriminator": {
+            "mapping": {
+              "code_execution_20250825": "#/components/schemas/ServerToolCaller",
+              "code_execution_20260120": "#/components/schemas/ServerToolCaller_20260120",
+              "direct": "#/components/schemas/DirectCaller"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DirectCaller"
+            },
+            {
+              "$ref": "#/$defs/ServerToolCaller"
+            },
+            {
+              "$ref": "#/$defs/ServerToolCaller_20260120"
+            }
+          ],
+          "title": "Caller"
+        },
+        "id": {
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "input": {
+          "additionalProperties": true,
+          "title": "Input",
+          "type": "object"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_use",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "input",
+        "name",
+        "type"
+      ],
+      "title": "RequestToolUseBlock",
+      "type": "object"
+    },
+    "RequestWebFetchToolResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "caller": {
+          "discriminator": {
+            "mapping": {
+              "code_execution_20250825": "#/components/schemas/ServerToolCaller",
+              "code_execution_20260120": "#/components/schemas/ServerToolCaller_20260120",
+              "direct": "#/components/schemas/DirectCaller"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DirectCaller"
+            },
+            {
+              "$ref": "#/$defs/ServerToolCaller"
+            },
+            {
+              "$ref": "#/$defs/ServerToolCaller_20260120"
+            }
+          ],
+          "title": "Caller"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestWebFetchToolResultError"
+            },
+            {
+              "$ref": "#/$defs/RequestWebFetchResultBlock"
+            }
+          ],
+          "title": "Content"
+        },
+        "tool_use_id": {
+          "pattern": "^srvtoolu_[a-zA-Z0-9_]+$",
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "web_fetch_tool_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "tool_use_id",
+        "type"
+      ],
+      "title": "RequestWebFetchToolResultBlock",
+      "type": "object"
+    },
+    "RequestWebSearchToolResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "caller": {
+          "discriminator": {
+            "mapping": {
+              "code_execution_20250825": "#/components/schemas/ServerToolCaller",
+              "code_execution_20260120": "#/components/schemas/ServerToolCaller_20260120",
+              "direct": "#/components/schemas/DirectCaller"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DirectCaller"
+            },
+            {
+              "$ref": "#/$defs/ServerToolCaller"
+            },
+            {
+              "$ref": "#/$defs/ServerToolCaller_20260120"
+            }
+          ],
+          "title": "Caller"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/RequestWebSearchResultBlock"
+              },
+              "type": "array",
+              "title": "web_search_tool_result_block_item"
+            },
+            {
+              "$ref": "#/$defs/RequestWebSearchToolResultError",
+              "x-stainless-naming": {
+                "go": {
+                  "variant_constructor": "NewWebSearchToolRequestError"
+                }
+              }
+            }
+          ],
+          "title": "Content"
+        },
+        "tool_use_id": {
+          "pattern": "^srvtoolu_[a-zA-Z0-9_]+$",
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "web_search_tool_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "tool_use_id",
+        "type"
+      ],
+      "title": "RequestWebSearchToolResultBlock",
+      "type": "object"
+    },
+    "ThinkingDisplayMode": {
+      "enum": [
+        "summarized",
+        "omitted"
+      ],
+      "title": "ThinkingDisplayMode",
+      "type": "string"
+    },
+    "RequestBashCodeExecutionResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/RequestBashCodeExecutionOutputBlock"
+          },
+          "title": "Content",
+          "type": "array"
+        },
+        "return_code": {
+          "title": "Return Code",
+          "type": "integer"
+        },
+        "stderr": {
+          "title": "Stderr",
+          "type": "string"
+        },
+        "stdout": {
+          "title": "Stdout",
+          "type": "string"
+        },
+        "type": {
+          "const": "bash_code_execution_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "return_code",
+        "stderr",
+        "stdout",
+        "type"
+      ],
+      "title": "RequestBashCodeExecutionResultBlock",
+      "type": "object"
+    },
+    "RequestBashCodeExecutionToolResultError": {
+      "additionalProperties": false,
+      "properties": {
+        "error_code": {
+          "$ref": "#/$defs/BashCodeExecutionToolResultErrorCode"
+        },
+        "type": {
+          "const": "bash_code_execution_tool_result_error",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error_code",
+        "type"
+      ],
+      "title": "RequestBashCodeExecutionToolResultError",
+      "type": "object"
+    },
+    "RequestCodeExecutionResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/RequestCodeExecutionOutputBlock"
+          },
+          "title": "Content",
+          "type": "array"
+        },
+        "return_code": {
+          "title": "Return Code",
+          "type": "integer"
+        },
+        "stderr": {
+          "title": "Stderr",
+          "type": "string"
+        },
+        "stdout": {
+          "title": "Stdout",
+          "type": "string"
+        },
+        "type": {
+          "const": "code_execution_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "return_code",
+        "stderr",
+        "stdout",
+        "type"
+      ],
+      "title": "RequestCodeExecutionResultBlock",
+      "type": "object"
+    },
+    "RequestCodeExecutionToolResultError": {
+      "additionalProperties": false,
+      "properties": {
+        "error_code": {
+          "$ref": "#/$defs/CodeExecutionToolResultErrorCode"
+        },
+        "type": {
+          "const": "code_execution_tool_result_error",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error_code",
+        "type"
+      ],
+      "title": "RequestCodeExecutionToolResultError",
+      "type": "object"
+    },
+    "RequestEncryptedCodeExecutionResultBlock": {
+      "additionalProperties": false,
+      "description": "Code execution result with encrypted stdout for PFC + web_search results.",
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/RequestCodeExecutionOutputBlock"
+          },
+          "title": "Content",
+          "type": "array"
+        },
+        "encrypted_stdout": {
+          "title": "Encrypted Stdout",
+          "type": "string"
+        },
+        "return_code": {
+          "title": "Return Code",
+          "type": "integer"
+        },
+        "stderr": {
+          "title": "Stderr",
+          "type": "string"
+        },
+        "type": {
+          "const": "encrypted_code_execution_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "encrypted_stdout",
+        "return_code",
+        "stderr",
+        "type"
+      ],
+      "title": "RequestEncryptedCodeExecutionResultBlock",
+      "type": "object"
+    },
+    "Base64PDFSource": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "format": "byte",
+          "title": "Data",
+          "type": "string"
+        },
+        "media_type": {
+          "const": "application/pdf",
+          "title": "Media Type",
+          "type": "string"
+        },
+        "type": {
+          "const": "base64",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "media_type",
+        "type"
+      ],
+      "title": "Base64PDFSource",
+      "type": "object"
+    },
+    "ContentBlockSource": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "discriminator": {
+                  "mapping": {
+                    "image": "#/components/schemas/RequestImageBlock",
+                    "text": "#/components/schemas/RequestTextBlock"
+                  },
+                  "propertyName": "type"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/RequestTextBlock"
+                  },
+                  {
+                    "$ref": "#/$defs/RequestImageBlock"
+                  }
+                ],
+                "x-stainless-naming": {
+                  "go": {
+                    "type_name": "ContentBlockSourceContentItem"
+                  }
+                },
+                "title": "content_block_source_content_item"
+              },
+              "type": "array",
+              "title": "content_block_source_content"
+            }
+          ],
+          "title": "Content"
+        },
+        "type": {
+          "const": "content",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "type"
+      ],
+      "title": "ContentBlockSource",
+      "type": "object"
+    },
+    "PlainTextSource": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "title": "Data",
+          "type": "string"
+        },
+        "media_type": {
+          "const": "text/plain",
+          "title": "Media Type",
+          "type": "string"
+        },
+        "type": {
+          "const": "text",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "media_type",
+        "type"
+      ],
+      "title": "PlainTextSource",
+      "type": "object"
+    },
+    "URLPDFSource": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "url",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "url"
+      ],
+      "title": "URLPDFSource",
+      "type": "object"
+    },
+    "Base64ImageSource": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "format": "byte",
+          "title": "Data",
+          "type": "string"
+        },
+        "media_type": {
+          "enum": [
+            "image/jpeg",
+            "image/png",
+            "image/gif",
+            "image/webp"
+          ],
+          "title": "Media Type",
+          "type": "string"
+        },
+        "type": {
+          "const": "base64",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "media_type",
+        "type"
+      ],
+      "title": "Base64ImageSource",
+      "type": "object"
+    },
+    "URLImageSource": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "url",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "url"
+      ],
+      "title": "URLImageSource",
+      "type": "object"
+    },
+    "DirectCaller": {
+      "additionalProperties": false,
+      "description": "Tool invocation directly from the model.",
+      "properties": {
+        "type": {
+          "const": "direct",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "DirectCaller",
+      "type": "object"
+    },
+    "ServerToolCaller": {
+      "additionalProperties": false,
+      "description": "Tool invocation generated by a server-side tool.",
+      "properties": {
+        "tool_id": {
+          "pattern": "^srvtoolu_[a-zA-Z0-9_]+$",
+          "title": "Tool Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "code_execution_20250825",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_id",
+        "type"
+      ],
+      "title": "ServerToolCaller",
+      "type": "object"
+    },
+    "ServerToolCaller_20260120": {
+      "additionalProperties": false,
+      "properties": {
+        "tool_id": {
+          "pattern": "^srvtoolu_[a-zA-Z0-9_]+$",
+          "title": "Tool Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "code_execution_20260120",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_id",
+        "type"
+      ],
+      "title": "ServerToolCaller_20260120",
+      "type": "object"
+    },
+    "RequestTextEditorCodeExecutionCreateResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "is_file_update": {
+          "title": "Is File Update",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "text_editor_code_execution_create_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "is_file_update",
+        "type"
+      ],
+      "title": "RequestTextEditorCodeExecutionCreateResultBlock",
+      "type": "object"
+    },
+    "RequestTextEditorCodeExecutionStrReplaceResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "lines": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lines"
+        },
+        "new_lines": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "New Lines"
+        },
+        "new_start": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "New Start"
+        },
+        "old_lines": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Old Lines"
+        },
+        "old_start": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Old Start"
+        },
+        "type": {
+          "const": "text_editor_code_execution_str_replace_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "RequestTextEditorCodeExecutionStrReplaceResultBlock",
+      "type": "object"
+    },
+    "RequestTextEditorCodeExecutionToolResultError": {
+      "additionalProperties": false,
+      "properties": {
+        "error_code": {
+          "$ref": "#/$defs/TextEditorCodeExecutionToolResultErrorCode"
+        },
+        "error_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error Message"
+        },
+        "type": {
+          "const": "text_editor_code_execution_tool_result_error",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error_code",
+        "type"
+      ],
+      "title": "RequestTextEditorCodeExecutionToolResultError",
+      "type": "object"
+    },
+    "RequestTextEditorCodeExecutionViewResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "file_type": {
+          "enum": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "title": "File Type",
+          "type": "string"
+        },
+        "num_lines": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Num Lines"
+        },
+        "start_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Start Line"
+        },
+        "total_lines": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Total Lines"
+        },
+        "type": {
+          "const": "text_editor_code_execution_view_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "file_type",
+        "type"
+      ],
+      "title": "RequestTextEditorCodeExecutionViewResultBlock",
+      "type": "object"
+    },
+    "RequestToolReferenceBlock": {
+      "additionalProperties": false,
+      "description": "Tool reference block that can be included in tool_result content.",
+      "properties": {
+        "cache_control": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "ephemeral": "#/components/schemas/CacheControlEphemeral"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CacheControlEphemeral"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Create a cache control breakpoint at this content block.",
+          "title": "Cache Control"
+        },
+        "tool_name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_-]{1,256}$",
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_reference",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_name",
+        "type"
+      ],
+      "title": "RequestToolReferenceBlock",
+      "type": "object"
+    },
+    "RequestToolSearchToolResultError": {
+      "additionalProperties": false,
+      "properties": {
+        "error_code": {
+          "$ref": "#/$defs/ToolSearchToolResultErrorCode"
+        },
+        "error_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error Message"
+        },
+        "type": {
+          "const": "tool_search_tool_result_error",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error_code",
+        "type"
+      ],
+      "title": "RequestToolSearchToolResultError",
+      "type": "object"
+    },
+    "RequestToolSearchToolSearchResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "tool_references": {
+          "items": {
+            "$ref": "#/$defs/RequestToolReferenceBlock"
+          },
+          "title": "Tool References",
+          "type": "array"
+        },
+        "type": {
+          "const": "tool_search_tool_search_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_references",
+        "type"
+      ],
+      "title": "RequestToolSearchToolSearchResultBlock",
+      "type": "object"
+    },
+    "RequestWebFetchResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "$ref": "#/$defs/RequestDocumentBlock"
+        },
+        "retrieved_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "ISO 8601 timestamp when the content was retrieved",
+          "title": "Retrieved At"
+        },
+        "type": {
+          "const": "web_fetch_result",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "description": "Fetched content URL",
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "type",
+        "url"
+      ],
+      "title": "RequestWebFetchResultBlock",
+      "type": "object"
+    },
+    "RequestWebFetchToolResultError": {
+      "additionalProperties": false,
+      "properties": {
+        "error_code": {
+          "$ref": "#/$defs/WebFetchToolResultErrorCode"
+        },
+        "type": {
+          "const": "web_fetch_tool_result_error",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error_code",
+        "type"
+      ],
+      "title": "RequestWebFetchToolResultError",
+      "type": "object"
+    },
+    "RequestWebSearchResultBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "encrypted_content": {
+          "title": "Encrypted Content",
+          "type": "string"
+        },
+        "page_age": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Page Age"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "web_search_result",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "encrypted_content",
+        "title",
+        "type",
+        "url"
+      ],
+      "title": "RequestWebSearchResultBlock",
+      "type": "object"
+    },
+    "RequestWebSearchToolResultError": {
+      "additionalProperties": false,
+      "properties": {
+        "error_code": {
+          "$ref": "#/$defs/WebSearchToolResultErrorCode"
+        },
+        "type": {
+          "const": "web_search_tool_result_error",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error_code",
+        "type"
+      ],
+      "title": "RequestWebSearchToolResultError",
+      "type": "object"
+    },
+    "RequestBashCodeExecutionOutputBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "file_id": {
+          "title": "File Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "bash_code_execution_output",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_id",
+        "type"
+      ],
+      "title": "RequestBashCodeExecutionOutputBlock",
+      "type": "object"
+    },
+    "BashCodeExecutionToolResultErrorCode": {
+      "enum": [
+        "invalid_tool_input",
+        "unavailable",
+        "too_many_requests",
+        "execution_time_exceeded",
+        "output_file_too_large"
+      ],
+      "title": "BashCodeExecutionToolResultErrorCode",
+      "type": "string"
+    },
+    "RequestCodeExecutionOutputBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "file_id": {
+          "title": "File Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "code_execution_output",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_id",
+        "type"
+      ],
+      "title": "RequestCodeExecutionOutputBlock",
+      "type": "object"
+    },
+    "CodeExecutionToolResultErrorCode": {
+      "enum": [
+        "invalid_tool_input",
+        "unavailable",
+        "too_many_requests",
+        "execution_time_exceeded"
+      ],
+      "title": "CodeExecutionToolResultErrorCode",
+      "type": "string"
+    },
+    "TextEditorCodeExecutionToolResultErrorCode": {
+      "enum": [
+        "invalid_tool_input",
+        "unavailable",
+        "too_many_requests",
+        "execution_time_exceeded",
+        "file_not_found"
+      ],
+      "title": "TextEditorCodeExecutionToolResultErrorCode",
+      "type": "string"
+    },
+    "ToolSearchToolResultErrorCode": {
+      "enum": [
+        "invalid_tool_input",
+        "unavailable",
+        "too_many_requests",
+        "execution_time_exceeded"
+      ],
+      "title": "ToolSearchToolResultErrorCode",
+      "type": "string"
+    },
+    "WebFetchToolResultErrorCode": {
+      "enum": [
+        "invalid_tool_input",
+        "url_too_long",
+        "url_not_allowed",
+        "url_not_in_prior_context",
+        "url_not_accessible",
+        "unsupported_content_type",
+        "too_many_requests",
+        "max_uses_exceeded",
+        "unavailable"
+      ],
+      "title": "WebFetchToolResultErrorCode",
+      "type": "string"
+    },
+    "WebSearchToolResultErrorCode": {
+      "enum": [
+        "invalid_tool_input",
+        "unavailable",
+        "max_uses_exceeded",
+        "too_many_requests",
+        "query_too_long",
+        "request_too_large"
+      ],
+      "title": "WebSearchToolResultErrorCode",
+      "type": "string"
+    }
+  }
+}

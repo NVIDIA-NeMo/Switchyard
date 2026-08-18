@@ -5,6 +5,8 @@
 
 mod buffered;
 mod stream;
+#[allow(dead_code)]
+mod wire;
 
 pub use buffered::AnthropicMessagesCodec;
 pub use stream::AnthropicMessagesStreamCodec;

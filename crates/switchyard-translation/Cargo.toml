@@ -23,6 +23,8 @@ switchyard-protocol.workspace = true
 thiserror.workspace = true
 futures.workspace = true
 async-stream.workspace = true
+regress.workspace = true
+typify.workspace = true
 
 [dev-dependencies]
 pretty_assertions = "1"
