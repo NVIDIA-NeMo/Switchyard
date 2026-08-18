@@ -170,6 +170,10 @@ fn encode_responses_stream(
         LlmResponseChunk::ReasoningDelta { text, .. } => {
             encode_responses_reasoning_delta(state, text)
         }
+        LlmResponseChunk::ReasoningDetailsDelta { text, .. } if !text.is_empty() => {
+            encode_responses_reasoning_delta(state, text)
+        }
+        LlmResponseChunk::ReasoningDetailsDelta { .. } => Vec::new(),
         LlmResponseChunk::ToolCallDelta {
             index,
             id,

@@ -3,9 +3,15 @@
 
 //! Tests for buffered response translation between provider formats.
 
+pub mod common;
+
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+
+use common::{
+    REASONING_MODEL, normalized_policy, shell_tool_call, text_and_encrypted_reasoning_details,
+};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -327,6 +333,48 @@ fn openai_reasoning_response_translates_to_responses_reasoning_item() -> TestRes
     assert_eq!(
         output["usage"]["output_tokens_details"],
         json!({"reasoning_tokens": 2})
+    );
+    Ok(())
+}
+
+#[test]
+fn openai_chat_response_round_trips_reasoning_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    // Exercise the normalized IR path instead of replaying the original JSON.
+    let policy = normalized_policy();
+    let details = text_and_encrypted_reasoning_details();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": REASONING_MODEL,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "reasoning": "fallback text",
+                "reasoning_details": details,
+                "tool_calls": [shell_tool_call()]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiChat,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    assert_eq!(
+        output["choices"][0]["message"]["reasoning_details"],
+        details
+    );
+    assert_eq!(
+        output["choices"][0]["message"]["reasoning_content"],
+        "Inspect the tool result."
     );
     Ok(())
 }

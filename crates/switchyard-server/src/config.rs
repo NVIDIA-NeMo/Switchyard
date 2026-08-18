@@ -3,15 +3,15 @@
 
 //! Typed TOML configuration and explicit construction for the Rust server.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
 use libsy::{
-    Algorithm, ClassifierContractConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTarget,
-    LlmTargetSet, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
+    Algorithm, ClassifierContractConfig, ClassifierResponseFormat, CustomClassifierConfig,
+    CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig,
+    LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
     StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
@@ -20,11 +20,11 @@ use switchyard_llm_client::{
     Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     TranslatingLlmClient,
 };
-use switchyard_protocol::RoutedLlmClient;
+use switchyard_protocol::{ModelId, RoutedLlmClient};
 
 use crate::{
-    CountTokensTarget, ModelCapabilities, ModelPrice, SavingsConfig, ServerError, ServerResult,
-    ServerState,
+    CallerAuthKind, CountTokensTarget, ModelCapabilities, ModelPrice, SavingsConfig, ServerError,
+    ServerResult, ServerState,
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -106,12 +106,13 @@ impl ServerConfig {
                 )));
             }
             let algorithm = build_algorithm(route_name, config, &targets)?;
-            let client = self.build_client_router(config, &clients)?;
+            let (client, caller_auth) = self.build_route_clients(route_name, config, &clients)?;
             let count_tokens_target = self.build_count_tokens_target(config, &clients);
             routes.push((
-                config.id().to_string(),
+                config.id().clone(),
                 algorithm,
                 client,
+                caller_auth,
                 capabilities,
                 count_tokens_target,
             ));
@@ -195,7 +196,7 @@ impl ServerConfig {
                 .get_mut(&target.llm_client)
                 .ok_or_else(|| ServerError::new("validated llm client was not initialized"))?;
             model_configs.push(ModelConfig::new(
-                &target.id,
+                target.id.clone(),
                 build_backend(&target.llm_client, client_config, &target.extra_body)?,
                 None,
             ));
@@ -212,18 +213,11 @@ impl ServerConfig {
         Ok(clients)
     }
 
-    fn build_targets(&self) -> ServerResult<BTreeMap<String, LlmTarget>> {
+    fn build_targets(&self) -> ServerResult<BTreeMap<String, ModelId>> {
         Ok(self
             .targets
             .iter()
-            .map(|(name, config)| {
-                (
-                    name.clone(),
-                    LlmTarget {
-                        semantic_name: config.id.clone(),
-                    },
-                )
-            })
+            .map(|(name, config)| (name.clone(), config.id.clone()))
             .collect())
     }
 
@@ -237,26 +231,40 @@ impl ServerConfig {
     /// The map is built per route because targets are only reachable through the routes that
     /// name them, so the same model id may resolve to different clients in two routes without
     /// colliding.
-    fn build_client_router(
+    fn build_route_clients(
         &self,
+        route_name: &str,
         route: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
-    ) -> ServerResult<ClientRouter> {
-        let by_model = route
-            .callable_target_names()
-            .into_iter()
-            .map(|name| {
-                let target = self.targets.get(name).ok_or_else(|| {
-                    ServerError::new(format!("route references unknown target {name}"))
-                })?;
-                let client = clients.get(&target.llm_client).ok_or_else(|| {
-                    ServerError::new(format!("target {name} has no constructed llm client"))
-                })?;
-                let client: Arc<dyn RoutedLlmClient> = client.clone();
-                Ok((target.id.clone(), client))
-            })
-            .collect::<ServerResult<_>>()?;
-        Ok(ClientRouter::new(by_model))
+    ) -> ServerResult<(ClientRouter, Option<CallerAuthKind>)> {
+        let mut by_model = HashMap::new();
+        let mut caller_auth = None;
+        for name in route.callable_target_names() {
+            let target = self.targets.get(name).ok_or_else(|| {
+                ServerError::new(format!("route references unknown target {name}"))
+            })?;
+            let client = clients.get(&target.llm_client).ok_or_else(|| {
+                ServerError::new(format!("target {name} has no constructed llm client"))
+            })?;
+            let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
+                ServerError::new(format!(
+                    "target {name} references unknown llm client {}",
+                    target.llm_client
+                ))
+            })?;
+            if client_config.forward_auth {
+                let target_auth = client_config.format.caller_auth_kind();
+                if caller_auth.is_some_and(|kind| kind != target_auth) {
+                    return Err(ServerError::new(format!(
+                        "route {route_name} cannot forward both Anthropic and OpenAI caller credentials"
+                    )));
+                }
+                caller_auth = Some(target_auth);
+            }
+            let client: Arc<dyn RoutedLlmClient> = client.clone();
+            by_model.insert(target.id.clone(), client);
+        }
+        Ok((ClientRouter::new(by_model), caller_auth))
     }
 
     fn build_count_tokens_target(
@@ -287,7 +295,7 @@ impl ServerConfig {
 }
 
 // Prefer known Claude families, then preserve the route's target order.
-fn count_tokens_priority(target_name: &str, model_id: &str) -> usize {
+fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
     let target_name = target_name.to_ascii_lowercase();
     let model_id = model_id.to_ascii_lowercase();
     ["opus", "sonnet", "haiku"]
@@ -303,6 +311,8 @@ struct LlmClientConfig {
     base_url: String,
     api_key_env: Option<String>,
     #[serde(default)]
+    forward_auth: bool,
+    #[serde(default)]
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
@@ -311,7 +321,7 @@ struct LlmClientConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetConfig {
-    id: String,
+    id: ModelId,
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
@@ -363,6 +373,15 @@ enum ClientFormat {
     AnthropicMessages,
 }
 
+impl ClientFormat {
+    const fn caller_auth_kind(self) -> CallerAuthKind {
+        match self {
+            Self::AnthropicMessages => CallerAuthKind::Anthropic,
+            Self::OpenAiChat | Self::OpenAiResponses => CallerAuthKind::OpenAi,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ClassifierPolicyConfig {
@@ -402,6 +421,7 @@ struct CapabilityClassifierRouteConfig {
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
     prompt: Option<String>,
+    response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
 }
 
@@ -410,6 +430,7 @@ struct EscalationClassifierRouteConfig {
     strong_target: String,
     weak_target: String,
     prompt: Option<String>,
+    response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
     judge: EscalationJudgeConfig,
 }
@@ -431,7 +452,7 @@ struct CustomClassifierRouteConfig {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum RouteConfig {
     Noop {
-        id: String,
+        id: ModelId,
         #[serde(default)]
         context_window: Option<u32>,
         #[serde(default)]
@@ -440,7 +461,7 @@ enum RouteConfig {
         reasoning: Option<bool>,
     },
     Random {
-        id: String,
+        id: ModelId,
         #[serde(default)]
         context_window: Option<u32>,
         #[serde(default)]
@@ -452,7 +473,7 @@ enum RouteConfig {
         seed: Option<u64>,
     },
     Passthrough {
-        id: String,
+        id: ModelId,
         #[serde(default)]
         context_window: Option<u32>,
         #[serde(default)]
@@ -462,7 +483,7 @@ enum RouteConfig {
         target: String,
     },
     LlmClassifier {
-        id: String,
+        id: ModelId,
         #[serde(default)]
         context_window: Option<u32>,
         #[serde(default)]
@@ -488,6 +509,8 @@ enum RouteConfig {
         recent_turn_window: Option<usize>,
         #[serde(default)]
         prompt: Option<String>,
+        #[serde(default)]
+        response_format_type: ClassifierResponseFormat,
         #[serde(default = "default_classifier_max_output_tokens")]
         max_output_tokens: u64,
         #[serde(default)]
@@ -502,7 +525,7 @@ enum RouteConfig {
         policy: Option<ClassifierPolicyConfig>,
     },
     StageRouter {
-        id: String,
+        id: ModelId,
         #[serde(default)]
         context_window: Option<u32>,
         #[serde(default)]
@@ -548,6 +571,8 @@ struct StageClassifierConfig {
     recent_turn_window: Option<usize>,
     #[serde(default)]
     prompt: Option<String>,
+    #[serde(default)]
+    response_format_type: ClassifierResponseFormat,
     #[serde(default = "default_classifier_max_output_tokens")]
     max_output_tokens: u64,
 }
@@ -560,14 +585,15 @@ impl StageClassifierConfig {
             session_affinity: self.session_affinity,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
-            contract: classifier_contract(self.prompt.as_deref()),
+            contract: classifier_contract(self.prompt.as_deref())
+                .with_response_format_type(self.response_format_type),
             max_output_tokens: self.max_output_tokens,
         }
     }
 }
 
 impl RouteConfig {
-    fn id(&self) -> &str {
+    fn id(&self) -> &ModelId {
         use RouteConfig::*;
         match self {
             Noop { id, .. }
@@ -686,6 +712,7 @@ impl RouteConfig {
             message_hash_fallback,
             recent_turn_window,
             prompt,
+            response_format_type,
             max_output_tokens,
             escalation,
             targets,
@@ -743,6 +770,7 @@ impl RouteConfig {
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
                         prompt: prompt.clone(),
+                        response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
                     },
                 ))
@@ -780,6 +808,7 @@ impl RouteConfig {
                             weak_target,
                         )?,
                         prompt: prompt.clone(),
+                        response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
                         judge: required_classifier_field(route_name, "escalation", escalation)?,
                     },
@@ -791,6 +820,7 @@ impl RouteConfig {
                     || base_threshold.is_some()
                     || threshold_step.is_some()
                     || escalation.is_some()
+                    || *response_format_type != ClassifierResponseFormat::JsonSchema
                 {
                     return Err(ServerError::new(format!(
                         "llm_classifier route {route_name} mode custom cannot use capability or escalation fields"
@@ -876,6 +906,11 @@ fn build_backend(
             "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
         )));
     }
+    if config.forward_auth && config.api_key_env.is_some() {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} cannot set both forward_auth and api_key_env"
+        )));
+    }
     let api_key = config
         .api_key_env
         .as_deref()
@@ -901,6 +936,7 @@ fn build_backend(
     let http = HttpBackendConfig {
         base_url: base_url.to_string(),
         api_key,
+        forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
         max_retries: config.max_retries,
@@ -919,7 +955,7 @@ const fn default_max_retries() -> u32 {
 fn build_algorithm(
     route_name: &str,
     config: &RouteConfig,
-    targets: &BTreeMap<String, LlmTarget>,
+    targets: &BTreeMap<String, ModelId>,
 ) -> ServerResult<Arc<dyn Algorithm>> {
     match config {
         RouteConfig::Noop { .. } => Ok(Arc::new(Noop {})),
@@ -936,25 +972,27 @@ fn build_algorithm(
             Ok(Arc::new(algorithm))
         }
         RouteConfig::Passthrough { target, .. } => {
-            let target = resolve_target(route_name, target, targets)?;
+            let target = resolve_target_model_id(route_name, target, targets)?;
             Ok(Arc::new(Passthrough::new(target)))
         }
         RouteConfig::LlmClassifier {
             classifier_target, ..
         } => {
-            let classifier = resolve_target(route_name, classifier_target, targets)?;
+            let classifier = resolve_target_model_id(route_name, classifier_target, targets)?;
             let mode = config.classifier_mode(route_name)?;
             let algorithm = match mode {
                 LlmClassifierModeConfig::Capability(config) => {
-                    let strong = resolve_target(route_name, &config.strong_target, targets)?;
-                    let weak = resolve_target(route_name, &config.weak_target, targets)?;
+                    let strong =
+                        resolve_target_model_id(route_name, &config.strong_target, targets)?;
+                    let weak = resolve_target_model_id(route_name, &config.weak_target, targets)?;
                     let classifier_config = TaskClassifierConfig {
                         base_threshold: config.base_threshold,
                         threshold_step: config.threshold_step,
                         session_affinity: config.session_affinity,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
-                        contract: classifier_contract(config.prompt.as_deref()),
+                        contract: classifier_contract(config.prompt.as_deref())
+                            .with_response_format_type(config.response_format_type),
                         max_output_tokens: config.max_output_tokens,
                     };
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
@@ -965,13 +1003,15 @@ fn build_algorithm(
                     })
                 }
                 LlmClassifierModeConfig::Escalation(config) => {
-                    let strong = resolve_target(route_name, &config.strong_target, targets)?;
-                    let weak = resolve_target(route_name, &config.weak_target, targets)?;
+                    let strong =
+                        resolve_target_model_id(route_name, &config.strong_target, targets)?;
+                    let weak = resolve_target_model_id(route_name, &config.weak_target, targets)?;
                     LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
                         judge_target: classifier,
                         efficient_target: weak,
                         capable_target: strong,
-                        contract: classifier_contract(config.prompt.as_deref()),
+                        contract: classifier_contract(config.prompt.as_deref())
+                            .with_response_format_type(config.response_format_type),
                         config: config.judge,
                         max_output_tokens: config.max_output_tokens,
                     })
@@ -981,7 +1021,7 @@ fn build_algorithm(
                         .targets
                         .iter()
                         .map(|name| {
-                            resolve_target(route_name, name, targets)
+                            resolve_target_model_id(route_name, name, targets)
                                 .map(|target| (name.clone(), target))
                         })
                         .collect::<ServerResult<Vec<_>>>()?;
@@ -1031,15 +1071,15 @@ fn build_algorithm(
                     "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
                 );
             }
-            let capable = resolve_target(route_name, capable_target, targets)?;
-            let efficient = resolve_target(route_name, efficient_target, targets)?;
+            let capable = resolve_target_model_id(route_name, capable_target, targets)?;
+            let efficient = resolve_target_model_id(route_name, efficient_target, targets)?;
             let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
             config.recent_window = *recent_turn_window;
             config.handoff_notes = handoff_notes.clone();
             config.tier_prompts = tier_prompts(
-                &capable.semantic_name,
+                &capable,
                 capable_system_prompt.as_deref(),
-                &efficient.semantic_name,
+                &efficient,
                 efficient_system_prompt.as_deref(),
             );
             // The judge is called through its own target, so it is not a routing
@@ -1047,12 +1087,12 @@ fn build_algorithm(
             config.llm_fallback = classifier
                 .as_ref()
                 .map(|classifier| {
-                    resolve_target(route_name, &classifier.target, targets).map(|judge_target| {
-                        LlmFallback {
+                    resolve_target_model_id(route_name, &classifier.target, targets).map(
+                        |judge_target| LlmFallback {
                             judge_target,
                             config: classifier.task_classifier_config(),
-                        }
-                    })
+                        },
+                    )
                 })
                 .transpose()?;
             let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
@@ -1093,20 +1133,19 @@ fn tier_prompts(
 fn resolve_targets<'a>(
     route_name: &str,
     names: impl IntoIterator<Item = &'a str>,
-    targets: &BTreeMap<String, LlmTarget>,
-) -> ServerResult<LlmTargetSet> {
-    let resolved = names
+    targets: &BTreeMap<String, ModelId>,
+) -> ServerResult<Vec<ModelId>> {
+    names
         .into_iter()
-        .map(|name| resolve_target(route_name, name, targets))
-        .collect::<ServerResult<Vec<_>>>()?;
-    Ok(LlmTargetSet::new(resolved))
+        .map(|name| resolve_target_model_id(route_name, name, targets))
+        .collect()
 }
 
-fn resolve_target(
+fn resolve_target_model_id(
     route_name: &str,
     name: &str,
-    targets: &BTreeMap<String, LlmTarget>,
-) -> ServerResult<LlmTarget> {
+    targets: &BTreeMap<String, ModelId>,
+) -> ServerResult<ModelId> {
     targets.get(name).cloned().ok_or_else(|| {
         ServerError::new(format!(
             "route {route_name} references unknown target {name}"
@@ -1262,7 +1301,10 @@ target = "weak"
             "base_threshold = 0.5",
             "base_threshold = 0.5\nprompt = \"{{RESPONSE_SCHEMA}}\"",
         );
-        assert!(error_message(&schema_placeholder).contains("schema is sent separately"));
+        assert!(
+            error_message(&schema_placeholder)
+                .contains("Switchyard supplies the schema automatically")
+        );
         Ok(())
     }
 
@@ -1621,6 +1663,52 @@ target = "azure"
     }
 
     #[test]
+    fn rejects_headers_that_switchyard_sets() {
+        let cases = [
+            (
+                "base_url = \"https://example.test/v1\"",
+                "base_url = \"https://example.test/v1\"\n\
+                 extra_headers = { AUTHORIZATION = \"Bearer custom-key\" }",
+                "AUTHORIZATION",
+            ),
+            (
+                "base_url = \"https://example.test\"",
+                "base_url = \"https://example.test\"\n\
+                 extra_headers = { \"X-Api-Key\" = \"custom-key\" }",
+                "X-Api-Key",
+            ),
+            (
+                "base_url = \"https://example.test\"",
+                "base_url = \"https://example.test\"\n\
+                 extra_headers = { \"ANTHROPIC-VERSION\" = \"custom-version\" }",
+                "ANTHROPIC-VERSION",
+            ),
+        ];
+
+        for (original, replacement, header) in cases {
+            let configured = VALID_CONFIG.replacen(original, replacement, 1);
+            let error = error_message(&configured);
+            assert!(
+                error.contains(&format!("extra_headers cannot set {header:?}")),
+                "expected {header} to be rejected, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_additional_headers() -> ServerResult<()> {
+        let configured = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\n\
+             extra_headers = { X-Inference-Priority = \"batch\" }",
+            1,
+        );
+
+        server_state_from_toml(&configured)?;
+        Ok(())
+    }
+
+    #[test]
     fn retry_budget_rejects_negative_values() {
         let invalid = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",
@@ -1666,5 +1754,49 @@ target = "azure"
             std::env::remove_var(EMPTY_KEY_ENV);
         }
         assert!(message.contains("is empty"));
+    }
+
+    #[test]
+    fn forward_auth_rejects_conflicting_credentials() {
+        let competing_auth = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\n\
+                 forward_auth = true\n\
+                 api_key_env = \"UNUSED_TEST_KEY\"",
+            1,
+        );
+        assert!(
+            error_message(&competing_auth).contains("cannot set both forward_auth and api_key_env")
+        );
+
+        let static_auth = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test\"",
+            "base_url = \"https://example.test\"\n\
+                 forward_auth = true\n\
+                 extra_headers = { Authorization = \"static-value\" }",
+            1,
+        );
+        assert!(error_message(&static_auth).contains("extra_headers cannot set \"Authorization\""));
+
+        let static_beta = static_auth.replace("Authorization", "anthropic-beta");
+        assert!(
+            error_message(&static_beta).contains("extra_headers cannot set \"anthropic-beta\"")
+        );
+
+        for header in ["chatgpt-account-id", "x-openai-fedramp"] {
+            let static_context = VALID_CONFIG.replacen(
+                "base_url = \"https://example.test/v1\"",
+                &format!(
+                    "base_url = \"https://example.test/v1\"\n\
+                     forward_auth = true\n\
+                     extra_headers = {{ \"{header}\" = \"static-value\" }}"
+                ),
+                1,
+            );
+            assert!(
+                error_message(&static_context)
+                    .contains(&format!("extra_headers cannot set \"{header}\""))
+            );
+        }
     }
 }

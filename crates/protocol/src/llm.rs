@@ -87,6 +87,10 @@ pub enum ContentBlock {
         text: String,
         /// Provider signature used to validate or continue the reasoning block.
         signature: Option<String>,
+        /// Structured reasoning details, such as an encrypted `{ "type":
+        /// "reasoning.encrypted", "data": "..." }` object, replayed without modification.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        details: Vec<Value>,
     },
     /// Image content.
     Image {
@@ -300,7 +304,10 @@ pub struct PreservationMetadata {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmRequest {
-    /// Model requested by the inbound client.
+    /// Model currently addressed by the request.
+    ///
+    /// This initially contains the name supplied by the inbound client. A routing host may
+    /// replace it with the selected target before serving the request.
     pub model: Option<String>,
     /// System and developer instructions separated from conversation turns.
     pub instructions: Vec<InstructionBlock>,

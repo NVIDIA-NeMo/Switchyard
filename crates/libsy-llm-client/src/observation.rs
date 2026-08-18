@@ -6,13 +6,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use switchyard_protocol::Usage;
+use switchyard_protocol::{ModelId, Usage};
 
 /// One completed model call observed at the algorithm offload boundary.
 #[derive(Clone, Debug)]
 pub struct LlmCallObservation {
     /// Model selected for the completed call.
-    pub selected_model: String,
+    pub selected_model: ModelId,
     /// Whether this call generated an answer rather than a routing verdict.
     pub is_answer_call: bool,
     /// Whether the call completed successfully.

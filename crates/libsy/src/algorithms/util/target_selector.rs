@@ -11,18 +11,19 @@ use serde_json::Value;
 use super::llm_judge::JudgePolicy;
 use crate::core::classifier::{Classification, Score};
 use crate::{LibsyError, Result};
+use switchyard_protocol::ModelId;
 
 /// Maps one string field in a validated verdict to a configured routing target.
 pub(crate) struct TargetSelectorPolicy {
     selector: PointerBuf,
-    targets: BTreeMap<String, String>,
+    targets: BTreeMap<String, ModelId>,
 }
 
 impl TargetSelectorPolicy {
     /// Parses a JSON Pointer used to read validated verdicts.
     pub(crate) fn new(
         selector: impl Into<String>,
-        targets: BTreeMap<String, String>,
+        targets: BTreeMap<String, ModelId>,
     ) -> Result<Self> {
         let selector =
             PointerBuf::parse(selector.into()).map_err(|error| LibsyError::AlgorithmError {
@@ -67,8 +68,8 @@ mod tests {
         let policy = TargetSelectorPolicy::new(
             "/decision/target",
             BTreeMap::from([
-                ("opus".to_string(), "model/opus".to_string()),
-                ("sonnet".to_string(), "model/sonnet".to_string()),
+                ("opus".to_string(), ModelId::from("model/opus")),
+                ("sonnet".to_string(), ModelId::from("model/sonnet")),
             ]),
         )?;
         let classification = policy.to_classification(Some(&json!({
@@ -77,7 +78,7 @@ mod tests {
 
         assert_eq!(
             classification.argmax(false)?.map(|score| score.target),
-            Some("model/sonnet".to_string())
+            Some(ModelId::from("model/sonnet"))
         );
         Ok(())
     }
@@ -86,7 +87,7 @@ mod tests {
     fn a_missing_or_unknown_target_abstains() -> Result<()> {
         let policy = TargetSelectorPolicy::new(
             "/target",
-            BTreeMap::from([("sonnet".to_string(), "model/sonnet".to_string())]),
+            BTreeMap::from([("sonnet".to_string(), ModelId::from("model/sonnet"))]),
         )?;
 
         assert_eq!(

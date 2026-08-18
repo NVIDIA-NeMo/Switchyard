@@ -109,19 +109,23 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
         session.id = tracing::field::Empty,
         agent_id = tracing::field::Empty,
         task_id = tracing::field::Empty,
+        task_kind = tracing::field::Empty,
+        agent_role = tracing::field::Empty,
         correlation_id = tracing::field::Empty,
         extra_metadata = tracing::field::Empty,
         outcome = tracing::field::Empty,
         error = tracing::field::Empty,
     );
-    if let Some(route) = request.requested_model() {
-        span.record("switchyard.route", route);
+    if let Some(route) = request.model_id() {
+        span.record("switchyard.route", route.as_ref());
     }
     if let Some(metadata) = &request.metadata {
         for (field, value) in [
             ("session_id", &metadata.session_id),
             ("agent_id", &metadata.agent_id),
             ("task_id", &metadata.task_id),
+            ("task_kind", &metadata.task_kind),
+            ("agent_role", &metadata.agent_role),
             ("correlation_id", &metadata.correlation_id),
         ] {
             if let Some(value) = value {
@@ -285,15 +289,13 @@ pub(crate) fn record_llm_call(
     }
 }
 
-/// Records one published routing decision: the decision counter plus a
-/// structured debug event carrying the decision's reasoning.
+/// Records one published routing decision: the decision counter plus a structured debug event.
 pub(crate) fn record_decision(algorithm: &str, decision: &Decision) {
     let selected_model = decision.selected_model_id();
     tracing::debug!(
         target: TRACING_TARGET,
         algorithm,
-        selected_model,
-        reasoning = decision.reasoning().unwrap_or(""),
+        selected_model = %selected_model,
         "routing decision"
     );
     meter().u64_counter("switchyard.decisions").build().add(

@@ -7,15 +7,25 @@ import json
 import httpx
 import pytest
 import respx
-from litellm import AuthenticationError, ModelResponse, RateLimitError
+from litellm import (
+    AuthenticationError,
+    ModelResponse,
+    RateLimitError,
+)
+from litellm.exceptions import (
+    ContextWindowExceededError as LiteLLMContextWindowExceededError,
+)
+from litellm.types.utils import Choices, Message, Usage
 from switchyard_litellm import LiteLLMSyClient
+
+from switchyard.libsy import ContextWindowExceededError
 
 BASE_URL = "http://gateway.test/v1"
 
 
 def request_body() -> dict[str, object]:
     return {
-        "model": "auto",
+        "model": "fast",
         "instructions": [],
         "messages": [
             {
@@ -87,7 +97,7 @@ async def test_call_uses_litellm_async_completion(
         return ModelResponse(**gateway_response())
 
     monkeypatch.setattr("switchyard_litellm.client.acompletion", fake_acompletion)
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         await client.call(request_body())
     finally:
@@ -108,7 +118,7 @@ async def test_call_translates_request_and_normalizes_response() -> None:
     )
     request = request_body()
     original = copy.deepcopy(request)
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         response = await client.call(request)
     finally:
@@ -200,7 +210,7 @@ async def test_call_translates_function_tool_history() -> None:
     ]
     request["tool_choice"] = {"type": "tool", "data": {"name": "Bash"}}
 
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         await client.call(request)
     finally:
@@ -255,7 +265,7 @@ async def test_call_normalizes_a_function_tool_response(
         return ModelResponse(**gateway_tool_response())
 
     monkeypatch.setattr("switchyard_litellm.client.acompletion", fake_acompletion)
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         response = await client.call(request_body())
     finally:
@@ -298,7 +308,7 @@ async def test_call_rejects_non_mapping_tool_call_arguments(
             ],
         }
     ]
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         with pytest.raises(ValueError, match=r"messages\[0\]\.content\[0\]\.arguments"):
             await client.call(request)
@@ -317,7 +327,7 @@ async def test_call_rejects_non_mapping_response_tool_call_arguments(
         return ModelResponse(**payload)
 
     monkeypatch.setattr("switchyard_litellm.client.acompletion", fake_acompletion)
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         with pytest.raises(ValueError, match="invalid tool-call arguments"):
             await client.call(request_body())
@@ -340,7 +350,7 @@ async def test_call_translates_standard_tool_choice(
     request = request_body()
     request["tools"] = [{"name": "Bash", "description": None, "parameters": {}}]
     request["tool_choice"] = {"type": choice}
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         await client.call(request)
     finally:
@@ -442,7 +452,7 @@ async def test_call_rejects_unsupported_normalized_fields(
         router.post(f"{BASE_URL}/chat/completions").mock(
             return_value=httpx.Response(200, json=gateway_response())
         )
-        client = LiteLLMSyClient("fast", base_url=BASE_URL)
+        client = LiteLLMSyClient(base_url=BASE_URL)
         try:
             with pytest.raises(ValueError, match=match):
                 await client.call(request)
@@ -451,10 +461,10 @@ async def test_call_rejects_unsupported_normalized_fields(
 
 
 async def test_call_rejects_missing_messages() -> None:
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         with pytest.raises(ValueError, match="messages"):
-            await client.call({})
+            await client.call({"model": "fast"})
     finally:
         await client.aclose()
 
@@ -466,7 +476,7 @@ async def test_call_rejects_a_response_without_text() -> None:
     respx.post(f"{BASE_URL}/chat/completions").mock(
         return_value=httpx.Response(200, json=payload)
     )
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         with pytest.raises(ValueError, match="no text content"):
             await client.call(request_body())
@@ -484,7 +494,7 @@ async def test_call_rejects_a_response_without_choices(
         return ModelResponse(**payload)
 
     monkeypatch.setattr("switchyard_litellm.client.acompletion", fake_acompletion)
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         with pytest.raises(ValueError, match="no choices"):
             await client.call(request_body())
@@ -506,7 +516,7 @@ async def test_litellm_errors_propagate() -> None:
             },
         )
     )
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         with pytest.raises(AuthenticationError):
             await client.call(request_body())
@@ -528,7 +538,7 @@ async def test_retryable_litellm_error_is_not_retried() -> None:
             },
         )
     )
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         with pytest.raises(RateLimitError):
             await client.call(request_body())
@@ -538,6 +548,27 @@ async def test_retryable_litellm_error_is_not_retried() -> None:
     assert route.call_count == 1
 
 
+async def test_context_window_error_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_with_context_window(**_: object) -> ModelResponse:
+        raise LiteLLMContextWindowExceededError(
+            message="request is too large",
+            model="fast",
+            llm_provider="openai",
+        )
+
+    monkeypatch.setattr(
+        "switchyard_litellm.client.acompletion", fail_with_context_window
+    )
+    client = LiteLLMSyClient(base_url=BASE_URL)
+    try:
+        with pytest.raises(ContextWindowExceededError, match="request is too large"):
+            await client.call(request_body())
+    finally:
+        await client.aclose()
+
+
 @respx.mock
 async def test_cached_token_count_preserves_explicit_zero() -> None:
     payload = gateway_response()
@@ -545,10 +576,53 @@ async def test_cached_token_count_preserves_explicit_zero() -> None:
     respx.post(f"{BASE_URL}/chat/completions").mock(
         return_value=httpx.Response(200, json=payload)
     )
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    client = LiteLLMSyClient(base_url=BASE_URL)
     try:
         response = await client.call(request_body())
     finally:
         await client.aclose()
 
     assert response["usage"]["cached_input_tokens"] == 0
+
+
+def test_response_content_filter_empty_content() -> None:
+    """Empty content with a content_filter finish reason must be normalized."""
+    from switchyard_litellm.client import _response
+
+    response = ModelResponse(
+        id="chatcmpl-test",
+        model="openai/strong",
+        choices=[
+            Choices(
+                message=Message(content=None, tool_calls=None),
+                finish_reason="content_filter",
+            )
+        ],
+        usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+    )
+    result = _response(response)
+    outputs = result["outputs"]
+    assert isinstance(outputs, list)
+    output = outputs[0]
+    assert isinstance(output, dict)
+    assert output["content"] == []
+    assert output["stop_reason"] == "content_filter"
+
+
+def test_response_empty_content_without_content_filter_raises() -> None:
+    """Empty content with any other finish reason must still raise."""
+    from switchyard_litellm.client import _response
+
+    response = ModelResponse(
+        id="chatcmpl-test",
+        model="openai/strong",
+        choices=[
+            Choices(
+                message=Message(content=None, tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+    )
+    with pytest.raises(ValueError, match="LiteLLM returned no text content"):
+        _response(response)

@@ -13,7 +13,7 @@
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::{Request, Response};
+use crate::{ModelId, Request, Response};
 
 /// A boxed client-specific error preserved as the source of a routed call failure.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -72,7 +72,7 @@ pub enum LlmClientError {
     #[error("context window exceeded for model {model}: {message}")]
     ContextWindowExceeded {
         /// Model whose context window was exceeded.
-        model: String,
+        model: ModelId,
         /// Upstream error message.
         message: String,
     },
@@ -81,7 +81,7 @@ pub enum LlmClientError {
     #[error("upstream returned HTTP {status}: {body}")]
     UpstreamHttp {
         /// Upstream HTTP status code.
-        status: u16,
+        status: http::StatusCode,
         /// Raw upstream error body.
         body: String,
     },
@@ -118,7 +118,7 @@ pub enum RoutingFallbackReason {
 }
 
 impl RoutingFallbackReason {
-    /// Stable value embedded in routing reasoning.
+    /// Stable value used when logging a routing fallback.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ContextWindow => "context_window",
@@ -131,35 +131,23 @@ impl RoutingFallbackReason {
 #[derive(Clone, Debug)]
 pub struct Decision {
     /// The model identifier selected for the call.
-    selected_model_id: String,
-    /// Why, for logs and traces.
-    reasoning: Option<String>,
+    selected_model_id: ModelId,
     /// True for an answer-generating call. False for classifier and judge calls.
     is_answer_call: bool,
 }
 
 impl Decision {
     /// Creates a decision and records whether its call produces the answer.
-    pub fn new(
-        selected_model_id: impl Into<String>,
-        reasoning: Option<String>,
-        is_answer_call: bool,
-    ) -> Self {
+    pub fn new(selected_model_id: impl Into<ModelId>, is_answer_call: bool) -> Self {
         Self {
             selected_model_id: selected_model_id.into(),
-            reasoning,
             is_answer_call,
         }
     }
 
     /// The model identifier selected for the call.
-    pub fn selected_model_id(&self) -> &str {
-        self.selected_model_id.as_str()
-    }
-
-    /// Why this decision was made.
-    pub fn reasoning(&self) -> Option<&str> {
-        self.reasoning.as_deref()
+    pub fn selected_model_id(&self) -> &ModelId {
+        &self.selected_model_id
     }
 
     /// Whether this call generates an answer rather than a routing verdict.
@@ -180,10 +168,6 @@ impl Decision {
 /// not serialize requests unless their transport requires it.
 #[async_trait]
 pub trait RoutedLlmClient: Send + Sync {
-    /// Serve the model identified by
-    /// [`decision.selected_model_id()`](Decision::selected_model_id), resolving it to the
-    /// provider model this client calls.
-    /// `request.llm_request.model` is the agent's original name, carried through for
-    /// reference, not a call target.
-    async fn call(&self, request: Request, decision: Decision) -> Result<Response, LlmClientError>;
+    /// Make a request
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError>;
 }

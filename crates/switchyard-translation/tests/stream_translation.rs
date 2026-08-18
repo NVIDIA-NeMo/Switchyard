@@ -3,12 +3,16 @@
 
 //! Tests for translating streaming provider events through the stream IR.
 
+pub mod common;
+
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use switchyard_protocol::{ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
 };
+
+use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -765,6 +769,120 @@ fn openai_chat_reasoning_stream_fields_do_not_become_anthropic_text() -> TestRes
             && event["delta"]["text"]
                 .as_str()
                 .is_some_and(|text| text.contains("private reasoning"))
+    }));
+    Ok(())
+}
+
+#[test]
+fn openai_chat_stream_round_trips_reasoning_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
+    let details = text_and_encrypted_reasoning_details();
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": REASONING_MODEL,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "reasoning": "fallback text",
+                "reasoning_details": details
+            },
+            "finish_reason": null
+        }]
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiChat,
+        &chunk,
+    )?;
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0]["choices"][0]["delta"]["reasoning_details"],
+        details
+    );
+    assert!(events[0]["choices"][0]["delta"].get("reasoning").is_none());
+    Ok(())
+}
+
+#[test]
+fn openai_chat_stream_retains_encrypted_details_and_fallback() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
+    let details = json!([{
+        "type": "reasoning.encrypted",
+        "data": "opaque-encrypted-reasoning"
+    }]);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": REASONING_MODEL,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "reasoning_content": "",
+                "reasoning": "fallback text",
+                "reasoning_details": details
+            },
+            "finish_reason": null
+        }]
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiChat,
+        &chunk,
+    )?;
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0]["choices"][0]["delta"]["reasoning_details"],
+        details
+    );
+    assert_eq!(
+        events[0]["choices"][0]["delta"]["reasoning"],
+        "fallback text"
+    );
+    Ok(())
+}
+
+#[test]
+fn openai_chat_stream_uses_summary_when_detail_text_is_empty() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": REASONING_MODEL,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "reasoning_details": [{
+                    "type": "reasoning.summary",
+                    "text": "",
+                    "summary": "usable summary"
+                }]
+            },
+            "finish_reason": null
+        }]
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &chunk,
+    )?;
+
+    assert!(events.iter().any(|event| {
+        event["type"] == "content_block_delta"
+            && event["delta"]["type"] == "thinking_delta"
+            && event["delta"]["thinking"] == "usable summary"
     }));
     Ok(())
 }

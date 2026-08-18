@@ -15,11 +15,11 @@ use super::fall_through::FallThrough;
 use super::util::affinity::AffinityRouter;
 use super::util::subagent::SubagentOverride;
 use crate::Result;
-use crate::core::algorithm::{Driver, LlmTarget, LlmTargetSet};
+use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::testing::{echo, test_drive};
 use switchyard_protocol::{
-    Metadata, Request, Response, completion_text, slice_to_header_map, text_request,
+    Metadata, ModelId, Request, Response, completion_text, slice_to_header_map, text_request,
 };
 
 /// The cascade's terminal classifier: always picks the orchestrator.
@@ -36,22 +36,18 @@ impl Classifier for AlwaysOrchestrator {
         Ok((
             Classification::Scores(vec![Score {
                 confidence: 0.5,
-                target: "orchestrator".to_string(),
+                target: ModelId::from("orchestrator"),
             }]),
             None,
         ))
     }
 }
 
-fn targets() -> LlmTargetSet {
-    LlmTargetSet::new(
-        ["orchestrator", "worker", "reviewer"]
-            .iter()
-            .map(|name| LlmTarget {
-                semantic_name: (*name).to_string(),
-            })
-            .collect(),
-    )
+fn targets() -> Vec<ModelId> {
+    ["orchestrator", "worker", "reviewer"]
+        .iter()
+        .map(|name| ModelId::from(*name))
+        .collect()
 }
 
 fn request(headers: &[(&str, &str)]) -> Request {

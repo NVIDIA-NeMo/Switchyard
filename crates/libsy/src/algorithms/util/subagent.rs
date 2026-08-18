@@ -20,12 +20,13 @@ use async_trait::async_trait;
 use crate::Result;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
+use switchyard_protocol::ModelId;
 use switchyard_protocol::{Metadata, Request, Response};
 
 /// Scores a fixed worker target for delegated sub-agent work; abstains otherwise.
 pub struct SubagentOverride {
     /// Name of the worker target, resolved by the cascade against its target set.
-    worker: String,
+    worker: ModelId,
 }
 
 impl SubagentOverride {
@@ -33,7 +34,7 @@ impl SubagentOverride {
     ///
     /// `worker` must name a target in the cascade's set, or routing a sub-agent request
     /// fails with [`LibsyError::TargetNotFound`](crate::LibsyError::TargetNotFound).
-    pub fn new(worker: impl Into<String>) -> Self {
+    pub fn new(worker: impl Into<ModelId>) -> Self {
         Self {
             worker: worker.into(),
         }
@@ -80,14 +81,14 @@ mod tests {
         let metadata =
             (!headers.is_empty()).then(|| Metadata::from_headers(&slice_to_header_map(headers)));
         Request {
-            llm_request: text_request(Some("auto".to_string()), "hi"),
+            llm_request: text_request(Some(ModelId::from("auto").to_string()), "hi"),
             raw_request: None,
             metadata,
         }
     }
 
     /// Scores `headers` through the override, returning the winning target if it scored.
-    async fn selected(headers: &[(&str, &str)]) -> Result<Option<String>> {
+    async fn selected(headers: &[(&str, &str)]) -> Result<Option<ModelId>> {
         let mut state = ();
         let classification = SubagentOverride::new("worker")
             .score(&mut state, &mut request(headers), None)
@@ -108,16 +109,16 @@ mod tests {
             ("x-claude-code-session-id", "root"),
             ("x-claude-code-agent-id", "child-1"),
         ];
-        assert_eq!(selected(claude).await?, Some("worker".to_string()));
+        assert_eq!(selected(claude).await?, Some(ModelId::from("worker")));
 
         // Codex delegated-work kinds.
         assert_eq!(
             selected(&[("x-openai-subagent", "review")]).await?,
-            Some("worker".to_string())
+            Some(ModelId::from("worker"))
         );
         assert_eq!(
             selected(&[("x-openai-subagent", "collab_spawn")]).await?,
-            Some("worker".to_string())
+            Some(ModelId::from("worker"))
         );
         Ok(())
     }

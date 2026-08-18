@@ -33,11 +33,11 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    AffinityRouter, Algorithm, Classifier, Driver, LibsyError, LlmClassifierConfig, LlmTarget,
-    LlmTargetSet, LlmTaskClassifier, PickerMode, StageRouter, StageRouterConfig, Step,
-    TaskClassifierConfig,
+    AffinityRouter, Algorithm, Classifier, Driver, LibsyError, LlmClassifierConfig,
+    LlmTaskClassifier, PickerMode, StageRouter, StageRouterConfig, Step, TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
+use switchyard_protocol::ModelId;
 use switchyard_protocol::{
     ContentBlock, Decision, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
     RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
@@ -327,19 +327,16 @@ struct UsageClient {
 /// Client that returns a weak classifier verdict. The delays let a test tell
 /// classifier time apart from routed-call time.
 struct ClassifierClient {
+    classifier_model_id: ModelId,
     classifier_delay: Duration,
     routed_delay: Duration,
 }
 
 #[async_trait]
 impl RoutedLlmClient for ClassifierClient {
-    async fn call(
-        &self,
-        _request: Request,
-        decision: Decision,
-    ) -> Result<Response, LlmClientError> {
-        let model = decision.selected_model_id().to_string();
-        let completion = if decision.is_answer_call() {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+        let model_id = request.model_id().unwrap_or_default();
+        let completion = if model_id != self.classifier_model_id {
             tokio::time::sleep(self.routed_delay).await;
             "routed response"
         } else {
@@ -347,7 +344,7 @@ impl RoutedLlmClient for ClassifierClient {
             r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
         };
         Ok(Response {
-            llm_response: LlmResponse::Agg(text_response(Some(model), completion)),
+            llm_response: LlmResponse::Agg(text_response(Some(model_id.to_string()), completion)),
             metadata: None,
         })
     }
@@ -361,20 +358,17 @@ enum JudgeOutcome {
 
 /// Returns one configured judge outcome and serves the selected target normally.
 struct JudgeClient {
+    judge_model: ModelId,
     outcome: JudgeOutcome,
 }
 
 #[async_trait]
 impl RoutedLlmClient for JudgeClient {
-    async fn call(
-        &self,
-        _request: Request,
-        decision: Decision,
-    ) -> Result<Response, LlmClientError> {
-        if decision.is_answer_call() {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+        if request.model_id().as_deref().unwrap_or_default() != self.judge_model {
             return Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
-                    Some(decision.selected_model_id().to_string()),
+                    request.model_id().map(|id| id.to_string()),
                     "routed response",
                 )),
                 metadata: None,
@@ -382,7 +376,7 @@ impl RoutedLlmClient for JudgeClient {
         }
         match &self.outcome {
             JudgeOutcome::CallFailure => Err(LlmClientError::UpstreamHttp {
-                status: 500,
+                status: http::StatusCode::INTERNAL_SERVER_ERROR,
                 body: "server error".to_string(),
             }),
             JudgeOutcome::Reply(text) => Ok(Response {
@@ -408,11 +402,10 @@ impl RoutedLlmClient for JudgeClient {
 impl RoutedLlmClient for UsageClient {
     async fn call(
         &self,
-        _request: Request,
-        decision: Decision,
+        request: Request,
     ) -> Result<Response, switchyard_protocol::LlmClientError> {
         let mut response = text_response(
-            Some(decision.selected_model_id().to_string()),
+            request.model_id().map(|s| s.to_string()),
             "observed response",
         );
         response.id = Some("obs-response-1".to_string());
@@ -429,7 +422,7 @@ impl RoutedLlmClient for UsageClient {
 /// algorithm exercising both instrumented driver paths.
 struct SingleCallAlgo {
     name: String,
-    target_set: LlmTargetSet,
+    target_set: Vec<String>,
 }
 
 #[async_trait]
@@ -445,17 +438,13 @@ impl Algorithm for SingleCallAlgo {
     ) -> switchyard_libsy::Result<Response> {
         let target = self
             .target_set
-            .targets()
             .first()
             .ok_or(LibsyError::NoTargets)?
             .clone();
-        let decision = Decision::new(
-            target.semantic_name.clone(),
-            Some(format!("picked '{}'", target.semantic_name)),
-            true,
-        );
+        tracing::info!("picked '{target}'");
+        let decision = Decision::new(target.clone(), true);
         driver.decide(decision.clone()).await?;
-        driver.call_model(request, decision).await
+        driver.call_model(request, vec![target.into()], true).await
     }
 }
 
@@ -466,6 +455,8 @@ fn request_with_metadata(session_id: &str, correlation_id: &str) -> Request {
         metadata: Some(Metadata {
             session_id: Some(session_id.to_string()),
             correlation_id: Some(correlation_id.to_string()),
+            task_kind: Some("code_review".to_string()),
+            agent_role: Some("reviewer".to_string()),
             extra_metadata: Some(BTreeMap::from([(
                 "tenant".to_string(),
                 "obs-tenant-1".to_string(),
@@ -478,9 +469,7 @@ fn request_with_metadata(session_id: &str, correlation_id: &str) -> Request {
 fn algo(name: &str, model: &str) -> Arc<dyn Algorithm> {
     Arc::new(SingleCallAlgo {
         name: name.to_string(),
-        target_set: LlmTargetSet::new(vec![LlmTarget {
-            semantic_name: model.to_string(),
-        }]),
+        target_set: vec![model.to_string()],
     })
 }
 
@@ -499,15 +488,11 @@ fn classifier_router(
     efficient_model: &str,
     capable_model: &str,
 ) -> switchyard_libsy::Result<Arc<dyn Algorithm>> {
-    let target = |name: &str| LlmTarget {
-        semantic_name: name.to_string(),
-    };
-    let targets = LlmTargetSet::new(vec![target(efficient_model), target(capable_model)]);
     Ok(Arc::new(LlmTaskClassifier::new(
         LlmClassifierConfig::Capability {
-            judge_target: target(judge_model),
-            efficient_target: targets.get_target(efficient_model)?,
-            capable_target: targets.get_target(capable_model)?,
+            judge_target: ModelId::from(judge_model),
+            efficient_target: ModelId::from(efficient_model),
+            capable_target: ModelId::from(capable_model),
             config: TaskClassifierConfig {
                 base_threshold: 0.5,
                 ..TaskClassifierConfig::default()
@@ -585,6 +570,7 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
                 content: vec![ContentBlock::Reasoning {
                     text: "provider reasoning".to_string(),
                     signature: None,
+                    details: Vec::new(),
                 }],
             }],
             ..LlmRequest::default()
@@ -740,6 +726,15 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         run_span.fields.get("outcome").map(String::as_str),
         Some("ok")
     );
+    // Semantic harness labels: bounded classes, distinct from the high-cardinality ids above.
+    assert_eq!(
+        run_span.fields.get("task_kind").map(String::as_str),
+        Some("code_review")
+    );
+    assert_eq!(
+        run_span.fields.get("agent_role").map(String::as_str),
+        Some("reviewer")
+    );
     // Host-defined labels ride in generically via Metadata.extra_metadata.
     assert!(
         run_span
@@ -835,21 +830,15 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         Some("2")
     );
 
-    // Structured debug event: the published decision with its reasoning.
+    // The algorithm logs why it made the decision.
     let events = store.events();
     assert!(
         events.iter().any(|event| {
-            event.target == "libsy"
-                && event.level == "DEBUG"
-                && event.fields.get("selected_model").map(String::as_str) == Some(MODEL)
-                && event
-                    .fields
-                    .get("reasoning")
-                    .is_some_and(|reasoning| reasoning.contains("picked"))
+            event.level == "INFO"
                 && event
                     .fields
                     .get("message")
-                    .is_some_and(|message| message.contains("routing decision"))
+                    .is_some_and(|message| message.contains("picked"))
         }),
         "no routing-decision log event for {MODEL} in {events:?}"
     );
@@ -862,12 +851,10 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
     let (_, exporter, provider, _, _) = telemetry();
     const STRONG: &str = "obs-stage-strong";
     const WEAK: &str = "obs-stage-weak";
-    let target = |name: &str| LlmTarget {
-        semantic_name: name.to_string(),
-    };
+    let target = |name: &str| name.to_string();
     let algorithm = Arc::new(StageRouter::new(
-        target(STRONG),
-        target(WEAK),
+        target(STRONG).into(),
+        target(WEAK).into(),
         StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
     )?) as Arc<dyn Algorithm>;
     let request = Request {
@@ -980,11 +967,7 @@ struct StreamingUsageClient;
 
 #[async_trait]
 impl RoutedLlmClient for StreamingUsageClient {
-    async fn call(
-        &self,
-        _request: Request,
-        decision: Decision,
-    ) -> Result<Response, LlmClientError> {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
         let usage = Usage {
             input_tokens: Some(13),
             output_tokens: Some(5),
@@ -994,7 +977,7 @@ impl RoutedLlmClient for StreamingUsageClient {
         let chunks = vec![Ok(LlmResponseStreamEvent::new(vec![
             LlmResponseChunk::MessageStart {
                 id: Some("obs-stream-response".to_string()),
-                model: Some(decision.selected_model_id().to_string()),
+                model: request.model_id().map(|s| s.to_string()),
             },
             LlmResponseChunk::Usage(usage),
             LlmResponseChunk::MessageStop {
@@ -1012,11 +995,7 @@ struct TimeoutClient;
 
 #[async_trait]
 impl RoutedLlmClient for TimeoutClient {
-    async fn call(
-        &self,
-        _request: Request,
-        _decision: Decision,
-    ) -> Result<Response, LlmClientError> {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
         Err(LlmClientError::Timeout {
             source: Box::new(TestError("upstream timed out")),
         })
@@ -1249,6 +1228,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
         u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
 
     let client = Arc::new(ClassifierClient {
+        classifier_model_id: "classifier".into(),
         classifier_delay: Duration::from_millis(60),
         routed_delay: Duration::from_millis(200),
     }) as Arc<dyn RoutedLlmClient>;
@@ -1256,11 +1236,11 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
 
     let (trace, _response) = run(router, client, classifier_request()).await?;
 
-    assert!(
+    assert_eq!(
         trace
             .last()
-            .and_then(|decision| decision.reasoning())
-            .is_some_and(|reasoning| reasoning.contains("routing tier: weak"))
+            .map(|decision| decision.selected_model_id().as_str()),
+        Some("weak")
     );
 
     let snapshots = flushed_metrics(exporter, provider);
@@ -1342,7 +1322,10 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
     ];
 
     for (judge_model, outcome, expected_reason) in cases {
-        let client = Arc::new(JudgeClient { outcome }) as Arc<dyn RoutedLlmClient>;
+        let client = Arc::new(JudgeClient {
+            judge_model: judge_model.into(),
+            outcome,
+        }) as Arc<dyn RoutedLlmClient>;
         run(
             classifier_router(judge_model, "fo-weak", "fo-strong")?,
             client,

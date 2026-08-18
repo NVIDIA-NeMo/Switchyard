@@ -8,14 +8,13 @@
 //! lives with the assembled algorithm in [`crate::algorithms::escalation`].
 
 use serde::Deserialize;
-use switchyard_protocol::{ContentBlock, Message, Role};
+use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
 
 use super::classifier_contract::{ClassifierContract, ClassifierContractConfig};
 use super::llm_judge::{
     ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
     StructuredJudge,
 };
-use crate::core::algorithm::LlmTarget;
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
@@ -118,8 +117,8 @@ pub(crate) type EscalationJudge = StructuredJudge<EscalationInput, SerdeDecoder<
 /// decline and an outage stay efficient, but only a decline is evidence, so only a decline
 /// clears the streak.
 pub(crate) struct EscalationPolicy {
-    capable: String,
-    efficient: String,
+    capable: ModelId,
+    efficient: ModelId,
 }
 
 impl JudgePolicy for EscalationPolicy {
@@ -145,9 +144,9 @@ impl JudgePolicy for EscalationPolicy {
 /// Loads the packaged prompt and schema, so an unusable asset or an unusable `config` value
 /// fails here rather than on the first request.
 pub(crate) fn build_judge(
-    judge_target: LlmTarget,
-    capable: String,
-    efficient: String,
+    judge_target: ModelId,
+    capable: ModelId,
+    efficient: ModelId,
     contract_config: &ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,

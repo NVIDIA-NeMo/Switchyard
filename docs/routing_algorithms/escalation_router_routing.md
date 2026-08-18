@@ -48,8 +48,9 @@ clients send; the judge is not exposed as a client-selectable model.
 
 The route-level `prompt` key replaces the packaged trajectory-judge prompt. It
 uses the escalation verdict schema rather than the capability verdict schema.
-Switchyard sends that schema separately through the provider's structured-output
-request rather than copying it into the prompt.
+Switchyard supplies that schema according to the route's `response_format_type`:
+through the structured-output request in the default `json_schema` mode, or in
+the prompt in `json_object` mode.
 
 ## How the decision works
 

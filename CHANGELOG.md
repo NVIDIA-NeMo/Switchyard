@@ -19,6 +19,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the FastAPI endpoints and legacy chain, the `switchyard-components` crate,
   and their compatibility PyO3 bindings are removed. Use `switchyard-server`
   with native TOML deployments, or `switchyard launch` for coding agents.
+- **Packaging extras `[server]`, `[gpu]`, and `[all]`** — dropped together
+  with the deprecated Python server stack; only `[cli]` remains. Install
+  server functionality via the standalone `switchyard-server` binary instead.
 
 ## [0.2.0]
 
@@ -192,7 +195,7 @@ traffic that sits between client applications and LLM backends.
   `--list-models`), and `verify` / `launch --smoke` round-trip checks.
 - **Observability** — Prometheus `/metrics`, a JSON `/v1/stats`
   (`/v1/routing/stats` alias), and per-request cost/token/latency stats. See
-  [Metrics Reference](docs/METRICS_REFERENCE.md).
+  [Metrics Reference](docs/internal/metrics_reference.md).
 - **Python library** — `SwitchyardRecipes` (`passthrough_recipe`,
   `random_routing_recipe`, `cascade_recipe`, `deterministic_routing_recipe`,
   …) and typed `ChatRequest` / `ChatResponse` containers for in-process use.

@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use switchyard_protocol::{Request, Role};
+use switchyard_protocol::{ModelId, Request, Role};
 
 use crate::core::algorithm::{Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -46,7 +46,7 @@ const MAX_ASSIGNMENTS: usize = 4096;
 #[derive(Default)]
 pub struct AffinityRouter {
     /// When set, only these models are retained; a decision for any other model is not latched.
-    latch_only: Option<HashSet<String>>,
+    latch_only: Option<HashSet<ModelId>>,
     /// Whether root-session requests should abstain instead of being retained.
     subagents_only: bool,
     /// In absence of headers, use the message hash based fallback key to do task based routing
@@ -55,7 +55,7 @@ pub struct AffinityRouter {
     ///
     /// Held on the instance so the two roles share one process-local map through a
     /// single registered [`Arc`](std::sync::Arc); bounded by [`MAX_ASSIGNMENTS`].
-    assignments: Mutex<HashMap<RoutingIdentity, String>>,
+    assignments: Mutex<HashMap<RoutingIdentity, ModelId>>,
     /// Whether the "no identity to key on" warning has already been emitted.
     unkeyed_warning_emitted: AtomicBool,
 }
@@ -84,7 +84,7 @@ impl AffinityRouter {
 
     /// Restricts latching to `models`; a decision for any other model routes but is not
     /// retained.
-    pub fn with_latch_only(mut self, models: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn with_latch_only(mut self, models: impl IntoIterator<Item = impl Into<ModelId>>) -> Self {
         self.latch_only = Some(models.into_iter().map(Into::into).collect());
         self
     }
@@ -153,7 +153,7 @@ where
             let mut assignments = self.assignments.lock();
             if self.should_latch(model) && !assignments.contains_key(&key) {
                 evict_if_full(&mut assignments);
-                assignments.insert(key, model.to_string());
+                assignments.insert(key, model.clone());
             }
         }
         Ok(())
@@ -179,19 +179,6 @@ impl<S> Classifier<S> for AffinityRouter
 where
     S: Send + 'static,
 {
-    fn target_unavailable(&self, request: &Request, target: &str) {
-        let Some(key) = self.affinity_key(request) else {
-            return;
-        };
-        let mut assignments = self.assignments.lock();
-        if assignments
-            .get(&key)
-            .is_some_and(|assigned| assigned == target)
-        {
-            assignments.remove(&key);
-        }
-    }
-
     async fn score(
         &self,
         _state: &mut S,
@@ -216,7 +203,7 @@ where
 }
 
 /// Evicts one arbitrary assignment when the map has reached [`MAX_ASSIGNMENTS`].
-fn evict_if_full(assignments: &mut HashMap<RoutingIdentity, String>) {
+fn evict_if_full(assignments: &mut HashMap<RoutingIdentity, ModelId>) {
     if assignments.len() >= MAX_ASSIGNMENTS
         && let Some(evicted) = assignments.keys().next().cloned()
     {
@@ -238,7 +225,7 @@ mod tests {
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
     fn fixed_decision(target: &str) -> Decision {
-        Decision::new(target, None, true)
+        Decision::new(target, true)
     }
 
     fn request(metadata: Metadata) -> Request {
@@ -520,6 +507,7 @@ mod tests {
                 ContentBlock::Reasoning {
                     text: "Internal provider reasoning.".to_string(),
                     signature: Some("provider-signature".to_string()),
+                    details: Vec::new(),
                 },
             ],
         });

@@ -47,7 +47,7 @@ BOOK_MODE="closed"
 PROXY_STRIP_ARTIFACT="/etc/proxy-public/strip.jsonl"
 VERIFIER_PROXY_TEMPLATE='${SWITCHYARD_VERIFIER_HTTP_PROXY}'
 SWITCHYARD_DOCKER_IMAGE="${SWITCHYARD_DOCKER_IMAGE:-switchyard-baseline:local}"
-SWITCHYARD_DOCKERFILE="${SWITCHYARD_DOCKERFILE:-benchmark/switchyard-rust-server.Dockerfile}"
+SWITCHYARD_DOCKERFILE="${SWITCHYARD_DOCKERFILE:-Dockerfile}"
 SWITCHYARD_DOCKER_SERVICE_NAME="${SWITCHYARD_DOCKER_SERVICE_NAME:-switchyard}"
 SWITCHYARD_DOCKER_BUILD="${SWITCHYARD_DOCKER_BUILD:-1}"
 SWITCHYARD_DOCKER_NETWORK="${SWITCHYARD_DOCKER_NETWORK:-}"
@@ -644,8 +644,7 @@ patch_root = Path(sys.argv[3])
 verify_method = sys.argv[4]
 verify_status = sys.argv[5]
 try:
-    with patch_file.open("rb") as fh:
-        digest = "sha256:" + hashlib.file_digest(fh, "sha256").hexdigest()
+    digest = "sha256:" + hashlib.sha256(patch_file.read_bytes()).hexdigest()
 except OSError:
     digest = "sha256:missing"
 print(json.dumps({

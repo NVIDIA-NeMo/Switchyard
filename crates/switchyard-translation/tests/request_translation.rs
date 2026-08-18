@@ -3,9 +3,15 @@
 
 //! Tests for buffered request translation between provider formats.
 
+pub mod common;
+
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+};
+
+use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -307,6 +313,211 @@ fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult
             {"role": "user", "content": "Now summarize it."}
         ])
     );
+    Ok(())
+}
+
+// Verifies Anthropic multimodal blocks retain provider fields inside tool results.
+#[test]
+fn anthropic_tool_result_multimodal_blocks_round_trip_complete() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let document = json!({
+        "type": "document",
+        "title": "report.pdf",
+        "context": "Quarterly results",
+        "citations": {"enabled": true},
+        "source": {
+            "type": "base64",
+            "media_type": "application/pdf",
+            "data": "ZG9jdW1lbnQ="
+        }
+    });
+    let image = json!({
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "aW1hZ2U="
+        }
+    });
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_document",
+                "content": [
+                    {"type": "text", "text": "content ready"},
+                    image.clone(),
+                    document.clone()
+                ]
+            }]
+        }],
+        "max_tokens": 1024
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::AnthropicMessages,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    assert_eq!(
+        output["messages"][0]["content"][0]["content"],
+        json!([
+            {"type": "text", "text": "content ready"},
+            image,
+            document
+        ])
+    );
+    Ok(())
+}
+
+// Verifies provider-managed Anthropic file IDs are not reused as OpenAI file IDs.
+#[test]
+fn anthropic_tool_result_file_id_does_not_become_openai_file_id() -> TestResult {
+    let engine = TranslationEngine::default();
+    let document = json!({
+        "type": "document",
+        "source": {
+            "type": "file",
+            "file_id": "file_anthropic_123"
+        }
+    });
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_document",
+                "content": [document.clone()]
+            }]
+        }],
+        "max_tokens": 1024
+    });
+
+    let translated = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &body,
+        &TranslationPolicy::default(),
+    )?;
+
+    assert_eq!(translated.body["messages"][1]["content"][0]["type"], "text");
+    let recovered: Value = serde_json::from_str(
+        translated.body["messages"][1]["content"][0]["text"]
+            .as_str()
+            .ok_or("file fallback should be text")?,
+    )?;
+    assert_eq!(recovered, document);
+    assert!(translated.diagnostics.iter().any(|diagnostic| {
+        diagnostic.message == "OpenAI Chat codec could not map file content"
+    }));
+    Ok(())
+}
+
+// Verifies parallel tool results preserve ordering and obey strict conversion policy.
+#[test]
+fn anthropic_parallel_multimodal_tool_results_preserve_order_and_policy() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_image",
+                    "content": [
+                        {"type": "text", "text": "image ready"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "aW1hZ2U="
+                            }
+                        }
+                    ]
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_document",
+                    "content": [
+                        {"type": "text", "text": "document ready"},
+                        {
+                            "type": "document",
+                            "title": "report.pdf",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": "ZG9jdW1lbnQ="
+                            }
+                        }
+                    ]
+                }
+            ]
+        }],
+        "max_tokens": 1024
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["messages"],
+        json!([
+            {"role": "tool", "tool_call_id": "toolu_image", "content": "image ready"},
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_document",
+                "content": "document ready"
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,aW1hZ2U="}
+                    },
+                    {
+                        "type": "file",
+                        "file": {"file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+                    }
+                ]
+            }
+        ])
+    );
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+
+    let error = match engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &body,
+        &policy,
+    ) {
+        Ok(_) => panic!("multimodal tool result should be rejected by strict policy"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), "LossyConversion");
     Ok(())
 }
 
@@ -793,6 +1004,7 @@ fn responses_reasoning_items_attach_to_tool_call_turn_for_openai_chat() -> TestR
     );
     assert_eq!(messages.len(), 4);
     assert_eq!(messages[1], json!({"role": "assistant", "content": "\n\n"}));
+    assert_eq!(messages[2]["reasoning"], "Check the python setup.");
     assert_eq!(messages[2]["tool_calls"][0]["id"], "call-1");
     assert_eq!(messages[3]["role"], "tool");
     Ok(())
@@ -828,9 +1040,99 @@ fn responses_reasoning_item_merges_into_next_assistant_message_for_openai_chat()
         output["messages"],
         json!([
             {"role": "user", "content": "Check the file"},
-            {"role": "assistant", "content": "Let me check."}
+            {
+                "role": "assistant",
+                "content": "Let me check.",
+                "reasoning": "Reading."
+            }
         ])
     );
+    Ok(())
+}
+
+#[test]
+fn openai_chat_reasoning_details_round_trip_in_assistant_history() -> TestResult {
+    let engine = TranslationEngine::default();
+    // Exercise the normalized IR path instead of replaying the original JSON.
+    let policy = normalized_policy();
+    let details = json!([
+        {
+            "type": "reasoning.summary",
+            "summary": "Inspect the environment.",
+            "id": "reasoning-1",
+            "format": "openai-responses-v1",
+            "index": 0
+        },
+        {
+            "type": "reasoning.encrypted",
+            "data": "opaque-encrypted-reasoning",
+            "id": "reasoning-1",
+            "format": "openai-responses-v1",
+            "index": 1
+        }
+    ]);
+    let body = json!({
+        "model": REASONING_MODEL,
+        "messages": [
+            {"role": "user", "content": "Inspect the environment"},
+            {
+                "role": "assistant",
+                "content": null,
+                "reasoning": "fallback text",
+                "reasoning_details": details,
+                "tool_calls": [shell_tool_call()]
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "/workspace"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiChat,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    assert_eq!(output["messages"][1]["reasoning_details"], details);
+    assert!(output["messages"][1].get("reasoning").is_none());
+    assert_eq!(output["messages"][1]["tool_calls"][0]["id"], "call-1");
+    Ok(())
+}
+
+#[test]
+fn openai_chat_encrypted_reasoning_details_retain_fallback() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let details = json!([{
+        "type": "reasoning.encrypted",
+        "data": "opaque-encrypted-reasoning",
+        "id": "reasoning-1",
+        "format": "openai-responses-v1",
+        "index": 0
+    }]);
+    let body = json!({
+        "model": REASONING_MODEL,
+        "messages": [{
+            "role": "assistant",
+            "content": null,
+            "reasoning": "fallback text",
+            "reasoning_details": details
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiChat,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    assert_eq!(output["messages"][0]["reasoning_details"], details);
+    assert_eq!(output["messages"][0]["reasoning"], "fallback text");
     Ok(())
 }
 

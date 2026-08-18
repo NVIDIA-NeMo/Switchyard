@@ -192,6 +192,18 @@ fn encode_anthropic_stream(
             }));
             out
         }
+        LlmResponseChunk::ReasoningDetailsDelta { text, .. } => {
+            if text.is_empty() {
+                return Vec::new();
+            }
+            let mut out = ensure_anthropic_reasoning_block(state);
+            out.push(json!({
+                "type": "content_block_delta",
+                "index": state.reasoning_block_index.unwrap_or(0),
+                "delta": {"type": "thinking_delta", "thinking": text},
+            }));
+            out
+        }
         LlmResponseChunk::ToolCallDelta {
             index,
             id,

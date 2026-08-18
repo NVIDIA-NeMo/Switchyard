@@ -177,7 +177,6 @@ fn client_call_error_type(error: &LibsyError) -> Cow<'static, str> {
         LibsyError::AlgorithmError { .. } => Cow::Borrowed("algorithm_error"),
         LibsyError::Driver(_) => Cow::Borrowed("driver_error"),
         LibsyError::MissingFinalResponse => Cow::Borrowed("missing_final_response"),
-        LibsyError::AllTargetsExcluded => Cow::Borrowed("context_window_exceeded"),
         LibsyError::External { .. } => Cow::Borrowed("_OTHER"),
     }
 }
@@ -192,7 +191,7 @@ fn llm_client_error_type(error: &LlmClientError) -> Cow<'static, str> {
         LlmClientError::Transport { .. } => Cow::Borrowed("transport"),
         LlmClientError::Timeout { .. } => Cow::Borrowed("timeout"),
         LlmClientError::ContextWindowExceeded { .. } => Cow::Borrowed("context_window_exceeded"),
-        LlmClientError::UpstreamHttp { status, .. } => Cow::Owned(status.to_string()),
+        LlmClientError::UpstreamHttp { status, .. } => Cow::Owned(status.as_str().to_owned()),
         LlmClientError::InvalidResponse { .. } => Cow::Borrowed("invalid_response"),
         LlmClientError::Ffi { .. } => Cow::Borrowed("ffi"),
         _ => Cow::Borrowed("_OTHER"),

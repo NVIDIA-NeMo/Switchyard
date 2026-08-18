@@ -77,14 +77,14 @@ impl SavingsConfig {
             };
             let price = self.price_for(model);
             if price.is_none() {
-                unpriced_models.push(model.clone());
+                unpriced_models.push(model.to_string());
             }
             let cost = price.map(|p| tokens.cost(p)).unwrap_or(0.0);
             let would_be = baseline.map(|(_, p)| tokens.cost(p)).unwrap_or(0.0);
             actual_cost += cost;
             baseline_cost += would_be;
             models.insert(
-                model.clone(),
+                model.to_string(),
                 ModelSavings {
                     calls: m.calls,
                     prompt_tokens: m.prompt_tokens,
@@ -112,8 +112,9 @@ impl SavingsConfig {
                 // An unpriced judge is under-counted the same way as an
                 // unpriced serving model; surface it rather than hide it.
                 None => {
-                    if !unpriced_models.contains(model) {
-                        unpriced_models.push(model.clone());
+                    let model = model.to_string();
+                    if !unpriced_models.contains(&model) {
+                        unpriced_models.push(model);
                     }
                 }
             }

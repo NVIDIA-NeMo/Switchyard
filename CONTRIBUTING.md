@@ -73,6 +73,11 @@ uv run mypy switchyard
 
 # Tests — no failures
 uv run pytest tests/ -v
+
+# Rust formatting, linting, and tests
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 These commands run in CI on every push. **Fix linting errors locally before pushing:**
@@ -130,6 +135,9 @@ feat(api)!: remove legacy route option
    uv run ruff check .
    uv run mypy switchyard
    uv run pytest tests/ -v
+   cargo fmt --all --check
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo test --workspace
    ```
 
 4. **Push and open a PR** on GitHub. Include:
@@ -152,6 +160,7 @@ workflows (commitlint, PR title) run on every PR but are advisory.
 
 ```bash
 uv run pytest tests/ -v
+cargo test --workspace
 ```
 
 ### Integration tests (requires API keys)
@@ -167,19 +176,38 @@ The default unit test suite runs with no network access and no API keys. Live, e
 
 ## Architecture
 
-See [Agents](AGENTS.md) for the full architecture guide. Key points:
+See [Architecture](docs/architecture.md) for the request lifecycle and
+[Agents](AGENTS.md) for crate boundaries and repository conventions. The
+supported serving path is native Rust:
 
-- **Typed requests/responses** — use `ChatRequest` and `ChatResponse` subtypes
-- **Composable chain** — `RequestProcessor` → `LLMBackend` → `ResponseProcessor` → `TranslationEngine`
-- **Profiles** — pre-built chains in `switchyard/lib/profiles/`
+```text
+HTTP request
+  → switchyard-server
+  → switchyard-translation (decode)
+  → libsy
+  → libsy-llm-client
+  → switchyard-translation (encode)
+  → upstream model
+```
 
-When adding a new component:
+Before making a change, identify the surface that owns it:
 
-1. Decide the role: `RequestProcessor`, `LLMBackend`, `ResponseProcessor`, or translation engine work.
-2. Subclass the ABC from `switchyard/lib/roles.py`.
-3. Put Python middleware in the matching subpackage (`switchyard/lib/processors/`, `switchyard/lib/backends/`) and provider translation logic in `crates/switchyard-translation`.
-4. Add tests in `tests/`.
-5. Export from the relevant `__init__.py` and from `switchyard/__init__.py`'s `__all__`.
+- Put routing algorithms and driver behavior in `crates/libsy`.
+- Put provider-neutral request and response types in `crates/protocol`.
+- Put translated HTTP calls in `crates/libsy-llm-client`.
+- Put wire-format conversion in `crates/switchyard-translation`.
+- Put HTTP serving and deployment configuration in `crates/switchyard-server`.
+- Put source-neutral skill-distillation records and port traits in
+  `crates/switchyard-skill-distillation`; that crate does not own workflow
+  orchestration. Test its public contracts in
+  `crates/switchyard-skill-distillation/tests/contracts.rs`.
+- Put native Python bindings in `crates/switchyard-py`; keep Python wrappers in
+  `switchyard/libsy` or `switchyard_rust`.
+- Put launcher behavior in `switchyard/cli`.
+
+Add Rust tests in the owning crate and Python tests in `tests/`. Export new
+public symbols from the owning crate or package rather than the top-level
+`switchyard` package unless that package owns the API.
 
 ## Documentation
 

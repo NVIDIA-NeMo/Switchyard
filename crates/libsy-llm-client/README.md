@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # libsy-llm-client
 
 An HTTP client that speaks Switchyard's neutral IR directly. You hand it a
-[`switchyard_protocol::Request`] and a model name; it looks up the configured backend,
+[`switchyard_protocol::Request`] and a [`ModelId`]; it looks up the configured backend,
 encodes the request to that backend's wire format, adds auth and forwards your
 headers, makes the call with a shared `reqwest::Client`, and decodes the reply
 back into a [`switchyard_protocol::Response`] — buffered or streamed.
@@ -20,16 +20,20 @@ It depends on `switchyard-libsy`, `switchyard-protocol`, and
 
 ## Concepts
 
-- **Model configs.** A client is built from [`ModelConfig`] values. Each model has a
-  default [`Backend`] and can have additional backends for other wire formats.
-  [`TranslatingLlmClient::call_rewrite_model`] uses the request's metadata wire format
-  when set, otherwise the model's default backend.
+- **Model configs.** A client is built from [`ModelConfig`] values, each keyed by a
+  [`ModelId`]. Each model has a default [`Backend`] and can have additional backends
+  for other wire formats. [`TranslatingLlmClient::call_rewrite_model`] uses the
+  request's metadata wire format when set, otherwise the model's default backend.
+- **Model ids.** A [`ModelId`] is a newtype over `String` that behaves like one — it
+  derefs to `str`, compares against string literals, and converts from `&str` or
+  `String` with `.into()`. Anywhere below that takes `impl Into<ModelId>` accepts a
+  bare literal; the borrowed positions need a `ModelId` value to reference.
 - **Backends.** A [`Backend`] is one of `OpenAiChat`, `OpenAiResponses`, or
   `Anthropic`, each wrapping an [`HttpBackendConfig`] (`base_url`, `api_key`,
   static `extra_headers`, default `extra_body` fields, and `max_retries`). The
   variant fixes the URL path and auth scheme (Bearer vs `x-api-key` +
   `anthropic-version`).
-- **Model rewrite.** The resolved model name is both the map key and the model id
+- **Model rewrite.** The resolved [`ModelId`] is both the map key and the model id
   sent upstream — it overwrites whatever `model` the request arrived with.
 - **Streaming is chosen by the request.** If the encoded body has `stream: true`
   (i.e. `request.llm_request.stream`), you get `LlmResponse::Stream`; otherwise
@@ -61,6 +65,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
     let openai = HttpBackendConfig {
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: std::env::var("OPENAI_API_KEY").ok(),
+        forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
         max_retries: 2,
@@ -80,7 +85,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
 
 ```rust
 use switchyard_llm_client::{LlmClientError, TranslatingLlmClient};
-use switchyard_protocol::{completion_text, text_request, LlmResponse, Request};
+use switchyard_protocol::{completion_text, text_request, LlmResponse, ModelId, Request};
 
 async fn ask(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<String> {
     let request = Request {
@@ -90,9 +95,8 @@ async fn ask(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<Str
     };
 
     // model_name wins over request.llm_request.model; it is also sent upstream.
-    let response = client
-        .call_rewrite_model(request, Some("gpt-4o-mini"))
-        .await?;
+    let model = ModelId::from("gpt-4o-mini");
+    let response = client.call_rewrite_model(request, Some(&model)).await?;
 
     match response.llm_response {
         LlmResponse::Agg(agg) => Ok(completion_text(&agg)),
@@ -110,7 +114,7 @@ Set `stream` on the IR request and drive the returned chunk stream:
 ```rust
 use futures_util::StreamExt;
 use switchyard_llm_client::TranslatingLlmClient;
-use switchyard_protocol::{text_request, LlmResponse, LlmResponseChunk, Request};
+use switchyard_protocol::{text_request, LlmResponse, LlmResponseChunk, ModelId, Request};
 
 async fn stream(
     client: &TranslatingLlmClient,
@@ -119,16 +123,17 @@ async fn stream(
     llm_request.stream = true;
     let request = Request { llm_request, raw_request: None, metadata: None };
 
-    let response = client
-        .call_rewrite_model(request, Some("gpt-4o-mini"))
-        .await?;
+    let model = ModelId::from("gpt-4o-mini");
+    let response = client.call_rewrite_model(request, Some(&model)).await?;
 
-    if let LlmResponse::Stream(mut chunks) = response.llm_response {
-        while let Some(item) = chunks.next().await {
-            match item {
-                Ok(LlmResponseChunk::TextDelta { text, .. }) => print!("{text}"),
-                Ok(_) => {}                       // usage, tool-call deltas, message start/stop
-                Err(error) => return Err(error),
+    if let LlmResponse::Stream(mut events) = response.llm_response {
+        while let Some(item) = events.next().await {
+            // Each event carries zero or more provider-neutral chunks; the ones
+            // ignored here are usage, tool-call deltas, and message start/stop.
+            for chunk in item?.normalized() {
+                if let LlmResponseChunk::TextDelta { text, .. } = chunk {
+                    print!("{text}");
+                }
             }
         }
     }
@@ -139,9 +144,9 @@ async fn stream(
 ### Routing an algorithm
 
 [`run`] takes a libsy algorithm and a [`ClientRouter`], and returns the final response plus
-the trace of decisions the algorithm published. The router resolves each offloaded call to
-the client for the target the algorithm selected; `ClientRouter::single` is the
-single-provider case:
+the trace of decisions the algorithm published. Each offloaded `CallModel` carries an ordered
+`models` list. The router resolves and tries those candidates in order; `ClientRouter::single`
+is the single-provider case:
 
 ```rust
 use std::sync::Arc;
@@ -165,9 +170,26 @@ async fn route(
 ```
 
 When targets are served by different clients — a judge on one provider and the serving
-models on another, say — build the router from `model name -> client` with
+models on another, say — build the router from `ModelId -> client` with
 [`ClientRouter::new`] instead. A model missing from that map fails with
 `LlmClientError::Configuration` rather than silently going to another provider.
+
+```rust
+use std::collections::HashMap;
+use std::sync::Arc;
+use switchyard_llm_client::ClientRouter;
+use switchyard_protocol::{ModelId, RoutedLlmClient};
+
+fn split_router(
+    judge: Arc<dyn RoutedLlmClient>,
+    serving: Arc<dyn RoutedLlmClient>,
+) -> ClientRouter {
+    ClientRouter::new(HashMap::from([
+        (ModelId::from("gpt-4o-mini"), judge),
+        (ModelId::from("claude-sonnet-4-5"), serving),
+    ]))
+}
+```
 
 A router is not itself a client: [`ClientRouter::route`] hands back a
 [`switchyard_protocol::RoutedLlmClient`] and the caller makes the call.
@@ -210,9 +232,16 @@ fn build_multi_format_client(
   Anthropic sends `x-api-key: <key>` plus `anthropic-version`.
 - `request.metadata.http_headers` are forwarded upstream, **except** reserved ones:
   `host`, `content-length`, `connection`, and the backend-owned
-  `authorization` / `x-api-key` / `anthropic-version` / `content-type`. So a
-  caller's placeholder credential never overrides the backend's real key.
-- Per-backend static headers go in `HttpBackendConfig::extra_headers`.
+  login, API-key, version, and content headers. So a caller's placeholder
+  credential never overrides the backend's real key.
+- `HttpBackendConfig::forward_auth` uses the caller's credential instead of the
+  backend's configured key. OpenAI backends forward `authorization`,
+  `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic backends forward
+  `authorization` or `x-api-key`; they also keep `oauth-*` values from
+  `anthropic-beta` and remove other caller-supplied beta values.
+- Per-backend custom headers go in `HttpBackendConfig::extra_headers`. Set credentials with
+  `api_key`. OpenAI backends reject `Authorization`; Anthropic backends reject `x-api-key`
+  and `anthropic-version`. Header names are case-insensitive.
 - Per-target top-level request defaults go in `HttpBackendConfig::extra_body`.
   The merge is shallow and fields already present in the request take precedence.
 - `HttpBackendConfig::max_retries` controls additional attempts after retryable
@@ -220,9 +249,12 @@ fn build_multi_format_client(
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
 
-Retries replay the same upstream request. A transport failure can therefore
-duplicate a request that the provider processed but did not finish returning,
-and the retry budget plus capped `Retry-After` delays determines total latency.
+Retries replay the same upstream request to the same model. Each candidate's
+`max_retries` budget is exhausted before candidate fallback advances to the next
+model. The worst case is `candidates × (max_retries + 1)` upstream requests, and
+total latency includes every candidate's capped `Retry-After` backoff. A transport
+failure can duplicate a request that the provider processed but did not finish
+returning.
 
 ## Errors
 
@@ -248,5 +280,6 @@ and the retry budget plus capped `Retry-After` delays determines total latency.
 [`Backend`]: src/backend.rs
 [`HttpBackendConfig`]: src/backend.rs
 [`ModelConfig`]: src/client.rs
+[`ModelId`]: ../protocol/src/model_id.rs
 [`TranslatingLlmClient::call_rewrite_model`]: src/client.rs
 [`LlmClientError`]: ../protocol/src/client.rs

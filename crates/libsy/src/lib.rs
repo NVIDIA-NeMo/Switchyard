@@ -5,9 +5,7 @@
 #![doc = include_str!("../README.md")]
 
 mod core;
-pub use core::algorithm::{
-    Algorithm, CallModel, Driver, LlmTarget, LlmTargetSet, Step, StepStream, drive,
-};
+pub use core::algorithm::{Algorithm, CallModel, Driver, Step, StepStream, drive};
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::processor::{Event, Processor};
 pub use core::state::{State, StateValue};
@@ -25,7 +23,9 @@ pub use algorithms::passthrough::Passthrough;
 pub use algorithms::rand::{Random, RandomClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::util::affinity::AffinityRouter;
-pub use algorithms::util::classifier_contract::ClassifierContractConfig;
+pub use algorithms::util::classifier_contract::{
+    ClassifierContractConfig, ClassifierResponseFormat,
+};
 pub use algorithms::util::escalation::EscalationJudgeConfig;
 pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
 pub use algorithms::util::subagent::SubagentOverride;

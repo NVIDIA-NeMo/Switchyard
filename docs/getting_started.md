@@ -27,7 +27,7 @@ source "$HOME/.local/bin/env"
 Then install the published Switchyard tool:
 
 ```bash
-uv tool install --python 3.12 "nemo-switchyard[cli]"
+uv tool install --python 3.10 "nemo-switchyard[cli]"
 ```
 
 This creates an isolated Python tool environment containing the `switchyard`
@@ -155,6 +155,12 @@ base_threshold = 0.5
 `format` selects the upstream protocol and must be `openai_chat`,
 `openai_responses`, or `anthropic_messages`. `api_key_env` names the environment
 variable the server reads; the secret does not belong in the TOML file.
+A client can set `forward_auth = true` instead of `api_key_env` to send each
+caller's credential to that upstream. OpenAI clients forward `authorization`,
+`chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients forward
+`authorization` or `x-api-key`. Enable this only for an upstream that should
+receive the caller's login. The server rejects a forwarding route called
+through the other provider's API.
 
 ### Run the server
 
