@@ -265,7 +265,6 @@ Each response carries two routing headers:
 | Header | Content |
 |---|---|
 | `x-model-router-selected-model` | The model ID the turn was routed to. |
-| `x-model-router-rationale` | Human-readable routing reason (e.g. `stage_router selected weak (confidence 0.612)`). |
 
 ### Decision sources
 
