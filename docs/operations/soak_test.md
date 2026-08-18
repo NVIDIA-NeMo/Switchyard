@@ -50,11 +50,11 @@ release, then run it directly:
 cargo build --release -p switchyard-soak
 ```
 
-## Rehearse the complete local stack
+## Check the local server and load tools
 
-The rehearsal embeds [VidaiMock](https://github.com/vidaiUK/VidaiMock) as a Rust library, so it
-does not need a separate `vidaimock` command. Build the server, soak tester, and mock helper from
-the commit under test:
+The local test embeds [VidaiMock](https://github.com/vidaiUK/VidaiMock) as a Rust library, so it does
+not need a separate `vidaimock` command. Build the server, soak tester, and mock helper from the
+commit under test:
 
 ```bash
 cargo build --release -p switchyard-server -p switchyard-soak \
@@ -69,47 +69,46 @@ cargo install oha
 uv tool install aiperf
 ```
 
-Then run the Python rehearsal from the repository root:
+Then run the local test from the repository root:
 
 ```bash
-python3.12 scripts/soak_rehearsal.py --duration 10s --concurrency 4
+python3.12 scripts/run_local_soak_test.py --duration 10s --concurrency 4
 ```
 
-`--duration` controls the Rust soak phase. The route smoke, oha, and AIPerf phases are short and
-bounded by request count. `--help` explains every rehearsal flag. Set `OHA_BIN`, `AIPERF_BIN`,
+`--duration` controls how long the Rust soak tester runs. The route checks, oha, and AIPerf runs are
+short and limited by request count. `--help` explains every flag. Set `OHA_BIN`, `AIPERF_BIN`,
 `SWITCHYARD_SERVER_BIN`, `SWITCHYARD_SOAK_BIN`, or `SWITCHYARD_SOAK_MOCK_BIN` when a command is not
 on `PATH` or not under `target/release`.
 
 The script checks all five commands before starting a process. A missing command prints a warning,
-the build or install command, and the matching environment-variable override. Cargo compiles the
-embedded VidaiMock library, but it does not install the unrelated oha or AIPerf executables during
-a normal build.
+the build or install command, and the matching environment variable. Cargo compiles the embedded
+VidaiMock library, but it does not install the unrelated oha or AIPerf programs during a normal
+build.
 
 The script gives each tool one job:
 
-| Tool | Job in the rehearsal |
+| Tool | Job in the local test |
 |---|---|
 | Embedded VidaiMock | Supplies local OpenAI-compatible model responses with configurable latency and no provider cost. |
 | oha | Sends raw concurrent HTTP requests through the random route and writes a status and latency distribution. |
-| Python route smoke | Sends one Chat Completions request through each route. The stage request includes a critical tool failure so the signal scorer takes its escalation path. |
-| AIPerf | Sends streaming Chat Completions through passthrough routing and records LLM and token latency artifacts. |
-| `switchyard-soak` | Runs passthrough routing through Chat Completions, Messages, and Responses, with streaming on and off, while checking liveness, metrics, process sampling, and result gates. |
+| Python route checks | Sends one Chat Completions request through each route. The stage request includes a critical tool failure so the signal scorer selects the capable target. |
+| AIPerf | Sends streaming Chat Completions through passthrough routing and records LLM, token, and response-time results. |
+| `switchyard-soak` | Runs passthrough routing through Chat Completions, Messages, and Responses, with streaming on and off, while checking server health, metrics, process use, and required results. |
 
-The checked-in rehearsal config exercises `noop`, `random`, `passthrough`, `llm_classifier`, and
+`scripts/local_soak_test.toml` exercises `noop`, `random`, `passthrough`, `llm_classifier`, and
 `stage_router`. It uses the accepted maximum retry count (10), a zero-weight random target, and the
 upper classifier and stage thresholds (1.0). The config is validated with
 `switchyard-server --dry-run` before either service starts.
 
-The runner does not invent operational maxima for unbounded values such as target count or recent
-turn window. Focused Rust tests cover the real bounded structures at cap plus one: 1,024 routing
-overflow identities, 4,096 affinity assignments, 100,000 retained latency samples, and 10,000
-recorded error details. Server tests cover invalid thresholds, malformed classifier verdicts,
-missing subagent identifiers, target failures, and the retry value immediately above the maximum.
+The runner does not add limits for target count or recent-turn history because the server does not
+limit them. Rust tests cover the real limits: 4,096 saved route assignments, 100,000 response-time
+samples, and 10,000 error records. Server tests cover invalid thresholds, bad classifier responses,
+missing stage-router request IDs, target errors, and retry count 11, which is one above the maximum.
 
 ## Run the 48-hour test
 
 Choose concurrency from the release capacity plan. Increase it in short
-rehearsals until you find the highest expected steady load that remains below
+test runs until you find the highest expected steady load that remains below
 the backend's rate limit. Use that load for the 48-hour run. An overload test
 that spends most of its time throttled does not measure release stability.
 
@@ -128,7 +127,7 @@ large usage charges against a metered backend. Use a dedicated test deployment,
 estimate the request volume first with a short run, and get approval for any
 paid-provider cost.
 
-Use a five-minute rehearsal to confirm the route and result files:
+Use a five-minute run to confirm the route and result files:
 
 ```bash
 ./target/release/switchyard-soak \

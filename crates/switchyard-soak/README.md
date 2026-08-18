@@ -69,47 +69,17 @@ The inference workers use a fixed six-case cycle: three public endpoint formats 
 streaming on and off. A deterministic cycle makes missing endpoint or streaming coverage visible
 in short runs.
 
-## Rehearse the whole toolchain
+## Check the local server and load tools
 
-The repository's `scripts/soak_rehearsal.py` starts an embedded VidaiMock server and
-`switchyard-server`, validates a configuration containing every server route type, sends one
-production HTTP request through each route, then runs three complementary clients:
+`scripts/run_local_soak_test.py` starts an embedded VidaiMock server and `switchyard-server`, sends
+one HTTP request through each configured route, then runs `oha`, NVIDIA AIPerf, and
+`switchyard-soak`. VidaiMock returns fixed local responses, so this local test needs no provider key
+and incurs no inference cost.
 
-- `oha` checks raw HTTP concurrency and status-code distribution.
-- NVIDIA AIPerf measures LLM request, token, and streaming latency through passthrough routing.
-- `switchyard-soak` checks all three API formats, streaming framing, liveness, metrics, process
-  sampling, result files, and pass/fail gates through the same passthrough route.
-
-`switchyard-soak` itself does not require VidaiMock, oha, or AIPerf. The local rehearsal builds
-VidaiMock's Rust library into a helper command, so it does not need a separate `vidaimock` install.
-Build the Rust commands and helper:
-
-```bash
-cargo build --release -p switchyard-server -p switchyard-soak \
-  --bins --example switchyard-soak-mock
-```
-
-Install the two external load generators:
-
-```bash
-cargo install oha
-uv tool install aiperf
-```
-
-Then run the local rehearsal:
-
-```bash
-python3.12 scripts/soak_rehearsal.py --duration 10s --concurrency 4
-```
-
-The script checks every required command before it starts a server. When a command is missing, it
-prints a warning with the build or install command and the environment variable that can point to
-an existing executable. Cargo dependencies compile Rust libraries; a normal `cargo build` does
-not install unrelated host commands, so oha and AIPerf remain explicit installs.
-
-The embedded VidaiMock server supplies deterministic local model responses, so this rehearsal needs no provider key
-and incurs no inference cost. It is a preflight check, not a replacement for the 48-hour run
-against the release deployment.
+The script needs the built Rust programs plus installed `oha` and AIPerf commands.
+`switchyard-soak` itself does not require those extra programs and can run by itself against a
+release server. See the [operations guide](../../docs/operations/soak_test.md) for setup, the local
+command, the 48-hour release run, and result review.
 
 ## Results
 

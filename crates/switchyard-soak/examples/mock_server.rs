@@ -1,18 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Local VidaiMock server used by `scripts/soak_rehearsal.py`.
+//! Local VidaiMock server used by `scripts/run_local_soak_test.py`.
 
 use std::process::ExitCode;
 
 use clap::Parser;
 use vidaimock::MockServer;
 
-/// Start the embedded mock backend used by the local soak rehearsal.
+/// Start the embedded mock backend used by the local soak test.
 #[derive(Parser)]
 #[command(
     name = "switchyard-soak-mock",
-    about = "Start VidaiMock for the local Switchyard soak rehearsal",
+    about = "Start VidaiMock for the local Switchyard soak test",
     after_long_help = "Example:\n  cargo run --release -p switchyard-soak --example switchyard-soak-mock -- --port 8100 --latency-ms 40",
     version
 )]

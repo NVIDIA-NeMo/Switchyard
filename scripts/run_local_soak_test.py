@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Rehearse every Switchyard route with embedded VidaiMock, oha, AIPerf, and the soak test."""
+"""Run every Switchyard route with embedded VidaiMock, oha, AIPerf, and the soak test."""
 
 import argparse
 import json
@@ -42,7 +42,7 @@ class Child:
 
 @dataclass(frozen=True)
 class RequiredBinary:
-    """One command the rehearsal must find before starting any process."""
+    """One command the local soak test must find before starting any process."""
 
     label: str
     env_var: str
@@ -78,8 +78,8 @@ def parser() -> argparse.ArgumentParser:
     """Build the plain-English command-line interface."""
     command = argparse.ArgumentParser(
         description=(
-            "Start a local VidaiMock-backed Switchyard stack, smoke every route, then run oha, "
-            "AIPerf, and switchyard-soak."
+            "Start VidaiMock and a local Switchyard server, send one request through every route, "
+            "then run oha, AIPerf, and switchyard-soak."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -219,8 +219,8 @@ def run_checked(name: str, command: Sequence[str], log_path: Path) -> None:
         raise RuntimeError(f"{name} failed with status {result.returncode}; see {log_path}")
 
 
-def smoke_routes(base_url: str, output_path: Path) -> None:
-    """Send one production HTTP request through every configured route."""
+def check_routes(base_url: str, output_path: Path) -> None:
+    """Send one HTTP request through every configured route."""
     ordinary = [{"role": "user", "content": "Reply with exactly OK."}]
     stage_edge = [
         {"role": "user", "content": "Fix the build."},
@@ -273,11 +273,11 @@ def smoke_routes(base_url: str, output_path: Path) -> None:
 def default_output_dir(repo_root: Path) -> Path:
     """Choose a new timestamped directory under the repository."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return repo_root / "soak-rehearsal-results" / stamp
+    return repo_root / "local-soak-test-results" / stamp
 
 
-def run_rehearsal(args: argparse.Namespace) -> Path:
-    """Run the complete local rehearsal and return its output directory."""
+def run_local_soak_test(args: argparse.Namespace) -> Path:
+    """Run the complete local soak test and return its output directory."""
     repo_root = Path(__file__).resolve().parents[1]
     rust_build = (
         "Build the Rust commands with: cargo build --release -p switchyard-server "
@@ -334,7 +334,7 @@ def run_rehearsal(args: argparse.Namespace) -> Path:
     output_dir = (args.output_dir or default_output_dir(repo_root)).resolve()
     output_dir.mkdir(parents=True, exist_ok=False)
     config_path = output_dir / "routes.toml"
-    shutil.copy2(repo_root / "scripts/soak_rehearsal.toml", config_path)
+    shutil.copy2(repo_root / "scripts/local_soak_test.toml", config_path)
 
     run_checked(
         "switchyard-server config validation",
@@ -366,7 +366,7 @@ def run_rehearsal(args: argparse.Namespace) -> Path:
         children.append(server)
         base_url = f"http://127.0.0.1:{args.server_port}"
         wait_for_health(server, f"{base_url}/health", "ok")
-        smoke_routes(base_url, output_dir / "route-smoke.jsonl")
+        check_routes(base_url, output_dir / "route-checks.jsonl")
 
         oha_body = output_dir / "oha-request.json"
         oha_body.write_text(
@@ -436,7 +436,7 @@ def run_rehearsal(args: argparse.Namespace) -> Path:
         )
 
         run_checked(
-            "switchyard-soak endpoint and streaming matrix",
+            "switchyard-soak API and streaming requests",
             [
                 soak_bin,
                 "--base-url",
@@ -466,14 +466,14 @@ def run_rehearsal(args: argparse.Namespace) -> Path:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Parse arguments, run the rehearsal, and print one actionable failure."""
+    """Parse arguments, run the local soak test, and print one actionable failure."""
     args = parser().parse_args(argv)
     try:
-        output_dir = run_rehearsal(args)
+        output_dir = run_local_soak_test(args)
     except (OSError, RuntimeError) as error:
-        print(f"soak rehearsal failed: {error}", file=sys.stderr)
+        print(f"local soak test failed: {error}", file=sys.stderr)
         return 1
-    print(f"Soak rehearsal passed; results: {output_dir}")
+    print(f"Local soak test passed; results: {output_dir}")
     return 0
 
 

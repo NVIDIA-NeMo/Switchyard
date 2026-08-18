@@ -33,7 +33,7 @@ use crate::stats::{
 #[command(
     name = "switchyard-soak",
     about = "Run a sustained, closed-loop load test against a live Switchyard server",
-    after_long_help = "Examples:\n  switchyard-soak --model switchyard/general --duration 5m --concurrency 4\n  switchyard-soak --model switchyard/general --duration 48h --server-pid 1234 --max-rss-growth-mib 512\n\nThis command does not require VidaiMock, oha, or AIPerf. The optional scripts/soak_rehearsal.py command uses an embedded VidaiMock helper and warns before it starts when oha or AIPerf is missing.",
+    after_long_help = "Examples:\n  switchyard-soak --model switchyard/general --duration 5m --concurrency 4\n  switchyard-soak --model switchyard/general --duration 48h --server-pid 1234 --max-rss-growth-mib 512\n\nThis command does not require VidaiMock, oha, or AIPerf. The optional scripts/run_local_soak_test.py command uses an embedded VidaiMock helper and warns before it starts when oha or AIPerf is missing.",
     version
 )]
 pub struct Args {

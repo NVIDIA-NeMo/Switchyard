@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+# Local routes used by run_local_soak_test.py; no provider credentials are required.
+
 schema_version = 1
 
 [llm_clients.mock]
