@@ -7,8 +7,8 @@ an HTTP stack.</p>
 <h3 id="setup"><a class="doc-anchor" href="#setup">§</a>Setup</h3><div class="example-wrap"><pre class="language-toml"><code>[dependencies]
 async-trait = &quot;0.1&quot;
 futures = &quot;0.3&quot;
-switchyard-libsy = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }
-switchyard-protocol = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }
+switchyard-libsy = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;, tag = &quot;v0.2.0&quot; }
+switchyard-protocol = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;, tag = &quot;v0.2.0&quot; }
 tokio = { version = &quot;1&quot;, features = [&quot;macros&quot;, &quot;rt&quot;] }</code></pre></div><h3 id="built-in-algorithms"><a class="doc-anchor" href="#built-in-algorithms">§</a>Built-in algorithms</h3><div><table><thead><tr><th>Type</th><th>Purpose</th></tr></thead><tbody>
 <tr><td><a href="struct.Passthrough.html" title="struct switchyard_libsy::Passthrough"><code>Passthrough</code></a></td><td>Always select one configured target.</td></tr>
 <tr><td><a href="struct.Random.html" title="struct switchyard_libsy::Random"><code>Random</code></a></td><td>Select among any number of targets using uniform or weighted routing.</td></tr>
