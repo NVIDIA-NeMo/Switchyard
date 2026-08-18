@@ -346,6 +346,33 @@ async fn redo_appends_echo_and_feedback_then_reinvokes() {
 }
 
 #[tokio::test]
+async fn redo_feedback_defers_to_the_requested_deliverable() {
+    // A REDO on a plan-only request must not read as authorization to start
+    // implementing: the default prefix scopes "keep working" to whatever the
+    // original request asked for.
+    let script = Script::new();
+    let gate = gate(AdvisorGateConfig::default());
+    let serve = script.serve("REDO: the rollout step is missing", |index| {
+        if index == 0 {
+            reply("plan: 1. ship it")
+        } else {
+            reply("plan: 1. stage it 2. ship it")
+        }
+    });
+    test_drive(gate, task_request(), serve)
+        .await
+        .expect("routes");
+    let redo = script.call(2);
+    let feedback = redo.llm_request.messages[2]
+        .text_content("\n")
+        .expect("feedback text");
+    assert!(feedback.contains("does NOT yet satisfy the original request"));
+    assert!(feedback.contains("revise the plan if a plan was requested"));
+    // The old unconditional completion claim must be gone.
+    assert!(!feedback.contains("the task is NOT yet complete"));
+}
+
+#[tokio::test]
 async fn budget_consumed_once_per_scope() {
     let script = Script::new();
     let gate = gate(AdvisorGateConfig::default());
