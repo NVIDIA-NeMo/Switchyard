@@ -956,10 +956,9 @@ base_threshold = 0.5
     Ok(())
 }
 
-/// Decision-only routing executes the judge, stops before the selected model call, and
-/// returns only the non-secret connection settings needed by an external caller.
+/// Decision-only routing returns callable metadata and preserves any answer produced while routing.
 #[tokio::test]
-async fn decision_returns_callable_target_without_calling_it() -> TestResult {
+async fn decision_returns_callable_target_and_routing_answer() -> TestResult {
     let judge_upstream = MockUpstream::start().await?;
     let model_upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
@@ -994,6 +993,15 @@ classifier_target = "judge"
 strong_target = "quality"
 weak_target = "economy"
 base_threshold = 0.5
+
+[routes.escalation]
+id = "switchyard/escalation"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge"
+strong_target = "quality"
+weak_target = "economy"
+escalation = {{ confirmations = 1 }}
 "#,
         judge_url = judge_upstream.base_url,
         model_url = model_upstream.base_url,
@@ -1043,6 +1051,34 @@ base_threshold = 0.5
         vec!["model/classifier".to_string()]
     );
     assert!(model_upstream.models().await.is_empty());
+
+    judge_upstream.calls.lock().await.clear();
+    model_upstream.calls.lock().await.clear();
+    let response = send(
+        &app,
+        "POST",
+        "/v1/decision",
+        Some(json!({
+            "input_format": "openai_chat",
+            "request": {
+                "model": "switchyard/escalation",
+                "messages": [{"role": "user", "content": "bounded task"}]
+            }
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let response = response.json()?;
+    assert_eq!(response["selected"]["target"], "economy");
+    assert_eq!(response["fallbacks"], json!([]));
+    assert_eq!(response["response"]["model"], "model/weak");
+    assert_eq!(
+        response["response"]["choices"][0]["message"]["content"],
+        "ok"
+    );
+    assert_eq!(model_upstream.models().await, ["model/weak"]);
+    assert_eq!(judge_upstream.models().await, ["model/classifier"]);
     Ok(())
 }
 

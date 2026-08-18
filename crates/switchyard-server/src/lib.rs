@@ -42,7 +42,7 @@ use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
 
-use switchyard_translation::{WireFormat, decode_request};
+use switchyard_translation::{WireFormat, decode_request, encode_aggregated_response};
 
 use crate::config::ServerConfig;
 use crate::response::into_http_response;
@@ -121,6 +121,8 @@ struct RouteEntry {
 struct DecisionResponse<'a> {
     selected: DecisionTargetResponse<'a>,
     fallbacks: Vec<DecisionTargetResponse<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<Value>,
 }
 
 /// Borrowed response view over one target's existing configuration.
@@ -333,7 +335,8 @@ impl ServerState {
     fn decision_response<'a>(
         &'a self,
         route: &'a RouteEntry,
-        outcome: &'a RoutingOutcome,
+        outcome: &RoutingOutcome,
+        response: Option<Value>,
     ) -> Option<DecisionResponse<'a>> {
         let config = self.config.as_ref()?;
         let target_names = config.routing_target_names(route.config_name.as_ref()?)?;
@@ -360,6 +363,7 @@ impl ServerState {
                 .iter()
                 .map(resolve)
                 .collect::<Option<Vec<_>>>()?,
+            response,
         })
     }
 }
@@ -668,20 +672,38 @@ async fn decision(
             );
         }
     };
+    let input_format = body.input_format;
     let (route, request) = match resolve_route(
         &state,
         metadata_from_headers(headers),
         body.request,
-        body.input_format,
+        input_format,
     ) {
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
-    let outcome = match run_decision_only(route, request).await {
+    let mut outcome = match run_decision_only(route, request).await {
         Ok(outcome) => outcome,
         Err(error) => return algorithm_error(error),
     };
-    match state.decision_response(route, &outcome) {
+    let response = match outcome.response.take() {
+        Some(response) => {
+            let aggregate = match response.llm_response.into_agg().await {
+                Ok(aggregate) => aggregate,
+                Err(error) => return client_error(&error),
+            };
+            match encode_aggregated_response(
+                &aggregate,
+                input_format,
+                Some(outcome.selected_model_id.as_str()),
+            ) {
+                Ok(response) => Some(response),
+                Err(error) => return server_error(error.to_string()),
+            }
+        }
+        None => None,
+    };
+    match state.decision_response(route, &outcome, response) {
         Some(response) => Json(response).into_response(),
         None => error_response(
             StatusCode::UNPROCESSABLE_ENTITY,

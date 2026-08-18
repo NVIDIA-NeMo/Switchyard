@@ -145,7 +145,8 @@ nested request names the route in `model`. It executes required classifier or ju
 returns the selected target and ordered fallbacks with their model, format, base URL, and
 `extra_body`. It does not make a post-routing answer call. Routing-time calls still execute, and
 response-dependent algorithms such as escalation and advisor routing may produce an answer while
-deciding; that response is not included in the decision endpoint's metadata response.
+deciding. When they do, the endpoint includes the buffered answer as `response`, encoded in
+`input_format`; otherwise the field is omitted.
 
 For `stage_router`, `algorithm_stats.stage_router` groups routing decisions by source and semantic
 target and summarizes its score, confidence, and input-dimension histograms. These values reset
