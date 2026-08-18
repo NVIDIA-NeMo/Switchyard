@@ -131,6 +131,13 @@ async fn call_first_available(
     let models = clients
         .overflows
         .eligible(identity.as_deref(), &call.models);
+    if models.len() < call.models.len() {
+        tracing::debug!(
+            skipped = call.models.len() - models.len(),
+            selected = %models[0],
+            "skipping candidates that overflowed earlier in this session"
+        );
+    }
     for (index, target) in models.iter().enumerate() {
         let request = request_for(&call.request, target);
         match call_one(

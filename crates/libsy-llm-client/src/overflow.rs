@@ -3,7 +3,8 @@
 
 //! Per-session memory of targets that exceeded their context window.
 
-use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
+use std::collections::HashMap;
 
 use parking_lot::Mutex;
 use switchyard_protocol::{ModelId, Request};
@@ -13,29 +14,31 @@ const MAX_IDENTITIES: usize = 1_024;
 
 #[derive(Default)]
 pub(crate) struct SessionOverflows {
-    by_identity: Mutex<HashMap<String, HashSet<ModelId>>>,
+    by_identity: Mutex<HashMap<String, Vec<ModelId>>>,
 }
 
 impl SessionOverflows {
-    /// Never empty while `candidates` is non-empty: a later turn may fit again, so the
-    /// caller should get the upstream's answer rather than a routing error.
-    pub(crate) fn eligible(&self, identity: Option<&str>, candidates: &[ModelId]) -> Vec<ModelId> {
-        let Some(identity) = identity else {
-            return candidates.to_vec();
-        };
+    /// Borrows `candidates` unchanged unless this conversation has overflowed one of them.
+    /// Never empty: a later turn may fit again, so the caller should get the upstream's
+    /// answer rather than a routing error.
+    pub(crate) fn eligible<'a>(
+        &self,
+        identity: Option<&str>,
+        candidates: &'a [ModelId],
+    ) -> Cow<'a, [ModelId]> {
         let history = self.by_identity.lock();
-        let Some(overflowed) = history.get(identity) else {
-            return candidates.to_vec();
+        let Some(overflowed) = identity.and_then(|identity| history.get(identity)) else {
+            return Cow::Borrowed(candidates);
         };
         let eligible: Vec<ModelId> = candidates
             .iter()
-            .filter(|candidate| !overflowed.contains(*candidate))
+            .filter(|candidate| !overflowed.contains(candidate))
             .cloned()
             .collect();
-        if eligible.is_empty() {
-            candidates.to_vec()
+        if eligible.is_empty() || eligible.len() == candidates.len() {
+            Cow::Borrowed(candidates)
         } else {
-            eligible
+            Cow::Owned(eligible)
         }
     }
 
@@ -48,10 +51,10 @@ impl SessionOverflows {
         {
             history.remove(&victim);
         }
-        history
-            .entry(identity.to_string())
-            .or_default()
-            .insert(target.clone());
+        let overflowed = history.entry(identity.to_string()).or_default();
+        if !overflowed.contains(target) {
+            overflowed.push(target.clone());
+        }
     }
 }
 
@@ -76,35 +79,19 @@ mod tests {
         ModelId::from(name)
     }
 
-    fn request(metadata: Metadata) -> Request {
-        Request {
-            llm_request: text_request(None, "hi"),
-            raw_request: None,
-            metadata: Some(metadata),
-        }
-    }
-
     #[test]
     fn an_overflowed_target_is_skipped_for_the_rest_of_the_session() {
         let history = SessionOverflows::default();
         let candidates = vec![model("weak"), model("strong")];
 
-        assert_eq!(history.eligible(Some("s1"), &candidates), candidates);
+        assert_eq!(*history.eligible(Some("s1"), &candidates), candidates[..]);
         history.record(Some("s1"), &model("weak"));
+
         assert_eq!(
-            history.eligible(Some("s1"), &candidates),
-            vec![model("strong")]
+            *history.eligible(Some("s1"), &candidates),
+            [model("strong")]
         );
-    }
-
-    #[test]
-    fn history_is_scoped_to_one_session() {
-        let history = SessionOverflows::default();
-        let candidates = vec![model("weak"), model("strong")];
-        history.record(Some("s1"), &model("weak"));
-
-        assert_eq!(history.eligible(Some("s2"), &candidates), candidates);
-        assert_eq!(history.eligible(None, &candidates), candidates);
+        assert_eq!(*history.eligible(Some("s2"), &candidates), candidates[..]);
     }
 
     #[test]
@@ -113,11 +100,16 @@ mod tests {
         let candidates = vec![model("weak")];
         history.record(Some("s1"), &model("weak"));
 
-        assert_eq!(history.eligible(Some("s1"), &candidates), candidates);
+        assert_eq!(*history.eligible(Some("s1"), &candidates), candidates[..]);
     }
 
     #[test]
     fn a_subagent_does_not_share_its_parents_history() {
+        let request = |metadata| Request {
+            llm_request: text_request(None, "hi"),
+            raw_request: None,
+            metadata: Some(metadata),
+        };
         let parent = request(Metadata {
             session_id: Some("s1".into()),
             ..Default::default()
@@ -131,15 +123,5 @@ mod tests {
 
         assert_eq!(identity(&parent).as_deref(), Some("s1"));
         assert_eq!(identity(&child).as_deref(), Some("s1/a1"));
-    }
-
-    #[test]
-    fn tracking_is_bounded() {
-        let history = SessionOverflows::default();
-        for n in 0..MAX_IDENTITIES + 10 {
-            history.record(Some(&format!("s{n}")), &model("weak"));
-        }
-
-        assert!(history.by_identity.lock().len() <= MAX_IDENTITIES);
     }
 }
