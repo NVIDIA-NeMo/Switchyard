@@ -1199,20 +1199,7 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     Ok(())
 }
 
-// Decoding alone must yield the function-call arguments exactly once.
-//
-// `response.output_item.done` repeats the complete arguments that the delta
-// events already carried, so the decoder drops it when it matches what it has
-// seen. That comparison reads state the DECODER never writes — it is filled by
-// the Anthropic encoder — so it only holds when one state happens to do both
-// halves. libsy buffers a turn with its own state and no Anthropic encode, and
-// the arguments are then emitted twice.
-//
-// Observed through switchyard-server 0.2.0 against a live Azure gpt-5.6
-// target: every llm_classifier route doubled its streamed tool arguments,
-// while passthrough over the identical path was correct. Claude Code rejects
-// the result with "InputValidationError: parameter type is expected as
-// 'object' but provided as 'string'".
+// A completion event must not repeat function-call arguments from delta events.
 #[test]
 fn responses_decode_emits_tool_arguments_once() -> TestResult {
     let engine = TranslationEngine::default();
