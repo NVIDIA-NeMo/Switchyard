@@ -8,10 +8,12 @@ from pathlib import Path
 
 import pytest
 
+from switchyard.cli.command_utils import strip_forwarded_args
 from switchyard.cli.launch_command import _config_path
 from switchyard.cli.launchers.claude_code_launcher import _claude_env
 from switchyard.cli.launchers.codex_cli_launcher import _codex_env, _provider_overrides
 from switchyard.cli.launchers.native_server import NativeServer
+from switchyard.cli.launchers.openclaw_launcher import _openclaw_command
 from switchyard.cli.switchyard_cli import _build_parser
 
 
@@ -44,6 +46,27 @@ def test_launcher_surface_is_model_config_and_forwarded_args(agent: str) -> None
     assert args.model == "switchyard"
     assert args.config is None
     assert vars(args)[f"{agent}_args"] == ["--", "--version"]
+
+
+@pytest.mark.parametrize(
+    ("agent_args", "expected"),
+    [
+        ([], ["openclaw", "chat"]),
+        (["--", "--version"], ["openclaw", "--version"]),
+        (["--", "chat", "--help"], ["openclaw", "chat", "--help"]),
+    ],
+)
+def test_openclaw_uses_forwarded_args_as_the_complete_argument_list(
+    agent_args: list[str],
+    expected: list[str],
+) -> None:
+    launch = _subparsers(_build_parser())["launch"]
+    parser = _subparsers(launch)["openclaw"]
+    args = parser.parse_args(["--model", "switchyard", *agent_args])
+
+    command = _openclaw_command("openclaw", strip_forwarded_args(args.openclaw_args))
+
+    assert command == expected
 
 
 def test_default_config_is_packaged_openrouter_deployment() -> None:
