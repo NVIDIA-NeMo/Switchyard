@@ -8,12 +8,119 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat, prepend_system_prompt,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+// Provider-only fields and embedded cross-format snapshots survive prompt insertion.
+#[test]
+fn prepending_a_system_prompt_preserves_exact_provider_fields() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({
+                "model": "gpt",
+                "messages": [
+                    {"role": "system", "name": "caller", "content": "client prompt"},
+                    {"role": "user", "content": "hi"}
+                ],
+                "prompt_cache_key": "session-1",
+                "stream": true,
+                "stream_options": {"include_usage": true}
+            }),
+            "/messages/0",
+            json!({"role": "system", "content": "target prompt"}),
+            "/stream_options/include_usage",
+            json!(true),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({
+                "model": "gpt",
+                "instructions": "client prompt",
+                "input": "hi",
+                "include": ["reasoning.encrypted_content"],
+                "parallel_tool_calls": false,
+                "prompt_cache_key": "session-1",
+                "reasoning": {"effort": "high", "summary": "auto"},
+                "metadata": {
+                    "tenant": "example",
+                    "_switchyard_translation": {
+                        "requests": {
+                            "anthropic_messages": {
+                                "model": "claude",
+                                "max_tokens": 64,
+                                "messages": [{"role": "user", "content": "hi"}]
+                            }
+                        }
+                    }
+                },
+                "store": false,
+                "truncation": "auto"
+            }),
+            "/instructions",
+            json!("target prompt\n\nclient prompt"),
+            "/metadata/tenant",
+            json!("example"),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({
+                "model": "claude",
+                "max_tokens": 64,
+                "system": [{
+                    "type": "text",
+                    "text": "client prompt",
+                    "cache_control": {"type": "ephemeral"}
+                }],
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+            "/system/0",
+            json!({"type": "text", "text": "target prompt"}),
+            "/system/1/cache_control/type",
+            json!("ephemeral"),
+        ),
+    ];
+
+    for (format, body, prompt_path, expected_prompt, preserved_path, expected_preserved) in cases {
+        let mut request = engine.decode_request(format, &body, &policy)?.request;
+        prepend_system_prompt(&mut request, "target prompt");
+        let once = engine.encode_request(format, &request, &policy)?.body;
+        assert_eq!(
+            once.pointer(prompt_path),
+            Some(&expected_prompt),
+            "{format}"
+        );
+        assert_eq!(
+            once.pointer(preserved_path),
+            Some(&expected_preserved),
+            "{format}"
+        );
+        if format == WireFormat::OpenAiResponses {
+            assert_eq!(
+                once.pointer(
+                    "/metadata/_switchyard_translation/requests/anthropic_messages/system"
+                ),
+                Some(&json!("target prompt")),
+                "embedded preservation must reflect the prompt mutation"
+            );
+            let relayed = engine
+                .translate_request(format, WireFormat::AnthropicMessages, &once, &policy)?
+                .body;
+            assert_eq!(relayed["system"], "target prompt");
+        }
+
+        prepend_system_prompt(&mut request, "target prompt");
+        let twice = engine.encode_request(format, &request, &policy)?.body;
+        assert_eq!(twice, once, "{format}: prompt insertion must be idempotent");
+    }
+    Ok(())
+}
 
 // Verifies Anthropic-only request fields are dropped or mapped for OpenAI Chat.
 #[test]

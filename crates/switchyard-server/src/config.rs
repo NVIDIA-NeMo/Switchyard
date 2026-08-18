@@ -79,6 +79,15 @@ impl ServerConfig {
         for (target_name, target) in &self.targets {
             validate_value("target name", target_name)?;
             validate_value(&format!("target {target_name} id"), &target.id)?;
+            if target
+                .system_prompt
+                .as_deref()
+                .is_some_and(|prompt| prompt.trim().is_empty())
+            {
+                return Err(ServerError::new(format!(
+                    "target {target_name} system_prompt must not be empty"
+                )));
+            }
             if !seen_client_model_ids.insert((target.llm_client.as_str(), target.id.as_str())) {
                 tracing::warn!(
                     "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
@@ -100,9 +109,12 @@ impl ServerConfig {
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
+            let target_prompts = self.build_target_prompts(route_name, config)?;
             let algorithm = build_algorithm(route_name, config, &targets)?;
-            let (client, caller_auth) = self.build_route_clients(route_name, config, &clients)?;
-            let count_tokens_target = self.build_count_tokens_target(config, &clients);
+            let count_tokens_target =
+                self.build_count_tokens_target(config, &clients, &target_prompts);
+            let (client, caller_auth) =
+                self.build_route_clients(route_name, config, &clients, target_prompts)?;
             routes.push((
                 config.id().clone(),
                 algorithm,
@@ -176,6 +188,7 @@ impl ServerConfig {
         route_name: &str,
         route: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        target_prompts: TargetPrompts,
     ) -> ServerResult<(ClientRouter, Option<CallerAuthKind>)> {
         let mut by_model = HashMap::new();
         let mut caller_auth = None;
@@ -204,13 +217,66 @@ impl ServerConfig {
             let client: Arc<dyn RoutedLlmClient> = client.clone();
             by_model.insert(target.id.clone(), client);
         }
-        Ok((ClientRouter::new(by_model), caller_auth))
+        Ok((
+            ClientRouter::new_with_target_prompts(by_model, target_prompts),
+            caller_auth,
+        ))
+    }
+
+    /// Resolves target fields and legacy Stage aliases into one prompt per routed model.
+    /// Judge-only targets are excluded; aliases sharing a model must agree, including unset values.
+    fn build_target_prompts(
+        &self,
+        route_name: &str,
+        route: &RouteConfig,
+    ) -> ServerResult<TargetPrompts> {
+        let mut by_model: BTreeMap<ModelId, Option<String>> = BTreeMap::new();
+        for name in route.routing_target_names() {
+            let target = self.targets.get(name).ok_or_else(|| {
+                ServerError::new(format!(
+                    "route {route_name} references unknown target {name}"
+                ))
+            })?;
+            let legacy_prompt = route.legacy_system_prompt(name);
+            if let (Some(prompt), Some(legacy)) = (target.system_prompt.as_deref(), legacy_prompt)
+                && prompt != legacy
+            {
+                return Err(ServerError::new(format!(
+                    "route {route_name} configures different system prompts for {}",
+                    target.id
+                )));
+            }
+            let prompt = legacy_prompt.or(target.system_prompt.as_deref());
+            // Decisions carry model IDs, so aliases in one route must agree on the prompt.
+            match by_model.entry(target.id.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(prompt.map(str::to_string));
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if entry.get().as_deref() != prompt =>
+                {
+                    return Err(ServerError::new(format!(
+                        "route {route_name} configures different system prompts for {}",
+                        target.id
+                    )));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(by_model
+            .into_iter()
+            .filter_map(|(target, prompt)| prompt.map(|prompt| (target, prompt)))
+            .fold(TargetPrompts::default(), |prompts, (target, prompt)| {
+                prompts.with(target, prompt)
+            }))
     }
 
     fn build_count_tokens_target(
         &self,
         route_config: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        target_prompts: &TargetPrompts,
     ) -> Option<CountTokensTarget> {
         route_config
             .routing_target_names()
@@ -230,6 +296,7 @@ impl ServerConfig {
             .map(|(_, _, target, client)| CountTokensTarget {
                 model: target.id.clone(),
                 client: client.clone(),
+                system_prompt: target_prompts.get(&target.id).map(str::to_string),
             })
     }
 }
@@ -265,6 +332,7 @@ struct TargetConfig {
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
+    system_prompt: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -596,6 +664,23 @@ impl RouteConfig {
             Self::Advisor {
                 executor_target, ..
             } => vec![executor_target],
+        }
+    }
+
+    // Stage's original route-level fields remain aliases for target prompts.
+    fn legacy_system_prompt(&self, target_name: &str) -> Option<&str> {
+        match self {
+            Self::StageRouter {
+                capable_target,
+                capable_system_prompt,
+                ..
+            } if target_name == capable_target => capable_system_prompt.as_deref(),
+            Self::StageRouter {
+                efficient_target,
+                efficient_system_prompt,
+                ..
+            } if target_name == efficient_target => efficient_system_prompt.as_deref(),
+            _ => None,
         }
     }
 
@@ -1025,8 +1110,6 @@ fn build_algorithm(
             confidence_threshold,
             recent_turn_window,
             handoff_notes,
-            capable_system_prompt,
-            efficient_system_prompt,
             classifier,
             ..
         } => {
@@ -1040,12 +1123,6 @@ fn build_algorithm(
             let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
             config.recent_window = *recent_turn_window;
             config.handoff_notes = handoff_notes.clone();
-            config.tier_prompts = tier_prompts(
-                &capable,
-                capable_system_prompt.as_deref(),
-                &efficient,
-                efficient_system_prompt.as_deref(),
-            );
             // The judge is called through its own target, so it is not a routing
             // destination and stays out of the tier pair.
             config.llm_fallback = classifier
@@ -1142,23 +1219,6 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 
 fn default_classifier_max_output_tokens() -> u64 {
     TaskClassifierConfig::default().max_output_tokens
-}
-
-/// Keys each configured system prompt by the target it belongs to.
-fn tier_prompts(
-    capable: &str,
-    capable_prompt: Option<&str>,
-    efficient: &str,
-    efficient_prompt: Option<&str>,
-) -> TargetPrompts {
-    let mut prompts = TargetPrompts::default();
-    if let Some(prompt) = capable_prompt {
-        prompts = prompts.with(capable, prompt);
-    }
-    if let Some(prompt) = efficient_prompt {
-        prompts = prompts.with(efficient, prompt);
-    }
-    prompts
 }
 
 fn resolve_targets<'a>(
@@ -1269,6 +1329,47 @@ target = "weak"
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn target_system_prompts_must_be_unambiguous() {
+        let set_and_unset = VALID_CONFIG
+            .replace(
+                "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"",
+                "[targets.strong]\nid = \"shared/model\"\nllm_client = \"responses\"\nsystem_prompt = \"strong prompt\"",
+            )
+            .replace(
+                "[targets.weak]\nid = \"weak/model\"\nllm_client = \"anthropic\"",
+                "[targets.weak]\nid = \"shared/model\"\nllm_client = \"anthropic\"",
+            );
+        let error = error_message(&set_and_unset);
+        assert!(
+            error.contains("route classifier configures different system prompts for shared/model"),
+            "{error}"
+        );
+
+        let legacy_stage = format!(
+            r#"{VALID_CONFIG}
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
+capable_system_prompt = "legacy prompt"
+"#
+        )
+        .replacen(
+            "[targets.strong]",
+            "[targets.strong]\nsystem_prompt = \"target prompt\"",
+            1,
+        );
+        let error = error_message(&legacy_stage);
+        assert!(
+            error.contains("route stage configures different system prompts for strong/model"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1482,6 +1583,14 @@ classifier_magic = true
             (
                 VALID_CONFIG.replace("[targets.strong]", "[targets.\" strong \"]"),
                 "target name must be non-empty and have no surrounding whitespace",
+            ),
+            (
+                VALID_CONFIG.replacen(
+                    "[targets.strong]",
+                    "[targets.strong]\nsystem_prompt = \"   \"",
+                    1,
+                ),
+                "target strong system_prompt must not be empty",
             ),
             (
                 VALID_CONFIG.replace(

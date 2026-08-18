@@ -15,6 +15,8 @@
 //! [`switchyard_libsy::Algorithm::run_stream`] and serves every model call the algorithm
 //! offloads, so a host that just wants the answer does not have to drive the step stream
 //! itself.
+//! A host that drives the stream itself can use [`ClientRouter::resolve_call`] to resolve the
+//! candidate client and apply target-specific prompts before making each call.
 
 pub mod backend;
 pub mod client;
@@ -30,5 +32,5 @@ pub use client::{ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
 pub use observation::{LlmCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
-pub use run::{ClientRouter, run};
+pub use run::{ClientRouter, ResolvedLlmCall, run};
 pub use switchyard_translation::RawEventStream;
