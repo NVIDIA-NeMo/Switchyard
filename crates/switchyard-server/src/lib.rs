@@ -572,7 +572,9 @@ async fn anthropic_count_tokens(
 ) -> Response {
     let body = match llm_json_body(body) {
         Ok(body) => body,
-        Err(message) => return anthropic_error_response(invalid_body_error(message)),
+        Err((status, message)) => {
+            return anthropic_error_response(invalid_body_error(status, message));
+        }
     };
     let (route, request) = match resolve_route(
         &state,
@@ -658,7 +660,7 @@ async fn handle_endpoint_inner(
             )
             .await
         }
-        Err(message) => invalid_body_error(message),
+        Err((status, message)) => invalid_body_error(status, message),
     };
     let response = render_error_response(response, wire_format);
     metrics::record_client_response(response.status().as_u16());
@@ -668,11 +670,17 @@ async fn handle_endpoint_inner(
 
 fn llm_json_body(
     body: std::result::Result<Json<Value>, JsonRejection>,
-) -> std::result::Result<Value, String> {
+) -> std::result::Result<Value, (StatusCode, String)> {
     match body {
         Ok(Json(value)) if value.is_object() => Ok(value),
-        Ok(_) => Err("Request body must be a JSON object".to_string()),
-        Err(error) => Err(format!("Request body must be valid JSON: {error}")),
+        Ok(_) => Err((
+            StatusCode::BAD_REQUEST,
+            "Request body must be a JSON object".to_string(),
+        )),
+        Err(error) => Err((
+            error.status(),
+            format!("Request body must be valid JSON: {error}"),
+        )),
     }
 }
 
@@ -690,7 +698,7 @@ fn resolve_route(
     wire_format: WireFormat,
 ) -> std::result::Result<(&RouteEntry, Request), Response> {
     let llm_request = decode_request(wire_format, &body)
-        .map_err(|error| invalid_body_error(error.to_string()))?;
+        .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
     let requested_model = llm_request
         .model
         .clone()
@@ -1037,13 +1045,8 @@ fn server_error(message: impl Into<String>) -> Response {
     )
 }
 
-fn invalid_body_error(message: impl Into<String>) -> Response {
-    error_response(
-        StatusCode::BAD_REQUEST,
-        message,
-        "invalid_request_error",
-        "invalid_body",
-    )
+fn invalid_body_error(status: StatusCode, message: impl Into<String>) -> Response {
+    error_response(status, message, "invalid_request_error", "invalid_body")
 }
 
 fn error_response(

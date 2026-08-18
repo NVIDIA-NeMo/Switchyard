@@ -25,7 +25,7 @@ use switchyard_llm_client::{
 use switchyard_protocol::ModelId;
 use switchyard_protocol::RoutedLlmClient;
 use switchyard_server::config::load_server_state;
-use switchyard_server::{ServerState, build_switchyard_router};
+use switchyard_server::{DEFAULT_MAX_REQUEST_BODY_BYTES, ServerState, build_switchyard_router};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -761,6 +761,27 @@ async fn send_with_headers(
         Body::empty()
     };
     let response = app.clone().oneshot(builder.body(request_body)?).await?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response.into_body().collect().await?.to_bytes();
+    Ok(Response {
+        status,
+        headers,
+        bytes,
+    })
+}
+
+async fn send_raw_json(
+    app: &Router,
+    path: &str,
+    body: Vec<u8>,
+    content_type: Option<&str>,
+) -> TestResult<Response> {
+    let mut builder = HttpRequest::builder().method("POST").uri(path);
+    if let Some(content_type) = content_type {
+        builder = builder.header("content-type", content_type);
+    }
+    let response = app.clone().oneshot(builder.body(Body::from(body))?).await?;
     let status = response.status();
     let headers = response.headers().clone();
     let bytes = response.into_body().collect().await?.to_bytes();
@@ -1760,6 +1781,72 @@ async fn routes_dispatch_and_discovery_endpoints_are_stable() -> TestResult {
     let calls = upstream.calls.lock().await;
     assert_eq!(calls[0]["model"], "model/general");
     assert_eq!(calls[1]["model"], "model/code");
+    Ok(())
+}
+
+#[tokio::test]
+async fn json_extractor_statuses_keep_api_specific_error_envelopes() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    for (content_type, expected_status) in [
+        (Some("application/json"), StatusCode::BAD_REQUEST),
+        (None, StatusCode::UNSUPPORTED_MEDIA_TYPE),
+        (Some("text/plain"), StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    ] {
+        let body = if expected_status == StatusCode::BAD_REQUEST {
+            br#"{"model":"broken""#.to_vec()
+        } else {
+            br#"{"model":"valid-json"}"#.to_vec()
+        };
+        let response = send_raw_json(&app, "/v1/chat/completions", body, content_type).await?;
+        assert_eq!(response.status, expected_status);
+        let body = response.json()?;
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "invalid_body");
+    }
+
+    let response = send_raw_json(
+        &app,
+        "/v1/chat/completions",
+        vec![b' '; DEFAULT_MAX_REQUEST_BODY_BYTES + 1],
+        Some("application/json"),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(response.json()?["error"]["code"], "invalid_body");
+
+    for (body, content_type, expected_status, expected_type) in [
+        (
+            br#"{"model":"broken""#.as_slice(),
+            Some("application/json"),
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+        ),
+        (
+            br#"{"model":"valid-json"}"#.as_slice(),
+            None,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "api_error",
+        ),
+    ] {
+        let response = send_raw_json(&app, "/v1/messages", body.to_vec(), content_type).await?;
+        assert_eq!(response.status, expected_status);
+        let body = response.json()?;
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], expected_type);
+    }
+
+    let response = send_raw_json(
+        &app,
+        "/v1/messages",
+        vec![b' '; DEFAULT_MAX_REQUEST_BODY_BYTES + 1],
+        Some("application/json"),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
+    let body = response.json()?;
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "request_too_large");
     Ok(())
 }
 
