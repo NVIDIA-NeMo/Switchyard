@@ -99,11 +99,15 @@ fn switchyard(is_chat_broken: bool) -> (Router, Arc<Mutex<HashSet<String>>>) {
     }
     fn response(body: &Value, field: &str) -> Response {
         if body.get("stream") == Some(&Value::Bool(true)) {
-            (
-                [(header::CONTENT_TYPE, "text/event-stream")],
-                "data: {}\n\n",
-            )
-                .into_response()
+            let stream = match field {
+                "choices" => "data: {\"choices\":[]}\n\ndata: [DONE]\n\n",
+                "content" => "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+                "output" => {
+                    "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
+                }
+                _ => "",
+            };
+            ([(header::CONTENT_TYPE, "text/event-stream")], stream).into_response()
         } else {
             let mut response = serde_json::Map::new();
             response.insert(field.to_string(), json!([]));

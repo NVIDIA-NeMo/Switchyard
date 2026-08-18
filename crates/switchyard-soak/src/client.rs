@@ -120,6 +120,7 @@ fn parse_metrics(text: &str) -> Metrics {
     metrics
 }
 
+#[derive(Debug)]
 pub struct RequestError {
     pub kind: String,
     pub detail: String,
@@ -138,6 +139,124 @@ impl RequestError {
             transport_error_kind(error),
             truncate(&error.to_string(), 500),
         )
+    }
+}
+
+struct StreamValidator {
+    endpoint: Endpoint,
+    event_name: Option<String>,
+    saw_json: bool,
+    saw_terminal: bool,
+}
+
+impl StreamValidator {
+    fn new(endpoint: Endpoint) -> Self {
+        Self {
+            endpoint,
+            event_name: None,
+            saw_json: false,
+            saw_terminal: false,
+        }
+    }
+
+    fn read_line(&mut self, line: &[u8]) -> Result<(), RequestError> {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.is_empty() {
+            self.event_name = None;
+            return Ok(());
+        }
+        let line = std::str::from_utf8(line)
+            .map_err(|error| RequestError::new("invalid_stream", error.to_string()))?;
+        if let Some(event_name) = line.strip_prefix("event:") {
+            self.event_name = Some(event_name.trim_start().to_string());
+            return Ok(());
+        }
+        let Some(data) = line.strip_prefix("data:") else {
+            return Ok(());
+        };
+        let data = data.strip_prefix(' ').unwrap_or(data);
+        if self.saw_terminal {
+            return Err(RequestError::new(
+                "invalid_stream",
+                "stream contained data after its terminal event",
+            ));
+        }
+        if data == "[DONE]" {
+            if self.endpoint != Endpoint::Chat {
+                return Err(RequestError::new(
+                    "invalid_stream",
+                    format!(
+                        "{} stream contained an OpenAI [DONE] marker",
+                        self.endpoint.as_str()
+                    ),
+                ));
+            }
+            self.saw_terminal = true;
+            return Ok(());
+        }
+
+        let payload: Value = serde_json::from_str(data).map_err(|error| {
+            RequestError::new("invalid_stream", format!("invalid SSE JSON: {error}"))
+        })?;
+        let event_type = payload.get("type").and_then(Value::as_str);
+        if self.event_name.as_deref() == Some("error")
+            || event_type == Some("error")
+            || payload.get("error").is_some()
+        {
+            let detail = payload
+                .pointer("/error/message")
+                .or_else(|| payload.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("stream returned an error event");
+            return Err(RequestError::new("stream_error", truncate(detail, 500)));
+        }
+
+        match self.endpoint {
+            Endpoint::Chat => {}
+            Endpoint::Messages | Endpoint::Responses => {
+                let event_type = event_type.ok_or_else(|| {
+                    RequestError::new("invalid_stream", "SSE data did not contain an event type")
+                })?;
+                if self.event_name.as_deref() != Some(event_type) {
+                    return Err(RequestError::new(
+                        "invalid_stream",
+                        format!(
+                            "SSE event name {:?} did not match data type {event_type:?}",
+                            self.event_name
+                        ),
+                    ));
+                }
+                self.saw_terminal = matches!(
+                    (self.endpoint, event_type),
+                    (Endpoint::Messages, "message_stop")
+                        | (
+                            Endpoint::Responses,
+                            "response.completed" | "response.incomplete"
+                        )
+                );
+            }
+        }
+        self.saw_json = true;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), RequestError> {
+        if !self.saw_json {
+            return Err(RequestError::new(
+                "empty_stream",
+                "successful streaming response contained no JSON events",
+            ));
+        }
+        if !self.saw_terminal {
+            return Err(RequestError::new(
+                "invalid_stream",
+                format!(
+                    "{} stream ended without its terminal event",
+                    self.endpoint.as_str()
+                ),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -181,25 +300,27 @@ pub async fn send_request(
             ));
         }
         let mut bytes = response.bytes_stream();
-        let mut received_data = false;
+        let mut pending = Vec::new();
+        let mut validator = StreamValidator::new(endpoint);
         while let Some(chunk) = bytes.next().await {
             match chunk {
                 Ok(chunk) => {
-                    received_data =
-                        received_data || chunk.iter().any(|byte| !byte.is_ascii_whitespace());
+                    pending.extend_from_slice(&chunk);
+                    while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+                        let mut line = pending.drain(..=newline).collect::<Vec<_>>();
+                        line.pop();
+                        validator.read_line(&line)?;
+                    }
                 }
                 Err(error) => {
                     return Err(RequestError::transport(&error));
                 }
             }
         }
-        if !received_data {
-            return Err(RequestError::new(
-                "empty_stream",
-                "successful streaming response contained no data",
-            ));
+        if !pending.is_empty() {
+            validator.read_line(&pending)?;
         }
-        return Ok(());
+        return validator.finish();
     }
 
     let status = response.status();
@@ -355,5 +476,43 @@ mod tests {
 
         assert_eq!(metrics.requests, Some(42.0));
         assert_eq!(metrics.errors, Some(3.0));
+    }
+
+    #[test]
+    fn stream_validator_accepts_each_public_terminal_event() -> Result<(), RequestError> {
+        for (endpoint, stream) in [
+            (Endpoint::Chat, "data: {\"choices\":[]}\n\ndata: [DONE]\n\n"),
+            (
+                Endpoint::Messages,
+                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            ),
+            (
+                Endpoint::Responses,
+                "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+            ),
+        ] {
+            let mut validator = StreamValidator::new(endpoint);
+            for line in stream.split('\n') {
+                validator.read_line(line.as_bytes())?;
+            }
+            validator.finish()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stream_validator_rejects_errors_and_missing_terminal_events() {
+        let mut error = StreamValidator::new(Endpoint::Chat);
+        let result = error.read_line(b"data: {\"error\":{\"message\":\"boom\"}}");
+        assert_eq!(result.unwrap_err().kind, "stream_error");
+
+        let mut incomplete = StreamValidator::new(Endpoint::Responses);
+        incomplete
+            .read_line(b"event: response.output_text.delta")
+            .expect("event name should parse");
+        incomplete
+            .read_line(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}")
+            .expect("data should parse");
+        assert_eq!(incomplete.finish().unwrap_err().kind, "invalid_stream");
     }
 }
