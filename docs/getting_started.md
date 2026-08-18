@@ -248,8 +248,8 @@ picks a target and hands the model call back to you.
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
@@ -268,11 +268,12 @@ behaviour.
 
 ### Drive the algorithm
 
-An algorithm yields a stream of steps. Each `Step::CallModel` is a model call your
-host performs over its own transport, and the run ends with
-`Step::Done` carrying the final response. Serving those calls yourself
-is what lets libsy embed in a host that already owns its HTTP stack, retries,
-and credentials.
+An algorithm yields a stream of steps. Each `Step::CallModel` is a routing-time classifier or
+judge call your host performs over its own transport. The run ends with `Step::Done` carrying a
+`RoutingOutcome`: the selected model, ordered fallbacks, rewritten request, and an optional
+response when routing already produced the answer. Otherwise the host makes the terminal answer
+call from that outcome. Serving these calls yourself is what lets libsy embed in a host that
+already owns its HTTP stack, retries, and credentials.
 
 For the request, response, and streaming types the steps carry, see
 [`switchyard-protocol`](../crates/protocol/README.md).

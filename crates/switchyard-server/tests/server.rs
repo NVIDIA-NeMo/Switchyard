@@ -25,7 +25,7 @@ use switchyard_llm_client::{
 use switchyard_protocol::ModelId;
 use switchyard_protocol::RoutedLlmClient;
 use switchyard_server::config::load_server_state;
-use switchyard_server::{ServerState, build_switchyard_router};
+use switchyard_server::{DEFAULT_MAX_REQUEST_BODY_BYTES, ServerState, build_switchyard_router};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -161,6 +161,37 @@ async fn upstream_chat(
                 .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
         );
         return Sse::new(stream).into_response();
+    }
+
+    if model == "model/advisor" {
+        // The review consult carries the serialized transcript in its user
+        // message, so the original prompt text rides inside it: tests script
+        // the verdict (or an outage) from the prompt they send.
+        let haystack = body["messages"].to_string();
+        if haystack.contains("advisor-down") {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": {"message": "advisor is unavailable"}})),
+            )
+                .into_response();
+        }
+        let verdict = if haystack.contains("please-redo") {
+            "REDO run the tests"
+        } else {
+            "APPROVE"
+        };
+        return Json(json!({
+            "id": "chatcmpl-advisor",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": verdict},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 40, "completion_tokens": 4, "total_tokens": 44}
+        }))
+        .into_response();
     }
 
     let custom_target_schema = body
@@ -479,7 +510,7 @@ async fn stats_accumulates_buffered_success_error_and_shared_routes() -> TestRes
     assert_eq!(stats["models"]["gemini-3.5-flash"]["calls"], 1);
     assert_eq!(stats["models"]["gemini-3.5-flash"]["errors"], 1);
     assert_eq!(stats["models"]["model/unknown"]["calls"], 1);
-    assert_eq!(stats["routing_overhead"]["count"], 2);
+    assert_eq!(stats["routing_overhead"]["count"], 3);
     Ok(())
 }
 
@@ -575,9 +606,7 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         "switchyard_client_responses_total{outcome=\"success\",",
         "switchyard_upstream_attempts_total{code=\"200\",outcome=\"success\",",
         "# TYPE switchyard_runs_total counter",
-        "# TYPE switchyard_llm_calls_total counter",
         "# TYPE switchyard_run_duration_ms histogram",
-        "# TYPE switchyard_llm_call_duration_ms histogram",
         "# TYPE switchyard_prompt_tokens_total counter",
         "# TYPE switchyard_completion_tokens_total counter",
         "# TYPE switchyard_cached_tokens_total counter",
@@ -732,6 +761,27 @@ async fn send_with_headers(
         Body::empty()
     };
     let response = app.clone().oneshot(builder.body(request_body)?).await?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response.into_body().collect().await?.to_bytes();
+    Ok(Response {
+        status,
+        headers,
+        bytes,
+    })
+}
+
+async fn send_raw_json(
+    app: &Router,
+    path: &str,
+    body: Vec<u8>,
+    content_type: Option<&str>,
+) -> TestResult<Response> {
+    let mut builder = HttpRequest::builder().method("POST").uri(path);
+    if let Some(content_type) = content_type {
+        builder = builder.header("content-type", content_type);
+    }
+    let response = app.clone().oneshot(builder.body(Body::from(body))?).await?;
     let status = response.status();
     let headers = response.headers().clone();
     let bytes = response.into_body().collect().await?.to_bytes();
@@ -1283,6 +1333,83 @@ prompt = "CUSTOM STAGE"
 }
 
 #[tokio::test]
+async fn accepted_escalation_response_is_logged_once_as_the_final_answer() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.escalation]
+id = "switchyard/escalation"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+escalation = {{ confirmations = 1 }}
+"#,
+        base_url = upstream.base_url
+    ))?
+    .with_routing_log(temp_dir.path().join("routing.jsonl"))?;
+    let app = build_switchyard_router(state);
+
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/escalation",
+            "messages": [{"role": "user", "content": "bounded task"}]
+        })),
+        &[("x-switchyard-session-id", "accepted-escalation")],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(upstream.models().await, ["model/weak", "model/classifier"]);
+
+    let stats = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=accepted-escalation",
+        None,
+    )
+    .await?;
+    assert_eq!(stats.status, StatusCode::OK);
+    let stats = stats.json()?;
+    assert_eq!(stats["total_calls"], 2);
+    assert_eq!(stats["total_prompt_tokens"], 20);
+    assert_eq!(stats["total_completion_tokens"], 4);
+    assert_eq!(stats["models"]["model/weak"]["calls"], 1);
+    assert_eq!(stats["models"]["model/classifier"]["calls"], 1);
+
+    let process_stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(process_stats["total_requests"], 1);
+    assert_eq!(process_stats["models"]["model/weak"]["calls"], 1);
+    assert_eq!(
+        process_stats["models"]["model/weak"]["model_call_latency"]["count"],
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn stage_classifier_can_request_json_object_output() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
@@ -1654,6 +1781,72 @@ async fn routes_dispatch_and_discovery_endpoints_are_stable() -> TestResult {
     let calls = upstream.calls.lock().await;
     assert_eq!(calls[0]["model"], "model/general");
     assert_eq!(calls[1]["model"], "model/code");
+    Ok(())
+}
+
+#[tokio::test]
+async fn json_extractor_statuses_keep_api_specific_error_envelopes() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    for (content_type, expected_status) in [
+        (Some("application/json"), StatusCode::BAD_REQUEST),
+        (None, StatusCode::UNSUPPORTED_MEDIA_TYPE),
+        (Some("text/plain"), StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    ] {
+        let body = if expected_status == StatusCode::BAD_REQUEST {
+            br#"{"model":"broken""#.to_vec()
+        } else {
+            br#"{"model":"valid-json"}"#.to_vec()
+        };
+        let response = send_raw_json(&app, "/v1/chat/completions", body, content_type).await?;
+        assert_eq!(response.status, expected_status);
+        let body = response.json()?;
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "invalid_body");
+    }
+
+    let response = send_raw_json(
+        &app,
+        "/v1/chat/completions",
+        vec![b' '; DEFAULT_MAX_REQUEST_BODY_BYTES + 1],
+        Some("application/json"),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(response.json()?["error"]["code"], "invalid_body");
+
+    for (body, content_type, expected_status, expected_type) in [
+        (
+            br#"{"model":"broken""#.as_slice(),
+            Some("application/json"),
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+        ),
+        (
+            br#"{"model":"valid-json"}"#.as_slice(),
+            None,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "api_error",
+        ),
+    ] {
+        let response = send_raw_json(&app, "/v1/messages", body.to_vec(), content_type).await?;
+        assert_eq!(response.status, expected_status);
+        let body = response.json()?;
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], expected_type);
+    }
+
+    let response = send_raw_json(
+        &app,
+        "/v1/messages",
+        vec![b' '; DEFAULT_MAX_REQUEST_BODY_BYTES + 1],
+        Some("application/json"),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
+    let body = response.json()?;
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "request_too_large");
     Ok(())
 }
 
@@ -2498,5 +2691,368 @@ async fn request_and_upstream_errors_use_the_inbound_wire_format() -> TestResult
             }
         })
     );
+    Ok(())
+}
+
+/// A `type = "advisor"` deployment: gated executor + reviewer on one mock upstream.
+fn advisor_state(base_url: &str) -> TestResult<ServerState> {
+    load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.executor]
+id = "model/executor"
+llm_client = "upstream"
+
+[targets.advisor]
+id = "model/advisor"
+llm_client = "upstream"
+
+[routes.gated]
+id = "switchyard/advisor"
+type = "advisor"
+executor_target = "executor"
+advisor_target = "advisor"
+"#,
+    ))
+}
+
+fn advisor_chat_body(prompt: &str) -> Value {
+    json!({
+        "model": "switchyard/advisor",
+        "messages": [{"role": "user", "content": prompt}]
+    })
+}
+
+#[tokio::test]
+async fn advisor_route_approve_flow_and_stats() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(advisor_state(&upstream.base_url)?);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(advisor_chat_body("hi")),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/executor")
+    );
+    // Executor turn first, then the review consult.
+    assert_eq!(upstream.models().await, ["model/executor", "model/advisor"]);
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["models"]["model/executor"]["calls"], 1);
+    // The consult lands in the classifier bucket with its usage.
+    assert_eq!(stats["classifier"]["models"]["model/advisor"]["calls"], 1);
+    assert_eq!(stats["classifier"]["total_tokens"]["prompt"], 40);
+    Ok(())
+}
+
+#[tokio::test]
+async fn advisor_route_budget_scoped_by_proxy_header() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(advisor_state(&upstream.base_url)?);
+
+    for (session, expected_consults) in [("eval-a", 1), ("eval-a", 1), ("eval-b", 2)] {
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(advisor_chat_body("hi")),
+            &[("proxy_x_session_id", session)],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        let consults = upstream
+            .models()
+            .await
+            .iter()
+            .filter(|model| *model == "model/advisor")
+            .count();
+        assert_eq!(consults, expected_consults, "session {session}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn advisor_route_streaming_approval_replays_provider_events() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(advisor_state(&upstream.base_url)?);
+
+    let mut body = advisor_chat_body("hi");
+    body["stream"] = json!(true);
+    let response = send(&app, "POST", "/v1/chat/completions", Some(body)).await?;
+    assert_eq!(response.status, StatusCode::OK);
+    // The gate buffered the executor stream for the review, then replayed the
+    // provider events verbatim.
+    assert_eq!(upstream.models().await, ["model/executor", "model/advisor"]);
+    let text = response.text()?;
+    let events: Vec<Value> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[1]["choices"][0]["delta"]["content"], "hello");
+    assert_eq!(events[2]["choices"][0]["delta"]["content"], "-partial");
+    assert_eq!(events[3]["choices"][0]["delta"]["content"], "-final");
+    // Provider-specific usage detail rides through untouched.
+    assert_eq!(
+        events[3]["usage"]["prompt_tokens_details"]["cache_creation_tokens"],
+        2
+    );
+    assert_eq!(events[4]["choices"][0]["finish_reason"], "stop");
+    assert!(text.trim_end().ends_with("data: [DONE]"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn advisor_route_routing_log_records_classifier_tier() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let log_path = temp_dir.path().join("routing.jsonl");
+    let state = advisor_state(&upstream.base_url)?.with_routing_log(&log_path)?;
+    let app = build_switchyard_router(state);
+
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(advisor_chat_body("hi")),
+        &[("proxy_x_session_id", "session-1")],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    let records: Vec<Value> = std::fs::read_to_string(&log_path)?
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    // The consult is appended under the shared judge tier; the served turn is
+    // the terminal answer row. The discarded-turn row does not exist in v1 —
+    // its tokens live in the advisor_gate stats block instead.
+    assert_eq!(records.len(), 2);
+    let consult = records
+        .iter()
+        .find(|record| record["model"] == "model/advisor")
+        .ok_or("consult row present")?;
+    assert_eq!(consult["tier"], "classifier");
+    assert_eq!(consult["session_id"], "session-1");
+    assert_eq!(consult["prompt_tokens"], 40);
+    Ok(())
+}
+
+#[tokio::test]
+async fn advisor_route_count_tokens_uses_executor() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.claude]
+format = "anthropic_messages"
+base_url = "{base_url}"
+
+[targets.executor]
+id = "model/executor"
+llm_client = "claude"
+
+[targets.advisor]
+id = "model/advisor"
+llm_client = "claude"
+
+[routes.gated]
+id = "switchyard/advisor"
+type = "advisor"
+executor_target = "executor"
+advisor_target = "advisor"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/messages/count_tokens",
+        Some(json!({
+            "model": "switchyard/advisor",
+            "messages": [{"role": "user", "content": "hi"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["input_tokens"], 7);
+    // The executor is the route's only completion target, so it backs
+    // count_tokens; the judge-only advisor never does.
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["model"], "model/executor");
+    Ok(())
+}
+
+/// An advisor deployment whose reviewer client never retries, so a down
+/// advisor hits fail-open after a single attempt (the documented deployment
+/// posture for the advisor tier).
+fn advisor_state_no_retry(base_url: &str) -> TestResult<ServerState> {
+    load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[llm_clients.reviewer]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+
+[targets.executor]
+id = "model/executor"
+llm_client = "upstream"
+
+[targets.advisor]
+id = "model/advisor"
+llm_client = "reviewer"
+
+[routes.gated]
+id = "switchyard/advisor"
+type = "advisor"
+executor_target = "executor"
+advisor_target = "advisor"
+"#,
+    ))
+}
+
+fn gate_count(stats: &Value, path: &[&str]) -> u64 {
+    let mut value = &stats["algorithm_stats"]["advisor_gate"];
+    for key in path {
+        value = &value[*key];
+    }
+    value.as_u64().unwrap_or(0)
+}
+
+// REDO mechanics, fail-open, and the /v1/stats advisor_gate projection in one
+// sequential test: the OpenTelemetry meter behind algorithm_stats is
+// process-global, so this is the only test that emits redo / consult-failure
+// metrics and the only one that may assert their exact counts.
+#[tokio::test]
+async fn advisor_route_redo_fail_open_and_stats_projection() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(advisor_state_no_retry(&upstream.base_url)?);
+    let before = send(&app, "GET", "/v1/stats", None).await?.json()?;
+
+    // REDO: the gated turn is discarded, the advisor plan is fed back, and
+    // the executor continues. Each flow gets its own budget scope so the
+    // second one is still reviewable.
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(advisor_chat_body("please-redo")),
+        &[("proxy_x_session_id", "redo-flow")],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
+    assert_eq!(
+        upstream.models().await,
+        ["model/executor", "model/advisor", "model/executor"]
+    );
+    let calls = upstream.calls.lock().await;
+    let redo_messages = calls[2]["messages"]
+        .as_array()
+        .ok_or("redo call has messages")?
+        .clone();
+    drop(calls);
+    assert_eq!(redo_messages.len(), 3);
+    assert_eq!(redo_messages[1]["role"], "assistant");
+    assert_eq!(redo_messages[1]["content"], "ok");
+    assert_eq!(redo_messages[2]["role"], "user");
+    let feedback = redo_messages[2]["content"]
+        .as_str()
+        .ok_or("feedback is text")?;
+    assert!(feedback.starts_with("A senior reviewer examined your work"));
+    assert!(feedback.ends_with("run the tests"));
+
+    // Fail-open: the advisor 503s once (no retries) and the turn still flows.
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(advisor_chat_body("advisor-down")),
+        &[("proxy_x_session_id", "fail-flow")],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
+    assert_eq!(
+        upstream.models().await,
+        [
+            "model/executor",
+            "model/advisor",
+            "model/executor",
+            "model/executor",
+            "model/advisor",
+        ]
+    );
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    // State-owned accumulator: two client-visible executor answers; the discarded REDO attempt
+    // is routing work. The failed advisor consult is counted separately.
+    assert_eq!(stats["models"]["model/executor"]["calls"], 2);
+    assert_eq!(stats["classifier"]["total_errors"], 1);
+    // Projection deltas for the metrics only this test emits.
+    let redo = gate_count(&stats, &["reviews", "redo", "total"])
+        - gate_count(&before, &["reviews", "redo", "total"]);
+    assert_eq!(redo, 1);
+    assert_eq!(
+        gate_count(&stats, &["reviews", "redo", "by_trigger", "no_tool_call"]),
+        gate_count(&before, &["reviews", "redo", "by_trigger", "no_tool_call"]) + 1
+    );
+    assert_eq!(
+        gate_count(&stats, &["discarded", "turns"]),
+        gate_count(&before, &["discarded", "turns"]) + 1
+    );
+    // Mock usage: prompt 10 with 7 cached -> 3 non-cached input, 2 output.
+    assert_eq!(
+        gate_count(&stats, &["discarded", "tokens", "input"]),
+        gate_count(&before, &["discarded", "tokens", "input"]) + 3
+    );
+    assert_eq!(
+        gate_count(&stats, &["discarded", "tokens", "cached"]),
+        gate_count(&before, &["discarded", "tokens", "cached"]) + 7
+    );
+    assert_eq!(
+        gate_count(&stats, &["discarded", "tokens", "output"]),
+        gate_count(&before, &["discarded", "tokens", "output"]) + 2
+    );
+    // The 503 maps to the bounded upstream_5xx reason label.
+    assert_eq!(
+        gate_count(&stats, &["consult_failures", "upstream_5xx"]),
+        gate_count(&before, &["consult_failures", "upstream_5xx"]) + 1
+    );
+
+    // Reset re-baselines the projection: the redo/discard counts this test
+    // produced disappear from the next snapshot.
+    let reset = send(&app, "POST", "/v1/stats/reset", None).await?;
+    assert_eq!(reset.status, StatusCode::OK);
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(gate_count(&stats, &["reviews", "redo", "total"]), 0);
+    assert_eq!(gate_count(&stats, &["discarded", "turns"]), 0);
     Ok(())
 }

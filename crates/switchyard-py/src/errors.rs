@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Error mapping for the libsy Python binding.
+//! Error mapping for the Python bindings.
 
 use pyo3::create_exception;
 use pyo3::exceptions::PyRuntimeError;
@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 
 create_exception!(_switchyard_rust, LibsyError, PyRuntimeError);
 create_exception!(_switchyard_rust, ContextWindowExceededError, PyRuntimeError);
+create_exception!(_switchyard_rust, ServerConfigError, PyRuntimeError);
 
 /// Converts libsy execution failures into one stable Python exception.
 pub(crate) fn py_libsy_error(error: impl std::fmt::Display) -> PyErr {
@@ -20,5 +21,9 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add(
         "ContextWindowExceededError",
         module.py().get_type::<ContextWindowExceededError>(),
+    )?;
+    module.add(
+        "ServerConfigError",
+        module.py().get_type::<ServerConfigError>(),
     )
 }

@@ -1,14 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The routed-call server trait and the routing decision it carries.
+//! The routed-call server trait and its shared error types.
 //!
 //! [`RoutedLlmClient`] is the one piece of I/O the protocol does not own: a host
-//! implements it to actually perform a model call. [`Decision`] is the routing
-//! decision that produced the call, carried alongside so the client and any
-//! observer can see which model was chosen and why. Both live here — rather than
-//! in libsy's orchestration crate — so a client crate that depends only on the
-//! protocol can serve routed calls without pulling in the orchestrator.
+//! implements it to actually perform a model call. It lives here — rather than in
+//! libsy's orchestration crate — so a client crate that depends only on the protocol
+//! can serve routed calls without pulling in the orchestrator.
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -124,35 +122,6 @@ impl RoutingFallbackReason {
             Self::ContextWindow => "context_window",
             Self::Unavailable => "unavailable",
         }
-    }
-}
-
-/// A routing choice produced by an algorithm.
-#[derive(Clone, Debug)]
-pub struct Decision {
-    /// The model identifier selected for the call.
-    selected_model_id: ModelId,
-    /// True for an answer-generating call. False for classifier and judge calls.
-    is_answer_call: bool,
-}
-
-impl Decision {
-    /// Creates a decision and records whether its call produces the answer.
-    pub fn new(selected_model_id: impl Into<ModelId>, is_answer_call: bool) -> Self {
-        Self {
-            selected_model_id: selected_model_id.into(),
-            is_answer_call,
-        }
-    }
-
-    /// The model identifier selected for the call.
-    pub fn selected_model_id(&self) -> &ModelId {
-        &self.selected_model_id
-    }
-
-    /// Whether this call generates an answer rather than a routing verdict.
-    pub fn is_answer_call(&self) -> bool {
-        self.is_answer_call
     }
 }
 

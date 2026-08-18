@@ -732,6 +732,52 @@ fn responses_unknown_input_item_is_preserved_for_openai_chat() -> TestResult {
     Ok(())
 }
 
+// Responses accepts message-shaped input items without an explicit discriminator.
+#[test]
+fn responses_input_message_without_type_translates_normally() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": [{"role": "user", "content": "hello"}]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["messages"],
+        json!([{"role": "user", "content": "hello"}])
+    );
+    Ok(())
+}
+
+// A discriminator-less object that is not message-shaped must not silently become prompt text.
+#[test]
+fn responses_input_without_type_or_message_shape_is_rejected() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": [{"payload": "ambiguous"}]
+    });
+
+    let error = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .expect_err("ambiguous input item should be rejected");
+
+    assert!(error.to_string().contains("$.input[0].type"));
+}
+
 // Verifies orphan Responses tool outputs degrade to readable user text.
 #[test]
 fn responses_orphan_function_call_output_degrades_to_user_text_for_openai_chat() -> TestResult {

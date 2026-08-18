@@ -107,8 +107,8 @@ or agent runtime without owning an HTTP stack. Pair it with
 
 ```toml
 [dependencies]
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
 ```
 
 See [Getting Started](docs/getting_started.md#library-path) for setup and the

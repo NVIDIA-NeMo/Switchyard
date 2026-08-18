@@ -8,7 +8,7 @@ defines contracts; it does not route, translate, or perform network calls.
 
 ```toml
 [dependencies]
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
 serde_json = "1"
 ```
 
@@ -21,7 +21,7 @@ serde_json = "1"
 | Response | [`AggLlmResponse`], [`ResponseOutput`], [`Usage`], [`StopReason`] |
 | Streaming | [`LlmResponse`], [`LlmResponseStream`], [`LlmResponseStreamEvent`], [`LlmResponseChunk`], [`ProviderStreamEvent`] |
 | Envelope | [`Request`], [`Response`], [`Metadata`] |
-| Routing I/O | [`Decision`], [`RoutedLlmClient`], [`LlmClientError`] |
+| Routing I/O | [`RoutedLlmClient`], [`LlmClientError`] |
 | Wire identity | [`WireFormat`], [`FormatId`] |
 
 ## Simple request

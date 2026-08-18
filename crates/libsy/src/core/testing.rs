@@ -6,7 +6,8 @@
 //! libsy offloads every model call, so a test needs something to answer them. [`drive`] is
 //! [`crate::drive`] with the promise handling filled in: a test supplies a [`Serve`] closure
 //! standing in for the client a real host would use, and gets back the same
-//! `(trace, response)` pair a host does — the same path `switchyard-llm-client`'s `run`
+//! `(selected model, response)` pair a host does — the same path
+//! `switchyard-llm-client`'s `run`
 //! takes over HTTP.
 //!
 //! The closure is async so a fake can block on a barrier, wait on a notify, or never
@@ -16,9 +17,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use switchyard_protocol::{
-    Decision, LlmClientError, LlmResponse, ModelId, Request, Response, text_response,
-};
+use switchyard_protocol::{LlmClientError, LlmResponse, ModelId, Request, Response, text_response};
 
 use crate::core::algorithm::{Algorithm, CallModel};
 use crate::{LibsyError, Result};
@@ -47,12 +46,22 @@ pub(crate) async fn test_drive(
     algorithm: Arc<dyn Algorithm>,
     request: Request,
     serve: impl Serve,
-) -> Result<(Vec<Decision>, Response)> {
+) -> Result<(ModelId, Response)> {
     let serve = Arc::new(serve);
-    crate::drive(algorithm, request, move |call| {
-        fulfill(Arc::clone(&serve), call)
+    let routing_serve = Arc::clone(&serve);
+    let outcome = crate::drive(algorithm, request, move |call| {
+        fulfill(Arc::clone(&routing_serve), call)
     })
-    .await
+    .await?;
+    let selected_model = outcome.selected_model_id.clone();
+    let response = match outcome.response {
+        Some(response) => response,
+        None => serve
+            .serve(selected_model.clone(), outcome.request)
+            .await
+            .map_err(|source| LibsyError::client_call(selected_model.clone(), source))?,
+    };
+    Ok((selected_model, response))
 }
 
 /// Serve one call and fulfill its promise, mapping failures the way a host does so

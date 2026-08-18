@@ -241,7 +241,6 @@ where
             .call_model(
                 self.judge.build_request(state, request),
                 vec![self.target.clone()],
-                false,
             )
             .await
             .inspect_err(|error| report_fail_open(judge_model, error, libsy_error_reason(error)))
@@ -272,7 +271,7 @@ fn report_fail_open(judge_model: &str, error: &dyn std::fmt::Display, reason: &'
 }
 
 /// Returns a bounded reason for a judge call that failed at the libsy layer.
-fn libsy_error_reason(error: &LibsyError) -> &'static str {
+pub(crate) fn libsy_error_reason(error: &LibsyError) -> &'static str {
     match error {
         LibsyError::ClientCall { source, .. } => client_error_reason(source),
         _ => "call_error",

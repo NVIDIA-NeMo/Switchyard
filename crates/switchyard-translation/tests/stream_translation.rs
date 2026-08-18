@@ -7,7 +7,7 @@ pub mod common;
 
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use switchyard_protocol::{ResponseAccumulator, StopReason};
+use switchyard_protocol::{LlmResponseStreamEvent, ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
 };
@@ -186,6 +186,55 @@ fn replayed_nonterminal_event_advances_encoder_state_before_finish() -> TestResu
     Ok(())
 }
 
+// Exact replay advances sequencing by the one raw event actually emitted, not discarded
+// synthetic events produced while advancing encoder state.
+#[test]
+fn responses_replay_without_sequence_advances_by_one_emitted_event() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let raw = json!({
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+            "type": "function_call",
+            "id": "fc_0",
+            "call_id": "call_0",
+            "name": "bash",
+            "arguments": ""
+        }
+    });
+    let replayed = LlmResponseStreamEvent::preserved(
+        format,
+        raw.clone(),
+        vec![LlmResponseChunk::ToolCallDelta {
+            index: 0,
+            id: Some("call_0".to_string()),
+            name: Some("bash".to_string()),
+            arguments_delta: None,
+        }],
+    );
+    let mut state = StreamTranslationState::new(format, format);
+
+    assert_eq!(
+        engine.encode_stream_event(&mut state, format, replayed)?,
+        vec![raw]
+    );
+    let generated = engine.encode_stream_event(
+        &mut state,
+        format,
+        LlmResponseStreamEvent::new(vec![LlmResponseChunk::ToolCallDelta {
+            index: 0,
+            id: None,
+            name: None,
+            arguments_delta: Some("{}".to_string()),
+        }]),
+    )?;
+
+    assert_eq!(generated.len(), 1);
+    assert_eq!(generated[0]["sequence_number"], 1);
+    Ok(())
+}
+
 #[test]
 fn replayed_anthropic_terminal_delta_finishes_with_message_stop_only() -> TestResult {
     let engine = TranslationEngine::default();
@@ -338,6 +387,81 @@ fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
 
     assert_eq!(events[0]["usage"]["completion_tokens"], 42);
     assert_eq!(events[0]["choices"][0]["finish_reason"], "stop");
+    Ok(())
+}
+
+// Verifies streamed moderation stops stay distinguishable from normal turns in both
+// directions, and that a named refusal category survives re-encoding.
+#[test]
+fn content_filter_and_refusal_streams_translate_across_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+
+    // An OpenAI moderation stop reaches Anthropic clients as `refusal`, carrying the
+    // null form Anthropic documents for a refusal mapping to no named category.
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "content_filter"}]
+    });
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &chunk,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+    let terminal = events
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+        .ok_or("missing Anthropic terminal delta")?;
+    assert_eq!(terminal["delta"]["stop_reason"], "refusal");
+    assert_eq!(
+        terminal["delta"]["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
+    );
+
+    // The distinction survives the other direction rather than being flattened.
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiChat);
+    let delta = json!({
+        "type": "message_delta",
+        "delta": {
+            "stop_reason": "refusal",
+            "stop_details": {
+                "type": "refusal",
+                "category": "cyber",
+                "explanation": "This request was declined because it could enable cyber harm."
+            }
+        },
+        "usage": {"output_tokens": 1}
+    });
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &delta,
+    )?;
+    assert_eq!(events[0]["choices"][0]["finish_reason"], "content_filter");
+
+    // Re-encoding a streamed refusal keeps the category the source named.
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::AnthropicMessages);
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        WireFormat::AnthropicMessages,
+        &delta,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+    let terminal = events
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+        .ok_or("missing Anthropic terminal delta")?;
+    assert_eq!(terminal["delta"]["stop_reason"], "refusal");
+    assert_eq!(terminal["delta"]["stop_details"]["category"], "cyber");
     Ok(())
 }
 
@@ -1104,6 +1228,76 @@ fn openai_chat_stream_usage_without_breakdowns_still_emits_responses_usage_detai
     Ok(())
 }
 
+// Responses terminal snapshots include every field required by strict generated clients.
+#[test]
+fn responses_completed_event_is_schema_complete_and_retains_message_id() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "delta": {"content": "hello"},
+            "finish_reason": "stop"
+        }]
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &chunk,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    for (expected, event) in events.iter().enumerate() {
+        assert_eq!(event["sequence_number"], expected as u64);
+    }
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("expected response.completed")?;
+    let response = completed["response"]
+        .as_object()
+        .ok_or("completed response should be an object")?;
+    for field in [
+        "id",
+        "object",
+        "created_at",
+        "completed_at",
+        "error",
+        "incomplete_details",
+        "instructions",
+        "metadata",
+        "model",
+        "output",
+        "parallel_tool_calls",
+        "frequency_penalty",
+        "presence_penalty",
+        "status",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_p",
+        "usage",
+    ] {
+        assert!(
+            response.contains_key(field),
+            "missing response field {field}"
+        );
+    }
+    assert_eq!(response["output"][0]["id"], "msg_0");
+    let done = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .ok_or("expected response.output_item.done")?;
+    assert_eq!(done["item"]["id"], "msg_0");
+    Ok(())
+}
+
 // Verifies a streamed token-limit stop terminates with response.incomplete.
 #[test]
 fn openai_chat_length_finish_translates_to_responses_incomplete_event() -> TestResult {
@@ -1196,5 +1390,41 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
         return Err("finish should emit a terminal Chat chunk".into());
     };
     assert_eq!(terminal["choices"][0]["finish_reason"], "length");
+    Ok(())
+}
+
+// A completion event must not repeat function-call arguments from delta events.
+#[test]
+fn responses_decode_emits_tool_arguments_once() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state = StreamTranslationState::default();
+    let arguments = r#"{"skill":"demo:thing","args":{}}"#;
+
+    let upstream = [
+        json!({"type": "response.output_item.added", "output_index": 0,
+               "item": {"type": "function_call", "call_id": "call_1",
+                        "name": "Skill", "arguments": ""}}),
+        json!({"type": "response.function_call_arguments.delta",
+               "output_index": 0, "delta": arguments}),
+        json!({"type": "response.output_item.done", "output_index": 0,
+               "item": {"type": "function_call", "call_id": "call_1",
+                        "name": "Skill", "arguments": arguments}}),
+    ];
+
+    let mut seen = String::new();
+    for event in upstream {
+        let decoded = engine.decode_stream_event(&mut state, WireFormat::OpenAiResponses, event)?;
+        for chunk in decoded.normalized() {
+            if let LlmResponseChunk::ToolCallDelta {
+                arguments_delta: Some(delta),
+                ..
+            } = chunk
+            {
+                seen.push_str(delta);
+            }
+        }
+    }
+
+    assert_eq!(seen, arguments);
     Ok(())
 }

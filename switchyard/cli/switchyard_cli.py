@@ -12,6 +12,7 @@ from switchyard.cli.launch_command import (
     cmd_launch_codex,
     cmd_launch_openclaw,
 )
+from switchyard.cli.launchers.native_server import NativeServerConfigError
 
 
 def _add_launch_parser(
@@ -73,7 +74,10 @@ def main() -> None:
     if not hasattr(args, "func"):
         parser.print_help()
         raise SystemExit(1)
-    args.func(args)
+    try:
+        args.func(args)
+    except NativeServerConfigError as exc:
+        parser.exit(1, f"error: {exc}\n")
 
 
 if __name__ == "__main__":

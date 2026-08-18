@@ -29,6 +29,7 @@ nav:
       - LLM Classifier Routing: routing_algorithms/llm_classifier_routing.md
       - Stage-Router Routing: routing_algorithms/stage_router_routing.md
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
+      - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
   - Operations:
       - Context-Window Handling: operations/context_window.md
   - Reference:

@@ -6,6 +6,7 @@
 //! Everything public here is re-exported at the crate root; reach for it by name —
 //! `use switchyard_libsy::Random`.
 
+pub mod advisor_gate;
 pub mod fall_through;
 pub mod llm_class;
 pub mod noop;

@@ -522,7 +522,7 @@ impl Classifier<State> for EscalationClassifier {
             "escalation classifier selected efficient tier"
         );
         let efficient_response = match driver
-            .call_model(request.clone(), vec![self.efficient.clone()], true)
+            .call_model(request.clone(), vec![self.efficient.clone()])
             .await
         {
             Ok(r) => r,
@@ -597,6 +597,7 @@ struct ClassifierRouteConfig {
 }
 
 /// Complete construction settings for one LLM classifier mode.
+#[derive(Clone)]
 #[non_exhaustive]
 pub enum LlmClassifierConfig {
     /// Routes between efficient and capable targets from a task-level verdict.
@@ -929,7 +930,11 @@ impl Algorithm for LlmTaskClassifier {
         "llm_task_classifier"
     }
 
-    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
+    async fn route(
+        self: Arc<Self>,
+        driver: Driver,
+        request: Request,
+    ) -> Result<crate::RoutingOutcome> {
         self.route.execute(driver, request).await
     }
 }
@@ -1123,12 +1128,10 @@ mod tests {
     async fn an_unreachable_judge_routes_capable_instead_of_failing_the_request() -> Result<()> {
         let router = router()?;
 
-        let (trace, response) = test_drive(router, classify_request(), unreachable_judge()).await?;
+        let (selected_model, response) =
+            test_drive(router, classify_request(), unreachable_judge()).await?;
 
-        assert_eq!(
-            trace.last().map(|d| d.selected_model_id().as_str()),
-            Some("capable")
-        );
+        assert_eq!(selected_model, "capable");
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("answer from capable".to_string())
@@ -1813,14 +1816,11 @@ mod tests {
         let model = Queue::new(["efficient answer"]);
         let router = escalation_router()?;
 
-        let (trace, response) =
+        let (selected_model, response) =
             test_drive(router, classify_request(), queued(model, judge)).await?;
 
         // The efficient model is the serving target, and the response comes from its call.
-        assert_eq!(
-            trace.last().map(|d| d.selected_model_id().as_str()),
-            Some("efficient")
-        );
+        assert_eq!(selected_model, "efficient");
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("efficient answer".to_string())
@@ -1859,13 +1859,10 @@ mod tests {
         let model = Queue::new(["efficient draft", "capable answer"]);
         let router = escalation_router()?;
 
-        let (trace, response) =
+        let (selected_model, response) =
             test_drive(router, classify_request(), queued(model, judge)).await?;
 
-        assert_eq!(
-            trace.last().map(|d| d.selected_model_id().as_str()),
-            Some("capable")
-        );
+        assert_eq!(selected_model, "capable");
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("capable answer".to_string())
@@ -1888,12 +1885,10 @@ mod tests {
             queued(Arc::clone(&model), Arc::clone(&judge)),
         )
         .await?;
-        let (trace, _) = test_drive(router.clone(), session_request, queued(model, judge)).await?;
+        let (selected_model, _) =
+            test_drive(router.clone(), session_request, queued(model, judge)).await?;
 
-        assert_eq!(
-            trace.last().map(|d| d.selected_model_id().as_str()),
-            Some("capable")
-        );
+        assert_eq!(selected_model, "capable");
         Ok(())
     }
 
@@ -1916,12 +1911,9 @@ mod tests {
             }
         };
 
-        let (trace, response) = test_drive(router, classify_request(), serve).await?;
+        let (selected_model, response) = test_drive(router, classify_request(), serve).await?;
 
-        assert_eq!(
-            trace.last().map(|d| d.selected_model_id().as_str()),
-            Some("capable")
-        );
+        assert_eq!(selected_model, "capable");
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("capable answer".to_string())

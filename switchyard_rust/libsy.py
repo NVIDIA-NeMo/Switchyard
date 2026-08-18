@@ -14,12 +14,16 @@ _EXPORTS = frozenset(
     {
         "Algorithm",
         "ContextWindowExceededError",
-        "Decision",
+        "CustomClassifierConfig",
+        "EscalationClassifierConfig",
         "LibsyError",
+        "LlmClassifierConfig",
         "LlmFallback",
         "ModelCall",
+        "RoutingOutcome",
         "Step",
         "TaskClassifierConfig",
+        "llm_classifier",
         "llm_task_classifier",
         "noop",
         "random",
@@ -36,19 +40,43 @@ if TYPE_CHECKING:
     class ContextWindowExceededError(RuntimeError): ...
 
     @final
-    class Decision:
-        """A semantic routing choice produced by an algorithm."""
+    class CustomClassifierConfig:
+        """Configure schema-validated routing across named targets.
 
-        @property
-        def selected_model_id(self) -> str: ...
+        ``max_output_tokens`` must be positive. Enabling ``message_hash_fallback``
+        requires ``session_affinity``.
+        """
 
-        @property
-        def reasoning(self) -> str | None: ...
+        def __init__(
+            self,
+            prompt: str,
+            response_schema: Mapping[str, object],
+            selector: str,
+            *,
+            session_affinity: bool = False,
+            message_hash_fallback: bool = False,
+            recent_turn_window: int | None = None,
+            max_output_tokens: int = 4096,
+        ) -> None: ...
 
-        @property
-        def is_answer_call(self) -> bool: ...
+    @final
+    class EscalationClassifierConfig:
+        """Configure response-based escalation between two targets.
 
-    _RoutingDecision = Decision
+        Counts and token limits must be positive, and ``window_message_chars``
+        must be at least 50.
+        """
+
+        def __init__(
+            self,
+            *,
+            confirmations: int = 2,
+            recent_turn_window: int = 28,
+            window_message_chars: int = 500,
+            max_output_tokens: int = 4096,
+            prompt: str | None = None,
+            response_format_type: Literal["json_schema", "json_object"] = "json_schema",
+        ) -> None: ...
 
     @final
     class ModelCall:
@@ -61,14 +89,23 @@ if TYPE_CHECKING:
         @property
         def models(self) -> list[str]: ...
 
-        @property
-        def decision(self) -> Decision: ...
-
-        def into_parts(self) -> tuple[dict[str, object], Decision]: ...
-
         def respond(self, response: Mapping[str, object]) -> None: ...
 
         def fail(self, error: BaseException) -> None: ...
+
+    @final
+    class RoutingOutcome:
+        @property
+        def selected_model_id(self) -> str: ...
+
+        @property
+        def fallback_models(self) -> list[str]: ...
+
+        @property
+        def request(self) -> dict[str, object]: ...
+
+        @property
+        def response(self) -> dict[str, object] | None: ...
 
     class Step:
         @final
@@ -77,17 +114,18 @@ if TYPE_CHECKING:
             call: ModelCall
 
         @final
-        class Decision:
-            __match_args__: ClassVar[tuple[Literal["decision"]]] = ("decision",)
-            decision: _RoutingDecision
-
-        @final
         class Done:
-            __match_args__: ClassVar[tuple[Literal["response"]]] = ("response",)
-            response: dict[str, object]
+            __match_args__: ClassVar[tuple[Literal["outcome"]]] = ("outcome",)
+            outcome: RoutingOutcome
 
     @final
     class TaskClassifierConfig:
+        """Configure capability classification between efficient and capable targets.
+
+        Thresholds must remain within ``[0, 1]``, ``max_output_tokens`` must be
+        positive, and ``message_hash_fallback`` requires ``session_affinity``.
+        """
+
         def __init__(
             self,
             base_threshold: float,
@@ -100,6 +138,46 @@ if TYPE_CHECKING:
             prompt: str | None = None,
             response_format_type: Literal["json_schema", "json_object"] = "json_schema",
         ) -> None: ...
+
+    class LlmClassifierConfig:
+        """Select one supported LLM classifier mode.
+
+        Target names and each nested mode configuration must satisfy the selected
+        classifier's invariants.
+        """
+
+        @staticmethod
+        def capability(
+            judge_target: str,
+            efficient_target: str,
+            capable_target: str,
+            *,
+            config: TaskClassifierConfig,
+        ) -> LlmClassifierConfig:
+            """Route by predicted task capability."""
+            ...
+
+        @staticmethod
+        def escalation(
+            judge_target: str,
+            efficient_target: str,
+            capable_target: str,
+            *,
+            config: EscalationClassifierConfig,
+        ) -> LlmClassifierConfig:
+            """Call the efficient target first and escalate judged responses."""
+            ...
+
+        @staticmethod
+        def custom(
+            judge_target: str,
+            targets: Sequence[tuple[str, str]],
+            *,
+            default_target: str,
+            config: CustomClassifierConfig,
+        ) -> LlmClassifierConfig:
+            """Route among named targets using a schema-selected label."""
+            ...
 
     @final
     class LlmFallback:
@@ -116,7 +194,7 @@ if TYPE_CHECKING:
             self,
             request: Mapping[str, object],
             headers: Mapping[str, str] | None = None,
-        ) -> AsyncIterator[Step.CallModel | Step.Decision | Step.Done]: ...
+        ) -> AsyncIterator[Step.CallModel | Step.Done]: ...
 
     def noop() -> Algorithm: ...
 
@@ -126,6 +204,10 @@ if TYPE_CHECKING:
         weights: Sequence[float] | None = None,
         seed: int | None = None,
     ) -> Algorithm: ...
+
+    def llm_classifier(config: LlmClassifierConfig) -> Algorithm:
+        """Build a classifier, raising ValueError when its configuration is invalid."""
+        ...
 
     def llm_task_classifier(
         judge_target: str,
