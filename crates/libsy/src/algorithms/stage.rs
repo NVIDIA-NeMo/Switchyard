@@ -460,6 +460,7 @@ mod tests {
                 session_id: Some("session-1".to_string()),
                 ..Default::default()
             }),
+            ineligible_targets: Vec::new(),
         }
     }
 

@@ -350,6 +350,7 @@ impl PyAlgorithm {
         let request = Request {
             llm_request: from_python(request)?,
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: headers.map(|headers| Metadata::from_headers(&headers)),
         };
         let stream = {

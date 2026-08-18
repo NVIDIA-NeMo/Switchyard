@@ -332,6 +332,7 @@ pub(crate) fn request_at_turn(session_id: Option<&str>, turn: usize) -> Request 
             ..LlmRequest::default()
         },
         raw_request: None,
+        ineligible_targets: Vec::new(),
         metadata: session_id.map(|id| Metadata {
             session_id: Some(id.to_string()),
             ..Metadata::default()

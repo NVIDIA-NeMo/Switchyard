@@ -56,6 +56,7 @@ mod tests {
         let request = Request {
             llm_request: text_request(Some("auto".to_string()), "hi"),
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: None,
         };
         let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(MODEL_ID));

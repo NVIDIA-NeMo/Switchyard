@@ -187,8 +187,6 @@ pub struct Metadata {
     pub correlation_id: Option<String>,
     /// Switchyard target that successfully served a response.
     pub served_model: Option<ModelId>,
-    /// Targets that rejected this request for exceeding their context window.
-    pub overflowed: Vec<ModelId>,
     /// Arbitrary host-defined key/value metadata.
     pub extra_metadata: Option<BTreeMap<String, String>>,
     /// HTTP headers to attach when forwarding the request/response, if any.

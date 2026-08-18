@@ -728,6 +728,7 @@ fn resolve_route(
     let request = Request {
         llm_request,
         raw_request: Some(body),
+        ineligible_targets: Vec::new(),
         metadata: Some(metadata),
     };
     Ok((route, request))

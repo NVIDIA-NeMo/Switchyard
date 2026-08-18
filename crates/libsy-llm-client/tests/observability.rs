@@ -452,6 +452,7 @@ fn request_with_metadata(session_id: &str, correlation_id: &str) -> Request {
     Request {
         llm_request: text_request(Some("auto".to_string()), "hi"),
         raw_request: None,
+        ineligible_targets: Vec::new(),
         metadata: Some(Metadata {
             session_id: Some(session_id.to_string()),
             correlation_id: Some(correlation_id.to_string()),
@@ -503,6 +504,7 @@ fn classifier_request() -> Request {
     Request {
         llm_request: text_request(Some("auto".to_string()), "classify this"),
         raw_request: None,
+        ineligible_targets: Vec::new(),
         metadata: None,
     }
 }
@@ -574,6 +576,7 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
             ..LlmRequest::default()
         },
         raw_request: None,
+        ineligible_targets: Vec::new(),
         metadata: None,
     };
 
@@ -873,6 +876,7 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
             ..LlmRequest::default()
         },
         raw_request: None,
+        ineligible_targets: Vec::new(),
         metadata: Some(Metadata {
             wire_format: Some(WireFormat::OpenAiChat),
             session_id: Some("obs-stage-session".to_string()),

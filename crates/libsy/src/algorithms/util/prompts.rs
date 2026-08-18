@@ -155,6 +155,7 @@ mod tests {
                 ..LlmRequest::default()
             },
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: None,
         }
     }
@@ -223,6 +224,7 @@ mod tests {
                 ..text_request(Some("auto".to_string()), "fix the build")
             },
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: None,
         };
 

@@ -494,6 +494,7 @@ impl TranslatingLlmClient {
         let request = Request {
             llm_request,
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: Some(Metadata {
                 session_id: None,
                 agent_id: None,
@@ -940,6 +941,7 @@ mod tests {
         Request {
             llm_request,
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: None,
         }
     }
@@ -1829,6 +1831,7 @@ mod tests {
                 ..LlmRequest::default()
             },
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: Some(Metadata {
                 session_id: None,
                 agent_id: None,

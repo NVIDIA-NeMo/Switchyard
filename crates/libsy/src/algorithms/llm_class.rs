@@ -1092,6 +1092,7 @@ mod tests {
         Request {
             llm_request: text_request(Some("auto".to_string()), "classify this task"),
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: None,
         }
     }
@@ -1433,6 +1434,7 @@ mod tests {
                 ..LlmRequest::default()
             },
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: None,
         };
         Ok(judge
@@ -1603,6 +1605,7 @@ mod tests {
                 ..LlmRequest::default()
             },
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: None,
         };
         let judge_request = judge.build_request(&State::default(), &request);

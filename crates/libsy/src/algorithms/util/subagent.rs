@@ -83,6 +83,7 @@ mod tests {
         Request {
             llm_request: text_request(Some(ModelId::from("auto").to_string()), "hi"),
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata,
         }
     }

@@ -25,6 +25,7 @@ use switchyard_protocol::{
 };
 
 use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
+use crate::overflow::{self, Overflows};
 use crate::{metrics, observability};
 
 /// Run one request to completion, serving every offloaded model call with `client`.
@@ -43,10 +44,21 @@ use crate::{metrics, observability};
 pub async fn run(
     algorithm: Arc<dyn Algorithm>,
     clients: ClientRouter,
-    request: Request,
+    mut request: Request,
     observer: Option<RunObserver>,
 ) -> Result<(Vec<Decision>, Response)> {
     let algorithm_name = algorithm.name().to_string();
+    // Tell the algorithm which targets this conversation has already overflowed, so it does
+    // not select one that is certain to be rejected again.
+    let conversation = overflow::conversation(&request);
+    let session_final = request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.session_final)
+        .unwrap_or(false);
+    if let Some(conversation) = &conversation {
+        request.ineligible_targets = clients.overflows.get(conversation);
+    }
     // The output from `serve` goes in here: when each successful routed call was in
     // flight. Everything else the run spent time on is routing overhead.
     let routed_calls = Arc::new(Mutex::new(RoutedCallWindows::default()));
@@ -54,12 +66,15 @@ pub async fn run(
     let result = drive(algorithm, request, {
         let observer = observer.clone();
         let routed_calls = Arc::clone(&routed_calls);
+        let clients = clients.clone();
+        let conversation = conversation.clone();
         move |call| {
             serve(
                 clients.clone(),
                 call,
                 observer.clone(),
                 Arc::clone(&routed_calls),
+                conversation.clone(),
             )
         }
     })
@@ -70,6 +85,9 @@ pub async fn run(
         if let Some(observer) = observer {
             observer(RunObservation::RoutingOverhead(overhead));
         }
+    }
+    if session_final && let Some(conversation) = &conversation {
+        clients.overflows.forget(conversation);
     }
     Ok(result)
 }
@@ -113,8 +131,10 @@ async fn serve(
     observer: Option<RunObserver>,
     // Output parameter because `drive` takes a function that returns a plain `Result<()>`.
     routed_calls: Arc<Mutex<RoutedCallWindows>>,
+    conversation: Option<String>,
 ) -> Result<()> {
-    let result = call_first_available(&clients, &call, &observer, &routed_calls).await;
+    let result =
+        call_first_available(&clients, &call, &observer, &routed_calls, &conversation).await;
     call.respond(result)
 }
 
@@ -124,9 +144,8 @@ async fn call_first_available(
     call: &CallModel,
     observer: &Option<RunObserver>,
     routed_calls: &Arc<Mutex<RoutedCallWindows>>,
+    conversation: &Option<String>,
 ) -> Result<Response> {
-    // Reported back to the algorithm so it can drop these targets from later turns.
-    let mut overflowed = Vec::new();
     for (index, target) in call.models.iter().enumerate() {
         let request = request_for(&call.request, target);
         match call_one(
@@ -141,16 +160,13 @@ async fn call_first_available(
         )
         .await
         {
-            Ok(mut response) => {
-                for target in &overflowed {
-                    response.push_overflowed(target);
-                }
-                return Ok(response);
-            }
+            Ok(response) => return Ok(response),
             Err(error) => {
                 let reason = fallback_reason(&error);
-                if reason == Some(RoutingFallbackReason::ContextWindow) {
-                    overflowed.push(target.clone());
+                if reason == Some(RoutingFallbackReason::ContextWindow)
+                    && let Some(conversation) = conversation
+                {
+                    clients.overflows.record(conversation, target);
                 }
                 if index + 1 == call.models.len() {
                     return Err(error);
@@ -310,6 +326,8 @@ fn request_for(request: &Request, target: &ModelId) -> Request {
 #[derive(Clone)]
 pub struct ClientRouter {
     routing: Arc<Routing>,
+    /// Shared with every clone so the history outlives the one request [`run`] serves.
+    overflows: Arc<Overflows>,
 }
 
 enum Routing {
@@ -324,6 +342,7 @@ impl ClientRouter {
     pub fn new(by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>) -> Self {
         Self {
             routing: Arc::new(Routing::ByModel(by_model)),
+            overflows: Arc::default(),
         }
     }
 
@@ -335,6 +354,7 @@ impl ClientRouter {
     pub fn single(client: Arc<dyn RoutedLlmClient>) -> Self {
         Self {
             routing: Arc::new(Routing::Single(client)),
+            overflows: Arc::default(),
         }
     }
 
@@ -471,6 +491,7 @@ mod tests {
         Request {
             llm_request: text_request(Some("auto".to_string()), "hello".to_string()),
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: None,
         }
     }

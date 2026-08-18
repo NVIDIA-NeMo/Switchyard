@@ -171,6 +171,7 @@ where
                 ..LlmRequest::default()
             },
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: request.metadata.clone(),
         }
     }
@@ -402,6 +403,7 @@ mod tests {
         Request {
             llm_request: text_request(Some("auto".to_string()), "judge this"),
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: None,
         }
     }

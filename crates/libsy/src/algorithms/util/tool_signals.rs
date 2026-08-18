@@ -612,6 +612,7 @@ mod tests {
                 ..LlmRequest::default()
             },
             raw_request: None,
+            ineligible_targets: Vec::new(),
             metadata: None,
         }
     }
