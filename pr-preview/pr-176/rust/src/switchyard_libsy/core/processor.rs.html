@@ -3,7 +3,7 @@
 <a href=#3 id=3 data-nosnippet>3</a>
 <a href=#4 id=4 data-nosnippet>4</a></span><span class="kw">use </span><span class="kw">crate</span>::Result;
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>async_trait::async_trait;
-<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>switchyard_protocol::{AggLlmResponse, Decision, Request};
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>switchyard_protocol::{AggLlmResponse, ModelId, Request};
 <a href=#7 id=7 data-nosnippet>7</a>
 <a href=#8 id=8 data-nosnippet>8</a><span class="doccomment">/// An event observed by the algorithm. Events are consumed by [`Processor`] to mutate state.
 <a href=#9 id=9 data-nosnippet>9</a>///
@@ -20,8 +20,8 @@
 <a href=#20 id=20 data-nosnippet>20</a>    </span>Decision {
 <a href=#21 id=21 data-nosnippet>21</a>        <span class="doccomment">/// The request, rewritable in place.
 <a href=#22 id=22 data-nosnippet>22</a>        </span>request: <span class="kw-2">&amp;</span><span class="lifetime">'a </span><span class="kw-2">mut </span>Request,
-<a href=#23 id=23 data-nosnippet>23</a>        <span class="doccomment">/// The routing decision produced for `request`.
-<a href=#24 id=24 data-nosnippet>24</a>        </span>decision: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>Decision,
+<a href=#23 id=23 data-nosnippet>23</a>        <span class="doccomment">/// The model selected for `request`.
+<a href=#24 id=24 data-nosnippet>24</a>        </span>selected_model_id: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>ModelId,
 <a href=#25 id=25 data-nosnippet>25</a>    },
 <a href=#26 id=26 data-nosnippet>26</a>    <span class="doccomment">/// A buffered response received back from a model.
 <a href=#27 id=27 data-nosnippet>27</a>    </span>ModelResponse(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>AggLlmResponse),
@@ -82,7 +82,7 @@
 <a href=#82 id=82 data-nosnippet>82</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = TestState::default();
 <a href=#83 id=83 data-nosnippet>83</a>        <span class="kw">let </span><span class="kw-2">mut </span>req = request();
 <a href=#84 id=84 data-nosnippet>84</a>        <span class="kw">let </span>response = text_response(<span class="prelude-val">None</span>, <span class="string">"ok"</span>);
-<a href=#85 id=85 data-nosnippet>85</a>        <span class="kw">let </span>decision = Decision::new(<span class="string">"test/model"</span>, <span class="bool-val">true</span>);
+<a href=#85 id=85 data-nosnippet>85</a>        <span class="kw">let </span>selected_model_id = ModelId::from(<span class="string">"test/model"</span>);
 <a href=#86 id=86 data-nosnippet>86</a>        <span class="comment">// Feed one of every event variant through the processor.
 <a href=#87 id=87 data-nosnippet>87</a>        </span>processor
 <a href=#88 id=88 data-nosnippet>88</a>            .process(<span class="kw-2">&amp;mut </span>state, Event::Request(<span class="kw-2">&amp;mut </span>req))
@@ -95,7 +95,7 @@
 <a href=#95 id=95 data-nosnippet>95</a>                <span class="kw-2">&amp;mut </span>state,
 <a href=#96 id=96 data-nosnippet>96</a>                Event::Decision {
 <a href=#97 id=97 data-nosnippet>97</a>                    request: <span class="kw-2">&amp;mut </span>req,
-<a href=#98 id=98 data-nosnippet>98</a>                    decision: <span class="kw-2">&amp;</span>decision,
+<a href=#98 id=98 data-nosnippet>98</a>                    selected_model_id: <span class="kw-2">&amp;</span>selected_model_id,
 <a href=#99 id=99 data-nosnippet>99</a>                },
 <a href=#100 id=100 data-nosnippet>100</a>            )
 <a href=#101 id=101 data-nosnippet>101</a>            .<span class="kw">await</span><span class="question-mark">?</span>;

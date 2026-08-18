@@ -704,6 +704,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/advisor_gate_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advisor-Gate Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -884,10 +912,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#rehearse-the-complete-local-stack" class="md-nav__link">
+  <a href="#check-the-local-server-and-load-tools" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Rehearse the complete local stack
+        Check the local server and load tools
       
     </span>
   </a>
@@ -1137,10 +1165,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#rehearse-the-complete-local-stack" class="md-nav__link">
+  <a href="#check-the-local-server-and-load-tools" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Rehearse the complete local stack
+        Check the local server and load tools
       
     </span>
   </a>
@@ -1238,10 +1266,10 @@ not suspend or restart and has enough disk space for the server log.</p>
 release, then run it directly:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-soak
 </span></code></pre></div>
-<h2 id="rehearse-the-complete-local-stack">Rehearse the complete local stack<a class="headerlink" href="#rehearse-the-complete-local-stack" title="Permanent link">&para;</a></h2>
-<p>The rehearsal embeds <a href="https://github.com/vidaiUK/VidaiMock">VidaiMock</a> as a Rust library, so it
-does not need a separate <code>vidaimock</code> command. Build the server, soak tester, and mock helper from
-the commit under test:</p>
+<h2 id="check-the-local-server-and-load-tools">Check the local server and load tools<a class="headerlink" href="#check-the-local-server-and-load-tools" title="Permanent link">&para;</a></h2>
+<p>The local test embeds <a href="https://github.com/vidaiUK/VidaiMock">VidaiMock</a> as a Rust library, so it does
+not need a separate <code>vidaimock</code> command. Build the server, soak tester, and mock helper from the
+commit under test:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-server<span class="w"> </span>-p<span class="w"> </span>switchyard-soak<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--bins<span class="w"> </span>--example<span class="w"> </span>switchyard-soak-mock
 </span></code></pre></div>
@@ -1250,23 +1278,23 @@ the commit under test:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>oha
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>aiperf
 </span></code></pre></div>
-<p>Then run the Python rehearsal from the repository root:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>python3.12<span class="w"> </span>scripts/soak_rehearsal.py<span class="w"> </span>--duration<span class="w"> </span>10s<span class="w"> </span>--concurrency<span class="w"> </span><span class="m">4</span>
+<p>Then run the local test from the repository root:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>python3.12<span class="w"> </span>scripts/run_local_soak_test.py<span class="w"> </span>--duration<span class="w"> </span>10s<span class="w"> </span>--concurrency<span class="w"> </span><span class="m">4</span>
 </span></code></pre></div>
-<p><code>--duration</code> controls the Rust soak phase. The route smoke, oha, and AIPerf phases are short and
-bounded by request count. <code>--help</code> explains every rehearsal flag. Set <code>OHA_BIN</code>, <code>AIPERF_BIN</code>,
+<p><code>--duration</code> controls how long the Rust soak tester runs. The route checks, oha, and AIPerf runs are
+short and limited by request count. <code>--help</code> explains every flag. Set <code>OHA_BIN</code>, <code>AIPERF_BIN</code>,
 <code>SWITCHYARD_SERVER_BIN</code>, <code>SWITCHYARD_SOAK_BIN</code>, or <code>SWITCHYARD_SOAK_MOCK_BIN</code> when a command is not
 on <code>PATH</code> or not under <code>target/release</code>.</p>
 <p>The script checks all five commands before starting a process. A missing command prints a warning,
-the build or install command, and the matching environment-variable override. Cargo compiles the
-embedded VidaiMock library, but it does not install the unrelated oha or AIPerf executables during
-a normal build.</p>
+the build or install command, and the matching environment variable. Cargo compiles the embedded
+VidaiMock library, but it does not install the unrelated oha or AIPerf programs during a normal
+build.</p>
 <p>The script gives each tool one job:</p>
 <table>
 <thead>
 <tr>
 <th>Tool</th>
-<th>Job in the rehearsal</th>
+<th>Job in the local test</th>
 </tr>
 </thead>
 <tbody>
@@ -1279,31 +1307,30 @@ a normal build.</p>
 <td>Sends raw concurrent HTTP requests through the random route and writes a status and latency distribution.</td>
 </tr>
 <tr>
-<td>Python route smoke</td>
-<td>Sends one Chat Completions request through each route. The stage request includes a critical tool failure so the signal scorer takes its escalation path.</td>
+<td>Python route checks</td>
+<td>Sends one Chat Completions request through each route. The stage request includes a critical tool failure so the signal scorer selects the capable target.</td>
 </tr>
 <tr>
 <td>AIPerf</td>
-<td>Sends streaming Chat Completions through passthrough routing and records LLM and token latency artifacts.</td>
+<td>Sends streaming Chat Completions through passthrough routing and records LLM, token, and response-time results.</td>
 </tr>
 <tr>
 <td><code>switchyard-soak</code></td>
-<td>Runs passthrough routing through Chat Completions, Messages, and Responses, with streaming on and off, while checking liveness, metrics, process sampling, and result gates.</td>
+<td>Runs passthrough routing through Chat Completions, Messages, and Responses, with streaming on and off, while checking server health, metrics, process use, and required results.</td>
 </tr>
 </tbody>
 </table>
-<p>The checked-in rehearsal config exercises <code>noop</code>, <code>random</code>, <code>passthrough</code>, <code>llm_classifier</code>, and
+<p><code>scripts/local_soak_test.toml</code> exercises <code>noop</code>, <code>random</code>, <code>passthrough</code>, <code>llm_classifier</code>, and
 <code>stage_router</code>. It uses the accepted maximum retry count (10), a zero-weight random target, and the
 upper classifier and stage thresholds (1.0). The config is validated with
 <code>switchyard-server --dry-run</code> before either service starts.</p>
-<p>The runner does not invent operational maxima for unbounded values such as target count or recent
-turn window. Focused Rust tests cover the real bounded structures at cap plus one: 4,096 affinity
-assignments, 100,000 retained latency samples, and 10,000 recorded error details. Server tests
-cover invalid thresholds, malformed classifier verdicts, missing subagent identifiers, target
-failures, and the retry value immediately above the maximum.</p>
+<p>The runner does not add limits for target count or recent-turn history because the server does not
+limit them. Rust tests cover the real limits: 4,096 saved route assignments, 100,000 response-time
+samples, and 10,000 error records. Server tests cover invalid thresholds, bad classifier responses,
+missing stage-router request IDs, target errors, and retry count 11, which is one above the maximum.</p>
 <h2 id="run-the-48-hour-test">Run the 48-hour test<a class="headerlink" href="#run-the-48-hour-test" title="Permanent link">&para;</a></h2>
 <p>Choose concurrency from the release capacity plan. Increase it in short
-rehearsals until you find the highest expected steady load that remains below
+test runs until you find the highest expected steady load that remains below
 the backend's rate limit. Use that load for the 48-hour run. An overload test
 that spends most of its time throttled does not measure release stability.</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
@@ -1318,7 +1345,7 @@ that spends most of its time throttled does not measure release stability.</p>
 large usage charges against a metered backend. Use a dedicated test deployment,
 estimate the request volume first with a short run, and get approval for any
 paid-provider cost.</p>
-<p>Use a five-minute rehearsal to confirm the route and result files:</p>
+<p>Use a five-minute run to confirm the route and result files:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
