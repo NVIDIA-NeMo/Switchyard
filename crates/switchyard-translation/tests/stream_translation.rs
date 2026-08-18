@@ -1198,3 +1198,52 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     assert_eq!(terminal["choices"][0]["finish_reason"], "length");
     Ok(())
 }
+
+// Decoding alone must yield the function-call arguments exactly once.
+//
+// `response.output_item.done` repeats the complete arguments that the delta
+// events already carried, so the decoder drops it when it matches what it has
+// seen. That comparison reads state the DECODER never writes — it is filled by
+// the Anthropic encoder — so it only holds when one state happens to do both
+// halves. libsy buffers a turn with its own state and no Anthropic encode, and
+// the arguments are then emitted twice.
+//
+// Observed through switchyard-server 0.2.0 against a live Azure gpt-5.6
+// target: every llm_classifier route doubled its streamed tool arguments,
+// while passthrough over the identical path was correct. Claude Code rejects
+// the result with "InputValidationError: parameter type is expected as
+// 'object' but provided as 'string'".
+#[test]
+fn responses_decode_emits_tool_arguments_once() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state = StreamTranslationState::default();
+    let arguments = r#"{"skill":"demo:thing","args":{}}"#;
+
+    let upstream = [
+        json!({"type": "response.output_item.added", "output_index": 0,
+               "item": {"type": "function_call", "call_id": "call_1",
+                        "name": "Skill", "arguments": ""}}),
+        json!({"type": "response.function_call_arguments.delta",
+               "output_index": 0, "delta": arguments}),
+        json!({"type": "response.output_item.done", "output_index": 0,
+               "item": {"type": "function_call", "call_id": "call_1",
+                        "name": "Skill", "arguments": arguments}}),
+    ];
+
+    let mut seen = String::new();
+    for event in upstream {
+        let decoded = engine.decode_stream_event(&mut state, WireFormat::OpenAiResponses, event)?;
+        for chunk in decoded.normalized() {
+            if let LlmResponseChunk::ToolCallDelta {
+                arguments_delta: Some(delta),
+                ..
+            } = chunk
+            {
+                seen.push_str(delta);
+            }
+        }
+    }
+
+    assert_eq!(seen, arguments);
+    Ok(())
+}
