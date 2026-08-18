@@ -6,11 +6,13 @@ defines contracts; it does not route, translate, or perform network calls.
 
 ## Setup
 
+<!-- BEGIN GENERATED: Rust dependencies -->
 ```toml
 [dependencies]
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-protocol = "=0.2.0"
 serde_json = "1"
 ```
+<!-- END GENERATED: Rust dependencies -->
 
 ## Main types
 

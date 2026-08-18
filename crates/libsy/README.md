@@ -8,14 +8,16 @@ an HTTP stack.
 
 ## Setup
 
+<!-- BEGIN GENERATED: Rust dependencies -->
 ```toml
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-libsy = "=0.2.0"
+switchyard-protocol = "=0.2.0"
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
+<!-- END GENERATED: Rust dependencies -->
 
 ## Built-in algorithms
 

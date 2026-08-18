@@ -21,11 +21,13 @@ clients, decisions, metadata, and wire-format identifiers.
 
 Applications embedding libsy normally depend on both crates:
 
+<!-- BEGIN GENERATED: Rust dependencies -->
 ```toml
 [dependencies]
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-libsy = "=0.2.0"
+switchyard-protocol = "=0.2.0"
 ```
+<!-- END GENERATED: Rust dependencies -->
 
 Import algorithms and orchestration types from `switchyard_libsy`. Import
 requests, responses, metadata, decisions, and LLM client traits from
