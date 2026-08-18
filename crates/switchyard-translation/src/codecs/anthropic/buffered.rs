@@ -340,17 +340,22 @@ impl FormatCodec for AnthropicMessagesCodec {
         let content = output
             .map(|output| encode_anthropic_content(&output.content))
             .unwrap_or_else(|| vec![json!({"type": "text", "text": ""})]);
+        let normalized_stop_reason = output.and_then(|output| output.stop_reason);
         let body = json!({
             "id": response.id.clone().unwrap_or_else(|| "msg_switchyard".to_string()),
             "type": "message",
             "role": "assistant",
             "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
             "content": content,
-            "stop_reason": output
-                .and_then(|output| output.stop_reason)
+            "stop_reason": normalized_stop_reason
                 .map(anthropic_stop_reason)
                 .unwrap_or("end_turn"),
             "stop_sequence": Value::Null,
+            "stop_details": normalized_stop_reason
+                .map(|reason| {
+                    anthropic_stop_details(reason, response.extensions.fields.get("stop_details"))
+                })
+                .unwrap_or(Value::Null),
             "usage": encode_anthropic_usage(&response.usage),
         });
         Ok(EncodedResponse {
@@ -1030,6 +1035,7 @@ fn map_anthropic_stop_reason(reason: Option<&str>) -> StopReason {
     match reason {
         Some("max_tokens") => StopReason::MaxTokens,
         Some("tool_use") => StopReason::ToolUse,
+        Some("refusal") => StopReason::ContentFilter,
         Some("end_turn") | None => StopReason::EndTurn,
         _ => StopReason::Unknown,
     }
@@ -1040,9 +1046,30 @@ fn anthropic_stop_reason(reason: StopReason) -> &'static str {
     match reason {
         StopReason::MaxTokens => "max_tokens",
         StopReason::ToolUse => "tool_use",
-        StopReason::EndTurn
-        | StopReason::ContentFilter
-        | StopReason::Error
-        | StopReason::Unknown => "end_turn",
+        StopReason::ContentFilter => "refusal",
+        StopReason::EndTurn | StopReason::Error | StopReason::Unknown => "end_turn",
+    }
+}
+
+// Emits the metadata object Anthropic pairs with a `refusal` stop reason.
+//
+// An Anthropic source keeps its `stop_details` in provider extensions, so replay that
+// object and preserve the named policy category and its explanation. Only a refusal
+// synthesized from a provider that reports no category falls back to the null form,
+// which Anthropic documents as the normal value for a refusal that maps to no named
+// category.
+fn anthropic_stop_details(reason: StopReason, source: Option<&Value>) -> Value {
+    match reason {
+        StopReason::ContentFilter => source
+            .filter(|details| !details.is_null())
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "type": "refusal",
+                    "category": Value::Null,
+                    "explanation": Value::Null,
+                })
+            }),
+        _ => Value::Null,
     }
 }

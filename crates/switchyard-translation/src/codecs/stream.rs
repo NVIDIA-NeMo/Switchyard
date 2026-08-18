@@ -42,6 +42,9 @@ pub struct StreamTranslationState {
     pub(crate) output_tokens_seen: u64,
     pub(crate) saw_backend_usage: bool,
     pub(crate) stop_reason: Option<String>,
+    /// Refusal metadata carried by the source, replayed instead of a synthesized
+    /// object so a named policy category and its explanation are not flattened away.
+    pub(crate) stop_details: Option<Value>,
     pub(crate) emitted_message_delta: bool,
 
     pub(crate) next_content_index: usize,
