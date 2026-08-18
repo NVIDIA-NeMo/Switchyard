@@ -3,6 +3,7 @@
 
 //! Streaming codec for OpenAI Responses API events.
 
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::LlmResponseChunk;
@@ -34,12 +35,63 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         state: &mut StreamTranslationState,
         event: LlmResponseChunk,
     ) -> Vec<Value> {
-        encode_responses_stream(state, event)
+        let events = encode_responses_stream(state, event);
+        add_sequence_numbers(state, events)
+    }
+
+    fn observe_replayed_event(
+        &self,
+        state: &mut StreamTranslationState,
+        raw: &Value,
+        normalized: Vec<LlmResponseChunk>,
+    ) {
+        let replayed_terminal = normalized
+            .iter()
+            .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }));
+        // Exact replay emits `raw` once. Normalized encodings only advance codec state;
+        // their generated events are discarded and must not create sequence-number gaps.
+        for chunk in normalized {
+            drop(encode_responses_stream(state, chunk));
+        }
+        state.response_sequence_number = raw
+            .get("sequence_number")
+            .and_then(Value::as_u64)
+            .map_or(state.response_sequence_number.saturating_add(1), |number| {
+                number.saturating_add(1)
+            });
+        if replayed_terminal {
+            state.finished = true;
+        }
     }
 
     fn finish(&self, state: &mut StreamTranslationState) -> Vec<Value> {
-        finish_responses_stream(state)
+        let events = finish_responses_stream(state);
+        add_sequence_numbers(state, events)
     }
+}
+
+/// Required fields shared by Responses stream snapshots.
+#[derive(Serialize)]
+struct ResponsesStreamResponse {
+    id: String,
+    object: &'static str,
+    created_at: u64,
+    completed_at: Option<u64>,
+    error: Option<Value>,
+    incomplete_details: Option<Value>,
+    instructions: Option<Value>,
+    metadata: Option<Value>,
+    model: String,
+    output: Vec<Value>,
+    parallel_tool_calls: bool,
+    frequency_penalty: Option<f64>,
+    presence_penalty: Option<f64>,
+    status: &'static str,
+    temperature: Option<f64>,
+    tool_choice: &'static str,
+    tools: Vec<Value>,
+    top_p: Option<f64>,
+    usage: Value,
 }
 
 // Decodes one OpenAI Responses event into neutral streaming events.
@@ -228,6 +280,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "output_index": output_index,
             "item": {
                 "type": "message",
+                "id": format!("msg_{output_index}"),
                 "role": "assistant",
                 "status": status,
                 "content": [{"type": "output_text", "text": state.response_text}],
@@ -269,6 +322,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             output_index,
             json!({
                 "type": "message",
+                "id": format!("msg_{output_index}"),
                 "role": "assistant",
                 "status": status,
                 "content": [{"type": "output_text", "text": state.response_text}],
@@ -310,15 +364,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
 
     out.push(json!({
         "type": event_type,
-        "response": {
-            "id": responses_id(state),
-            "object": "response",
-            "status": status,
-            "incomplete_details": incomplete_details,
-            "model": target_model_or_source_model(state),
-            "output": output,
-            "usage": responses_usage_value(&state.usage),
-        },
+        "response": responses_stream_response(state, status, incomplete_details, output),
     }));
     state.finished = true;
     out
@@ -397,15 +443,52 @@ fn ensure_responses_created(state: &mut StreamTranslationState) -> Vec<Value> {
     state.response_created = true;
     vec![json!({
         "type": "response.created",
-        "response": {
-            "id": responses_id(state),
-            "object": "response",
-            "status": "in_progress",
-            "model": target_model_or_source_model(state),
-            "output": [],
-            "usage": responses_usage_value(&state.usage),
-        },
+        "response": responses_stream_response(state, "in_progress", None, Vec::new()),
     })]
+}
+
+// Builds a schema-complete Responses snapshot for strict generated clients.
+fn responses_stream_response(
+    state: &StreamTranslationState,
+    status: &'static str,
+    incomplete_details: Option<Value>,
+    output: Vec<Value>,
+) -> ResponsesStreamResponse {
+    ResponsesStreamResponse {
+        id: responses_id(state),
+        object: "response",
+        created_at: 0,
+        completed_at: None,
+        error: None,
+        incomplete_details,
+        instructions: None,
+        metadata: None,
+        model: target_model_or_source_model(state),
+        output,
+        parallel_tool_calls: true,
+        frequency_penalty: None,
+        presence_penalty: None,
+        status,
+        temperature: None,
+        tool_choice: "auto",
+        tools: Vec::new(),
+        top_p: None,
+        usage: responses_usage_value(&state.usage),
+    }
+}
+
+// Assigns monotonically increasing sequence numbers to generated Responses events.
+fn add_sequence_numbers(state: &mut StreamTranslationState, mut events: Vec<Value>) -> Vec<Value> {
+    for event in &mut events {
+        if let Some(object) = event.as_object_mut() {
+            object.insert(
+                "sequence_number".to_string(),
+                Value::from(state.response_sequence_number),
+            );
+            state.response_sequence_number = state.response_sequence_number.saturating_add(1);
+        }
+    }
+    events
 }
 
 // Accumulates assistant text and emits Responses text delta events.

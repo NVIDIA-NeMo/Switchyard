@@ -7,7 +7,7 @@ pub mod common;
 
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use switchyard_protocol::{ResponseAccumulator, StopReason};
+use switchyard_protocol::{LlmResponseStreamEvent, ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
 };
@@ -183,6 +183,55 @@ fn replayed_nonterminal_event_advances_encoder_state_before_finish() -> TestResu
     assert_eq!(finish[0]["id"], "chatcmpl-clean-eof");
     assert_eq!(finish[0]["model"], "gpt-4o");
     assert_eq!(finish[0]["choices"][0]["finish_reason"], "stop");
+    Ok(())
+}
+
+// Exact replay advances sequencing by the one raw event actually emitted, not discarded
+// synthetic events produced while advancing encoder state.
+#[test]
+fn responses_replay_without_sequence_advances_by_one_emitted_event() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let raw = json!({
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+            "type": "function_call",
+            "id": "fc_0",
+            "call_id": "call_0",
+            "name": "bash",
+            "arguments": ""
+        }
+    });
+    let replayed = LlmResponseStreamEvent::preserved(
+        format,
+        raw.clone(),
+        vec![LlmResponseChunk::ToolCallDelta {
+            index: 0,
+            id: Some("call_0".to_string()),
+            name: Some("bash".to_string()),
+            arguments_delta: None,
+        }],
+    );
+    let mut state = StreamTranslationState::new(format, format);
+
+    assert_eq!(
+        engine.encode_stream_event(&mut state, format, replayed)?,
+        vec![raw]
+    );
+    let generated = engine.encode_stream_event(
+        &mut state,
+        format,
+        LlmResponseStreamEvent::new(vec![LlmResponseChunk::ToolCallDelta {
+            index: 0,
+            id: None,
+            name: None,
+            arguments_delta: Some("{}".to_string()),
+        }]),
+    )?;
+
+    assert_eq!(generated.len(), 1);
+    assert_eq!(generated[0]["sequence_number"], 1);
     Ok(())
 }
 
@@ -1101,6 +1150,76 @@ fn openai_chat_stream_usage_without_breakdowns_still_emits_responses_usage_detai
         completed["response"]["usage"]["output_tokens_details"],
         json!({"reasoning_tokens": 0})
     );
+    Ok(())
+}
+
+// Responses terminal snapshots include every field required by strict generated clients.
+#[test]
+fn responses_completed_event_is_schema_complete_and_retains_message_id() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "delta": {"content": "hello"},
+            "finish_reason": "stop"
+        }]
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &chunk,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    for (expected, event) in events.iter().enumerate() {
+        assert_eq!(event["sequence_number"], expected as u64);
+    }
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("expected response.completed")?;
+    let response = completed["response"]
+        .as_object()
+        .ok_or("completed response should be an object")?;
+    for field in [
+        "id",
+        "object",
+        "created_at",
+        "completed_at",
+        "error",
+        "incomplete_details",
+        "instructions",
+        "metadata",
+        "model",
+        "output",
+        "parallel_tool_calls",
+        "frequency_penalty",
+        "presence_penalty",
+        "status",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_p",
+        "usage",
+    ] {
+        assert!(
+            response.contains_key(field),
+            "missing response field {field}"
+        );
+    }
+    assert_eq!(response["output"][0]["id"], "msg_0");
+    let done = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .ok_or("expected response.output_item.done")?;
+    assert_eq!(done["item"]["id"], "msg_0");
     Ok(())
 }
 
