@@ -73,6 +73,14 @@ pub(crate) struct StreamToolState {
     pub(crate) id: Option<String>,
     pub(crate) name: Option<String>,
     pub(crate) arguments: String,
+    /// Arguments observed while DECODING the source stream.
+    ///
+    /// Separate from `arguments`, which encoders accumulate. A decoder that
+    /// deduplicates against `arguments` only works when one state performs
+    /// both halves of the translation; when a caller buffers a stream with its
+    /// own state and encodes later, the field is empty and the duplicate is
+    /// emitted.
+    pub(crate) decoded_arguments: String,
     pub(crate) pending_arguments: String,
     pub(crate) started: bool,
     pub(crate) content_index: Option<usize>,

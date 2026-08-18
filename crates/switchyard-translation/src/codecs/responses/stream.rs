@@ -153,7 +153,7 @@ fn decode_responses_stream(
                 })
                 .unwrap_or_default()
         }
-        Some("response.output_item.added") => decode_responses_output_item_added(event),
+        Some("response.output_item.added") => decode_responses_output_item_added(event, state),
         Some("response.function_call_arguments.delta") => {
             let output_index = event
                 .get("output_index")
@@ -163,6 +163,14 @@ fn decode_responses_stream(
                 .get("delta")
                 .and_then(Value::as_str)
                 .map(|delta| {
+                    // Recorded so `response.output_item.done`, which repeats
+                    // the complete arguments, can tell it is a repeat.
+                    state
+                        .tool_states
+                        .entry(output_index as usize)
+                        .or_default()
+                        .decoded_arguments
+                        .push_str(delta);
                     vec![LlmResponseChunk::ToolCallDelta {
                         index: output_index as usize,
                         id: None,
@@ -371,7 +379,10 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
 }
 
 // Converts Responses function-call item creation into a neutral tool-call delta.
-fn decode_responses_output_item_added(event: &Value) -> Vec<LlmResponseChunk> {
+fn decode_responses_output_item_added(
+    event: &Value,
+    state: &mut StreamTranslationState,
+) -> Vec<LlmResponseChunk> {
     let Some(item) = event.get("item").and_then(Value::as_object) else {
         return Vec::new();
     };
@@ -382,6 +393,19 @@ fn decode_responses_output_item_added(event: &Value) -> Vec<LlmResponseChunk> {
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
+    let arguments_delta = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .filter(|arguments| !arguments.is_empty())
+        .map(ToOwned::to_owned);
+    if let Some(arguments) = arguments_delta.as_deref() {
+        state
+            .tool_states
+            .entry(index)
+            .or_default()
+            .decoded_arguments
+            .push_str(arguments);
+    }
     vec![LlmResponseChunk::ToolCallDelta {
         index,
         id: item
@@ -393,18 +417,14 @@ fn decode_responses_output_item_added(event: &Value) -> Vec<LlmResponseChunk> {
             .get("name")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        arguments_delta: item
-            .get("arguments")
-            .and_then(Value::as_str)
-            .filter(|arguments| !arguments.is_empty())
-            .map(ToOwned::to_owned),
+        arguments_delta,
     }]
 }
 
 // Emits a final tool-call argument delta when Responses only supplies arguments at item end.
 fn decode_responses_output_item_done(
     event: &Value,
-    state: &StreamTranslationState,
+    state: &mut StreamTranslationState,
 ) -> Vec<LlmResponseChunk> {
     let Some(item) = event.get("item").and_then(Value::as_object) else {
         return Vec::new();
@@ -418,12 +438,13 @@ fn decode_responses_output_item_done(
         .unwrap_or(0) as usize;
     let arguments = item.get("arguments").and_then(Value::as_str);
     if let Some(arguments) = arguments {
-        let existing = state
-            .tool_states
-            .get(&index)
-            .map(|tool| tool.arguments.as_str())
-            .unwrap_or("");
-        if !arguments.is_empty() && arguments != existing {
+        // Compared against what THIS decoder has seen. Reading the encoder's
+        // `arguments` instead only deduplicates when a single state performs
+        // both halves of the translation, and silently duplicates when a
+        // caller buffers the stream with its own state.
+        let tool = state.tool_states.entry(index).or_default();
+        if !arguments.is_empty() && arguments != tool.decoded_arguments {
+            tool.decoded_arguments.push_str(arguments);
             return vec![LlmResponseChunk::ToolCallDelta {
                 index,
                 id: None,

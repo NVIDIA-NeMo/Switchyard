@@ -1392,3 +1392,39 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     assert_eq!(terminal["choices"][0]["finish_reason"], "length");
     Ok(())
 }
+
+// A completion event must not repeat function-call arguments from delta events.
+#[test]
+fn responses_decode_emits_tool_arguments_once() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state = StreamTranslationState::default();
+    let arguments = r#"{"skill":"demo:thing","args":{}}"#;
+
+    let upstream = [
+        json!({"type": "response.output_item.added", "output_index": 0,
+               "item": {"type": "function_call", "call_id": "call_1",
+                        "name": "Skill", "arguments": ""}}),
+        json!({"type": "response.function_call_arguments.delta",
+               "output_index": 0, "delta": arguments}),
+        json!({"type": "response.output_item.done", "output_index": 0,
+               "item": {"type": "function_call", "call_id": "call_1",
+                        "name": "Skill", "arguments": arguments}}),
+    ];
+
+    let mut seen = String::new();
+    for event in upstream {
+        let decoded = engine.decode_stream_event(&mut state, WireFormat::OpenAiResponses, event)?;
+        for chunk in decoded.normalized() {
+            if let LlmResponseChunk::ToolCallDelta {
+                arguments_delta: Some(delta),
+                ..
+            } = chunk
+            {
+                seen.push_str(delta);
+            }
+        }
+    }
+
+    assert_eq!(seen, arguments);
+    Ok(())
+}
