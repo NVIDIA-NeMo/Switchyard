@@ -1018,13 +1018,24 @@ base_threshold = 0.5
     assert_eq!(
         response.json()?,
         json!({
-            "target": "economy",
-            "model": "model/weak",
-            "llm_client": {
-                "format": "openai_chat",
-                "base_url": model_upstream.base_url,
+            "selected": {
+                "target": "economy",
+                "model": "model/weak",
+                "llm_client": {
+                    "format": "openai_chat",
+                    "base_url": model_upstream.base_url,
+                },
+                "extra_body": {"service_tier": "priority"},
             },
-            "extra_body": {"service_tier": "priority"},
+            "fallbacks": [{
+                "target": "quality",
+                "model": "model/strong",
+                "llm_client": {
+                    "format": "openai_chat",
+                    "base_url": model_upstream.base_url,
+                },
+                "extra_body": {},
+            }],
         })
     );
     assert_eq!(

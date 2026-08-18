@@ -32,8 +32,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use futures_util::StreamExt;
-use libsy::{Algorithm, CallModel, LibsyError, Step};
+use libsy::{Algorithm, CallModel, LibsyError, RoutingOutcome, drive};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -117,9 +116,16 @@ struct RouteEntry {
     config_name: Option<String>,
 }
 
-/// Borrowed response view over the selected target's existing configuration.
+/// Decision result using the same selected/fallback order as libsy.
 #[derive(Serialize)]
 struct DecisionResponse<'a> {
+    selected: DecisionTargetResponse<'a>,
+    fallbacks: Vec<DecisionTargetResponse<'a>>,
+}
+
+/// Borrowed response view over one target's existing configuration.
+#[derive(Serialize)]
+struct DecisionTargetResponse<'a> {
     target: &'a str,
     model: &'a ModelId,
     llm_client: DecisionLlmClientResponse<'a>,
@@ -323,28 +329,37 @@ impl ServerState {
         self.routes.get(model)
     }
 
-    /// Resolves one selected model through the target names configured for its route.
+    /// Resolves the routing outcome through the target names configured for its route.
     fn decision_response<'a>(
         &'a self,
         route: &'a RouteEntry,
-        selected_model: &ModelId,
+        outcome: &'a RoutingOutcome,
     ) -> Option<DecisionResponse<'a>> {
         let config = self.config.as_ref()?;
-        let (target_name, target) = config
-            .routing_target_names(route.config_name.as_ref()?)?
-            .into_iter()
-            .rev()
-            .filter_map(|name| config.targets.get_key_value(name))
-            .find(|(_, target)| target.id == *selected_model)?;
-        let client = config.llm_clients.get(&target.llm_client)?;
+        let target_names = config.routing_target_names(route.config_name.as_ref()?)?;
+        let resolve = |model: &ModelId| {
+            let (target_name, target) = target_names
+                .iter()
+                .filter_map(|name| config.targets.get_key_value(*name))
+                .find(|(_, target)| target.id == *model)?;
+            let client = config.llm_clients.get(&target.llm_client)?;
+            Some(DecisionTargetResponse {
+                target: target_name,
+                model: &target.id,
+                llm_client: DecisionLlmClientResponse {
+                    format: client.format.wire_format(),
+                    base_url: &client.base_url,
+                },
+                extra_body: &target.extra_body,
+            })
+        };
         Some(DecisionResponse {
-            target: target_name,
-            model: &target.id,
-            llm_client: DecisionLlmClientResponse {
-                format: client.format.wire_format(),
-                base_url: &client.base_url,
-            },
-            extra_body: &target.extra_body,
+            selected: resolve(&outcome.selected_model_id)?,
+            fallbacks: outcome
+                .fallback_models
+                .iter()
+                .map(resolve)
+                .collect::<Option<Vec<_>>>()?,
         })
     }
 }
@@ -643,9 +658,14 @@ async fn decision(
 ) -> Response {
     let body = match body {
         Ok(Json(body)) if body.request.is_object() => body,
-        Ok(_) => return invalid_body_error("request must be a JSON object"),
+        Ok(_) => {
+            return invalid_body_error(StatusCode::BAD_REQUEST, "request must be a JSON object");
+        }
         Err(error) => {
-            return invalid_body_error(format!("Request body must be valid JSON: {error}"));
+            return invalid_body_error(
+                error.status(),
+                format!("Request body must be valid JSON: {error}"),
+            );
         }
     };
     let (route, request) = match resolve_route(
@@ -657,43 +677,27 @@ async fn decision(
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
-    let selected_model = match run_decision_only(route, request).await {
-        Ok(model) => model,
+    let outcome = match run_decision_only(route, request).await {
+        Ok(outcome) => outcome,
         Err(error) => return algorithm_error(error),
     };
-    match state.decision_response(route, &selected_model) {
-        Some(target) => Json(target).into_response(),
+    match state.decision_response(route, &outcome) {
+        Some(response) => Json(response).into_response(),
         None => error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
-            format!("selected model {selected_model} has no callable target configuration"),
+            "routing outcome contains a model with no callable target configuration",
             "invalid_request_error",
             "decision_not_callable",
         ),
     }
 }
 
-/// Drives an algorithm until its answer call is known, without executing that final call.
-async fn run_decision_only(route: &RouteEntry, request: Request) -> libsy::Result<ModelId> {
-    let stream = Arc::clone(&route.algorithm).run_stream(request);
-    tokio::pin!(stream);
-
-    while let Some(step) = stream.next().await {
-        match step? {
-            // Decision-only behavior: take the selected answer call and stop before model I/O.
-            Step::CallModel(call) if call.is_answer_call => {
-                let (_, models) = call.into_parts();
-                return models.into_iter().next().ok_or(LibsyError::NoTargets);
-            }
-            // Normal algorithm execution: classifiers and judges must answer before a final
-            // target can be selected.
-            Step::CallModel(call) => serve_decision_dependency(route, *call).await?,
-            // Published decisions are observability events. The answer CallModel above is the
-            // executable selection and therefore the endpoint's source of truth.
-            Step::Decision(_) => {}
-            Step::Done(_) => return Err(LibsyError::MissingFinalResponse),
-        }
-    }
-    Err(LibsyError::MissingFinalResponse)
+/// Completes routing-time calls and returns the outcome without serving its answer target.
+async fn run_decision_only(route: &RouteEntry, request: Request) -> libsy::Result<RoutingOutcome> {
+    drive(Arc::clone(&route.algorithm), request, |call| {
+        serve_decision_dependency(route, call)
+    })
+    .await
 }
 
 /// Serves a classifier or judge call that the decision depends on.
