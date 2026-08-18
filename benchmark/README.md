@@ -129,6 +129,15 @@ uv run --no-sync python benchmark/prepare_harbor_dataset.py \
   --overwrite
 ```
 
+SWE-bench Verified is the benchmark used by the test-time scaling runner:
+
+```bash
+uv run --no-sync python benchmark/prepare_harbor_dataset.py \
+  --source-dataset swebench-verified@1.0 \
+  --output-dir benchmark/datasets/swebench-verified-closed-book \
+  --overwrite
+```
+
 SWE-Bench Pro is supported with the Harbor dataset `cais/swebenchpro`. The generated dataset uses
 the same pinned-agent and closed-book proxy path without opening dataset-specific agent egress.
 
@@ -138,6 +147,35 @@ uv run --no-sync python benchmark/prepare_harbor_dataset.py \
   --output-dir benchmark/datasets/swebenchpro-closed-book \
   --overwrite
 ```
+
+## Run Paper Test-Time Scaling
+
+The test-time scaling runner follows the paper's two-iteration schedule. One full task uses 32 agent
+attempts, 32 summaries, and 240 comparison calls. Start with smaller settings before running the
+paper defaults.
+
+The config writer records every choice that the paper does not state. It labels the result as a
+conceptual replication because those missing choices prevent an exact numerical replication.
+
+```bash
+export NVIDIA_API_KEY="..."
+
+uv run --no-sync python benchmark/test_time_scaling_config.py \
+  --dataset benchmark/datasets/swebench-verified-closed-book \
+  --task astropy__astropy-7606 \
+  --model azure/anthropic/claude-sonnet-4-5 \
+  --output benchmark/tb_runs/test-time-scaling-canary
+
+cargo run -p switchyard-test-time-scaling-runner -- \
+  benchmark/tb_runs/test-time-scaling-canary/config/runner.json
+```
+
+The default settings are N=16, K=4, G=2, and V=8. For a small end-to-end check, add
+`--rollouts 2 --refinement-count 1 --votes 1` to the config command.
+
+The runner saves `run.json` before it starts official verification. Selection cannot read verifier
+results because Harbor does not create them during the agent attempts. After selection, the grader
+applies every saved patch to a fresh task container and writes `evaluation.json`.
 
 ## Run Without Switchyard
 

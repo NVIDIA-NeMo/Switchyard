@@ -24,6 +24,7 @@ fi
 CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.211}"
 CODEX_VERSION="${CODEX_VERSION:-0.144.5}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.3}"
+MINI_SWE_AGENT_VERSION="${MINI_SWE_AGENT_VERSION:-2.4.6}"
 NODE_VERSION="${NODE_VERSION:-20.11.1}"
 
 DEFAULT_HARBOR_MODEL="openai/gpt-5.2"
@@ -38,6 +39,7 @@ SERVER_CONFIG=""
 MODEL=""
 ROUTE_MODEL=""
 AGENT="terminus-2"
+AGENT_IMPORT_PATH=""
 HARBOR_MODEL="${DEFAULT_HARBOR_MODEL}"
 HARBOR_PATH=""
 HARBOR_BIN="${HARBOR_BIN:-}"
@@ -101,6 +103,7 @@ Main options:
                                agents, and MODEL for claude-code/codex.
   --route-model MODEL          Deprecated alias for --model in Switchyard mode.
   --agent NAME                 Harbor agent (default: terminus-2)
+  --agent-import-path PATH     Custom Harbor agent in module.path:ClassName form.
   --harbor-model MODEL         Explicit Harbor model label override.
   --upstream-base-url URL      Direct-upstream OpenAI-compatible base URL
                                (default: https://openrouter.ai/api/v1).
@@ -305,6 +308,7 @@ while [[ $# -gt 0 ]]; do
         --model) MODEL="$2"; shift 2 ;;
         --route-model) ROUTE_MODEL="$2"; shift 2 ;;
         --agent) AGENT="$2"; shift 2 ;;
+        --agent-import-path) AGENT_IMPORT_PATH="$2"; shift 2 ;;
         --harbor-model) HARBOR_MODEL="$2"; HARBOR_MODEL_SET=1; shift 2 ;;
         --upstream-base-url) UPSTREAM_BASE_URL="$2"; shift 2 ;;
         --upstream-api-key-env) UPSTREAM_API_KEY_ENV="$2"; shift 2 ;;
@@ -538,14 +542,22 @@ fi
 WRAPPER="${RUN_DIR}/run-background.sh"
 HARBOR_JOB_DIR="${RUN_DIR}/jobs/${JOB_NAME}"
 
-HARBOR_CMD=("${HARBOR_CMD_PREFIX[@]}" run
-    --agent "${AGENT}"
-    --model "${HARBOR_MODEL}"
+HARBOR_CMD=("${HARBOR_CMD_PREFIX[@]}" run)
+if [[ -n "${AGENT_IMPORT_PATH}" ]]; then
+    HARBOR_CMD+=(--agent-import-path "${AGENT_IMPORT_PATH}")
+else
+    HARBOR_CMD+=(--agent "${AGENT}")
+fi
+HARBOR_CMD+=(--model "${HARBOR_MODEL}"
     --jobs-dir "${RUN_DIR}/jobs"
     --job-name "${JOB_NAME}"
     -n "${N_CONCURRENT}"
     --max-retries "${MAX_RETRIES}"
     --agent-timeout-multiplier "${AGENT_TIMEOUT_MULTIPLIER}")
+
+if [[ "${AGENT}" == "mini-swe-agent" ]]; then
+    HARBOR_CMD+=(--ak "version=${MINI_SWE_AGENT_VERSION}")
+fi
 
 HARBOR_CMD+=(--path "${HARBOR_PATH}")
 
@@ -710,7 +722,7 @@ print_resolved() {
     shell_join "${HARBOR_PYTHON_CMD[@]}"
     echo
     echo "  harbor_patch:  verified"
-    echo "  agent/model:   ${AGENT} / ${HARBOR_MODEL}"
+    echo "  agent/model:   ${AGENT_IMPORT_PATH:-${AGENT}} / ${HARBOR_MODEL}"
     echo "  reasoning:     ${REASONING_EFFORT:-unset}"
     if [[ -n "${CODEX_MODEL_CATALOG_HOST}" ]]; then
         echo "  codex_catalog: ${CODEX_MODEL_CATALOG_HOST}"
@@ -747,7 +759,8 @@ fi
 
 AGENT_VERSIONS_JSON="$(json_object_from_pairs \
     claude_code "${CLAUDE_CODE_VERSION}" codex "${CODEX_VERSION}" \
-    opencode "${OPENCODE_VERSION}" node "${NODE_VERSION}")"
+    opencode "${OPENCODE_VERSION}" mini_swe_agent "${MINI_SWE_AGENT_VERSION}" \
+    node "${NODE_VERSION}")"
 HARBOR_EXTRA_JSON="$(json_array)"
 if [[ "${#HARBOR_EXTRA[@]}" -gt 0 ]]; then
     HARBOR_EXTRA_JSON="$(json_array "${HARBOR_EXTRA[@]}")"
@@ -855,10 +868,30 @@ cleanup() {
         docker rm -f "\${SWITCHYARD_DOCKER_CONTAINER}" >/dev/null 2>&1 || true
     fi
     if [[ "\${DOCKER_NETWORK_CREATED}" == "1" ]]; then
-        docker network rm "\${SWITCHYARD_DOCKER_NETWORK}" >/dev/null 2>&1 || true
+        docker_with_timeout network rm "\${SWITCHYARD_DOCKER_NETWORK}" >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
+
+docker_with_timeout() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 30 docker "\$@"
+    else
+        docker "\$@"
+    fi
+}
+
+ensure_docker_network() {
+    if docker_with_timeout network inspect "\${SWITCHYARD_DOCKER_NETWORK}" >/dev/null 2>&1; then
+        return
+    fi
+    if ! docker_with_timeout network create "\${SWITCHYARD_DOCKER_NETWORK}" >/dev/null; then
+        echo "ERROR: Docker could not inspect or create network \${SWITCHYARD_DOCKER_NETWORK}." >&2
+        echo "       Check the Docker network API before retrying this benchmark." >&2
+        exit 127
+    fi
+    DOCKER_NETWORK_CREATED=1
+}
 
 export PYTHONHASHSEED=0
 export LC_ALL=C.UTF-8
@@ -872,10 +905,7 @@ if [[ "\${SERVER_ENABLED}" == "1" ]]; then
     if [[ "\${SWITCHYARD_DOCKER_BUILD}" != "0" ]]; then
         docker build -f "\${SWITCHYARD_DOCKERFILE}" -t "\${SWITCHYARD_DOCKER_IMAGE}" .
     fi
-    if ! docker network inspect "\${SWITCHYARD_DOCKER_NETWORK}" >/dev/null 2>&1; then
-        docker network create "\${SWITCHYARD_DOCKER_NETWORK}"
-        DOCKER_NETWORK_CREATED=1
-    fi
+    ensure_docker_network
     docker rm -f "\${SWITCHYARD_DOCKER_CONTAINER}" >/dev/null 2>&1 || true
     DOCKER_RUN_ARGS=(
         -d --rm
@@ -920,10 +950,7 @@ else
         echo "Switchyard disabled; using direct upstream"
         echo "  network: \${SWITCHYARD_DOCKER_NETWORK}"
         echo "  upstream: \${HARBOR_BASE_URL}"
-        if ! docker network inspect "\${SWITCHYARD_DOCKER_NETWORK}" >/dev/null 2>&1; then
-            docker network create "\${SWITCHYARD_DOCKER_NETWORK}"
-            DOCKER_NETWORK_CREATED=1
-        fi
+        ensure_docker_network
     } > "\${SERVER_LOG}" 2>&1
     echo "\${SWITCHYARD_DOCKER_NETWORK}" > "\${RUN_DIR}/docker_network"
 fi
@@ -979,6 +1006,7 @@ else
     export OPENAI_API_KEY="\${!UPSTREAM_API_KEY_ENV}"
 fi
 export OPENAI_BASE_URL="\${HARBOR_BASE_URL}"
+export OPENAI_API_BASE="\${HARBOR_BASE_URL}"
 if [[ "\${BOOK_MODE}" == "closed" ]]; then
     export CLOSED_BOOK_MODE=1
 else
