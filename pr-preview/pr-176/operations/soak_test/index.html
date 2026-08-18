@@ -912,6 +912,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#compare-routing-algorithm-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compare routing algorithm performance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#check-the-local-server-and-load-tools" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1165,6 +1176,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#compare-routing-algorithm-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compare routing algorithm performance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#check-the-local-server-and-load-tools" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1266,23 +1288,55 @@ not suspend or restart and has enough disk space for the server log.</p>
 release, then run it directly:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-soak
 </span></code></pre></div>
+<h2 id="compare-routing-algorithm-performance">Compare routing algorithm performance<a class="headerlink" href="#compare-routing-algorithm-performance" title="Permanent link">&para;</a></h2>
+<p>Use <code>scripts/benchmark_routing_algorithms.py</code> to compare routing algorithms under the same load.
+The command runs oha and AIPerf sequentially for every model id, then writes <code>report.md</code>,
+<code>report.csv</code>, and <code>report.json</code> beside both tools' raw results:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>python3.12<span class="w"> </span>scripts/benchmark_routing_algorithms.py<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">noop</span><span class="o">=</span>switchyard/noop<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">passthrough</span><span class="o">=</span>switchyard/passthrough<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">random</span><span class="o">=</span>switchyard/random<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">llm_classifier</span><span class="o">=</span>switchyard/classifier<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">stage_router</span><span class="o">=</span>switchyard/stage<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span>--request-count<span class="w"> </span><span class="m">1000</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">  </span>--backend-label<span class="w"> </span><span class="s2">&quot;release model deployment&quot;</span>
+</span></code></pre></div>
+<p>oha sends non-streaming fixed-body requests and reports the raw HTTP request rate and latency
+ceiling. AIPerf sends streaming Chat Completions and reports request latency, time to first token
+(TTFT), inter-token latency (ITL), request throughput, and output-token throughput. The command
+runs them one after the other because simultaneous runs would compete for the same server capacity
+and distort both results.</p>
+<p>To isolate routing overhead, configure every route to use the same target deployment and keep the
+prompt, input length, output length, concurrency, and request count fixed. Set <code>--tokenizer</code> to the
+real model tokenizer when exact token counts matter. AIPerf uses a deterministic workload seed so
+each route receives the same synthetic inputs.</p>
+<p>This comparison command does not start VidaiMock or Switchyard. Point it at a running Switchyard
+server backed by real models to measure end-to-end TTFT and token throughput. Real-model runs cost
+tokens and include provider queuing and model variance, so use a dedicated deployment and repeat the
+run before treating a small difference as an algorithm effect.</p>
 <h2 id="check-the-local-server-and-load-tools">Check the local server and load tools<a class="headerlink" href="#check-the-local-server-and-load-tools" title="Permanent link">&para;</a></h2>
 <p>The local test embeds <a href="https://github.com/vidaiUK/VidaiMock">VidaiMock</a> as a Rust library, so it does
 not need a separate <code>vidaimock</code> command. Build the server, soak tester, and mock helper from the
 commit under test:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-server<span class="w"> </span>-p<span class="w"> </span>switchyard-soak<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--bins<span class="w"> </span>--example<span class="w"> </span>switchyard-soak-mock
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-server<span class="w"> </span>-p<span class="w"> </span>switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--bins<span class="w"> </span>--example<span class="w"> </span>switchyard-soak-mock
 </span></code></pre></div>
 <p>Install <a href="https://github.com/hatoo/oha">oha</a> and
 <a href="https://docs.nvidia.com/aiperf/reference/command-line-options">NVIDIA AIPerf</a>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>oha
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>aiperf
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>oha
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span>aiperf
 </span></code></pre></div>
 <p>Then run the local test from the repository root:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>python3.12<span class="w"> </span>scripts/run_local_soak_test.py<span class="w"> </span>--duration<span class="w"> </span>10s<span class="w"> </span>--concurrency<span class="w"> </span><span class="m">4</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>python3.12<span class="w"> </span>scripts/run_local_soak_test.py<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--duration<span class="w"> </span>10s<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--request-count<span class="w"> </span><span class="m">100</span>
 </span></code></pre></div>
-<p><code>--duration</code> controls how long the Rust soak tester runs. The route checks, oha, and AIPerf runs are
-short and limited by request count. <code>--help</code> explains every flag. Set <code>OHA_BIN</code>, <code>AIPERF_BIN</code>,
+<p><code>--duration</code> controls how long the Rust soak tester runs. <code>--request-count</code> controls how many
+measured requests each load tool sends to each algorithm. <code>--help</code> explains every flag. Set
+<code>OHA_BIN</code>, <code>AIPERF_BIN</code>,
 <code>SWITCHYARD_SERVER_BIN</code>, <code>SWITCHYARD_SOAK_BIN</code>, or <code>SWITCHYARD_SOAK_MOCK_BIN</code> when a command is not
 on <code>PATH</code> or not under <code>target/release</code>.</p>
 <p>The script checks all five commands before starting a process. A missing command prints a warning,
@@ -1304,7 +1358,7 @@ build.</p>
 </tr>
 <tr>
 <td>oha</td>
-<td>Sends raw concurrent HTTP requests through the random route and writes a status and latency distribution.</td>
+<td>Sends raw concurrent HTTP requests through every route and writes a status and latency distribution for each algorithm.</td>
 </tr>
 <tr>
 <td>Python route checks</td>
@@ -1312,7 +1366,11 @@ build.</p>
 </tr>
 <tr>
 <td>AIPerf</td>
-<td>Sends streaming Chat Completions through passthrough routing and records LLM, token, and response-time results.</td>
+<td>Sends the same deterministic streaming workload through every route and records LLM, token, and response-time results.</td>
+</tr>
+<tr>
+<td>Combined report</td>
+<td>Joins selected oha and AIPerf metrics by algorithm in Markdown, CSV, and JSON.</td>
 </tr>
 <tr>
 <td><code>switchyard-soak</code></td>
@@ -1322,7 +1380,11 @@ build.</p>
 </table>
 <p><code>scripts/local_soak_test.toml</code> exercises <code>noop</code>, <code>random</code>, <code>passthrough</code>, <code>llm_classifier</code>, and
 <code>stage_router</code>. It uses the accepted maximum retry count (10), a zero-weight random target, and the
-upper classifier and stage thresholds (1.0). The config is validated with
+upper classifier and stage thresholds (1.0). Classifier affinity is disabled so every measured
+request includes the classifier call. VidaiMock's generic classifier reply is intentionally not a
+valid routing verdict, so the local classifier row measures the classifier call and fail-open path.
+Use a real classifier backend or a purpose-built classifier stub to measure successful
+classification. The config is validated with
 <code>switchyard-server --dry-run</code> before either service starts.</p>
 <p>The runner does not add limits for target count or recent-turn history because the server does not
 limit them. Rust tests cover the real limits: 4,096 saved route assignments, 100,000 response-time
@@ -1333,32 +1395,32 @@ missing stage-router request IDs, target errors, and retry count 11, which is on
 test runs until you find the highest expected steady load that remains below
 the backend's rate limit. Use that load for the 48-hour run. An overload test
 that spends most of its time throttled does not measure release stability.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--duration<span class="w"> </span>48h<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span>--server-pid<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SOAK_SERVER_PID</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">  </span>--max-rss-growth-mib<span class="w"> </span><span class="m">512</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--duration<span class="w"> </span>48h<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span>--server-pid<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SOAK_SERVER_PID</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span>--max-rss-growth-mib<span class="w"> </span><span class="m">512</span>
 </span></code></pre></div>
 <p>The runner keeps 16 requests in flight until the test ends. This can generate
 large usage charges against a metered backend. Use a dedicated test deployment,
 estimate the request volume first with a short run, and get approval for any
 paid-provider cost.</p>
 <p>Use a five-minute run to confirm the route and result files:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--duration<span class="w"> </span>5m<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span>--report-interval<span class="w"> </span><span class="m">10</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--duration<span class="w"> </span>5m<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span>--report-interval<span class="w"> </span><span class="m">10</span>
 </span></code></pre></div>
 <p>If the Switchyard endpoint requires a bearer token, pass the environment
 variable name instead of putting the token on the command line:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_SOAK_TOKEN</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--api-key-env<span class="w"> </span>SWITCHYARD_SOAK_TOKEN<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_SOAK_TOKEN</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--api-key-env<span class="w"> </span>SWITCHYARD_SOAK_TOKEN<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID
 </span></code></pre></div>
 <h2 id="pass-criteria">Pass criteria<a class="headerlink" href="#pass-criteria" title="Permanent link">&para;</a></h2>
 <p>The command exits with status 0 only when:</p>
