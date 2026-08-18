@@ -8,7 +8,7 @@ defines contracts; it does not route, translate, or perform network calls.
 
 ```toml
 [dependencies]
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
 serde_json = "1"
 ```
 
