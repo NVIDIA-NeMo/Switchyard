@@ -29,7 +29,9 @@ pub(super) enum Verdict {
 /// Serializes the conversation for the advisor. The JSON body is capped with
 /// a middle drop — the head keeps the task statement, the tail keeps the
 /// recent evidence a completeness review is about — while the terminal turn
-/// is appended uncapped.
+/// is appended uncapped. `cap` is the route's `transcript_max_chars`: a
+/// character budget on the serialized JSON (~4 chars per token, so the 200k
+/// default is ~50k tokens of advisor input).
 pub(super) fn review_transcript(
     messages: &[Message],
     review_tail: Option<&str>,

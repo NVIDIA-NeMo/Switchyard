@@ -373,6 +373,43 @@ async fn redo_feedback_defers_to_the_requested_deliverable() {
 }
 
 #[tokio::test]
+async fn over_cap_consult_flags_truncation_to_the_reviewer() {
+    // When the serialized conversation exceeds `transcript_max_chars`, the
+    // transcript carries the truncation marker AND the reviewer contract
+    // must describe it — the advisor may not treat absent middle evidence
+    // as evidence of absence.
+    let script = Script::new();
+    let gate = gate(AdvisorGateConfig {
+        transcript_max_chars: 256,
+        ..AdvisorGateConfig::default()
+    });
+    let serve = script.serve("APPROVE", |_| reply("done"));
+    let long_task = format!("build X. context: {}", "y".repeat(2_000));
+    test_drive(
+        gate,
+        request(vec![Message::text(Role::User, long_task)]),
+        serve,
+    )
+    .await
+    .expect("routes");
+    let consult = script.call(1);
+    let transcript = consult.llm_request.messages[0]
+        .text_content("\n")
+        .expect("transcript text");
+    assert!(transcript.contains(TRUNCATION_MARKER.trim()));
+    let contract: String = consult.llm_request.instructions[0]
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(contract.contains("truncated in the middle"));
+    assert!(contract.contains(TRUNCATION_MARKER.trim()));
+}
+
+#[tokio::test]
 async fn budget_consumed_once_per_scope() {
     let script = Script::new();
     let gate = gate(AdvisorGateConfig::default());
