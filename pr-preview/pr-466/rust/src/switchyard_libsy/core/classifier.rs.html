@@ -205,59 +205,61 @@
 <a href=#205 id=205 data-nosnippet>205</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request {
 <a href=#206 id=206 data-nosnippet>206</a>            llm_request: text_request(<span class="prelude-val">Some</span>(<span class="string">"strong"</span>.to_string()), <span class="string">"hi"</span>),
 <a href=#207 id=207 data-nosnippet>207</a>            raw_request: <span class="prelude-val">None</span>,
-<a href=#208 id=208 data-nosnippet>208</a>            metadata: <span class="prelude-val">None</span>,
-<a href=#209 id=209 data-nosnippet>209</a>        };
-<a href=#210 id=210 data-nosnippet>210</a>        <span class="comment">// A `None` driver is valid: the classifier scored without offloading a model call.
-<a href=#211 id=211 data-nosnippet>211</a>        </span><span class="kw">let </span>(classification, <span class="kw">_</span>) = RecordingClassifier
-<a href=#212 id=212 data-nosnippet>212</a>            .score(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;mut </span>request, <span class="prelude-val">None</span>)
-<a href=#213 id=213 data-nosnippet>213</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#214 id=214 data-nosnippet>214</a>        <span class="macro">assert_eq!</span>(
-<a href=#215 id=215 data-nosnippet>215</a>            classification.argmax(<span class="bool-val">false</span>)<span class="question-mark">?</span>.map(|s| s.target),
-<a href=#216 id=216 data-nosnippet>216</a>            <span class="prelude-val">Some</span>(ModelId::from(<span class="string">"strong"</span>))
-<a href=#217 id=217 data-nosnippet>217</a>        );
-<a href=#218 id=218 data-nosnippet>218</a>        <span class="macro">assert!</span>(state);
-<a href=#219 id=219 data-nosnippet>219</a>        <span class="prelude-val">Ok</span>(())
-<a href=#220 id=220 data-nosnippet>220</a>    }
-<a href=#221 id=221 data-nosnippet>221</a>
-<a href=#222 id=222 data-nosnippet>222</a>    <span class="doccomment">/// Rewrites the request's model, then scores the rewritten value.
-<a href=#223 id=223 data-nosnippet>223</a>    </span><span class="kw">struct </span>RewritingClassifier;
-<a href=#224 id=224 data-nosnippet>224</a>
-<a href=#225 id=225 data-nosnippet>225</a>    <span class="attr">#[async_trait]
-<a href=#226 id=226 data-nosnippet>226</a>    </span><span class="kw">impl </span>Classifier <span class="kw">for </span>RewritingClassifier {
-<a href=#227 id=227 data-nosnippet>227</a>        <span class="kw">async fn </span>score(
-<a href=#228 id=228 data-nosnippet>228</a>            <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#229 id=229 data-nosnippet>229</a>            _state: <span class="kw-2">&amp;mut </span>(),
-<a href=#230 id=230 data-nosnippet>230</a>            request: <span class="kw-2">&amp;mut </span>Request,
-<a href=#231 id=231 data-nosnippet>231</a>            _driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
-<a href=#232 id=232 data-nosnippet>232</a>        ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
-<a href=#233 id=233 data-nosnippet>233</a>            request.llm_request.model = <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>.to_string());
-<a href=#234 id=234 data-nosnippet>234</a>            <span class="prelude-val">Ok</span>((
-<a href=#235 id=235 data-nosnippet>235</a>                Classification::Scores(<span class="macro">vec!</span>[Score {
-<a href=#236 id=236 data-nosnippet>236</a>                    target: ModelId::from(<span class="string">"rewritten"</span>),
-<a href=#237 id=237 data-nosnippet>237</a>                    confidence: <span class="number">1.0</span>,
-<a href=#238 id=238 data-nosnippet>238</a>                }]),
-<a href=#239 id=239 data-nosnippet>239</a>                <span class="prelude-val">None</span>,
-<a href=#240 id=240 data-nosnippet>240</a>            ))
-<a href=#241 id=241 data-nosnippet>241</a>        }
-<a href=#242 id=242 data-nosnippet>242</a>    }
-<a href=#243 id=243 data-nosnippet>243</a>
-<a href=#244 id=244 data-nosnippet>244</a>    <span class="attr">#[tokio::test]
-<a href=#245 id=245 data-nosnippet>245</a>    </span><span class="kw">async fn </span>classifier_rewrites_the_request_in_place() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#246 id=246 data-nosnippet>246</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = ();
-<a href=#247 id=247 data-nosnippet>247</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request {
-<a href=#248 id=248 data-nosnippet>248</a>            llm_request: text_request(<span class="prelude-val">Some</span>(<span class="string">"auto"</span>.to_string()), <span class="string">"hi"</span>),
-<a href=#249 id=249 data-nosnippet>249</a>            raw_request: <span class="prelude-val">None</span>,
-<a href=#250 id=250 data-nosnippet>250</a>            metadata: <span class="prelude-val">None</span>,
-<a href=#251 id=251 data-nosnippet>251</a>        };
-<a href=#252 id=252 data-nosnippet>252</a>
-<a href=#253 id=253 data-nosnippet>253</a>        RewritingClassifier
-<a href=#254 id=254 data-nosnippet>254</a>            .score(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;mut </span>request, <span class="prelude-val">None</span>)
-<a href=#255 id=255 data-nosnippet>255</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#256 id=256 data-nosnippet>256</a>
-<a href=#257 id=257 data-nosnippet>257</a>        <span class="comment">// The rewrite outlives the call: later classifiers in the cascade score this value,
-<a href=#258 id=258 data-nosnippet>258</a>        // and it is what reaches the model.
-<a href=#259 id=259 data-nosnippet>259</a>        </span><span class="macro">assert_eq!</span>(request.model_id().as_deref(), <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>));
-<a href=#260 id=260 data-nosnippet>260</a>        <span class="prelude-val">Ok</span>(())
-<a href=#261 id=261 data-nosnippet>261</a>    }
-<a href=#262 id=262 data-nosnippet>262</a>}
+<a href=#208 id=208 data-nosnippet>208</a>            ineligible_targets: Vec::new(),
+<a href=#209 id=209 data-nosnippet>209</a>            metadata: <span class="prelude-val">None</span>,
+<a href=#210 id=210 data-nosnippet>210</a>        };
+<a href=#211 id=211 data-nosnippet>211</a>        <span class="comment">// A `None` driver is valid: the classifier scored without offloading a model call.
+<a href=#212 id=212 data-nosnippet>212</a>        </span><span class="kw">let </span>(classification, <span class="kw">_</span>) = RecordingClassifier
+<a href=#213 id=213 data-nosnippet>213</a>            .score(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;mut </span>request, <span class="prelude-val">None</span>)
+<a href=#214 id=214 data-nosnippet>214</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#215 id=215 data-nosnippet>215</a>        <span class="macro">assert_eq!</span>(
+<a href=#216 id=216 data-nosnippet>216</a>            classification.argmax(<span class="bool-val">false</span>)<span class="question-mark">?</span>.map(|s| s.target),
+<a href=#217 id=217 data-nosnippet>217</a>            <span class="prelude-val">Some</span>(ModelId::from(<span class="string">"strong"</span>))
+<a href=#218 id=218 data-nosnippet>218</a>        );
+<a href=#219 id=219 data-nosnippet>219</a>        <span class="macro">assert!</span>(state);
+<a href=#220 id=220 data-nosnippet>220</a>        <span class="prelude-val">Ok</span>(())
+<a href=#221 id=221 data-nosnippet>221</a>    }
+<a href=#222 id=222 data-nosnippet>222</a>
+<a href=#223 id=223 data-nosnippet>223</a>    <span class="doccomment">/// Rewrites the request's model, then scores the rewritten value.
+<a href=#224 id=224 data-nosnippet>224</a>    </span><span class="kw">struct </span>RewritingClassifier;
+<a href=#225 id=225 data-nosnippet>225</a>
+<a href=#226 id=226 data-nosnippet>226</a>    <span class="attr">#[async_trait]
+<a href=#227 id=227 data-nosnippet>227</a>    </span><span class="kw">impl </span>Classifier <span class="kw">for </span>RewritingClassifier {
+<a href=#228 id=228 data-nosnippet>228</a>        <span class="kw">async fn </span>score(
+<a href=#229 id=229 data-nosnippet>229</a>            <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#230 id=230 data-nosnippet>230</a>            _state: <span class="kw-2">&amp;mut </span>(),
+<a href=#231 id=231 data-nosnippet>231</a>            request: <span class="kw-2">&amp;mut </span>Request,
+<a href=#232 id=232 data-nosnippet>232</a>            _driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
+<a href=#233 id=233 data-nosnippet>233</a>        ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
+<a href=#234 id=234 data-nosnippet>234</a>            request.llm_request.model = <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>.to_string());
+<a href=#235 id=235 data-nosnippet>235</a>            <span class="prelude-val">Ok</span>((
+<a href=#236 id=236 data-nosnippet>236</a>                Classification::Scores(<span class="macro">vec!</span>[Score {
+<a href=#237 id=237 data-nosnippet>237</a>                    target: ModelId::from(<span class="string">"rewritten"</span>),
+<a href=#238 id=238 data-nosnippet>238</a>                    confidence: <span class="number">1.0</span>,
+<a href=#239 id=239 data-nosnippet>239</a>                }]),
+<a href=#240 id=240 data-nosnippet>240</a>                <span class="prelude-val">None</span>,
+<a href=#241 id=241 data-nosnippet>241</a>            ))
+<a href=#242 id=242 data-nosnippet>242</a>        }
+<a href=#243 id=243 data-nosnippet>243</a>    }
+<a href=#244 id=244 data-nosnippet>244</a>
+<a href=#245 id=245 data-nosnippet>245</a>    <span class="attr">#[tokio::test]
+<a href=#246 id=246 data-nosnippet>246</a>    </span><span class="kw">async fn </span>classifier_rewrites_the_request_in_place() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#247 id=247 data-nosnippet>247</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = ();
+<a href=#248 id=248 data-nosnippet>248</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request {
+<a href=#249 id=249 data-nosnippet>249</a>            llm_request: text_request(<span class="prelude-val">Some</span>(<span class="string">"auto"</span>.to_string()), <span class="string">"hi"</span>),
+<a href=#250 id=250 data-nosnippet>250</a>            raw_request: <span class="prelude-val">None</span>,
+<a href=#251 id=251 data-nosnippet>251</a>            ineligible_targets: Vec::new(),
+<a href=#252 id=252 data-nosnippet>252</a>            metadata: <span class="prelude-val">None</span>,
+<a href=#253 id=253 data-nosnippet>253</a>        };
+<a href=#254 id=254 data-nosnippet>254</a>
+<a href=#255 id=255 data-nosnippet>255</a>        RewritingClassifier
+<a href=#256 id=256 data-nosnippet>256</a>            .score(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;mut </span>request, <span class="prelude-val">None</span>)
+<a href=#257 id=257 data-nosnippet>257</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#258 id=258 data-nosnippet>258</a>
+<a href=#259 id=259 data-nosnippet>259</a>        <span class="comment">// The rewrite outlives the call: later classifiers in the cascade score this value,
+<a href=#260 id=260 data-nosnippet>260</a>        // and it is what reaches the model.
+<a href=#261 id=261 data-nosnippet>261</a>        </span><span class="macro">assert_eq!</span>(request.model_id().as_deref(), <span class="prelude-val">Some</span>(<span class="string">"rewritten"</span>));
+<a href=#262 id=262 data-nosnippet>262</a>        <span class="prelude-val">Ok</span>(())
+<a href=#263 id=263 data-nosnippet>263</a>    }
+<a href=#264 id=264 data-nosnippet>264</a>}
 </code></pre></div></section></main></body></html>
