@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::algorithm::{self, Algorithm, Driver};
+use crate::core::algorithm::{self, Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
@@ -38,6 +38,56 @@ struct SessionState<S> {
 }
 
 type SessionStates<S> = Mutex<HashMap<String, SessionState<S>>>;
+
+/// Bounds process-local overflow history. Dropping an entry costs one rediscovered
+/// overflow, so the victim choice does not need to be exact.
+const MAX_OVERFLOW_IDENTITIES: usize = 1_024;
+
+/// Targets each conversation has overflowed, so a later turn is not routed to one that
+/// cannot serve it. A conversation only grows, so an overflow does not reverse.
+#[derive(Default)]
+struct SessionOverflows {
+    by_identity: Mutex<HashMap<RoutingIdentity, Vec<ModelId>>>,
+}
+
+impl SessionOverflows {
+    fn get(&self, identity: &Option<RoutingIdentity>) -> Vec<ModelId> {
+        let Some(identity) = identity else {
+            return Vec::new();
+        };
+        self.by_identity
+            .lock()
+            .get(identity)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn record(&self, identity: &Option<RoutingIdentity>, targets: &[ModelId]) {
+        let Some(identity) = identity else { return };
+        if targets.is_empty() {
+            return;
+        }
+        let mut history = self.by_identity.lock();
+        if history.len() >= MAX_OVERFLOW_IDENTITIES
+            && !history.contains_key(identity)
+            && let Some(victim) = history.keys().next().cloned()
+        {
+            history.remove(&victim);
+        }
+        let overflowed = history.entry(identity.clone()).or_default();
+        for target in targets {
+            if !overflowed.contains(target) {
+                overflowed.push(target.clone());
+            }
+        }
+    }
+
+    fn remove_session(&self, session: &str) {
+        self.by_identity
+            .lock()
+            .retain(|identity, _| identity.session() != session);
+    }
+}
 
 /// Delete sessions that have been inactive this long. Catches sessions that did not terminate
 /// cleanly.
@@ -96,6 +146,7 @@ pub struct FallThrough<S = ()> {
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: Vec<ModelId>,
     session_states: Option<Arc<SessionStates<S>>>,
+    overflows: SessionOverflows,
     cleanup_started: Once,
 }
 
@@ -109,6 +160,7 @@ impl FallThrough<()> {
             classifiers: Vec::new(),
             targets,
             session_states: None,
+            overflows: SessionOverflows::default(),
             cleanup_started: Once::new(),
         }
     }
@@ -127,6 +179,7 @@ where
             classifiers: Vec::new(),
             targets,
             session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
+            overflows: SessionOverflows::default(),
             cleanup_started: Once::new(),
         }
     }
@@ -185,6 +238,7 @@ where
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
+        let request_identity = RoutingIdentity::from_request(&request);
         let session_state = self.session_state(&request);
         let (target, served) = match session_state {
             Some(state) => {
@@ -202,14 +256,32 @@ where
         // for twice.
         // Nothing reads it on the way out: streamed or buffered, it reaches the caller
         // untouched.
-        match served {
-            Some(response) => Ok(response),
+        let response = match served {
+            Some(response) => response,
             None => {
                 driver
                     .call_model(request, self.candidates(&target), true)
-                    .await
+                    .await?
             }
+        };
+        self.overflows
+            .record(&request_identity, response.overflowed());
+        Ok(response)
+    }
+
+    /// `target` unless this session already overflowed it, in which case the first
+    /// configured target it has not. Falls back to `target` when every one is spent, so a
+    /// turn small enough to fit again still reaches the upstream.
+    fn eligible(&self, request: &Request, target: &ModelId) -> ModelId {
+        let overflowed = self.overflows.get(&RoutingIdentity::from_request(request));
+        if overflowed.is_empty() || !overflowed.contains(target) {
+            return target.clone();
         }
+        self.targets
+            .iter()
+            .find(|candidate| !overflowed.contains(candidate))
+            .unwrap_or(target)
+            .clone()
     }
 
     /// Drops retained routing state once the host marks a session complete.
@@ -217,6 +289,7 @@ where
         if let Some(states) = &self.session_states {
             states.lock().remove(session);
         }
+        self.overflows.remove_session(session);
     }
 
     /// The selected target first, then every other configured target as a fallback candidate.
@@ -274,9 +347,11 @@ where
             });
         };
 
-        // 3. Resolve the target, log the choice, and publish the decision.
+        // 3. Resolve the target, log the choice, and publish the decision. A target this
+        //    session already overflowed cannot serve it, so the decision names the
+        //    substitute rather than a model that will never be called.
         algorithm::ensure_model_is_target(&self.targets, &score.target)?;
-        let target = score.target.clone();
+        let target = self.eligible(request, &score.target);
         let message = (self.decision_reason)(&self.name, &score);
         let message = with_routing_tier(message, deciding.routing_tier(&target));
         tracing::info!("{message}");
@@ -989,5 +1064,36 @@ mod tests {
         let states = states.lock();
         assert!(states.contains_key("session-1"));
         assert!(!states.contains_key("session-2"));
+    }
+
+    /// A turn whose client reported an overflow must not be routed to that target again,
+    /// and the published decision must name the model that is actually called.
+    #[tokio::test]
+    async fn an_overflowed_target_is_dropped_from_later_turns() -> Result<()> {
+        let router = Arc::new(
+            FallThrough::<()>::new(target_set(&["weak", "strong"]))
+                .with_classifier(Arc::new(DefaultTarget::new("weak"))),
+        );
+        let turn = || Request {
+            llm_request: text_request(None, "hi"),
+            raw_request: None,
+            metadata: Some(Metadata {
+                session_id: Some("s1".to_string()),
+                ..Default::default()
+            }),
+        };
+
+        // The client serves strong and reports that weak overflowed on the way.
+        let overflowing = |target: ModelId, _request: Request| async move {
+            let mut response = reply(target.as_str());
+            response.push_overflowed(&ModelId::from("weak"));
+            Ok(response)
+        };
+        let (first, _) = test_drive(router.clone(), turn(), overflowing).await?;
+        assert_eq!(first[0].selected_model_id().as_str(), "weak");
+
+        let (second, _) = test_drive(router, turn(), echo()).await?;
+        assert_eq!(second[0].selected_model_id().as_str(), "strong");
+        Ok(())
     }
 }

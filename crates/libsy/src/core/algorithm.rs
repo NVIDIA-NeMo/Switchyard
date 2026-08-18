@@ -313,6 +313,13 @@ pub(crate) enum RoutingIdentity {
 }
 
 impl RoutingIdentity {
+    /// The session this identity belongs to, whether it is a root or a child.
+    pub(crate) fn session(&self) -> &str {
+        match self {
+            Self::Session(session) | Self::Subagent { session, .. } => session,
+        }
+    }
+
     /// Builds a root or child identity from non-empty request metadata.
     ///
     /// A child request missing either ID returns `None`, so it keeps no routing history

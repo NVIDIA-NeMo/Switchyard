@@ -62,6 +62,19 @@ impl Response {
     pub fn set_served_model(&mut self, model: &ModelId) {
         self.metadata.get_or_insert_default().served_model = Some(model.clone());
     }
+
+    /// Targets that rejected this request for exceeding their context window.
+    pub fn overflowed(&self) -> &[ModelId] {
+        self.metadata.as_ref().map_or(&[], |m| &m.overflowed)
+    }
+
+    /// Records a target that rejected this request for exceeding its context window.
+    pub fn push_overflowed(&mut self, model: &ModelId) {
+        self.metadata
+            .get_or_insert_default()
+            .overflowed
+            .push(model.clone());
+    }
 }
 
 #[cfg(test)]

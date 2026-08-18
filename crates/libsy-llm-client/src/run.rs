@@ -25,7 +25,6 @@ use switchyard_protocol::{
 };
 
 use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
-use crate::overflow::{self, SessionOverflows};
 use crate::{metrics, observability};
 
 /// Run one request to completion, serving every offloaded model call with `client`.
@@ -126,19 +125,9 @@ async fn call_first_available(
     observer: &Option<RunObserver>,
     routed_calls: &Arc<Mutex<RoutedCallWindows>>,
 ) -> Result<Response> {
-    // A conversation only grows, so a target that overflowed once will overflow again.
-    let identity = overflow::identity(&call.request);
-    let models = clients
-        .overflows
-        .eligible(identity.as_deref(), &call.models);
-    if models.len() < call.models.len() {
-        tracing::debug!(
-            skipped = call.models.len() - models.len(),
-            selected = %models[0],
-            "skipping candidates that overflowed earlier in this session"
-        );
-    }
-    for (index, target) in models.iter().enumerate() {
+    // Reported back to the algorithm so it can drop these targets from later turns.
+    let mut overflowed = Vec::new();
+    for (index, target) in call.models.iter().enumerate() {
         let request = request_for(&call.request, target);
         match call_one(
             clients,
@@ -148,23 +137,28 @@ async fn call_first_available(
             observer,
             routed_calls,
             index,
-            models.len(),
+            call.models.len(),
         )
         .await
         {
-            Ok(response) => return Ok(response),
+            Ok(mut response) => {
+                for target in &overflowed {
+                    response.push_overflowed(target);
+                }
+                return Ok(response);
+            }
             Err(error) => {
                 let reason = fallback_reason(&error);
                 if reason == Some(RoutingFallbackReason::ContextWindow) {
-                    clients.overflows.record(identity.as_deref(), target);
+                    overflowed.push(target.clone());
                 }
-                if index + 1 == models.len() {
+                if index + 1 == call.models.len() {
                     return Err(error);
                 }
                 match reason {
                     Some(reason) => tracing::info!(
                         from = %target,
-                        to = %models[index + 1],
+                        to = %call.models[index + 1],
                         reason = reason.as_str(),
                         "model call failed; trying next candidate"
                     ),
@@ -316,8 +310,6 @@ fn request_for(request: &Request, target: &ModelId) -> Request {
 #[derive(Clone)]
 pub struct ClientRouter {
     routing: Arc<Routing>,
-    /// Shared with every clone so the history outlives the single request a [`run`] serves.
-    overflows: Arc<SessionOverflows>,
 }
 
 enum Routing {
@@ -332,7 +324,6 @@ impl ClientRouter {
     pub fn new(by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>) -> Self {
         Self {
             routing: Arc::new(Routing::ByModel(by_model)),
-            overflows: Arc::default(),
         }
     }
 
@@ -344,7 +335,6 @@ impl ClientRouter {
     pub fn single(client: Arc<dyn RoutedLlmClient>) -> Self {
         Self {
             routing: Arc::new(Routing::Single(client)),
-            overflows: Arc::default(),
         }
     }
 
