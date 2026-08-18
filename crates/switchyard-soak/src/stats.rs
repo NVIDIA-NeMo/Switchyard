@@ -60,20 +60,6 @@ pub fn latency_stats(values: &mut [f64]) -> LatencyStats {
     }
 }
 
-/// Return four stable prompts with reusable prefixes of *prompt_bytes* filler each.
-pub fn build_prompt_pool(prompt_bytes: usize) -> Vec<String> {
-    (0..4)
-        .map(|index| {
-            let prefix = format!("Switchyard soak prefix {index}. ");
-            let instruction = "Reply with exactly OK. ";
-            let unit = "load test context ";
-            let mut filler = unit.repeat(prompt_bytes / unit.len() + 1);
-            filler.truncate(prompt_bytes);
-            format!("{prefix}{filler}{instruction}")
-        })
-        .collect()
-}
-
 /// ISO-8601 UTC timestamp at second precision, e.g. `2026-07-30T18:04:00Z`.
 pub fn now_utc_string() -> String {
     humantime::format_rfc3339_seconds(SystemTime::now()).to_string()
@@ -103,6 +89,8 @@ pub struct RunStats {
     pub total_failures: u64,
     pub endpoint_successes: BTreeMap<String, u64>,
     pub endpoint_failures: BTreeMap<String, u64>,
+    pub scenario_successes: BTreeMap<String, u64>,
+    pub scenario_failures: BTreeMap<String, u64>,
     pub error_kinds: BTreeMap<String, u64>,
     latency_reservoir: Vec<f64>,
     latency_count: u64,
@@ -129,6 +117,8 @@ impl RunStats {
             total_failures: 0,
             endpoint_successes: BTreeMap::new(),
             endpoint_failures: BTreeMap::new(),
+            scenario_successes: BTreeMap::new(),
+            scenario_failures: BTreeMap::new(),
             error_kinds: BTreeMap::new(),
             latency_reservoir: Vec::new(),
             latency_count: 0,
@@ -148,7 +138,13 @@ impl RunStats {
     }
 
     /// Record one completed inference request; `error_kind` is `None` on success.
-    pub fn record(&mut self, endpoint: &str, latency_ms: f64, error_kind: Option<&str>) {
+    pub fn record(
+        &mut self,
+        endpoint: &str,
+        scenario: &str,
+        latency_ms: f64,
+        error_kind: Option<&str>,
+    ) {
         match error_kind {
             None => {
                 self.interval.successes += 1;
@@ -157,6 +153,10 @@ impl RunStats {
                     .endpoint_successes
                     .entry(endpoint.to_string())
                     .or_default() += 1;
+                *self
+                    .scenario_successes
+                    .entry(scenario.to_string())
+                    .or_default() += 1;
             }
             Some(kind) => {
                 self.interval.failures += 1;
@@ -164,6 +164,10 @@ impl RunStats {
                 *self
                     .endpoint_failures
                     .entry(endpoint.to_string())
+                    .or_default() += 1;
+                *self
+                    .scenario_failures
+                    .entry(scenario.to_string())
                     .or_default() += 1;
                 *self.error_kinds.entry(kind.to_string()).or_default() += 1;
             }
@@ -200,6 +204,8 @@ pub struct Summary {
     pub requests_per_second: f64,
     pub endpoint_successes: BTreeMap<String, u64>,
     pub endpoint_failures: BTreeMap<String, u64>,
+    pub scenario_successes: BTreeMap<String, u64>,
+    pub scenario_failures: BTreeMap<String, u64>,
     pub error_kinds: BTreeMap<String, u64>,
     pub latency_p50_ms: Option<f64>,
     pub latency_p95_ms: Option<f64>,
@@ -321,6 +327,8 @@ pub fn build_summary(
         requests_per_second,
         endpoint_successes: stats.endpoint_successes.clone(),
         endpoint_failures: stats.endpoint_failures.clone(),
+        scenario_successes: stats.scenario_successes.clone(),
+        scenario_failures: stats.scenario_failures.clone(),
         error_kinds: stats.error_kinds.clone(),
         latency_p50_ms: latency.p50_ms,
         latency_p95_ms: latency.p95_ms,
@@ -375,8 +383,8 @@ mod tests {
     #[test]
     fn record_tracks_interval_and_cumulative_results() {
         let mut stats = RunStats::new(1);
-        stats.record("chat", 10.0, None);
-        stats.record("messages", 20.0, Some("timeout"));
+        stats.record("chat", "short-interactive", 10.0, None);
+        stats.record("messages", "long-context", 20.0, Some("timeout"));
 
         let interval = stats.take_interval();
         assert_eq!(interval.successes, 1);
@@ -390,7 +398,7 @@ mod tests {
     fn latency_samples_stay_bounded_after_the_reservoir_fills() {
         let mut stats = RunStats::new(1);
         for sample in 0..=RESERVOIR_SIZE {
-            stats.record("chat", sample as f64, None);
+            stats.record("chat", "short-interactive", sample as f64, None);
         }
 
         assert_eq!(stats.latency_reservoir.len(), RESERVOIR_SIZE);

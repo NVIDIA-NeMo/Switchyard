@@ -5,17 +5,40 @@ server long enough to expose failures that short tests miss. Run it for 48
 hours before code freeze when a release changes libsy, the Rust server,
 routing, streaming, translation, or server lifecycle behavior.
 
-The test sends closed-loop traffic through:
+The standard test sends closed-loop traffic through:
 
 - OpenAI Chat Completions (`/v1/chat/completions`)
 - Anthropic Messages (`/v1/messages`)
 - OpenAI Responses (`/v1/responses`)
 - streaming and non-streaming responses
-- four repeated prompt prefixes
+- short and long inputs, long outputs, shared prefixes, and mixed request sizes
+- growing conversations, large tool catalogs, tool-call bursts, and stage transitions
+- deterministic easy/hard classifier mixes
 
 The runner also checks `/health` and `/metrics` every minute. Every five
 minutes, it sends an invalid Chat Completions request, expects HTTP 400, and
 then confirms the server is still live.
+
+The scenario catalog covers these distinct pressure angles:
+
+| Scenario | Pressure angle | What to review |
+|---|---|---|
+| `short-interactive` | Short prompts under fixed load, a concurrency knee, or a 10x request-rate burst | HTTP ceiling, TTFT, routing overhead, and the saturation point |
+| `long-context` | 8K, 32K, and near-window inputs | TTFT, memory, and context-sensitive route failures |
+| `decode-heavy` | 512-token and 1,024-token output limits | ITL, output tokens/second, and stream stability |
+| `prefix-reuse` | Matched shared and unique long prefixes | Cache-sensitive TTFT and token accounting |
+| `mixed-traffic` | A 70/20/10 short, medium, and long mix | p99 latency and head-of-line effects |
+| `growing-conversation` | Eight cumulative conversation turns in one session | Affinity, history cost, and per-turn latency growth |
+| `large-tool-catalog` | 16-tool and 64-tool JSON-schema catalogs | Serialization/routing overhead and intact tool forwarding |
+| `tool-call-burst` | Eight linked assistant call/tool-result turns | Session continuity and burst handling |
+| `stage-transitions` | One growing history across exploration, critical failure, and productive work | Stage-router tier changes and scorer output |
+| `classifier-mix` | Deterministic 80/20 then 50/50 easy/hard requests | Target share, classifier calls/errors, and classifier latency |
+| `context-overflow` | One target rejects a near-window request | Fallback to another eligible target |
+| `failure-pressure` | Bounded 429, 500, malformed verdict, and truncated stream | Retry recovery, explicit terminal errors, and connection health |
+| `client-cancellation` | A client timeout during a delayed response | Teardown and recovery of later traffic |
+
+`standard` includes the core and agentic rows. Run `resilience` separately because expected
+failures should not be compared as throughput samples.
 
 ## Prepare the server
 
@@ -66,30 +89,56 @@ python3.12 scripts/benchmark_routing_algorithms.py \
   --model stage_router=switchyard/stage \
   --concurrency 100 \
   --request-count 1000 \
+  --scenario-set standard \
+  --load-profile fixed \
+  --profile-runs 3 \
   --backend-label "release model deployment"
 ```
 
-oha sends non-streaming fixed-body requests and reports the raw HTTP request rate and latency
-ceiling. AIPerf sends streaming Chat Completions and reports request latency, time to first token
-(TTFT), inter-token latency (ITL), request throughput, and output-token throughput. The command
-runs them one after the other because simultaneous runs would compete for the same server capacity
-and distort both results.
+The Rust crate exports one AIPerf `inputs-json` file per scenario. oha reuses the first exported
+`short-interactive` payload as a non-streaming fixed body and reports the raw HTTP request rate and
+latency ceiling. AIPerf replays every selected streaming session and reports request latency, time
+to first token (TTFT), inter-token latency (ITL), request throughput, output-token throughput, and
+multi-run confidence intervals. The command saves `/v1/stats` before and after each AIPerf run so
+the report also records selected-target calls and shares, classifier calls/errors and latency, and
+mean routing overhead. It runs
+jobs sequentially because simultaneous tools would compete for the same server capacity.
+
+Use the load schedules after the fixed scenario comparison establishes a baseline:
+
+```bash
+python3.12 scripts/benchmark_routing_algorithms.py \
+  --base-url http://127.0.0.1:4000 \
+  --model random=switchyard/random \
+  --model classifier=switchyard/classifier \
+  --scenario short-interactive \
+  --load-profile concurrency-knee \
+  --load-profile traffic-burst \
+  --concurrency 128 \
+  --request-rate 20
+```
+
+The concurrency knee uses bounded steps up to `--concurrency`. The traffic burst holds the base
+request rate, raises it to 10 times that rate for five seconds, then returns to the base. Pass
+`--load-profile all` to run fixed, knee, and burst schedules. These schedules apply to the short
+baseline; they are not separate request scenarios.
 
 To isolate routing overhead, configure every route to use the same target deployment and keep the
-prompt, input length, output length, concurrency, and request count fixed. Set `--tokenizer` to the
-real model tokenizer when exact token counts matter. AIPerf uses a deterministic workload seed so
-each route receives the same synthetic inputs.
+scenario manifest, concurrency, request count, and profile-run count fixed. Set `--tokenizer` to
+the real model tokenizer when exact token counts matter. AIPerf uses deterministic sessions and a
+fixed seed so each route receives the same requests.
 
-This comparison command does not start VidaiMock or Switchyard. Point it at a running Switchyard
-server backed by real models to measure end-to-end TTFT and token throughput. Real-model runs cost
-tokens and include provider queuing and model variance, so use a dedicated deployment and repeat the
-run before treating a small difference as an algorithm effect.
+This comparison command does not start a backend or Switchyard. Point it at a running Switchyard
+server backed by real models to measure end-to-end TTFT and token throughput with real tokenization
+and generated tokens. Real-model runs cost tokens and include provider queuing and model variance,
+so use a dedicated deployment and repeat the run before treating a small difference as an
+algorithm effect. Use the local scenario backend first for deterministic routing correctness and
+overhead, then rerun the same manifest against real models for capacity claims.
 
 ## Check the local server and load tools
 
-The local test embeds [VidaiMock](https://github.com/vidaiUK/VidaiMock) as a Rust library, so it does
-not need a separate `vidaimock` command. Build the server, soak tester, and mock helper from the
-commit under test:
+The local test uses a request-aware Axum backend from the soak crate. Build the server, soak tester,
+and scenario backend from the commit under test:
 
 ```bash
 cargo build --release -p switchyard-server -p switchyard-soak \
@@ -120,29 +169,48 @@ measured requests each load tool sends to each algorithm. `--help` explains ever
 on `PATH` or not under `target/release`.
 
 The script checks all five commands before starting a process. A missing command prints a warning,
-the build or install command, and the matching environment variable. Cargo compiles the embedded
-VidaiMock library, but it does not install the unrelated oha or AIPerf programs during a normal
-build.
+the build or install command, and the matching environment variable. Cargo builds the scenario
+backend, but it does not install oha or AIPerf during a normal build.
 
 The script gives each tool one job:
 
 | Tool | Job in the local test |
 |---|---|
-| Embedded VidaiMock | Supplies local OpenAI-compatible model responses with configurable latency and no provider cost. |
-| oha | Sends raw concurrent HTTP requests through every route and writes a status and latency distribution for each algorithm. |
-| Python route checks | Sends one Chat Completions request through each route. The stage request includes a critical tool failure so the signal scorer selects the capable target. |
-| AIPerf | Sends the same deterministic streaming workload through every route and records LLM, token, and response-time results. |
-| Combined report | Joins selected oha and AIPerf metrics by algorithm in Markdown, CSV, and JSON. |
-| `switchyard-soak` | Runs passthrough routing through Chat Completions, Messages, and Responses, with streaming on and off, while checking server health, metrics, process use, and required results. |
+| Scenario backend | Returns local OpenAI-compatible responses, valid easy/hard classifier verdicts, and bounded failures with no provider cost. |
+| oha | Measures the non-streaming `short-interactive` HTTP baseline through every route. |
+| Python route checks | Sends one ordinary Chat Completions request through each configured route before load starts. |
+| AIPerf | Replays Rust-exported streaming sessions through every route and records LLM, token, response-time, and confidence results. |
+| Combined report | Joins scenario, load, oha, AIPerf, and routing-counter metrics in Markdown, CSV, and JSON. It keeps resilience rows separate from throughput rows. |
+| `switchyard-soak` | Runs the standard scenario set while checking public API variants, server health, metrics, process use, and required results. |
 
 `scripts/local_soak_test.toml` exercises `noop`, `random`, `passthrough`, `llm_classifier`, and
 `stage_router`. It uses the accepted maximum retry count (10), a zero-weight random target, and the
 upper classifier and stage thresholds (1.0). Classifier affinity is disabled so every measured
-request includes the classifier call. VidaiMock's generic classifier reply is intentionally not a
-valid routing verdict, so the local classifier row measures the classifier call and fail-open path.
-Use a real classifier backend or a purpose-built classifier stub to measure successful
-classification. The config is validated with
+request includes the classifier call. The scenario backend returns `p_solve=1.0` for easy markers
+and `p_solve=0.1` for hard markers; with the configured threshold, those requests select the weak
+and strong targets respectively. The config is validated with
 `switchyard-server --dry-run` before either service starts.
+
+Run resilience cases separately so expected transport failures do not contaminate throughput
+comparisons:
+
+```bash
+python3.12 scripts/benchmark_routing_algorithms.py \
+  --base-url http://127.0.0.1:4000 \
+  --model classifier=switchyard/classifier \
+  --scenario-set resilience \
+  --load-profile fixed \
+  --profile-runs 1
+```
+
+`context-overflow` checks target fallback, `failure-pressure` injects bounded 429, 500, malformed
+classifier, and truncated-stream cases, and `client-cancellation` uses a one-second client timeout
+against a delayed response. Their expected error-rate ranges appear in the report's Resilience
+section, and the command fails after writing the report when any row misses its range. The local
+runner calls the scenario backend's `/reset` endpoint before each AIPerf cell so every algorithm
+receives the same transient-failure sequence. When you run the comparison command directly against
+that backend, pass `--scenario-backend-reset-url http://127.0.0.1:8100/reset` to preserve the same
+comparison.
 
 The runner does not add limits for target count or recent-turn history because the server does not
 limit them. Rust tests cover the real limits: 4,096 saved route assignments, 100,000 response-time

@@ -265,11 +265,18 @@ pub async fn send_request(
     client: &Client,
     base_url: &str,
     endpoint: Endpoint,
+    session_id: &str,
     body: &Value,
 ) -> Result<(), RequestError> {
     let url = format!("{base_url}{}", endpoint.path());
     let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    let response = match client.post(&url).json(body).send().await {
+    let response = match client
+        .post(&url)
+        .header("x-switchyard-session-id", session_id)
+        .json(body)
+        .send()
+        .await
+    {
         Ok(response) => response,
         Err(error) => return Err(RequestError::transport(&error)),
     };

@@ -5,6 +5,7 @@
 
 mod client;
 mod report;
+mod scenarios;
 mod stats;
 
 use std::fs;
@@ -12,7 +13,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -22,18 +23,17 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde_json::json;
 use tokio::sync::Notify;
 
-use crate::client::{Endpoint, preflight, request_body, send_request};
+use crate::client::{Endpoint, preflight, send_request};
 use crate::report::{ResultsWriter, invalid_request_canary, reporter};
-use crate::stats::{
-    RunStats, build_prompt_pool, build_summary, now_utc_string, round3, utc_dir_stamp,
-};
+use crate::scenarios::{Scenario, ScenarioOptions, ScenarioSet};
+use crate::stats::{RunStats, build_summary, now_utc_string, round3, utc_dir_stamp};
 
 /// Command-line arguments for the soak test.
 #[derive(Parser)]
 #[command(
     name = "switchyard-soak",
     about = "Run a sustained, closed-loop load test against a live Switchyard server",
-    after_long_help = "Examples:\n  switchyard-soak --model switchyard/general --duration 5m --concurrency 4\n  switchyard-soak --model switchyard/general --duration 48h --server-pid 1234 --max-rss-growth-mib 512\n\nThis command does not require VidaiMock, oha, or AIPerf. The optional scripts/run_local_soak_test.py command uses an embedded VidaiMock helper and warns before it starts when oha or AIPerf is missing.",
+    after_long_help = "Examples:\n  switchyard-soak --model switchyard/general --duration 5m --concurrency 4\n  switchyard-soak --model switchyard/general --scenario tool-call-burst --duration 5m\n  switchyard-soak --model switchyard/general --export-scenarios scenarios\n\nThis command does not require oha or AIPerf. scripts/benchmark_routing_algorithms.py uses the exported scenario files with both tools.",
     version
 )]
 pub struct Args {
@@ -53,13 +53,29 @@ pub struct Args {
     #[arg(long, default_value_t = 16)]
     concurrency: usize,
 
-    /// Output-token limit sent with every inference request.
+    /// Default output-token limit; decode-heavy uses bounded 512 and 1,024 limits.
     #[arg(long, default_value_t = 32)]
     max_output_tokens: u32,
 
     /// Bytes of repeated prefix added to each prompt to exercise request memory and caching.
     #[arg(long, default_value_t = 1024)]
     prompt_bytes: usize,
+
+    /// Named scenario collection; explicit --scenario values take precedence.
+    #[arg(long, value_enum, default_value_t = ScenarioSet::Standard)]
+    scenario_set: ScenarioSet,
+
+    /// Exact scenario id to run; repeat to select more than one scenario.
+    #[arg(long, action = clap::ArgAction::Append)]
+    scenario: Vec<String>,
+
+    /// Context-window size used to bound generated long-context scenarios.
+    #[arg(long, default_value_t = 32_768)]
+    context_window_tokens: usize,
+
+    /// Export selected AIPerf input files and exit without contacting a server.
+    #[arg(long)]
+    export_scenarios: Option<PathBuf>,
 
     /// Seconds allowed to connect or wait between response bytes; an active stream may run longer.
     #[arg(long, default_value_t = 120.0)]
@@ -105,6 +121,13 @@ impl Args {
                 "--max-output-tokens and --prompt-bytes must be greater than zero".to_string(),
             );
         }
+        ScenarioOptions {
+            model: &self.model,
+            prompt_bytes: self.prompt_bytes,
+            max_output_tokens: self.max_output_tokens,
+            context_window_tokens: self.context_window_tokens,
+        }
+        .validate()?;
         if !self.request_timeout.is_finite()
             || !self.report_interval.is_finite()
             || self.request_timeout <= 0.0
@@ -144,8 +167,7 @@ struct RunContext {
 
 struct Workload {
     model: String,
-    prompts: Vec<String>,
-    max_output_tokens: u32,
+    scenarios: Vec<Scenario>,
 }
 
 /// A one-shot stop signal that many tasks can wait on and any task can raise.
@@ -194,24 +216,26 @@ async fn worker(
     context: RunContext,
     workload: Arc<Workload>,
     worker_id: usize,
-    request_numbers: Arc<AtomicU64>,
 ) -> Result<(), String> {
+    let mut request_number = 0;
     while !context.stop.is_set() {
-        let request_number = request_numbers.fetch_add(1, Ordering::Relaxed) as usize;
-        let endpoint = Endpoint::ALL[request_number % Endpoint::ALL.len()];
-        let stream = (request_number / Endpoint::ALL.len()).is_multiple_of(2);
-        let body = request_body(
-            endpoint,
-            &workload.model,
-            &workload.prompts[request_number % workload.prompts.len()],
-            workload.max_output_tokens,
-            stream,
-        );
+        let scenario = &workload.scenarios[request_number % workload.scenarios.len()];
+        let stream = (request_number / workload.scenarios.len()).is_multiple_of(2);
+        let request = scenario.request(request_number / workload.scenarios.len(), stream);
+        let session_id = format!("{}-worker-{worker_id}", request.session_id);
         let started = Instant::now();
-        let result = send_request(&context.client, &context.base_url, endpoint, &body).await;
+        let result = send_request(
+            &context.client,
+            &context.base_url,
+            request.endpoint,
+            &session_id,
+            request.body,
+        )
+        .await;
         let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
         context.stats.lock().record(
-            endpoint.as_str(),
+            request.endpoint.as_str(),
+            scenario.id,
             latency_ms,
             result.as_ref().err().map(|error| error.kind.as_str()),
         );
@@ -222,7 +246,8 @@ async fn worker(
                 .write_error(&json!({
                     "timestamp_utc": now_utc_string(),
                     "worker": worker_id,
-                    "endpoint": endpoint.as_str(),
+                    "scenario": scenario.id,
+                    "endpoint": request.endpoint.as_str(),
                     "stream": stream,
                     "latency_ms": round3(latency_ms),
                     "error": error.kind,
@@ -230,6 +255,7 @@ async fn worker(
                 }))
                 .map_err(|error| error.to_string())?;
         }
+        request_number = request_number.wrapping_add(1);
     }
     Ok(())
 }
@@ -306,7 +332,12 @@ fn spawn_signal_listener(stop: Arc<Stop>) -> tokio::task::JoinHandle<()> {
 }
 
 /// Record every non-secret input with the normalized duration and fixed request variants.
-fn write_config(results_dir: &Path, args: &Args, model: &str) -> Result<(), String> {
+fn write_config(
+    results_dir: &Path,
+    args: &Args,
+    model: &str,
+    scenarios: &[Scenario],
+) -> Result<(), String> {
     let config = json!({
         "base_url": args.base_url,
         "model": model,
@@ -316,6 +347,8 @@ fn write_config(results_dir: &Path, args: &Args, model: &str) -> Result<(), Stri
         "streaming": [true, false],
         "max_output_tokens": args.max_output_tokens,
         "prompt_bytes": args.prompt_bytes,
+        "context_window_tokens": args.context_window_tokens,
+        "scenarios": scenarios.iter().map(|scenario| scenario.id).collect::<Vec<_>>(),
         "request_timeout": args.request_timeout,
         "report_interval": args.report_interval,
         "invalid_canary_interval": args.invalid_canary_interval,
@@ -332,6 +365,22 @@ fn write_config(results_dir: &Path, args: &Args, model: &str) -> Result<(), Stri
 /// Run the configured soak test and return a process exit code (0 pass, 1 fail).
 pub async fn run(args: Args) -> Result<i32, String> {
     args.validate()?;
+
+    let scenarios = scenarios::select(
+        ScenarioOptions {
+            model: &args.model,
+            prompt_bytes: args.prompt_bytes,
+            max_output_tokens: args.max_output_tokens,
+            context_window_tokens: args.context_window_tokens,
+        },
+        args.scenario_set,
+        &args.scenario,
+    )?;
+    if let Some(output_dir) = &args.export_scenarios {
+        let manifest = scenarios::export(&scenarios, &args.model, output_dir)?;
+        println!("Exported scenario manifest: {}", manifest.display());
+        return Ok(0);
+    }
 
     let token = match &args.api_key_env {
         Some(var) => {
@@ -370,16 +419,16 @@ pub async fn run(args: Args) -> Result<i32, String> {
     let writer = Arc::new(Mutex::new(
         ResultsWriter::new(&results_dir).map_err(|error| error.to_string())?,
     ));
-    write_config(&results_dir, &args, &args.model)?;
+    write_config(&results_dir, &args, &args.model, &scenarios)?;
 
     println!(
-        "Soak started: model={} duration={}s concurrency={} endpoints={} results={}",
+        "Soak started: model={} duration={}s concurrency={} scenarios={} results={}",
         args.model,
         args.duration,
         args.concurrency,
-        Endpoint::ALL
+        scenarios
             .iter()
-            .map(|endpoint| endpoint.as_str())
+            .map(|scenario| scenario.id)
             .collect::<Vec<_>>()
             .join(","),
         results_dir.display(),
@@ -389,7 +438,6 @@ pub async fn run(args: Args) -> Result<i32, String> {
     let stats = Arc::new(Mutex::new(RunStats::new(2026)));
     let stop = Arc::new(Stop::new());
     let workers_done = Arc::new(Stop::new());
-    let request_numbers = Arc::new(AtomicU64::new(0));
     let context = RunContext {
         client,
         base_url,
@@ -413,19 +461,13 @@ pub async fn run(args: Args) -> Result<i32, String> {
 
     let workload = Arc::new(Workload {
         model: args.model.clone(),
-        prompts: build_prompt_pool(args.prompt_bytes),
-        max_output_tokens: args.max_output_tokens,
+        scenarios,
     });
     let mut worker_handles = Vec::new();
     for worker_id in 0..args.concurrency {
         let handle = tokio::spawn(guard_stop(
             stop.clone(),
-            worker(
-                context.clone(),
-                workload.clone(),
-                worker_id,
-                request_numbers.clone(),
-            ),
+            worker(context.clone(), workload.clone(), worker_id),
         ));
         worker_handles.push((format!("worker-{worker_id}"), handle));
     }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Run every Switchyard route with VidaiMock, load tools, and the soak test."""
+"""Run every Switchyard route with the local scenario backend and load tools."""
 
 import argparse
 import json
@@ -67,8 +67,8 @@ def parser() -> argparse.ArgumentParser:
     """Build the plain-English command-line interface."""
     command = argparse.ArgumentParser(
         description=(
-            "Start VidaiMock and a local Switchyard server, send one request through every route, "
-            "then run oha, AIPerf, and switchyard-soak."
+            "Start the request-aware scenario backend and a local Switchyard server, send one "
+            "request through every route, then run oha, AIPerf, and switchyard-soak."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -93,7 +93,7 @@ def parser() -> argparse.ArgumentParser:
         "--mock-latency-ms",
         type=nonnegative_int,
         default=40,
-        help="response latency VidaiMock adds to each backend call",
+        help="response latency the local scenario backend adds to ordinary calls",
     )
     command.add_argument(
         "--server-port",
@@ -162,31 +162,12 @@ def wait_for_health(child: Child, url: str, expected_status: str | None = None) 
 
 def check_routes(base_url: str, output_path: Path) -> None:
     """Send one HTTP request through every configured route."""
-    ordinary = [{"role": "user", "content": "Reply with exactly OK."}]
-    stage_edge = [
-        {"role": "user", "content": "Fix the build."},
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "Bash", "arguments": '{"command":"cargo test"}'},
-                }
-            ],
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "call_1",
-            "content": "fatal runtime error: out of memory",
-        },
-    ]
     records = []
-    for algorithm, route in ROUTES:
+    for _algorithm, route in ROUTES:
         body = json.dumps(
             {
                 "model": route,
-                "messages": stage_edge if algorithm == "stage_router" else ordinary,
+                "messages": [{"role": "user", "content": "Reply with exactly OK."}],
                 "max_tokens": 8,
                 "stream": False,
             }
@@ -244,7 +225,7 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
                 rust_build,
             ),
             RequiredBinary(
-                "embedded VidaiMock helper",
+                "scenario backend",
                 "SWITCHYARD_SOAK_MOCK_BIN",
                 os.environ.get(
                     "SWITCHYARD_SOAK_MOCK_BIN",
@@ -268,7 +249,7 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
     )
     server_bin = binaries["switchyard-server"]
     soak_bin = binaries["switchyard-soak"]
-    mock_bin = binaries["embedded VidaiMock helper"]
+    mock_bin = binaries["scenario backend"]
     oha_bin = binaries["oha"]
     aiperf_bin = binaries["AIPerf"]
 
@@ -286,7 +267,7 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
     children: list[Child] = []
     try:
         mock = start_child(
-            "embedded VidaiMock",
+            "scenario backend",
             [
                 mock_bin,
                 "--port",
@@ -294,7 +275,7 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
                 "--latency-ms",
                 str(args.mock_latency_ms),
             ],
-            output_dir / "vidaimock.log",
+            output_dir / "scenario-backend.log",
         )
         children.append(mock)
         wait_for_health(mock, f"http://127.0.0.1:{MOCK_PORT}/health")
@@ -315,10 +296,15 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
                 models=ROUTES,
                 concurrency=args.concurrency,
                 request_count=args.request_count,
-                backend_label=f"VidaiMock with {args.mock_latency_ms} ms response latency",
+                backend_label=(
+                    f"request-aware local backend with {args.mock_latency_ms} ms response latency"
+                ),
                 output_dir=output_dir / "routing-benchmark",
                 oha_bin=oha_bin,
                 aiperf_bin=aiperf_bin,
+                soak_bin=soak_bin,
+                profile_runs=1,
+                scenario_backend_reset_url=f"http://127.0.0.1:{MOCK_PORT}/reset",
             )
         )
 

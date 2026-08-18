@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{Json, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use clap::Parser;
@@ -66,7 +66,11 @@ fn switchyard(is_chat_broken: bool) -> (Router, Arc<Mutex<HashSet<String>>>) {
     async fn models() -> Response {
         Json(json!({"data": [{"id": "soak-route"}]})).into_response()
     }
-    async fn chat(State(state): State<MockState>, Json(body): Json<Value>) -> Response {
+    async fn chat(
+        State(state): State<MockState>,
+        headers: HeaderMap,
+        Json(body): Json<Value>,
+    ) -> Response {
         let invalid_messages = body.get("messages").is_some_and(|messages| {
             messages
                 .as_array()
@@ -79,6 +83,9 @@ fn switchyard(is_chat_broken: bool) -> (Router, Arc<Mutex<HashSet<String>>>) {
                 (StatusCode::BAD_REQUEST, "messages must not be empty").into_response()
             };
         }
+        if !headers.contains_key("x-switchyard-session-id") {
+            return (StatusCode::BAD_REQUEST, "missing session id").into_response();
+        }
         state.record("chat", &body);
         if state.is_chat_broken {
             return if body.get("stream") == Some(&Value::Bool(true)) {
@@ -89,11 +96,25 @@ fn switchyard(is_chat_broken: bool) -> (Router, Arc<Mutex<HashSet<String>>>) {
         }
         response(&body, "choices")
     }
-    async fn messages(State(state): State<MockState>, Json(body): Json<Value>) -> Response {
+    async fn messages(
+        State(state): State<MockState>,
+        headers: HeaderMap,
+        Json(body): Json<Value>,
+    ) -> Response {
+        if !headers.contains_key("x-switchyard-session-id") {
+            return (StatusCode::BAD_REQUEST, "missing session id").into_response();
+        }
         state.record("messages", &body);
         response(&body, "content")
     }
-    async fn responses(State(state): State<MockState>, Json(body): Json<Value>) -> Response {
+    async fn responses(
+        State(state): State<MockState>,
+        headers: HeaderMap,
+        Json(body): Json<Value>,
+    ) -> Response {
+        if !headers.contains_key("x-switchyard-session-id") {
+            return (StatusCode::BAD_REQUEST, "missing session id").into_response();
+        }
         state.record("responses", &body);
         response(&body, "output")
     }
@@ -146,6 +167,8 @@ fn args(base_url: &str, results_dir: &str) -> Result<Args, clap::Error> {
         "0.1",
         "--invalid-canary-interval",
         "0.1",
+        "--scenario",
+        "short-interactive",
         "--results-dir",
         results_dir,
     ])
@@ -217,6 +240,70 @@ async fn bad_responses_and_canary_write_a_failing_summary() -> TestResult {
             .unwrap_or(0)
             > 0
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn nonbaseline_scenarios_all_cross_the_public_request_path() -> TestResult {
+    let (app, _) = switchyard(false);
+    let server = serve(app).await?;
+    let dir = tempfile::tempdir()?;
+    let results_dir = dir.path().join("scenario-results");
+    let args = Args::try_parse_from([
+        "switchyard-soak",
+        "--base-url",
+        &server.base_url,
+        "--model",
+        "soak-route",
+        "--duration",
+        "0.8s",
+        "--concurrency",
+        "4",
+        "--report-interval",
+        "0.2",
+        "--invalid-canary-interval",
+        "0",
+        "--scenario",
+        "long-context",
+        "--scenario",
+        "decode-heavy",
+        "--scenario",
+        "prefix-reuse",
+        "--scenario",
+        "mixed-traffic",
+        "--scenario",
+        "growing-conversation",
+        "--scenario",
+        "large-tool-catalog",
+        "--scenario",
+        "tool-call-burst",
+        "--scenario",
+        "stage-transitions",
+        "--scenario",
+        "classifier-mix",
+        "--results-dir",
+        results_dir.to_str().ok_or("non-utf8 results dir")?,
+    ])?;
+
+    assert_eq!(run(args).await?, 0);
+    let summary: Value =
+        serde_json::from_str(&std::fs::read_to_string(results_dir.join("summary.json"))?)?;
+    let successes = summary["scenario_successes"]
+        .as_object()
+        .ok_or("scenario_successes was not an object")?;
+    for scenario in [
+        "long-context",
+        "decode-heavy",
+        "prefix-reuse",
+        "mixed-traffic",
+        "growing-conversation",
+        "large-tool-catalog",
+        "tool-call-burst",
+        "stage-transitions",
+        "classifier-mix",
+    ] {
+        assert!(successes.contains_key(scenario), "missing {scenario}");
+    }
     Ok(())
 }
 

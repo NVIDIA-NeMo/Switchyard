@@ -35,4 +35,3 @@ tokio.workspace = true
 axum = "0.8"
 tempfile = "3"
 tokio.workspace = true
-vidaimock = "0.3"
