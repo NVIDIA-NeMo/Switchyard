@@ -1581,6 +1581,60 @@ fn anthropic_unmappable_output_format_is_rejected_under_strict_policy() -> TestR
     Ok(())
 }
 
+// Verifies inline `data:` images become Anthropic base64 sources, since Anthropic's URL
+// source rejects anything that is not an http(s) link. A percent-encoded payload is not raw
+// base64, so it keeps the URL source it had before rather than reaching Anthropic mislabelled.
+#[test]
+fn openai_data_uri_images_translate_to_anthropic_sources() -> TestResult {
+    let engine = TranslationEngine::default();
+    let cases = [
+        (
+            "base64 data URI",
+            json!({"url": "data:image/png;base64,aW1hZ2U=", "detail": "high"}),
+            json!({"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}),
+        ),
+        (
+            "data URI carrying extra parameters",
+            json!({"url": "data:image/jpeg;charset=binary;base64,aW1hZ2U="}),
+            json!({"type": "base64", "media_type": "image/jpeg", "data": "aW1hZ2U="}),
+        ),
+        (
+            "percent-encoded data URI",
+            json!({"url": "data:image/png;base64,YQ%3D%3D"}),
+            json!({"type": "url", "url": "data:image/png;base64,YQ%3D%3D"}),
+        ),
+    ];
+
+    for (case, image_url, expected_source) in cases {
+        let body = json!({
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What color is this?"},
+                    {"type": "image_url", "image_url": image_url}
+                ]
+            }]
+        });
+
+        let output = engine
+            .translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+
+        assert_eq!(
+            output["messages"][0]["content"][1],
+            json!({"type": "image", "source": expected_source}),
+            "{case}"
+        );
+    }
+    Ok(())
+}
+
 // Verifies Anthropic receives its supported schema subset without mutating the neutral contract.
 #[test]
 fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestResult {

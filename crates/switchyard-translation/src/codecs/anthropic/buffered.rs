@@ -908,9 +908,13 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
             })]
         }
         ContentBlock::Image { source } => vec![match source {
-            ImageSource::Url { url, .. } => {
-                json!({"type": "image", "source": {"type": "url", "url": url}})
-            }
+            ImageSource::Url { url, .. } => match split_base64_data_uri(url) {
+                Some((media_type, data)) => json!({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": data},
+                }),
+                None => json!({"type": "image", "source": {"type": "url", "url": url}}),
+            },
             ImageSource::Base64 { media_type, data } => json!({
                 "type": "image",
                 "source": {
@@ -988,6 +992,22 @@ fn encode_one_anthropic_tool_result_block(block: &ContentBlock) -> Vec<Value> {
         | ContentBlock::ToolCall(_)
         | ContentBlock::ToolResult(_) => Vec::new(),
     }
+}
+
+// Splits `data:<media type>[;<parameter>...];base64,<payload>`, the form OpenAI-compatible
+// clients use for inline images. A percent-encoded payload has to be decoded before it is
+// base64, and a data URI with no media type leaves Anthropic's `media_type` with nothing to
+// carry, so both keep the handling they had before and are relayed as-is.
+fn split_base64_data_uri(url: &str) -> Option<(&str, &str)> {
+    let (metadata, data) = url.strip_prefix("data:")?.split_once(',')?;
+    let parameters = metadata.strip_suffix(";base64")?;
+    let media_type = parameters
+        .split_once(';')
+        .map_or(parameters, |(media_type, _)| media_type);
+    if media_type.is_empty() || data.contains('%') {
+        return None;
+    }
+    Some((media_type, data))
 }
 
 // Anthropic requires `tool_use.input` to be object-shaped, while OpenAI and
