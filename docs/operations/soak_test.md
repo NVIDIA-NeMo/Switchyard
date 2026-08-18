@@ -50,6 +50,41 @@ release, then run it directly:
 cargo build --release -p switchyard-soak
 ```
 
+## Compare routing algorithm performance
+
+Use `scripts/benchmark_routing_algorithms.py` to compare routing algorithms under the same load.
+The command runs oha and AIPerf sequentially for every model id, then writes `report.md`,
+`report.csv`, and `report.json` beside both tools' raw results:
+
+```bash
+python3.12 scripts/benchmark_routing_algorithms.py \
+  --base-url http://127.0.0.1:4000 \
+  --model noop=switchyard/noop \
+  --model passthrough=switchyard/passthrough \
+  --model random=switchyard/random \
+  --model llm_classifier=switchyard/classifier \
+  --model stage_router=switchyard/stage \
+  --concurrency 100 \
+  --request-count 1000 \
+  --backend-label "release model deployment"
+```
+
+oha sends non-streaming fixed-body requests and reports the raw HTTP request rate and latency
+ceiling. AIPerf sends streaming Chat Completions and reports request latency, time to first token
+(TTFT), inter-token latency (ITL), request throughput, and output-token throughput. The command
+runs them one after the other because simultaneous runs would compete for the same server capacity
+and distort both results.
+
+To isolate routing overhead, configure every route to use the same target deployment and keep the
+prompt, input length, output length, concurrency, and request count fixed. Set `--tokenizer` to the
+real model tokenizer when exact token counts matter. AIPerf uses a deterministic workload seed so
+each route receives the same synthetic inputs.
+
+This comparison command does not start VidaiMock or Switchyard. Point it at a running Switchyard
+server backed by real models to measure end-to-end TTFT and token throughput. Real-model runs cost
+tokens and include provider queuing and model variance, so use a dedicated deployment and repeat the
+run before treating a small difference as an algorithm effect.
+
 ## Check the local server and load tools
 
 The local test embeds [VidaiMock](https://github.com/vidaiUK/VidaiMock) as a Rust library, so it does
@@ -66,17 +101,21 @@ Install [oha](https://github.com/hatoo/oha) and
 
 ```bash
 cargo install oha
-uv tool install aiperf
+uv tool install --python 3.12 aiperf
 ```
 
 Then run the local test from the repository root:
 
 ```bash
-python3.12 scripts/run_local_soak_test.py --duration 10s --concurrency 4
+python3.12 scripts/run_local_soak_test.py \
+  --duration 10s \
+  --concurrency 4 \
+  --request-count 100
 ```
 
-`--duration` controls how long the Rust soak tester runs. The route checks, oha, and AIPerf runs are
-short and limited by request count. `--help` explains every flag. Set `OHA_BIN`, `AIPERF_BIN`,
+`--duration` controls how long the Rust soak tester runs. `--request-count` controls how many
+measured requests each load tool sends to each algorithm. `--help` explains every flag. Set
+`OHA_BIN`, `AIPERF_BIN`,
 `SWITCHYARD_SERVER_BIN`, `SWITCHYARD_SOAK_BIN`, or `SWITCHYARD_SOAK_MOCK_BIN` when a command is not
 on `PATH` or not under `target/release`.
 
@@ -90,14 +129,19 @@ The script gives each tool one job:
 | Tool | Job in the local test |
 |---|---|
 | Embedded VidaiMock | Supplies local OpenAI-compatible model responses with configurable latency and no provider cost. |
-| oha | Sends raw concurrent HTTP requests through the random route and writes a status and latency distribution. |
+| oha | Sends raw concurrent HTTP requests through every route and writes a status and latency distribution for each algorithm. |
 | Python route checks | Sends one Chat Completions request through each route. The stage request includes a critical tool failure so the signal scorer selects the capable target. |
-| AIPerf | Sends streaming Chat Completions through passthrough routing and records LLM, token, and response-time results. |
+| AIPerf | Sends the same deterministic streaming workload through every route and records LLM, token, and response-time results. |
+| Combined report | Joins selected oha and AIPerf metrics by algorithm in Markdown, CSV, and JSON. |
 | `switchyard-soak` | Runs passthrough routing through Chat Completions, Messages, and Responses, with streaming on and off, while checking server health, metrics, process use, and required results. |
 
 `scripts/local_soak_test.toml` exercises `noop`, `random`, `passthrough`, `llm_classifier`, and
 `stage_router`. It uses the accepted maximum retry count (10), a zero-weight random target, and the
-upper classifier and stage thresholds (1.0). The config is validated with
+upper classifier and stage thresholds (1.0). Classifier affinity is disabled so every measured
+request includes the classifier call. VidaiMock's generic classifier reply is intentionally not a
+valid routing verdict, so the local classifier row measures the classifier call and fail-open path.
+Use a real classifier backend or a purpose-built classifier stub to measure successful
+classification. The config is validated with
 `switchyard-server --dry-run` before either service starts.
 
 The runner does not add limits for target count or recent-turn history because the server does not

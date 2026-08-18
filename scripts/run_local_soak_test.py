@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Run every Switchyard route with embedded VidaiMock, oha, AIPerf, and the soak test."""
+"""Run every Switchyard route with VidaiMock, load tools, and the soak test."""
 
 import argparse
 import json
@@ -18,16 +18,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
+from benchmark_routing_algorithms import (
+    BenchmarkConfig,
+    RequiredBinary,
+    positive_int,
+    resolve_binaries,
+    run_benchmark,
+    run_checked,
+)
+
 ROUTES = (
-    "switchyard/noop",
-    "switchyard/random",
-    "switchyard/passthrough",
-    "switchyard/classifier",
-    "switchyard/stage",
+    ("noop", "switchyard/noop"),
+    ("random", "switchyard/random"),
+    ("passthrough", "switchyard/passthrough"),
+    ("llm_classifier", "switchyard/classifier"),
+    ("stage_router", "switchyard/stage"),
 )
 MOCK_PORT = 8100
-OHA_REQUESTS = 100
-AIPERF_REQUESTS = 20
 
 
 @dataclass
@@ -38,24 +45,6 @@ class Child:
     process: subprocess.Popen[str]
     log: TextIO
     log_path: Path
-
-
-@dataclass(frozen=True)
-class RequiredBinary:
-    """One command the local soak test must find before starting any process."""
-
-    label: str
-    env_var: str
-    value: str
-    setup: str
-
-
-def positive_int(value: str) -> int:
-    """Parse a command-line integer that must be greater than zero."""
-    parsed = int(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("must be greater than zero")
-    return parsed
 
 
 def nonnegative_int(value: str) -> int:
@@ -95,6 +84,12 @@ def parser() -> argparse.ArgumentParser:
         help="concurrent requests used by oha, AIPerf, and the soak run",
     )
     command.add_argument(
+        "--request-count",
+        type=positive_int,
+        default=100,
+        help="measured requests each load tool sends for each routing algorithm",
+    )
+    command.add_argument(
         "--mock-latency-ms",
         type=nonnegative_int,
         default=40,
@@ -112,45 +107,6 @@ def parser() -> argparse.ArgumentParser:
         help="new directory for generated config, logs, and tool results",
     )
     return command
-
-
-def find_binary(value: str) -> str | None:
-    """Return an executable path, or None when the command cannot run."""
-    if os.sep in value:
-        path = Path(value).expanduser().resolve()
-        if path.is_file() and os.access(path, os.X_OK):
-            return str(path)
-    else:
-        found = shutil.which(value)
-        if found is not None:
-            return found
-    return None
-
-
-def resolve_binaries(requirements: Sequence[RequiredBinary]) -> dict[str, str]:
-    """Resolve every command and print all missing-command setup instructions."""
-    resolved = {}
-    missing = []
-    for requirement in requirements:
-        path = find_binary(requirement.value)
-        if path is None:
-            missing.append(requirement)
-        else:
-            resolved[requirement.label] = path
-
-    for requirement in missing:
-        print(
-            f"warning: {requirement.label} executable not found: {requirement.value}",
-            file=sys.stderr,
-        )
-        print(f"  {requirement.setup}", file=sys.stderr)
-        print(
-            f"  Or set {requirement.env_var}=/path/to/{Path(requirement.value).name}",
-            file=sys.stderr,
-        )
-    if missing:
-        raise RuntimeError(f"install or build the {len(missing)} missing command(s), then rerun")
-    return resolved
 
 
 def start_child(name: str, command: Sequence[str], log_path: Path) -> Child:
@@ -204,21 +160,6 @@ def wait_for_health(child: Child, url: str, expected_status: str | None = None) 
     raise RuntimeError(f"{child.name} did not become healthy at {url}; see {child.log_path}")
 
 
-def run_checked(name: str, command: Sequence[str], log_path: Path) -> None:
-    """Run one finite tool and keep its output in a named log file."""
-    print(f"Running {name}; log: {log_path}")
-    with log_path.open("w", encoding="utf-8") as log:
-        result = subprocess.run(
-            list(command),
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-        )
-    if result.returncode != 0:
-        raise RuntimeError(f"{name} failed with status {result.returncode}; see {log_path}")
-
-
 def check_routes(base_url: str, output_path: Path) -> None:
     """Send one HTTP request through every configured route."""
     ordinary = [{"role": "user", "content": "Reply with exactly OK."}]
@@ -241,11 +182,11 @@ def check_routes(base_url: str, output_path: Path) -> None:
         },
     ]
     records = []
-    for route in ROUTES:
+    for algorithm, route in ROUTES:
         body = json.dumps(
             {
                 "model": route,
-                "messages": stage_edge if route == "switchyard/stage" else ordinary,
+                "messages": stage_edge if algorithm == "stage_router" else ordinary,
                 "max_tokens": 8,
                 "stream": False,
             }
@@ -321,7 +262,7 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
                 "AIPerf",
                 "AIPERF_BIN",
                 os.environ.get("AIPERF_BIN", "aiperf"),
-                "Install AIPerf with: uv tool install aiperf",
+                "Install AIPerf with: uv tool install --python 3.12 aiperf",
             ),
         )
     )
@@ -368,71 +309,17 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
         wait_for_health(server, f"{base_url}/health", "ok")
         check_routes(base_url, output_dir / "route-checks.jsonl")
 
-        oha_body = output_dir / "oha-request.json"
-        oha_body.write_text(
-            json.dumps(
-                {
-                    "model": "switchyard/random",
-                    "messages": [{"role": "user", "content": "Reply with exactly OK."}],
-                    "max_tokens": 8,
-                    "stream": False,
-                }
-            ),
-            encoding="utf-8",
-        )
-        run_checked(
-            "oha raw HTTP load",
-            [
-                oha_bin,
-                "-n",
-                str(OHA_REQUESTS),
-                "-c",
-                str(args.concurrency),
-                "--no-tui",
-                "--method",
-                "POST",
-                "-T",
-                "application/json",
-                "-D",
-                str(oha_body),
-                "--output-format",
-                "json",
-                "--output",
-                str(output_dir / "oha.json"),
-                f"{base_url}/v1/chat/completions",
-            ],
-            output_dir / "oha.log",
-        )
-
-        run_checked(
-            "AIPerf streaming profile",
-            [
-                aiperf_bin,
-                "profile",
-                "--model",
-                "switchyard/passthrough",
-                "--url",
-                base_url,
-                "--endpoint-type",
-                "chat",
-                "--streaming",
-                "--tokenizer",
-                "builtin",
-                "--use-legacy-max-tokens",
-                "--isl",
-                "32",
-                "--osl",
-                "8",
-                "--concurrency",
-                str(args.concurrency),
-                "--request-count",
-                str(AIPERF_REQUESTS),
-                "--request-timeout-seconds",
-                "30",
-                "--artifact-dir",
-                str(output_dir / "aiperf"),
-            ],
-            output_dir / "aiperf.log",
+        run_benchmark(
+            BenchmarkConfig(
+                base_url=base_url,
+                models=ROUTES,
+                concurrency=args.concurrency,
+                request_count=args.request_count,
+                backend_label=f"VidaiMock with {args.mock_latency_ms} ms response latency",
+                output_dir=output_dir / "routing-benchmark",
+                oha_bin=oha_bin,
+                aiperf_bin=aiperf_bin,
+            )
         )
 
         run_checked(

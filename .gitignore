@@ -152,6 +152,7 @@ plans/
 bench_results*/
 soak-results/
 local-soak-test-results/
+routing-benchmark-results/
 jobs/**/*.*
 pytest-of-*/
 

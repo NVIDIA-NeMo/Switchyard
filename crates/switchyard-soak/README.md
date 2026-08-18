@@ -72,9 +72,16 @@ in short runs.
 ## Check the local server and load tools
 
 `scripts/run_local_soak_test.py` starts an embedded VidaiMock server and `switchyard-server`, sends
-one HTTP request through each configured route, then runs `oha`, NVIDIA AIPerf, and
+one HTTP request through each configured route, then runs `oha` and NVIDIA AIPerf sequentially for
+every routing algorithm. It writes one Markdown, CSV, and JSON performance report before it runs
 `switchyard-soak`. VidaiMock returns fixed local responses, so this local test needs no provider key
 and incurs no inference cost.
+
+Run `scripts/benchmark_routing_algorithms.py` by itself against an existing Switchyard server to
+compare the same routes with real model output. The command reports TTFT, ITL, request throughput,
+and output-token throughput from AIPerf alongside oha's raw HTTP request rate and latency results.
+The operations guide explains how to keep the comparison fair and when to use VidaiMock or a real
+backend.
 
 The script needs the built Rust programs plus installed `oha` and AIPerf commands.
 `switchyard-soak` itself does not require those extra programs and can run by itself against a

@@ -46,8 +46,6 @@ classifier_target = "classifier"
 strong_target = "strong"
 weak_target = "weak"
 base_threshold = 1.0
-session_affinity = true
-message_hash_fallback = true
 max_output_tokens = 1
 
 [routes.stage]
