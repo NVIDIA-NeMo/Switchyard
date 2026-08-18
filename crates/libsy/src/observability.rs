@@ -5,7 +5,7 @@
 //! algorithm layer.
 //!
 //! [`Algorithm::run_stream`](crate::Algorithm::run_stream) and [`Driver`] call these
-//! helpers around the [`Decision`] hook and the offload boundary, so every algorithm is
+//! helpers around the routing outcome and the offload boundary, so every algorithm is
 //! instrumented from the outside and carries no telemetry code of its own. The provider
 //! call on the other side of the offload belongs to the host, and is instrumented by
 //! whoever makes it. Metrics record through the
@@ -33,59 +33,27 @@
 //! negligible next to a model call.
 
 use std::future::Future;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use opentelemetry::metrics::{Meter, ObservableGauge};
+use opentelemetry::metrics::Meter;
 use opentelemetry::{KeyValue, global};
 use tracing::Span;
 
-use crate::{DriverError, LibsyError, Result};
-use switchyard_protocol::{Decision, Request, Response};
+use crate::Result;
+use switchyard_protocol::{ModelId, Request, Response};
 
 const METRICS_SCOPE: &str = "switchyard";
 const TRACING_TARGET: &str = "libsy";
-
-static TOTAL_REQUESTS: AtomicU64 = AtomicU64::new(0);
-static TOTAL_ERRORS: AtomicU64 = AtomicU64::new(0);
-static TOTAL_GAUGES: OnceLock<(ObservableGauge<u64>, ObservableGauge<u64>)> = OnceLock::new();
 
 /// The `libsy`-scoped meter from the globally installed provider.
 pub(crate) fn meter() -> Meter {
     global::meter(METRICS_SCOPE)
 }
 
-/// Registers process-wide compatibility gauges with the installed global meter provider.
-pub(crate) fn initialize_metrics() {
-    TOTAL_GAUGES.get_or_init(|| {
-        let meter = meter();
-        let requests = meter
-            .u64_observable_gauge("switchyard.total_requests")
-            .with_callback(|observer| {
-                observer.observe(TOTAL_REQUESTS.load(Ordering::Relaxed), &[]);
-            })
-            .build();
-        let errors = meter
-            .u64_observable_gauge("switchyard.total_errors")
-            .with_callback(|observer| {
-                observer.observe(TOTAL_ERRORS.load(Ordering::Relaxed), &[]);
-            })
-            .build();
-        (requests, errors)
-    });
-}
-
-/// Whether a result is a call the consumer deliberately abandoned rather than a failure.
-pub(crate) fn is_abandoned<T>(result: &Result<T>) -> bool {
-    matches!(result, Err(LibsyError::Driver(DriverError::Abandoned)))
-}
-
-/// `outcome` attribute value for a result: `ok`, `abandoned`, or `error`.
+/// `outcome` attribute value for a result: `ok` or `error`.
 pub(crate) fn outcome_value<T>(result: &Result<T>) -> &'static str {
     match result {
         Ok(_) => "ok",
-        Err(LibsyError::Driver(DriverError::Abandoned)) => "abandoned",
         Err(_) => "error",
     }
 }
@@ -145,10 +113,10 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
 /// Runs one algorithm task to completion, recording the run counter, duration
 /// histogram, span outcome, and failure log when it resolves.
 /// Executes inside the `libsy.run` span its caller instruments the task with.
-pub(crate) async fn observe_run(
+pub(crate) async fn observe_run<T>(
     algorithm: &str,
-    run: impl Future<Output = Result<Response>>,
-) -> Result<Response> {
+    run: impl Future<Output = Result<T>>,
+) -> Result<T> {
     let started = Instant::now();
     let result = run.await;
     let duration = started.elapsed();
@@ -159,14 +127,10 @@ pub(crate) async fn observe_run(
 /// Records the end of one algorithm run: the run counter and duration
 /// histogram, the `outcome`/`error` fields on `span`, and a warn log when the
 /// run failed.
-fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, span: &Span) {
+fn record_run<T>(algorithm: &str, duration: Duration, result: &Result<T>, span: &Span) {
     let outcome = outcome_value(result);
     span.record("outcome", outcome);
-    // An abandoned run ended because the consumer took the call, not because anything went
-    // wrong, so it is counted but not reported as a failure.
-    if let Err(error) = result
-        && !is_abandoned(result)
-    {
+    if let Err(error) = result {
         span.record("error", tracing::field::display(error));
         tracing::warn!(
             target: TRACING_TARGET,
@@ -211,7 +175,6 @@ pub(crate) fn record_classifier_fail_open(judge_model: &str, reason: &'static st
 pub(crate) fn record_llm_call(
     algorithm: &str,
     selected_model: &str,
-    is_answer_call: bool,
     duration: Duration,
     result: &Result<Response>,
     span: &Span,
@@ -234,29 +197,6 @@ pub(crate) fn record_llm_call(
         .build()
         .record(duration.as_secs_f64() * 1000.0, &call_attributes);
 
-    // An abandoned answer call was never served, so it counts as neither a served
-    // request nor an error.
-    if is_answer_call && !is_abandoned(result) {
-        TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
-        let routed_attributes = [KeyValue::new("model", selected_model.to_string())];
-        if result.is_ok() {
-            meter
-                .u64_counter("switchyard.requests")
-                .build()
-                .add(1, &routed_attributes);
-            meter
-                .f64_histogram("switchyard.model_call_latency_ms")
-                .build()
-                .record(duration.as_secs_f64() * 1000.0, &routed_attributes);
-        } else {
-            TOTAL_ERRORS.fetch_add(1, Ordering::Relaxed);
-            meter
-                .u64_counter("switchyard.errors")
-                .build()
-                .add(1, &routed_attributes);
-        }
-    }
-
     match result {
         Ok(response) => {
             // Token usage exists only once a response is buffered; a streamed
@@ -275,7 +215,7 @@ pub(crate) fn record_llm_call(
                 }
             }
         }
-        Err(error) if !is_abandoned(result) => {
+        Err(error) => {
             span.record("error", tracing::field::display(error));
             tracing::warn!(
                 target: TRACING_TARGET,
@@ -285,13 +225,11 @@ pub(crate) fn record_llm_call(
                 "model call failed"
             );
         }
-        Err(_) => {}
     }
 }
 
 /// Records one published routing decision: the decision counter plus a structured debug event.
-pub(crate) fn record_decision(algorithm: &str, decision: &Decision) {
-    let selected_model = decision.selected_model_id();
+pub(crate) fn record_decision(algorithm: &str, selected_model: &ModelId) {
     tracing::debug!(
         target: TRACING_TARGET,
         algorithm,

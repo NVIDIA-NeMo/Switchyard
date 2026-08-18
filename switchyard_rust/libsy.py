@@ -15,12 +15,12 @@ _EXPORTS = frozenset(
         "Algorithm",
         "ContextWindowExceededError",
         "CustomClassifierConfig",
-        "Decision",
         "EscalationClassifierConfig",
         "LibsyError",
         "LlmClassifierConfig",
         "LlmFallback",
         "ModelCall",
+        "RoutingOutcome",
         "Step",
         "TaskClassifierConfig",
         "llm_classifier",
@@ -79,21 +79,6 @@ if TYPE_CHECKING:
         ) -> None: ...
 
     @final
-    class Decision:
-        """A semantic routing choice produced by an algorithm."""
-
-        @property
-        def selected_model_id(self) -> str: ...
-
-        @property
-        def reasoning(self) -> str | None: ...
-
-        @property
-        def is_answer_call(self) -> bool: ...
-
-    _RoutingDecision = Decision
-
-    @final
     class ModelCall:
         @property
         def algorithm(self) -> str: ...
@@ -104,14 +89,23 @@ if TYPE_CHECKING:
         @property
         def models(self) -> list[str]: ...
 
-        @property
-        def decision(self) -> Decision: ...
-
-        def into_parts(self) -> tuple[dict[str, object], Decision]: ...
-
         def respond(self, response: Mapping[str, object]) -> None: ...
 
         def fail(self, error: BaseException) -> None: ...
+
+    @final
+    class RoutingOutcome:
+        @property
+        def selected_model_id(self) -> str: ...
+
+        @property
+        def fallback_models(self) -> list[str]: ...
+
+        @property
+        def request(self) -> dict[str, object]: ...
+
+        @property
+        def response(self) -> dict[str, object] | None: ...
 
     class Step:
         @final
@@ -120,14 +114,9 @@ if TYPE_CHECKING:
             call: ModelCall
 
         @final
-        class Decision:
-            __match_args__: ClassVar[tuple[Literal["decision"]]] = ("decision",)
-            decision: _RoutingDecision
-
-        @final
         class Done:
-            __match_args__: ClassVar[tuple[Literal["response"]]] = ("response",)
-            response: dict[str, object]
+            __match_args__: ClassVar[tuple[Literal["outcome"]]] = ("outcome",)
+            outcome: RoutingOutcome
 
     @final
     class TaskClassifierConfig:
@@ -205,7 +194,7 @@ if TYPE_CHECKING:
             self,
             request: Mapping[str, object],
             headers: Mapping[str, str] | None = None,
-        ) -> AsyncIterator[Step.CallModel | Step.Decision | Step.Done]: ...
+        ) -> AsyncIterator[Step.CallModel | Step.Done]: ...
 
     def noop() -> Algorithm: ...
 

@@ -11,9 +11,8 @@ from switchyard.libsy import (
     Algorithm,
     ContextWindowExceededError,
     CustomClassifierConfig,
-    Decision,
-    LibsyError,
     LlmClassifierConfig,
+    RoutingOutcome,
     Step,
     TaskClassifierConfig,
     algorithms,
@@ -57,8 +56,7 @@ async def run_algorithm(
     *,
     request: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
-) -> tuple[list[Decision], dict[str, Any]]:
-    decisions: list[Decision] = []
+) -> tuple[str, dict[str, Any]]:
     async for step in algorithm.run_stream(request or request_body(), headers=headers):
         match step:
             case Step.CallModel(call):
@@ -76,64 +74,47 @@ async def run_algorithm(
                     else:
                         call.respond(response)
                         break
-            case Step.Decision(decision):
-                decisions.append(decision)
-            case Step.Done(response):
-                return decisions, response
-    raise AssertionError("algorithm stream ended without a response")
+            case Step.Done(outcome):
+                if outcome.response is not None:
+                    return outcome.selected_model_id, outcome.response
+                candidates = [outcome.selected_model_id, *outcome.fallback_models]
+                for index, target in enumerate(candidates):
+                    candidate_request = {**outcome.request, "model": target}
+                    client = (clients or {})[target]
+                    try:
+                        response = await client.call(candidate_request)
+                    except ContextWindowExceededError:
+                        if index + 1 == len(candidates):
+                            raise
+                    else:
+                        return outcome.selected_model_id, response
+    raise AssertionError("algorithm stream ended without an outcome")
 
 
 async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() -> None:
     client = EchoClient("fast")
     algorithm = algorithms.random(["fast"])
-    decisions: list[Decision] = []
-    response: dict[str, Any] | None = None
+    outcome: RoutingOutcome | None = None
     variants: list[str] = []
 
     async for step in algorithm.run_stream(request_body()):
         match step:
-            case Step.CallModel(call):
-                variants.append("call_model")
-                assert call.models == ["fast"]
-                client_response = await client.call(call.request)
-                call.respond(client_response)
-                with pytest.raises(LibsyError, match="already been completed"):
-                    call.respond(client_response)
-            case Step.Decision(decision):
-                variants.append("decision")
-                decisions.append(decision)
             case Step.Done(done):
                 variants.append("done")
-                response = done
+                outcome = done
 
-    assert variants == ["decision", "call_model", "done"]
-    assert len(decisions) == 1
-    assert decisions[0].selected_model_id == "fast"
-    assert decisions[0].is_answer_call is True
+    assert variants == ["done"]
+    assert outcome is not None
+    assert outcome.selected_model_id == "fast"
+    assert outcome.fallback_models == []
+    assert outcome.response is None
+    response = await client.call(outcome.request)
     assert client.calls[0]["model"] == "fast"
     assert client.calls[0]["messages"][0]["content"] == [
         {"type": "text", "text": "hello"}
     ]
-    assert response is not None
     assert response["model"] == "fast"
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "fast"}]
-
-
-async def test_into_parts_supports_decision_only_routing() -> None:
-    algorithm = algorithms.random(["fast"])
-
-    async for step in algorithm.run_stream(request_body()):
-        match step:
-            case Step.CallModel(call) if call.decision.is_answer_call:
-                request, decision = call.into_parts()
-                assert call.algorithm == "random"
-                assert call.models == ["fast"]
-                assert request["messages"] == request_body()["messages"]
-                assert decision.selected_model_id == "fast"
-                assert decision.is_answer_call is True
-                with pytest.raises(LibsyError, match="already been completed"):
-                    call.into_parts()
-                break
 
 
 async def test_classifier_config_accepts_a_prompt_override() -> None:
@@ -322,9 +303,9 @@ def test_random_rejects_invalid_weights() -> None:
 
 
 async def test_noop_needs_no_client() -> None:
-    decisions, response = await run_algorithm(algorithms.noop())
+    selected_model, response = await run_algorithm(algorithms.noop())
 
-    assert decisions[0].selected_model_id == "auto"
+    assert selected_model == "auto"
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "OK"}]
 
 
@@ -341,11 +322,11 @@ def test_algorithm_rejects_invalid_headers(headers: dict[str, str], message: str
 
 
 async def test_algorithm_accepts_case_insensitive_duplicate_names() -> None:
-    decisions, _ = await run_algorithm(
+    selected_model, _ = await run_algorithm(
         algorithms.noop(), headers={"X-Unused": "first", "x-unused": "second"}
     )
 
-    assert decisions[0].selected_model_id == "auto"
+    assert selected_model == "auto"
 
 
 def test_algorithm_rejects_header_map_capacity_overflow() -> None:
@@ -379,17 +360,6 @@ def test_invalid_request_is_rejected_at_the_boundary() -> None:
         )
 
 
-async def test_client_failure_becomes_libsy_error() -> None:
-    class FailingClient:
-        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
-            raise RuntimeError("client failed")
-
-    algorithm = algorithms.random(["broken"])
-
-    with pytest.raises(LibsyError, match="client failed"):
-        await run_algorithm(algorithm, {"broken": FailingClient()})
-
-
 async def test_context_window_failure_falls_back_to_the_next_model() -> None:
     class OverflowClient:
         async def call(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -401,10 +371,10 @@ async def test_context_window_failure_falls_back_to_the_next_model() -> None:
         picker="efficient_first",
         confidence_threshold=0.5,
     )
-    decisions, response = await run_algorithm(
+    selected_model, response = await run_algorithm(
         algorithm,
         {"fast": OverflowClient(), "strong": EchoClient("strong")},
     )
 
-    assert [decision.selected_model_id for decision in decisions] == ["fast"]
+    assert selected_model == "fast"
     assert response["model"] == "strong"

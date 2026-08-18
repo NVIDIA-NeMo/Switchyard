@@ -15,11 +15,11 @@ use switchyard_libsy::{
     Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat,
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
-    PickerMode, Random, StageRouter, StageRouterConfig, Step as RustStep, StepStream,
-    TaskClassifierConfig,
+    PickerMode, Random, RoutingOutcome, StageRouter, StageRouterConfig, Step as RustStep,
+    StepStream, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    AggLlmResponse, Decision, LlmClientError, LlmResponse, Metadata, ModelId, Request, Response,
+    AggLlmResponse, LlmClientError, LlmResponse, Metadata, ModelId, Request, Response,
 };
 use tokio::sync::Mutex;
 
@@ -335,41 +335,6 @@ impl PyLlmFallback {
     }
 }
 
-/// A routing choice produced by an algorithm.
-#[pyclass(name = "Decision", module = "switchyard.libsy", frozen)]
-struct PyDecision {
-    inner: Decision,
-}
-
-impl From<Decision> for PyDecision {
-    fn from(inner: Decision) -> Self {
-        Self { inner }
-    }
-}
-
-#[pymethods]
-impl PyDecision {
-    /// The semantic model id selected for the call.
-    #[getter]
-    fn selected_model_id(&self) -> &str {
-        self.inner.selected_model_id().as_str()
-    }
-
-    /// Whether this call produces the answer rather than a routing verdict.
-    #[getter]
-    fn is_answer_call(&self) -> bool {
-        self.inner.is_answer_call()
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "Decision(selected_model_id={:?}, is_answer_call={})",
-            self.inner.selected_model_id(),
-            self.inner.is_answer_call()
-        )
-    }
-}
-
 /// One model call yielded by [`PyAlgorithm::run_stream`].
 #[pyclass(name = "ModelCall", module = "switchyard.libsy")]
 struct PyModelCall {
@@ -377,28 +342,16 @@ struct PyModelCall {
     algorithm: String,
     request: Py<PyAny>,
     models: Vec<String>,
-    decision: Py<PyDecision>,
 }
 
 impl PyModelCall {
     fn new(py: Python<'_>, call: CallModel) -> PyResult<Self> {
         let request = to_python(py, &call.request.llm_request)?;
-        let selected = call
-            .models
-            .first()
-            .cloned()
-            .ok_or(RustLibsyError::NoTargets)
-            .map_err(py_libsy_error)?;
-        let decision = Py::new(
-            py,
-            PyDecision::from(Decision::new(selected, call.is_answer_call)),
-        )?;
         Ok(Self {
             algorithm: call.algorithm.clone(),
             models: call.models.iter().map(ToString::to_string).collect(),
             inner: Some(call),
             request,
-            decision,
         })
     }
 
@@ -427,20 +380,6 @@ impl PyModelCall {
     #[getter]
     fn models(&self) -> Vec<String> {
         self.models.clone()
-    }
-
-    /// The routing decision behind this call.
-    #[getter]
-    fn decision(&self, py: Python<'_>) -> Py<PyDecision> {
-        self.decision.clone_ref(py)
-    }
-
-    /// Consume the answer call without serving it and return its rewritten request and decision.
-    #[pyo3(name = "into_parts")]
-    fn take_parts(&mut self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyDecision>)> {
-        let decision = self.decision.clone_ref(py);
-        let (request, _models) = self.take()?.into_parts();
-        Ok((to_python(py, &request.llm_request)?, decision))
     }
 
     /// Fulfill this call with an aggregate normalized response dictionary.
@@ -482,15 +421,51 @@ impl PyModelCall {
     }
 }
 
+/// The terminal routing selection, rewritten request, and optional existing response.
+#[pyclass(name = "RoutingOutcome", module = "switchyard.libsy", frozen)]
+struct PyRoutingOutcome {
+    selected_model_id: String,
+    fallback_models: Vec<String>,
+    request: Py<PyAny>,
+    response: Option<Py<PyAny>>,
+}
+
+#[pymethods]
+impl PyRoutingOutcome {
+    /// The model selected by the algorithm and tried first by the host.
+    #[getter]
+    fn selected_model_id(&self) -> &str {
+        &self.selected_model_id
+    }
+
+    /// Additional models the host may try in order after an eligible failure.
+    #[getter]
+    fn fallback_models(&self) -> Vec<String> {
+        self.fallback_models.clone()
+    }
+
+    /// The normalized request after routing-time rewrites.
+    #[getter]
+    fn request(&self, py: Python<'_>) -> Py<PyAny> {
+        self.request.clone_ref(py)
+    }
+
+    /// An answer produced while routing, when one already exists.
+    #[getter]
+    fn response(&self, py: Python<'_>) -> Option<Py<PyAny>> {
+        self.response
+            .as_ref()
+            .map(|response| response.clone_ref(py))
+    }
+}
+
 /// One item yielded by a Python algorithm stream.
 #[pyclass(name = "Step", module = "switchyard.libsy", frozen)]
 enum PyStep {
     /// The host must serve the model call before the algorithm can continue.
     CallModel { call: Py<PyModelCall> },
-    /// A routing decision emitted by the algorithm.
-    Decision { decision: Py<PyDecision> },
-    /// The terminal aggregate response.
-    Done { response: Py<PyAny> },
+    /// The terminal routing outcome.
+    Done { outcome: Py<PyRoutingOutcome> },
 }
 
 /// Async Python iterator over one Rust algorithm run.
@@ -526,7 +501,7 @@ struct PyAlgorithm {
 
 #[pymethods]
 impl PyAlgorithm {
-    /// Run the algorithm as a stream of model calls, decisions, and one terminal response.
+    /// Run the algorithm as routing-time model calls followed by one terminal outcome.
     ///
     /// `headers`, when given, is normalized into the request's correlation
     /// [`Metadata`] exactly as an HTTP host would (`Metadata::from_headers`),
@@ -565,20 +540,40 @@ async fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 call: Py::new(py, PyModelCall::new(py, *call)?)?,
             })
         }),
-        RustStep::Decision(decision) => Python::attach(|py| {
-            Ok(PyStep::Decision {
-                decision: Py::new(py, PyDecision::from(decision))?,
-            })
-        }),
-        RustStep::Done(response) => {
-            let response = response
-                .llm_response
-                .into_agg()
-                .await
-                .map_err(py_libsy_error)?;
+        RustStep::Done(outcome) => {
+            let RoutingOutcome {
+                selected_model_id,
+                fallback_models,
+                request,
+                response,
+            } = *outcome;
+            let response = match response {
+                Some(response) => Some(
+                    response
+                        .llm_response
+                        .into_agg()
+                        .await
+                        .map_err(py_libsy_error)?,
+                ),
+                None => None,
+            };
             Python::attach(|py| {
                 Ok(PyStep::Done {
-                    response: to_python(py, &response)?,
+                    outcome: Py::new(
+                        py,
+                        PyRoutingOutcome {
+                            selected_model_id: selected_model_id.to_string(),
+                            fallback_models: fallback_models
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect(),
+                            request: to_python(py, &request.llm_request)?,
+                            response: response
+                                .as_ref()
+                                .map(|response| to_python(py, response))
+                                .transpose()?,
+                        },
+                    )?,
                 })
             })
         }
@@ -730,12 +725,12 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let libsy_module = PyModule::new(module.py(), "libsy")?;
     libsy_module.add_class::<PyAlgorithm>()?;
     libsy_module.add_class::<PyCustomClassifierConfig>()?;
-    libsy_module.add_class::<PyDecision>()?;
     libsy_module.add_class::<PyEscalationClassifierConfig>()?;
     libsy_module.add_class::<PyLlmClassifierConfig>()?;
     libsy_module.add_class::<PyLlmFallback>()?;
     libsy_module.add_class::<PyModelCall>()?;
     libsy_module.add_class::<PyRunStream>()?;
+    libsy_module.add_class::<PyRoutingOutcome>()?;
     libsy_module.add_class::<PyStep>()?;
     libsy_module.add_class::<PyTaskClassifierConfig>()?;
     libsy_module.add_function(wrap_pyfunction!(noop_algorithm, &libsy_module)?)?;

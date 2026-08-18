@@ -21,7 +21,7 @@ serde_json = "1"
 | Response | [`AggLlmResponse`], [`ResponseOutput`], [`Usage`], [`StopReason`] |
 | Streaming | [`LlmResponse`], [`LlmResponseStream`], [`LlmResponseStreamEvent`], [`LlmResponseChunk`], [`ProviderStreamEvent`] |
 | Envelope | [`Request`], [`Response`], [`Metadata`] |
-| Routing I/O | [`Decision`], [`RoutedLlmClient`], [`LlmClientError`] |
+| Routing I/O | [`RoutedLlmClient`], [`LlmClientError`] |
 | Wire identity | [`WireFormat`], [`FormatId`] |
 
 ## Simple request

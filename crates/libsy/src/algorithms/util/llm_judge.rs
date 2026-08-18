@@ -241,7 +241,6 @@ where
             .call_model(
                 self.judge.build_request(state, request),
                 vec![self.target.clone()],
-                false,
             )
             .await
             .inspect_err(|error| report_fail_open(judge_model, error, libsy_error_reason(error)))

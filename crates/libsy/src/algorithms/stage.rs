@@ -139,7 +139,11 @@ impl Algorithm for StageRouter {
         STAGE_ROUTER
     }
 
-    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
+    async fn route(
+        self: Arc<Self>,
+        driver: Driver,
+        request: Request,
+    ) -> Result<crate::RoutingOutcome> {
         self.route.execute(driver, request).await
     }
 }
@@ -334,7 +338,6 @@ mod tests {
     struct Call {
         target: String,
         messages: Vec<String>,
-        is_answer_call: bool,
     }
 
     /// Records what each target receives.
@@ -349,7 +352,7 @@ mod tests {
             self.calls
                 .lock()
                 .iter()
-                .filter(|call| call.is_answer_call)
+                .filter(|call| call.target != JUDGE)
                 .cloned()
                 .collect()
         }
@@ -370,7 +373,6 @@ mod tests {
                             .iter()
                             .filter_map(|message| message.text_content("|"))
                             .collect(),
-                        is_answer_call: target != JUDGE,
                     });
                     let completion = if target == JUDGE {
                         let p_solve = *recorder.judge_p_solve.lock();
@@ -495,28 +497,20 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let router = recording_router(config_with_judge(&recorder, 0.1))?;
 
-        let (trace, _) = test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
+        let (selected_model, _) =
+            test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
 
         let calls = recorder.calls.lock();
         assert!(
-            calls
-                .iter()
-                .any(|call| call.target == JUDGE && !call.is_answer_call),
+            calls.iter().any(|call| call.target == JUDGE),
             "the judge should be recorded as a routing side call"
         );
         assert!(
-            calls
-                .iter()
-                .any(|call| call.target == "strong" && call.is_answer_call),
+            calls.iter().any(|call| call.target == "strong"),
             "the selected target should be recorded as an answer call"
         );
         drop(calls);
-        assert_eq!(
-            trace
-                .last()
-                .map(|decision| decision.selected_model_id().as_str()),
-            Some("strong")
-        );
+        assert_eq!(selected_model, "strong");
         Ok(())
     }
 

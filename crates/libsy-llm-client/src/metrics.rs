@@ -4,8 +4,39 @@
 //! Metric labelling inherited from Python
 
 use std::time::Duration;
+use std::{
+    sync::OnceLock,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
+use opentelemetry::metrics::ObservableGauge;
 use opentelemetry::{KeyValue, global};
+use switchyard_libsy::Result;
+use switchyard_protocol::{ModelId, Response};
+
+static TOTAL_REQUESTS: AtomicU64 = AtomicU64::new(0);
+static TOTAL_ERRORS: AtomicU64 = AtomicU64::new(0);
+static TOTAL_GAUGES: OnceLock<(ObservableGauge<u64>, ObservableGauge<u64>)> = OnceLock::new();
+
+/// Registers process-wide compatibility gauges with the installed global meter provider.
+pub fn initialize() {
+    TOTAL_GAUGES.get_or_init(|| {
+        let meter = global::meter("switchyard");
+        let requests = meter
+            .u64_observable_gauge("switchyard.total_requests")
+            .with_callback(|observer| {
+                observer.observe(TOTAL_REQUESTS.load(Ordering::Relaxed), &[]);
+            })
+            .build();
+        let errors = meter
+            .u64_observable_gauge("switchyard.total_errors")
+            .with_callback(|observer| {
+                observer.observe(TOTAL_ERRORS.load(Ordering::Relaxed), &[]);
+            })
+            .build();
+        (requests, errors)
+    });
+}
 
 pub(crate) const fn is_retryable_http_status(status: u16) -> bool {
     status == 408 || status == 429 || (status >= 500 && status <= 599)
@@ -61,16 +92,9 @@ pub(crate) fn record_upstream_attempt(status: Option<u16>) {
         );
 }
 
-/// Records what routing cost on top of the call that served the run: classifier
-/// calls, target resolution, and decision publishing.
-pub(crate) fn record_routing_overhead(
-    algorithm: &str,
-    run: Duration,
-    call_duration: Duration,
-) -> Duration {
-    // Saturating: the two clocks start a moment apart, so a run that is all
-    // routed call can come out fractionally negative.
-    let overhead = run.saturating_sub(call_duration);
+/// Records the time needed to produce the routing outcome, including classifier calls,
+/// target resolution, request rewrites, and decision publishing.
+pub(crate) fn record_routing_overhead(algorithm: &str, overhead: Duration) {
     global::meter("switchyard")
         .f64_histogram("switchyard.routing_overhead_ms")
         .build()
@@ -78,7 +102,58 @@ pub(crate) fn record_routing_overhead(
             overhead.as_secs_f64() * 1000.0,
             &[KeyValue::new("algorithm", algorithm.to_string())],
         );
-    overhead
+}
+
+/// Records one terminal model call made after routing, preserving the libsy call metric surface.
+pub(crate) fn record_answer_call(
+    algorithm: &str,
+    selected_model: &ModelId,
+    duration: Duration,
+    result: &Result<Response>,
+) {
+    let attributes = [
+        KeyValue::new("algorithm", algorithm.to_string()),
+        KeyValue::new("selected_model", selected_model.to_string()),
+        KeyValue::new("outcome", if result.is_ok() { "ok" } else { "error" }),
+    ];
+    let meter = global::meter("switchyard");
+    meter
+        .u64_counter("switchyard.llm_calls")
+        .build()
+        .add(1, &attributes);
+    meter
+        .f64_histogram("switchyard.llm_call_duration_ms")
+        .build()
+        .record(duration.as_secs_f64() * 1000.0, &attributes);
+}
+
+/// Records one terminal routed request after the algorithm has produced an outcome.
+pub(crate) fn record_routed_request(
+    selected_model: &ModelId,
+    answer_duration: Option<Duration>,
+    result: &Result<Response>,
+) {
+    TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
+    let attributes = [KeyValue::new("model", selected_model.to_string())];
+    let meter = global::meter("switchyard");
+    if result.is_ok() {
+        meter
+            .u64_counter("switchyard.requests")
+            .build()
+            .add(1, &attributes);
+        if let Some(duration) = answer_duration {
+            meter
+                .f64_histogram("switchyard.model_call_latency_ms")
+                .build()
+                .record(duration.as_secs_f64() * 1000.0, &attributes);
+        }
+    } else {
+        TOTAL_ERRORS.fetch_add(1, Ordering::Relaxed);
+        meter
+            .u64_counter("switchyard.errors")
+            .build()
+            .add(1, &attributes);
+    }
 }
 
 #[cfg(test)]

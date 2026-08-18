@@ -32,11 +32,11 @@ use std::time::Instant;
 
 use parking_lot::Mutex;
 use switchyard_protocol::{
-    ContentBlock, Decision, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Request,
-    Response, Role, SamplingParams,
+    ContentBlock, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Request, Role,
+    SamplingParams,
 };
 
-use crate::core::algorithm::{Algorithm, Driver};
+use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
 use crate::{LibsyError, Result};
 
 mod telemetry;
@@ -233,12 +233,6 @@ impl AdvisorGate {
         })
     }
 
-    /// One executor Decision; published immediately before each executor call
-    /// so `trace.last()` always names the executor on every return path.
-    fn executor_decision(&self) -> Decision {
-        Decision::new(self.executor.clone(), true)
-    }
-
     // ── Scope ledger ────────────────────────────────────────────────────────
 
     /// Whether the scope's budget or failure cap is spent; logs once per scope.
@@ -324,23 +318,23 @@ impl AdvisorGate {
         driver: &Driver,
         request: Request,
         scope: &ScopeKey,
-    ) -> Result<Response> {
+    ) -> Result<RoutingOutcome> {
         // Spent budget (or failure cap): pure passthrough — live stream,
         // verbatim preserved-body replay, zero buffering. Executor errors
         // (including ContextWindowExceeded) propagate for the host's
         // client-visible mapping.
         if self.check_exhausted(scope) {
-            driver.decide(self.executor_decision()).await?;
-            return driver
-                .call_model(request, vec![self.executor.clone()], true)
-                .await;
+            return Ok(RoutingOutcome::route_to(
+                self.executor.clone(),
+                Vec::new(),
+                request,
+            ));
         }
 
         // Gated phase: generate the turn once, fully buffered, so the gate
         // can inspect it before the client sees anything.
-        driver.decide(self.executor_decision()).await?;
         let response = driver
-            .call_model(request.clone(), vec![self.executor.clone()], true)
+            .call_model(request.clone(), vec![self.executor.clone()])
             .await?;
         let turn = buffer_turn(self.executor.as_str(), response).await?;
 
@@ -362,7 +356,11 @@ impl AdvisorGate {
             }
         };
         if !(triggered || stall) {
-            return Ok(turn.into_response());
+            return Ok(RoutingOutcome::answered(
+                self.executor.clone(),
+                request,
+                turn.into_response(),
+            ));
         }
         // A stall consumed by a simultaneous trigger does not latch, so the
         // checkpoint can still fire later if this review is refunded.
@@ -370,7 +368,11 @@ impl AdvisorGate {
             self.mark_stall_fired(stall_key);
         }
         if !self.try_reserve(scope) {
-            return Ok(turn.into_response());
+            return Ok(RoutingOutcome::answered(
+                self.executor.clone(),
+                request,
+                turn.into_response(),
+            ));
         }
 
         let trigger_label = match (&self.trigger, triggered) {
@@ -385,11 +387,19 @@ impl AdvisorGate {
             .consult(driver, &request, review_tail.as_deref(), trigger_label)
             .await
         {
-            Ok(ConsultOutcome::Approve) => Ok(turn.into_response()),
-            Ok(ConsultOutcome::Redo { plan }) => self.redo(driver, request, turn, &plan).await,
+            Ok(ConsultOutcome::Approve) => Ok(RoutingOutcome::answered(
+                self.executor.clone(),
+                request,
+                turn.into_response(),
+            )),
+            Ok(ConsultOutcome::Redo { plan }) => Ok(self.redo(request, turn, &plan)),
             Ok(ConsultOutcome::Failed) => {
                 self.refund_failure(scope);
-                Ok(turn.into_response())
+                Ok(RoutingOutcome::answered(
+                    self.executor.clone(),
+                    request,
+                    turn.into_response(),
+                ))
             }
             Err(error) => {
                 self.refund_failure(scope);
@@ -401,13 +411,7 @@ impl AdvisorGate {
     /// REDO: the client never sees the gated turn. Its text (or reasoning) is
     /// echoed as an assistant message, the advisor's plan follows as user
     /// feedback, and the executor continues as a pure passthrough call.
-    async fn redo(
-        &self,
-        driver: &Driver,
-        request: Request,
-        turn: GatedTurn,
-        plan: &str,
-    ) -> Result<Response> {
+    fn redo(&self, request: Request, turn: GatedTurn, plan: &str) -> RoutingOutcome {
         record_discarded(&turn.agg.usage);
         emit_discarded_audit(self.executor.as_str(), &turn.agg.usage);
         let echo = visible_text(&turn.agg)
@@ -425,10 +429,7 @@ impl AdvisorGate {
         // preserved pre-surgery body verbatim and the feedback never reaches
         // the executor.
         crate::algorithms::util::prompts::drop_exact_replay(&mut redo);
-        driver.decide(self.executor_decision()).await?;
-        driver
-            .call_model(redo, vec![self.executor.clone()], true)
-            .await
+        RoutingOutcome::route_to(self.executor.clone(), Vec::new(), redo)
     }
 
     /// Consults the advisor over the buffered transcript and parses the
@@ -462,10 +463,8 @@ impl AdvisorGate {
         );
         let consult_request = self.build_consult_request(base, transcript);
         let started = Instant::now();
-        // Judge-style call: the advisor never produces the client's answer,
-        // so no Decision is published for it.
         let reply = match driver
-            .call_model(consult_request, vec![self.advisor.clone()], false)
+            .call_model(consult_request, vec![self.advisor.clone()])
             .await
         {
             Ok(response) => response
@@ -584,7 +583,7 @@ impl Algorithm for AdvisorGate {
         "advisor_gate"
     }
 
-    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         let scope = budget_scope(&request);
         let session_final = request
             .metadata

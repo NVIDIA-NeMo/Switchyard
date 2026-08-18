@@ -10,7 +10,7 @@ use switchyard_protocol::{ResponseOutput, ToolCall, ToolResult, completion_text}
 use futures::StreamExt;
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, ModelId,
-    StopReason,
+    Response, StopReason,
 };
 
 use super::transcript::{NO_TEXT_PLACEHOLDER, TRUNCATION_MARKER, middle_drop};
@@ -270,7 +270,7 @@ async fn approved_terminal_turn_returns_buffered_body() {
     let script = Script::new();
     let gate = gate(AdvisorGateConfig::default());
     let serve = script.serve("APPROVE", |_| reply("all done"));
-    let (trace, response) = test_drive(gate, task_request(), serve)
+    let (selected_model, response) = test_drive(gate, task_request(), serve)
         .await
         .expect("routes");
     assert_eq!(
@@ -278,33 +278,7 @@ async fn approved_terminal_turn_returns_buffered_body() {
         vec![EXECUTOR.to_string(), ADVISOR.to_string()]
     );
     assert_eq!(completion_text(&agg_of(response).await), "all done");
-    // The published trace ends on the executor so hosts attribute the
-    // served model correctly.
-    let last = trace.last().expect("decision published");
-    assert_eq!(last.selected_model_id(), EXECUTOR);
-    assert!(last.is_answer_call());
-}
-
-#[tokio::test]
-async fn advisor_consult_publishes_no_decision() {
-    let script = Script::new();
-    let gate = gate(AdvisorGateConfig::default());
-    let serve = script.serve("APPROVE", |_| reply("done"));
-    let (trace, _) = test_drive(gate, task_request(), serve)
-        .await
-        .expect("routes");
-    // The advisor was consulted...
-    assert_eq!(
-        script.models(),
-        vec![EXECUTOR.to_string(), ADVISOR.to_string()]
-    );
-    // ...but as a judge-style call: no Decision is published for it, so
-    // hosts never attribute the served model to the advisor.
-    assert!(!trace.is_empty());
-    for decision in &trace {
-        assert_eq!(decision.selected_model_id(), EXECUTOR);
-        assert!(decision.is_answer_call());
-    }
+    assert_eq!(selected_model, EXECUTOR);
 }
 
 #[tokio::test]
