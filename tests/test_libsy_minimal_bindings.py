@@ -11,7 +11,6 @@ from switchyard.libsy import (
     Algorithm,
     ContextWindowExceededError,
     CustomClassifierConfig,
-    LibsyError,
     LlmClassifierConfig,
     RoutingOutcome,
     Step,
