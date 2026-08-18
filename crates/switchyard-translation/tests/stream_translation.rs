@@ -5,8 +5,10 @@
 
 pub mod common;
 
+use std::collections::HashMap;
+
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::{Value, json};
 use switchyard_protocol::{LlmResponseStreamEvent, ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
@@ -15,6 +17,48 @@ use switchyard_translation::{
 use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+// Reduces Anthropic stream events to ordered labels (`<block>_start`, `<delta>`,
+// `<block>_stop`) so ordering assertions stay readable without restating each payload.
+fn event_labels(events: &[Value]) -> Vec<String> {
+    let mut block_types: HashMap<u64, String> = HashMap::new();
+    events
+        .iter()
+        .map(|event| {
+            let index = event
+                .get("index")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            match event
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
+                "content_block_start" => {
+                    let block_type = event
+                        .get("content_block")
+                        .and_then(|block| block.get("type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    block_types.insert(index, block_type.clone());
+                    format!("{block_type}_start")
+                }
+                "content_block_delta" => event
+                    .get("delta")
+                    .and_then(|delta| delta.get("type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                "content_block_stop" => {
+                    let block_type = block_types.get(&index).cloned().unwrap_or_default();
+                    format!("{block_type}_stop")
+                }
+                other => other.to_string(),
+            }
+        })
+        .collect()
+}
 
 // Same-format replay returns the same parsed JSON value, including provider-specific fields.
 #[test]
@@ -384,51 +428,15 @@ fn openai_chat_mixed_reasoning_and_content_stream_in_reasoning_first_order() -> 
     )?;
 
     assert_eq!(
-        events,
+        event_labels(&events),
         vec![
-            json!({
-                "type": "message_start",
-                "message": {
-                    "id": "msg_chatcmpl-test",
-                    "type": "message",
-                    "role": "assistant",
-                    "model": "nvidia/nvidia/nemotron-3-ultra-nvfp4",
-                    "content": [],
-                    "stop_reason": null,
-                    "stop_sequence": null,
-                    "usage": {"input_tokens": 0, "output_tokens": 0}
-                }
-            }),
-            json!({
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {
-                    "type": "thinking",
-                    "thinking": "",
-                    "signature": ""
-                }
-            }),
-            json!({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "thinking_delta", "thinking": "."}
-            }),
-            json!({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "signature_delta", "signature": ""}
-            }),
-            json!({"type": "content_block_stop", "index": 0}),
-            json!({
-                "type": "content_block_start",
-                "index": 1,
-                "content_block": {"type": "text", "text": ""}
-            }),
-            json!({
-                "type": "content_block_delta",
-                "index": 1,
-                "delta": {"type": "text_delta", "text": "Hello"}
-            }),
+            "message_start",
+            "thinking_start",
+            "thinking_delta",
+            "signature_delta",
+            "thinking_stop",
+            "text_start",
+            "text_delta",
         ]
     );
     Ok(())
