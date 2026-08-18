@@ -171,7 +171,7 @@ Routed-call compatibility metrics are:
 | `switchyard_classifier_fail_open_total` | counter | `judge_model`, `reason` | Judge failures that made a classifier route without a verdict |
 | `switchyard_client_responses_total` | counter | `outcome` | Final LLM-route responses |
 | `switchyard_upstream_attempts_total` | counter | `outcome`, `code` | Actual upstream HTTP attempts |
-| `switchyard_router_retry_recovered_total` | counter | none | Retry recoveries (currently always zero) |
+| `switchyard_router_retry_recovered_total` | counter | none | Upstream operations recovered by a retry |
 
 `switchyard_classifier_fail_open_total` counts requests that still reached a target after the
 judge call failed. `judge_model` names the configured judge target, and `reason` is one of eight
