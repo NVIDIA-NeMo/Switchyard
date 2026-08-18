@@ -19,6 +19,8 @@ use switchyard_server::{
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+use crate::errors::ServerConfigError;
+
 const DEFAULT_SHUTDOWN_TIMEOUT_SECS: f64 = 2.0;
 
 /// Running loopback server backed entirely by the native Rust implementation.
@@ -38,7 +40,8 @@ impl PyServer {
     #[pyo3(signature = (config, port=0))]
     fn new(config: PathBuf, port: u16) -> PyResult<Self> {
         initialize_observability().map_err(server_error)?;
-        let state = load_server_state(config).map_err(server_error)?;
+        let state = load_server_state(config)
+            .map_err(|error| ServerConfigError::new_err(error.to_string()))?;
         let caller_auth_by_model = state
             .models()
             .map(|model| {
@@ -177,6 +180,7 @@ fn server_error(error: impl std::fmt::Display) -> PyErr {
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let server_module = PyModule::new(module.py(), "server")?;
+    server_module.add("ServerConfigError", module.getattr("ServerConfigError")?)?;
     server_module.add_class::<PyServer>()?;
     module.add_submodule(&server_module)?;
     Ok(())
