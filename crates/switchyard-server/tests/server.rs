@@ -2925,8 +2925,9 @@ async fn advisor_route_redo_fail_open_and_stats_projection() -> TestResult {
     );
 
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-    // State-owned accumulator: three executor answer calls, one failed consult.
-    assert_eq!(stats["models"]["model/executor"]["calls"], 3);
+    // State-owned accumulator: two client-visible executor answers; the discarded REDO attempt
+    // is routing work. The failed advisor consult is counted separately.
+    assert_eq!(stats["models"]["model/executor"]["calls"], 2);
     assert_eq!(stats["classifier"]["total_errors"], 1);
     // Projection deltas for the metrics only this test emits.
     let redo = gate_count(&stats, &["reviews", "redo", "total"])
