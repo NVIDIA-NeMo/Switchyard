@@ -9,10 +9,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use libsy::{
-    Algorithm, ClassifierContractConfig, ClassifierResponseFormat, CustomClassifierConfig,
-    CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig,
-    LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
-    StageRouterConfig, TargetPrompts, TaskClassifierConfig,
+    AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
+    CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger,
+    HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, Random, StageRouter, StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -456,6 +456,53 @@ enum RouteConfig {
         #[serde(default)]
         classifier: Option<StageClassifierConfig>,
     },
+    Advisor {
+        id: ModelId,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
+        /// Serves every client-visible turn; also the count_tokens target.
+        executor_target: String,
+        /// Reviews the executor's first terminal turn. Judge-only, never a
+        /// routing destination.
+        advisor_target: String,
+        #[serde(default)]
+        reviewer_system_prompt: Option<String>,
+        #[serde(default)]
+        redo_feedback_prefix: Option<String>,
+        #[serde(default)]
+        gate_trigger: AdvisorTriggerConfig,
+        #[serde(default)]
+        gate_trigger_pattern: Option<String>,
+        #[serde(default = "default_max_reviews")]
+        max_reviews: u32,
+        #[serde(default)]
+        gate_stall_turns: u32,
+        #[serde(default)]
+        gate_min_tool_results: u32,
+        #[serde(default = "default_advisor_max_tokens")]
+        advisor_max_tokens: u64,
+        #[serde(default)]
+        advisor_temperature: Option<f64>,
+        #[serde(default = "default_transcript_max_chars")]
+        transcript_max_chars: usize,
+        #[serde(default = "default_fail_open")]
+        fail_open: bool,
+    },
+}
+
+/// What fires an advisor route's review.
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum AdvisorTriggerConfig {
+    /// The executor's first turn without tool calls.
+    #[default]
+    NoToolCall,
+    /// The first turn whose text matches `gate_trigger_pattern`.
+    Pattern,
 }
 
 /// The judge a `stage_router` route falls through to, and how it routes.
@@ -504,7 +551,8 @@ impl RouteConfig {
             | Random { id, .. }
             | LlmClassifier { id, .. }
             | Passthrough { id, .. }
-            | StageRouter { id, .. } => id,
+            | StageRouter { id, .. }
+            | Advisor { id, .. } => id,
         }
     }
 
@@ -543,6 +591,11 @@ impl RouteConfig {
                 efficient_target,
                 ..
             } => vec![capable_target, efficient_target],
+            // The advisor is judge-only: reviews go through its own client,
+            // so it is not a completion (or count_tokens) destination.
+            Self::Advisor {
+                executor_target, ..
+            } => vec![executor_target],
         }
     }
 
@@ -560,6 +613,7 @@ impl RouteConfig {
                 classifier: Some(classifier),
                 ..
             } => names.push(&classifier.target),
+            Self::Advisor { advisor_target, .. } => names.push(advisor_target),
             _ => {}
         }
         names
@@ -593,6 +647,12 @@ impl RouteConfig {
                 ..
             }
             | StageRouter {
+                context_window,
+                tool_calling,
+                reasoning,
+                ..
+            }
+            | Advisor {
                 context_window,
                 tool_calling,
                 reasoning,
@@ -1004,7 +1064,74 @@ fn build_algorithm(
             })?;
             Ok(Arc::new(algorithm))
         }
+        RouteConfig::Advisor {
+            executor_target,
+            advisor_target,
+            reviewer_system_prompt,
+            redo_feedback_prefix,
+            gate_trigger,
+            gate_trigger_pattern,
+            max_reviews,
+            gate_stall_turns,
+            gate_min_tool_results,
+            advisor_max_tokens,
+            advisor_temperature,
+            transcript_max_chars,
+            fail_open,
+            ..
+        } => {
+            let executor = resolve_target_model_id(route_name, executor_target, targets)?;
+            let advisor = resolve_target_model_id(route_name, advisor_target, targets)?;
+            // A pattern set under the default trigger would be silently
+            // ignored; reject the misconfiguration instead.
+            if *gate_trigger == AdvisorTriggerConfig::NoToolCall && gate_trigger_pattern.is_some() {
+                return Err(ServerError::new(format!(
+                    "advisor route {route_name}: gate_trigger_pattern requires \
+                     gate_trigger = \"pattern\""
+                )));
+            }
+            let mut config = AdvisorGateConfig::default();
+            if let Some(prompt) = reviewer_system_prompt {
+                config.reviewer_system_prompt = prompt.clone();
+            }
+            if let Some(prefix) = redo_feedback_prefix {
+                config.redo_feedback_prefix = prefix.clone();
+            }
+            config.gate_trigger = match gate_trigger {
+                AdvisorTriggerConfig::NoToolCall => GateTrigger::NoToolCall,
+                AdvisorTriggerConfig::Pattern => {
+                    GateTrigger::Pattern(gate_trigger_pattern.clone().unwrap_or_default())
+                }
+            };
+            config.max_reviews = *max_reviews;
+            config.gate_stall_turns = *gate_stall_turns;
+            config.gate_min_tool_results = *gate_min_tool_results;
+            config.advisor_max_tokens = *advisor_max_tokens;
+            config.advisor_temperature = *advisor_temperature;
+            config.transcript_max_chars = *transcript_max_chars;
+            config.fail_open = *fail_open;
+            let algorithm = AdvisorGate::new(executor, advisor, config).map_err(|error| {
+                ServerError::new(format!("advisor route {route_name}: {error}"))
+            })?;
+            Ok(Arc::new(algorithm))
+        }
     }
+}
+
+const fn default_max_reviews() -> u32 {
+    1
+}
+
+const fn default_advisor_max_tokens() -> u64 {
+    2048
+}
+
+const fn default_transcript_max_chars() -> usize {
+    200_000
+}
+
+const fn default_fail_open() -> bool {
+    true
 }
 
 fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
@@ -1664,5 +1791,123 @@ target = "azure"
                     .contains(&format!("extra_headers cannot set \"{header}\""))
             );
         }
+    }
+
+    const ADVISOR_CONFIG: &str = r#"
+schema_version = 1
+
+[llm_clients.anthropic]
+format = "anthropic_messages"
+base_url = "https://example.test"
+
+[targets.executor]
+id = "executor/model"
+llm_client = "anthropic"
+
+[targets.advisor]
+id = "advisor/model"
+llm_client = "anthropic"
+
+[routes.gated]
+id = "switchyard/advisor"
+type = "advisor"
+executor_target = "executor"
+advisor_target = "advisor"
+"#;
+
+    #[test]
+    fn advisor_route_parses_with_defaults_and_builds() -> ServerResult<()> {
+        let state = server_state_from_toml(ADVISOR_CONFIG)?;
+        assert_eq!(state.models().collect::<Vec<_>>(), ["switchyard/advisor"]);
+        Ok(())
+    }
+
+    #[test]
+    fn advisor_route_accepts_every_gate_knob() -> ServerResult<()> {
+        let tuned = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            concat!(
+                "advisor_target = \"advisor\"\n",
+                "reviewer_system_prompt = \"review it\"\n",
+                "redo_feedback_prefix = \"REVIEWER SAYS: \"\n",
+                "gate_trigger = \"pattern\"\n",
+                "gate_trigger_pattern = 'task_complete[\"\\s>:]*true'\n",
+                "max_reviews = 2\n",
+                "gate_stall_turns = 40\n",
+                "gate_min_tool_results = 1\n",
+                "advisor_max_tokens = 1024\n",
+                "advisor_temperature = 0.0\n",
+                "transcript_max_chars = 100000\n",
+                "fail_open = false\n",
+                "context_window = 200000\n",
+                "tool_calling = true\n",
+                "reasoning = true",
+            ),
+        );
+        server_state_from_toml(&tuned)?;
+        Ok(())
+    }
+
+    #[test]
+    fn advisor_route_rejects_unknown_keys() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"advisor\"\nbogus_field = 1",
+        );
+        assert!(error_message(&invalid).contains("bogus_field"));
+    }
+
+    #[test]
+    fn advisor_route_requires_both_targets() {
+        let missing = ADVISOR_CONFIG.replace("advisor_target = \"advisor\"\n", "");
+        assert!(error_message(&missing).contains("advisor_target"));
+    }
+
+    #[test]
+    fn advisor_route_rejects_unknown_target() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"missing\"",
+        );
+        assert!(error_message(&invalid).contains("missing"));
+    }
+
+    #[test]
+    fn advisor_route_rejects_invalid_pattern() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"advisor\"\ngate_trigger = \"pattern\"\ngate_trigger_pattern = \"(unclosed\"",
+        );
+        assert!(error_message(&invalid).contains("not a valid regex"));
+    }
+
+    #[test]
+    fn advisor_route_rejects_pattern_without_pattern_trigger() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"advisor\"\ngate_trigger_pattern = \"done\"",
+        );
+        assert!(
+            error_message(&invalid)
+                .contains("gate_trigger_pattern requires gate_trigger = \"pattern\"")
+        );
+    }
+
+    #[test]
+    fn advisor_route_pattern_trigger_requires_pattern() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"advisor\"\ngate_trigger = \"pattern\"",
+        );
+        assert!(error_message(&invalid).contains("non-empty gate_trigger_pattern"));
+    }
+
+    #[test]
+    fn advisor_route_rejects_zero_max_reviews() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"advisor\"\nmax_reviews = 0",
+        );
+        assert!(error_message(&invalid).contains("max_reviews must be at least 1"));
     }
 }
