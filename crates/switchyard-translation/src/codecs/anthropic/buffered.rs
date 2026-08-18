@@ -28,11 +28,6 @@ use crate::util::{
     json_string, push_lossy, stable_id, string_value, validate_request_capabilities,
 };
 
-// Schema name applied when converting Anthropic structured output to the neutral
-// contract. Anthropic identifies the schema only by position, while the neutral
-// OpenAI shape requires a name, so requests that arrive this way share one.
-const ANTHROPIC_STRUCTURED_OUTPUT_SCHEMA_NAME: &str = "response";
-
 /// Format codec for Anthropic Messages payloads.
 pub struct AnthropicMessagesCodec;
 
@@ -367,16 +362,8 @@ impl FormatCodec for AnthropicMessagesCodec {
     }
 }
 
-// Reads Anthropic's structured-output schema into the neutral response format.
-//
-// `output_config.format` is the current field; the top-level `output_format` is
-// the earlier beta spelling that Anthropic still accepts, so both are read and
-// the current one wins. The neutral contract is OpenAI-shaped and requires a
-// schema name that Anthropic never sends, so one is supplied here.
-//
-// A format that cannot be mapped is reported rather than dropped in silence: the
-// caller asked for constrained output and would otherwise receive prose with no
-// indication that the constraint never reached the upstream.
+// Reads the current `output_config.format`, or the beta `output_format` it replaced,
+// into the neutral OpenAI-shaped response format.
 fn decode_anthropic_output_format(
     body: &Map<String, Value>,
     diagnostics: &mut Vec<TranslationDiagnostic>,
@@ -406,9 +393,7 @@ fn decode_anthropic_output_format(
         )?;
         return Ok(None);
     }
-    // A non-object schema would be forwarded verbatim into the neutral contract and
-    // reach the upstream as a malformed `json_schema.schema`, so it is refused here
-    // rather than handed on.
+    // A non-object schema would reach the upstream as a malformed `json_schema.schema`.
     let Some(schema) = format.get("schema").filter(|schema| schema.is_object()) else {
         push_lossy(
             diagnostics,
@@ -420,7 +405,8 @@ fn decode_anthropic_output_format(
     Ok(Some(json!({
         "type": "json_schema",
         "json_schema": {
-            "name": ANTHROPIC_STRUCTURED_OUTPUT_SCHEMA_NAME,
+            // Anthropic identifies the schema by position; the neutral shape needs a name.
+            "name": "response",
             "schema": schema.clone(),
         },
     })))
