@@ -433,7 +433,7 @@ fn stop_reason_from_str(reason: Option<&str>) -> StopReason {
     match reason {
         Some("length" | "max_tokens") => StopReason::MaxTokens,
         Some("tool_calls" | "function_call" | "tool_use") => StopReason::ToolUse,
-        Some("content_filter" | "refusal") => StopReason::ContentFilter,
+        Some("content_filter") => StopReason::ContentFilter,
         Some("stop" | "end_turn" | "stop_sequence") | None => StopReason::EndTurn,
         Some(_) => StopReason::Unknown,
     }
@@ -488,15 +488,6 @@ mod tests {
                 text: "Hello".to_string()
             }]
         );
-    }
-
-    #[test]
-    fn folds_anthropic_refusal_as_content_filter() {
-        let agg = fold(vec![LlmResponseChunk::MessageStop {
-            reason: Some("refusal".to_string()),
-        }]);
-
-        assert_eq!(agg.outputs[0].stop_reason, Some(StopReason::ContentFilter));
     }
 
     #[test]

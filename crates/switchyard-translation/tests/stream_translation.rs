@@ -303,43 +303,6 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
     Ok(())
 }
 
-// Verifies streamed moderation stops are not reported to Anthropic clients as normal turns.
-#[test]
-fn openai_content_filter_stream_translates_to_anthropic_refusal() -> TestResult {
-    let engine = TranslationEngine::default();
-    let mut state =
-        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
-    let chunk = json!({
-        "id": "chatcmpl-test",
-        "object": "chat.completion.chunk",
-        "model": "gpt-4o",
-        "choices": [{
-            "index": 0,
-            "delta": {},
-            "finish_reason": "content_filter"
-        }]
-    });
-
-    let mut events = engine.translate_event(
-        &mut state,
-        WireFormat::OpenAiChat,
-        WireFormat::AnthropicMessages,
-        &chunk,
-    )?;
-    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
-
-    let terminal = events
-        .iter()
-        .find(|event| event["type"] == "message_delta")
-        .ok_or("missing Anthropic terminal delta")?;
-    assert_eq!(terminal["delta"]["stop_reason"], "refusal");
-    assert_eq!(
-        terminal["delta"]["stop_details"],
-        json!({"type": "refusal", "category": null, "explanation": null})
-    );
-    Ok(())
-}
-
 // Verifies Anthropic usage and stop events become terminal OpenAI chunks.
 #[test]
 fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
@@ -374,26 +337,78 @@ fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
     Ok(())
 }
 
-// Verifies streamed Anthropic refusals remain distinguishable for OpenAI clients.
+// Verifies streamed moderation stops stay distinguishable from normal turns in both
+// directions, and that a named refusal category survives re-encoding.
 #[test]
-fn anthropic_refusal_stream_translates_to_openai_content_filter() -> TestResult {
+fn content_filter_and_refusal_streams_translate_across_formats() -> TestResult {
     let engine = TranslationEngine::default();
+
+    // An OpenAI moderation stop reaches Anthropic clients as `refusal`, carrying the
+    // null form Anthropic documents for a refusal mapping to no named category.
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "content_filter"}]
+    });
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &chunk,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+    let terminal = events
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+        .ok_or("missing Anthropic terminal delta")?;
+    assert_eq!(terminal["delta"]["stop_reason"], "refusal");
+    assert_eq!(
+        terminal["delta"]["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
+    );
+
+    // The distinction survives the other direction rather than being flattened.
     let mut state =
         StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiChat);
     let delta = json!({
         "type": "message_delta",
-        "delta": {"stop_reason": "refusal"},
+        "delta": {
+            "stop_reason": "refusal",
+            "stop_details": {
+                "type": "refusal",
+                "category": "cyber",
+                "explanation": "This request was declined because it could enable cyber harm."
+            }
+        },
         "usage": {"output_tokens": 1}
     });
-
     let events = engine.translate_event(
         &mut state,
         WireFormat::AnthropicMessages,
         WireFormat::OpenAiChat,
         &delta,
     )?;
-
     assert_eq!(events[0]["choices"][0]["finish_reason"], "content_filter");
+
+    // Re-encoding a streamed refusal keeps the category the source named.
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::AnthropicMessages);
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        WireFormat::AnthropicMessages,
+        &delta,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+    let terminal = events
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+        .ok_or("missing Anthropic terminal delta")?;
+    assert_eq!(terminal["delta"]["stop_reason"], "refusal");
+    assert_eq!(terminal["delta"]["stop_details"]["category"], "cyber");
     Ok(())
 }
 

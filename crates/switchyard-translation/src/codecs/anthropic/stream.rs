@@ -117,6 +117,12 @@ fn decode_anthropic_stream(
                 // Remember the provider stop reason: Anthropic delivers it here, on
                 // `message_delta`, while the terminal `message_stop` carries none of its own.
                 state.stop_reason = Some(stop_reason.to_string());
+                state.stop_details = object
+                    .get("delta")
+                    .and_then(Value::as_object)
+                    .and_then(|delta| delta.get("stop_details"))
+                    .filter(|details| !details.is_null())
+                    .cloned();
                 out.push(LlmResponseChunk::MessageStop {
                     reason: Some(stop_reason.to_string()),
                 });
@@ -265,7 +271,10 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "delta": {
                 "stop_reason": anthropic_stop_reason(state.stop_reason.as_deref()),
                 "stop_sequence": Value::Null,
-                "stop_details": anthropic_stop_details(state.stop_reason.as_deref()),
+                "stop_details": anthropic_stop_details(
+                    state.stop_reason.as_deref(),
+                    state.stop_details.as_ref(),
+                ),
             },
             "usage": anthropic_stream_usage(state),
         }));
@@ -573,23 +582,28 @@ fn anthropic_stop_reason(reason: Option<&str>) -> String {
     match reason {
         Some("length") => "max_tokens".to_string(),
         Some("tool_calls") | Some("function_call") => "tool_use".to_string(),
-        Some("content_filter") => "refusal".to_string(),
-        Some("end_turn")
-        | Some("max_tokens")
-        | Some("tool_use")
-        | Some("stop_sequence")
-        | Some("refusal") => reason.unwrap_or("end_turn").to_string(),
+        Some("content_filter" | "refusal") => "refusal".to_string(),
+        Some(reason @ ("end_turn" | "max_tokens" | "tool_use" | "stop_sequence")) => {
+            reason.to_string()
+        }
         _ => "end_turn".to_string(),
     }
 }
 
-// Emits the metadata object required by Anthropic refusal events.
-fn anthropic_stop_details(reason: Option<&str>) -> Value {
+// Emits the metadata object Anthropic pairs with a `refusal` stop reason.
+//
+// A source that already reported `stop_details` carries the named policy category and
+// its explanation, so replay that object verbatim. Only a refusal synthesized from a
+// provider that reports no category falls back to the null form, which Anthropic
+// documents as the normal value for a refusal that maps to no named category.
+fn anthropic_stop_details(reason: Option<&str>, source: Option<&Value>) -> Value {
     match reason {
-        Some("content_filter" | "refusal") => json!({
-            "type": "refusal",
-            "category": Value::Null,
-            "explanation": Value::Null,
+        Some("content_filter" | "refusal") => source.cloned().unwrap_or_else(|| {
+            json!({
+                "type": "refusal",
+                "category": Value::Null,
+                "explanation": Value::Null,
+            })
         }),
         _ => Value::Null,
     }

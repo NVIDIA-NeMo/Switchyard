@@ -352,7 +352,9 @@ impl FormatCodec for AnthropicMessagesCodec {
                 .unwrap_or("end_turn"),
             "stop_sequence": Value::Null,
             "stop_details": normalized_stop_reason
-                .map(anthropic_stop_details)
+                .map(|reason| {
+                    anthropic_stop_details(reason, response.extensions.fields.get("stop_details"))
+                })
                 .unwrap_or(Value::Null),
             "usage": encode_anthropic_usage(&response.usage),
         });
@@ -996,14 +998,25 @@ fn anthropic_stop_reason(reason: StopReason) -> &'static str {
     }
 }
 
-// Emits the metadata object required by Anthropic refusal responses.
-fn anthropic_stop_details(reason: StopReason) -> Value {
+// Emits the metadata object Anthropic pairs with a `refusal` stop reason.
+//
+// An Anthropic source keeps its `stop_details` in provider extensions, so replay that
+// object and preserve the named policy category and its explanation. Only a refusal
+// synthesized from a provider that reports no category falls back to the null form,
+// which Anthropic documents as the normal value for a refusal that maps to no named
+// category.
+fn anthropic_stop_details(reason: StopReason, source: Option<&Value>) -> Value {
     match reason {
-        StopReason::ContentFilter => json!({
-            "type": "refusal",
-            "category": Value::Null,
-            "explanation": Value::Null,
-        }),
+        StopReason::ContentFilter => source
+            .filter(|details| !details.is_null())
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "type": "refusal",
+                    "category": Value::Null,
+                    "explanation": Value::Null,
+                })
+            }),
         _ => Value::Null,
     }
 }
