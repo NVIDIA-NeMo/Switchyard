@@ -16,6 +16,10 @@ log = logging.getLogger(__name__)
 _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+class NativeServerConfigError(RuntimeError):
+    """Raised when a native server deployment configuration is invalid."""
+
+
 class HttpStatsSource(StatsSource):
     """Read launcher statistics from the native server."""
 
@@ -39,9 +43,12 @@ class NativeServer:
     """Host one TOML deployment through the PyO3 Rust server binding."""
 
     def __init__(self, config: Path) -> None:
-        from switchyard_rust.server import Server
+        from switchyard_rust.server import Server, ServerConfigError
 
-        self._server = Server(config, port=0)
+        try:
+            self._server = Server(config, port=0)
+        except ServerConfigError as exc:
+            raise NativeServerConfigError(str(exc)) from exc
         self.port: int = self._server.port
         self.base_url: str = self._server.base_url
         self.stats: StatsSource = HttpStatsSource(self.base_url)
@@ -55,4 +62,4 @@ class NativeServer:
         self._server.close()
 
 
-__all__ = ["HttpStatsSource", "NativeServer"]
+__all__ = ["HttpStatsSource", "NativeServer", "NativeServerConfigError"]

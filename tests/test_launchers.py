@@ -4,6 +4,7 @@
 """Contract tests for the minimal coding-agent launcher surface."""
 
 import argparse
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,8 +12,8 @@ import pytest
 from switchyard.cli.launch_command import _config_path
 from switchyard.cli.launchers.claude_code_launcher import _claude_env
 from switchyard.cli.launchers.codex_cli_launcher import _codex_env, _provider_overrides
-from switchyard.cli.launchers.native_server import NativeServer
-from switchyard.cli.switchyard_cli import _build_parser
+from switchyard.cli.launchers.native_server import NativeServer, NativeServerConfigError
+from switchyard.cli.switchyard_cli import _build_parser, main
 
 
 def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
@@ -121,6 +122,40 @@ def test_native_server_passes_config_directly_to_binding(
     }
     assert server.port == 4321
     assert config.exists()
+
+
+def test_native_server_identifies_missing_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    with pytest.raises(NativeServerConfigError, match="OPENROUTER_API_KEY"):
+        NativeServer(_config_path(None))
+
+
+def test_cli_prints_configuration_error_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def invalid_config(_args: argparse.Namespace) -> None:
+        raise NativeServerConfigError(
+            "OPENROUTER_API_KEY: environment variable not found"
+        )
+
+    monkeypatch.setattr("switchyard.cli.switchyard_cli.cmd_launch_claude", invalid_config)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["switchyard", "launch", "claude", "--model", "switchyard"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+    assert capsys.readouterr().err == (
+        "error: OPENROUTER_API_KEY: environment variable not found\n"
+    )
 
 
 def test_missing_explicit_config_is_a_cli_error(tmp_path: Path) -> None:

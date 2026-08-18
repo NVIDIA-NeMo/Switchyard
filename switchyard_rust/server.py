@@ -12,6 +12,9 @@ from switchyard_rust._native import load_native
 
 if TYPE_CHECKING:
 
+    class ServerConfigError(RuntimeError):
+        """Raised when a native server deployment configuration is invalid."""
+
     @final
     class Server:
         """Running loopback instance of the native Switchyard server."""
@@ -39,10 +42,10 @@ if TYPE_CHECKING:
 
 
 def __getattr__(name: str) -> object:
-    if name == "Server":
+    if name in {"Server", "ServerConfigError"}:
         native: Any = load_native()
-        return native.server.Server
+        return getattr(native.server, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["Server"]
+__all__ = ["Server", "ServerConfigError"]
