@@ -142,14 +142,9 @@ impl Random {
         let classifier = Arc::new(RandomClassifier::new(targets.clone(), weights, seed)?);
         let inner = FallThrough::<()>::new(targets)
             .with_name("random")
-            .with_decision_reason(random_decision_reason)
             .with_classifier(classifier);
         Ok(Self { inner })
     }
-}
-
-fn random_decision_reason(_name: &str, winner: &Score) -> String {
-    format!("random routing selected target '{}'", winner.target)
 }
 
 #[async_trait]

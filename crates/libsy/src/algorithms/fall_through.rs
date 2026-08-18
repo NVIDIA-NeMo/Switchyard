@@ -91,7 +91,6 @@ impl<S: Send> Classifier<S> for DefaultTarget {
 /// The generic state type is shared by every processor and classifier in the composition.
 pub struct FallThrough<S = ()> {
     name: String,
-    decision_reason: fn(&str, &Score) -> String,
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: Vec<ModelId>,
@@ -104,7 +103,6 @@ impl FallThrough<()> {
     pub fn new(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
-            decision_reason: default_decision_reason,
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -122,7 +120,6 @@ where
     pub fn new_with_state(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
-            decision_reason: default_decision_reason,
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -134,12 +131,6 @@ where
     /// Sets the stable, low-cardinality telemetry name for this composition.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
-        self
-    }
-
-    /// Sets the decision log message for an algorithm assembled from this cascade.
-    pub(crate) fn with_decision_reason(mut self, reason: fn(&str, &Score) -> String) -> Self {
-        self.decision_reason = reason;
         self
     }
 
@@ -273,9 +264,9 @@ where
         // 3. Resolve the target and log the choice.
         algorithm::ensure_model_is_target(&self.targets, &score.target)?;
         let target = score.target.clone();
-        let message = (self.decision_reason)(&self.name, &score);
-        let message = with_routing_tier(message, deciding.routing_tier(&target));
-        tracing::info!("{message}");
+        let tier = deciding.routing_tier(&target);
+        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, tier = ?tier, "Model selected");
+
         // 4. Post-decision replay: every processor sees the selection so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
         for processor in &self.processors {
@@ -323,21 +314,6 @@ fn session_id(request: &Request) -> Option<String> {
         .as_deref()
         .filter(|id| !id.is_empty())
         .map(str::to_string)
-}
-
-fn default_decision_reason(_name: &str, winner: &Score) -> String {
-    format!(
-        "fall-through selected {} (confidence {:.3})",
-        winner.target, winner.confidence
-    )
-}
-
-/// Appends the routing tier to a decision log message when the classifier supplies one.
-fn with_routing_tier(message: String, tier: Option<&str>) -> String {
-    match tier {
-        Some(tier) => format!("{message}; routing tier: {tier}"),
-        None => message,
-    }
 }
 
 #[async_trait]
