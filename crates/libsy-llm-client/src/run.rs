@@ -126,8 +126,7 @@ async fn call_first_available(
     observer: &Option<RunObserver>,
     routed_calls: &Arc<Mutex<RoutedCallWindows>>,
 ) -> Result<Response> {
-    // Skip targets this conversation has already overflowed. The request only grows, so
-    // calling them again would spend a round trip on a rejection we can predict.
+    // A conversation only grows, so a target that overflowed once will overflow again.
     let identity = overflow::identity(&call.request);
     let models = clients
         .overflows
@@ -310,8 +309,7 @@ fn request_for(request: &Request, target: &ModelId) -> Request {
 #[derive(Clone)]
 pub struct ClientRouter {
     routing: Arc<Routing>,
-    /// Targets each conversation has already overflowed. Shared with every clone so the
-    /// history outlives the single request a [`run`] serves.
+    /// Shared with every clone so the history outlives the single request a [`run`] serves.
     overflows: Arc<SessionOverflows>,
 }
 

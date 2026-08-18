@@ -8,17 +8,15 @@ use std::collections::{HashMap, HashSet};
 use parking_lot::Mutex;
 use switchyard_protocol::{ModelId, Request};
 
-/// Bounds process-local history. Dropping an entry costs one rediscovered overflow.
+/// Dropping an entry costs one rediscovered overflow, so the victim choice need not be exact.
 const MAX_IDENTITIES: usize = 1_024;
 
-/// Overflow history keyed by conversation.
 #[derive(Default)]
 pub(crate) struct SessionOverflows {
     by_identity: Mutex<HashMap<String, HashSet<ModelId>>>,
 }
 
 impl SessionOverflows {
-    /// The candidates `identity` has not already overflowed, in the order given.
     /// Never empty while `candidates` is non-empty: a later turn may fit again, so the
     /// caller should get the upstream's answer rather than a routing error.
     pub(crate) fn eligible(&self, identity: Option<&str>, candidates: &[ModelId]) -> Vec<ModelId> {
@@ -41,7 +39,6 @@ impl SessionOverflows {
         }
     }
 
-    /// Remembers that `target` overflowed for `identity`.
     pub(crate) fn record(&self, identity: Option<&str>, target: &ModelId) {
         let Some(identity) = identity else { return };
         let mut history = self.by_identity.lock();
@@ -58,8 +55,7 @@ impl SessionOverflows {
     }
 }
 
-/// A root request keyed by session, a child request by session and agent. A child missing
-/// either ID is untracked rather than sharing its parent's history.
+/// A child missing either ID is untracked rather than sharing its parent's history.
 pub(crate) fn identity(request: &Request) -> Option<String> {
     let metadata = request.metadata.as_ref()?;
     let session = metadata.session_id.as_deref().filter(|id| !id.is_empty())?;
