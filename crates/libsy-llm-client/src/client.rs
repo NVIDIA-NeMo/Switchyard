@@ -222,7 +222,7 @@ impl TranslatingLlmClient {
             strip_unsigned_thinking_blocks(&mut body);
         }
         if matches!(backend, Backend::OpenAiResponses(_)) {
-            strip_unsigned_responses_reasoning(&mut body);
+            normalize_responses_reasoning(&mut body, backend.supports_encrypted_reasoning());
         }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
@@ -679,11 +679,12 @@ fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
-// Removes plaintext reasoning items that strict Responses backends cannot replay.
-// Signed reasoning keeps an empty content array: strict OpenAI requires that the
-// array contain no plaintext, while OpenAI-compatible backends such as llama.cpp
-// require the field itself to remain an array when replaying the item.
-fn strip_unsigned_responses_reasoning(body: &mut Value) {
+// Removes reasoning items that the selected Responses backend cannot replay.
+// Strict authenticated providers retain signed encrypted reasoning with no
+// plaintext. Unauthenticated local backends cannot consume another provider's
+// encrypted reasoning, so they drop signed and unsigned reasoning alike while
+// preserving messages and tool-call history.
+fn normalize_responses_reasoning(body: &mut Value, preserve_signed: bool) {
     let Some(Value::Array(input)) = body.get_mut("input") else {
         return;
     };
@@ -698,10 +699,10 @@ fn strip_unsigned_responses_reasoning(body: &mut Value) {
             object.get("encrypted_content").and_then(Value::as_str),
             Some(encrypted_content) if !encrypted_content.is_empty()
         );
-        if signed {
+        if signed && preserve_signed {
             object.insert("content".to_string(), Value::Array(Vec::new()));
         }
-        signed
+        signed && preserve_signed
     });
 }
 
@@ -904,6 +905,16 @@ mod tests {
         vec![ModelConfig::new(
             "gpt",
             Backend::OpenAiResponses(config(base_url)),
+            None,
+        )]
+    }
+
+    fn local_responses_map(base_url: &str) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.api_key = None;
+        vec![ModelConfig::new(
+            "local",
+            Backend::OpenAiResponses(backend),
             None,
         )]
     }
@@ -1476,6 +1487,72 @@ mod tests {
                 raw,
                 None,
                 Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?;
+        Ok(())
+    }
+
+    // Encrypted hosted reasoning is opaque to a local Responses backend. Dropping
+    // it avoids llama.cpp rejecting a missing or empty `content` array while
+    // retaining the conversation and tool-call history it can consume.
+    #[tokio::test]
+    async fn local_responses_requests_drop_encrypted_reasoning_items()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let Some(input) = body.get("input").and_then(Value::as_array) else {
+                    return false;
+                };
+                input
+                    .iter()
+                    .all(|item| item.get("type").and_then(Value::as_str) != Some("reasoning"))
+                    && input.iter().any(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call")
+                    })
+                    && input.iter().any(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    })
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_local",
+                "object": "response",
+                "model": "local",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client =
+            TranslatingLlmClient::new(&local_responses_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "inspect"}]},
+                {
+                    "type": "reasoning",
+                    "encrypted_content": "opaque-provider-reasoning"
+                },
+                {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+            ]
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("local")),
                 WireFormat::OpenAiResponses,
             )
             .await?;

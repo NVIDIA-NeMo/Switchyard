@@ -175,6 +175,17 @@ impl Backend {
         self.config().forward_auth
     }
 
+    /// Whether a Responses backend can replay provider-encrypted reasoning.
+    ///
+    /// Hosted OpenAI-compatible providers are authenticated either with a
+    /// configured key or caller-forwarded credentials. Unauthenticated
+    /// Responses backends are typically local servers, which cannot consume
+    /// another provider's encrypted reasoning items.
+    pub(crate) fn supports_encrypted_reasoning(&self) -> bool {
+        matches!(self, Backend::OpenAiResponses(_))
+            && (self.config().api_key.is_some() || self.config().forward_auth)
+    }
+
     /// Applies only the caller credential accepted by this provider.
     pub(crate) fn apply_forwarded_auth(
         &self,
