@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 ROLLOUTS = REPO / "benchmark" / "test_time_scaling_rollouts.py"
 GRADES = REPO / "benchmark" / "test_time_scaling_grades.py"
@@ -151,6 +153,8 @@ def test_config_writer_uses_paper_defaults(tmp_path: Path) -> None:
 
 
 def test_saved_patch_includes_new_files() -> None:
+    # The Harbor agent adapter imports `harbor`, which requires Python >= 3.12; skip where absent.
+    pytest.importorskip("harbor")
     module = _load(HARBOR_AGENT, "switchyard_test_time_scaling_harbor_agent")
 
     assert "git -C /testbed add -A" in module.PATCH_COMMAND
