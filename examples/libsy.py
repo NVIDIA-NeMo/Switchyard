@@ -7,7 +7,7 @@
 import asyncio
 from collections.abc import Mapping
 
-from switchyard.libsy import Step, algorithms
+from switchyard.libsy import LlmResponse, Step, algorithms
 
 
 class EchoClient:
@@ -41,13 +41,19 @@ async def main() -> None:
 
     async for step in algorithm.run_stream(request):
         match step:
-            case Step.Decision(decision):
-                print("Decision:", decision.selected_model_id, decision.reasoning)
             case Step.CallModel(call):
-                model = call.decision.selected_model_id
-                call.respond(await client.call(call.request, model))
-            case Step.Done(response):
-                print("Response:", response)
+                call.respond(LlmResponse.Agg(await client.call(call.request, call.models[0])))
+            case Step.Done(outcome):
+                print("Decision:", outcome.selected_model_id)
+                match outcome.response:
+                    case LlmResponse.Agg(response):
+                        print("Response:", response)
+                    case LlmResponse.Stream(stream):
+                        async for event in stream:
+                            print("Response event:", event)
+                    case None:
+                        response = await client.call(outcome.request, outcome.selected_model_id)
+                        print("Response:", response)
 
 
 if __name__ == "__main__":

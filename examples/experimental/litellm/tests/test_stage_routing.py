@@ -7,7 +7,7 @@ import httpx
 import respx
 from switchyard_litellm import LiteLLMSyClient
 
-from switchyard.libsy import Algorithm, Decision, Step, algorithms
+from switchyard.libsy import Algorithm, LlmResponse, Step, algorithms
 
 BASE_URL = "http://gateway.test/v1"
 
@@ -77,17 +77,20 @@ async def _run_router(
     router: Algorithm,
     request: dict[str, object],
     client: LiteLLMSyClient,
-) -> tuple[list[Decision], dict[str, object]]:
-    decisions: list[Decision] = []
+) -> tuple[str, dict[str, object]]:
     async for step in router.run_stream(request):
         match step:
-            case Step.Decision(decision):
-                decisions.append(decision)
             case Step.CallModel(call):
-                call.respond(await client.call(call.request))
-            case Step.Done(response):
-                return decisions, response
-    raise AssertionError("algorithm stream ended without a response")
+                call.respond(LlmResponse.Agg(await client.call(call.request)))
+            case Step.Done(outcome):
+                match outcome.response:
+                    case LlmResponse.Agg(response):
+                        return outcome.selected_model_id, response
+                    case LlmResponse.Stream(_):
+                        raise AssertionError("LiteLLM example expects buffered responses")
+                    case None:
+                        return outcome.selected_model_id, await client.call(outcome.request)
+    raise AssertionError("algorithm stream ended without an outcome")
 
 
 @respx.mock
@@ -109,17 +112,17 @@ async def test_stage_router_drives_both_litellm_models() -> None:
         recent_window=3,
     )
     try:
-        fast_decisions, fast_response = await _run_router(
+        fast_target, fast_response = await _run_router(
             router, request_body(), client
         )
-        strong_decisions, strong_response = await _run_router(
+        strong_target, strong_response = await _run_router(
             router, request_body(critical_error=True), client
         )
     finally:
         await client.aclose()
 
-    assert [item.selected_model_id for item in fast_decisions] == ["fast"]
-    assert [item.selected_model_id for item in strong_decisions] == ["strong"]
+    assert fast_target == "fast"
+    assert strong_target == "strong"
     assert fast_response["outputs"][0]["content"][0]["text"] == "fast"
     assert strong_response["outputs"][0]["content"][0]["text"] == "strong"
     assert seen == ["fast", "strong"]
