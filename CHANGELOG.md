@@ -27,9 +27,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **`Algorithm::route` returns `RoutingOutcome`** — instead of the bare final
-  `Result`, so callers observe the full routing outcome (see #458 for the
-  design). (#459)
+- **`Algorithm::route` returns `Result<RoutingOutcome>`** — instead of the
+  bare final `Result`, so callers observe the full routing outcome (see #458
+  for the design). (#459)
 
 ### Removed
 
