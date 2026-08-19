@@ -34,8 +34,8 @@ uv sync --extra cli      # add prompt-toolkit
 uv sync --all-extras     # everything (dev group is still included by default)
 ```
 
-(`server` is already pulled in by the dev group, so you don't need
-`--extra server` for local development.)
+(There is no `server` extra: the native server is compiled into the wheel by
+maturin through `switchyard-py`.)
 
 ## Project Structure
 
@@ -97,8 +97,9 @@ export OPENAI_API_KEY="sk-..."
 uv run pytest tests/your_e2e_test.py -v -x
 ```
 
-`secrets/secrets.template.json` shows the structure expected by
-`secrets/secrets.json` if you prefer a credential file over env vars.
+The server reads API keys from the environment variables named by each
+client's `api_key_env` key; it does not load a credential file itself.
+`examples/secrets.template.json` is a sample of what those values look like.
 
 ## Human-AI Development Convention
 

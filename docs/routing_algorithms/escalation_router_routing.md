@@ -150,14 +150,15 @@ Read the standard stats endpoint:
 curl -s http://localhost:4000/v1/stats
 ```
 
-The snapshot reports per-model calls, tokens, latency, and cost for the strong
-and weak tiers. Judge calls are recorded in the classifier stats bucket, so their
-token cost and latency remain visible as routing overhead.
+The snapshot reports calls, tokens, and latency per model, so the strong and
+weak tiers show up as their own target-model entries. Judge calls are recorded in
+the classifier stats bucket, so their token usage and latency remain visible as
+routing overhead.
 
-When the server runs with a routing log, successful judge calls also appear in
-per-session routing stats under the judge's model id, tagged with the
-`classifier` tier — so per-session token accounting includes judge overhead
-alongside the tiers the session was served by.
+When the server runs with a routing log, each successful judge call is written
+to the log under the judge's model id, labeled with the `classifier` tier — so
+per-session token accounting counts judge overhead in the judge model's entry,
+alongside the models that actually served the session.
 
 ## When not to use escalation routing
 

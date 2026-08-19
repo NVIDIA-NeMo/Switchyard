@@ -74,15 +74,17 @@ and reasoning.
 ## Routing Algorithms
 
 An algorithm receives the normalized request, publishes a routing decision,
-and serves the selected target. The standalone server supports these primary
-route types:
+and serves the selected target. The standalone server supports these route
+types:
 
 | Route type | Behavior |
 |---|---|
+| `noop` | Returns a canned `OK` response without calling an upstream. |
 | `passthrough` | Sends every request to one target. |
 | `random` | Selects among targets using optional relative weights. |
 | `llm_classifier` | Uses a classifier target to choose between weak and strong targets. |
 | `stage_router` | Uses tool-result and progress signals to choose an efficient or capable target. |
+| `advisor` | Serves turns through an executor while an advisor judge gates terminal turns for rework. |
 
 Strong, weak, capable, and efficient are roles within an algorithm, not fixed
 properties of a model. The same upstream model can serve different roles in

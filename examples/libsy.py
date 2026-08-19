@@ -5,23 +5,22 @@
 """Drive a libsy algorithm stream from Python."""
 
 import asyncio
-from collections.abc import Mapping
 
 from switchyard.libsy import Step, algorithms
 
 
 class EchoClient:
-    """Return a fixed completion for any selected target."""
+    """Return a fixed completion for the model on the request."""
 
-    async def call(
-        self,
-        request: Mapping[str, object],
-        model: str,
-    ) -> Mapping[str, object]:
+    async def call(self, request):
         return {
-            "model": model,
+            "model": request["model"],
             "outputs": [
-                {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]}
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Hello"}],
+                    "stop_reason": "end_turn",
+                }
             ],
         }
 
@@ -41,12 +40,11 @@ async def main() -> None:
 
     async for step in algorithm.run_stream(request):
         match step:
-            case Step.Decision(decision):
-                print("Decision:", decision.selected_model_id, decision.reasoning)
-            case Step.CallModel(call):
-                model = call.decision.selected_model_id
-                call.respond(await client.call(call.request, model))
-            case Step.Done(response):
+            case Step.Done(outcome):
+                response = outcome.response
+                if response is None:
+                    response = await client.call(outcome.request)
+                print("Selected model:", outcome.selected_model_id)
                 print("Response:", response)
 
 

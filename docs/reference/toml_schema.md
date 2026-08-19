@@ -208,6 +208,29 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
 
+### `advisor`
+
+The executor serves every turn; an advisor judge can send a terminal turn
+back for rework. See
+[Advisor-Gate Routing](../routing_algorithms/advisor_gate_routing.md) for gate
+behavior and tuning.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `executor_target` | Yes | — | Target that serves every turn and answers `count_tokens` calls. |
+| `advisor_target` | Yes | — | Judge-only target. Not a routing destination. |
+| `reviewer_system_prompt` | No | packaged prompt | System prompt for the advisor's review call (the APPROVE/REDO contract). |
+| `redo_feedback_prefix` | No | packaged prefix | Text prepended to the advisor's REDO plan when it is fed back to the executor. |
+| `gate_trigger` | No | `no_tool_call` | `no_tool_call` reviews the first turn without tool calls; `pattern` reviews the first turn whose visible text matches `gate_trigger_pattern`. |
+| `gate_trigger_pattern` | No | unset | Regex (searched, not anchored) for the `pattern` trigger. Required when `gate_trigger = "pattern"`; rejected while `no_tool_call` is in effect. |
+| `max_reviews` | No | `1` | Reviews allowed per budget scope. Must be at least `1`. |
+| `gate_stall_turns` | No | `0` | When above `0`, also review (once per conversation) the first request already carrying at least this many assistant turns. `0` disables it. |
+| `gate_min_tool_results` | No | `0` | For the `no_tool_call` trigger: only review once the conversation carries at least this many tool results. `0` reviews from the first terminal turn. |
+| `advisor_max_tokens` | No | `2048` | Cap on the advisor's output per consult. |
+| `advisor_temperature` | No | unset | Sampling temperature for the consult. Unset omits it from the wire request. |
+| `transcript_max_chars` | No | `200000` | Cap on the serialized transcript handed to the advisor; the middle of an over-cap conversation is dropped. |
+| `fail_open` | No | `true` | `true` degrades a failed consult to APPROVE; `false` propagates it as the turn's error. |
+
 ## Validation Errors
 
 `--dry-run` prefixes configuration failures with

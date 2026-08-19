@@ -225,14 +225,18 @@ references, and route construction without starting the server.
 
 Check health: `curl http://localhost:4000/health`
 
-**Telemetry header opt-out**
+**Telemetry opt-out**
 
-Switchyard adds an `X-Switchyard-Version` header to outbound LLM calls for
-release attribution. No request or response content is included. To disable:
+The server exports traces and metrics with OpenTelemetry. Remote OTLP export
+is off by default and only activates when you set an OTLP endpoint such as
+`OTEL_EXPORTER_OTLP_ENDPOINT`. To disable telemetry entirely:
 
 ```bash
-export SWITCHYARD_TELEMETRY_OPT_OUT=1
+export OTEL_SDK_DISABLED=1
 ```
+
+Or disable a single signal: `OTEL_TRACES_EXPORTER=none` or
+`OTEL_METRICS_EXPORTER=none`.
 
 ---
 

@@ -90,8 +90,8 @@ ready.
 The same tag publishes these crates to crates.io in dependency order:
 
 1. `switchyard-protocol`
-2. `switchyard-libsy`
-3. `switchyard-translation`
+2. `switchyard-translation`
+3. `switchyard-libsy`
 4. `switchyard-llm-client`
 5. `switchyard-server`
 

@@ -25,13 +25,35 @@ A JSON summary of the same traffic lives at `GET /v1/stats`.
 | `switchyard_total_requests` | gauge | Successful and failed routed model calls since process start. Classifier and judge calls are excluded; a context-window fallback can add another routed call. |
 | `switchyard_total_errors` | gauge | Failed routed model calls since process start. |
 
+## Run, decision, and call counters
+
+Instrument names in the code use the OTel dotted form (`switchyard.runs`,
+`switchyard.stage_router.score`, ...); the Prometheus exporter sanitizes the
+dots to underscores and appends `_total` to counters, same as the other
+families in this document.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `switchyard_build_info{version}` | gauge | `1` at process start, with the server version as the `version` label. |
+| `switchyard_runs_total{algorithm,outcome}` | counter | One per completed run of a routing algorithm; `outcome` is `ok` or `error`. |
+| `switchyard_run_duration_ms{algorithm,outcome}` | histogram | Wall-clock duration of one routing-algorithm run, in milliseconds. |
+| `switchyard_decisions_total{algorithm,selected_model}` | counter | One per run that resolves a target model. |
+| `switchyard_llm_calls_total{algorithm,selected_model,outcome}` | counter | One per model call the router makes — algorithm-layer calls (classifier, judge, advisor) plus the terminal routed answer call. |
+| `switchyard_llm_call_duration_ms{algorithm,selected_model,outcome}` | histogram | Wall-clock duration of one of those model calls, in milliseconds. |
+
+`algorithm` is the routing algorithm's name (e.g. `stage_router`,
+`llm_classifier`). `selected_model` is the model ID the call targeted — always
+a real model, never `none`.
+
 ## Per-endpoint counters
 
 The `model` label is the configured endpoint id (`openai/gpt-5.5`,
 `azure_openai/gpt-5.5`, etc.).
 
-The `tier` label is optional. It is present when an algorithm defines a stable
-tier for the selected model, such as `strong` or `weak` for a two-tier classifier.
+The `tier` label is not exported on any of these families. The routing tier
+(`strong`/`weak`) is a per-request routing decision and is recorded, when the
+routing log is enabled, in the server's JSONL routing log (`tier` field) — not as
+a Prometheus label.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -69,6 +91,36 @@ Each histogram emits `_bucket`, `_sum`, and `_count` series. Use
 `upstream_5xx`, `upstream_non_5xx`, `invalid_response`, `parse_error`, `client_error`, or
 `call_error`. The labels never include request or response text.
 
+## Stage router metrics
+
+Present when the routing algorithm is `stage_router`: one decision counter and
+six distributions per turn.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `switchyard_stage_router_routing_decisions_total{decision_source,target_name}` | counter | One per turn's final routing choice. `decision_source` is one of `override`, `tests_passed`, `dimensions`, `ambiguous`, `llm-classifier`, or `fall_open`; `target_name` is the model name the turn routed to (one of the router's two tier endpoints). |
+| `switchyard_stage_router_score` | histogram | The stage scorer's signed routing score (positive favors the capable side, negative the efficient side). |
+| `switchyard_stage_router_confidence` | histogram | The decision confidence used to resolve or defer the turn. |
+| `switchyard_stage_router_severity` | histogram | Detected tool-failure severity for the turn. |
+| `switchyard_stage_router_spinning` | histogram | Repeated unproductive tool activity for the turn. |
+| `switchyard_stage_router_exploring` | histogram | Exploratory tool activity for the turn. |
+| `switchyard_stage_router_production_intensity` | histogram | Production-oriented tool activity for the turn. |
+
+The six histograms carry no labels. The score uses buckets from `-1` to `1`
+in 0.25 steps; the other five use `[0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]`.
+
+## Advisor gate metrics
+
+Present when the routing algorithm is `advisor_gate` (opt-in); otherwise
+absent from the scrape.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `switchyard_advisor_gate_reviews_total{verdict,trigger}` | counter | One per advisor-model consultation. `verdict` is `approve`, `redo`, or `unparseable`; `trigger` is `pattern`, `no_tool_call`, or `stall`. |
+| `switchyard_advisor_gate_consult_failures_total{reason}` | counter | One per advisor call that failed before a verdict; `reason` from the same bounded set as the classifier fail-open reasons, minus `parse_error`. |
+| `switchyard_advisor_gate_discarded_turns_total` | counter | One per executor turn discarded on a `redo` verdict. |
+| `switchyard_advisor_gate_discarded_tokens_total{kind}` | counter | Tokens consumed by that discarded turn; `kind` is `input`, `cached`, `cache_creation`, or `output`. |
+
 ## Outcome counters for error-rate ratios
 
 The `outcome` label takes exactly three values:
@@ -97,7 +149,7 @@ The `outcome` label takes exactly three values:
 
 `outcome` is fully determined by `code`, so adding the label does not
 multiply series. You get one series per distinct code either way. The
-canonical codes (`200`, `429`, `500`, `504`, `none`) are seeded at `0` so
+canonical codes (`200`, `404`, `429`, `500`, `504`, `none`) are seeded at `0` so
 their time series exist from process start (a `rate()` over a never-seen
 counter reads as "no data", not zero).
 
@@ -149,10 +201,14 @@ into label space.
 | `outcome` | Exactly 3: `success`, `retryable_error`, `other_error`. | Outcome counters |
 | `code` | Bounded: the known-code allowlist (`200`, `400`, `401`, `403`, `404`, `408`, `409`, `422`, `429`, `500`, `502`, `503`, `504`), plus `none` and the per-class buckets `1xx`/`2xx`/`3xx`/`4xx`/`5xx`/`other`. About 20 values max. | `switchyard_upstream_attempts_total` |
 | `le` | The configured histogram bucket boundaries. | Histogram buckets |
-| `algorithm` | One stable value per configured algorithm. | Routing-overhead histogram |
-| `tier` | Small enumerated set, optional. | Per-endpoint counters and histograms on algorithms that supply it |
+| `algorithm` | One stable value per configured algorithm. | Routing-overhead histogram, run and call counters |
+| `decision_source` | Exactly 6: `override`, `tests_passed`, `dimensions`, `ambiguous`, `llm-classifier`, `fall_open`. | Stage-router decision counter |
+| `target_name` | One per configured endpoint. | Stage-router decision counter |
+| `selected_model` | One per configured endpoint (always a real model ID). | Decision and call counters |
+| `reason` | Bounded error categories: `timeout`, `transport`, `upstream_5xx`, `upstream_non_5xx`, `invalid_response`, `parse_error`, `client_error`, `call_error` (consult failures use that set minus `parse_error`). | Classifier fail-open counter, advisor-gate consult-failure counter |
+| `kind` | Exactly 4: `input`, `cached`, `cache_creation`, `output`. | Advisor-gate discarded-token counter |
 | `judge_model` | One per configured judge target. | Classifier fail-open counter |
-| `reason` | Exactly 8 fixed error categories. | Classifier fail-open counter |
+| `version` | One value: the server version. | `switchyard_build_info` |
 
 ## Triage cheatsheet
 
