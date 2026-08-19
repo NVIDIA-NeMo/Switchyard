@@ -348,11 +348,11 @@ enum PyLlmResponse {
 }
 
 impl PyLlmResponse {
-    fn to_core(&self, py: Python<'_>) -> PyResult<LlmResponse> {
+    fn to_core(&self, py: Python<'_>, model: ModelId) -> PyResult<LlmResponse> {
         match self {
             Self::Agg { response } => from_python(response.bind(py)).map(LlmResponse::Agg),
             Self::Stream { stream } => {
-                python_response_stream(py, stream.clone_ref(py)).map(LlmResponse::Stream)
+                python_response_stream(py, stream.clone_ref(py), model).map(LlmResponse::Stream)
             }
         }
     }
@@ -364,12 +364,27 @@ fn ffi_error(error: PyErr) -> LlmClientError {
     }
 }
 
-fn python_response_stream(py: Python<'_>, stream: Py<PyAny>) -> PyResult<LlmResponseStream> {
+fn python_client_error(py: Python<'_>, error: PyErr, model: &ModelId) -> LlmClientError {
+    if error.is_instance_of::<ContextWindowExceededError>(py) {
+        LlmClientError::ContextWindowExceeded {
+            model: model.clone(),
+            message: error.value(py).to_string(),
+        }
+    } else {
+        ffi_error(error)
+    }
+}
+
+fn python_response_stream(
+    py: Python<'_>,
+    stream: Py<PyAny>,
+    model: ModelId,
+) -> PyResult<LlmResponseStream> {
     let iterator = stream.bind(py).call_method0("__aiter__")?.unbind();
     // Rust polls on Tokio, so retain the Python task's event loop and context for every item.
     let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
-    let stream = futures::stream::unfold(Some((iterator, locals)), |state| async move {
-        let (iterator, locals) = state?;
+    let stream = futures::stream::unfold(Some((iterator, locals, model)), |state| async move {
+        let (iterator, locals, model) = state?;
         let next = Python::attach(|py| {
             pyo3_async_runtimes::into_future_with_locals(
                 &locals,
@@ -382,13 +397,14 @@ fn python_response_stream(py: Python<'_>, stream: Py<PyAny>) -> PyResult<LlmResp
                     let event =
                         Python::attach(|py| from_python::<LlmResponseStreamEvent>(item.bind(py)))
                             .map_err(ffi_error);
-                    Some((event, Some((iterator, locals))))
+                    Some((event, Some((iterator, locals, model))))
                 }
                 Err(error) => {
                     if Python::attach(|py| error.is_instance_of::<PyStopAsyncIteration>(py)) {
                         None
                     } else {
-                        Some((Err(ffi_error(error)), None))
+                        let error = Python::attach(|py| python_client_error(py, error, &model));
+                        Some((Err(error), None))
                     }
                 }
             },
@@ -447,7 +463,17 @@ impl PyModelCall {
 
     /// Fulfill this call with a normalized aggregate or streamed response.
     fn respond(&mut self, py: Python<'_>, response: PyRef<'_, PyLlmResponse>) -> PyResult<()> {
-        let llm_response = response.to_core(py)?;
+        let model = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| py_libsy_error("model call has already been completed"))?
+            .request
+            .llm_request
+            .model
+            .as_ref()
+            .map(ModelId::new)
+            .ok_or_else(|| py_libsy_error("model call request is missing its selected model"))?;
+        let llm_response = response.to_core(py, model)?;
         let call = self.take()?;
         let metadata = call.request.metadata.clone();
         call.respond(Ok(Response {
@@ -462,23 +488,18 @@ impl PyModelCall {
         if !error.is_instance_of::<PyBaseException>() {
             return Err(PyTypeError::new_err("error must derive from BaseException"));
         }
+        let target = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| py_libsy_error("model call has already been completed"))?
+            .request
+            .llm_request
+            .model
+            .as_ref()
+            .map(ModelId::new)
+            .ok_or_else(|| py_libsy_error("model call request is missing its selected model"))?;
         let call = self.take()?;
-        let target = call
-            .models
-            .first()
-            .cloned()
-            .ok_or(RustLibsyError::NoTargets)
-            .map_err(py_libsy_error)?;
-        let source = if error.is_instance_of::<ContextWindowExceededError>() {
-            LlmClientError::ContextWindowExceeded {
-                model: target.clone(),
-                message: error.str()?.to_string_lossy().into_owned(),
-            }
-        } else {
-            LlmClientError::Ffi {
-                source: Box::new(PyErr::from_value(error.clone())),
-            }
-        };
+        let source = python_client_error(error.py(), PyErr::from_value(error.clone()), &target);
         call.respond(Err(RustLibsyError::client_call(target, source)))
             .map_err(py_libsy_error)
     }

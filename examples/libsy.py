@@ -4,8 +4,9 @@
 
 """Drive a libsy algorithm stream from Python."""
 
+import argparse
 import asyncio
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 
 from switchyard.libsy import LlmResponse, Step, algorithms
 
@@ -13,26 +14,52 @@ from switchyard.libsy import LlmResponse, Step, algorithms
 class EchoClient:
     """Return a fixed completion for any selected target."""
 
+    def __init__(self, *, stream: bool) -> None:
+        self.stream = stream
+
     async def call(
         self,
         request: Mapping[str, object],
         model: str,
-    ) -> Mapping[str, object]:
-        return {
-            "model": model,
-            "outputs": [
-                {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]}
-            ],
-        }
+    ) -> LlmResponse.Agg | LlmResponse.Stream:
+        if self.stream:
+
+            async def events() -> AsyncIterator[Mapping[str, object]]:
+                yield {
+                    "preservation": None,
+                    "normalized": [{"MessageStart": {"id": "echo", "model": model}}],
+                }
+                yield {
+                    "preservation": None,
+                    "normalized": [{"TextDelta": {"index": 0, "text": "Hello"}}],
+                }
+                yield {
+                    "preservation": None,
+                    "normalized": [{"MessageStop": {"reason": "end_turn"}}],
+                }
+
+            return LlmResponse.Stream(events())
+
+        return LlmResponse.Agg(
+            {
+                "model": model,
+                "outputs": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Hello"}],
+                    }
+                ],
+            }
+        )
 
 
-async def main() -> None:
+async def main(*, stream: bool) -> None:
     """Run random routing and serve its selected target."""
     request = {
         "model": "auto",
         "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
     }
-    client = EchoClient()
+    client = EchoClient(stream=stream)
     algorithm = algorithms.random(
         ["fast", "quality"],
         weights=[1, 3],
@@ -42,19 +69,23 @@ async def main() -> None:
     async for step in algorithm.run_stream(request):
         match step:
             case Step.CallModel(call):
-                call.respond(LlmResponse.Agg(await client.call(call.request, call.models[0])))
+                call.respond(await client.call(call.request, call.models[0]))
             case Step.Done(outcome):
                 print("Decision:", outcome.selected_model_id)
-                match outcome.response:
-                    case LlmResponse.Agg(response):
-                        print("Response:", response)
-                    case LlmResponse.Stream(stream):
-                        async for event in stream:
+                response = outcome.response or await client.call(
+                    outcome.request,
+                    outcome.selected_model_id,
+                )
+                match response:
+                    case LlmResponse.Agg(aggregate_response):
+                        print("Response:", aggregate_response)
+                    case LlmResponse.Stream(response_stream):
+                        async for event in response_stream:
                             print("Response event:", event)
-                    case None:
-                        response = await client.call(outcome.request, outcome.selected_model_id)
-                        print("Response:", response)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--stream", action="store_true", help="return response events")
+    args = parser.parse_args()
+    asyncio.run(main(stream=args.stream))
