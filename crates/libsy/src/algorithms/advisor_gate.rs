@@ -32,8 +32,8 @@ use std::time::Instant;
 
 use parking_lot::Mutex;
 use switchyard_protocol::{
-    ContentBlock, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Request, Role,
-    SamplingParams,
+    ContentBlock, Decision, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Request,
+    Role, SamplingParams,
 };
 
 use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
@@ -324,6 +324,7 @@ impl AdvisorGate {
         // (including ContextWindowExceeded) propagate for the host's
         // client-visible mapping.
         if self.check_exhausted(scope) {
+            driver.decide(Decision::new(self.executor.clone(), true), HashMap::new()).await?;
             return Ok(RoutingOutcome::route_to(
                 self.executor.clone(),
                 Vec::new(),
@@ -333,6 +334,7 @@ impl AdvisorGate {
 
         // Gated phase: generate the turn once, fully buffered, so the gate
         // can inspect it before the client sees anything.
+        driver.decide(Decision::new(self.executor.clone(), true), HashMap::new()).await?;
         let response = driver
             .call_model(request.clone(), vec![self.executor.clone()])
             .await?;

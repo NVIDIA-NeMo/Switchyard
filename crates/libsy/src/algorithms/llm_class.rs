@@ -219,6 +219,14 @@ impl JudgePolicy for TaskClassifierPolicy {
             confidence: 1.0,
         }])
     }
+
+    fn record_to_state(&self, verdict: Option<&Self::Verdict>, state: &mut State) {
+        let Some(verdict) = verdict else { return };
+        state.extra.insert("judge_p_solve".into(), StateValue::Scalar(verdict.p_solve as f32));
+        state.extra.insert("judge_crux".into(), StateValue::String(verdict.crux.clone()));
+        state.extra.insert("judge_primary_rule".into(), StateValue::String(verdict.primary_rule.clone()));
+        state.extra.insert("judge_capability_boundary".into(), StateValue::String(verdict.capability_boundary.clone()));
+    }
 }
 
 #[derive(Clone, Debug)]

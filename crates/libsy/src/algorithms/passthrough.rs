@@ -3,6 +3,7 @@
 
 //! Direct parent routing with an optional delegated-work classifier cascade.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use switchyard_protocol::{ModelId, Request};

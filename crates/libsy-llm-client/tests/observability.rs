@@ -10,7 +10,7 @@
 //! and model name. Counters are cumulative across flushes; the helpers take the
 //! latest (max) matching data point.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -39,7 +39,7 @@ use switchyard_libsy::{
     StageRouterConfig, Step, TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
-use switchyard_protocol::ModelId;
+use switchyard_protocol::{Decision, ModelId};
 use switchyard_protocol::{
     ContentBlock, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
     RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
@@ -476,6 +476,7 @@ impl Algorithm for SingleCallAlgo {
             .ok_or(LibsyError::NoTargets)?
             .clone();
         tracing::info!("picked '{target}'");
+        driver.decide(Decision::new(target.clone(), true), HashMap::new()).await?;
         Ok(RoutingOutcome::route_to(target.into(), Vec::new(), request))
     }
 }
@@ -1205,6 +1206,7 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
             Ok(Step::CallModel(call)) => {
                 call.respond(Err(test_error("synthetic upstream failure")))?;
             }
+            Ok(Step::Decision { .. }) => {}
             Ok(Step::Done(_)) => {
                 return Err(test_error("expected the failed call to fail the run"));
             }

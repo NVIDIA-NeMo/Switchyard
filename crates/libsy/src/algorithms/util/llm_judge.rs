@@ -200,6 +200,11 @@ pub trait JudgePolicy: Send + Sync {
     type Verdict: Send + Sync;
 
     fn to_classification(&self, verdict: Option<&Self::Verdict>) -> Classification;
+
+    /// Write verdict-derived signals to `state.extra` for downstream observers.
+    /// The default no-op is suitable for policies that expose no additional metadata.
+    #[allow(unused_variables)]
+    fn record_to_state(&self, verdict: Option<&Self::Verdict>, state: &mut State) {}
 }
 
 /// A classifier that calls one judge target and routes through its verdict policy.
@@ -333,6 +338,7 @@ where
             });
         };
         let verdict = self.verdict(state, request, driver).await;
+        self.policy.record_to_state(verdict.as_ref(), state);
         // A judge consultation is a side call, never the turn's answer.
         Ok((self.policy.to_classification(verdict.as_ref()), None))
     }

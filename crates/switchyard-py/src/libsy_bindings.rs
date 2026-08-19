@@ -15,12 +15,12 @@ use switchyard_libsy::{
     Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger,
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
-    PickerMode, Random, RoutingOutcome, StageRouter, StageRouterConfig, Step as RustStep,
-    StepStream, TaskClassifierConfig,
+    PickerMode, Random, RoutingOutcome, StageRouter, StageRouterConfig, StateValue,
+    Step as RustStep, StepStream, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId,
-    Request, Response,
+    Decision, LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata,
+    ModelId, Request, Response,
 };
 use tokio::sync::Mutex;
 
@@ -345,6 +345,20 @@ impl PyLlmFallback {
     }
 }
 
+/// A routing choice produced by an algorithm.
+#[pyclass(name = "Decision", module = "switchyard.libsy", frozen)]
+struct PyDecision {
+    inner: Decision,
+    /// Routing metadata snapshot from `state.extra` at decision time.
+    extra: HashMap<String, StateValue>,
+}
+
+impl From<Decision> for PyDecision {
+    fn from(inner: Decision) -> Self {
+        Self { inner, extra: HashMap::new() }
+    }
+}
+
 /// A normalized aggregate response or a live stream of normalized response events.
 #[pyclass(name = "LlmResponse", module = "switchyard.libsy", frozen)]
 enum PyLlmResponse {
@@ -381,6 +395,39 @@ fn python_client_error(py: Python<'_>, error: PyErr, model: &ModelId) -> LlmClie
         }
     } else {
         ffi_error(error)
+    }
+}
+
+#[pymethods]
+impl PyDecision {
+    /// The model id selected by the routing decision.
+    #[getter]
+    fn selected_model_id(&self) -> &str {
+        self.inner.selected_model_id()
+    }
+
+    /// Return the scalar routing metadata value for `key`, or `None` if absent or non-scalar.
+    fn get(&self, key: &str) -> Option<f32> {
+        match self.extra.get(key)? {
+            StateValue::Scalar(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Return the string routing metadata value for `key`, or `None` if absent or non-string.
+    fn get_str(&self, key: &str) -> Option<String> {
+        match self.extra.get(key)? {
+            StateValue::String(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Decision(selected_model_id={:?}, is_answer_call={})",
+            self.inner.selected_model_id(),
+            self.inner.is_answer_call()
+        )
     }
 }
 
@@ -601,6 +648,8 @@ fn response_to_python(py: Python<'_>, response: LlmResponse) -> PyResult<Py<PyAn
 enum PyStep {
     /// The host must serve the model call before the algorithm can continue.
     CallModel { call: Py<PyModelCall> },
+    /// A routing decision published by the algorithm as it happens.
+    Decision { decision: Py<PyDecision> },
     /// The terminal routing outcome.
     Done { outcome: Py<PyRoutingOutcome> },
 }
@@ -675,6 +724,11 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
         RustStep::CallModel(call) => Python::attach(|py| {
             Ok(PyStep::CallModel {
                 call: Py::new(py, PyModelCall::new(py, *call)?)?,
+            })
+        }),
+        RustStep::Decision { decision, extra } => Python::attach(|py| {
+            Ok(PyStep::Decision {
+                decision: Py::new(py, PyDecision { inner: decision, extra })?,
             })
         }),
         RustStep::Done(outcome) => {
@@ -856,6 +910,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     libsy_module.add_class::<PyLlmFallback>()?;
     libsy_module.add_class::<PyLlmResponse>()?;
     libsy_module.add_class::<PyLlmResponseStream>()?;
+    libsy_module.add_class::<PyDecision>()?;
     libsy_module.add_class::<PyModelCall>()?;
     libsy_module.add_class::<PyRunStream>()?;
     libsy_module.add_class::<PyRoutingOutcome>()?;

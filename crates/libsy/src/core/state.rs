@@ -32,3 +32,26 @@ pub struct State {
     /// Algorithm-specific state keyed by stable internal names.
     pub extra: HashMap<String, StateValue>,
 }
+
+/// Provides access to the [`StateValue`] map accumulated during algorithm execution.
+///
+/// Implemented on state types that carry routing metadata. The map is cloned once and
+/// attached to the published [`crate::core::algorithm::Step::Decision`], so downstream
+/// observers (e.g. Python bindings) can read signal fields without parsing log output.
+pub trait WithExtra {
+    /// Returns a snapshot of the extra routing metadata accumulated so far.
+    fn routing_extra(&self) -> HashMap<String, StateValue>;
+}
+
+impl WithExtra for State {
+    fn routing_extra(&self) -> HashMap<String, StateValue> {
+        self.extra.clone()
+    }
+}
+
+/// Stateless compositions carry no extra; callers receive an empty map.
+impl WithExtra for () {
+    fn routing_extra(&self) -> HashMap<String, StateValue> {
+        HashMap::new()
+    }
+}

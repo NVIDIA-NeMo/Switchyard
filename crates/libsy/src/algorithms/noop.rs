@@ -3,11 +3,12 @@
 
 //! Test-only algorithm that returns a hard-coded response without calling a backend.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use switchyard_protocol::{
-    AggLlmResponse, ContentBlock, LlmResponse, ModelId, Request, Response, ResponseOutput, Role,
-    StopReason,
+    AggLlmResponse, ContentBlock, Decision, LlmResponse, ModelId, Request, Response,
+    ResponseOutput, Role, StopReason,
 };
 
 use crate::core::algorithm::{Algorithm, Driver};
@@ -22,12 +23,13 @@ impl Algorithm for Noop {
         "noop"
     }
 
-    async fn route(self: Arc<Self>, _driver: Driver, request: Request) -> Result<RoutingOutcome> {
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         let streaming = request.llm_request.stream;
         let model_id = request
             .model_id()
             .unwrap_or_else(|| ModelId::from("switchyard/noop"));
         tracing::info!(target = %model_id, "noop returned its synthetic response");
+        driver.decide(Decision::new(model_id.clone(), true), HashMap::new()).await?;
         let aggregate = AggLlmResponse {
             id: Some("switchyard-noop".to_string()),
             model: Some(model_id.to_string()),

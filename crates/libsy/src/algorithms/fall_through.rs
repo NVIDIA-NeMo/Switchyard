@@ -29,8 +29,9 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
+use crate::core::state::WithExtra;
 use crate::{LibsyError, Result, RoutingOutcome};
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{Decision, ModelId, Request, Response};
 
 struct SessionState<S> {
     state: Arc<AsyncMutex<S>>,
@@ -114,7 +115,7 @@ impl FallThrough<()> {
 
 impl<S> FallThrough<S>
 where
-    S: Default + Send + 'static,
+    S: Default + Send + WithExtra + 'static,
 {
     /// Creates a router that retains one private `S` per session.
     pub fn new_with_state(targets: Vec<ModelId>) -> Self {
@@ -272,6 +273,7 @@ where
                 .find_map(|c| c.routing_tier(&target))
         });
         tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, tier = ?tier, "Model selected");
+        driver.decide(Decision::new(target.clone(), true), state.routing_extra()).await?;
 
         // 4. Post-decision replay: every processor sees the selection so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
@@ -325,7 +327,7 @@ fn session_id(request: &Request) -> Option<String> {
 #[async_trait]
 impl<S> Algorithm for FallThrough<S>
 where
-    S: Default + Send + 'static,
+    S: Default + Send + WithExtra + 'static,
 {
     fn name(&self) -> &str {
         &self.name
@@ -343,7 +345,14 @@ mod tests {
     use crate::{SystemPromptProcessor, TargetPrompts};
 
     use crate::core::testing::{Serve, echo, reply, test_drive};
+    use crate::StateValue;
     use switchyard_protocol::{LlmRequest, Message, Metadata, Role, completion_text, text_request};
+
+    impl WithExtra for u32 {
+        fn routing_extra(&self) -> HashMap<String, StateValue> {
+            HashMap::new()
+        }
+    }
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
@@ -515,7 +524,7 @@ mod tests {
         serve: impl Serve,
     ) -> Result<(String, ModelId)>
     where
-        S: Default + Send + 'static,
+        S: Default + Send + WithExtra + 'static,
     {
         let (selected_model, response) = test_drive(router.clone(), request, serve).await?;
         let text = response
@@ -533,7 +542,7 @@ mod tests {
         serve: impl Serve,
     ) -> Result<(String, ModelId)>
     where
-        S: Default + Send + 'static,
+        S: Default + Send + WithExtra + 'static,
     {
         run_request(router, request(), serve).await
     }
@@ -838,6 +847,12 @@ mod tests {
         #[derive(Default)]
         struct TurnState {
             count: u32,
+        }
+
+        impl WithExtra for TurnState {
+            fn routing_extra(&self) -> HashMap<String, StateValue> {
+                HashMap::new()
+            }
         }
 
         // Increments the session turn count on every request.

@@ -4,7 +4,7 @@
 //! The [`Algorithm`] trait and its [`Driver`] — the orchestration contract every
 //! algorithm implements and the offload channel it uses for routing-time model calls.
 
-use std::{future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Instant};
+use std::{collections::HashMap, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use futures::{FutureExt, Stream, StreamExt};
@@ -19,9 +19,10 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStreamEvent`] is its host/algorithm envelope; and
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{Decision, ModelId, Request, Response};
 
 use crate::{DriverError, LibsyError, Result, observability};
+use crate::core::state::StateValue;
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
@@ -187,6 +188,22 @@ impl Driver {
         result
     }
 
+    /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
+    /// Each successfully published decision is counted and logged; a decision
+    /// the stream never accepted is not recorded.
+    ///
+    /// `extra` is the snapshot of routing metadata collected in `state.extra` at
+    /// decision time; pass `HashMap::new()` when no state is available.
+    pub async fn decide(&self, decision: Decision, extra: HashMap<String, StateValue>) -> Result<()> {
+        self.step_tx
+            .send(Ok(Step::Decision { decision: decision.clone(), extra }))
+            .await
+            .map_err(|_| DriverError::StreamClosed)?;
+        observability::record_decision(&self.algorithm, &decision);
+        Ok(())
+    }
+
+
     /// Emit the terminal step: [`Step::Done`] on `Ok`, or an `Err` stream
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
@@ -212,6 +229,14 @@ pub enum Step {
     /// The algorithm needs this model call performed. The host serves it and fulfills
     /// it with [`CallModel::respond`]. Boxed: it is by far the largest variant.
     CallModel(Box<CallModel>),
+    /// A routing decision the algorithm made, published via [`Driver::decide`] as it
+    /// happens (rather than collected into a trace returned at the end).
+    Decision {
+        /// The routing choice.
+        decision: Decision,
+        /// Routing-metadata snapshot from `state.extra` at decision time.
+        extra: HashMap<String, StateValue>,
+    },
     /// The algorithm finished with its routing outcome — the last step of a run.
     Done(Box<RoutingOutcome>),
 }
@@ -254,6 +279,7 @@ where
                     None => break, // stream has ended, no more steps
                     Some(item) => match item? {
                         Step::CallModel(call) => in_flight.push(serve(*call)),
+                        Step::Decision { .. } => {}
                         Step::Done(outcome) => {
                             final_outcome = Some(*outcome);
                             break;
@@ -444,6 +470,7 @@ mod tests {
                 .first()
                 .ok_or(LibsyError::NoTargets)?
                 .clone();
+            driver.decide(Decision::new(target.clone(), true), HashMap::new()).await?;
             let response = driver
                 .call_model(request.clone(), vec![target.clone()])
                 .await?;
@@ -594,7 +621,7 @@ mod tests {
             let (driver, step_rx) = Driver::new("test");
             drop(step_rx);
             let result = driver
-                .call_model(request(), vec![ModelId::from("closed")])
+                .decide(Decision::new(ModelId::from("closed"), true), HashMap::new())
                 .await;
             assert!(matches!(
                 result,
@@ -713,6 +740,9 @@ mod tests {
                         metadata: None,
                     }))?;
                 }
+                Step::Decision { decision, .. } => {
+                    assert_eq!(decision.selected_model_id(), "offload/model");
+                }
                 Step::Done(outcome) => {
                     let response = outcome
                         .response
@@ -800,6 +830,7 @@ mod tests {
                 Ok(Step::CallModel(call)) => {
                     call.respond(Err(test_error("upstream model call failed")))?;
                 }
+                Ok(Step::Decision { .. }) => {}
                 Ok(Step::Done(..)) => {
                     return Err(test_error(
                         "expected the offload error to propagate, got a response",

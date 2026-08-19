@@ -8,7 +8,7 @@ mod core;
 pub use core::algorithm::{Algorithm, CallModel, Driver, RoutingOutcome, Step, StepStream, drive};
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::processor::{Event, Processor};
-pub use core::state::{State, StateValue};
+pub use core::state::{State, StateValue, WithExtra};
 
 mod error;
 pub use error::{DriverError, LibsyError, Result};

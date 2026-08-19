@@ -562,6 +562,18 @@ impl Classifier<State> for StageClassifier {
 
         let outcome = pick_tier(signal, self.mode, self.confidence_threshold);
         record_score_metrics(signal, &outcome);
+
+        // Write signal dimensions and score to state.extra before branching so both the
+        // Resolved and ConsultClassifier paths carry the full signal picture.
+        let dims = dimensions_from_signal(signal);
+        let scored = score_signal(signal);
+        state.extra.insert("signal_severity".into(), StateValue::Scalar(dims.severity as f32));
+        state.extra.insert("signal_spinning".into(), StateValue::Scalar(dims.spinning as f32));
+        state.extra.insert("signal_exploring".into(), StateValue::Scalar(dims.exploring as f32));
+        state.extra.insert("signal_production_intensity".into(), StateValue::Scalar(dims.production_intensity as f32));
+        state.extra.insert("signal_score".into(), StateValue::Scalar(scored.score as f32));
+        state.extra.insert("signal_confidence".into(), StateValue::Scalar(scored.confidence as f32));
+
         match outcome {
             PickOutcome::Resolved {
                 tier,
