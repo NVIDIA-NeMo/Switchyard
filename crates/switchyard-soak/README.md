@@ -101,8 +101,9 @@ compare the same routes with real model output. oha runs only for the fixed `sho
 baseline. AIPerf replays every selected session and reports TTFT, ITL, request throughput, output
 token throughput, multi-run confidence, selected-target calls, classifier calls, and routing
 overhead. Add `--direct-base-url` and `--direct-model` to compare each route with the same backend
-without Switchyard. The operations guide explains how to keep the comparison fair and when to use
-the local backend or real models.
+without Switchyard. That comparison adds an annotated TTFT and output-token-throughput SVG to the
+Markdown report. The operations guide explains how to keep the comparison fair and when to use the
+local backend or real models.
 
 The script needs the built Rust programs plus installed `oha` and AIPerf commands.
 `switchyard-soak` itself does not require those extra programs and can run by itself against a

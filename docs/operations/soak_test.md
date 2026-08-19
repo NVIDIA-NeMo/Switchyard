@@ -77,7 +77,7 @@ cargo build --release -p switchyard-soak
 
 Use `scripts/benchmark_routing_algorithms.py` to compare routing algorithms under the same load.
 The command runs oha and AIPerf sequentially for every model id, then writes `report.md`,
-`report.csv`, and `report.json` beside both tools' raw results:
+`report.csv`, `report.json`, and `routing-overhead.svg` beside both tools' raw results:
 
 ```bash
 python3.12 scripts/benchmark_routing_algorithms.py \
@@ -111,6 +111,13 @@ token throughput means the routed path processed less work. The `standard` scena
 all non-resilience request patterns exported by the Rust crate: short and long contexts, long
 outputs, shared prefixes, mixed request sizes, growing conversations, large tool catalogs,
 tool-call bursts, stage changes, and easy/hard classifier mixes.
+
+When the run includes a direct backend, the Markdown report embeds `routing-overhead.svg` before
+the overhead table. The two annotated heatmaps show TTFT and output-token-throughput changes for
+every route and workload. Each cell shows the absolute change in milliseconds or tokens per second
+and the percent change. Red cells are worse than the direct backend, and blue cells are better.
+The script uses only the Python standard library to create the SVG, so the same benchmark command
+reproduces the plot without a plotting package.
 
 The Rust crate exports one AIPerf `inputs-json` file per scenario. oha reuses the first exported
 `short-interactive` payload as a non-streaming fixed body and reports the raw HTTP request rate and
@@ -209,7 +216,7 @@ The script gives each tool one job:
 | oha | Measures the non-streaming `short-interactive` HTTP baseline through every route. |
 | Python route checks | Sends one ordinary Chat Completions request through each configured route before load starts. |
 | AIPerf | Replays Rust-exported streaming sessions through every route and records LLM, token, response-time, and confidence results. |
-| Combined report | Joins scenario, load, oha, AIPerf, and routing-counter metrics in Markdown, CSV, and JSON. It keeps resilience rows separate from throughput rows. |
+| Combined report | Joins scenario, load, oha, AIPerf, and routing-counter metrics in Markdown, CSV, JSON, and an overhead plot. It keeps resilience rows separate from throughput rows. |
 | `switchyard-soak` | Runs the standard scenario set while checking public API variants, server health, metrics, process use, and required results. |
 
 `scripts/local_soak_test.toml` exercises `noop`, `random`, `passthrough`, `llm_classifier`, and

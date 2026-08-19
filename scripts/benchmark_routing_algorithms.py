@@ -20,8 +20,10 @@ from pathlib import Path
 
 if __package__:
     from .aiperf_runner import aggregate_exports, run_profile, validate_aiperf_version
+    from .routing_overhead_plot import OverheadPlotRow, write_overhead_plot
 else:
     from aiperf_runner import aggregate_exports, run_profile, validate_aiperf_version
+    from routing_overhead_plot import OverheadPlotRow, write_overhead_plot
 
 MAX_MATERIALIZED_REQUESTS = 1_000_000
 MAX_MATERIALIZED_BYTES = 256 * 1024 * 1024
@@ -151,7 +153,9 @@ class BenchmarkResult:
     aiperf_request_throughput_delta_pct: float | None = None
     aiperf_request_latency_p50_delta_ms: float | None = None
     aiperf_ttft_p50_delta_ms: float | None = None
+    aiperf_ttft_p50_delta_pct: float | None = None
     aiperf_ttft_p99_delta_ms: float | None = None
+    aiperf_output_tokens_per_second_delta: float | None = None
     aiperf_output_tokens_per_second_delta_pct: float | None = None
 
 
@@ -787,9 +791,17 @@ def compare_to_direct_backend(results: Sequence[BenchmarkResult]) -> list[Benchm
                     result.aiperf_ttft_p50_ms,
                     baseline.aiperf_ttft_p50_ms,
                 ),
+                aiperf_ttft_p50_delta_pct=_percent_change(
+                    result.aiperf_ttft_p50_ms,
+                    baseline.aiperf_ttft_p50_ms,
+                ),
                 aiperf_ttft_p99_delta_ms=_difference(
                     result.aiperf_ttft_p99_ms,
                     baseline.aiperf_ttft_p99_ms,
+                ),
+                aiperf_output_tokens_per_second_delta=_difference(
+                    result.aiperf_output_tokens_per_second,
+                    baseline.aiperf_output_tokens_per_second,
                 ),
                 aiperf_output_tokens_per_second_delta_pct=_percent_change(
                     result.aiperf_output_tokens_per_second,
@@ -807,7 +819,7 @@ def format_metric(value: float | None) -> str:
 
 def format_delta(value: float | None, suffix: str = "") -> str:
     """Render a signed direct-backend comparison."""
-    return "n/a" if value is None else f"{value:+.2f}{suffix}"
+    return "n/a" if value is None else f"{value:+,.2f}{suffix}"
 
 
 def write_report(config: BenchmarkConfig, results: Sequence[BenchmarkResult]) -> None:
@@ -857,6 +869,24 @@ def write_report(config: BenchmarkConfig, results: Sequence[BenchmarkResult]) ->
             for result in results
             if not result.bypasses_switchyard and result.scenario_group != "resilience"
         ]
+        if overhead_results:
+            write_overhead_plot(
+                config.output_dir / "routing-overhead.svg",
+                [
+                    OverheadPlotRow(
+                        scenario=result.scenario,
+                        load=result.load_profile,
+                        route=result.algorithm,
+                        ttft_delta_ms=result.aiperf_ttft_p50_delta_ms,
+                        ttft_delta_pct=result.aiperf_ttft_p50_delta_pct,
+                        token_throughput_delta=(result.aiperf_output_tokens_per_second_delta),
+                        token_throughput_delta_pct=(
+                            result.aiperf_output_tokens_per_second_delta_pct
+                        ),
+                    )
+                    for result in overhead_results
+                ],
+            )
         lines.extend(
             (
                 "## Routing overhead versus the direct backend",
@@ -870,14 +900,22 @@ def write_report(config: BenchmarkConfig, results: Sequence[BenchmarkResult]) ->
                 "",
             )
         )
+        if overhead_results:
+            lines.extend(
+                (
+                    "![Routing overhead plots](routing-overhead.svg)",
+                    "",
+                )
+            )
         if not overhead_results:
             lines.append("No successful direct-backend comparisons were available.")
         else:
             lines.extend(
                 (
-                    "| Workload | Route | Load | Request p50 | TTFT p50 | Request throughput | "
-                    "Token throughput |",
-                    "|---|---|---|---:|---:|---:|---:|",
+                    "| Workload | Route | Load | Request p50 change (ms) | "
+                    "TTFT p50 change (ms) | TTFT change (%) | Request throughput change (%) | "
+                    "Token throughput change (tokens/s) | Token throughput change (%) |",
+                    "|---|---|---|---:|---:|---:|---:|---:|---:|",
                 )
             )
             for result in overhead_results:
@@ -886,7 +924,9 @@ def write_report(config: BenchmarkConfig, results: Sequence[BenchmarkResult]) ->
                     f"{result.load_profile} | "
                     f"{format_delta(result.aiperf_request_latency_p50_delta_ms, ' ms')} | "
                     f"{format_delta(result.aiperf_ttft_p50_delta_ms, ' ms')} | "
+                    f"{format_delta(result.aiperf_ttft_p50_delta_pct, '%')} | "
                     f"{format_delta(result.aiperf_request_throughput_delta_pct, '%')} | "
+                    f"{format_delta(result.aiperf_output_tokens_per_second_delta, ' tokens/s')} | "
                     f"{format_delta(result.aiperf_output_tokens_per_second_delta_pct, '%')} |"
                 )
         lines.extend(
@@ -909,9 +949,7 @@ def write_report(config: BenchmarkConfig, results: Sequence[BenchmarkResult]) ->
             if result.scenario in seen_scenarios:
                 continue
             seen_scenarios.add(result.scenario)
-            lines.append(
-                f"| {result.scenario.replace('-', ' ')} | {result.scenario_description} |"
-            )
+            lines.append(f"| {result.scenario.replace('-', ' ')} | {result.scenario_description} |")
     lines.extend(("", "## Run details", "", *run_details))
     lines.extend(
         (

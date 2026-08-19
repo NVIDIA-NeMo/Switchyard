@@ -209,13 +209,15 @@ def test_report_combines_scenarios_single_and_aggregate_results(tmp_path) -> Non
 
     report = (output_dir / "report.md").read_text()
     assert "## Routing overhead versus the direct backend" in report
+    assert "![Routing overhead plots](routing-overhead.svg)" in report
     assert (
         report.index("## Routing overhead versus the direct backend")
         < report.index("## Run details")
         < report.index("## Throughput and latency")
     )
     assert (
-        "| short interactive | random | fixed | +5.00 ms | +3.00 ms | -4.50% | -11.43% |" in report
+        "| short interactive | random | fixed | +5.00 ms | +3.00 ms | +25.00% | "
+        "-4.50% | -80.00 tokens/s | -11.43% |" in report
     )
     assert "| short interactive | short baseline |" in report
     assert "| random | short-interactive | fixed | 120.50 | 95.50 |" in report
@@ -239,10 +241,14 @@ def test_report_combines_scenarios_single_and_aggregate_results(tmp_path) -> Non
     assert direct_row["aiperf_itl_p50_ms"] is None
     assert direct_row["aiperf_request_throughput_delta_pct"] is None
     assert random_payload["aiperf_output_tokens_per_second_per_user_p50"] == 200.0
+    assert random_payload["aiperf_ttft_p50_delta_pct"] == 25.0
+    assert random_payload["aiperf_output_tokens_per_second_delta"] == -80.0
     assert random_payload["scenario_description"] == "short baseline"
     assert classifier_payload["aiperf_request_latency_p50_ms"] == 50.0
     assert classifier_payload["aiperf_request_throughput_cv"] == 0.03
     assert classifier_payload["classifier_latency_avg_ms"] == 4.0
+
+    assert (output_dir / "routing-overhead.svg").is_file()
 
     with pytest.raises(RuntimeError, match="missing direct baseline for mixed-traffic fixed"):
         compare_to_direct_backend((results[0], replace(results[1], scenario="mixed-traffic")))
