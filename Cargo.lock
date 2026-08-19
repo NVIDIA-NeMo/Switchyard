@@ -2301,6 +2301,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "reqwest",
+ "serde",
  "serde_json",
  "switchyard-libsy",
  "switchyard-protocol",

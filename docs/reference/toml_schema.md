@@ -48,6 +48,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `forward_auth` | No | `false` | Forward the caller's provider credential to this upstream. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
+| `responses_reasoning` | No | `preserve_encrypted` | Reasoning replay policy for `openai_responses`: `preserve_encrypted` or `drop`. Rejected for other formats. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.
@@ -75,6 +76,23 @@ forwarding client used by a route, including classifier and judge targets. The
 server rejects an Anthropic forwarding route called through an OpenAI endpoint,
 or an OpenAI forwarding route called through an Anthropic endpoint, before it
 calls an upstream.
+
+Responses providers do not share one reasoning representation. Strict hosted
+providers can replay signed `encrypted_content`, while local compatible servers
+may reject those opaque items. The default `responses_reasoning =
+"preserve_encrypted"` drops unsigned plaintext reasoning and keeps signed
+reasoning without plaintext. Configure a local client explicitly when it cannot
+consume encrypted reasoning:
+
+```toml
+[llm_clients.local]
+format = "openai_responses"
+base_url = "http://127.0.0.1:8080/v1"
+responses_reasoning = "drop"
+```
+
+The `drop` policy removes reasoning items only; messages, function calls, and
+function-call outputs remain in order.
 
 ## `[targets.<name>]`
 

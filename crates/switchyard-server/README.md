@@ -85,6 +85,10 @@ Target-level `extra_body` values are shallow-merged into the upstream request wh
 the request does not already contain that key.
 `max_retries` defaults to `2` and applies to transport failures, timeouts, HTTP 408/429, and 5xx
 responses.
+For an `openai_responses` client, `responses_reasoning` defaults to
+`preserve_encrypted`. Set it to `drop` for a local compatible server that cannot
+replay another provider's encrypted reasoning items; messages and tool history
+are retained.
 
 Random-route `weights` are relative, follow target order, and do not need to sum to one. Omit them
 for equal weighting. The optional `seed` reproduces the selection sequence for the same call order.

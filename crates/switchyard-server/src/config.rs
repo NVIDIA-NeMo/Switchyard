@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use switchyard_llm_client::{
     Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    TranslatingLlmClient,
+    ResponsesReasoningPolicy, TranslatingLlmClient,
 };
 use switchyard_protocol::{ModelId, RoutedLlmClient};
 
@@ -256,6 +256,7 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    responses_reasoning: Option<ResponsesReasoningPolicy>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -267,7 +268,7 @@ struct TargetConfig {
     extra_body: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 enum ClientFormat {
     #[serde(rename = "openai_chat")]
     OpenAiChat,
@@ -875,6 +876,11 @@ fn build_backend(
             "llm client {client_name} cannot set both forward_auth and api_key_env"
         )));
     }
+    if config.responses_reasoning.is_some() && config.format != ClientFormat::OpenAiResponses {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} responses_reasoning is only valid for openai_responses"
+        )));
+    }
     let api_key = config
         .api_key_env
         .as_deref()
@@ -904,6 +910,7 @@ fn build_backend(
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
         max_retries: config.max_retries,
+        responses_reasoning: config.responses_reasoning.unwrap_or_default(),
     };
     Ok(match config.format {
         ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
@@ -1653,6 +1660,55 @@ target = "azure"
         };
         assert_eq!(primary.max_retries, 0);
         Ok(())
+    }
+
+    #[test]
+    fn responses_reasoning_defaults_and_accepts_drop() -> ServerResult<()> {
+        let default: ServerConfig = toml::from_str(VALID_CONFIG)
+            .map_err(|error| ServerError::new(format!("failed to parse config: {error}")))?;
+        let responses = default
+            .llm_clients
+            .get("responses")
+            .ok_or_else(|| ServerError::new("responses llm client is missing"))?;
+        let backend = build_backend("responses", responses, &BTreeMap::new())?;
+        let Backend::OpenAiResponses(http) = backend else {
+            return Err(ServerError::new("expected Responses backend"));
+        };
+        assert_eq!(
+            http.responses_reasoning,
+            ResponsesReasoningPolicy::PreserveEncrypted
+        );
+
+        let configured = VALID_CONFIG.replacen(
+            "[llm_clients.responses]\nformat = \"openai_responses\"\nbase_url = \"https://example.test/v1\"",
+            "[llm_clients.responses]\nformat = \"openai_responses\"\nbase_url = \"https://example.test/v1\"\nresponses_reasoning = \"drop\"",
+            1,
+        );
+        let config: ServerConfig = toml::from_str(&configured)
+            .map_err(|error| ServerError::new(format!("failed to parse config: {error}")))?;
+        let responses = config
+            .llm_clients
+            .get("responses")
+            .ok_or_else(|| ServerError::new("responses llm client is missing"))?;
+        let backend = build_backend("responses", responses, &BTreeMap::new())?;
+        let Backend::OpenAiResponses(http) = backend else {
+            return Err(ServerError::new("expected Responses backend"));
+        };
+        assert_eq!(http.responses_reasoning, ResponsesReasoningPolicy::Drop);
+        Ok(())
+    }
+
+    #[test]
+    fn responses_reasoning_rejects_other_formats() {
+        let invalid = VALID_CONFIG.replacen(
+            "format = \"openai_chat\"",
+            "format = \"openai_chat\"\nresponses_reasoning = \"drop\"",
+            1,
+        );
+        assert!(
+            error_message(&invalid)
+                .contains("responses_reasoning is only valid for openai_responses")
+        );
     }
 
     #[test]

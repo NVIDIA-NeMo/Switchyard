@@ -161,6 +161,9 @@ caller's credential to that upstream. OpenAI clients forward `authorization`,
 `authorization` or `x-api-key`. Enable this only for an upstream that should
 receive the caller's login. The server rejects a forwarding route called
 through the other provider's API.
+For a local `openai_responses` server that cannot replay provider-encrypted
+reasoning, set `responses_reasoning = "drop"`; hosted Responses clients default
+to `preserve_encrypted`.
 
 ### Run the server
 

@@ -221,8 +221,8 @@ impl TranslatingLlmClient {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
         }
-        if matches!(backend, Backend::OpenAiResponses(_)) {
-            normalize_responses_reasoning(&mut body, backend.supports_encrypted_reasoning());
+        if let Some(policy) = backend.responses_reasoning() {
+            policy.normalize(&mut body);
         }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
@@ -679,33 +679,6 @@ fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
-// Removes reasoning items that the selected Responses backend cannot replay.
-// Strict authenticated providers retain signed encrypted reasoning with no
-// plaintext. Unauthenticated local backends cannot consume another provider's
-// encrypted reasoning, so they drop signed and unsigned reasoning alike while
-// preserving messages and tool-call history.
-fn normalize_responses_reasoning(body: &mut Value, preserve_signed: bool) {
-    let Some(Value::Array(input)) = body.get_mut("input") else {
-        return;
-    };
-    input.retain_mut(|item| {
-        let Some(object) = item.as_object_mut() else {
-            return true;
-        };
-        if object.get("type").and_then(Value::as_str) != Some("reasoning") {
-            return true;
-        }
-        let signed = matches!(
-            object.get("encrypted_content").and_then(Value::as_str),
-            Some(encrypted_content) if !encrypted_content.is_empty()
-        );
-        if signed && preserve_signed {
-            object.insert("content".to_string(), Value::Array(Vec::new()));
-        }
-        signed && preserve_signed
-    });
-}
-
 // Drops fields accepted by OpenAI-like APIs but rejected by Anthropic Messages.
 //
 // A router can serve earlier turns of a session from an OpenAI-format target and
@@ -865,6 +838,7 @@ mod tests {
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             max_retries: 0,
+            responses_reasoning: crate::ResponsesReasoningPolicy::default(),
         }
     }
 
@@ -911,7 +885,7 @@ mod tests {
 
     fn local_responses_map(base_url: &str) -> Vec<ModelConfig> {
         let mut backend = config(base_url);
-        backend.api_key = None;
+        backend.responses_reasoning = crate::ResponsesReasoningPolicy::Drop;
         vec![ModelConfig::new(
             "local",
             Backend::OpenAiResponses(backend),
