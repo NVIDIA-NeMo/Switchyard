@@ -113,6 +113,22 @@ async fn upstream_chat(
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
     let prompt = body["messages"][0]["content"].as_str().unwrap_or("");
+    if prompt == "retry-once"
+        && calls
+            .lock()
+            .await
+            .iter()
+            .filter(|call| call["messages"][0]["content"] == "retry-once")
+            .count()
+            == 1
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [("retry-after", "0")],
+            Json(json!({"error": {"message": "upstream is temporarily unavailable"}})),
+        )
+            .into_response();
+    }
     if (model == "model/weak" && prompt == "unavailable") || prompt == "all-unavailable" {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -365,13 +381,21 @@ async fn upstream_count_tokens(
 }
 
 fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<ServerState> {
+    random_state_with_retries(base_url, routes, 0)
+}
+
+fn random_state_with_retries(
+    base_url: &str,
+    routes: &[(&str, &[&str])],
+    max_retries: u32,
+) -> TestResult<ServerState> {
     let backend = Backend::OpenAiChat(HttpBackendConfig {
         base_url: base_url.to_string(),
         api_key: Some("test-key".to_string()),
         forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
-        max_retries: 0,
+        max_retries,
     });
     let target_models = routes
         .iter()
@@ -550,7 +574,12 @@ async fn stats_reset_returns_confirmation_and_clears_all_stats() -> TestResult {
 #[tokio::test]
 async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
     const MODEL: &str = "model/metrics-buffered";
-    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(random_state_with_retries(
+        &upstream.base_url,
+        &[(ROUTE_MODEL, &[MODEL])],
+        1,
+    )?);
 
     let before = send(&app, "GET", "/metrics", None).await?;
     assert_eq!(before.status, StatusCode::OK);
@@ -588,7 +617,7 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         "/v1/chat/completions",
         Some(json!({
             "model": ROUTE_MODEL,
-            "messages": [{"role": "user", "content": "hello"}]
+            "messages": [{"role": "user", "content": "retry-once"}]
         })),
     )
     .await?;
@@ -596,6 +625,15 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
 
     let after = send(&app, "GET", "/metrics", None).await?;
     let metrics = after.text()?;
+    assert_eq!(
+        metric_delta(
+            seeded,
+            metrics,
+            "switchyard_router_retry_recovered_total",
+            &[]
+        ),
+        Some(1.0)
+    );
     for expected in [
         "# TYPE switchyard_build_info gauge",
         &format!("switchyard_build_info{{version=\"{VERSION}\""),

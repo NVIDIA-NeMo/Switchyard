@@ -261,6 +261,9 @@ impl TranslatingLlmClient {
                     span.record("outcome", "success");
                     span.record("status_code", response.status());
                     span.record("will_retry", false);
+                    if attempt > 0 {
+                        metrics::record_retry_recovered();
+                    }
                     return Ok(response);
                 }
                 Err(failure) => {

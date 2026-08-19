@@ -92,6 +92,14 @@ pub(crate) fn record_upstream_attempt(status: Option<u16>) {
         );
 }
 
+/// Records an upstream operation that succeeded after at least one retry.
+pub(crate) fn record_retry_recovered() {
+    global::meter("switchyard")
+        .u64_counter("switchyard.router_retry_recovered")
+        .build()
+        .add(1, &[]);
+}
+
 /// Records the time needed to produce the routing outcome, including classifier calls,
 /// target resolution, request rewrites, and decision publishing.
 pub(crate) fn record_routing_overhead(algorithm: &str, overhead: Duration) {

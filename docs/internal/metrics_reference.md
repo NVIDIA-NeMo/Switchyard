@@ -81,7 +81,7 @@ The `outcome` label takes exactly three values:
 |---|---|---|
 | `switchyard_client_responses_total{outcome}` | counter | HTTP responses returned to clients on the LLM-serving routes (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`). The denominator for the **router-served** error rate. |
 | `switchyard_upstream_attempts_total{outcome,code}` | counter | Individual upstream call attempts. One client request can produce N attempts via retry. The denominator for the **direct-to-endpoint** baseline error rate. The `code` label carries the raw upstream HTTP status for plotting the error-code distribution (see below). |
-| `switchyard_router_retry_recovered_total` | counter | Reserved retry-recovery counter. The current server exports it as zero. |
+| `switchyard_router_retry_recovered_total` | counter | Upstream operations that succeeded after at least one retry. |
 
 ### The `code` label on `switchyard_upstream_attempts_total`
 
