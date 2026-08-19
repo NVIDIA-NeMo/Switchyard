@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+manifest_version = 1
+
+[plugin]
+id = "nvidia.switchyard"
+kind = "rust_dynamic"
+
+[compat]
+relay = ">=0.8.0,<1.0"
+native_api = "1"
+
+[defaults]
+enabled = false
+
+[capabilities]
+items = ["plugin_native", "config_schema"]
+
+[config_schema]
+path = "config.schema.json"
+
+[source]
+artifact = "<platform-library-file>"
+
+[integrity]
+sha256 = "sha256:<artifact-sha256>"
+
+[load]
+library = "<platform-library-file>"
+symbol = "nemo_relay_register_plugin"
