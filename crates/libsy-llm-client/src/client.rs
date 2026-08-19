@@ -221,6 +221,9 @@ impl TranslatingLlmClient {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
         }
+        if matches!(backend, Backend::OpenAiResponses(_)) {
+            strip_unsigned_responses_reasoning(&mut body);
+        }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
             enable_anthropic_prompt_caching(&mut body);
@@ -676,6 +679,29 @@ fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
+// Removes plaintext reasoning items that strict Responses backends cannot replay.
+fn strip_unsigned_responses_reasoning(body: &mut Value) {
+    let Some(Value::Array(input)) = body.get_mut("input") else {
+        return;
+    };
+    input.retain_mut(|item| {
+        let Some(object) = item.as_object_mut() else {
+            return true;
+        };
+        if object.get("type").and_then(Value::as_str) != Some("reasoning") {
+            return true;
+        }
+        let signed = matches!(
+            object.get("encrypted_content").and_then(Value::as_str),
+            Some(encrypted_content) if !encrypted_content.is_empty()
+        );
+        if signed {
+            object.remove("content");
+        }
+        signed
+    });
+}
+
 // Drops fields accepted by OpenAI-like APIs but rejected by Anthropic Messages.
 //
 // A router can serve earlier turns of a session from an OpenAI-format target and
@@ -867,6 +893,14 @@ mod tests {
         vec![ModelConfig::new(
             "claude",
             Backend::Anthropic(config(base_url)),
+            None,
+        )]
+    }
+
+    fn responses_map(base_url: &str) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(config(base_url)),
             None,
         )]
     }
@@ -1363,6 +1397,81 @@ mod tests {
                 None,
                 Some(&ModelId::from("claude")),
                 WireFormat::AnthropicMessages,
+            )
+            .await?;
+        Ok(())
+    }
+
+    // Local Responses backends can emit plaintext reasoning that strict upstreams cannot replay.
+    #[tokio::test]
+    async fn responses_requests_drop_unsigned_reasoning_items()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let Some(input) = body.get("input").and_then(Value::as_array) else {
+                    return false;
+                };
+                let reasoning: Vec<&Value> = input
+                    .iter()
+                    .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+                    .collect();
+                reasoning.len() == 1
+                    && reasoning[0]
+                        .get("encrypted_content")
+                        .and_then(Value::as_str)
+                        == Some("encrypted")
+                    && reasoning[0].get("content").is_none()
+                    && input.iter().any(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call")
+                    })
+                    && input.iter().any(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    })
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "gpt",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&responses_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "input": [
+                {"type": "message", "role": "user", "content": "inspect the repo"},
+                {
+                    "type": "reasoning",
+                    "content": [{"type": "reasoning_text", "text": "private local reasoning"}],
+                    "encrypted_content": ""
+                },
+                {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+                {
+                    "type": "reasoning",
+                    "content": [{"type": "reasoning_text", "text": "must not be replayed"}],
+                    "encrypted_content": "encrypted"
+                }
+            ]
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
             )
             .await?;
         Ok(())
