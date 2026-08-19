@@ -4,7 +4,6 @@
 
 """Drive a libsy algorithm stream from Python."""
 
-import argparse
 import asyncio
 from collections.abc import AsyncIterator, Mapping
 
@@ -14,15 +13,12 @@ from switchyard.libsy import LlmResponse, Step, algorithms
 class EchoClient:
     """Return a fixed completion for any selected target."""
 
-    def __init__(self, *, stream: bool) -> None:
-        self.stream = stream
-
     async def call(
         self,
         request: Mapping[str, object],
         model: str,
     ) -> LlmResponse.Agg | LlmResponse.Stream:
-        if self.stream:
+        if request.get("stream") is True:
 
             async def events() -> AsyncIterator[Mapping[str, object]]:
                 yield {
@@ -53,13 +49,14 @@ class EchoClient:
         )
 
 
-async def main(*, stream: bool) -> None:
+async def main() -> None:
     """Run random routing and serve its selected target."""
     request = {
         "model": "auto",
+        "stream": True,
         "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
     }
-    client = EchoClient(stream=stream)
+    client = EchoClient()
     algorithm = algorithms.random(
         ["fast", "quality"],
         weights=[1, 3],
@@ -85,7 +82,4 @@ async def main(*, stream: bool) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--stream", action="store_true", help="return response events")
-    args = parser.parse_args()
-    asyncio.run(main(stream=args.stream))
+    asyncio.run(main())
