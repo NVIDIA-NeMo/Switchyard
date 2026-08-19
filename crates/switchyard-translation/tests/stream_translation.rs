@@ -5,8 +5,10 @@
 
 pub mod common;
 
+use std::collections::HashMap;
+
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::{Value, json};
 use switchyard_protocol::{LlmResponseStreamEvent, ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
@@ -15,6 +17,48 @@ use switchyard_translation::{
 use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+// Reduces Anthropic stream events to ordered labels (`<block>_start`, `<delta>`,
+// `<block>_stop`) so ordering assertions stay readable without restating each payload.
+fn event_labels(events: &[Value]) -> Vec<String> {
+    let mut block_types: HashMap<u64, String> = HashMap::new();
+    events
+        .iter()
+        .map(|event| {
+            let index = event
+                .get("index")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            match event
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
+                "content_block_start" => {
+                    let block_type = event
+                        .get("content_block")
+                        .and_then(|block| block.get("type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    block_types.insert(index, block_type.clone());
+                    format!("{block_type}_start")
+                }
+                "content_block_delta" => event
+                    .get("delta")
+                    .and_then(|delta| delta.get("type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                "content_block_stop" => {
+                    let block_type = block_types.get(&index).cloned().unwrap_or_default();
+                    format!("{block_type}_stop")
+                }
+                other => other.to_string(),
+            }
+        })
+        .collect()
+}
 
 // Same-format replay returns the same parsed JSON value, including provider-specific fields.
 #[test]
@@ -352,6 +396,48 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
             "index": 0,
             "delta": {"type": "text_delta", "text": "Hi"}
         })
+    );
+    Ok(())
+}
+
+// A mixed chunk must emit reasoning before text, matching the buffered decoder.
+#[test]
+fn openai_chat_mixed_reasoning_and_content_stream_in_reasoning_first_order() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "nvidia/nvidia/nemotron-3-ultra-nvfp4",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "reasoning_content": ".",
+                "content": "Hello"
+            },
+            "finish_reason": null
+        }]
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &chunk,
+    )?;
+
+    assert_eq!(
+        event_labels(&events),
+        vec![
+            "message_start",
+            "thinking_start",
+            "thinking_delta",
+            "signature_delta",
+            "thinking_stop",
+            "text_start",
+            "text_delta",
+        ]
     );
     Ok(())
 }
