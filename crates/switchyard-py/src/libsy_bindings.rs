@@ -19,7 +19,8 @@ use switchyard_libsy::{
     StepStream, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    AggLlmResponse, LlmClientError, LlmResponse, Metadata, ModelId, Request, Response,
+    LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId,
+    Request, Response,
 };
 use tokio::sync::Mutex;
 
@@ -335,6 +336,84 @@ impl PyLlmFallback {
     }
 }
 
+/// A normalized aggregate response or a live stream of normalized response events.
+#[pyclass(name = "LlmResponse", module = "switchyard.libsy", frozen)]
+enum PyLlmResponse {
+    /// A fully buffered normalized response dictionary.
+    #[pyo3(constructor = (response))]
+    Agg { response: Py<PyAny> },
+    /// An async iterator of normalized response-event dictionaries.
+    #[pyo3(constructor = (stream))]
+    Stream { stream: Py<PyAny> },
+}
+
+impl PyLlmResponse {
+    fn to_core(&self, py: Python<'_>, model: ModelId) -> PyResult<LlmResponse> {
+        match self {
+            Self::Agg { response } => from_python(response.bind(py)).map(LlmResponse::Agg),
+            Self::Stream { stream } => {
+                python_response_stream(py, stream.clone_ref(py), model).map(LlmResponse::Stream)
+            }
+        }
+    }
+}
+
+fn ffi_error(error: PyErr) -> LlmClientError {
+    LlmClientError::Ffi {
+        source: Box::new(error),
+    }
+}
+
+fn python_client_error(py: Python<'_>, error: PyErr, model: &ModelId) -> LlmClientError {
+    if error.is_instance_of::<ContextWindowExceededError>(py) {
+        LlmClientError::ContextWindowExceeded {
+            model: model.clone(),
+            message: error.value(py).to_string(),
+        }
+    } else {
+        ffi_error(error)
+    }
+}
+
+fn python_response_stream(
+    py: Python<'_>,
+    stream: Py<PyAny>,
+    model: ModelId,
+) -> PyResult<LlmResponseStream> {
+    let iterator = stream.bind(py).call_method0("__aiter__")?.unbind();
+    // Rust polls on Tokio, so retain the Python task's event loop and context for every item.
+    let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
+    let stream = futures::stream::unfold(Some((iterator, locals, model)), |state| async move {
+        let (iterator, locals, model) = state?;
+        let next = Python::attach(|py| {
+            pyo3_async_runtimes::into_future_with_locals(
+                &locals,
+                iterator.bind(py).call_method0("__anext__")?,
+            )
+        });
+        match next {
+            Ok(next) => match next.await {
+                Ok(item) => {
+                    let event =
+                        Python::attach(|py| from_python::<LlmResponseStreamEvent>(item.bind(py)))
+                            .map_err(ffi_error);
+                    Some((event, Some((iterator, locals, model))))
+                }
+                Err(error) => {
+                    if Python::attach(|py| error.is_instance_of::<PyStopAsyncIteration>(py)) {
+                        None
+                    } else {
+                        let error = Python::attach(|py| python_client_error(py, error, &model));
+                        Some((Err(error), None))
+                    }
+                }
+            },
+            Err(error) => Some((Err(ffi_error(error)), None)),
+        }
+    });
+    Ok(Box::pin(stream))
+}
+
 /// One model call yielded by [`PyAlgorithm::run_stream`].
 #[pyclass(name = "ModelCall", module = "switchyard.libsy")]
 struct PyModelCall {
@@ -382,13 +461,23 @@ impl PyModelCall {
         self.models.clone()
     }
 
-    /// Fulfill this call with an aggregate normalized response dictionary.
-    fn respond(&mut self, response: &Bound<'_, PyAny>) -> PyResult<()> {
-        let aggregate = from_python::<AggLlmResponse>(response)?;
+    /// Fulfill this call with a normalized aggregate or streamed response.
+    fn respond(&mut self, py: Python<'_>, response: PyRef<'_, PyLlmResponse>) -> PyResult<()> {
+        let model = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| py_libsy_error("model call has already been completed"))?
+            .request
+            .llm_request
+            .model
+            .as_ref()
+            .map(ModelId::new)
+            .ok_or_else(|| py_libsy_error("model call request is missing its selected model"))?;
+        let llm_response = response.to_core(py, model)?;
         let call = self.take()?;
         let metadata = call.request.metadata.clone();
         call.respond(Ok(Response {
-            llm_response: LlmResponse::Agg(aggregate),
+            llm_response,
             metadata,
         }))
         .map_err(py_libsy_error)
@@ -399,23 +488,18 @@ impl PyModelCall {
         if !error.is_instance_of::<PyBaseException>() {
             return Err(PyTypeError::new_err("error must derive from BaseException"));
         }
+        let target = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| py_libsy_error("model call has already been completed"))?
+            .request
+            .llm_request
+            .model
+            .as_ref()
+            .map(ModelId::new)
+            .ok_or_else(|| py_libsy_error("model call request is missing its selected model"))?;
         let call = self.take()?;
-        let target = call
-            .models
-            .first()
-            .cloned()
-            .ok_or(RustLibsyError::NoTargets)
-            .map_err(py_libsy_error)?;
-        let source = if error.is_instance_of::<ContextWindowExceededError>() {
-            LlmClientError::ContextWindowExceeded {
-                model: target.clone(),
-                message: error.str()?.to_string_lossy().into_owned(),
-            }
-        } else {
-            LlmClientError::Ffi {
-                source: Box::new(PyErr::from_value(error.clone())),
-            }
-        };
+        let source = python_client_error(error.py(), PyErr::from_value(error.clone()), &target);
         call.respond(Err(RustLibsyError::client_call(target, source)))
             .map_err(py_libsy_error)
     }
@@ -450,13 +534,57 @@ impl PyRoutingOutcome {
         self.request.clone_ref(py)
     }
 
-    /// An answer produced while routing, when one already exists.
+    /// An aggregate or streamed answer produced while routing, when one already exists.
     #[getter]
     fn response(&self, py: Python<'_>) -> Option<Py<PyAny>> {
         self.response
             .as_ref()
             .map(|response| response.clone_ref(py))
     }
+}
+
+/// Async Python iterator over one normalized Rust response stream.
+#[pyclass(name = "_LlmResponseStream", module = "switchyard.libsy", frozen)]
+struct PyLlmResponseStream {
+    inner: Arc<Mutex<LlmResponseStream>>,
+}
+
+#[pymethods]
+impl PyLlmResponseStream {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stream = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match stream.lock().await.next().await {
+                Some(Ok(event)) => Python::attach(|py| to_python(py, &event)),
+                Some(Err(error)) => Err(py_libsy_error(error)),
+                None => Err(PyStopAsyncIteration::new_err(())),
+            }
+        })
+    }
+}
+
+fn response_to_python(py: Python<'_>, response: LlmResponse) -> PyResult<Py<PyAny>> {
+    let response = match response {
+        LlmResponse::Agg(response) => PyLlmResponse::Agg {
+            response: to_python(py, &response)?,
+        },
+        LlmResponse::Stream(stream) => PyLlmResponse::Stream {
+            stream: Py::new(
+                py,
+                PyLlmResponseStream {
+                    inner: Arc::new(Mutex::new(stream)),
+                },
+            )?
+            .into_any(),
+        },
+    };
+    response
+        .into_pyobject(py)
+        .map(|response| response.unbind().into_any())
 }
 
 /// One item yielded by a Python algorithm stream.
@@ -485,7 +613,7 @@ impl PyRunStream {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let step = stream.lock().await.next().await;
             match step {
-                Some(Ok(step)) => step_to_python(step).await,
+                Some(Ok(step)) => step_to_python(step),
                 Some(Err(error)) => Err(py_libsy_error(error)),
                 None => Err(PyStopAsyncIteration::new_err(())),
             }
@@ -533,7 +661,7 @@ impl PyAlgorithm {
     }
 }
 
-async fn step_to_python(step: RustStep) -> PyResult<PyStep> {
+fn step_to_python(step: RustStep) -> PyResult<PyStep> {
     match step {
         RustStep::CallModel(call) => Python::attach(|py| {
             Ok(PyStep::CallModel {
@@ -547,16 +675,6 @@ async fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 request,
                 response,
             } = *outcome;
-            let response = match response {
-                Some(response) => Some(
-                    response
-                        .llm_response
-                        .into_agg()
-                        .await
-                        .map_err(py_libsy_error)?,
-                ),
-                None => None,
-            };
             Python::attach(|py| {
                 Ok(PyStep::Done {
                     outcome: Py::new(
@@ -569,8 +687,7 @@ async fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                                 .collect(),
                             request: to_python(py, &request.llm_request)?,
                             response: response
-                                .as_ref()
-                                .map(|response| to_python(py, response))
+                                .map(|response| response_to_python(py, response.llm_response))
                                 .transpose()?,
                         },
                     )?,
@@ -728,6 +845,8 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     libsy_module.add_class::<PyEscalationClassifierConfig>()?;
     libsy_module.add_class::<PyLlmClassifierConfig>()?;
     libsy_module.add_class::<PyLlmFallback>()?;
+    libsy_module.add_class::<PyLlmResponse>()?;
+    libsy_module.add_class::<PyLlmResponseStream>()?;
     libsy_module.add_class::<PyModelCall>()?;
     libsy_module.add_class::<PyRunStream>()?;
     libsy_module.add_class::<PyRoutingOutcome>()?;

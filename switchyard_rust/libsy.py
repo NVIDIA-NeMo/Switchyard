@@ -19,6 +19,7 @@ _EXPORTS = frozenset(
         "LibsyError",
         "LlmClassifierConfig",
         "LlmFallback",
+        "LlmResponse",
         "ModelCall",
         "RoutingOutcome",
         "Step",
@@ -38,6 +39,23 @@ if TYPE_CHECKING:
     class LibsyError(RuntimeError): ...
 
     class ContextWindowExceededError(RuntimeError): ...
+
+    class LlmResponse:
+        """A normalized aggregate response or live normalized event stream."""
+
+        @final
+        class Agg:
+            __match_args__: ClassVar[tuple[Literal["response"]]] = ("response",)
+            response: dict[str, object]
+
+            def __init__(self, response: Mapping[str, object]) -> None: ...
+
+        @final
+        class Stream:
+            __match_args__: ClassVar[tuple[Literal["stream"]]] = ("stream",)
+            stream: AsyncIterator[dict[str, object]]
+
+            def __init__(self, stream: AsyncIterator[Mapping[str, object]]) -> None: ...
 
     @final
     class CustomClassifierConfig:
@@ -89,7 +107,7 @@ if TYPE_CHECKING:
         @property
         def models(self) -> list[str]: ...
 
-        def respond(self, response: Mapping[str, object]) -> None: ...
+        def respond(self, response: LlmResponse.Agg | LlmResponse.Stream) -> None: ...
 
         def fail(self, error: BaseException) -> None: ...
 
@@ -105,7 +123,7 @@ if TYPE_CHECKING:
         def request(self) -> dict[str, object]: ...
 
         @property
-        def response(self) -> dict[str, object] | None: ...
+        def response(self) -> LlmResponse.Agg | LlmResponse.Stream | None: ...
 
     class Step:
         @final

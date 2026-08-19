@@ -3,6 +3,7 @@
 
 """Tests for the dictionary-based libsy Python API."""
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ from switchyard.libsy import (
     ContextWindowExceededError,
     CustomClassifierConfig,
     LlmClassifierConfig,
+    LlmResponse,
     RoutingOutcome,
     Step,
     TaskClassifierConfig,
@@ -72,11 +74,15 @@ async def run_algorithm(
                         call.fail(error)
                         break
                     else:
-                        call.respond(response)
+                        call.respond(LlmResponse.Agg(response))
                         break
             case Step.Done(outcome):
                 if outcome.response is not None:
-                    return outcome.selected_model_id, outcome.response
+                    match outcome.response:
+                        case LlmResponse.Agg(response):
+                            return outcome.selected_model_id, response
+                        case LlmResponse.Stream(_):
+                            raise AssertionError("test helper expected an aggregate response")
                 candidates = [outcome.selected_model_id, *outcome.fallback_models]
                 for index, target in enumerate(candidates):
                     candidate_request = {**outcome.request, "model": target}
@@ -115,6 +121,42 @@ async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() 
     ]
     assert response["model"] == "fast"
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "fast"}]
+
+
+async def test_routing_call_accepts_a_streamed_response() -> None:
+    async def events() -> AsyncIterator[dict[str, object]]:
+        for chunk in [
+            {"MessageStart": {"id": "response-1", "model": "judge"}},
+            {"TextDelta": {"index": 0, "text": '{"target":"balanced"}'}},
+            {"MessageStop": {"reason": "end_turn"}},
+        ]:
+            yield {"preservation": None, "normalized": [chunk]}
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["target"],
+        "properties": {"target": {"type": "string", "enum": ["fast", "balanced"]}},
+    }
+    algorithm = algorithms.llm_classifier(
+        LlmClassifierConfig.custom(
+            "judge",
+            [("fast", "model-a"), ("balanced", "model-b")],
+            default_target="fast",
+            config=CustomClassifierConfig("Choose a target.", schema, "/target"),
+        )
+    )
+    outcome: RoutingOutcome | None = None
+
+    async for step in algorithm.run_stream(request_body()):
+        match step:
+            case Step.CallModel(call):
+                call.respond(LlmResponse.Stream(events()))
+            case Step.Done(done):
+                outcome = done
+
+    assert outcome is not None
+    assert outcome.selected_model_id == "model-b"
 
 
 async def test_classifier_config_accepts_a_prompt_override() -> None:

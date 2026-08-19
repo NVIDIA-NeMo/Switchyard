@@ -107,7 +107,7 @@ normalized request shape and routing policy:
 ```python
 import asyncio
 
-from switchyard.libsy import Step, algorithms
+from switchyard.libsy import LlmResponse, Step, algorithms
 from switchyard_litellm import LiteLLMSyClient
 
 
@@ -161,17 +161,23 @@ async def main() -> None:
     try:
         async for step in router.run_stream(request):
             match step:
-                case Step.Decision(decision):
-                    print("Decision:", decision.selected_model_id, decision.reasoning)
                 case Step.CallModel(call):
                     try:
                         response = await client.call(call.request)
                     except Exception as error:
                         call.fail(error)
                     else:
-                        call.respond(response)
-                case Step.Done(response):
-                    print("Response:", response)
+                        call.respond(LlmResponse.Agg(response))
+                case Step.Done(outcome):
+                    print("Decision:", outcome.selected_model_id)
+                    match outcome.response:
+                        case LlmResponse.Agg(response):
+                            print("Response:", response)
+                        case LlmResponse.Stream(stream):
+                            async for event in stream:
+                                print("Response event:", event)
+                        case None:
+                            print("Response:", await client.call(outcome.request))
     finally:
         await client.aclose()
 
