@@ -128,6 +128,7 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions |
 | `POST` | `/v1/messages` | Anthropic Messages |
 | `POST` | `/v1/responses` | OpenAI Responses |
+| `POST` | `/v1/decision` | Resolve selected and fallback targets without a post-routing answer call |
 | `POST` | `/v1/messages/count_tokens` | Token count from a route's Anthropic target |
 | `GET` | `/v1/models` | Routes served by this deployment |
 | `GET` | `/v1/stats` | Per-model usage plus curated algorithm stats |
@@ -138,6 +139,14 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 Requests name a route by its `id`, so `POST /v1/chat/completions` with `"model": "switchyard/general"`
 routes through the `[routes.general]` entry above. Any of the three request formats can address any
 route, and the server translates between them.
+
+`POST /v1/decision` accepts `{"input_format": "openai_chat", "request": {...}}`, where the
+nested request names the route in `model`. It executes required classifier or judge calls, then
+returns the selected target and ordered fallbacks with their model, format, base URL, and
+`extra_body`. It does not make a post-routing answer call. Routing-time calls still execute, and
+response-dependent algorithms such as escalation and advisor routing may produce an answer while
+deciding. When they do, the endpoint includes the buffered answer as `response`, encoded in
+`input_format`; otherwise the field is omitted.
 
 For `stage_router`, `algorithm_stats.stage_router` groups routing decisions by source and semantic
 target and summarizes its score, confidence, and input-dimension histograms. These values reset

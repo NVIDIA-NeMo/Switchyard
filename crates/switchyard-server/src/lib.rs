@@ -32,9 +32,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, LibsyError};
+use libsy::{Algorithm, CallModel, LibsyError, RoutingOutcome, drive};
 use parking_lot::Mutex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
@@ -42,8 +42,9 @@ use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
 
-use switchyard_translation::{WireFormat, decode_request};
+use switchyard_translation::{WireFormat, decode_request, encode_aggregated_response};
 
+use crate::config::ServerConfig;
 use crate::response::into_http_response;
 use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
 
@@ -112,6 +113,32 @@ struct RouteEntry {
     caller_auth: Option<CallerAuthKind>,
     capabilities: ModelCapabilities,
     count_tokens_target: Option<CountTokensTarget>,
+    config_name: Option<String>,
+}
+
+/// Decision result using the same selected/fallback order as libsy.
+#[derive(Serialize)]
+struct DecisionResponse<'a> {
+    selected: DecisionTargetResponse<'a>,
+    fallbacks: Vec<DecisionTargetResponse<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<Value>,
+}
+
+/// Borrowed response view over one target's existing configuration.
+#[derive(Serialize)]
+struct DecisionTargetResponse<'a> {
+    target: &'a str,
+    model: &'a ModelId,
+    llm_client: DecisionLlmClientResponse<'a>,
+    extra_body: &'a BTreeMap<String, Value>,
+}
+
+/// Non-secret client settings needed to call a selected model.
+#[derive(Serialize)]
+struct DecisionLlmClientResponse<'a> {
+    format: WireFormat,
+    base_url: &'a str,
 }
 
 /// Caller credential family required by forwarded-auth backends.
@@ -158,6 +185,7 @@ impl CountTokensTarget {
 #[derive(Clone)]
 pub struct ServerState {
     routes: Arc<BTreeMap<ModelId, RouteEntry>>,
+    config: Option<Arc<ServerConfig>>,
     metrics: prometheus::Registry,
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
@@ -212,6 +240,7 @@ impl ServerState {
                 None,
                 ModelCapabilities::default(),
                 None,
+                None,
             )
         }))
     }
@@ -225,12 +254,20 @@ impl ServerState {
                 Option<CallerAuthKind>,
                 ModelCapabilities,
                 Option<CountTokensTarget>,
+                Option<String>,
             ),
         >,
     ) -> ServerResult<Self> {
         let mut entries = BTreeMap::new();
-        for (model, algorithm, target_clients, caller_auth, capabilities, count_tokens_target) in
-            routes
+        for (
+            model,
+            algorithm,
+            target_clients,
+            caller_auth,
+            capabilities,
+            count_tokens_target,
+            config_name,
+        ) in routes
         {
             let model = ModelId::from(model.trim());
             if model.is_empty() {
@@ -242,6 +279,7 @@ impl ServerState {
                 caller_auth,
                 capabilities,
                 count_tokens_target,
+                config_name,
             };
             if entries.insert(model.clone(), entry).is_some() {
                 return Err(ServerError::new(format!("duplicate route model {model}")));
@@ -257,11 +295,18 @@ impl ServerState {
         );
         Ok(Self {
             routes: Arc::new(entries),
+            config: None,
             metrics,
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
         })
+    }
+
+    /// Retains the validated configuration used to describe decision results.
+    fn with_config(mut self, config: Arc<ServerConfig>) -> Self {
+        self.config = Some(config);
+        self
     }
 
     /// Enables durable per-request routing records at `path`.
@@ -284,6 +329,42 @@ impl ServerState {
 
     fn route_for_model(&self, model: &str) -> Option<&RouteEntry> {
         self.routes.get(model)
+    }
+
+    /// Resolves the routing outcome through the target names configured for its route.
+    fn decision_response<'a>(
+        &'a self,
+        route: &'a RouteEntry,
+        outcome: &RoutingOutcome,
+        response: Option<Value>,
+    ) -> Option<DecisionResponse<'a>> {
+        let config = self.config.as_ref()?;
+        let target_names = config.routing_target_names(route.config_name.as_ref()?)?;
+        let resolve = |model: &ModelId| {
+            let (target_name, target) = target_names
+                .iter()
+                .filter_map(|name| config.targets.get_key_value(*name))
+                .find(|(_, target)| target.id == *model)?;
+            let client = config.llm_clients.get(&target.llm_client)?;
+            Some(DecisionTargetResponse {
+                target: target_name,
+                model: &target.id,
+                llm_client: DecisionLlmClientResponse {
+                    format: client.format.wire_format(),
+                    base_url: &client.base_url,
+                },
+                extra_body: &target.extra_body,
+            })
+        };
+        Some(DecisionResponse {
+            selected: resolve(&outcome.selected_model_id)?,
+            fallbacks: outcome
+                .fallback_models
+                .iter()
+                .map(resolve)
+                .collect::<Option<Vec<_>>>()?,
+            response,
+        })
     }
 }
 
@@ -503,6 +584,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
+        .route("/v1/decision", post(decision))
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/models", get(models))
         .route("/v1/stats", get(get_stats))
@@ -562,6 +644,92 @@ async fn openai_responses(
     body: std::result::Result<Json<Value>, JsonRejection>,
 ) -> Response {
     handle_endpoint(state, started, headers, body, WireFormat::OpenAiResponses).await
+}
+
+/// One provider request submitted for a routing decision without an answer-model call.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionEndpointRequest {
+    input_format: WireFormat,
+    request: Value,
+}
+
+/// Selects a target while still allowing the algorithm's classifier and judge calls.
+async fn decision(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<DecisionEndpointRequest>, JsonRejection>,
+) -> Response {
+    let body = match body {
+        Ok(Json(body)) if body.request.is_object() => body,
+        Ok(_) => {
+            return invalid_body_error(StatusCode::BAD_REQUEST, "request must be a JSON object");
+        }
+        Err(error) => {
+            return invalid_body_error(
+                error.status(),
+                format!("Request body must be valid JSON: {error}"),
+            );
+        }
+    };
+    let input_format = body.input_format;
+    let (route, request) = match resolve_route(
+        &state,
+        metadata_from_headers(headers),
+        body.request,
+        input_format,
+    ) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+    let mut outcome = match run_decision_only(route, request).await {
+        Ok(outcome) => outcome,
+        Err(error) => return algorithm_error(error),
+    };
+    let response = match outcome.response.take() {
+        Some(response) => {
+            let aggregate = match response.llm_response.into_agg().await {
+                Ok(aggregate) => aggregate,
+                Err(error) => return client_error(&error),
+            };
+            match encode_aggregated_response(
+                &aggregate,
+                input_format,
+                Some(outcome.selected_model_id.as_str()),
+            ) {
+                Ok(response) => Some(response),
+                Err(error) => return server_error(error.to_string()),
+            }
+        }
+        None => None,
+    };
+    match state.decision_response(route, &outcome, response) {
+        Some(response) => Json(response).into_response(),
+        None => {
+            server_error("routing outcome contains a model with no callable target configuration")
+        }
+    }
+}
+
+/// Completes routing-time calls and returns the outcome without serving its answer target.
+async fn run_decision_only(route: &RouteEntry, request: Request) -> libsy::Result<RoutingOutcome> {
+    drive(Arc::clone(&route.algorithm), request, |call| {
+        serve_decision_dependency(route, call)
+    })
+    .await
+}
+
+/// Serves a classifier or judge call that the decision depends on.
+async fn serve_decision_dependency(route: &RouteEntry, call: CallModel) -> libsy::Result<()> {
+    let model = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
+    let result = match route.target_clients.route(&model) {
+        Ok(client) => client
+            .call(call.request.clone())
+            .await
+            .map_err(|source| LibsyError::client_call(model, source)),
+        Err(source) => Err(LibsyError::client_call(model, source)),
+    };
+    call.respond(result)
 }
 
 /// Anthropic token counting against the route's explicitly configured target.

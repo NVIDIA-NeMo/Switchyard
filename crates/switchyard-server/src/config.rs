@@ -20,7 +20,7 @@ use switchyard_llm_client::{
     Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     TranslatingLlmClient,
 };
-use switchyard_protocol::{ModelId, RoutedLlmClient};
+use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
 use crate::{
     CallerAuthKind, CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState,
@@ -44,22 +44,31 @@ pub fn load_server_state(path: impl AsRef<Path>) -> ServerResult<ServerState> {
 }
 
 fn server_state_from_toml(toml: &str) -> ServerResult<ServerState> {
-    let config: ServerConfig = toml::from_str(toml)
-        .map_err(|error| ServerError::new(format!("failed to parse TOML: {error}")))?;
-    config.build()
+    let config: Arc<ServerConfig> = Arc::new(
+        toml::from_str(toml)
+            .map_err(|error| ServerError::new(format!("failed to parse TOML: {error}")))?,
+    );
+    let state = config.build()?;
+    Ok(state.with_config(config))
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ServerConfig {
+pub(crate) struct ServerConfig {
     schema_version: u32,
     #[serde(default)]
-    llm_clients: BTreeMap<String, LlmClientConfig>,
-    targets: BTreeMap<String, TargetConfig>,
+    pub(crate) llm_clients: BTreeMap<String, LlmClientConfig>,
+    pub(crate) targets: BTreeMap<String, TargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
 }
 
 impl ServerConfig {
+    pub(crate) fn routing_target_names(&self, route_name: &str) -> Option<Vec<&str>> {
+        self.routes
+            .get(route_name)
+            .map(RouteConfig::routing_target_names)
+    }
+
     fn build(&self) -> ServerResult<ServerState> {
         if self.schema_version != SUPPORTED_SCHEMA_VERSION {
             return Err(ServerError::new(format!(
@@ -94,6 +103,11 @@ impl ServerConfig {
         for (route_name, config) in &self.routes {
             validate_value("route name", route_name)?;
             validate_value(&format!("route {route_name} id"), config.id())?;
+            for target_name in config.callable_target_names() {
+                self.targets.get(target_name).ok_or_else(|| {
+                    ServerError::new(format!("route references unknown target {target_name}"))
+                })?;
+            }
             let capabilities = config.capabilities();
             if capabilities.context_window == Some(0) {
                 return Err(ServerError::new(format!(
@@ -110,6 +124,7 @@ impl ServerConfig {
                 caller_auth,
                 capabilities,
                 count_tokens_target,
+                Some(route_name.clone()),
             ));
         }
         ServerState::new_with_capabilities(routes)
@@ -246,9 +261,9 @@ fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LlmClientConfig {
-    format: ClientFormat,
-    base_url: String,
+pub(crate) struct LlmClientConfig {
+    pub(crate) format: ClientFormat,
+    pub(crate) base_url: String,
     api_key_env: Option<String>,
     #[serde(default)]
     forward_auth: bool,
@@ -260,15 +275,15 @@ struct LlmClientConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TargetConfig {
-    id: ModelId,
-    llm_client: String,
+pub(crate) struct TargetConfig {
+    pub(crate) id: ModelId,
+    pub(crate) llm_client: String,
     #[serde(default)]
-    extra_body: BTreeMap<String, Value>,
+    pub(crate) extra_body: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
-enum ClientFormat {
+pub(crate) enum ClientFormat {
     #[serde(rename = "openai_chat")]
     OpenAiChat,
     #[serde(rename = "openai_responses")]
@@ -278,6 +293,14 @@ enum ClientFormat {
 }
 
 impl ClientFormat {
+    pub(crate) const fn wire_format(self) -> WireFormat {
+        match self {
+            Self::OpenAiChat => WireFormat::OpenAiChat,
+            Self::OpenAiResponses => WireFormat::OpenAiResponses,
+            Self::AnthropicMessages => WireFormat::AnthropicMessages,
+        }
+    }
+
     const fn caller_auth_kind(self) -> CallerAuthKind {
         match self {
             Self::AnthropicMessages => CallerAuthKind::Anthropic,
@@ -1493,9 +1516,10 @@ classifier_magic = true
         ];
 
         for (toml, expected) in cases {
+            let error = error_message(&toml);
             assert!(
-                error_message(&toml).contains(expected),
-                "expected error containing {expected}"
+                error.contains(expected),
+                "expected error containing {expected}, got {error}"
             );
         }
     }
