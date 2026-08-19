@@ -754,8 +754,33 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     }
 }
 
+// Anthropic and Bedrock both cap a request at four blocks carrying
+// `cache_control`, counting tools, system blocks and message blocks together.
+const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
+
+// Counts the blocks upstream will see carrying a `cache_control` marker. The
+// marker's own value holds no such key, so it is never counted twice.
+fn count_cache_control_blocks(value: &Value) -> usize {
+    match value {
+        Value::Object(map) => {
+            usize::from(map.contains_key("cache_control"))
+                + map.values().map(count_cache_control_blocks).sum::<usize>()
+        }
+        Value::Array(items) => items.iter().map(count_cache_control_blocks).sum(),
+        _ => 0,
+    }
+}
+
 // Marks the final message content block as the Anthropic prompt-cache breakpoint.
 fn enable_anthropic_prompt_caching(body: &mut Value) {
+    // Abstain once the caller has spent the budget itself. Adding a fifth marker
+    // turns a request that was valid on arrival into an upstream HTTP 400, and a
+    // caller that placed four breakpoints deliberately needs them more than we
+    // need a fifth. When the final block is already marked this returns early
+    // and changes nothing, which is what the insert below would have done.
+    if count_cache_control_blocks(body) >= MAX_CACHE_CONTROL_BLOCKS {
+        return;
+    }
     let Some(content) = body
         .get_mut("messages")
         .and_then(Value::as_array_mut)
@@ -957,6 +982,66 @@ mod tests {
 
         assert_eq!(
             body["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    // Counts the blocks upstream will see carrying a `cache_control` marker.
+    fn cache_control_blocks(value: &Value) -> usize {
+        count_cache_control_blocks(value)
+    }
+
+    // A body whose four breakpoints are all spent elsewhere: the caller manages
+    // its own caching and left the final block unmarked on purpose.
+    fn body_at_the_cache_control_limit() -> Value {
+        json!({
+            "system": [
+                {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": "b", "cache_control": {"type": "ephemeral"}}
+            ],
+            "tools": [
+                {"name": "t", "input_schema": {"type": "object"},
+                 "cache_control": {"type": "ephemeral"}}
+            ],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "old", "cache_control": {"type": "ephemeral"}}
+                ]},
+                {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+                {"role": "user", "content": [{"type": "text", "text": "new"}]}
+            ]
+        })
+    }
+
+    #[test]
+    fn anthropic_prompt_caching_abstains_at_the_cache_control_limit() {
+        let mut body = body_at_the_cache_control_limit();
+        assert_eq!(cache_control_blocks(&body), 4);
+
+        enable_anthropic_prompt_caching(&mut body);
+
+        // Anthropic and Bedrock both reject a fifth marker with HTTP 400, which
+        // would fail a request that was valid before it reached us.
+        assert_eq!(cache_control_blocks(&body), 4);
+        assert!(
+            body["messages"][2]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn anthropic_prompt_caching_still_marks_one_below_the_limit() {
+        let mut body = body_at_the_cache_control_limit();
+        // Free one breakpoint, so there is room for ours.
+        body["system"].as_array_mut().unwrap().pop();
+        assert_eq!(cache_control_blocks(&body), 3);
+
+        enable_anthropic_prompt_caching(&mut body);
+
+        assert_eq!(cache_control_blocks(&body), 4);
+        assert_eq!(
+            body["messages"][2]["content"][0]["cache_control"],
             json!({"type": "ephemeral"})
         );
     }
