@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Experimental LiteLLM client for Switchyard libsy."""
+"""Experimental Switchyard routing plugin for LiteLLM."""
 
-from .client import LiteLLMSyClient
+from .plugins import RandomRoutingPlugin, StageRoutingPlugin, SwitchyardRoutingPlugin
 
-__all__ = ["LiteLLMSyClient"]
+__all__ = ["RandomRoutingPlugin", "StageRoutingPlugin", "SwitchyardRoutingPlugin"]

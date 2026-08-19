@@ -1,357 +1,362 @@
-# Switchyard + LiteLLM
+# Switchyard routing plugin for LiteLLM
 
-> **Experimental integration:** This example and its Python APIs are
-> experimental and may change without notice.
+> **Experimental integration:** This example and its Python API may change without notice.
 
-Build on this package when you want to put Switchyard routing in front of a
-LiteLLM gateway. It demonstrates the integration end to end, and its client,
-Compose configuration, and example code are intended as a copyable starting
-point for your own application.
+> **Checkout-only dependency:** The current published `nemo-switchyard` release does not contain
+> the decision-only Python API used here. Run this example from this repository checkout, where
+> `[tool.uv.sources]` binds the example to the adjacent Switchyard source. Do not install or publish
+> `switchyard-litellm` as a standalone package until a compatible Switchyard release is available
+> and its dependency floor can be updated.
 
-LiteLLM provides the OpenAI-compatible gateway, model aliases, and OpenRouter
-provider integration. Switchyard's Stage router makes the routing decision from
-the coding agent's recent tool history.
-`LiteLLMSyClient` connects Switchyard's normalized libsy requests to their
-selected aliases through LiteLLM's asynchronous Completion API and the
-Dockerized gateway. Together, they let an application keep routing policy in
-Switchyard while LiteLLM owns model access and sends Chat Completions inference
-through OpenRouter.
+This package integrates Switchyard at LiteLLM's native routing-plugin boundary. Applications keep
+using LiteLLM's `Router` or OpenAI-compatible proxy. The same configured object has two LiteLLM
+roles: before deployment selection it narrows the candidate set to the model selected by
+Switchyard; after selection it applies any supported Switchyard request rewrite before LiteLLM
+translates and sends the provider request.
+
+The integration pins LiteLLM 1.97.0. Model inventory and routing policy are both owned by the
+deployer:
+
+- LiteLLM YAML defines the public model group, candidate models, credentials, and provider options.
+- Switchyard TOML selects the algorithm and all of its supported routing parameters.
+
+The checked-in profiles use two OpenRouter models as demonstration values. Those model IDs are not
+built into `switchyard_litellm` and can be replaced without changing package source.
+
+## Layout
+
+```text
+litellm/
+├── deployment/
+│   ├── .env.example
+│   ├── Dockerfile
+│   ├── compose.yaml
+│   └── profiles/
+│       ├── stage/{litellm.yaml,switchyard.toml}
+│       └── random/{litellm.yaml,switchyard.toml}
+├── examples/python_router.py
+├── src/switchyard_litellm/
+│   ├── configuration/
+│   └── plugins/
+└── tests/{unit,integration}/
+```
 
 ## Request flow
 
 ```text
-your application → libsy normalized request → Switchyard Stage router
-                 → LiteLLMSyClient → LiteLLM async Completion API
-                 → Dockerized gateway alias → OpenRouter Chat Completions
-                 → selected model
+application → LiteLLM Router → Switchyard routing plugin
+                              → Algorithm.run_stream()
+                              → one selected candidate + optional request delta
+            → LiteLLM deployment selection
+            → same object as deployment callback → provider inference
 ```
 
-The bundled router treats `strong` as the capable tier and `fast` as the
-efficient tier. It uses the `efficient_first` picker, so an initial request or
-an ambiguous turn falls open to `fast`. Decisive error-recovery signals, such as
-a critical failed tool result, route the turn to `strong`. The client asks
-LiteLLM's Completion API to call the selected alias through the gateway rather
-than embedding a provider model ID in application code.
+The candidate-bound Stage and Random plugins construct Switchyard algorithms from the live
+candidate list supplied by LiteLLM. The low-level `SwitchyardRoutingPlugin` then:
 
-## Quick start
+1. converts LiteLLM's `structured_messages` to a normalized Switchyard request;
+2. runs the supplied algorithm until `Step.Done`;
+3. validates and converts any supported request delta;
+4. replaces `context.candidate_models` with the selected exact deployment; and
+5. records the decision and private delta under `context.signals["switchyard"]`.
 
-This example uses these pinned gateway aliases and image:
+LiteLLM copies those signals into request metadata. After LiteLLM selects a deployment, the same
+object's `async_pre_call_deployment_hook` applies the delta and removes it from the metadata passed
+downstream. The proxy profile therefore registers the dotted object as both a routing plugin and a
+callback.
 
-- `strong` maps to OpenRouter's `openai/gpt-5.6-sol` model.
-- `fast` maps to OpenRouter's `moonshotai/kimi-k3` model.
-- The Python client pins `litellm==1.92.0`.
-- The gateway runs `ghcr.io/berriai/litellm:v1.92.0`.
+LiteLLM remains responsible for credentials, retries, provider translation, inference, and the
+OpenAI-compatible API.
 
-### Prerequisites
+## Supported algorithm semantics
 
-You need Python 3.12, [uv](https://docs.astral.sh/uv/), Docker Compose, an
-`OPENROUTER_API_KEY`, and OpenRouter account access to both model IDs. The
-example intentionally standardizes on Python 3.12; the pinned LiteLLM release
-cannot build on Python 3.14.
+Compatibility is determined by behavior rather than an algorithm-name allowlist.
+`StageRoutingPlugin` and `RandomRoutingPlugin` provide the deployer-oriented bindings supported by
+the checked-in configuration loader.
 
-### Configure
+| Behavior | Result |
+|---|---|
+| Random selects a current candidate | Supported |
+| Stage uses only request-history signals | Supported |
+| Algorithm requests `Step.CallModel` | Rejected |
+| Algorithm returns an existing response | Rejected |
+| Algorithm rewrites text instructions/messages | Applied after deployment selection |
+| Algorithm rewrites tools/tool choice | Applied after deployment selection |
+| Algorithm rewrites sampling, output, reasoning effort, or stream | Applied after deployment selection |
+| Algorithm rewrites supported provider-extension fields | Applied after deployment selection |
+| Algorithm rewrites raw reasoning, preservation, or unsupported content/extensions | Rejected |
+| Algorithm selects outside the current candidate pool | Rejected |
+| Algorithm stream ends without `Step.Done` | Rejected |
 
-From the repository root:
+Escalation and classifier-backed routers are not compatible because a LiteLLM routing plugin cannot
+service intermediate model calls. Stage's system prompts and handoff notes do not require an
+intermediate call, so the dual-role Stage plugin supports them. Unsupported behavior fails closed
+before LiteLLM sends inference.
+
+LiteLLM 1.97.0's routing context exposes structured messages but does not expose the caller's tools,
+sampling controls, output controls, or provider-specific arguments. The adapter therefore uses
+delta semantics: a field explicitly changed by Switchyard overrides the corresponding LiteLLM
+argument, while a field Switchyard leaves at the adapter default does not clear or replace the
+caller's original value. A Switchyard algorithm can produce an outbound override for tools,
+`tool_choice`, `temperature`, `top_p`, `top_k`, `max_completion_tokens`, `response_format`,
+`reasoning_effort`, `stream`, and the safe OpenAI Chat extension fields supported by the adapter.
+It cannot inspect the original value of those fields through the current routing-plugin API, or
+intentionally clear a caller value back to an adapter default such as `None` or an empty tool list.
+
+The message adapter supports `system`, `developer`, and `user` text; assistant text and OpenAI
+function tool calls; and text tool results. It rejects malformed function arguments, media or audio
+content, legacy `function` messages, and unknown roles or content blocks.
+
+## Quick start with the local proxy
+
+Prerequisites are Docker Compose and an OpenRouter key with access to the example models. From this
+directory:
 
 ```bash
-cd examples/experimental/litellm
-cp .env.example .env
-# Edit .env and set OPENROUTER_API_KEY.
-```
-
-### Install from the checkout
-
-From the package directory:
-
-```bash
-uv sync --locked --python 3.12
-```
-
-### Install the package from source in another uv environment
-
-From the repository root:
-
-```bash
-LITELLM_ENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/switchyard-litellm-env.XXXXXX")"
-uv venv --python 3.12 "$LITELLM_ENV_DIR"
-uv pip install --python "$LITELLM_ENV_DIR/bin/python" ./examples/experimental/litellm
-"$LITELLM_ENV_DIR/bin/python" -c "from switchyard_litellm import LiteLLMSyClient"
-rm -rf -- "$LITELLM_ENV_DIR"
-```
-
-### Start and inspect LiteLLM
-
-From the package directory:
-
-```bash
-docker compose up -d --wait
-docker compose ps
+cp deployment/.env.example deployment/.env
+# Set OPENROUTER_API_KEY in deployment/.env.
+docker compose -f deployment/compose.yaml up -d --build --wait
 curl -fsS http://127.0.0.1:4000/health/liveliness
 ```
 
-### Run the example
+The default profile is `stage`. Send a request to its public `switchyard` model group:
 
 ```bash
-uv run --locked --python 3.12 python example.py
+curl -i http://127.0.0.1:4000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "switchyard",
+    "messages": [{"role": "user", "content": "Reply with the word hello."}],
+    "max_tokens": 64
+  }'
 ```
 
-The bundled request includes an out-of-memory tool failure, so the Stage router
-selects the capable `strong` alias. Remove the assistant tool call and tool
-result to see the same router fall open to `fast`.
+LiteLLM keeps the response body's `model` field equal to the public group. The
+`x-litellm-model-name` response header identifies the concrete model selected by Switchyard.
 
-## Use in your application
+Start the Random profile instead with:
 
-After installing the package, adapt this program to your application's
-normalized request shape and routing policy:
+```bash
+SWITCHYARD_LITELLM_PROFILE=random \
+  docker compose -f deployment/compose.yaml up -d --build --wait
+```
+
+Stop the proxy without deleting repository data:
+
+```bash
+docker compose -f deployment/compose.yaml down
+```
+
+## Configure a deployment profile
+
+Each directory under `deployment/profiles/` is a complete selectable profile:
+
+```text
+profiles/my-profile/
+├── litellm.yaml       # model inventory and LiteLLM settings
+└── switchyard.toml    # Switchyard algorithm and parameters
+```
+
+The LiteLLM YAML registers the environment-configured plugin object:
+
+```yaml
+model_list:
+  - model_name: switchyard
+    litellm_params:
+      model: provider/capable-model
+      api_key: os.environ/PROVIDER_API_KEY
+  - model_name: switchyard
+    litellm_params:
+      model: provider/efficient-model
+      api_key: os.environ/PROVIDER_API_KEY
+
+router_settings:
+  plugins:
+    - switchyard_litellm.configuration.configured_plugin.ROUTING_PLUGIN
+
+litellm_settings:
+  callbacks:
+    - switchyard_litellm.configuration.configured_plugin.ROUTING_PLUGIN
+```
+
+Compose mounts the selected profile at `/app/deployment` and sets
+`SWITCHYARD_LITELLM_CONFIG=/app/deployment/switchyard.toml`. LiteLLM imports the pre-created object
+from the dotted path above when the proxy starts.
+
+### Stage fields
+
+```toml
+algorithm = "stage"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_window = 3
+only_on_wrong_signal_escalation = true
+escalation_note = "The efficient tier failed; continue from its work."
+deescalation_note = "The capable tier completed the recovery."
+capable_system_prompt = "Handle this request as the capable tier."
+efficient_system_prompt = "Handle this request as the efficient tier."
+```
+
+| Field | Required | Accepted value |
+|---|---:|---|
+| `algorithm` | yes | `"stage"` |
+| `picker` | yes | `"capable_first"` or `"efficient_first"` |
+| `confidence_threshold` | yes | finite number from `0` through `1` |
+| `recent_window` | no | nonnegative integer; omitted means no fixed recent window |
+| `only_on_wrong_signal_escalation` | no | Boolean; defaults to `true` |
+| `escalation_note` | no | nonempty text appended when Stage hands work to the capable tier |
+| `deescalation_note` | no | nonempty text appended when Stage hands work back; requires `escalation_note` |
+| `capable_system_prompt` | no | nonempty system instruction used for the capable tier |
+| `efficient_system_prompt` | no | nonempty system instruction used for the efficient tier |
+
+Stage requires exactly two unique candidate model IDs. Their first occurrence in LiteLLM's
+candidate order defines the capable model first and the efficient model second. `picker` controls
+which tier is chosen in the absence of an escalation signal; it does not change those roles.
+
+### Random fields
+
+```toml
+algorithm = "random"
+seed = 6
+weights = [0.25, 0.75]
+```
+
+| Field | Required | Accepted value |
+|---|---:|---|
+| `algorithm` | yes | `"random"` |
+| `seed` | no | integer from `0` through `2^64 - 1` |
+| `weights` | no | nonempty array of finite, nonnegative numbers with at least one positive value |
+
+Random selects across every unique candidate ID in first-seen LiteLLM order. `weights` maps to that
+same order, so its length must equal the number of unique candidates in the request. Omitting
+`weights` gives each candidate equal weight; omitting `seed` uses Switchyard's unseeded behavior.
+
+Static errors—missing files, malformed TOML, unknown keys, wrong types, invalid ranges, and invalid
+weight values—fail while LiteLLM imports the plugin at proxy startup. Constraints that depend on
+LiteLLM's live candidates fail at request time: Stage's two-candidate requirement and Random's
+candidate-to-weight count.
+
+To add a profile, copy an existing directory, edit both files, and select its directory name:
+
+```bash
+SWITCHYARD_LITELLM_PROFILE=my-profile \
+  docker compose -f deployment/compose.yaml up -d --build --wait
+```
+
+On a successful decision without a rewrite, the plugin preserves signals from earlier plugins and
+adds:
 
 ```python
-import asyncio
-
-from switchyard.libsy import LlmResponse, Step, algorithms
-from switchyard_litellm import LiteLLMSyClient
-
-
-async def main() -> None:
-    request = {
-        "model": "auto",
-        "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": "Fix the failing tests."}],
-            },
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_call",
-                        "id": "call_1",
-                        "name": "Bash",
-                        "arguments": {"command": "pytest"},
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_call_id": "call_1",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "fatal runtime error: out of memory",
-                            }
-                        ],
-                        "is_error": True,
-                    }
-                ],
-            },
-        ],
-        "reasoning": {"effort": "low"},
-        "output": {"max_output_tokens": 64},
-    }
-    client = LiteLLMSyClient()
-    router = algorithms.stage_router(
-        "strong",
-        "fast",
-        picker="efficient_first",
-        confidence_threshold=0.5,
-        recent_window=3,
-    )
-    try:
-        async for step in router.run_stream(request):
-            match step:
-                case Step.CallModel(call):
-                    try:
-                        response = await client.call(call.request)
-                    except Exception as error:
-                        call.fail(error)
-                    else:
-                        call.respond(LlmResponse.Agg(response))
-                case Step.Done(outcome):
-                    print("Decision:", outcome.selected_model_id)
-                    match outcome.response:
-                        case LlmResponse.Agg(response):
-                            print("Response:", response)
-                        case LlmResponse.Stream(stream):
-                            async for event in stream:
-                                print("Response event:", event)
-                        case None:
-                            print("Response:", await client.call(outcome.request))
-    finally:
-        await client.aclose()
-
-
-asyncio.run(main())
+context.signals["switchyard"] = {
+    "selected_model_id": "provider/efficient-model",
+    "fallback_models": ["provider/capable-model"],
+}
 ```
 
-## Known limitations
+`fallback_models` is diagnostic metadata only. The plugin narrows the candidate set; it does not add
+a LiteLLM fallback policy. When Switchyard rewrites a supported request field, the signal also
+temporarily contains a private `request_patch`. The callback consumes that patch after deployment
+selection and excludes it from the metadata it returns downstream.
 
-This example intentionally supports buffered text and OpenAI-compatible
-function-tool traffic. It translates normalized function definitions, tool
-choices, assistant tool calls, and text-only tool results into gateway requests,
-and normalizes returned function calls for `libsy`.
-Media, instructions, non-text tool results, structured output, provider-specific
-extensions, preserved raw payloads, and streaming fail explicitly.
+## Use the plugin with LiteLLM's Python Router
 
-The pinned LiteLLM release does not yet recognize Kimi K3's current
-`reasoning_effort` support. `LiteLLMSyClient` forwards LiteLLM's
-`allowed_openai_params` hint to the gateway so OpenRouter receives that
-supported parameter. Recheck this compatibility hint when upgrading LiteLLM.
+For programmatic use, construct the plugin directly; TOML and the environment-backed import module
+are proxy deployment conveniences.
 
-LiteLLM 1.92 enters its optional proxy MCP path before distinguishing ordinary
-OpenAI function tools. `LiteLLMSyClient` disables that bridge for these calls so
-the integration does not need LiteLLM's proxy dependencies. Recheck this pinned
-compatibility behavior when upgrading LiteLLM.
+```python
+import litellm
+from litellm import Router
+from switchyard_litellm import StageRoutingPlugin
 
-## Test
+model_list = [
+    {
+        "model_name": "switchyard",
+        "litellm_params": {"model": "provider/capable-model"},
+    },
+    {
+        "model_name": "switchyard",
+        "litellm_params": {"model": "provider/efficient-model"},
+    },
+]
+plugin = StageRoutingPlugin(
+    picker="efficient_first",
+    confidence_threshold=0.5,
+    recent_window=3,
+)
+router = Router(model_list=model_list, plugins=[plugin])
+litellm.callbacks.append(plugin)
+```
 
-From the package directory, run the offline tests without provider calls:
+The explicit callback registration is required for programmatic `Router` use because LiteLLM's
+constructor accepts routing plugins but not deployment callbacks. In a long-running application,
+register the object once during startup. The proxy YAML shown above performs both registrations
+declaratively.
+
+Install the locked example environment and run the complete example from this directory:
 
 ```bash
-PYTHONPATH=. uv run --project . --locked --python 3.12 \
-  pytest tests -m "not e2e" -v
+uv sync --locked --python 3.12
+uv run --locked --env-file deployment/.env python examples/python_router.py
 ```
 
-The E2E test starts its own LiteLLM gateway and makes two paid OpenRouter Chat
-Completions calls through one Stage router. A no-signal request falls open to
-`fast`; a critical failed-tool request routes to `strong`.
-`SWITCHYARD_LITELLM_E2E=1` is the explicit spend opt-in:
+## Develop against a LiteLLM source checkout
+
+The pinned container is the reproducible default. To work on LiteLLM itself, follow LiteLLM's
+[local development setup](https://docs.litellm.ai/docs/extras/contributing_code#1-setting-up-your-local-dev-environment),
+including its proxy dependencies, then install this Switchyard checkout into that environment.
+Point the plugin loader at a routing TOML and LiteLLM at the matching model YAML:
+
+```bash
+export SWITCHYARD_LITELLM_CONFIG=/absolute/path/to/switchyard-new/examples/experimental/litellm/deployment/profiles/stage/switchyard.toml
+PYTHONPATH=/absolute/path/to/switchyard-new/examples/experimental/litellm/src \
+  uv run litellm --config \
+  /absolute/path/to/switchyard-new/examples/experimental/litellm/deployment/profiles/stage/litellm.yaml
+```
+
+Keep LiteLLM at v1.97.0 when reproducing this example's verified behavior.
+
+## Tests
+
+From the repository root, run the offline suite without an API key or provider calls:
+
+```bash
+PYTHONPATH=examples/experimental/litellm/src \
+  uv run --project examples/experimental/litellm --locked \
+  pytest examples/experimental/litellm/tests -m "not e2e" -v
+```
+
+The paid suite has an explicit opt-in. It builds and starts the local proxy once for each profile
+and verifies the concrete target through LiteLLM's `x-litellm-model-name` response header:
 
 ```bash
 SWITCHYARD_LITELLM_E2E=1 \
-uv run --project . --locked --python 3.12 --env-file .env \
-  pytest tests/test_e2e.py -m e2e -v
-```
-
-## Run the optional three-task Harbor smoke benchmark
-
-See the repository's [Harbor benchmark guide](../../../benchmark/README.md) for
-the one-time Harbor patch and dataset preparation. This is a separate test
-boundary: the package E2E tests `LiteLLMSyClient`, while Harbor tests
-`Harbor → Switchyard server → LiteLLM → OpenRouter`.
-
-From the repository root, start the example gateway:
-
-```bash
-docker compose --env-file examples/experimental/litellm/.env \
-  -f examples/experimental/litellm/compose.yaml up -d --wait
-```
-
-Then run the three-task smoke benchmark in the foreground:
-
-```bash
-SWITCHYARD_DOCKER_NETWORK=switchyard-litellm \
-bash benchmark/run-baseline.sh \
-  --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
-  --server-config examples/experimental/litellm/benchmark-route.toml \
-  --task-list-file examples/experimental/litellm/benchmark-tasks.txt \
-  --model litellm-stage \
-  --agent codex \
-  --reasoning-effort low \
-  --n-tasks 3 \
-  --n-concurrent 1 \
-  --max-retries 0 \
-  --port 4100 \
-  --foreground
-```
-
-The native benchmark route uses the same efficient-first Stage policy but does
-not use `LiteLLMSyClient`; Switchyard server translates requests directly to
-the shared LiteLLM gateway. The gateway drops parameters unsupported by the
-selected provider model, so the benchmark's reasoning effort reaches `strong`
-without causing `fast` requests to fail. The sample runs `broken-python`,
-`cosign-keyless-signing`, and `jq-data-processing`. Three autonomous coding-agent
-tasks can make many paid model calls. Inspect the resulting run under
-`benchmark/tb_runs/`, including
-`run_manifest.json`, `harbor.log`, `routing_stats_final.json`, and
-`jobs/<job>/<task>/agent/trajectory.json`.
-
-The verified run used the benchmark runner's fallback Codex model template:
-the task image's pinned Codex 0.144.5 requires `supports_reasoning_summaries`,
-which a newer host-generated catalog may omit. If Harbor fails with that missing
-field, use the following recovery procedure. It changes no repository source
-and is only for that exact error.
-
-Create a temporary `codex` shim that makes the host-only
-`codex debug models --bundled` probe fail. The runner then uses its existing
-`_fallback_codex_model_template()`:
-
-```bash
-CODEX_SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/switchyard-codex.XXXXXX")"
-printf '#!/usr/bin/env bash\nexit 1\n' > "$CODEX_SHIM_DIR/codex"
-chmod +x "$CODEX_SHIM_DIR/codex"
-```
-
-From the repository root, rerun the benchmark with the temporary directory at
-the front of `PATH`:
-
-```bash
-PATH="$CODEX_SHIM_DIR:$PATH" \
-SWITCHYARD_DOCKER_NETWORK=switchyard-litellm \
-bash benchmark/run-baseline.sh \
-  --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
-  --server-config examples/experimental/litellm/benchmark-route.toml \
-  --task-list-file examples/experimental/litellm/benchmark-tasks.txt \
-  --model litellm-stage \
-  --agent codex \
-  --reasoning-effort low \
-  --n-tasks 3 \
-  --n-concurrent 1 \
-  --max-retries 0 \
-  --port 4100 \
-  --foreground
-```
-
-After the run, remove only the shim and its empty temporary directory:
-
-```bash
-rm -f "$CODEX_SHIM_DIR/codex"
-rmdir "$CODEX_SHIM_DIR"
-```
-
-## Stop
-
-For the package-directory quick start:
-
-```bash
-docker compose down
-```
-
-After the repository-root Harbor workflow:
-
-```bash
-docker compose --env-file examples/experimental/litellm/.env \
-  -f examples/experimental/litellm/compose.yaml down
+  uv run --env-file examples/experimental/litellm/deployment/.env \
+  --project examples/experimental/litellm --locked \
+  pytest examples/experimental/litellm/tests/integration/test_e2e.py -m e2e -v
 ```
 
 ## Troubleshooting
 
-- Ensure `OPENROUTER_API_KEY` is present and not blank in `.env`.
-- Confirm your OpenRouter account can access `openai/gpt-5.6-sol` and
-  `moonshotai/kimi-k3`.
-- If host port 4000 is occupied, set `LITELLM_PORT` to an unused port and use
-  it in the health check, gateway URL, and `LiteLLMSyClient` `base_url`. The
-  bundled `example.py` assumes port 4000 unless you edit it.
-- If the container is unhealthy, from the repository root inspect:
-
-  ```bash
-  docker compose --env-file examples/experimental/litellm/.env \
-    -f examples/experimental/litellm/compose.yaml logs litellm
-  ```
-- Harbor must use the Docker network named exactly `switchyard-litellm`.
-- The benchmark uses Switchyard port 4100 to avoid LiteLLM's host port 4000.
+- If Compose says the key is missing, place `OPENROUTER_API_KEY` in `deployment/.env`, or pass
+  another file with `docker compose --env-file /path/to/.env -f deployment/compose.yaml ...`.
+- If startup reports `SWITCHYARD_LITELLM_CONFIG`, verify that the selected profile contains a
+  readable `switchyard.toml` and that its `algorithm` and fields match the tables above.
+- If port 4000 is occupied, set `LITELLM_PORT` before starting Compose and use that port in requests.
+- If the service is unhealthy, run `docker compose -f deployment/compose.yaml logs litellm`.
+- If routing fails only when a request arrives, verify candidate ordering/count and Random weight
+  count before checking the request's supported message shapes.
 
 ## Security
 
-The gateway is unauthenticated and intended only for local development. Its
-port is bound to loopback only. Use LiteLLM authentication and its production
-deployment guidance before exposing it remotely.
+The bundled proxy is unauthenticated and binds only to loopback. It is intended for local
+development. Local `.env` files are excluded from the Docker build context; keep credentials out of
+YAML, TOML, source control, and command output. Configure LiteLLM authentication and follow its
+production deployment guidance before exposing the service.
 
 ## References
 
-- [OpenRouter quickstart](https://openrouter.ai/docs/quickstart)
-- [GPT-5.6 Sol on OpenRouter](https://openrouter.ai/openai/gpt-5.6-sol)
-- [Kimi K3 on OpenRouter](https://openrouter.ai/moonshotai/kimi-k3)
-- [LiteLLM gateway quick start](https://docs.litellm.ai/docs/proxy/quick_start)
-- [Switchyard Stage-router docs](../../../docs/routing_algorithms/stage_router_routing.md)
+- [LiteLLM routing plugins](https://docs.litellm.ai/docs/routing_plugins)
+- [Switchyard decision-only API PR #459](https://github.com/NVIDIA-NeMo/Switchyard/pull/459)
+- [Switchyard Python binding updates PR #479](https://github.com/NVIDIA-NeMo/Switchyard/pull/479)
+- [Switchyard Stage routing](../../../docs/routing_algorithms/stage_router_routing.md)
+- [Switchyard Random routing](../../../docs/routing_algorithms/random_routing.md)
