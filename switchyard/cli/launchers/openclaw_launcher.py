@@ -152,8 +152,8 @@ def _openclaw_env(workspace: str) -> dict[str, str]:
 
 
 def _openclaw_command(openclaw_bin: str, openclaw_args: list[str]) -> list[str]:
-    """Build the OpenClaw interactive command."""
-    return [openclaw_bin, "chat", *openclaw_args]
+    """Build the OpenClaw command, defaulting to interactive chat."""
+    return [openclaw_bin, *(openclaw_args or ["chat"])]
 
 
 def _supervise_openclaw(
