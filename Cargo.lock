@@ -2389,6 +2389,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-test-time-scaling"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "switchyard-test-time-scaling-runner"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "switchyard-test-time-scaling",
+ "tokio",
+]
+
+[[package]]
 name = "switchyard-translation"
 version = "0.2.0"
 dependencies = [

@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
 import importlib.util
 import json
 from pathlib import Path
@@ -37,7 +35,6 @@ def _write_task(root: Path, name: str, task_toml: str, dockerfile: str | None = 
 def _prepare(
     tmp_path: Path,
     source: Path,
-    *,
     source_dataset: str = "openthoughts-tblite@2.0",
 ) -> Path:
     module = _load_generator_module()
@@ -190,6 +187,8 @@ def test_prebuilt_docker_image_task_becomes_derived_dockerfile(tmp_path: Path) -
     assert dockerfile.startswith("FROM python:3.12-slim\nUSER root\n")
     assert "@anthropic-ai/claude-code@2.1.211" in dockerfile
     assert "@openai/codex@0.144.5" in dockerfile
+    assert "uv tool install mini-swe-agent==2.4.6" in dockerfile
+    assert 'grep -F "mini-swe-agent v2.4.6"' in dockerfile
     assert "opencode-ai@1.18.3" in dockerfile
 
 
@@ -286,6 +285,7 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
         "CLAUDE_CODE_VERSION": "2.1.211",
         "CODEX_VERSION": "0.144.5",
         "HERMES_VERSION": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
+        "MINI_SWE_AGENT_VERSION": "2.4.6",
         "NODE_VERSION": "20.11.1",
         "OPENCODE_VERSION": "1.18.3",
     }
@@ -309,6 +309,7 @@ def test_generated_compose_bakes_task_id_into_proxy_env(tmp_path: Path) -> None:
     assert "SWITCHYARD_TASK_ID=task-id-check" in proxy_env
     assert "SWITCHYARD_TRIAL_DIR=${HOST_AGENT_LOGS_PATH:-}" in proxy_env
 
+
 def test_a_hermes_ref_that_is_not_a_commit_sha_is_rejected() -> None:
     """Only a full commit SHA can be recorded as a pin.
 
@@ -321,6 +322,7 @@ def test_a_hermes_ref_that_is_not_a_commit_sha_is_rejected() -> None:
     base = {
         "CLAUDE_CODE_VERSION": "1",
         "CODEX_VERSION": "2",
+        "MINI_SWE_AGENT_VERSION": "2.4.6",
         "OPENCODE_VERSION": "3",
         "NODE_VERSION": "4",
     }
@@ -345,6 +347,7 @@ def test_the_hermes_installer_is_fetched_at_the_pinned_commit() -> None:
     pins = {
         "CLAUDE_CODE_VERSION": "1",
         "CODEX_VERSION": "2",
+        "MINI_SWE_AGENT_VERSION": "2.4.6",
         "OPENCODE_VERSION": "3",
         "NODE_VERSION": "4",
         "HERMES_VERSION": sha,
@@ -368,6 +371,7 @@ def test_the_hermes_pin_is_applied_by_commit_and_forced() -> None:
     pins = {
         "CLAUDE_CODE_VERSION": "1",
         "CODEX_VERSION": "2",
+        "MINI_SWE_AGENT_VERSION": "2.4.6",
         "OPENCODE_VERSION": "3",
         "NODE_VERSION": "4",
         "HERMES_VERSION": sha,
@@ -385,6 +389,7 @@ def test_the_alpine_branch_installs_the_shell_the_installer_needs() -> None:
     pins = {
         "CLAUDE_CODE_VERSION": "1",
         "CODEX_VERSION": "2",
+        "MINI_SWE_AGENT_VERSION": "2.4.6",
         "OPENCODE_VERSION": "3",
         "NODE_VERSION": "4",
         "HERMES_VERSION": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
@@ -400,7 +405,8 @@ def test_a_missing_hermes_pin_is_reported_with_the_other_pins(tmp_path: Path) ->
     module = _load_generator_module()
     versions = tmp_path / "agent-versions.env"
     versions.write_text(
-        "CLAUDE_CODE_VERSION=1\nCODEX_VERSION=2\nOPENCODE_VERSION=3\nNODE_VERSION=4\n"
+        "CLAUDE_CODE_VERSION=1\nCODEX_VERSION=2\nMINI_SWE_AGENT_VERSION=5\n"
+        "OPENCODE_VERSION=3\nNODE_VERSION=4\n"
     )
     module.AGENT_VERSIONS_FILE = versions
     source = tmp_path / "source"
@@ -414,4 +420,3 @@ def test_a_missing_hermes_pin_is_reported_with_the_other_pins(tmp_path: Path) ->
             harbor_command="harbor",
             overwrite=False,
         )
-

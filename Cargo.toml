@@ -10,6 +10,8 @@ members = [
     "crates/protocol",
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
+    "crates/switchyard-test-time-scaling",
+    "crates/switchyard-test-time-scaling-runner",
     "crates/switchyard-translation",
 ]
 
@@ -40,6 +42,7 @@ switchyard-libsy = { path = "crates/libsy", version = "0.2.0" }
 switchyard-llm-client = { path = "crates/libsy-llm-client", version = "0.2.0" }
 switchyard-protocol = { path = "crates/protocol", version = "0.2.0" }
 switchyard-server = { path = "crates/switchyard-server", version = "0.2.0" }
+switchyard-test-time-scaling = { path = "crates/switchyard-test-time-scaling", version = "0.2.0" }
 switchyard-translation = { path = "crates/switchyard-translation", version = "0.2.0" }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

@@ -3,8 +3,6 @@
 
 """Prepare a local closed-book Harbor dataset with prebaked coding agents."""
 
-from __future__ import annotations
-
 import argparse
 import hashlib
 import json
@@ -155,7 +153,11 @@ def _find_exported_dataset_root(download_root: Path, source_dataset: str) -> Pat
             return candidate
 
     dirs_with_tasks = sorted(
-        {task.parent.parent for task in download_root.rglob("task.toml") if task.parent != download_root}
+        {
+            task.parent.parent
+            for task in download_root.rglob("task.toml")
+            if task.parent != download_root
+        }
     )
     if len(dirs_with_tasks) == 1:
         return dirs_with_tasks[0]
@@ -164,7 +166,9 @@ def _find_exported_dataset_root(download_root: Path, source_dataset: str) -> Pat
     raise FileNotFoundError(f"could not find exported tasks under {download_root}")
 
 
-def _run_download(source_dataset: str, download_root: Path, harbor_command: str, overwrite: bool) -> Path:
+def _run_download(
+    source_dataset: str, download_root: Path, harbor_command: str, overwrite: bool
+) -> Path:
     download_root.mkdir(parents=True, exist_ok=True)
     command = [
         *shlex.split(harbor_command),
@@ -199,6 +203,7 @@ def _install_layer(pins: dict[str, str]) -> str:
     node_version = pins["NODE_VERSION"]
     claude_version = pins["CLAUDE_CODE_VERSION"]
     codex_version = pins["CODEX_VERSION"]
+    mini_swe_agent_version = pins["MINI_SWE_AGENT_VERSION"]
     opencode_version = pins["OPENCODE_VERSION"]
     # Hermes (NousResearch hermes-agent) is a per-user uv app installed from
     # GitHub, not an npm package. Baking it here (build-time, with host network)
@@ -228,7 +233,7 @@ def _install_layer(pins: dict[str, str]) -> str:
     return f"""
 
 # Switchyard benchmark prebaked coding agents.
-ENV SWITCHYARD_PREBAKED_AGENT_VERSIONS="claude-code={claude_version},codex={codex_version},opencode={opencode_version},node={node_version},hermes={hermes_version}"
+ENV SWITCHYARD_PREBAKED_AGENT_VERSIONS="claude-code={claude_version},codex={codex_version},mini-swe-agent={mini_swe_agent_version},opencode={opencode_version},node={node_version},hermes={hermes_version}"
 RUN set -eux; \\
     if command -v apt-get >/dev/null 2>&1; then \\
         apt-get update; \\
@@ -282,6 +287,12 @@ RUN set -eux; \\
     curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/{hermes_version}/scripts/install.sh \\
         | bash -s -- --skip-setup --commit {hermes_version} --force-commit; \\
     hermes version
+RUN set -eux; \\
+    export HOME=/root; \\
+    export PATH="/root/.local/bin:$PATH"; \\
+    curl -LsSf https://astral.sh/uv/0.7.13/install.sh | sh; \\
+    uv tool install mini-swe-agent=={mini_swe_agent_version}; \\
+    uv tool list | grep -F "mini-swe-agent v{mini_swe_agent_version}"
 """
 
 
@@ -329,9 +340,7 @@ def _rewrite_task_image(task_dir: Path, pins: dict[str, str]) -> dict[str, Any]:
     entrypoint_layer = _entrypoint_layer()
 
     if docker_image:
-        dockerfile.write_text(
-            f"FROM {docker_image}\nUSER root\n{layer.lstrip()}{entrypoint_layer}"
-        )
+        dockerfile.write_text(f"FROM {docker_image}\nUSER root\n{layer.lstrip()}{entrypoint_layer}")
         task_toml.write_text(
             _remove_toml_key_from_table(task_toml.read_text(), "environment", "docker_image")
         )
@@ -389,7 +398,9 @@ def _append_proxy_allowlist(proxy_assets: Path, hosts: tuple[str, ...]) -> None:
     allowlist_path = proxy_assets / "allowlist-base.txt"
     base = allowlist_path.read_text().rstrip()
     additions = "\n".join(dict.fromkeys(hosts))
-    allowlist_path.write_text(f"{base}\n\n# Dataset-required package and data sources.\n{additions}\n")
+    allowlist_path.write_text(
+        f"{base}\n\n# Dataset-required package and data sources.\n{additions}\n"
+    )
 
 
 def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> dict[str, Any]:
@@ -449,7 +460,11 @@ def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> di
         "proxy": {"condition": "service_healthy"},
     }
     main["volumes"] = [
-        *([str(item) for item in main.get("volumes", [])] if isinstance(main.get("volumes"), list) else []),
+        *(
+            [str(item) for item in main.get("volumes", [])]
+            if isinstance(main.get("volumes"), list)
+            else []
+        ),
         "proxy-ca-public:/etc/proxy-ca:ro",
     ]
 
@@ -506,7 +521,6 @@ def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> di
 
 
 def prepare_dataset(
-    *,
     source_dataset: str,
     source_dir: Path | None,
     output_dir: Path,
@@ -518,6 +532,7 @@ def prepare_dataset(
         "CLAUDE_CODE_VERSION",
         "CODEX_VERSION",
         "HERMES_VERSION",
+        "MINI_SWE_AGENT_VERSION",
         "NODE_VERSION",
         "OPENCODE_VERSION",
     }
@@ -582,7 +597,9 @@ def _cli_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-dataset", default=DEFAULT_SOURCE_DATASET)
     parser.add_argument("--source-dir", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--harbor-command", default=os.environ.get("HARBOR_COMMAND", "uv run --no-sync harbor"))
+    parser.add_argument(
+        "--harbor-command", default=os.environ.get("HARBOR_COMMAND", "uv run --no-sync harbor")
+    )
     parser.add_argument("--overwrite", action="store_true")
     ns = parser.parse_args(argv)
 
