@@ -10,10 +10,10 @@ use serde::Deserialize;
 use serde_json::Value as Json;
 use switchyard_libsy::{
     Algorithm, ClassifierContractConfig, EscalationJudgeConfig, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTarget, LlmTargetSet, LlmTaskClassifier, PickerMode,
-    Random, StageRouter, StageRouterConfig, TargetPrompts, TaskClassifierConfig,
+    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, PickerMode, Random, StageRouter,
+    StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
-use switchyard_protocol::{RoutedLlmClient, WireFormat};
+use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
 use crate::client::TargetClient;
 
@@ -378,13 +378,9 @@ impl SwitchyardConfig {
                     targets
                         .get(name)
                         .ok_or_else(|| format!("algorithm target {name:?} was not prepared"))?;
-                    LlmTarget {
-                        semantic_name: name.to_string(),
-                    }
+                    ModelId::from(name)
                 }
-                None => LlmTarget {
-                    semantic_name: name.to_string(),
-                },
+                None => ModelId::from(name),
             })
         };
 
@@ -408,7 +404,7 @@ impl SwitchyardConfig {
                     .iter()
                     .map(|(_, binding)| binding.weight)
                     .collect::<Vec<_>>();
-                Random::new(LlmTargetSet::new(targets), Some(weights), *seed)
+                Random::new(targets, Some(weights), *seed)
                     .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
                     .map_err(|error| error.to_string())
             }
@@ -455,10 +451,10 @@ impl SwitchyardConfig {
                 config.handoff_notes = handoff_notes.clone();
                 let mut prompts = TargetPrompts::default();
                 if let Some(prompt) = capable_system_prompt {
-                    prompts = prompts.with(capable_target, prompt);
+                    prompts = prompts.with(capable_target.as_str(), prompt);
                 }
                 if let Some(prompt) = efficient_system_prompt {
-                    prompts = prompts.with(efficient_target, prompt);
+                    prompts = prompts.with(efficient_target.as_str(), prompt);
                 }
                 config.tier_prompts = prompts;
                 if let Some(classifier) = classifier {

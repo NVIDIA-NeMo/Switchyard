@@ -11,7 +11,7 @@ use serde_json::{Map, json};
 use switchyard_libsy::{Algorithm, LibsyError};
 use switchyard_llm_client::{ClientRouter, LlmCallObservation, RunObservation, RunObserver, run};
 use switchyard_protocol::{
-    Decision, LlmClientError, LlmResponse, Metadata, Request, Response, WireFormat,
+    LlmClientError, LlmResponse, Metadata, ModelId, Request, Response, WireFormat,
 };
 use switchyard_translation::{TranslationEngine, encode_stream};
 
@@ -325,20 +325,17 @@ impl SwitchyardRuntime {
         let clients = ClientRouter::new(
             self.targets
                 .iter()
-                .map(|(name, target)| (name.clone(), target.client.clone()))
+                .map(|(name, target)| (ModelId::from(name.as_str()), target.client.clone()))
                 .collect::<HashMap<_, _>>(),
         );
         match run(self.algorithm.clone(), clients, request, Some(observer)).await {
-            Ok((decisions, response)) => {
-                for decision in decisions {
-                    self.emit_decision(marks, &decision, attempt, mark_metadata);
-                }
+            Ok((selected_model_id, response)) => {
+                self.emit_decision(marks, &selected_model_id, attempt, mark_metadata);
                 self.emit_routing_llm_calls(
                     marks,
                     take_observed_calls(&observations),
                     attempt,
                     mark_metadata,
-                    true,
                 );
                 Ok(response)
             }
@@ -348,7 +345,6 @@ impl SwitchyardRuntime {
                     take_observed_calls(&observations),
                     attempt,
                     mark_metadata,
-                    false,
                 );
                 Err(error)
             }
@@ -370,10 +366,9 @@ impl SwitchyardRuntime {
             json!({"selected_target": target_name}),
             metadata,
         );
-        let decision = Decision::new(target_name, Some("trusted fallback target".into()), true);
         target
             .client
-            .call(request, decision)
+            .call(request)
             .await
             .map_err(|error| public_client_failure("trusted fallback", &error))
     }
@@ -402,7 +397,7 @@ impl SwitchyardRuntime {
     fn emit_decision(
         &self,
         marks: &mut Vec<RoutingMark>,
-        decision: &Decision,
+        selected_model_id: &ModelId,
         attempt: u32,
         metadata: &Json,
     ) {
@@ -412,9 +407,7 @@ impl SwitchyardRuntime {
             json!({
                 "algorithm": self.algorithm.name(),
                 "attempt": attempt,
-                "selected_target": decision.selected_model_id(),
-                "reasoning": decision.reasoning(),
-                "is_answer_call": decision.is_answer_call(),
+                "selected_target": selected_model_id,
             }),
             metadata,
         );
@@ -423,23 +416,10 @@ impl SwitchyardRuntime {
     fn emit_routing_llm_calls(
         &self,
         marks: &mut Vec<RoutingMark>,
-        mut calls: Vec<LlmCallObservation>,
+        calls: Vec<LlmCallObservation>,
         attempt: u32,
         metadata: &Json,
-        successful_run: bool,
     ) {
-        // The last successful routed call produced the response represented by Relay's
-        // outer LLM lifecycle event. Keep it out of these marks so consumers can add
-        // routing overhead without counting the serving call twice. Earlier routed calls
-        // are discarded candidates (for example, escalation's weak draft).
-        if successful_run
-            && let Some(position) = calls
-                .iter()
-                .rposition(|call| call.is_answer_call && call.is_success)
-        {
-            calls.remove(position);
-        }
-
         for (index, call) in calls.into_iter().enumerate() {
             self.mark(
                 marks,
@@ -449,7 +429,7 @@ impl SwitchyardRuntime {
                     "attempt": attempt,
                     "call_index": index + 1,
                     "selected_target": call.selected_model,
-                    "call_role": if call.is_answer_call { "candidate" } else { "judge" },
+                    "call_role": "routing",
                     "outcome": if call.is_success { "ok" } else { "error" },
                     "latency_ms": call.duration.as_secs_f64() * 1_000.0,
                     "usage": call.usage,
@@ -551,7 +531,7 @@ fn libsy_error_retryable(error: &LibsyError) -> bool {
     };
     match source {
         LlmClientError::UpstreamHttp { status, .. } => {
-            matches!(*status, 408 | 425 | 429 | 500 | 502 | 503 | 504)
+            matches!(status.as_u16(), 408 | 425 | 429 | 500 | 502 | 503 | 504)
         }
         LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
         _ => false,
@@ -583,7 +563,7 @@ fn failure_mark_data(attempt: u32, failure: &LibsyError) -> Json {
             ..
         } => {
             data.insert("failure_kind".into(), Json::from("http"));
-            data.insert("http_status".into(), Json::from(*status));
+            data.insert("http_status".into(), Json::from(status.as_u16()));
         }
         LibsyError::ClientCall { source, .. } => {
             data.insert("failure_kind".into(), Json::from("non_http"));

@@ -4,11 +4,13 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use switchyard_libsy::{
-    ClassifierContractConfig, EscalationJudgeConfig, LlmClassifierConfig, LlmFallback, LlmTarget,
+    ClassifierContractConfig, EscalationJudgeConfig, LlmClassifierConfig, LlmFallback,
     LlmTaskClassifier, Passthrough, PickerMode, StageRouter, StageRouterConfig,
     TaskClassifierConfig,
 };
-use switchyard_protocol::{LlmResponseStream, RoutedLlmClient, Usage, text_request, text_response};
+use switchyard_protocol::{
+    LlmResponseStream, ModelId, RoutedLlmClient, Usage, text_request, text_response,
+};
 
 use super::*;
 
@@ -34,11 +36,7 @@ fn scripted(behavior: ScriptedBehavior) -> Arc<ScriptedClient> {
 
 #[async_trait::async_trait]
 impl RoutedLlmClient for ScriptedClient {
-    async fn call(
-        &self,
-        request: Request,
-        _decision: Decision,
-    ) -> Result<Response, LlmClientError> {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         match self.behavior {
             ScriptedBehavior::Text(text) => {
@@ -80,10 +78,8 @@ impl RoutedLlmClient for ScriptedClient {
     }
 }
 
-fn fixed_target(name: &str) -> LlmTarget {
-    LlmTarget {
-        semantic_name: name.to_string(),
-    }
+fn fixed_target(name: &str) -> ModelId {
+    ModelId::from(name)
 }
 
 fn runtime_with_algorithm(
@@ -217,9 +213,7 @@ fn stage_signal_relay_request(protocol: WireFormat) -> RelayRequest {
 fn relay_gateway_placeholder_session_is_not_retained() {
     let fallback = scripted(ScriptedBehavior::Text("fallback"));
     let runtime = runtime_with_algorithm(
-        Arc::new(Passthrough::new(LlmTarget {
-            semantic_name: "selected".into(),
-        })),
+        Arc::new(Passthrough::new(ModelId::from("selected"))),
         fallback,
         WireFormat::OpenAiChat,
     );
@@ -246,9 +240,7 @@ fn relay_gateway_placeholder_session_is_not_retained() {
 fn explicit_switchyard_session_overrides_relay_gateway_placeholder() {
     let fallback = scripted(ScriptedBehavior::Text("fallback"));
     let runtime = runtime_with_algorithm(
-        Arc::new(Passthrough::new(LlmTarget {
-            semantic_name: "selected".into(),
-        })),
+        Arc::new(Passthrough::new(ModelId::from("selected"))),
         fallback,
         WireFormat::OpenAiChat,
     );
@@ -280,9 +272,7 @@ async fn buffered_finalization_failure_uses_fallback_once() {
     let fallback = scripted(ScriptedBehavior::EmptyBuffered);
     let runtime = SwitchyardRuntime {
         max_retries: 1,
-        algorithm: Arc::new(Passthrough::new(LlmTarget {
-            semantic_name: "selected".into(),
-        })),
+        algorithm: Arc::new(Passthrough::new(ModelId::from("selected"))),
         targets: BTreeMap::from([
             (
                 "selected".into(),
@@ -382,9 +372,7 @@ async fn invalid_selected_stream_does_not_invoke_failing_fallback_twice() {
     let fallback = scripted(ScriptedBehavior::FailingStream);
     let runtime = SwitchyardRuntime {
         max_retries: 0,
-        algorithm: Arc::new(Passthrough::new(LlmTarget {
-            semantic_name: "selected".into(),
-        })),
+        algorithm: Arc::new(Passthrough::new(ModelId::from("selected"))),
         targets: BTreeMap::from([
             (
                 "selected".into(),
@@ -420,9 +408,7 @@ async fn failing_fallback_call_flushes_error_and_fallback_marks() {
     let fallback = scripted(ScriptedBehavior::TransportFailure("fallback call failed"));
     let runtime = SwitchyardRuntime {
         max_retries: 0,
-        algorithm: Arc::new(Passthrough::new(LlmTarget {
-            semantic_name: "selected".into(),
-        })),
+        algorithm: Arc::new(Passthrough::new(ModelId::from("selected"))),
         targets: BTreeMap::from([
             (
                 "selected".into(),
@@ -584,10 +570,10 @@ async fn escalation_buffers_weak_stream_then_latches_the_session_to_strong() {
     );
     assert_eq!(routing_calls.len(), 2);
     assert_eq!(routing_calls[0]["selected_target"], "weak");
-    assert_eq!(routing_calls[0]["call_role"], "candidate");
+    assert_eq!(routing_calls[0]["call_role"], "routing");
     assert_eq!(routing_calls[0]["usage"]["total_tokens"], 18);
     assert_eq!(routing_calls[1]["selected_target"], "judge");
-    assert_eq!(routing_calls[1]["call_role"], "judge");
+    assert_eq!(routing_calls[1]["call_role"], "routing");
     assert_eq!(routing_calls[1]["usage"]["total_tokens"], 18);
     assert!(
         routing_calls
@@ -617,8 +603,6 @@ async fn escalation_buffers_weak_stream_then_latches_the_session_to_strong() {
     assert!(marks.iter().any(|mark| {
         mark.name == "switchyard.routing.decision"
             && mark.data["selected_target"] == "strong"
-            && mark.data["is_answer_call"] == true
-            && mark.data["reasoning"].is_string()
             && mark.metadata["session_id"] == "session-1"
     }));
 }
@@ -670,7 +654,7 @@ async fn escalation_judge_failure_falls_open_to_the_buffered_weak_response() {
         .collect::<Vec<_>>();
     assert_eq!(routing_calls.len(), 1);
     assert_eq!(routing_calls[0].data["selected_target"], "judge");
-    assert_eq!(routing_calls[0].data["call_role"], "judge");
+    assert_eq!(routing_calls[0].data["call_role"], "routing");
     assert_eq!(routing_calls[0].data["outcome"], "error");
     assert!(routing_calls[0].data["usage"].is_null());
 }
@@ -766,8 +750,6 @@ async fn stage_router_uses_tool_signals_for_every_managed_protocol() {
                 && mark.data["algorithm"] == "stage_router"
                 && mark.data["attempt"] == 1
                 && mark.data["selected_target"] == "strong"
-                && mark.data["reasoning"].is_string()
-                && mark.data["is_answer_call"] == true
                 && mark.metadata["session_id"] == format!("stage-{}", protocol.as_str())
         }));
     }
@@ -806,10 +788,7 @@ async fn stage_router_falls_open_to_each_picker_default_without_tool_history() {
             .unwrap();
 
         assert!(marks.iter().any(|mark| {
-            mark.name == "switchyard.routing.decision"
-                && mark.data["selected_target"] == expected
-                && mark.data["reasoning"].is_string()
-                && mark.data["is_answer_call"] == true
+            mark.name == "switchyard.routing.decision" && mark.data["selected_target"] == expected
         }));
     }
 }
@@ -862,13 +841,10 @@ async fn stage_router_classifier_resolves_an_ambiguous_turn() {
         .collect::<Vec<_>>();
     assert_eq!(routing_calls.len(), 1);
     assert_eq!(routing_calls[0].data["selected_target"], "judge");
-    assert_eq!(routing_calls[0].data["call_role"], "judge");
+    assert_eq!(routing_calls[0].data["call_role"], "routing");
     assert_eq!(routing_calls[0].data["outcome"], "ok");
     assert_eq!(routing_calls[0].data["usage"]["total_tokens"], 18);
     assert!(marks.iter().any(|mark| {
-        mark.name == "switchyard.routing.decision"
-            && mark.data["selected_target"] == "weak"
-            && mark.data["reasoning"].is_string()
-            && mark.data["is_answer_call"] == true
+        mark.name == "switchyard.routing.decision" && mark.data["selected_target"] == "weak"
     }));
 }

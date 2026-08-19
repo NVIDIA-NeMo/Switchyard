@@ -158,7 +158,7 @@ automatic compatibility fallback.
 
 Each completed routing-only model call emits a
 `switchyard.routing.llm_call` ATOF mark. Its data identifies the algorithm,
-attempt, call order, target, role (`judge` or discarded `candidate`), outcome,
+attempt, call order, target, routing role, outcome,
 latency, and normalized provider token `usage`. The
 successful call that serves the caller is deliberately excluded because
 Relay's outer LLM end event already records that usage. A failed call, or a
@@ -358,8 +358,8 @@ classifier target has the same structured-output protocol restriction as the
 standalone classifier.
 
 Ambiguous turns that reach the optional classifier add one judge call;
-decisive tool signals do not. Decision marks report the selected model,
-reasoning, and answer-call status exposed by libsy's `Decision` API.
+decisive tool signals do not. Decision marks report the selected model from
+libsy's `RoutingOutcome`.
 
 Version-1 service configuration, decision-only execution, and observe-only
 mode are rejected.
