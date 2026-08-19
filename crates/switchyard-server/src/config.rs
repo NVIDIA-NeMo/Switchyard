@@ -1676,6 +1676,21 @@ target = "azure"
             return Err(ServerError::new("primary llm client is missing"));
         };
         assert_eq!(primary.max_retries, 0);
+
+        let maximum = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            &format!(
+                "base_url = \"https://example.test/v1\"\nmax_retries = {MAX_CONFIGURED_RETRIES}"
+            ),
+            1,
+        );
+        let config: ServerConfig = toml::from_str(&maximum).map_err(|error| {
+            ServerError::new(format!("failed to parse maximum retry config: {error}"))
+        })?;
+        let Some(primary) = config.llm_clients.get("primary") else {
+            return Err(ServerError::new("primary llm client is missing"));
+        };
+        assert_eq!(primary.max_retries, MAX_CONFIGURED_RETRIES);
         Ok(())
     }
 

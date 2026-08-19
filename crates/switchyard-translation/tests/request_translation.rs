@@ -1783,6 +1783,18 @@ fn malformed_request_fields_are_rejected() {
             "invalid value at $.max_tokens: expected a non-negative integer",
         ),
         (
+            "OpenAI Chat string messages",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": "invalid"}),
+            "expected array at $.messages",
+        ),
+        (
+            "Anthropic string messages",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": "invalid"}),
+            "expected array at $.messages",
+        ),
+        (
             "Responses boolean input",
             WireFormat::OpenAiResponses,
             json!({"model": "gpt", "input": true}),
