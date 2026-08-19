@@ -680,6 +680,9 @@ fn set_json_model(body: &mut Value, model: &str) {
 }
 
 // Removes plaintext reasoning items that strict Responses backends cannot replay.
+// Signed reasoning keeps an empty content array: strict OpenAI requires that the
+// array contain no plaintext, while OpenAI-compatible backends such as llama.cpp
+// require the field itself to remain an array when replaying the item.
 fn strip_unsigned_responses_reasoning(body: &mut Value) {
     let Some(Value::Array(input)) = body.get_mut("input") else {
         return;
@@ -696,7 +699,7 @@ fn strip_unsigned_responses_reasoning(body: &mut Value) {
             Some(encrypted_content) if !encrypted_content.is_empty()
         );
         if signed {
-            object.remove("content");
+            object.insert("content".to_string(), Value::Array(Vec::new()));
         }
         signed
     });
@@ -1403,6 +1406,8 @@ mod tests {
     }
 
     // Local Responses backends can emit plaintext reasoning that strict upstreams cannot replay.
+    // Conversely, local backends require signed reasoning replayed from a strict
+    // upstream to retain `content` as an array, even though it must be empty.
     #[tokio::test]
     async fn responses_requests_drop_unsigned_reasoning_items()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
@@ -1423,7 +1428,7 @@ mod tests {
                         .get("encrypted_content")
                         .and_then(Value::as_str)
                         == Some("encrypted")
-                    && reasoning[0].get("content").is_none()
+                    && reasoning[0].get("content") == Some(&json!([]))
                     && input.iter().any(|item| {
                         item.get("type").and_then(Value::as_str) == Some("function_call")
                     })
