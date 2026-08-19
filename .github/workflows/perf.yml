@@ -1,9 +1,6 @@
-name: Perf Benchmark
+name: Perf Benchmark (manual)
 
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       concurrency:
@@ -12,11 +9,6 @@ on:
       request_count:
         description: "aiperf --request-count"
         default: "200"
-
-# Cancel superseded PR runs; keep main builds.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
