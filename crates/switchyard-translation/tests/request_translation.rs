@@ -8,7 +8,7 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    LossyConversionPolicy, PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -656,6 +656,142 @@ fn responses_request_translates_codex_tool_shape_to_openai_chat() -> TestResult 
     assert_eq!(
         output["tools"][0]["function"]["parameters"]["required"],
         json!(["cmd"])
+    );
+    Ok(())
+}
+
+// Verifies Codex namespace containers flatten to plain functions for a
+// Chat-only upstream.
+#[test]
+fn responses_request_flattens_codex_mcp_namespace_tools() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": "List files",
+        "tools": [{
+            "type": "namespace",
+            "name": "mcp__filesystem",
+            "description": "Filesystem MCP tools",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__filesystem__nested",
+                    "tools": [{
+                        "type": "function",
+                        "name": "stat_file",
+                        "parameters": {"type": "object"}
+                    }]
+                },
+                {
+                    "type": "function",
+                    "name": "list_files",
+                    "description": "List files in a directory",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"]
+                    }
+                }
+            ]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    // A nested container flattens too, and each leaf is qualified by the
+    // innermost container that named it.
+    let names = output["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    // Input order is preserved, and a nested container qualifies by its own name
+    // rather than stacking the outer one on top.
+    assert_eq!(
+        names,
+        vec![
+            "mcp__filesystem__nested__stat_file",
+            "mcp__filesystem__list_files"
+        ]
+    );
+    assert_eq!(output["tools"][0]["type"], "function");
+    // The schema rides along with the renamed tool.
+    let list_files = output["tools"]
+        .as_array()
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool["function"]["name"] == "mcp__filesystem__list_files")
+        })
+        .ok_or("list_files missing from the translated tools")?;
+    assert_eq!(
+        list_files["function"]["parameters"]["required"],
+        json!(["path"])
+    );
+    Ok(())
+}
+
+// A child colliding with a tool outside the container keeps its own identity,
+// because qualifying the namespaced one keeps the two names distinct upstream.
+#[test]
+fn responses_request_qualifies_namespace_children_colliding_with_top_level_tools() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": "Read a file",
+        "tools": [
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "Codex builtin",
+                "parameters": {"type": "object", "properties": {}}
+            },
+            {
+                "type": "namespace",
+                "name": "mcp__filesystem",
+                "tools": [{
+                    "type": "function",
+                    "name": "read_file",
+                    "description": "MCP tool of the same name",
+                    "parameters": {"type": "object", "properties": {}}
+                }]
+            }
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let names = output["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(names, vec!["read_file", "mcp__filesystem__read_file"]);
+    assert_eq!(
+        output["tools"][0]["function"]["description"],
+        "Codex builtin"
     );
     Ok(())
 }
@@ -2077,6 +2213,156 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
         input
             .iter()
             .any(|item| item["type"] == "function_call_output")
+    );
+    Ok(())
+}
+
+// A Responses target understands Codex containers, so the namespace is regrouped
+// rather than folded into each tool name.
+#[test]
+fn responses_request_rebuilds_codex_namespace_containers_for_a_responses_target() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": "hi",
+        "tools": [
+            {"type": "function", "name": "shell", "parameters": {"type": "object"}},
+            {
+                "type": "namespace",
+                "name": "mcp__docs",
+                "tools": [
+                    {"type": "function", "name": "search", "parameters": {"type": "object"}},
+                    {"type": "function", "name": "fetch", "parameters": {"type": "object"}}
+                ]
+            }
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy {
+                preservation: PreservationPolicy::Disabled,
+                ..TranslationPolicy::default()
+            },
+        )?
+        .body;
+
+    assert_eq!(output["tools"][0]["type"], "function");
+    assert_eq!(output["tools"][0]["name"], "shell");
+    assert_eq!(output["tools"][1]["type"], "namespace");
+    assert_eq!(output["tools"][1]["name"], "mcp__docs");
+    let children = output["tools"][1]["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["name"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(children, vec!["search", "fetch"]);
+    Ok(())
+}
+
+// An Anthropic target cannot express containers, so it gets qualified names.
+#[test]
+fn responses_request_qualifies_namespace_children_for_an_anthropic_target() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": "hi",
+        "tools": [
+            {"type": "namespace", "name": "mcp__a",
+             "tools": [{"type": "function", "name": "search", "parameters": {"type": "object"}}]},
+            {"type": "namespace", "name": "mcp__b",
+             "tools": [{"type": "function", "name": "search", "parameters": {"type": "object"}}]}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let names = output["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["name"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(names, vec!["mcp__a__search", "mcp__b__search"]);
+    Ok(())
+}
+
+// History must spell a tool the same way its definition does. Otherwise the
+// transcript teaches the model the bare name, and on the next turn an ambiguous
+// bare name cannot be attributed to either server.
+#[test]
+fn responses_request_qualifies_recorded_tool_calls_to_match_their_definitions() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            {
+                "type": "function_call",
+                "call_id": "c1",
+                "name": "search",
+                "namespace": "mcp__b",
+                "arguments": "{}"
+            },
+            {"type": "function_call_output", "call_id": "c1", "output": "done"}
+        ],
+        "tools": [
+            {"type": "namespace", "name": "mcp__a",
+             "tools": [{"type": "function", "name": "search", "parameters": {"type": "object"}}]},
+            {"type": "namespace", "name": "mcp__b",
+             "tools": [{"type": "function", "name": "search", "parameters": {"type": "object"}}]}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    // The recorded call names the same tool the definitions offer.
+    let recorded = output["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find_map(|message| message["tool_calls"][0]["function"]["name"].as_str())
+        })
+        .ok_or("no recorded tool call in the translated history")?;
+    assert_eq!(recorded, "mcp__b__search");
+
+    let offered = output["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        offered.contains(&recorded),
+        "history spelled {recorded}, but the upstream was offered {offered:?}"
     );
     Ok(())
 }

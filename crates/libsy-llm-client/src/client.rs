@@ -487,6 +487,7 @@ impl TranslatingLlmClient {
     ) -> Result<RawResponse> {
         let llm_request = decode_request(wire_format, &raw_http_request)
             .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
+        let request_extensions = llm_request.extensions.clone();
         // The model that serves the call — the rewrite target when the caller pinned
         // one, else the request's own model. Mirrors `call_rewrite_model`'s own
         // resolution so the response names whoever answered.
@@ -512,13 +513,17 @@ impl TranslatingLlmClient {
 
         match response.llm_response {
             LlmResponse::Agg(agg) => {
-                let body =
-                    encode_aggregated_response(&agg, wire_format, served_model.as_deref())
-                        .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
+                let body = encode_aggregated_response(
+                    &agg,
+                    wire_format,
+                    served_model.as_deref(),
+                    &request_extensions,
+                )
+                .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
                 Ok(RawResponse::Buffered(body))
             }
             LlmResponse::Stream(chunks) => {
-                let events = encode_stream(chunks, wire_format, served_model)?;
+                let events = encode_stream(chunks, wire_format, served_model, &request_extensions)?;
                 Ok(RawResponse::Stream(events))
             }
         }
@@ -1953,6 +1958,80 @@ mod tests {
         assert_eq!(body["choices"][0]["message"]["content"], "Hi there");
         // The client sees the model that answered, not the "client-facing" route id.
         assert_eq!(body["model"], "gpt");
+        Ok(())
+    }
+
+    // A Codex namespace is folded into the upstream tool name, then split back
+    // into name and namespace on the Responses call that returns to Codex.
+    #[tokio::test]
+    async fn call_rewrite_model_raw_restores_codex_mcp_namespace()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "tools": [{
+                    "type": "function",
+                    "function": {"name": "mcp__open_websearch__search"}
+                }]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__open_websearch__search",
+                                "arguments": "{\"q\":\"rust\"}"
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "input": "Search for Rust.",
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__open_websearch",
+                "tools": [{
+                    "type": "function",
+                    "name": "search",
+                    "description": "Search the web",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+                }]
+            }]
+        });
+
+        let RawResponse::Buffered(body) = client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?
+        else {
+            panic!("expected a buffered response");
+        };
+
+        assert_eq!(body["output"][0]["type"], "function_call");
+        assert_eq!(body["output"][0]["name"], "search");
+        assert_eq!(body["output"][0]["namespace"], "mcp__open_websearch");
+        // Arguments are parsed and re-serialized, so the spacing is normalized.
+        assert_eq!(body["output"][0]["arguments"], "{\"q\": \"rust\"}");
         Ok(())
     }
 

@@ -8,6 +8,7 @@
 //! servers, Python objects, or FFI bindings.
 
 pub mod codecs;
+pub mod codex_namespaces;
 pub mod diagnostic;
 pub mod engine;
 pub mod error;
@@ -22,6 +23,7 @@ pub use switchyard_protocol::stream::{
 };
 pub use switchyard_protocol::{format, llm};
 
+pub use codex_namespaces::{qualified_tool_origins, restore_qualified_tool_names};
 pub use diagnostic::*;
 pub use engine::*;
 pub use error::*;

@@ -87,7 +87,8 @@ impl FormatCodec for OpenAiResponsesCodec {
             &mut diagnostics,
             policy,
         )?;
-        request.tools = decode_responses_tools(body.get("tools"));
+        let mut tool_namespaces = Map::new();
+        request.tools = decode_responses_tools(body.get("tools"), &mut tool_namespaces);
         request.tool_choice = body
             .get("tool_choice")
             .and_then(decode_responses_tool_choice);
@@ -107,6 +108,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 "stream",
             ],
         );
+        crate::codex_namespaces::attach_tool_namespaces(&mut request.extensions, tool_namespaces);
         Ok(DecodedRequest {
             request,
             diagnostics,
@@ -147,10 +149,21 @@ impl FormatCodec for OpenAiResponsesCodec {
         }
         body.insert(
             "input".to_string(),
-            encode_responses_input(&request.messages, &mut diagnostics, _policy)?,
+            encode_responses_input(
+                &request.messages,
+                &mut diagnostics,
+                _policy,
+                crate::codex_namespaces::tool_namespaces(&request.extensions),
+            )?,
         );
         if !request.tools.is_empty() {
-            body.insert("tools".to_string(), encode_responses_tools(&request.tools));
+            body.insert(
+                "tools".to_string(),
+                encode_responses_tools(
+                    &request.tools,
+                    crate::codex_namespaces::tool_namespaces(&request.extensions),
+                ),
+            );
         }
         if let Some(choice) = &request.tool_choice
             && let Some(choice) = encode_responses_tool_choice(choice)
@@ -414,13 +427,27 @@ fn decode_responses_input(
                                 }
                                 DeterministicIdPolicy::Preserve => String::new(),
                             });
+                        // History has to spell a tool the way its definition
+                        // does, or the transcript teaches the model a name the
+                        // upstream was never offered.
+                        let name = item
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let name = match item
+                            .get("namespace")
+                            .and_then(Value::as_str)
+                            .filter(|namespace| !namespace.is_empty())
+                        {
+                            Some(namespace) => {
+                                crate::codex_namespaces::qualified_tool_name(namespace, &name)
+                            }
+                            None => name,
+                        };
                         pending_tool_calls.push(ToolCall {
                             id,
-                            name: item
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
+                            name,
                             arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
                         });
                     }
@@ -735,7 +762,16 @@ fn request_role_from_responses(role: Option<&str>, path: &str) -> Result<Role> {
 }
 
 // Decodes Responses tool shapes, including Codex-style tool entries.
-fn decode_responses_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
+// Decodes Responses tool shapes, including Codex-style tool entries.
+//
+// Codex groups tools into non-standard ``namespace`` containers that
+// OpenAI-compatible upstreams do not accept. Each child is exposed under a
+// `<namespace>__<tool>` name, and `namespaces` records the mapping so the
+// response can split it back apart.
+fn decode_responses_tools(
+    value: Option<&Value>,
+    namespaces: &mut Map<String, Value>,
+) -> Vec<ToolDefinition> {
     let Some(tools) = value.and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -744,7 +780,30 @@ fn decode_responses_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
         let Some(tool) = tool.as_object() else {
             continue;
         };
-        if tool.get("type").and_then(Value::as_str) == Some("function") {
+        if tool.get("type").and_then(Value::as_str) == Some("namespace") {
+            // An unnamed container carries nothing to dispatch on, so its
+            // children stay bare rather than gaining an empty prefix.
+            let container = tool
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty());
+            for mut child in decode_responses_tools(tool.get("tools"), namespaces) {
+                // A nested container already qualified its own children, and the
+                // innermost name is the one that identifies the tool.
+                let already_qualified = namespaces.contains_key(&child.name);
+                if let Some(container) = container
+                    && !already_qualified
+                {
+                    let qualified =
+                        crate::codex_namespaces::qualified_tool_name(container, &child.name);
+                    crate::codex_namespaces::record_tool_namespace(
+                        namespaces, &qualified, container,
+                    );
+                    child.name = qualified;
+                }
+                out.push(child);
+            }
+        } else if tool.get("type").and_then(Value::as_str) == Some("function") {
             if let Some(function) = tool.get("function").and_then(Value::as_object) {
                 if let Some(name) = function.get("name").and_then(Value::as_str)
                     && !name.is_empty()
@@ -923,6 +982,7 @@ fn encode_responses_input(
     messages: &[Message],
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
+    namespaces: Option<&Map<String, Value>>,
 ) -> Result<Value> {
     if messages.len() == 1
         && matches!(messages[0].role, Role::User)
@@ -958,13 +1018,17 @@ fn encode_responses_input(
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
-            encoded.extend(content.iter().filter_map(encode_responses_special_input));
+            encoded.extend(
+                content
+                    .iter()
+                    .filter_map(|block| encode_responses_special_input(block, namespaces)),
+            );
             continue;
         }
         let mut visible_content = Vec::new();
         let mut emitted_special = false;
         for block in &content {
-            if let Some(item) = encode_responses_special_input(block) {
+            if let Some(item) = encode_responses_special_input(block, namespaces) {
                 encoded.push(item);
                 emitted_special = true;
             } else {
@@ -984,7 +1048,10 @@ fn encode_responses_input(
 }
 
 // Encodes IR blocks that Responses represents as top-level input items.
-fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
+fn encode_responses_special_input(
+    block: &ContentBlock,
+    namespaces: Option<&Map<String, Value>>,
+) -> Option<Value> {
     match block {
         ContentBlock::Reasoning {
             text,
@@ -995,12 +1062,27 @@ fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
             "content": [{"type": "reasoning_text", "text": text}],
             "summary": [],
         })),
-        ContentBlock::ToolCall(call) => Some(json!({
-            "type": "function_call",
-            "call_id": call.id,
-            "name": call.name,
-            "arguments": json_string(&call.arguments),
-        })),
+        ContentBlock::ToolCall(call) => {
+            // A Responses client dispatches on name plus namespace, so undo the
+            // qualification this request applied for a flat upstream.
+            let (name, namespace) = namespaces
+                .and_then(|namespaces| {
+                    crate::codex_namespaces::split_qualified_name(namespaces, &call.name)
+                })
+                .map_or((call.name.clone(), None), |(name, namespace)| {
+                    (name, Some(namespace))
+                });
+            let mut item = json!({
+                "type": "function_call",
+                "call_id": call.id,
+                "name": name,
+                "arguments": json_string(&call.arguments),
+            });
+            if let Some(namespace) = namespace {
+                item["namespace"] = Value::String(namespace);
+            }
+            Some(item)
+        }
         ContentBlock::ToolResult(result) => Some(json!({
             "type": "function_call_output",
             "call_id": result.tool_call_id,
@@ -1091,24 +1173,51 @@ fn encode_responses_content(
 }
 
 // Encodes normalized tool definitions into Responses tool JSON.
-fn encode_responses_tools(tools: &[ToolDefinition]) -> Value {
-    Value::Array(
-        tools
-            .iter()
-            .map(|tool| {
-                let mut item = json!({
-                    "type": "function",
-                    "name": tool.name,
-                    "description": tool.description.clone().unwrap_or_default(),
-                    "parameters": tool.parameters,
-                });
-                if let Some(strict) = tool.strict {
-                    item["strict"] = Value::Bool(strict);
+// Encodes normalized tools as Responses entries.
+//
+// A Responses client understands Codex containers, so a tool whose name this
+// request qualified is regrouped under the container it came from.
+fn encode_responses_tools(
+    tools: &[ToolDefinition],
+    namespaces: Option<&Map<String, Value>>,
+) -> Value {
+    let mut out: Vec<Value> = Vec::new();
+    let mut containers: Vec<(String, Vec<Value>)> = Vec::new();
+    for tool in tools {
+        let mut item = json!({
+            "type": "function",
+            "name": tool.name,
+            "description": tool.description.clone().unwrap_or_default(),
+            "parameters": tool.parameters,
+        });
+        if let Some(strict) = tool.strict {
+            item["strict"] = Value::Bool(strict);
+        }
+        let split = namespaces.and_then(|namespaces| {
+            crate::codex_namespaces::split_qualified_name(namespaces, &tool.name)
+        });
+        match split {
+            None => out.push(item),
+            Some((name, namespace)) => {
+                item["name"] = Value::String(name);
+                match containers
+                    .iter_mut()
+                    .find(|(existing, _)| *existing == namespace)
+                {
+                    Some((_, children)) => children.push(item),
+                    None => containers.push((namespace, vec![item])),
                 }
-                item
-            })
-            .collect(),
-    )
+            }
+        }
+    }
+    for (namespace, children) in containers {
+        out.push(json!({
+            "type": "namespace",
+            "name": namespace,
+            "tools": children,
+        }));
+    }
+    Value::Array(out)
 }
 
 // Encodes normalized tool choice into Responses JSON.
