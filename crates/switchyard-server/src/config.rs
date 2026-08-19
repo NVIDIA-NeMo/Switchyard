@@ -262,11 +262,42 @@ fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
         .unwrap_or(3)
 }
 
+/// A client endpoint, parsed when the config loads rather than checked afterwards.
+///
+/// Holding a `HttpBaseUrl` is proof the value is an absolute HTTP(S) URL, so no
+/// later stage has to re-check it or can forget to.
+#[derive(Clone, Debug)]
+pub(crate) struct HttpBaseUrl(reqwest::Url);
+
+impl HttpBaseUrl {
+    pub(crate) fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for HttpBaseUrl {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        let url = reqwest::Url::parse(raw.trim()).map_err(|error| {
+            serde::de::Error::custom(format!("base_url must be an absolute HTTP(S) URL: {error}"))
+        })?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err(serde::de::Error::custom(
+                "base_url must be an absolute HTTP(S) URL",
+            ));
+        }
+        Ok(Self(url))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LlmClientConfig {
     pub(crate) format: ClientFormat,
-    pub(crate) base_url: String,
+    pub(crate) base_url: HttpBaseUrl,
     api_key_env: Option<String>,
     #[serde(default)]
     forward_auth: bool,
@@ -913,12 +944,6 @@ fn build_backend(
     config: &LlmClientConfig,
     extra_body: &BTreeMap<String, Value>,
 ) -> ServerResult<Backend> {
-    let base_url = config.base_url.trim();
-    if base_url.is_empty() {
-        return Err(ServerError::new(format!(
-            "llm client {client_name} base_url must not be empty"
-        )));
-    }
     if config.max_retries > MAX_CONFIGURED_RETRIES {
         return Err(ServerError::new(format!(
             "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
@@ -952,7 +977,7 @@ fn build_backend(
         })
         .transpose()?;
     let http = HttpBackendConfig {
-        base_url: base_url.to_string(),
+        base_url: config.base_url.as_str().to_string(),
         api_key,
         forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
@@ -964,25 +989,7 @@ fn build_backend(
         ClientFormat::OpenAiResponses => Backend::OpenAiResponses(http),
         ClientFormat::AnthropicMessages => Backend::Anthropic(http),
     };
-    validate_backend_url(client_name, &backend)?;
     Ok(backend)
-}
-
-// Validate the endpoint after the backend applies the same format-specific URL
-// joining used for requests, so dry-run and request construction cannot diverge.
-fn validate_backend_url(client_name: &str, backend: &Backend) -> ServerResult<()> {
-    let endpoint = backend.url();
-    let url = reqwest::Url::parse(&endpoint).map_err(|error| {
-        ServerError::new(format!(
-            "llm client {client_name} base_url must resolve to an absolute HTTP(S) URL: {error}"
-        ))
-    })?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err(ServerError::new(format!(
-            "llm client {client_name} base_url must resolve to an absolute HTTP(S) URL"
-        )));
-    }
-    Ok(())
 }
 
 const fn default_max_retries() -> u32 {
@@ -1448,22 +1455,6 @@ classify_trigger = "new_session""#,
     }
 
     #[test]
-    fn rejects_non_http_base_urls_during_construction() {
-        for base_url in ["not a url", "/v1", "ftp://example.test/v1"] {
-            let invalid = VALID_CONFIG.replacen(
-                "base_url = \"https://example.test/v1\"",
-                &format!("base_url = \"{base_url}\""),
-                1,
-            );
-            let message = error_message(&invalid);
-            assert!(
-                message.contains("llm client primary base_url"),
-                "unexpected error for {base_url}: {message}"
-            );
-        }
-    }
-
-    #[test]
     fn rejects_invalid_unreferenced_llm_client() {
         let invalid = format!(
             "{VALID_CONFIG}\n\
@@ -1473,7 +1464,7 @@ classify_trigger = "new_session""#,
         );
         let message = error_message(&invalid);
         assert!(
-            message.contains("llm client unused base_url"),
+            message.contains("base_url must be an absolute HTTP(S) URL"),
             "unexpected error: {message}"
         );
     }

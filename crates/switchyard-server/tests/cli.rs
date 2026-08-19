@@ -37,6 +37,9 @@ target = "invalid"
         .output()?;
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr)?;
-    assert!(stderr.contains("llm client invalid base_url"), "{stderr}");
+    assert!(
+        stderr.contains("base_url must be an absolute HTTP(S) URL"),
+        "{stderr}"
+    );
     Ok(())
 }
