@@ -59,8 +59,7 @@ switchyard-translation = { path = "../switchyard-translation" }   # for WireForm
 ```rust
 use std::collections::BTreeMap;
 use switchyard_llm_client::{
-    Backend, HttpBackendConfig, ModelConfig, ResponsesReasoningPolicy,
-    TranslatingLlmClient,
+    Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
 
 fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
@@ -71,7 +70,6 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
         max_retries: 2,
-        responses_reasoning: ResponsesReasoningPolicy::default(),
     };
 
     let models = [ModelConfig::new(
@@ -248,8 +246,8 @@ fn build_multi_format_client(
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
-- `HttpBackendConfig::responses_reasoning` controls reasoning-item replay for
-  Responses backends. `PreserveEncrypted` keeps signed provider state without
+- `ModelConfig::with_responses_reasoning` controls reasoning-item replay for a
+  Responses model. `PreserveEncrypted` keeps signed provider state without
   plaintext; `Drop` removes reasoning while retaining messages and tool history.
 
 Retries replay the same upstream request to the same model. Each candidate's

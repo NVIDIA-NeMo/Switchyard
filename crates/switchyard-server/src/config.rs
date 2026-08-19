@@ -135,11 +135,14 @@ impl ServerConfig {
             let model_configs = models_by_client
                 .get_mut(&target.llm_client)
                 .ok_or_else(|| ServerError::new("validated llm client was not initialized"))?;
-            model_configs.push(ModelConfig::new(
-                target.id.clone(),
-                build_backend(&target.llm_client, client_config, &target.extra_body)?,
-                None,
-            ));
+            model_configs.push(
+                ModelConfig::new(
+                    target.id.clone(),
+                    build_backend(&target.llm_client, client_config, &target.extra_body)?,
+                    None,
+                )
+                .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default()),
+            );
         }
 
         let mut clients = BTreeMap::new();
@@ -910,7 +913,6 @@ fn build_backend(
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
         max_retries: config.max_retries,
-        responses_reasoning: config.responses_reasoning.unwrap_or_default(),
     };
     Ok(match config.format {
         ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
@@ -1670,14 +1672,7 @@ target = "azure"
             .llm_clients
             .get("responses")
             .ok_or_else(|| ServerError::new("responses llm client is missing"))?;
-        let backend = build_backend("responses", responses, &BTreeMap::new())?;
-        let Backend::OpenAiResponses(http) = backend else {
-            return Err(ServerError::new("expected Responses backend"));
-        };
-        assert_eq!(
-            http.responses_reasoning,
-            ResponsesReasoningPolicy::PreserveEncrypted
-        );
+        assert_eq!(responses.responses_reasoning, None);
 
         let configured = VALID_CONFIG.replacen(
             "[llm_clients.responses]\nformat = \"openai_responses\"\nbase_url = \"https://example.test/v1\"",
@@ -1690,11 +1685,11 @@ target = "azure"
             .llm_clients
             .get("responses")
             .ok_or_else(|| ServerError::new("responses llm client is missing"))?;
-        let backend = build_backend("responses", responses, &BTreeMap::new())?;
-        let Backend::OpenAiResponses(http) = backend else {
-            return Err(ServerError::new("expected Responses backend"));
-        };
-        assert_eq!(http.responses_reasoning, ResponsesReasoningPolicy::Drop);
+        assert_eq!(
+            responses.responses_reasoning,
+            Some(ResponsesReasoningPolicy::Drop)
+        );
+        server_state_from_toml(&configured)?;
         Ok(())
     }
 

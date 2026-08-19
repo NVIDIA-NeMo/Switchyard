@@ -62,6 +62,7 @@ pub struct ModelConfig {
     model_name: ModelId,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
+    responses_reasoning: crate::ResponsesReasoningPolicy,
 }
 
 impl ModelConfig {
@@ -76,7 +77,15 @@ impl ModelConfig {
             model_name: model_name.into(),
             default_backend,
             other_backends,
+            responses_reasoning: crate::ResponsesReasoningPolicy::default(),
         }
+    }
+
+    /// Sets how Responses reasoning items are replayed to this model.
+    #[must_use]
+    pub fn with_responses_reasoning(mut self, policy: crate::ResponsesReasoningPolicy) -> Self {
+        self.responses_reasoning = policy;
+        self
     }
 }
 
@@ -221,8 +230,12 @@ impl TranslatingLlmClient {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
         }
-        if let Some(policy) = backend.responses_reasoning() {
-            policy.normalize(&mut body);
+        if matches!(backend, Backend::OpenAiResponses(_)) {
+            self.model_to_config
+                .get(model)
+                .map(|config| config.responses_reasoning)
+                .unwrap_or_default()
+                .normalize(&mut body);
         }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
@@ -838,7 +851,6 @@ mod tests {
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             max_retries: 0,
-            responses_reasoning: crate::ResponsesReasoningPolicy::default(),
         }
     }
 
@@ -884,13 +896,10 @@ mod tests {
     }
 
     fn local_responses_map(base_url: &str) -> Vec<ModelConfig> {
-        let mut backend = config(base_url);
-        backend.responses_reasoning = crate::ResponsesReasoningPolicy::Drop;
-        vec![ModelConfig::new(
-            "local",
-            Backend::OpenAiResponses(backend),
-            None,
-        )]
+        vec![
+            ModelConfig::new("local", Backend::OpenAiResponses(config(base_url)), None)
+                .with_responses_reasoning(crate::ResponsesReasoningPolicy::Drop),
+        ]
     }
 
     fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {

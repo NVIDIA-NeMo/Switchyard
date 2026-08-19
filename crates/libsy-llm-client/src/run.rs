@@ -685,7 +685,6 @@ mod tests {
                 extra_headers: BTreeMap::new(),
                 extra_body: BTreeMap::new(),
                 max_retries: 2,
-                responses_reasoning: crate::ResponsesReasoningPolicy::default(),
             })
         };
         let client = Arc::new(

@@ -11,7 +11,6 @@ use serde_json::Value;
 use switchyard_protocol::{Metadata, WireFormat};
 
 use crate::error::{LlmClientError, Result, is_overflow_body};
-use crate::responses_reasoning::ResponsesReasoningPolicy;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -57,8 +56,6 @@ pub struct HttpBackendConfig {
     pub extra_body: BTreeMap<String, Value>,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
-    /// Replay policy for OpenAI Responses reasoning items.
-    pub responses_reasoning: ResponsesReasoningPolicy,
 }
 
 impl fmt::Debug for HttpBackendConfig {
@@ -70,7 +67,6 @@ impl fmt::Debug for HttpBackendConfig {
             .field("extra_header_names", &self.extra_headers.keys())
             .field("extra_body_keys", &self.extra_body.keys())
             .field("max_retries", &self.max_retries)
-            .field("responses_reasoning", &self.responses_reasoning)
             .finish()
     }
 }
@@ -177,14 +173,6 @@ impl Backend {
 
     pub(crate) fn is_forwarding_auth(&self) -> bool {
         self.config().forward_auth
-    }
-
-    /// The configured reasoning replay policy for a Responses backend.
-    pub(crate) fn responses_reasoning(&self) -> Option<ResponsesReasoningPolicy> {
-        match self {
-            Backend::OpenAiResponses(config) => Some(config.responses_reasoning),
-            Backend::OpenAiChat(_) | Backend::Anthropic(_) => None,
-        }
     }
 
     /// Applies only the caller credential accepted by this provider.
@@ -358,7 +346,6 @@ mod tests {
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             max_retries: 0,
-            responses_reasoning: ResponsesReasoningPolicy::default(),
         }
     }
 
