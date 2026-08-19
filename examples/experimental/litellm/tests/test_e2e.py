@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from switchyard_litellm import LiteLLMSyClient
 
-from switchyard.libsy import Algorithm, Decision, Step, algorithms
+from switchyard.libsy import Algorithm, LlmResponse, Step, algorithms
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -147,17 +147,20 @@ async def _run_router(
     router: Algorithm,
     request: dict[str, object],
     client: LiteLLMSyClient,
-) -> tuple[list[Decision], dict[str, object]]:
-    decisions: list[Decision] = []
+) -> tuple[str, dict[str, object]]:
     async for step in router.run_stream(request):
         match step:
-            case Step.Decision(decision):
-                decisions.append(decision)
             case Step.CallModel(call):
-                call.respond(await client.call(call.request))
-            case Step.Done(response):
-                return decisions, response
-    raise AssertionError("algorithm stream ended without a response")
+                call.respond(LlmResponse.Agg(await client.call(call.request)))
+            case Step.Done(outcome):
+                match outcome.response:
+                    case LlmResponse.Agg(response):
+                        return outcome.selected_model_id, response
+                    case LlmResponse.Stream(_):
+                        raise AssertionError("LiteLLM example expects buffered responses")
+                    case None:
+                        return outcome.selected_model_id, await client.call(outcome.request)
+    raise AssertionError("algorithm stream ended without an outcome")
 
 
 @pytest.mark.e2e
@@ -180,8 +183,8 @@ async def test_stage_router_calls_both_real_openrouter_models(
     finally:
         await client.aclose()
 
-    assert [item.selected_model_id for item in strong_trace] == ["strong"]
-    assert [item.selected_model_id for item in fast_trace] == ["fast"]
+    assert strong_trace == "strong"
+    assert fast_trace == "fast"
     for response in (strong_response, fast_response):
         text = response["outputs"][0]["content"][0]["text"]
         assert isinstance(text, str)

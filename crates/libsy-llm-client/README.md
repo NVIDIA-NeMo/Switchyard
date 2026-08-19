@@ -12,8 +12,9 @@ headers, makes the call with a shared `reqwest::Client`, and decodes the reply
 back into a [`switchyard_protocol::Response`] — buffered or streamed.
 
 It also pairs the client with a libsy algorithm: [`run`] drives
-[`Algorithm::run_stream`] and serves every model call the algorithm offloads, so a
-host that just wants the answer never has to drive the step stream itself.
+[`Algorithm::run_stream`], serves routing-time calls, and consumes the terminal routing outcome.
+When routing has not already produced the answer, `run` makes the terminal call and owns backend
+retries plus ordered candidate fallback.
 
 It depends on `switchyard-libsy`, `switchyard-protocol`, and
 `switchyard-translation`; no server, no provider SDK.
@@ -65,6 +66,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
     let openai = HttpBackendConfig {
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: std::env::var("OPENAI_API_KEY").ok(),
+        forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
         max_retries: 2,
@@ -142,10 +144,10 @@ async fn stream(
 
 ### Routing an algorithm
 
-[`run`] takes a libsy algorithm and a [`ClientRouter`], and returns the final response plus
-the trace of decisions the algorithm published. The router resolves each offloaded call to
-the client for the target the algorithm selected; `ClientRouter::single` is the
-single-provider case:
+[`run`] takes a libsy algorithm and a [`ClientRouter`], and returns the algorithm-selected
+[`ModelId`] plus the final response. Routing-time `CallModel`s are served while the algorithm
+runs. The terminal outcome either already contains the answer or supplies the selected model and
+ordered fallbacks for the client to try. `ClientRouter::single` is the single-provider case:
 
 ```rust
 use std::sync::Arc;
@@ -159,12 +161,9 @@ async fn route(
     request: Request,
 ) -> switchyard_libsy::Result<String> {
     let clients = ClientRouter::single(client);
-    let (trace, _response) =
+    let (selected_model, _response) =
         switchyard_llm_client::run(algorithm, clients, request, None).await?;
-    Ok(trace
-        .last()
-        .map(|decision| decision.selected_model_id().to_string())
-        .unwrap_or_default())
+    Ok(selected_model.to_string())
 }
 ```
 
@@ -231,8 +230,13 @@ fn build_multi_format_client(
   Anthropic sends `x-api-key: <key>` plus `anthropic-version`.
 - `request.metadata.http_headers` are forwarded upstream, **except** reserved ones:
   `host`, `content-length`, `connection`, and the backend-owned
-  `authorization` / `x-api-key` / `anthropic-version` / `content-type`. So a
-  caller's placeholder credential never overrides the backend's real key.
+  login, API-key, version, and content headers. So a caller's placeholder
+  credential never overrides the backend's real key.
+- `HttpBackendConfig::forward_auth` uses the caller's credential instead of the
+  backend's configured key. OpenAI backends forward `authorization`,
+  `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic backends forward
+  `authorization` or `x-api-key`; they also keep `oauth-*` values from
+  `anthropic-beta` and remove other caller-supplied beta values.
 - Per-backend custom headers go in `HttpBackendConfig::extra_headers`. Set credentials with
   `api_key`. OpenAI backends reject `Authorization`; Anthropic backends reject `x-api-key`
   and `anthropic-version`. Header names are case-insensitive.
@@ -243,9 +247,12 @@ fn build_multi_format_client(
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
 
-Retries replay the same upstream request. A transport failure can therefore
-duplicate a request that the provider processed but did not finish returning,
-and the retry budget plus capped `Retry-After` delays determines total latency.
+Retries replay the same upstream request to the same model. Each candidate's
+`max_retries` budget is exhausted before candidate fallback advances to the next
+model. The worst case is `candidates × (max_retries + 1)` upstream requests, and
+total latency includes every candidate's capped `Retry-After` backoff. A transport
+failure can duplicate a request that the provider processed but did not finish
+returning.
 
 ## Errors
 

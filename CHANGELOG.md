@@ -6,12 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Advisor-gate routing** — new `advisor` route type pairing the serving
+  executor with a stronger judge-only advisor that reviews terminal turns:
+  APPROVE releases the buffered turn, REDO discards it and feeds the advisor's
+  plan back to the executor. Includes per-session review budgets scoped by
+  `proxy_x_session_id`, stall checkpoints, a pattern trigger for text-protocol
+  harnesses, middle-out transcript truncation, fail-open consults, and an
+  `advisor_gate` block in `/v1/stats` covering verdicts, consult failures, and
+  REDO-discarded turns.
+
 ### Removed
 
 - **Deprecated Python server stack** — `switchyard serve`, YAML route bundles,
   the FastAPI endpoints and legacy chain, the `switchyard-components` crate,
   and their compatibility PyO3 bindings are removed. Use `switchyard-server`
   with native TOML deployments, or `switchyard launch` for coding agents.
+- **Packaging extras `[server]`, `[gpu]`, and `[all]`** — dropped together
+  with the deprecated Python server stack; only `[cli]` remains. Install
+  server functionality via the standalone `switchyard-server` binary instead.
 
 ## [0.2.0]
 
@@ -185,7 +199,7 @@ traffic that sits between client applications and LLM backends.
   `--list-models`), and `verify` / `launch --smoke` round-trip checks.
 - **Observability** — Prometheus `/metrics`, a JSON `/v1/stats`
   (`/v1/routing/stats` alias), and per-request cost/token/latency stats. See
-  [Metrics Reference](docs/METRICS_REFERENCE.md).
+  [Metrics Reference](docs/internal/metrics_reference.md).
 - **Python library** — `SwitchyardRecipes` (`passthrough_recipe`,
   `random_routing_recipe`, `cascade_recipe`, `deterministic_routing_recipe`,
   …) and typed `ChatRequest` / `ChatResponse` containers for in-process use.

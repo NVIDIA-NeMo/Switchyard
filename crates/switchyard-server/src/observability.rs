@@ -19,7 +19,7 @@ use tracing_subscriber::{EnvFilter, Layer as _};
 
 use crate::{ServerError, ServerResult, metrics};
 
-const DEFAULT_LOG_FILTER: &str = "switchyard_server=info,libsy=info,opentelemetry=warn";
+const DEFAULT_LOG_FILTER: &str = "info,opentelemetry=warn";
 const DEFAULT_SERVICE_NAME: &str = "switchyard-server";
 
 struct Observability {

@@ -19,7 +19,7 @@ crate-type = ["cdylib", "rlib"]
 futures.workspace = true
 http.workspace = true
 switchyard-libsy.workspace = true
-pyo3 = { version = "0.28.3", features = ["abi3-py310", "extension-module"] }
+pyo3 = { version = "0.28.3", features = ["abi3-py310"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 pythonize = "0.28.0"
 serde.workspace = true

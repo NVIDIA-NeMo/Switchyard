@@ -50,6 +50,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                     })
             })
             .transpose()?;
+        let response_format = decode_anthropic_output_format(body, &mut diagnostics, policy)?;
         let mut request = LlmRequest {
             model: body
                 .get("model")
@@ -58,7 +59,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 .map(ToOwned::to_owned),
             output: OutputParams {
                 max_output_tokens,
-                response_format: None,
+                response_format,
             },
             sampling: SamplingParams {
                 temperature: body.get("temperature").and_then(Value::as_f64),
@@ -146,6 +147,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "top_k",
                 "thinking",
                 "output_config",
+                "output_format",
                 "stream",
             ],
         );
@@ -340,17 +342,22 @@ impl FormatCodec for AnthropicMessagesCodec {
         let content = output
             .map(|output| encode_anthropic_content(&output.content))
             .unwrap_or_else(|| vec![json!({"type": "text", "text": ""})]);
+        let normalized_stop_reason = output.and_then(|output| output.stop_reason);
         let body = json!({
             "id": response.id.clone().unwrap_or_else(|| "msg_switchyard".to_string()),
             "type": "message",
             "role": "assistant",
             "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
             "content": content,
-            "stop_reason": output
-                .and_then(|output| output.stop_reason)
+            "stop_reason": normalized_stop_reason
                 .map(anthropic_stop_reason)
                 .unwrap_or("end_turn"),
             "stop_sequence": Value::Null,
+            "stop_details": normalized_stop_reason
+                .map(|reason| {
+                    anthropic_stop_details(reason, response.extensions.fields.get("stop_details"))
+                })
+                .unwrap_or(Value::Null),
             "usage": encode_anthropic_usage(&response.usage),
         });
         Ok(EncodedResponse {
@@ -358,6 +365,56 @@ impl FormatCodec for AnthropicMessagesCodec {
             diagnostics: Vec::new(),
         })
     }
+}
+
+// Reads the current `output_config.format`, or the beta `output_format` it replaced,
+// into the neutral OpenAI-shaped response format.
+fn decode_anthropic_output_format(
+    body: &Map<String, Value>,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Option<Value>> {
+    let Some(format) = body
+        .get("output_config")
+        .and_then(Value::as_object)
+        .and_then(|config| config.get("format"))
+        .or_else(|| body.get("output_format"))
+    else {
+        return Ok(None);
+    };
+    let Some(format) = format.as_object() else {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output format is not an object; the requested format was dropped",
+        )?;
+        return Ok(None);
+    };
+    if format.get("type").and_then(Value::as_str) != Some("json_schema") {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output maps only a json_schema format; the requested format was dropped",
+        )?;
+        return Ok(None);
+    }
+    // A non-object schema would reach the upstream as a malformed `json_schema.schema`.
+    let Some(schema) = format.get("schema").filter(|schema| schema.is_object()) else {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output requires format.schema to be an object; the requested format was dropped",
+        )?;
+        return Ok(None);
+    };
+    Ok(Some(json!({
+        "type": "json_schema",
+        "json_schema": {
+            // Anthropic identifies the schema by position; the neutral shape needs a name.
+            "name": "response",
+            "schema": schema.clone(),
+        },
+    })))
 }
 
 /// Maps the neutral OpenAI-shaped JSON schema to Anthropic's output format.
@@ -525,6 +582,7 @@ fn decode_anthropic_content_block(
                 .and_then(Value::as_str)
                 .filter(|signature| !signature.is_empty())
                 .map(ToOwned::to_owned),
+            details: Vec::new(),
         }],
         Some("tool_use") => vec![ContentBlock::ToolCall(ToolCall {
             id: block
@@ -794,6 +852,7 @@ fn encode_one_anthropic_response_block(block: &ContentBlock) -> Vec<Value> {
         ContentBlock::Reasoning {
             text,
             signature: None,
+            ..
         } => vec![json!({
             "type": "thinking",
             "thinking": text,
@@ -812,6 +871,7 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
         ContentBlock::Reasoning {
             text,
             signature: Some(signature),
+            ..
         } if !signature.is_empty() => vec![json!({
             "type": "thinking",
             "thinking": text,
@@ -1027,6 +1087,7 @@ fn map_anthropic_stop_reason(reason: Option<&str>) -> StopReason {
     match reason {
         Some("max_tokens") => StopReason::MaxTokens,
         Some("tool_use") => StopReason::ToolUse,
+        Some("refusal") => StopReason::ContentFilter,
         Some("end_turn") | None => StopReason::EndTurn,
         _ => StopReason::Unknown,
     }
@@ -1037,9 +1098,30 @@ fn anthropic_stop_reason(reason: StopReason) -> &'static str {
     match reason {
         StopReason::MaxTokens => "max_tokens",
         StopReason::ToolUse => "tool_use",
-        StopReason::EndTurn
-        | StopReason::ContentFilter
-        | StopReason::Error
-        | StopReason::Unknown => "end_turn",
+        StopReason::ContentFilter => "refusal",
+        StopReason::EndTurn | StopReason::Error | StopReason::Unknown => "end_turn",
+    }
+}
+
+// Emits the metadata object Anthropic pairs with a `refusal` stop reason.
+//
+// An Anthropic source keeps its `stop_details` in provider extensions, so replay that
+// object and preserve the named policy category and its explanation. Only a refusal
+// synthesized from a provider that reports no category falls back to the null form,
+// which Anthropic documents as the normal value for a refusal that maps to no named
+// category.
+fn anthropic_stop_details(reason: StopReason, source: Option<&Value>) -> Value {
+    match reason {
+        StopReason::ContentFilter => source
+            .filter(|details| !details.is_null())
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "type": "refusal",
+                    "category": Value::Null,
+                    "explanation": Value::Null,
+                })
+            }),
+        _ => Value::Null,
     }
 }

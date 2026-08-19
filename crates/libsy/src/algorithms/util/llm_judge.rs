@@ -22,7 +22,7 @@ use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Decision, LlmClientError, Request, Response};
+use switchyard_protocol::{LlmClientError, Request, Response};
 
 /// Builds the classifier-specific message view presented to a structured judge.
 pub(crate) trait ClassifierInput: Send + Sync {
@@ -62,9 +62,19 @@ where
     fn decode(
         &self,
         response: &AggLlmResponse,
-        _contract: &ClassifierContract,
+        contract: &ClassifierContract,
     ) -> Result<Self::Verdict> {
-        parse_json_verdict(response)
+        if !contract.validates_locally() {
+            return parse_json_verdict(response);
+        }
+        let verdict = parse_json_verdict::<Value>(response)?;
+        contract.validate_verdict(&verdict)?;
+        serde_json::from_value(verdict).map_err(|error| LibsyError::AlgorithmError {
+            message: format!(
+                "judge reply did not parse as {}: {error}",
+                std::any::type_name::<Self::Verdict>()
+            ),
+        })
     }
 }
 
@@ -230,7 +240,7 @@ where
         let response = driver
             .call_model(
                 self.judge.build_request(state, request),
-                Decision::new(self.target.to_string(), false),
+                vec![self.target.clone()],
             )
             .await
             .inspect_err(|error| report_fail_open(judge_model, error, libsy_error_reason(error)))
@@ -261,7 +271,7 @@ fn report_fail_open(judge_model: &str, error: &dyn std::fmt::Display, reason: &'
 }
 
 /// Returns a bounded reason for a judge call that failed at the libsy layer.
-fn libsy_error_reason(error: &LibsyError) -> &'static str {
+pub(crate) fn libsy_error_reason(error: &LibsyError) -> &'static str {
     match error {
         LibsyError::ClientCall { source, .. } => client_error_reason(source),
         _ => "call_error",
@@ -273,9 +283,7 @@ fn client_error_reason(error: &LlmClientError) -> &'static str {
     match error {
         LlmClientError::Timeout { .. } => "timeout",
         LlmClientError::Transport { .. } => "transport",
-        LlmClientError::UpstreamHttp { status, .. } if (500..=599).contains(status) => {
-            "upstream_5xx"
-        }
+        LlmClientError::UpstreamHttp { status, .. } if status.is_server_error() => "upstream_5xx",
         LlmClientError::UpstreamHttp { .. } => "upstream_non_5xx",
         LlmClientError::InvalidResponse { .. } | LlmClientError::ResponseTranslation(_) => {
             "invalid_response"
@@ -336,6 +344,7 @@ mod tests {
     use super::*;
 
     use futures::StreamExt;
+    use http::StatusCode;
     use serde::Deserialize;
     use switchyard_protocol::{ContentBlock, LlmClientError, text_request, text_response};
 
@@ -348,6 +357,11 @@ mod tests {
     #[derive(Debug, Deserialize, PartialEq)]
     struct TestVerdict {
         ok: bool,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct ScoreVerdict {
+        score: f64,
     }
 
     struct TestJudge;
@@ -403,6 +417,7 @@ mod tests {
                 ContentBlock::Reasoning {
                     text: r#"{"ok":false}"#.to_string(),
                     signature: None,
+                    details: Vec::new(),
                 },
             );
         }
@@ -410,6 +425,47 @@ mod tests {
         assert_eq!(parsed, TestVerdict { ok: true });
 
         assert!(parse_json_verdict::<TestVerdict>(&text_response(None, "still thinking")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn typed_decoder_enforces_a_json_object_contract_locally() -> Result<()> {
+        use super::super::classifier_contract::{
+            ClassifierContractConfig, ClassifierResponseFormat,
+        };
+
+        let config = ClassifierContractConfig::default()
+            .with_response_format_type(ClassifierResponseFormat::JsonObject);
+        let contract = ClassifierContract::from_config(
+            &config,
+            "Return one JSON score.",
+            r#"{
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "ScoreVerdict",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"score": {"type": "number"}},
+                        "required": ["score"],
+                        "additionalProperties": false
+                    }
+                }
+            }"#,
+        )?;
+        let decoder = SerdeDecoder::<ScoreVerdict>::new();
+
+        let error = decoder
+            .decode(
+                &text_response(None, r#"{"score":0.5,"unexpected":true}"#),
+                &contract,
+            )
+            .expect_err("an extra property should fail the local schema");
+
+        assert!(error.to_string().contains("did not match response_schema"));
+        assert_eq!(
+            decoder.decode(&text_response(None, r#"{"score":0.5}"#), &contract)?,
+            ScoreVerdict { score: 0.5 }
+        );
         Ok(())
     }
 
@@ -557,14 +613,14 @@ mod tests {
             ),
             (
                 LlmClientError::UpstreamHttp {
-                    status: 500,
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
                     body: "server error".to_string(),
                 },
                 "upstream_5xx",
             ),
             (
                 LlmClientError::UpstreamHttp {
-                    status: 302,
+                    status: StatusCode::FOUND,
                     body: "redirect".to_string(),
                 },
                 "upstream_non_5xx",

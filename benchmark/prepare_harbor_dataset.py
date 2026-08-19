@@ -35,6 +35,7 @@ DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "datasets" / "openthoughts-tblite-closed-book"
 AGENT_VERSIONS_FILE = SCRIPT_DIR / "agent-versions.env"
 PROXY_ASSET_DIR = SCRIPT_DIR / "closed_book_proxy" / "proxy"
 AGENT_ENTRYPOINT = "switchyard-agent-entrypoint.sh"
+COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 TERMINAL_BENCH_2_SOURCE_DATASET = "terminal-bench/terminal-bench-2"
 TERMINAL_BENCH_2_1_SOURCE_DATASET = "terminal-bench/terminal-bench-2-1"
 # Shared across the TB2 family (2.0 + the 2.1 verified iteration): 2.1 tweaks
@@ -199,10 +200,35 @@ def _install_layer(pins: dict[str, str]) -> str:
     claude_version = pins["CLAUDE_CODE_VERSION"]
     codex_version = pins["CODEX_VERSION"]
     opencode_version = pins["OPENCODE_VERSION"]
+    # Hermes (NousResearch hermes-agent) is a per-user uv app installed from
+    # GitHub, not an npm package. Baking it here (build-time, with host network)
+    # means the runtime install() skip-guard short-circuits, so tasks need no
+    # egress for it — enabling closed-book Hermes runs.
+    #
+    # HERMES_VERSION must be a full commit SHA. A tag is not enough: tags can be
+    # deleted or repointed, so two builds could record the same version string while
+    # installing different code — the manifest would assert a reproducibility it does
+    # not have. Requiring one shape is complete by construction, where a deny-list of
+    # moving names ("main", "master", ...) can never be, since any branch name passes.
+    # The installer script is fetched from the same commit for the same reason: pinning
+    # the agent but running whatever installer main has today reintroduces the drift.
+    #
+    # The pin is applied with the installer's --commit, not --branch: --branch reaches
+    # `git clone --branch`, which accepts only branch and tag names and rejects a SHA.
+    # --force-commit is required with it. Without it the installer skips the pin when
+    # the commit is an ancestor of the freshly cloned HEAD, logging a warning and
+    # silently leaving the image on the tip of main — the drift this pin exists to
+    # prevent, arriving as a warning rather than a build failure.
+    hermes_version = pins["HERMES_VERSION"]
+    if not COMMIT_SHA_PATTERN.fullmatch(hermes_version):
+        raise SystemExit(
+            f"HERMES_VERSION={hermes_version!r} is not a full 40-character commit SHA; "
+            "a tag or branch can be repointed and cannot be recorded as a reproducible pin"
+        )
     return f"""
 
 # Switchyard benchmark prebaked coding agents.
-ENV SWITCHYARD_PREBAKED_AGENT_VERSIONS="claude-code={claude_version},codex={codex_version},opencode={opencode_version},node={node_version}"
+ENV SWITCHYARD_PREBAKED_AGENT_VERSIONS="claude-code={claude_version},codex={codex_version},opencode={opencode_version},node={node_version},hermes={hermes_version}"
 RUN set -eux; \\
     if command -v apt-get >/dev/null 2>&1; then \\
         apt-get update; \\
@@ -243,6 +269,19 @@ RUN set -eux; \\
     claude --version; \\
     codex --version; \\
     opencode --version
+RUN set -eux; \\
+    export HOME=/root; \\
+    export PATH="/root/.local/bin:$PATH"; \\
+    if command -v apt-get >/dev/null 2>&1; then \\
+        apt-get update; \\
+        apt-get install -y --no-install-recommends git ripgrep xz-utils; \\
+        rm -rf /var/lib/apt/lists/*; \\
+    elif command -v apk >/dev/null 2>&1; then \\
+        apk add --no-cache bash git ripgrep xz; \\
+    fi; \\
+    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/{hermes_version}/scripts/install.sh \\
+        | bash -s -- --skip-setup --commit {hermes_version} --force-commit; \\
+    hermes version
 """
 
 
@@ -475,7 +514,13 @@ def prepare_dataset(
     overwrite: bool,
 ) -> Path:
     pins = _read_env_file(AGENT_VERSIONS_FILE)
-    required = {"CLAUDE_CODE_VERSION", "CODEX_VERSION", "OPENCODE_VERSION", "NODE_VERSION"}
+    required = {
+        "CLAUDE_CODE_VERSION",
+        "CODEX_VERSION",
+        "HERMES_VERSION",
+        "NODE_VERSION",
+        "OPENCODE_VERSION",
+    }
     missing = sorted(required - pins.keys())
     if missing:
         raise ValueError(f"missing pins in {AGENT_VERSIONS_FILE}: {', '.join(missing)}")

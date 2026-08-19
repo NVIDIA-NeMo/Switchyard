@@ -12,12 +12,12 @@ use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
-use switchyard_protocol::{ModelId, Usage};
+use switchyard_protocol::{Metadata, ModelId, Usage};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
 
-const SESSION_ID_HEADER: &str = "proxy_x_session_id";
+const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
 const TASK_HEADER: &str = "x-switchyard-intake-task";
 const TRIAL_ID_HEADER: &str = "x-switchyard-trial-id";
 
@@ -104,11 +104,21 @@ pub(crate) struct RoutingLogContext {
 }
 
 impl RoutingLogContext {
-    pub(crate) fn from_headers(headers: &http::HeaderMap) -> Self {
+    /// Captures the normalized session ID, with the legacy log-only header as a fallback.
+    pub(crate) fn from_metadata(metadata: &Metadata) -> Self {
+        let headers = metadata.http_headers.as_ref();
         Self {
-            task: nonempty_header(headers, TASK_HEADER).map(|s| s.to_string()),
-            trial_id: nonempty_header(headers, TRIAL_ID_HEADER).map(|s| s.to_string()),
-            session_id: nonempty_header(headers, SESSION_ID_HEADER).map(|s| s.to_string()),
+            task: headers
+                .and_then(|headers| nonempty_header(headers, TASK_HEADER))
+                .map(str::to_string),
+            trial_id: headers
+                .and_then(|headers| nonempty_header(headers, TRIAL_ID_HEADER))
+                .map(str::to_string),
+            session_id: metadata.session_id.clone().or_else(|| {
+                headers
+                    .and_then(|headers| nonempty_header(headers, LEGACY_SESSION_ID_HEADER))
+                    .map(str::to_string)
+            }),
         }
     }
 }

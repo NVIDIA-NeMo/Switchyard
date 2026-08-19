@@ -6,7 +6,8 @@
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
+    first_nonempty_string, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
+    reasoning_text_from_details, text_from_blocks,
 };
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
@@ -361,6 +362,12 @@ impl FormatCodec for OpenAiChatCodec {
         {
             message["reasoning_content"] = Value::String(reasoning);
         }
+        if let Some(details) = output
+            .map(|output| reasoning_details_from_blocks(&output.content))
+            .filter(|details| !details.is_empty())
+        {
+            message["reasoning_details"] = Value::Array(details);
+        }
         if !tool_calls.is_empty() {
             message["tool_calls"] = Value::Array(tool_calls);
         }
@@ -389,22 +396,58 @@ impl FormatCodec for OpenAiChatCodec {
 
 // Pulls OpenAI-compatible reasoning fields into private reasoning IR blocks.
 fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map<String, Value>) {
-    let reasoning = ["reasoning_content", "reasoning"]
-        .into_iter()
-        .filter_map(|key| object.get(key).and_then(Value::as_str))
-        .filter(|text| !text.is_empty())
-        .map(|text| ContentBlock::Reasoning {
-            text: text.to_string(),
-            signature: None,
-        })
-        .collect::<Vec<_>>();
-    if reasoning.is_empty() {
+    if let Some(details) = object
+        .get("reasoning_details")
+        .and_then(Value::as_array)
+        .filter(|details| !details.is_empty())
+    {
+        let text = reasoning_text_from_details(details)
+            .or_else(|| {
+                first_nonempty_string(object, &["reasoning_content", "reasoning"])
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_default();
+        let signature = details.iter().find_map(|detail| {
+            detail
+                .get("signature")
+                .and_then(Value::as_str)
+                .filter(|signature| !signature.is_empty())
+                .map(ToOwned::to_owned)
+        });
+        content.insert(
+            0,
+            ContentBlock::Reasoning {
+                text,
+                signature,
+                details: details.clone(),
+            },
+        );
         return;
     }
 
-    let mut merged = reasoning;
-    merged.append(content);
-    *content = merged;
+    if let Some(text) = first_nonempty_string(object, &["reasoning_content", "reasoning"]) {
+        content.insert(
+            0,
+            ContentBlock::Reasoning {
+                text: text.to_string(),
+                signature: None,
+                details: Vec::new(),
+            },
+        );
+    }
+}
+
+// Returns structured reasoning details in their original order.
+fn reasoning_details_from_blocks(content: &[ContentBlock]) -> Vec<Value> {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Reasoning { details, .. } => Some(details.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .cloned()
+        .collect()
 }
 
 /// Decodes OpenAI role strings into normalized roles.
@@ -804,6 +847,7 @@ fn encode_message_without_tool_results_to_openai(
         "role": role,
         "content": encode_openai_content(&content_blocks, message.role, diagnostics, policy)?,
     });
+    encode_openai_message_reasoning(&mut message_json, &message.content);
     if !tool_calls.is_empty() {
         message_json["tool_calls"] = Value::Array(tool_calls);
         if message_json["content"] == Value::String(String::new()) {
@@ -811,6 +855,61 @@ fn encode_message_without_tool_results_to_openai(
         }
     }
     Ok(message_json)
+}
+
+// Adds either plaintext reasoning or structured details to an OpenAI Chat message.
+fn encode_openai_message_reasoning(message: &mut Value, content: &[ContentBlock]) {
+    let details = reasoning_details_from_blocks(content);
+    if details.is_empty() {
+        encode_openai_message_plaintext_reasoning(message, content);
+    } else {
+        encode_openai_message_structured_reasoning(message, content, details);
+    }
+}
+
+// Adds reasoning blocks that have no structured provider representation.
+fn encode_openai_message_plaintext_reasoning(message: &mut Value, content: &[ContentBlock]) {
+    let reasoning = content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Reasoning {
+                text,
+                signature: None,
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !reasoning.is_empty() {
+        message["reasoning"] = Value::String(reasoning);
+    }
+}
+
+// Adds exact provider details and text that cannot be recovered from those details.
+fn encode_openai_message_structured_reasoning(
+    message: &mut Value,
+    content: &[ContentBlock],
+    details: Vec<Value>,
+) {
+    message["reasoning_details"] = Value::Array(details);
+    let fallback = content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Reasoning { text, details, .. }
+                if !details.is_empty()
+                    && reasoning_text_from_details(details).as_deref() != Some(text.as_str())
+                    && !text.is_empty() =>
+            {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !fallback.is_empty() {
+        message["reasoning"] = Value::String(fallback);
+    }
 }
 
 // Checks whether any block in a message is a tool result.

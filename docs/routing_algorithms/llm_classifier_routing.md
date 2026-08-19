@@ -78,6 +78,11 @@ Switchyard does not parse provider-specific reasoning fields such as
 to `strong_target` even when the judge request returned HTTP 200. With session
 affinity, that fallback can be reused without another judge call.
 
+Capability and escalation routes use JSON Schema structured output by default.
+For a provider that supports JSON Object mode but not JSON Schema, set
+`response_format_type = "json_object"` on the route. Switchyard then adds the
+verdict schema to the judge prompt and validates the returned object locally.
+
 When a vLLM-compatible provider supports `enable_thinking`, configure it on the
 judge target through `extra_body`:
 
@@ -104,13 +109,14 @@ for the server merge behavior.
 | `session_affinity` | `false` | Retains the first selected target for a session and reuses it on later requests. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `session_affinity = true`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
+| `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
 
 ### Override the classifier prompt
 
 Set `prompt` on the route when the packaged capability rubric does not describe
-your weak model. Switchyard sends the response schema separately through the
-provider's structured-output request; do not copy it into the prompt.
+your weak model. Do not copy the response schema into the prompt: Switchyard
+supplies it according to `response_format_type`.
 
 ```toml
 [routes.smart]

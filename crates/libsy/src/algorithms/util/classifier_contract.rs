@@ -9,6 +9,17 @@ use serde_json::{Value, json};
 
 use crate::{LibsyError, Result};
 
+/// Provider-side structured-output mode used by a classifier judge.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassifierResponseFormat {
+    /// Send the verdict schema through the provider's strict JSON Schema wrapper.
+    #[default]
+    JsonSchema,
+    /// Request a JSON object and enforce the verdict schema locally.
+    JsonObject,
+}
+
 /// User-configurable parts of a classifier's prompt and verdict contract.
 ///
 /// Fields are private so new contract settings can be added without breaking Rust struct literals.
@@ -16,6 +27,8 @@ use crate::{LibsyError, Result};
 pub struct ClassifierContractConfig {
     #[serde(default)]
     prompt: Option<String>,
+    #[serde(default)]
+    response_format_type: ClassifierResponseFormat,
 }
 
 impl ClassifierContractConfig {
@@ -28,6 +41,20 @@ impl ClassifierContractConfig {
     /// Returns the configured prompt override.
     pub fn prompt(&self) -> Option<&str> {
         self.prompt.as_deref()
+    }
+
+    /// Selects the provider-side structured-output mode.
+    pub fn with_response_format_type(
+        mut self,
+        response_format_type: ClassifierResponseFormat,
+    ) -> Self {
+        self.response_format_type = response_format_type;
+        self
+    }
+
+    /// Returns the configured provider-side structured-output mode.
+    pub fn response_format_type(&self) -> ClassifierResponseFormat {
+        self.response_format_type
     }
 }
 
@@ -42,8 +69,9 @@ pub(crate) struct ClassifierContract {
 impl ClassifierContract {
     /// Builds a contract from user settings and packaged defaults.
     ///
-    /// The response format must contain `json_schema.schema` and is retained separately for the
-    /// model request. Schemas are never copied into the system prompt.
+    /// The packaged response format must contain `json_schema.schema`. JSON Schema mode retains
+    /// that wrapper for the model request; JSON Object mode moves the schema into the prompt and
+    /// compiles it for local validation.
     pub(crate) fn from_config(
         config: &ClassifierContractConfig,
         default_prompt: &str,
@@ -56,7 +84,31 @@ impl ClassifierContract {
                     message: format!("response schema is invalid: {error}"),
                 }
             })?;
-        Self::from_response_format(prompt_template, response_format, None)
+        let schema = response_format
+            .pointer("/json_schema/schema")
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "response schema has no json_schema.schema".to_string(),
+            })?;
+        match config.response_format_type() {
+            ClassifierResponseFormat::JsonSchema => {
+                Self::from_response_format(prompt_template, response_format, None)
+            }
+            ClassifierResponseFormat::JsonObject => {
+                validate_prompt(prompt_template)?;
+                let validator = compile_schema(schema)?;
+                let rendered_schema = serde_json::to_string_pretty(schema).map_err(|error| {
+                    algorithm_error(format!("response schema could not be rendered: {error}"))
+                })?;
+                let system_prompt = format!(
+                    "{prompt_template}\n\nReturn exactly one JSON object matching this JSON Schema:\n{rendered_schema}"
+                );
+                Self::from_response_format(
+                    &system_prompt,
+                    json!({"type": "json_object"}),
+                    Some(validator),
+                )
+            }
+        }
     }
 
     /// Builds a provider response format around a user-supplied inner JSON Schema.
@@ -88,21 +140,7 @@ impl ClassifierContract {
         response_format: Value,
         validator: Option<Validator>,
     ) -> Result<Self> {
-        if prompt_template.trim().is_empty() {
-            return Err(LibsyError::AlgorithmError {
-                message: "classifier prompt must not be empty".to_string(),
-            });
-        }
-        if prompt_template.contains("{{RESPONSE_SCHEMA}}") {
-            return Err(LibsyError::AlgorithmError {
-                message: "classifier prompt must not include {{RESPONSE_SCHEMA}}; the response schema is sent separately".to_string(),
-            });
-        }
-        response_format
-            .pointer("/json_schema/schema")
-            .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "response schema has no json_schema.schema".to_string(),
-            })?;
+        validate_prompt(prompt_template)?;
 
         Ok(Self {
             system_prompt: prompt_template.to_string(),
@@ -119,6 +157,11 @@ impl ClassifierContract {
         &self.response_format
     }
 
+    /// Whether the provider response must be checked against the compiled schema locally.
+    pub(crate) fn validates_locally(&self) -> bool {
+        self.validator.is_some()
+    }
+
     /// Validates a dynamic verdict when this contract carries a runtime schema validator.
     pub(crate) fn validate_verdict(&self, verdict: &Value) -> Result<()> {
         let Some(validator) = &self.validator else {
@@ -130,6 +173,18 @@ impl ClassifierContract {
                 message: format!("classifier verdict did not match response_schema: {error}"),
             })
     }
+}
+
+fn validate_prompt(prompt_template: &str) -> Result<()> {
+    if prompt_template.trim().is_empty() {
+        return Err(algorithm_error("classifier prompt must not be empty"));
+    }
+    if prompt_template.contains("{{RESPONSE_SCHEMA}}") {
+        return Err(algorithm_error(
+            "classifier prompt must not include {{RESPONSE_SCHEMA}}; remove the placeholder because Switchyard supplies the schema automatically",
+        ));
+    }
+    Ok(())
 }
 
 fn compile_schema(schema: &Value) -> Result<Validator> {
@@ -223,7 +278,11 @@ mod tests {
         )
         .expect_err("schema placeholders should be rejected");
 
-        assert!(error.to_string().contains("schema is sent separately"));
+        assert!(
+            error
+                .to_string()
+                .contains("Switchyard supplies the schema automatically")
+        );
     }
 
     #[test]

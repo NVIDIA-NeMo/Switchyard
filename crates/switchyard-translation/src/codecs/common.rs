@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Provider-agnostic helpers shared by buffered wire-format codecs.
+//! Provider-agnostic helpers shared by wire-format codecs.
 
 use serde_json::{Map, Value};
 
@@ -39,6 +39,40 @@ pub(crate) fn reasoning_text_from_blocks(content: &[ContentBlock], separator: &s
         })
         .collect::<Vec<_>>()
         .join(separator)
+}
+
+/// Extracts displayable text from structured reasoning details.
+pub(crate) fn reasoning_text_from_details(details: &[Value]) -> Option<String> {
+    let parts = details
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|detail| {
+            detail
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .or_else(|| {
+                    detail
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .filter(|summary| !summary.is_empty())
+                })
+        })
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+/// Returns the first non-empty string stored under the requested keys.
+pub(crate) fn first_nonempty_string<'a>(
+    object: &'a Map<String, Value>,
+    keys: &[&str],
+) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    })
 }
 
 /// Copies unknown provider fields into the IR extension map.

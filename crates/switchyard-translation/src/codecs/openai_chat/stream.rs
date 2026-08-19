@@ -6,6 +6,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::LlmResponseChunk;
+use crate::codecs::common::{first_nonempty_string, reasoning_text_from_details};
 use crate::codecs::stream::{
     StreamCodec, StreamTranslationState, record_source_identity, state_source_is, string_field,
     target_model_or_source_model,
@@ -97,6 +98,34 @@ fn decode_openai_chat_stream(
             continue;
         };
         if let Some(delta) = choice.get("delta").and_then(Value::as_object) {
+            if let Some(details) = delta
+                .get("reasoning_details")
+                .and_then(Value::as_array)
+                .filter(|details| !details.is_empty())
+            {
+                let text = reasoning_text_from_details(details)
+                    .or_else(|| {
+                        first_nonempty_string(delta, &["reasoning_content", "reasoning"])
+                            .map(ToOwned::to_owned)
+                    })
+                    .unwrap_or_default();
+                out.push(LlmResponseChunk::ReasoningDetailsDelta {
+                    index: 0,
+                    details: details.clone(),
+                    text,
+                });
+            } else {
+                for reasoning_key in ["reasoning_content", "reasoning"] {
+                    if let Some(text) = delta.get(reasoning_key).and_then(Value::as_str)
+                        && !text.is_empty()
+                    {
+                        out.push(LlmResponseChunk::ReasoningDelta {
+                            index: 0,
+                            text: text.to_string(),
+                        });
+                    }
+                }
+            }
             if let Some(text) = delta.get("content").and_then(Value::as_str)
                 && !text.is_empty()
             {
@@ -104,16 +133,6 @@ fn decode_openai_chat_stream(
                     index: 0,
                     text: text.to_string(),
                 });
-            }
-            for reasoning_key in ["reasoning_content", "reasoning"] {
-                if let Some(text) = delta.get(reasoning_key).and_then(Value::as_str)
-                    && !text.is_empty()
-                {
-                    out.push(LlmResponseChunk::ReasoningDelta {
-                        index: 0,
-                        text: text.to_string(),
-                    });
-                }
             }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tool_call in tool_calls {
@@ -193,6 +212,14 @@ fn encode_openai_chat_stream(
                 None,
                 None,
             )]
+        }
+        LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
+            let details_text = reasoning_text_from_details(&details);
+            let mut delta = json!({"reasoning_details": details});
+            if !text.is_empty() && details_text.as_deref() != Some(text.as_str()) {
+                delta["reasoning"] = Value::String(text);
+            }
+            vec![openai_stream_chunk(state, delta, None, None)]
         }
         LlmResponseChunk::ToolCallDelta {
             index,
@@ -397,6 +424,7 @@ fn openai_finish_reason(reason: Option<&str>) -> String {
         Some("end_turn") | Some("stop_sequence") | None => "stop".to_string(),
         Some("max_tokens") => "length".to_string(),
         Some("tool_use") => "tool_calls".to_string(),
+        Some("refusal") => "content_filter".to_string(),
         Some(other) => other.to_string(),
     }
 }

@@ -8,13 +8,11 @@ use std::time::Duration;
 
 use switchyard_protocol::{ModelId, Usage};
 
-/// One completed model call observed at the algorithm offload boundary.
+/// One completed model call observed while serving an algorithm run.
 #[derive(Clone, Debug)]
 pub struct LlmCallObservation {
     /// Model selected for the completed call.
     pub selected_model: ModelId,
-    /// Whether this call generated an answer rather than a routing verdict.
-    pub is_answer_call: bool,
     /// Whether the call completed successfully.
     pub is_success: bool,
     /// Time spent waiting for the model call to resolve.
@@ -26,8 +24,10 @@ pub struct LlmCallObservation {
 /// One request-scoped observation emitted by the algorithm runner.
 #[derive(Clone, Debug)]
 pub enum RunObservation {
-    /// A completed model call.
+    /// A completed model call requested by the algorithm for routing work.
     LlmCall(LlmCallObservation),
+    /// A completed terminal model call made from the routing outcome.
+    AnswerCall(LlmCallObservation),
     /// Routing time recorded by the `switchyard.routing_overhead_ms` metric.
     RoutingOverhead(Duration),
 }

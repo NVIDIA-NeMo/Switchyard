@@ -3,6 +3,7 @@
 
 """Tests for the dictionary-based libsy Python API."""
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -10,8 +11,10 @@ import pytest
 from switchyard.libsy import (
     Algorithm,
     ContextWindowExceededError,
-    Decision,
-    LibsyError,
+    CustomClassifierConfig,
+    LlmClassifierConfig,
+    LlmResponse,
+    RoutingOutcome,
     Step,
     TaskClassifierConfig,
     algorithms,
@@ -55,75 +58,105 @@ async def run_algorithm(
     *,
     request: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
-) -> tuple[list[Decision], dict[str, Any]]:
-    decisions: list[Decision] = []
+) -> tuple[str, dict[str, Any]]:
     async for step in algorithm.run_stream(request or request_body(), headers=headers):
         match step:
             case Step.CallModel(call):
-                target = call.decision.selected_model_id
-                client = (clients or {})[target]
-                try:
-                    response = await client.call(call.request)
-                except Exception as error:
-                    call.fail(error)
-                else:
-                    call.respond(response)
-            case Step.Decision(decision):
-                decisions.append(decision)
-            case Step.Done(response):
-                return decisions, response
-    raise AssertionError("algorithm stream ended without a response")
+                for index, target in enumerate(call.models):
+                    candidate_request = {**call.request, "model": target}
+                    client = (clients or {})[target]
+                    try:
+                        response = await client.call(candidate_request)
+                    except ContextWindowExceededError as error:
+                        if index + 1 == len(call.models):
+                            call.fail(error)
+                    except Exception as error:
+                        call.fail(error)
+                        break
+                    else:
+                        call.respond(LlmResponse.Agg(response))
+                        break
+            case Step.Done(outcome):
+                if outcome.response is not None:
+                    match outcome.response:
+                        case LlmResponse.Agg(response):
+                            return outcome.selected_model_id, response
+                        case LlmResponse.Stream(_):
+                            raise AssertionError("test helper expected an aggregate response")
+                candidates = [outcome.selected_model_id, *outcome.fallback_models]
+                for index, target in enumerate(candidates):
+                    candidate_request = {**outcome.request, "model": target}
+                    client = (clients or {})[target]
+                    try:
+                        response = await client.call(candidate_request)
+                    except ContextWindowExceededError:
+                        if index + 1 == len(candidates):
+                            raise
+                    else:
+                        return outcome.selected_model_id, response
+    raise AssertionError("algorithm stream ended without an outcome")
 
 
 async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() -> None:
     client = EchoClient("fast")
     algorithm = algorithms.random(["fast"])
-    decisions: list[Decision] = []
-    response: dict[str, Any] | None = None
+    outcome: RoutingOutcome | None = None
     variants: list[str] = []
 
     async for step in algorithm.run_stream(request_body()):
         match step:
-            case Step.CallModel(call):
-                variants.append("call_model")
-                client_response = await client.call(call.request)
-                call.respond(client_response)
-                with pytest.raises(LibsyError, match="already been completed"):
-                    call.respond(client_response)
-            case Step.Decision(decision):
-                variants.append("decision")
-                decisions.append(decision)
             case Step.Done(done):
                 variants.append("done")
-                response = done
+                outcome = done
 
-    assert variants == ["decision", "call_model", "done"]
-    assert len(decisions) == 1
-    assert decisions[0].selected_model_id == "fast"
-    assert decisions[0].is_answer_call is True
+    assert variants == ["done"]
+    assert outcome is not None
+    assert outcome.selected_model_id == "fast"
+    assert outcome.fallback_models == []
+    assert outcome.response is None
+    response = await client.call(outcome.request)
     assert client.calls[0]["model"] == "fast"
     assert client.calls[0]["messages"][0]["content"] == [
         {"type": "text", "text": "hello"}
     ]
-    assert response is not None
     assert response["model"] == "fast"
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "fast"}]
 
 
-async def test_into_parts_supports_decision_only_routing() -> None:
-    algorithm = algorithms.random(["fast"])
+async def test_routing_call_accepts_a_streamed_response() -> None:
+    async def events() -> AsyncIterator[dict[str, object]]:
+        for chunk in [
+            {"MessageStart": {"id": "response-1", "model": "judge"}},
+            {"TextDelta": {"index": 0, "text": '{"target":"balanced"}'}},
+            {"MessageStop": {"reason": "end_turn"}},
+        ]:
+            yield {"preservation": None, "normalized": [chunk]}
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["target"],
+        "properties": {"target": {"type": "string", "enum": ["fast", "balanced"]}},
+    }
+    algorithm = algorithms.llm_classifier(
+        LlmClassifierConfig.custom(
+            "judge",
+            [("fast", "model-a"), ("balanced", "model-b")],
+            default_target="fast",
+            config=CustomClassifierConfig("Choose a target.", schema, "/target"),
+        )
+    )
+    outcome: RoutingOutcome | None = None
 
     async for step in algorithm.run_stream(request_body()):
         match step:
-            case Step.CallModel(call) if call.decision.is_answer_call:
-                request, decision = call.into_parts()
-                assert call.algorithm == "random"
-                assert request["messages"] == request_body()["messages"]
-                assert decision.selected_model_id == "fast"
-                assert decision.is_answer_call is True
-                with pytest.raises(LibsyError, match="already been completed"):
-                    call.into_parts()
-                break
+            case Step.CallModel(call):
+                call.respond(LlmResponse.Stream(events()))
+            case Step.Done(done):
+                outcome = done
+
+    assert outcome is not None
+    assert outcome.selected_model_id == "model-b"
 
 
 async def test_classifier_config_accepts_a_prompt_override() -> None:
@@ -153,14 +186,16 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
 
     judge = JudgeClient("judge")
     weak = EchoClient("weak")
-    algorithm = algorithms.llm_task_classifier(
-        "judge",
-        "weak",
-        "strong",
-        config=TaskClassifierConfig(
-            0.5,
-            threshold_step=0.1,
-            prompt="Custom capability rubric.",
+    algorithm = algorithms.llm_classifier(
+        LlmClassifierConfig.capability(
+            "judge",
+            "weak",
+            "strong",
+            config=TaskClassifierConfig(
+                0.5,
+                threshold_step=0.1,
+                prompt="Custom capability rubric.",
+            ),
         ),
     )
 
@@ -179,6 +214,109 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
         "properties"
     ]["p_solve"]
     assert response["model"] == "weak"
+
+
+async def test_custom_classifier_routes_across_named_targets() -> None:
+    class JudgeClient(EchoClient):
+        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(request)
+            return {
+                "model": self.model,
+                "outputs": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": '{"target":"balanced"}'}],
+                        "stop_reason": "end_turn",
+                    }
+                ],
+            }
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["target"],
+        "properties": {"target": {"type": "string", "enum": ["fast", "balanced", "best"]}},
+    }
+    algorithm = algorithms.llm_classifier(
+        LlmClassifierConfig.custom(
+            "judge",
+            [("fast", "model-a"), ("balanced", "model-b"), ("best", "model-c")],
+            default_target="fast",
+            config=CustomClassifierConfig("Choose a target.", schema, "/target"),
+        )
+    )
+
+    _, response = await run_algorithm(
+        algorithm,
+        {
+            "judge": JudgeClient("judge"),
+            "model-a": EchoClient("model-a"),
+            "model-b": EchoClient("model-b"),
+            "model-c": EchoClient("model-c"),
+        },
+    )
+
+    assert response["model"] == "model-b"
+
+
+async def test_classifier_config_accepts_json_object_output() -> None:
+    """Verify that Python can select JSON Object mode for a classifier judge."""
+
+    class JudgeClient(EchoClient):
+        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(request)
+            return {
+                "model": self.model,
+                "outputs": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    '{"crux":"bounded task","primary_rule":"SUP-1",'
+                                    '"capability_boundary":"supported","p_solve":0.9}'
+                                ),
+                            }
+                        ],
+                        "stop_reason": "end_turn",
+                    }
+                ],
+            }
+
+    judge = JudgeClient("judge")
+    weak = EchoClient("weak")
+    algorithm = algorithms.llm_task_classifier(
+        "judge",
+        "weak",
+        "strong",
+        config=TaskClassifierConfig(0.5, response_format_type="json_object"),
+    )
+
+    _, response = await run_algorithm(
+        algorithm,
+        {
+            "judge": judge,
+            "weak": weak,
+            "strong": EchoClient("strong"),
+        },
+    )
+
+    assert judge.calls[0]["output"]["response_format"] == {"type": "json_object"}
+    prompt = judge.calls[0]["instructions"][0]["content"][0]["text"]
+    assert "JSON Schema" in prompt
+    assert '"p_solve"' in prompt
+    assert response["model"] == "weak"
+
+
+def test_classifier_config_rejects_unknown_response_format() -> None:
+    invalid_response_format: Any = "yaml"
+
+    with pytest.raises(
+        ValueError,
+        match="response_format_type must be 'json_schema' or 'json_object'",
+    ):
+        TaskClassifierConfig(0.5, response_format_type=invalid_response_format)
 
 
 async def test_random_weights_and_seed_are_reproducible() -> None:
@@ -207,9 +345,9 @@ def test_random_rejects_invalid_weights() -> None:
 
 
 async def test_noop_needs_no_client() -> None:
-    decisions, response = await run_algorithm(algorithms.noop())
+    selected_model, response = await run_algorithm(algorithms.noop())
 
-    assert decisions[0].selected_model_id == "auto"
+    assert selected_model == "auto"
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "OK"}]
 
 
@@ -226,11 +364,11 @@ def test_algorithm_rejects_invalid_headers(headers: dict[str, str], message: str
 
 
 async def test_algorithm_accepts_case_insensitive_duplicate_names() -> None:
-    decisions, _ = await run_algorithm(
+    selected_model, _ = await run_algorithm(
         algorithms.noop(), headers={"X-Unused": "first", "x-unused": "second"}
     )
 
-    assert decisions[0].selected_model_id == "auto"
+    assert selected_model == "auto"
 
 
 def test_algorithm_rejects_header_map_capacity_overflow() -> None:
@@ -264,17 +402,6 @@ def test_invalid_request_is_rejected_at_the_boundary() -> None:
         )
 
 
-async def test_client_failure_becomes_libsy_error() -> None:
-    class FailingClient:
-        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
-            raise RuntimeError("client failed")
-
-    algorithm = algorithms.random(["broken"])
-
-    with pytest.raises(LibsyError, match="client failed"):
-        await run_algorithm(algorithm, {"broken": FailingClient()})
-
-
 async def test_context_window_failure_falls_back_to_the_next_model() -> None:
     class OverflowClient:
         async def call(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -286,10 +413,10 @@ async def test_context_window_failure_falls_back_to_the_next_model() -> None:
         picker="efficient_first",
         confidence_threshold=0.5,
     )
-    decisions, response = await run_algorithm(
+    selected_model, response = await run_algorithm(
         algorithm,
         {"fast": OverflowClient(), "strong": EchoClient("strong")},
     )
 
-    assert [decision.selected_model_id for decision in decisions] == ["fast", "strong"]
+    assert selected_model == "fast"
     assert response["model"] == "strong"

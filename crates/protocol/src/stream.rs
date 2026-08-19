@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::pin::Pin;
 
 use futures::{Stream, StreamExt};
+use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -21,7 +22,7 @@ use crate::{
 /// Status reported for an upstream error delivered inside a streaming body. The
 /// upstream already sent a success status line before failing, so there is no real
 /// code to propagate; 502 matches how a failed upstream call surfaces elsewhere.
-const MID_STREAM_UPSTREAM_STATUS: u16 = 502;
+const MID_STREAM_UPSTREAM_STATUS: StatusCode = StatusCode::BAD_GATEWAY;
 
 /// A boxed, `Send` stream of response events. Each item may fail independently mid-stream.
 pub type LlmResponseStream =
@@ -193,11 +194,19 @@ impl AggLlmResponse {
                             text,
                         });
                     }
-                    ContentBlock::Reasoning { text, .. } => {
-                        chunks.push(LlmResponseChunk::ReasoningDelta {
-                            index: output_index,
-                            text,
-                        });
+                    ContentBlock::Reasoning { text, details, .. } => {
+                        if !details.is_empty() {
+                            chunks.push(LlmResponseChunk::ReasoningDetailsDelta {
+                                index: output_index,
+                                details,
+                                text,
+                            });
+                        } else {
+                            chunks.push(LlmResponseChunk::ReasoningDelta {
+                                index: output_index,
+                                text,
+                            });
+                        }
                     }
                     ContentBlock::ToolCall(tool) => {
                         let args = serde_json::to_string(&tool.arguments).unwrap_or_default();
@@ -272,6 +281,15 @@ pub enum LlmResponseChunk {
         /// Reasoning fragment.
         text: String,
     },
+    /// Adds structured reasoning details to one output index.
+    ReasoningDetailsDelta {
+        /// Provider output index.
+        index: usize,
+        /// Reasoning detail objects in provider order.
+        details: Vec<Value>,
+        /// Normalized reasoning text represented by or accompanying the details.
+        text: String,
+    },
     /// Adds or updates a tool call at one index.
     ToolCallDelta {
         /// Tool-call index within the response.
@@ -322,6 +340,7 @@ pub struct ResponseAccumulator {
     model: Option<String>,
     text: String,
     reasoning: Option<String>,
+    reasoning_details: Vec<Value>,
     tool_calls: BTreeMap<usize, PartialToolCall>,
     usage: Usage,
     stop_reason: Option<StopReason>,
@@ -359,6 +378,14 @@ impl ResponseAccumulator {
                     .get_or_insert_with(String::new)
                     .push_str(&text);
             }
+            LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
+                self.reasoning_details.extend(details);
+                if !text.is_empty() {
+                    self.reasoning
+                        .get_or_insert_with(String::new)
+                        .push_str(&text);
+                }
+            }
             LlmResponseChunk::ToolCallDelta {
                 index,
                 id,
@@ -388,10 +415,11 @@ impl ResponseAccumulator {
     /// tool calls (by ascending delta index) — a single assistant output.
     pub fn finish(self) -> AggLlmResponse {
         let mut content = Vec::new();
-        if let Some(reasoning) = self.reasoning {
+        if self.reasoning.is_some() || !self.reasoning_details.is_empty() {
             content.push(ContentBlock::Reasoning {
-                text: reasoning,
+                text: self.reasoning.unwrap_or_default(),
                 signature: None,
+                details: self.reasoning_details,
             });
         }
         if !self.text.is_empty() {
@@ -611,6 +639,7 @@ mod tests {
                 ContentBlock::Reasoning {
                     text: "think".to_string(),
                     signature: None,
+                    details: Vec::new(),
                 },
                 ContentBlock::Text {
                     text: "answer".to_string(),
@@ -647,6 +676,39 @@ mod tests {
             original.outputs[0].stop_reason
         );
         assert_eq!(recovered.outputs[0].content, original.outputs[0].content);
+    }
+
+    #[test]
+    fn into_stream_retains_encrypted_reasoning_and_text() {
+        let details = vec![json!({
+            "type": "reasoning.encrypted",
+            "data": "opaque-encrypted-reasoning"
+        })];
+        let original = AggLlmResponse {
+            outputs: vec![ResponseOutput {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Reasoning {
+                    text: "fallback reasoning".to_string(),
+                    signature: None,
+                    details: details.clone(),
+                }],
+                stop_reason: Some(StopReason::EndTurn),
+            }],
+            ..AggLlmResponse::default()
+        };
+
+        let recovered = block_on(LlmResponse::Stream(original.into_stream()).into_agg())
+            .expect("into_agg failed");
+        let ContentBlock::Reasoning {
+            text,
+            details: recovered_details,
+            ..
+        } = &recovered.outputs[0].content[0]
+        else {
+            panic!("expected reasoning block");
+        };
+        assert_eq!(text, "fallback reasoning");
+        assert_eq!(recovered_details, &details);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 //! Self-contained Python host for the Rust Switchyard server.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
@@ -18,12 +19,15 @@ use switchyard_server::{
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+use crate::errors::ServerConfigError;
+
 const DEFAULT_SHUTDOWN_TIMEOUT_SECS: f64 = 2.0;
 
 /// Running loopback server backed entirely by the native Rust implementation.
 #[pyclass(name = "Server", module = "switchyard_rust.server", unsendable)]
 struct PyServer {
     addr: SocketAddr,
+    caller_auth_by_model: HashMap<String, Option<&'static str>>,
     shutdown: Option<oneshot::Sender<()>>,
     completion: Option<Receiver<ServerResult<()>>>,
     task: Option<JoinHandle<()>>,
@@ -33,10 +37,20 @@ struct PyServer {
 impl PyServer {
     /// Loads a TOML deployment and starts serving it on loopback.
     #[new]
-    #[pyo3(signature = (config, *, port=0))]
+    #[pyo3(signature = (config, port=0))]
     fn new(config: PathBuf, port: u16) -> PyResult<Self> {
         initialize_observability().map_err(server_error)?;
-        let state = load_server_state(config).map_err(server_error)?;
+        let state = load_server_state(config)
+            .map_err(|error| ServerConfigError::new_err(error.to_string()))?;
+        let caller_auth_by_model = state
+            .models()
+            .map(|model| {
+                state
+                    .caller_auth_kind(model)
+                    .map(|kind| (model.to_string(), kind))
+            })
+            .collect::<ServerResult<HashMap<_, _>>>()
+            .map_err(server_error)?;
         let runtime = pyo3_async_runtimes::tokio::get_runtime();
         let server = {
             let _guard = runtime.enter();
@@ -65,6 +79,7 @@ impl PyServer {
         });
         Ok(Self {
             addr,
+            caller_auth_by_model,
             shutdown: Some(shutdown),
             completion: Some(completion),
             task: Some(task),
@@ -83,8 +98,16 @@ impl PyServer {
         format!("http://{}", self.addr)
     }
 
+    /// Returns which caller credential the route forwards, if any.
+    fn caller_auth_kind(&self, model: &str) -> PyResult<Option<&'static str>> {
+        self.caller_auth_by_model
+            .get(model)
+            .copied()
+            .ok_or_else(|| PyValueError::new_err(format!("unknown route model {model:?}")))
+    }
+
     /// Gracefully stops the server and flushes pending telemetry.
-    #[pyo3(signature = (*, timeout_secs=DEFAULT_SHUTDOWN_TIMEOUT_SECS))]
+    #[pyo3(signature = (timeout_secs=DEFAULT_SHUTDOWN_TIMEOUT_SECS))]
     fn close(&mut self, py: Python<'_>, timeout_secs: f64) -> PyResult<()> {
         self.close_inner(py, timeout_secs)
     }
@@ -157,6 +180,7 @@ fn server_error(error: impl std::fmt::Display) -> PyErr {
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let server_module = PyModule::new(module.py(), "server")?;
+    server_module.add("ServerConfigError", module.getattr("ServerConfigError")?)?;
     server_module.add_class::<PyServer>()?;
     module.add_submodule(&server_module)?;
     Ok(())

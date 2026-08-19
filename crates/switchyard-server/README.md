@@ -75,6 +75,12 @@ Each target references an entry under `llm_clients`. All configured clients use
 `anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`,
 `llm_classifier`, and `stage_router`. An `api_key_env` value names an environment variable; the TOML
 never contains the secret itself. If omitted, the client sends no authentication.
+A client can set `forward_auth = true` instead of `api_key_env` to send the
+caller's credential to the configured upstream. OpenAI clients forward
+`authorization`, `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients
+forward `authorization` or `x-api-key`. Enable this only when every forwarding
+client's `base_url` should receive the caller's login. A forwarding route must
+be called through the matching provider API.
 Target-level `extra_body` values are shallow-merged into the upstream request when
 the request does not already contain that key.
 `max_retries` defaults to `2` and applies to transport failures, timeouts, HTTP 408/429, and 5xx
@@ -88,8 +94,10 @@ for equal weighting. The optional `seed` reproduces the selection sequence for t
 Pass `--routing-log-file PATH` to append one JSON record after each completed routed response.
 Streaming responses are recorded after the stream drains. When enabled,
 `GET /v1/routing/session-stats?session_id=ID` rescans the durable log and returns call and token
-totals for that exact `proxy_x_session_id`, grouped by served model. The endpoint returns `404` when
-the session has no records and is not registered when routing logging is disabled.
+totals for that normalized session ID, normally supplied as `x-switchyard-session-id`, grouped by
+served model. The legacy `proxy_x_session_id` remains a fallback when no normalized session ID is
+present. The endpoint returns `404` when the session has no records and is not registered when
+routing logging is disabled.
 
 An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
 routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only
@@ -151,37 +159,42 @@ Routed-call compatibility metrics are:
 | `switchyard_requests_total` | counter | `model` | Successful final routed calls |
 | `switchyard_errors_total` | counter | `model` | Failed final routed calls |
 | `switchyard_model_call_latency_ms` | histogram | `model` | Successful final routed-call latency |
+| `switchyard_llm_calls_total` | counter | `algorithm`, `selected_model`, `outcome` | Logical routing and terminal model calls |
+| `switchyard_llm_call_duration_ms` | histogram | `algorithm`, `selected_model`, `outcome` | Logical routing and terminal model-call latency |
 | `switchyard_prompt_tokens_total` | counter | `model` | Input tokens, including cached and cache-creation tokens |
 | `switchyard_completion_tokens_total` | counter | `model` | Output tokens |
 | `switchyard_cached_tokens_total` | counter | `model` | Cached input tokens |
 | `switchyard_cache_creation_tokens_total` | counter | `model` | Cache-creation input tokens |
 | `switchyard_reasoning_tokens_total` | counter | `model` | Reasoning output tokens |
 | `switchyard_total_latency_ms` | histogram | `model` | Full-turn latency for successful routed responses |
-| `switchyard_routing_overhead_ms` | histogram | `algorithm` | Algorithm run time minus the call that served it |
+| `switchyard_routing_overhead_ms` | histogram | `algorithm` | Time spent producing the terminal routing outcome |
 | `switchyard_classifier_fail_open_total` | counter | `judge_model`, `reason` | Judge failures that made a classifier route without a verdict |
 | `switchyard_client_responses_total` | counter | `outcome` | Final LLM-route responses |
 | `switchyard_upstream_attempts_total` | counter | `outcome`, `code` | Actual upstream HTTP attempts |
-| `switchyard_router_retry_recovered_total` | counter | none | Retry recoveries (currently always zero) |
+| `switchyard_router_retry_recovered_total` | counter | none | Upstream operations recovered by a retry |
 
 `switchyard_classifier_fail_open_total` counts requests that still reached a target after the
 judge call failed. `judge_model` names the configured judge target, and `reason` is one of eight
 fixed error categories.
+
+`switchyard_llm_calls_total` and `switchyard_llm_call_duration_ms` retain the logical call
+boundary across routing: libsy records classifier and judge calls, while `libsy-llm-client`
+records the terminal call when the routing outcome requires one. A response already produced by
+routing is counted only by its original libsy call. Terminal fallback and backend retries remain
+one logical call labeled with the algorithm-selected model.
 
 `switchyard_total_latency_ms` observes an aggregate when it becomes available or a stream when it
 ends cleanly. Its clock starts in a router-wide middleware, before the request body is read and
 decoded, so it measures request ingress through response completion. It still excludes connection
 accept and TLS handshake, which hyper completes before the server sees the request.
 
-`switchyard_routing_overhead_ms` is what routing cost on top of the model call: the algorithm's run
-time minus the call that served the request. Classifier calls are not subtracted, so an
-LLM-classifier route reports its classification time here while `passthrough` and `random` report
-the sub-millisecond cost of picking a target. It carries only `algorithm`, since the number
-describes the router and not the target it chose, and a run that served nothing records nothing. Its
-buckets start at 0.1 ms via a view in the server; the SDK defaults start at 5 ms.
-
-Both clocks stop when the routed call resolves, which for a streamed response is when the stream
-handle arrives rather than when the stream ends, so SSE relay time is in neither term. The Python
-summary of the same name measures its total through stream completion, making its streaming values
-mostly generation time.
+`switchyard_routing_overhead_ms` records the elapsed time in `run` from `run_started` until
+`drive` returns a routing outcome. It includes algorithm execution and any classifier or judge
+calls made while driving the algorithm, and it is recorded before a terminal answer call begins.
+No duration for the request-serving call is subtracted. If routing itself produced the answer,
+that call occurred inside the measured `drive` interval. The metric carries only `algorithm`,
+since the duration describes the router rather than the target it chose; a routing failure before
+an outcome records nothing. Its buckets start at 0.1 ms via a view in the server; the SDK defaults
+start at 5 ms.
 
 See [CONFIGURATION.md](CONFIGURATION.md) to add an LLM client, target, or algorithm.

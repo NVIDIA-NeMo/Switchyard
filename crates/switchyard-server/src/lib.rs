@@ -37,7 +37,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver, TranslatingLlmClient};
-use switchyard_protocol::{Decision, LlmClientError, Metadata, ModelId, Request, Usage};
+use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
@@ -109,8 +109,36 @@ struct RouteEntry {
     /// selected. A route is a synthetic model with no upstream of its own, so this is a
     /// per-target lookup, never one client serving the whole route.
     target_clients: ClientRouter,
+    caller_auth: Option<CallerAuthKind>,
     capabilities: ModelCapabilities,
     count_tokens_target: Option<CountTokensTarget>,
+}
+
+/// Caller credential family required by forwarded-auth backends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CallerAuthKind {
+    Anthropic,
+    OpenAi,
+}
+
+impl CallerAuthKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+        }
+    }
+
+    const fn accepts(self, wire_format: WireFormat) -> bool {
+        matches!(
+            (self, wire_format),
+            (Self::Anthropic, WireFormat::AnthropicMessages)
+                | (
+                    Self::OpenAi,
+                    WireFormat::OpenAiChat | WireFormat::OpenAiResponses
+                )
+        )
+    }
 }
 
 /// Exact upstream model used by the server's Anthropic token-count endpoint.
@@ -181,6 +209,7 @@ impl ServerState {
                 model,
                 algorithm,
                 clients,
+                None,
                 ModelCapabilities::default(),
                 None,
             )
@@ -193,13 +222,16 @@ impl ServerState {
                 ModelId,
                 Arc<dyn Algorithm>,
                 ClientRouter,
+                Option<CallerAuthKind>,
                 ModelCapabilities,
                 Option<CountTokensTarget>,
             ),
         >,
     ) -> ServerResult<Self> {
         let mut entries = BTreeMap::new();
-        for (model, algorithm, target_clients, capabilities, count_tokens_target) in routes {
+        for (model, algorithm, target_clients, caller_auth, capabilities, count_tokens_target) in
+            routes
+        {
             let model = ModelId::from(model.trim());
             if model.is_empty() {
                 return Err(ServerError::new("route model must not be empty"));
@@ -207,6 +239,7 @@ impl ServerState {
             let entry = RouteEntry {
                 algorithm,
                 target_clients,
+                caller_auth,
                 capabilities,
                 count_tokens_target,
             };
@@ -240,6 +273,13 @@ impl ServerState {
     /// Returns the route model IDs served by the configured algorithms.
     pub fn models(&self) -> impl Iterator<Item = &str> {
         self.routes.keys().map(ModelId::as_str)
+    }
+
+    /// Returns the caller credential family used by `model`, if any.
+    pub fn caller_auth_kind(&self, model: &str) -> ServerResult<Option<&'static str>> {
+        self.route_for_model(model)
+            .map(|entry| entry.caller_auth.map(CallerAuthKind::as_str))
+            .ok_or_else(|| ServerError::new(format!("unknown route model {model:?}")))
     }
 
     fn route_for_model(&self, model: &str) -> Option<&RouteEntry> {
@@ -411,15 +451,17 @@ fn stats_observer(
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
+        RunObservation::AnswerCall(call) => {
+            let latency_ms = call.duration.as_secs_f64() * 1_000.0;
+            if call.is_success {
+                stats.record_success(&call.selected_model, latency_ms);
+            } else {
+                stats.record_error(&call.selected_model);
+            }
+        }
         RunObservation::LlmCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
-            if call.is_answer_call {
-                if call.is_success {
-                    stats.record_success(&call.selected_model, latency_ms);
-                } else {
-                    stats.record_error(&call.selected_model);
-                }
-            } else if call.is_success {
+            if call.is_success {
                 if let (Some((log, context)), Some(usage)) =
                     (classifier_log.as_ref(), call.usage.as_ref())
                 {
@@ -530,7 +572,9 @@ async fn anthropic_count_tokens(
 ) -> Response {
     let body = match llm_json_body(body) {
         Ok(body) => body,
-        Err(message) => return anthropic_error_response(invalid_body_error(message)),
+        Err((status, message)) => {
+            return anthropic_error_response(invalid_body_error(status, message));
+        }
     };
     let (route, request) = match resolve_route(
         &state,
@@ -580,11 +624,11 @@ async fn handle_endpoint_inner(
     body: std::result::Result<Json<Value>, JsonRejection>,
     wire_format: WireFormat,
 ) -> Response {
+    let metadata = metadata_from_headers(headers);
     let routing_log_context = state
         .routing_log
         .as_ref()
-        .map(|_| routing_log::RoutingLogContext::from_headers(&headers));
-    let metadata = metadata_from_headers(headers);
+        .map(|_| routing_log::RoutingLogContext::from_metadata(&metadata));
     let request_log = RequestLogContext {
         started: started.0,
         wire_format,
@@ -616,7 +660,7 @@ async fn handle_endpoint_inner(
             )
             .await
         }
-        Err(message) => invalid_body_error(message),
+        Err((status, message)) => invalid_body_error(status, message),
     };
     let response = render_error_response(response, wire_format);
     metrics::record_client_response(response.status().as_u16());
@@ -626,11 +670,17 @@ async fn handle_endpoint_inner(
 
 fn llm_json_body(
     body: std::result::Result<Json<Value>, JsonRejection>,
-) -> std::result::Result<Value, String> {
+) -> std::result::Result<Value, (StatusCode, String)> {
     match body {
         Ok(Json(value)) if value.is_object() => Ok(value),
-        Ok(_) => Err("Request body must be a JSON object".to_string()),
-        Err(error) => Err(format!("Request body must be valid JSON: {error}")),
+        Ok(_) => Err((
+            StatusCode::BAD_REQUEST,
+            "Request body must be a JSON object".to_string(),
+        )),
+        Err(error) => Err((
+            error.status(),
+            format!("Request body must be valid JSON: {error}"),
+        )),
     }
 }
 
@@ -648,7 +698,7 @@ fn resolve_route(
     wire_format: WireFormat,
 ) -> std::result::Result<(&RouteEntry, Request), Response> {
     let llm_request = decode_request(wire_format, &body)
-        .map_err(|error| invalid_body_error(error.to_string()))?;
+        .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
     let requested_model = llm_request
         .model
         .clone()
@@ -669,6 +719,22 @@ fn resolve_route(
             "model_not_found",
         )
     })?;
+    if let Some(caller_auth) = route.caller_auth
+        && !caller_auth.accepts(wire_format)
+    {
+        let (provider, expected_endpoint) = match caller_auth {
+            CallerAuthKind::Anthropic => ("Anthropic", "/v1/messages"),
+            CallerAuthKind::OpenAi => ("OpenAI", "/v1/chat/completions or /v1/responses"),
+        };
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "route {requested_model} forwards an {provider} login; call it through {expected_endpoint}",
+            ),
+            "invalid_request_error",
+            "invalid_request_error",
+        ));
+    }
     let request = Request {
         llm_request,
         raw_request: Some(body),
@@ -696,27 +762,22 @@ async fn handle_llm_request(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
     );
-    let (trace, response) =
+    let (selected_model, response) =
         match switchyard_llm_client::run(algorithm, client_router, request, Some(observer)).await {
             Ok(result) => result,
             Err(error) => return algorithm_error(error),
         };
-    // Metrics, response body, and routing header all read the same decision, so
-    // the model they name can never disagree. An empty trace leaves the body with
-    // the id the upstream reported.
-    let decision = trace.last();
-    let response = if let Some(decision) = decision {
+    // The response carries the candidate that actually served it. Fall back to the routing
+    // selection for algorithms that return a response without an offloaded model call.
+    let served_model = response.served_model().cloned().or(Some(selected_model));
+    let response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()
-            .map(|probe| {
-                state
-                    .stats
-                    .prefix_eligibility(decision.selected_model_id(), probe)
-            })
+            .map(|probe| state.stats.prefix_eligibility(served_model, probe))
             .unwrap_or(0.0);
         usage_metrics::observe(
             response,
-            decision.selected_model_id(),
+            served_model.as_str(),
             started.0,
             state.stats,
             cache_eligible,
@@ -726,13 +787,13 @@ async fn handle_llm_request(
         response
     };
 
-    let served_model = decision.map(|decision| decision.selected_model_id().to_string());
-    let mut response = match into_http_response(response, wire_format, served_model) {
+    let response_model = served_model.as_ref().map(ToString::to_string);
+    let mut response = match into_http_response(response, wire_format, response_model) {
         Ok(response) => response,
         Err(error) => return server_error(error.to_string()),
     };
-    if let Some(decision) = decision {
-        attach_routing_headers(&mut response, decision);
+    if let Some(served_model) = served_model.as_ref() {
+        attach_routing_headers(&mut response, served_model.as_str());
     }
     response
 }
@@ -808,12 +869,8 @@ fn metadata_from_headers(headers: HeaderMap) -> Metadata {
     metadata
 }
 
-fn attach_routing_headers(response: &mut Response, decision: &Decision) {
-    insert_routing_header(
-        response,
-        HEADER_SELECTED_MODEL,
-        decision.selected_model_id(),
-    );
+fn attach_routing_headers(response: &mut Response, served_model: &str) {
+    insert_routing_header(response, HEADER_SELECTED_MODEL, served_model);
 }
 
 fn insert_routing_header(response: &mut Response, name: &'static str, value: &str) {
@@ -862,7 +919,7 @@ fn client_error(error: &LlmClientError) -> Response {
             "context_length_exceeded",
         ),
         LlmClientError::UpstreamHttp { status, body } => error_response(
-            StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
+            *status,
             upstream_error_message(body),
             "upstream_error",
             "upstream_error",
@@ -988,13 +1045,8 @@ fn server_error(message: impl Into<String>) -> Response {
     )
 }
 
-fn invalid_body_error(message: impl Into<String>) -> Response {
-    error_response(
-        StatusCode::BAD_REQUEST,
-        message,
-        "invalid_request_error",
-        "invalid_body",
-    )
+fn invalid_body_error(status: StatusCode, message: impl Into<String>) -> Response {
+    error_response(status, message, "invalid_request_error", "invalid_body")
 }
 
 fn error_response(
@@ -1318,13 +1370,13 @@ mod tests {
         let log = SharedRoutingLog::new(dir.path().join("routing.jsonl")).expect("routing log");
         let mut headers = HeaderMap::new();
         headers.insert("proxy_x_session_id", "session-1".parse().expect("header"));
-        let context = routing_log::RoutingLogContext::from_headers(&headers);
+        let metadata = metadata_from_headers(headers);
+        let context = routing_log::RoutingLogContext::from_metadata(&metadata);
         let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
 
-        let call = |model: &str, is_answer_call: bool| {
-            RunObservation::LlmCall(LlmCallObservation {
+        let call = |model: &str, answer: bool| {
+            let observation = LlmCallObservation {
                 selected_model: ModelId::from(model),
-                is_answer_call,
                 is_success: true,
                 duration: Duration::from_millis(3),
                 usage: Some(Usage {
@@ -1332,7 +1384,12 @@ mod tests {
                     output_tokens: Some(7),
                     ..Usage::default()
                 }),
-            })
+            };
+            if answer {
+                RunObservation::AnswerCall(observation)
+            } else {
+                RunObservation::LlmCall(observation)
+            }
         };
         observer(call("judge-model", false));
         observer(call("routed-model", true));

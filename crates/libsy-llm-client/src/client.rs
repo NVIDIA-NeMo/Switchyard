@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value};
@@ -26,12 +27,9 @@ use crate::error::{LlmClientError, Result};
 use crate::metrics;
 use crate::raw::RawResponse;
 
-// TODO: Why is this here? What does it do?
-// Headers this client owns or that are hop-by-hop; never forwarded from the
-// caller's metadata. Auth/version/content-type are set by the backend or the
-// JSON body, so a forwarded copy would either be ignored or conflict. Compared
-// case-insensitively. Aligns with `_SENSITIVE_HEADERS` in the Python
-// `switchyard/lib/request_metadata.py` forwarding logic.
+// Headers this client owns or that are hop-by-hop. Backends apply an explicitly
+// enabled caller credential after generic metadata forwarding skips these.
+// Azure/OpenAI credentials and tenant selectors are also backend-owned.
 const RESERVED_HEADERS: &[&str] = &[
     "host",
     "content-length",
@@ -42,6 +40,11 @@ const RESERVED_HEADERS: &[&str] = &[
     "cookie",
     "set-cookie",
     "x-api-key",
+    "chatgpt-account-id",
+    "x-openai-fedramp",
+    "api-key",
+    "openai-organization",
+    "openai-project",
     "anthropic-beta",
     "anthropic-version",
     "content-type",
@@ -88,6 +91,7 @@ impl ModelConfig {
 pub struct TranslatingLlmClient {
     model_to_config: HashMap<ModelId, ModelConfig>,
     client: reqwest::Client,
+    forward_auth_client: reqwest::Client,
 }
 
 impl TranslatingLlmClient {
@@ -102,12 +106,16 @@ impl TranslatingLlmClient {
                 backend.validate_extra_headers(&config.model_name)?;
             }
         }
-        let client =
-            reqwest::Client::builder()
-                .build()
-                .map_err(|error| LlmClientError::Transport {
-                    source: Box::new(error),
-                })?;
+        let build_client = |builder: reqwest::ClientBuilder| {
+            builder.build().map_err(|error| LlmClientError::Transport {
+                source: Box::new(error),
+            })
+        };
+        let client = build_client(reqwest::Client::builder())?;
+        // A redirect could move provider-specific headers to another origin.
+        // Forwarded credentials are sent only to the configured URL.
+        let forward_auth_client =
+            build_client(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()))?;
         let model_to_config = model_configs
             .iter()
             .map(|config| (config.model_name.clone(), config.clone()))
@@ -116,6 +124,7 @@ impl TranslatingLlmClient {
         Ok(Self {
             model_to_config,
             client,
+            forward_auth_client,
         })
     }
 
@@ -252,13 +261,16 @@ impl TranslatingLlmClient {
                     span.record("outcome", "success");
                     span.record("status_code", response.status());
                     span.record("will_retry", false);
+                    if attempt > 0 {
+                        metrics::record_retry_recovered();
+                    }
                     return Ok(response);
                 }
                 Err(failure) => {
                     let will_retry = attempt < max_retries && failure.is_retryable();
                     span.record("outcome", "error");
                     if let Some(status) = failure.status {
-                        span.record("status_code", status);
+                        span.record("status_code", status.as_u16());
                     }
                     span.record("will_retry", will_retry);
                     if !will_retry {
@@ -286,8 +298,14 @@ impl TranslatingLlmClient {
         model: &ModelId,
         streaming: bool,
     ) -> std::result::Result<EncodedResponse, AttemptFailure> {
-        let builder = self.client.post(url).json(body);
+        let client = if backend.is_forwarding_auth() {
+            &self.forward_auth_client
+        } else {
+            &self.client
+        };
+        let builder = client.post(url).json(body);
         let builder = forward_metadata_headers(builder, metadata);
+        let builder = backend.apply_forwarded_auth(builder, metadata);
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
@@ -315,7 +333,7 @@ impl TranslatingLlmClient {
                     metrics::record_upstream_attempt(None);
                     return Err(AttemptFailure {
                         error: convert_reqwest_error(error),
-                        status: Some(status.as_u16()),
+                        status: Some(status),
                         retry_after: None,
                     });
                 }
@@ -334,11 +352,12 @@ impl TranslatingLlmClient {
                 metrics::record_upstream_attempt(None);
                 return Err(AttemptFailure {
                     error: convert_reqwest_error(error),
-                    status: Some(status.as_u16()),
+                    status: Some(status),
                     retry_after,
                 });
             }
         };
+        let body = backend.redact_forwarded_auth(body, metadata);
         metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
@@ -347,14 +366,11 @@ impl TranslatingLlmClient {
                     message: body,
                 }
             } else {
-                LlmClientError::UpstreamHttp {
-                    status: status.as_u16(),
-                    body,
-                }
+                LlmClientError::UpstreamHttp { status, body }
             };
         Err(AttemptFailure {
             error,
-            status: Some(status.as_u16()),
+            status: Some(status),
             retry_after,
         })
     }
@@ -553,7 +569,7 @@ impl EncodedResponse {
 // attempt telemetry and delay selection.
 struct AttemptFailure {
     error: LlmClientError,
-    status: Option<u16>,
+    status: Option<StatusCode>,
     retry_after: Option<Duration>,
 }
 
@@ -562,7 +578,7 @@ impl AttemptFailure {
         match &self.error {
             LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
             LlmClientError::UpstreamHttp { status, .. } => {
-                metrics::is_retryable_http_status(*status)
+                metrics::is_retryable_http_status(status.as_u16())
             }
             _ => false,
         }
@@ -631,7 +647,7 @@ fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     }
 }
 
-// Forwards caller-supplied metadata headers, skipping the reserved set.
+// Forwards caller-supplied metadata headers except credentials and client-owned headers.
 fn forward_metadata_headers(
     mut builder: RequestBuilder,
     metadata: Option<&Metadata>,
@@ -818,6 +834,7 @@ mod tests {
         HttpBackendConfig {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
+            forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             max_retries: 0,
@@ -1488,7 +1505,10 @@ mod tests {
         };
         assert!(matches!(
             error,
-            LlmClientError::UpstreamHttp { status: 500, .. }
+            LlmClientError::UpstreamHttp {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                ..
+            }
         ));
         Ok(())
     }
@@ -1550,7 +1570,7 @@ mod tests {
         assert!(matches!(
             error,
             LlmClientError::UpstreamHttp {
-                status: 401,
+                status: StatusCode::UNAUTHORIZED,
                 body
             } if body == "invalid key"
         ));
@@ -1586,7 +1606,7 @@ mod tests {
         assert!(matches!(
             error,
             LlmClientError::UpstreamHttp {
-                status: 500,
+                status: StatusCode::INTERNAL_SERVER_ERROR,
                 body
             } if body == "attempt 3"
         ));
@@ -1639,7 +1659,14 @@ mod tests {
         };
         assert!(transport.is_retryable());
 
-        for status in [408, 429, 500, 503, 599] {
+        for status in [
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::from_u16(599)
+                .expect("599 is a syntactically valid HTTP code in the http crate"),
+        ] {
             let failure = AttemptFailure {
                 error: LlmClientError::UpstreamHttp {
                     status,
@@ -1650,7 +1677,13 @@ mod tests {
             };
             assert!(failure.is_retryable(), "HTTP {status} should retry");
         }
-        for status in [400, 401, 409, 600] {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::CONFLICT,
+            StatusCode::from_u16(600)
+                .expect("600 is a syntactically valid HTTP code in the http crate"),
+        ] {
             let failure = AttemptFailure {
                 error: LlmClientError::UpstreamHttp {
                     status,
@@ -1676,7 +1709,7 @@ mod tests {
                 model: ModelId::from("gpt"),
                 message: "too long".to_string(),
             },
-            status: Some(400),
+            status: Some(StatusCode::BAD_REQUEST),
             retry_after: None,
         };
         assert!(!context_window.is_retryable());
@@ -1781,6 +1814,18 @@ mod tests {
             "accept-encoding",
             http::HeaderValue::from_static("gzip, br"),
         );
+        headers.insert(
+            "api-key",
+            http::HeaderValue::from_static("client-azure-key"),
+        );
+        headers.insert(
+            "openai-organization",
+            http::HeaderValue::from_static("org-client"),
+        );
+        headers.insert(
+            "openai-project",
+            http::HeaderValue::from_static("proj-client"),
+        );
         let request = Request {
             llm_request: LlmRequest {
                 model: Some("gpt".to_string()),
@@ -1810,6 +1855,9 @@ mod tests {
             .ok_or("request recording should be enabled")?;
         let received = received.first().ok_or("expected one upstream request")?;
         assert!(!received.headers.contains_key("accept-encoding"));
+        assert!(!received.headers.contains_key("api-key"));
+        assert!(!received.headers.contains_key("openai-organization"));
+        assert!(!received.headers.contains_key("openai-project"));
         Ok(())
     }
 

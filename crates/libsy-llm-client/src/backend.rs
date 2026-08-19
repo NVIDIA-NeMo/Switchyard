@@ -6,8 +6,9 @@
 use std::{collections::BTreeMap, fmt};
 
 use reqwest::RequestBuilder;
+use reqwest::header::HeaderValue;
 use serde_json::Value;
-use switchyard_protocol::WireFormat;
+use switchyard_protocol::{Metadata, WireFormat};
 
 use crate::error::{LlmClientError, Result, is_overflow_body};
 
@@ -25,6 +26,8 @@ const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
     "context length is only",
     "please reduce the length of the input",
     "exceeds the maximum allowed input length",
+    "exceeds the maximum allowed length",
+    "is longer than the model's context length",
 ];
 
 // Anthropic has no structured `error.code`, so detection is phrase-based only.
@@ -40,12 +43,14 @@ const ANTHROPIC_OVERFLOW_PHRASES: &[&str] = &[
 pub struct HttpBackendConfig {
     /// Base URL of the provider API (e.g. `https://api.openai.com/v1`).
     pub base_url: String,
-    /// API key for the provider, loaded by the caller. `None` sends no auth.
+    /// API key for the provider, loaded by the caller. `None` sends no configured auth.
     pub api_key: Option<String>,
+    /// Whether this backend forwards the caller's provider credential instead.
+    pub forward_auth: bool,
     /// Custom headers added to every outbound call to this backend.
     ///
-    /// OpenAI backends reject `Authorization`. Anthropic backends reject
-    /// `x-api-key` and `anthropic-version`. Header names are case-insensitive.
+    /// Provider-owned headers are rejected so a static value cannot replace
+    /// configured or forwarded auth. Header names are case-insensitive.
     pub extra_headers: BTreeMap<String, String>,
     /// Default top-level request fields, applied only when the request omits the key.
     pub extra_body: BTreeMap<String, Value>,
@@ -58,7 +63,8 @@ impl fmt::Debug for HttpBackendConfig {
         f.debug_struct("HttpBackendConfig")
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
-            .field("extra_headers", &self.extra_headers)
+            .field("forward_auth", &self.forward_auth)
+            .field("extra_header_names", &self.extra_headers.keys())
             .field("extra_body_keys", &self.extra_body.keys())
             .field("max_retries", &self.max_retries)
             .finish()
@@ -85,10 +91,16 @@ impl Backend {
         let invalid_name = self.config().extra_headers.keys().find(|name| match self {
             Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
                 name.eq_ignore_ascii_case("authorization")
+                    || (self.is_forwarding_auth()
+                        && (name.eq_ignore_ascii_case("chatgpt-account-id")
+                            || name.eq_ignore_ascii_case("x-openai-fedramp")))
             }
             Backend::Anthropic(_) => {
                 name.eq_ignore_ascii_case("x-api-key")
                     || name.eq_ignore_ascii_case("anthropic-version")
+                    || (self.is_forwarding_auth()
+                        && (name.eq_ignore_ascii_case("authorization")
+                            || name.eq_ignore_ascii_case("anthropic-beta")))
             }
         });
         if let Some(name) = invalid_name {
@@ -132,12 +144,17 @@ impl Backend {
         }
     }
 
-    /// Applies this backend's auth and version headers to a request builder.
+    /// Applies this backend's configured auth and version headers to a request builder.
     ///
     /// OpenAI variants use `Authorization: Bearer <key>`; Anthropic uses
-    /// `x-api-key: <key>` plus the required `anthropic-version` header.
+    /// `x-api-key: <key>` plus the required `anthropic-version` header. A backend
+    /// with `forward_auth` uses the caller's provider credential instead.
     pub fn apply_auth(&self, mut builder: RequestBuilder) -> RequestBuilder {
-        let api_key = self.config().api_key.as_deref();
+        let api_key = if self.is_forwarding_auth() {
+            None
+        } else {
+            self.config().api_key.as_deref()
+        };
         match self {
             Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
                 if let Some(api_key) = api_key {
@@ -152,6 +169,75 @@ impl Backend {
             }
         }
         builder
+    }
+
+    pub(crate) fn is_forwarding_auth(&self) -> bool {
+        self.config().forward_auth
+    }
+
+    /// Applies only the caller credential accepted by this provider.
+    pub(crate) fn apply_forwarded_auth(
+        &self,
+        mut builder: RequestBuilder,
+        metadata: Option<&Metadata>,
+    ) -> RequestBuilder {
+        if !self.is_forwarding_auth() {
+            return builder;
+        }
+        let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) else {
+            return builder;
+        };
+        match self {
+            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
+                for name in ["authorization", "chatgpt-account-id", "x-openai-fedramp"] {
+                    if let Some(value) = headers.get(name) {
+                        builder = builder.header(name, sensitive_header(value));
+                    }
+                }
+            }
+            Backend::Anthropic(_) => {
+                for name in ["authorization", "x-api-key"] {
+                    if let Some(value) = headers.get(name) {
+                        builder = builder.header(name, sensitive_header(value));
+                    }
+                }
+                if let Some(value) = headers.get("anthropic-beta")
+                    && let Some(value) = oauth_beta_header(value)
+                {
+                    builder = builder.header("anthropic-beta", value);
+                }
+            }
+        }
+        builder
+    }
+
+    /// Removes an echoed caller credential before an upstream error is returned or logged.
+    pub(crate) fn redact_forwarded_auth(
+        &self,
+        mut body: String,
+        metadata: Option<&Metadata>,
+    ) -> String {
+        if !self.is_forwarding_auth() {
+            return body;
+        }
+        let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) else {
+            return body;
+        };
+        let secret_headers: &[&str] = match self {
+            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
+                &["authorization", "chatgpt-account-id"]
+            }
+            Backend::Anthropic(_) => &["authorization", "x-api-key"],
+        };
+        for name in secret_headers {
+            let Some(value) = headers.get(*name).and_then(|value| value.to_str().ok()) else {
+                continue;
+            };
+            if !value.is_empty() {
+                body = body.replace(value, "[REDACTED]");
+            }
+        }
+        body
     }
 
     /// Custom per-backend headers to forward on every call.
@@ -202,6 +288,32 @@ impl Backend {
     }
 }
 
+// Retains OAuth markers while keeping provider feature betas backend-owned.
+fn sensitive_header(value: &HeaderValue) -> HeaderValue {
+    let mut value = value.clone();
+    value.set_sensitive(true);
+    value
+}
+
+fn oauth_beta_header(value: &HeaderValue) -> Option<HeaderValue> {
+    let oauth_betas = value
+        .to_str()
+        .ok()?
+        .split(',')
+        .map(str::trim)
+        .filter(|beta| {
+            beta.get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("oauth-"))
+        });
+    let value = oauth_betas.collect::<Vec<_>>().join(",");
+    if value.is_empty() {
+        return None;
+    }
+    let mut value = HeaderValue::from_str(&value).ok()?;
+    value.set_sensitive(true);
+    Some(value)
+}
+
 // Accept either a root `/v1` URL or an already-specific OpenAI endpoint URL.
 fn openai_url(base_url: &str, suffix: &str) -> String {
     let base_root = base_url
@@ -230,6 +342,7 @@ mod tests {
         HttpBackendConfig {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
+            forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             max_retries: 0,
@@ -338,6 +451,15 @@ mod tests {
         // Hub GLM (LiteLLM-wrapped): code is "400", detection relies on phrase match.
         assert!(backend.is_context_overflow(
             r#"{"error":{"message":"Input length 877338 exceeds the maximum allowed input length of 639968 tokens","code":"400"}}"#
+        ));
+        // Native SGLang: top-level envelope (no `error` key), caught by the raw-body phrase match.
+        // KV-pool rejection (managers/utils.py) and declared-context rejection
+        // (tokenizer_manager.py); both stable across v0.5.15-v0.5.17.
+        assert!(backend.is_context_overflow(
+            r#"{"object":"error","message":"Input length (700001 tokens) exceeds the maximum allowed length (536826 tokens). Use a shorter input or enable --allow-auto-truncate.","type":"BadRequestError","param":null,"code":400}"#
+        ));
+        assert!(backend.is_context_overflow(
+            r#"{"object":"error","message":"The input (12345 tokens) is longer than the model's context length (8192 tokens).","type":"BadRequestError","param":null,"code":400}"#
         ));
     }
 

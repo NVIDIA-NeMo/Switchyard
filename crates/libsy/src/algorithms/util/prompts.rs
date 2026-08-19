@@ -66,7 +66,7 @@ pub fn append_note(request: &mut Request, note: &str) {
 ///
 /// Call this from any new code that mutates the request. Nothing checks that you
 /// have.
-fn drop_exact_replay(request: &mut Request) {
+pub(crate) fn drop_exact_replay(request: &mut Request) {
     request.llm_request.preservation.requests.clear();
 }
 
@@ -114,10 +114,14 @@ impl<S: Send> Processor<S> for SystemPromptProcessor {
         // The decision event carries both the routing outcome and the outbound request,
         // so the target is read straight off it — whichever classifier picked it, and
         // with nothing kept between turns.
-        let Event::Decision { request, decision } = event else {
+        let Event::Decision {
+            request,
+            selected_model_id,
+        } = event
+        else {
             return Ok(());
         };
-        let Some(prompt) = self.prompts.get(decision.selected_model_id()) else {
+        let Some(prompt) = self.prompts.get(selected_model_id) else {
             return Ok(());
         };
         // Ahead of the client's own instructions, so this framing is what the
@@ -139,7 +143,7 @@ impl<S: Send> Processor<S> for SystemPromptProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_protocol::{Decision, LlmRequest, ToolResult, text_request};
+    use switchyard_protocol::{LlmRequest, ModelId, ToolResult, text_request};
 
     const NOTE: &str = "recovering from an error";
     const STRONG_PROMPT: &str = "diagnose before you edit";
@@ -265,13 +269,13 @@ mod tests {
             },
             ..Request::default()
         };
-        let decision = Decision::new(target, true);
+        let selected_model_id = ModelId::from(target);
         processor
             .process(
                 &mut (),
                 Event::Decision {
                     request: &mut request,
-                    decision: &decision,
+                    selected_model_id: &selected_model_id,
                 },
             )
             .await?;
@@ -326,14 +330,14 @@ mod tests {
                 text: "you are a coding agent".to_string(),
             }],
         });
-        let decision = Decision::new("strong", true);
+        let selected_model_id = ModelId::from("strong");
 
         processor
             .process(
                 &mut (),
                 Event::Decision {
                     request: &mut request,
-                    decision: &decision,
+                    selected_model_id: &selected_model_id,
                 },
             )
             .await?;

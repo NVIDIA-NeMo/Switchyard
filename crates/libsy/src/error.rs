@@ -36,8 +36,8 @@ pub enum LibsyError {
     #[error(transparent)]
     Driver(#[from] DriverError),
 
-    /// An algorithm's step stream ended without a terminal response.
-    #[error("algorithm run ended without a final response")]
+    /// An algorithm's step stream ended without a terminal routing outcome.
+    #[error("algorithm run ended without a routing outcome")]
     MissingFinalResponse,
 
     /// A target's protocol client failed while serving a routed request.
@@ -49,10 +49,6 @@ pub enum LibsyError {
         #[source]
         source: LlmClientError,
     },
-
-    /// Every target overflowed its context window.
-    #[error("every target exceeded its context window")]
-    AllTargetsExcluded,
 
     /// A user extension or other foreign operation failed.
     #[error("{operation} failed: {source}")]
@@ -96,12 +92,6 @@ pub enum DriverError {
     /// One side of a response promise was dropped before delivery.
     #[error("driver response promise was dropped")]
     ResponseDropped,
-
-    /// The consumer took the call's contents with `CallModel::into_parts` instead of
-    /// answering it, so the run ends here by the consumer's choice. Distinct from
-    /// [`ResponseDropped`](Self::ResponseDropped), which means the promise was lost.
-    #[error("model call was abandoned by the consumer")]
-    Abandoned,
 }
 
 #[cfg(test)]

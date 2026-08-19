@@ -327,8 +327,22 @@ fn decode_responses_input(
                     )?;
                     continue;
                 };
-                match item.get("type").and_then(Value::as_str) {
-                    Some("message") => {
+                let item_type = match item.get("type") {
+                    Some(Value::String(item_type)) => Some(item_type.as_str()),
+                    Some(_) => {
+                        return Err(TranslationError::InvalidType {
+                            path: format!("$.input[{index}].type"),
+                            expected: "a string",
+                        });
+                    }
+                    None => None,
+                };
+                let is_message = item_type == Some("message")
+                    || (item_type.is_none()
+                        && item.contains_key("role")
+                        && item.contains_key("content"));
+                match item_type {
+                    _ if is_message => {
                         let role = request_role_from_responses(
                             item.get("role").and_then(Value::as_str),
                             &format!("$.input[{index}].role"),
@@ -421,6 +435,13 @@ fn decode_responses_input(
                             tool_call_id,
                             content: vec![ContentBlock::Text { text: output_text }],
                             is_error: None,
+                        });
+                    }
+                    None => {
+                        return Err(TranslationError::InvalidValue {
+                            path: format!("$.input[{index}].type"),
+                            message: "missing type discriminator on a non-message input item"
+                                .to_string(),
                         });
                     }
                     _ => {
@@ -585,6 +606,7 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
     vec![ContentBlock::Reasoning {
         text: parts.join("\n"),
         signature: None,
+        details: Vec::new(),
     }]
 }
 
@@ -649,6 +671,7 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                                 .unwrap_or_default()
                                 .to_string(),
                             signature: None,
+                            details: Vec::new(),
                         });
                     }
                     Some("input_image") => {
@@ -966,6 +989,7 @@ fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
         ContentBlock::Reasoning {
             text,
             signature: None,
+            ..
         } => Some(json!({
             "type": "reasoning",
             "content": [{"type": "reasoning_text", "text": text}],

@@ -146,14 +146,16 @@ where
     S: Send + 'static,
 {
     async fn process(&self, _state: &mut S, event: Event<'_>) -> crate::Result<()> {
-        if let Event::Decision { request, decision } = event
+        if let Event::Decision {
+            request,
+            selected_model_id,
+        } = event
             && let Some(key) = self.affinity_key(request)
         {
-            let model = decision.selected_model_id();
             let mut assignments = self.assignments.lock();
-            if self.should_latch(model) && !assignments.contains_key(&key) {
+            if self.should_latch(selected_model_id) && !assignments.contains_key(&key) {
                 evict_if_full(&mut assignments);
-                assignments.insert(key, model.clone());
+                assignments.insert(key, selected_model_id.clone());
             }
         }
         Ok(())
@@ -179,19 +181,6 @@ impl<S> Classifier<S> for AffinityRouter
 where
     S: Send + 'static,
 {
-    fn target_unavailable(&self, request: &Request, target: &ModelId) {
-        let Some(key) = self.affinity_key(request) else {
-            return;
-        };
-        let mut assignments = self.assignments.lock();
-        if assignments
-            .get(&key)
-            .is_some_and(|assigned| assigned == target)
-        {
-            assignments.remove(&key);
-        }
-    }
-
     async fn score(
         &self,
         _state: &mut S,
@@ -230,15 +219,13 @@ mod tests {
 
     use std::sync::Arc;
 
-    use switchyard_protocol::{
-        ContentBlock, Decision, LlmRequest, Message, Metadata, text_request,
-    };
+    use switchyard_protocol::{ContentBlock, LlmRequest, Message, Metadata, text_request};
 
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
-    fn fixed_decision(target: &str) -> Decision {
-        Decision::new(target, true)
+    fn fixed_model(target: &str) -> ModelId {
+        ModelId::from(target)
     }
 
     fn request(metadata: Metadata) -> Request {
@@ -298,13 +285,13 @@ mod tests {
         request: &mut Request,
         model: &'static str,
     ) -> Result<(), BoxErr> {
-        let decision = fixed_decision(model);
+        let selected_model_id = ModelId::from(model);
         router
             .process(
                 state,
                 Event::Decision {
                     request,
-                    decision: &decision,
+                    selected_model_id: &selected_model_id,
                 },
             )
             .await?;
@@ -520,6 +507,7 @@ mod tests {
                 ContentBlock::Reasoning {
                     text: "Internal provider reasoning.".to_string(),
                     signature: Some("provider-signature".to_string()),
+                    details: Vec::new(),
                 },
             ],
         });
@@ -596,7 +584,7 @@ mod tests {
                 &mut state,
                 Event::Decision {
                     request: &mut first,
-                    decision: &fixed_decision("model-a"),
+                    selected_model_id: &fixed_model("model-a"),
                 },
             )
             .await?;
@@ -621,7 +609,7 @@ mod tests {
                 &mut state,
                 Event::Decision {
                     request: &mut unkeyed,
-                    decision: &fixed_decision("model-a"),
+                    selected_model_id: &fixed_model("model-a"),
                 },
             )
             .await?;
@@ -645,7 +633,7 @@ mod tests {
                 &mut state,
                 Event::Decision {
                     request: &mut second,
-                    decision: &fixed_decision("model-b"),
+                    selected_model_id: &fixed_model("model-b"),
                 },
             )
             .await?;
@@ -654,7 +642,7 @@ mod tests {
                 &mut state,
                 Event::Decision {
                     request: &mut first,
-                    decision: &fixed_decision("model-a"),
+                    selected_model_id: &fixed_model("model-a"),
                 },
             )
             .await?;

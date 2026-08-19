@@ -142,14 +142,9 @@ impl Random {
         let classifier = Arc::new(RandomClassifier::new(targets.clone(), weights, seed)?);
         let inner = FallThrough::<()>::new(targets)
             .with_name("random")
-            .with_decision_reason(random_decision_reason)
             .with_classifier(classifier);
         Ok(Self { inner })
     }
-}
-
-fn random_decision_reason(_name: &str, winner: &Score) -> String {
-    format!("random routing selected target '{}'", winner.target)
 }
 
 #[async_trait]
@@ -158,7 +153,11 @@ impl Algorithm for Random {
         "random"
     }
 
-    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
+    async fn route(
+        self: Arc<Self>,
+        driver: Driver,
+        request: Request,
+    ) -> Result<crate::RoutingOutcome> {
         self.inner.execute(driver, request).await
     }
 }
@@ -222,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn single_target_is_always_selected_and_called() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"])?;
-        let (trace, response) = test_drive(algorithm, request(), echo()).await?;
+        let (selected_model, response) = test_drive(algorithm, request(), echo()).await?;
 
         assert_eq!(
             response
@@ -232,29 +231,7 @@ mod tests {
                 .unwrap_or_default(),
             "only/model"
         );
-        assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].selected_model_id(), "only/model");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn selected_target_is_in_the_set_and_matches_the_trace() -> Result<()> {
-        let names = ["a/model", "b/model", "c/model"];
-        let algorithm = shared_algorithm(&names)?;
-
-        for _ in 0..50 {
-            let (trace, response) = test_drive(algorithm.clone(), request(), echo()).await?;
-            let selected = response
-                .llm_response
-                .as_agg()
-                .map(completion_text)
-                .unwrap_or_default();
-            assert!(
-                names.contains(&selected.as_str()),
-                "selected {selected} not in target set"
-            );
-            assert_eq!(trace[0].selected_model_id(), selected.as_str());
-        }
+        assert_eq!(selected_model, "only/model");
         Ok(())
     }
 
@@ -264,14 +241,15 @@ mod tests {
         let mut seen = HashSet::new();
 
         for _ in 0..100 {
-            let (_, response) = test_drive(algorithm.clone(), request(), echo()).await?;
-            seen.insert(
-                response
-                    .llm_response
-                    .as_agg()
-                    .map(completion_text)
-                    .unwrap_or_default(),
-            );
+            let (selected_model, response) =
+                test_drive(algorithm.clone(), request(), echo()).await?;
+            let served_model = response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default();
+            assert_eq!(selected_model, served_model.as_str());
+            seen.insert(served_model);
         }
 
         // Missing either target after 100 uniform draws has probability about 2^-99.
@@ -393,11 +371,8 @@ mod tests {
     #[tokio::test]
     async fn decision_is_inspectable() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"])?;
-        let (trace, _) = test_drive(algorithm, request(), echo()).await?;
-        let decision = &trace[0];
-
-        assert_eq!(decision.selected_model_id(), "only/model");
-        assert!(decision.is_answer_call());
+        let (selected_model, _) = test_drive(algorithm, request(), echo()).await?;
+        assert_eq!(selected_model, "only/model");
         Ok(())
     }
 }

@@ -3,16 +3,16 @@
 
 //! Typed TOML configuration and explicit construction for the Rust server.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
 use libsy::{
-    Algorithm, ClassifierContractConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
-    Noop, Passthrough, PickerMode, Random, StageRouter, StageRouterConfig, TargetPrompts,
-    TaskClassifierConfig,
+    AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
+    CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger,
+    HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, Random, StageRouter, StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -22,7 +22,9 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{ModelId, RoutedLlmClient};
 
-use crate::{CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState};
+use crate::{
+    CallerAuthKind, CountTokensTarget, ModelCapabilities, ServerError, ServerResult, ServerState,
+};
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIGURED_RETRIES: u32 = 10;
@@ -99,12 +101,13 @@ impl ServerConfig {
                 )));
             }
             let algorithm = build_algorithm(route_name, config, &targets)?;
-            let client = self.build_client_router(config, &clients)?;
+            let (client, caller_auth) = self.build_route_clients(route_name, config, &clients)?;
             let count_tokens_target = self.build_count_tokens_target(config, &clients);
             routes.push((
                 config.id().clone(),
                 algorithm,
                 client,
+                caller_auth,
                 capabilities,
                 count_tokens_target,
             ));
@@ -168,26 +171,40 @@ impl ServerConfig {
     /// The map is built per route because targets are only reachable through the routes that
     /// name them, so the same model id may resolve to different clients in two routes without
     /// colliding.
-    fn build_client_router(
+    fn build_route_clients(
         &self,
+        route_name: &str,
         route: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
-    ) -> ServerResult<ClientRouter> {
-        let by_model = route
-            .callable_target_names()
-            .into_iter()
-            .map(|name| {
-                let target = self.targets.get(name).ok_or_else(|| {
-                    ServerError::new(format!("route references unknown target {name}"))
-                })?;
-                let client = clients.get(&target.llm_client).ok_or_else(|| {
-                    ServerError::new(format!("target {name} has no constructed llm client"))
-                })?;
-                let client: Arc<dyn RoutedLlmClient> = client.clone();
-                Ok((target.id.clone(), client))
-            })
-            .collect::<ServerResult<_>>()?;
-        Ok(ClientRouter::new(by_model))
+    ) -> ServerResult<(ClientRouter, Option<CallerAuthKind>)> {
+        let mut by_model = HashMap::new();
+        let mut caller_auth = None;
+        for name in route.callable_target_names() {
+            let target = self.targets.get(name).ok_or_else(|| {
+                ServerError::new(format!("route references unknown target {name}"))
+            })?;
+            let client = clients.get(&target.llm_client).ok_or_else(|| {
+                ServerError::new(format!("target {name} has no constructed llm client"))
+            })?;
+            let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
+                ServerError::new(format!(
+                    "target {name} references unknown llm client {}",
+                    target.llm_client
+                ))
+            })?;
+            if client_config.forward_auth {
+                let target_auth = client_config.format.caller_auth_kind();
+                if caller_auth.is_some_and(|kind| kind != target_auth) {
+                    return Err(ServerError::new(format!(
+                        "route {route_name} cannot forward both Anthropic and OpenAI caller credentials"
+                    )));
+                }
+                caller_auth = Some(target_auth);
+            }
+            let client: Arc<dyn RoutedLlmClient> = client.clone();
+            by_model.insert(target.id.clone(), client);
+        }
+        Ok((ClientRouter::new(by_model), caller_auth))
     }
 
     fn build_count_tokens_target(
@@ -234,6 +251,8 @@ struct LlmClientConfig {
     base_url: String,
     api_key_env: Option<String>,
     #[serde(default)]
+    forward_auth: bool,
+    #[serde(default)]
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
@@ -256,6 +275,15 @@ enum ClientFormat {
     OpenAiResponses,
     #[serde(rename = "anthropic_messages")]
     AnthropicMessages,
+}
+
+impl ClientFormat {
+    const fn caller_auth_kind(self) -> CallerAuthKind {
+        match self {
+            Self::AnthropicMessages => CallerAuthKind::Anthropic,
+            Self::OpenAiChat | Self::OpenAiResponses => CallerAuthKind::OpenAi,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -297,6 +325,7 @@ struct CapabilityClassifierRouteConfig {
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
     prompt: Option<String>,
+    response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
 }
 
@@ -305,6 +334,7 @@ struct EscalationClassifierRouteConfig {
     strong_target: String,
     weak_target: String,
     prompt: Option<String>,
+    response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
     judge: EscalationJudgeConfig,
 }
@@ -383,6 +413,8 @@ enum RouteConfig {
         recent_turn_window: Option<usize>,
         #[serde(default)]
         prompt: Option<String>,
+        #[serde(default)]
+        response_format_type: ClassifierResponseFormat,
         #[serde(default = "default_classifier_max_output_tokens")]
         max_output_tokens: u64,
         #[serde(default)]
@@ -424,6 +456,53 @@ enum RouteConfig {
         #[serde(default)]
         classifier: Option<StageClassifierConfig>,
     },
+    Advisor {
+        id: ModelId,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
+        #[serde(default)]
+        reasoning: Option<bool>,
+        /// Serves every client-visible turn; also the count_tokens target.
+        executor_target: String,
+        /// Reviews the executor's first terminal turn. Judge-only, never a
+        /// routing destination.
+        advisor_target: String,
+        #[serde(default)]
+        reviewer_system_prompt: Option<String>,
+        #[serde(default)]
+        redo_feedback_prefix: Option<String>,
+        #[serde(default)]
+        gate_trigger: AdvisorTriggerConfig,
+        #[serde(default)]
+        gate_trigger_pattern: Option<String>,
+        #[serde(default = "default_max_reviews")]
+        max_reviews: u32,
+        #[serde(default)]
+        gate_stall_turns: u32,
+        #[serde(default)]
+        gate_min_tool_results: u32,
+        #[serde(default = "default_advisor_max_tokens")]
+        advisor_max_tokens: u64,
+        #[serde(default)]
+        advisor_temperature: Option<f64>,
+        #[serde(default = "default_transcript_max_chars")]
+        transcript_max_chars: usize,
+        #[serde(default = "default_fail_open")]
+        fail_open: bool,
+    },
+}
+
+/// What fires an advisor route's review.
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum AdvisorTriggerConfig {
+    /// The executor's first turn without tool calls.
+    #[default]
+    NoToolCall,
+    /// The first turn whose text matches `gate_trigger_pattern`.
+    Pattern,
 }
 
 /// The judge a `stage_router` route falls through to, and how it routes.
@@ -443,6 +522,8 @@ struct StageClassifierConfig {
     recent_turn_window: Option<usize>,
     #[serde(default)]
     prompt: Option<String>,
+    #[serde(default)]
+    response_format_type: ClassifierResponseFormat,
     #[serde(default = "default_classifier_max_output_tokens")]
     max_output_tokens: u64,
 }
@@ -455,7 +536,8 @@ impl StageClassifierConfig {
             session_affinity: self.session_affinity,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
-            contract: classifier_contract(self.prompt.as_deref()),
+            contract: classifier_contract(self.prompt.as_deref())
+                .with_response_format_type(self.response_format_type),
             max_output_tokens: self.max_output_tokens,
         }
     }
@@ -469,7 +551,8 @@ impl RouteConfig {
             | Random { id, .. }
             | LlmClassifier { id, .. }
             | Passthrough { id, .. }
-            | StageRouter { id, .. } => id,
+            | StageRouter { id, .. }
+            | Advisor { id, .. } => id,
         }
     }
 
@@ -508,6 +591,11 @@ impl RouteConfig {
                 efficient_target,
                 ..
             } => vec![capable_target, efficient_target],
+            // The advisor is judge-only: reviews go through its own client,
+            // so it is not a completion (or count_tokens) destination.
+            Self::Advisor {
+                executor_target, ..
+            } => vec![executor_target],
         }
     }
 
@@ -525,6 +613,7 @@ impl RouteConfig {
                 classifier: Some(classifier),
                 ..
             } => names.push(&classifier.target),
+            Self::Advisor { advisor_target, .. } => names.push(advisor_target),
             _ => {}
         }
         names
@@ -562,6 +651,12 @@ impl RouteConfig {
                 tool_calling,
                 reasoning,
                 ..
+            }
+            | Advisor {
+                context_window,
+                tool_calling,
+                reasoning,
+                ..
             } => ModelCapabilities {
                 context_window: *context_window,
                 tool_calling: *tool_calling,
@@ -581,6 +676,7 @@ impl RouteConfig {
             message_hash_fallback,
             recent_turn_window,
             prompt,
+            response_format_type,
             max_output_tokens,
             escalation,
             targets,
@@ -638,6 +734,7 @@ impl RouteConfig {
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
                         prompt: prompt.clone(),
+                        response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
                     },
                 ))
@@ -675,6 +772,7 @@ impl RouteConfig {
                             weak_target,
                         )?,
                         prompt: prompt.clone(),
+                        response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
                         judge: required_classifier_field(route_name, "escalation", escalation)?,
                     },
@@ -686,6 +784,7 @@ impl RouteConfig {
                     || base_threshold.is_some()
                     || threshold_step.is_some()
                     || escalation.is_some()
+                    || *response_format_type != ClassifierResponseFormat::JsonSchema
                 {
                     return Err(ServerError::new(format!(
                         "llm_classifier route {route_name} mode custom cannot use capability or escalation fields"
@@ -771,6 +870,11 @@ fn build_backend(
             "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
         )));
     }
+    if config.forward_auth && config.api_key_env.is_some() {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} cannot set both forward_auth and api_key_env"
+        )));
+    }
     let api_key = config
         .api_key_env
         .as_deref()
@@ -796,6 +900,7 @@ fn build_backend(
     let http = HttpBackendConfig {
         base_url: base_url.to_string(),
         api_key,
+        forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
         max_retries: config.max_retries,
@@ -850,7 +955,8 @@ fn build_algorithm(
                         session_affinity: config.session_affinity,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
-                        contract: classifier_contract(config.prompt.as_deref()),
+                        contract: classifier_contract(config.prompt.as_deref())
+                            .with_response_format_type(config.response_format_type),
                         max_output_tokens: config.max_output_tokens,
                     };
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
@@ -868,7 +974,8 @@ fn build_algorithm(
                         judge_target: classifier,
                         efficient_target: weak,
                         capable_target: strong,
-                        contract: classifier_contract(config.prompt.as_deref()),
+                        contract: classifier_contract(config.prompt.as_deref())
+                            .with_response_format_type(config.response_format_type),
                         config: config.judge,
                         max_output_tokens: config.max_output_tokens,
                     })
@@ -957,7 +1064,74 @@ fn build_algorithm(
             })?;
             Ok(Arc::new(algorithm))
         }
+        RouteConfig::Advisor {
+            executor_target,
+            advisor_target,
+            reviewer_system_prompt,
+            redo_feedback_prefix,
+            gate_trigger,
+            gate_trigger_pattern,
+            max_reviews,
+            gate_stall_turns,
+            gate_min_tool_results,
+            advisor_max_tokens,
+            advisor_temperature,
+            transcript_max_chars,
+            fail_open,
+            ..
+        } => {
+            let executor = resolve_target_model_id(route_name, executor_target, targets)?;
+            let advisor = resolve_target_model_id(route_name, advisor_target, targets)?;
+            // A pattern set under the default trigger would be silently
+            // ignored; reject the misconfiguration instead.
+            if *gate_trigger == AdvisorTriggerConfig::NoToolCall && gate_trigger_pattern.is_some() {
+                return Err(ServerError::new(format!(
+                    "advisor route {route_name}: gate_trigger_pattern requires \
+                     gate_trigger = \"pattern\""
+                )));
+            }
+            let mut config = AdvisorGateConfig::default();
+            if let Some(prompt) = reviewer_system_prompt {
+                config.reviewer_system_prompt = prompt.clone();
+            }
+            if let Some(prefix) = redo_feedback_prefix {
+                config.redo_feedback_prefix = prefix.clone();
+            }
+            config.gate_trigger = match gate_trigger {
+                AdvisorTriggerConfig::NoToolCall => GateTrigger::NoToolCall,
+                AdvisorTriggerConfig::Pattern => {
+                    GateTrigger::Pattern(gate_trigger_pattern.clone().unwrap_or_default())
+                }
+            };
+            config.max_reviews = *max_reviews;
+            config.gate_stall_turns = *gate_stall_turns;
+            config.gate_min_tool_results = *gate_min_tool_results;
+            config.advisor_max_tokens = *advisor_max_tokens;
+            config.advisor_temperature = *advisor_temperature;
+            config.transcript_max_chars = *transcript_max_chars;
+            config.fail_open = *fail_open;
+            let algorithm = AdvisorGate::new(executor, advisor, config).map_err(|error| {
+                ServerError::new(format!("advisor route {route_name}: {error}"))
+            })?;
+            Ok(Arc::new(algorithm))
+        }
     }
+}
+
+const fn default_max_reviews() -> u32 {
+    1
+}
+
+const fn default_advisor_max_tokens() -> u64 {
+    2048
+}
+
+const fn default_transcript_max_chars() -> usize {
+    200_000
+}
+
+const fn default_fail_open() -> bool {
+    true
 }
 
 fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
@@ -1158,7 +1332,10 @@ target = "weak"
             "base_threshold = 0.5",
             "base_threshold = 0.5\nprompt = \"{{RESPONSE_SCHEMA}}\"",
         );
-        assert!(error_message(&schema_placeholder).contains("schema is sent separately"));
+        assert!(
+            error_message(&schema_placeholder)
+                .contains("Switchyard supplies the schema automatically")
+        );
         Ok(())
     }
 
@@ -1570,5 +1747,167 @@ target = "azure"
             std::env::remove_var(EMPTY_KEY_ENV);
         }
         assert!(message.contains("is empty"));
+    }
+
+    #[test]
+    fn forward_auth_rejects_conflicting_credentials() {
+        let competing_auth = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\n\
+                 forward_auth = true\n\
+                 api_key_env = \"UNUSED_TEST_KEY\"",
+            1,
+        );
+        assert!(
+            error_message(&competing_auth).contains("cannot set both forward_auth and api_key_env")
+        );
+
+        let static_auth = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test\"",
+            "base_url = \"https://example.test\"\n\
+                 forward_auth = true\n\
+                 extra_headers = { Authorization = \"static-value\" }",
+            1,
+        );
+        assert!(error_message(&static_auth).contains("extra_headers cannot set \"Authorization\""));
+
+        let static_beta = static_auth.replace("Authorization", "anthropic-beta");
+        assert!(
+            error_message(&static_beta).contains("extra_headers cannot set \"anthropic-beta\"")
+        );
+
+        for header in ["chatgpt-account-id", "x-openai-fedramp"] {
+            let static_context = VALID_CONFIG.replacen(
+                "base_url = \"https://example.test/v1\"",
+                &format!(
+                    "base_url = \"https://example.test/v1\"\n\
+                     forward_auth = true\n\
+                     extra_headers = {{ \"{header}\" = \"static-value\" }}"
+                ),
+                1,
+            );
+            assert!(
+                error_message(&static_context)
+                    .contains(&format!("extra_headers cannot set \"{header}\""))
+            );
+        }
+    }
+
+    const ADVISOR_CONFIG: &str = r#"
+schema_version = 1
+
+[llm_clients.anthropic]
+format = "anthropic_messages"
+base_url = "https://example.test"
+
+[targets.executor]
+id = "executor/model"
+llm_client = "anthropic"
+
+[targets.advisor]
+id = "advisor/model"
+llm_client = "anthropic"
+
+[routes.gated]
+id = "switchyard/advisor"
+type = "advisor"
+executor_target = "executor"
+advisor_target = "advisor"
+"#;
+
+    #[test]
+    fn advisor_route_parses_with_defaults_and_builds() -> ServerResult<()> {
+        let state = server_state_from_toml(ADVISOR_CONFIG)?;
+        assert_eq!(state.models().collect::<Vec<_>>(), ["switchyard/advisor"]);
+        Ok(())
+    }
+
+    #[test]
+    fn advisor_route_accepts_every_gate_knob() -> ServerResult<()> {
+        let tuned = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            concat!(
+                "advisor_target = \"advisor\"\n",
+                "reviewer_system_prompt = \"review it\"\n",
+                "redo_feedback_prefix = \"REVIEWER SAYS: \"\n",
+                "gate_trigger = \"pattern\"\n",
+                "gate_trigger_pattern = 'task_complete[\"\\s>:]*true'\n",
+                "max_reviews = 2\n",
+                "gate_stall_turns = 40\n",
+                "gate_min_tool_results = 1\n",
+                "advisor_max_tokens = 1024\n",
+                "advisor_temperature = 0.0\n",
+                "transcript_max_chars = 100000\n",
+                "fail_open = false\n",
+                "context_window = 200000\n",
+                "tool_calling = true\n",
+                "reasoning = true",
+            ),
+        );
+        server_state_from_toml(&tuned)?;
+        Ok(())
+    }
+
+    #[test]
+    fn advisor_route_rejects_unknown_keys() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"advisor\"\nbogus_field = 1",
+        );
+        assert!(error_message(&invalid).contains("bogus_field"));
+    }
+
+    #[test]
+    fn advisor_route_requires_both_targets() {
+        let missing = ADVISOR_CONFIG.replace("advisor_target = \"advisor\"\n", "");
+        assert!(error_message(&missing).contains("advisor_target"));
+    }
+
+    #[test]
+    fn advisor_route_rejects_unknown_target() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"missing\"",
+        );
+        assert!(error_message(&invalid).contains("missing"));
+    }
+
+    #[test]
+    fn advisor_route_rejects_invalid_pattern() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"advisor\"\ngate_trigger = \"pattern\"\ngate_trigger_pattern = \"(unclosed\"",
+        );
+        assert!(error_message(&invalid).contains("not a valid regex"));
+    }
+
+    #[test]
+    fn advisor_route_rejects_pattern_without_pattern_trigger() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"advisor\"\ngate_trigger_pattern = \"done\"",
+        );
+        assert!(
+            error_message(&invalid)
+                .contains("gate_trigger_pattern requires gate_trigger = \"pattern\"")
+        );
+    }
+
+    #[test]
+    fn advisor_route_pattern_trigger_requires_pattern() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"advisor\"\ngate_trigger = \"pattern\"",
+        );
+        assert!(error_message(&invalid).contains("non-empty gate_trigger_pattern"));
+    }
+
+    #[test]
+    fn advisor_route_rejects_zero_max_reviews() {
+        let invalid = ADVISOR_CONFIG.replace(
+            "advisor_target = \"advisor\"",
+            "advisor_target = \"advisor\"\nmax_reviews = 0",
+        );
+        assert!(error_message(&invalid).contains("max_reviews must be at least 1"));
     }
 }
