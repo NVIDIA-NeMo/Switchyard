@@ -154,8 +154,8 @@ Capability mode classifies before serving. See
 | `weak_target` | Yes | — | Efficient tier. |
 | `base_threshold` | Yes | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. |
 | `threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
-| `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
-| `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
+| `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
+| `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 | `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
 
@@ -183,8 +183,8 @@ policy selector, and routes to any configured target label.
 | `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
 | `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
-| `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
-| `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
+| `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
+| `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
@@ -206,6 +206,7 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
 | `capable_system_prompt` | No | unset | System prompt handed to the capable tier. |
 | `efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
+| `classifier.classify_trigger` | No | `every_request` | When the judge runs. See the `llm_classifier` route. `new_session` has no effect here. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
 
 ## Validation Errors

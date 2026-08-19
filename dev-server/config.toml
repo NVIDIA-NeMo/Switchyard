@@ -74,6 +74,6 @@ classifier_target = "capable"
 strong_target = "capable"
 weak_target = "efficient"
 base_threshold = 0.5
-session_affinity = true
+classify_trigger = "new_session"
 message_hash_fallback = true
 

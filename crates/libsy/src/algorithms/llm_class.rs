@@ -12,7 +12,6 @@ use serde_json::Value;
 use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
 
 use super::fall_through::{DefaultTarget, FallThrough};
-use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
 use super::util::affinity::AffinityRouter;
 use super::util::classifier_contract::{
     ClassifierContract, ClassifierContractConfig, ClassifierResponseFormat,
@@ -23,6 +22,8 @@ use super::util::llm_judge::{
     SerdeDecoder, StructuredJudge,
 };
 use super::util::target_selector::TargetSelectorPolicy;
+use super::util::turn_pin::{ClassifyTrigger, TurnPin};
+use super::util::{DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, decisive};
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
@@ -231,8 +232,8 @@ pub struct TaskClassifierConfig {
     /// Supported verdicts use `base_threshold`, uncertain and unmatched verdicts use one
     /// step, and unsupported verdicts use two steps.
     pub threshold_step: f64,
-    /// Enables session affinity before the judge-backed classifier.
-    pub session_affinity: bool,
+    /// How often the classifier re-decides this session's target.
+    pub classify_trigger: ClassifyTrigger,
     /// Uses the first user message as the SessionKey for sticky routing when session metadata is unavailable.
     pub message_hash_fallback: bool,
     /// Trailing conversation turns the judge sees on top of the client
@@ -256,7 +257,7 @@ struct TaskClassifierConfigWire {
     #[serde(default)]
     threshold_step: f64,
     #[serde(default)]
-    session_affinity: bool,
+    classify_trigger: ClassifyTrigger,
     #[serde(default)]
     message_hash_fallback: bool,
     #[serde(default)]
@@ -283,7 +284,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
         Ok(Self {
             base_threshold: wire.base_threshold,
             threshold_step: wire.threshold_step,
-            session_affinity: wire.session_affinity,
+            classify_trigger: wire.classify_trigger,
             message_hash_fallback: wire.message_hash_fallback,
             recent_turn_window: wire.recent_turn_window,
             contract,
@@ -301,7 +302,7 @@ impl Default for TaskClassifierConfig {
         Self {
             base_threshold: 0.0,
             threshold_step: 0.0,
-            session_affinity: false,
+            classify_trigger: ClassifyTrigger::default(),
             message_hash_fallback: false,
             recent_turn_window: None,
             contract: ClassifierContractConfig::default(),
@@ -342,9 +343,10 @@ impl TaskClassifierConfig {
                 message: "max_output_tokens must be at least 1".to_string(),
             });
         }
-        if self.message_hash_fallback && !self.session_affinity {
+        if self.message_hash_fallback && self.classify_trigger != ClassifyTrigger::NewSession {
             return Err(LibsyError::AlgorithmError {
-                message: "message_hash_fallback requires session_affinity".to_string(),
+                message: "message_hash_fallback requires classify_trigger = new_session"
+                    .to_string(),
             });
         }
         Ok(())
@@ -379,8 +381,8 @@ pub struct CustomClassifierConfig {
     pub response_schema: Value,
     /// Deterministic policy applied after the verdict passes schema validation.
     pub policy: CustomClassifierPolicy,
-    /// Enables session affinity before the judge-backed classifier.
-    pub session_affinity: bool,
+    /// How often the classifier re-decides this session's target.
+    pub classify_trigger: ClassifyTrigger,
     /// Uses the first user message when session metadata is unavailable.
     pub message_hash_fallback: bool,
     /// Trailing conversation turns shown to the classifier judge.
@@ -400,7 +402,7 @@ impl CustomClassifierConfig {
             prompt: prompt.into(),
             response_schema,
             policy,
-            session_affinity: false,
+            classify_trigger: ClassifyTrigger::default(),
             message_hash_fallback: false,
             recent_turn_window: None,
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
@@ -413,9 +415,10 @@ impl CustomClassifierConfig {
                 message: "max_output_tokens must be at least 1".to_string(),
             });
         }
-        if self.message_hash_fallback && !self.session_affinity {
+        if self.message_hash_fallback && self.classify_trigger != ClassifyTrigger::NewSession {
             return Err(LibsyError::AlgorithmError {
-                message: "message_hash_fallback requires session_affinity".to_string(),
+                message: "message_hash_fallback requires classify_trigger = new_session"
+                    .to_string(),
             });
         }
         Ok(())
@@ -452,13 +455,6 @@ fn streak(state: &State) -> u32 {
         Some(StateValue::Count(n)) => *n,
         _ => 0,
     }
-}
-
-fn decisive(target: &ModelId) -> Classification {
-    Classification::Scores(vec![Score {
-        target: target.clone(),
-        confidence: 1.0,
-    }])
 }
 
 fn assistant_message(response: &AggLlmResponse) -> Message {
@@ -592,7 +588,7 @@ pub struct LlmTaskClassifier {
 
 struct ClassifierRouteConfig {
     default_target: ModelId,
-    session_affinity: bool,
+    classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
 }
 
@@ -687,7 +683,7 @@ impl LlmTaskClassifier {
         config.validate()?;
         let contract = Self::load_capability_contract(&config.contract)?;
         let targets = vec![efficient_target.clone(), capable_target.clone()];
-        let session_affinity = config.session_affinity;
+        let classify_trigger = config.classify_trigger;
         let message_hash_fallback = config.message_hash_fallback;
         let classifier = Arc::new(TaskClassifier {
             classifier: JudgeClassifier::new(
@@ -715,7 +711,7 @@ impl LlmTaskClassifier {
             inner,
             ClassifierRouteConfig {
                 default_target: classifier.capable_target.clone(),
-                session_affinity,
+                classify_trigger,
                 message_hash_fallback,
             },
         )
@@ -772,7 +768,7 @@ impl LlmTaskClassifier {
             prompt,
             response_schema,
             policy,
-            session_affinity,
+            classify_trigger,
             message_hash_fallback,
             recent_turn_window,
             max_output_tokens,
@@ -801,7 +797,7 @@ impl LlmTaskClassifier {
             classifier,
             ClassifierRouteConfig {
                 default_target: default_name,
-                session_affinity,
+                classify_trigger,
                 message_hash_fallback,
             },
         )
@@ -853,16 +849,24 @@ impl LlmTaskClassifier {
         config: ClassifierRouteConfig,
     ) -> Result<Self> {
         algorithm::ensure_model_is_target(&targets, &config.default_target)?;
-        if config.message_hash_fallback && !config.session_affinity {
+        if config.message_hash_fallback && config.classify_trigger != ClassifyTrigger::NewSession {
             return Err(LibsyError::AlgorithmError {
-                message: "message_hash_fallback requires session_affinity".to_string(),
+                message: "message_hash_fallback requires classify_trigger = new_session"
+                    .to_string(),
             });
         }
+        // Wraps the classifier rather than the route, so the pin also holds when this is
+        // embedded in another cascade and only `score` is called.
+        let inner = if config.classify_trigger == ClassifyTrigger::UserTurn {
+            Arc::new(TurnPin::new(inner)) as Arc<dyn Classifier<State>>
+        } else {
+            inner
+        };
         // Affinity comes first so a retained assignment short-circuits the judge call.
         // Note: when this classifier is embedded inside another cascade (e.g. StageRouter)
         // the affinity processor never fires — only the inner score() is called.
         let mut route = FallThrough::<State>::new_with_state(targets).with_name(ALGORITHM_NAME);
-        if config.session_affinity {
+        if config.classify_trigger == ClassifyTrigger::NewSession {
             let affinity = if config.message_hash_fallback {
                 AffinityRouter::new().with_message_hash_fallback()
             } else {
@@ -1206,14 +1210,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn classifier_config_enables_session_affinity() -> Result<()> {
+    async fn classifier_config_enables_new_session_trigger() -> Result<()> {
         let recorder = Arc::new(Recorder::default());
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: ModelId::from("judge"),
             efficient_target: ModelId::from("efficient"),
             capable_target: ModelId::from("capable"),
             config: TaskClassifierConfig {
-                session_affinity: true,
+                classify_trigger: ClassifyTrigger::NewSession,
                 ..test_config(TEST_THRESHOLD)
             },
         })?);
@@ -1234,7 +1238,7 @@ mod tests {
             efficient_target: ModelId::from("efficient"),
             capable_target: ModelId::from("capable"),
             config: TaskClassifierConfig {
-                session_affinity: true,
+                classify_trigger: ClassifyTrigger::NewSession,
                 message_hash_fallback: true,
                 recent_turn_window: None,
                 ..test_config(TEST_THRESHOLD)

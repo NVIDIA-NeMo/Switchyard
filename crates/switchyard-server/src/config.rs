@@ -10,9 +10,10 @@ use std::sync::Arc;
 
 use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
-    CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger,
-    HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
-    PickerMode, Random, StageRouter, StageRouterConfig, TargetPrompts, TaskClassifierConfig,
+    ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig,
+    GateTrigger, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
+    Passthrough, PickerMode, Random, StageRouter, StageRouterConfig, TargetPrompts,
+    TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -344,7 +345,7 @@ struct CapabilityClassifierRouteConfig {
     weak_target: String,
     base_threshold: f64,
     threshold_step: f64,
-    session_affinity: bool,
+    classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
     prompt: Option<String>,
@@ -369,7 +370,7 @@ struct CustomClassifierRouteConfig {
     prompt: String,
     response_schema: String,
     policy: ClassifierPolicyConfig,
-    session_affinity: bool,
+    classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
     max_output_tokens: u64,
@@ -429,7 +430,7 @@ enum RouteConfig {
         #[serde(default)]
         threshold_step: Option<f64>,
         #[serde(default)]
-        session_affinity: bool,
+        classify_trigger: ClassifyTrigger,
         #[serde(default)]
         message_hash_fallback: bool,
         #[serde(default)]
@@ -538,7 +539,7 @@ struct StageClassifierConfig {
     #[serde(default)]
     threshold_step: f64,
     #[serde(default)]
-    session_affinity: bool,
+    classify_trigger: ClassifyTrigger,
     #[serde(default)]
     message_hash_fallback: bool,
     #[serde(default)]
@@ -556,7 +557,7 @@ impl StageClassifierConfig {
         TaskClassifierConfig {
             base_threshold: self.base_threshold,
             threshold_step: self.threshold_step,
-            session_affinity: self.session_affinity,
+            classify_trigger: self.classify_trigger,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
             contract: classifier_contract(self.prompt.as_deref())
@@ -695,7 +696,7 @@ impl RouteConfig {
             weak_target,
             base_threshold,
             threshold_step,
-            session_affinity,
+            classify_trigger,
             message_hash_fallback,
             recent_turn_window,
             prompt,
@@ -753,7 +754,7 @@ impl RouteConfig {
                             base_threshold,
                         )?,
                         threshold_step: threshold_step.unwrap_or_default(),
-                        session_affinity: *session_affinity,
+                        classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
                         prompt: prompt.clone(),
@@ -771,10 +772,14 @@ impl RouteConfig {
                     response_schema,
                     policy,
                 )?;
+                if *classify_trigger != ClassifyTrigger::EveryRequest {
+                    return Err(ServerError::new(format!(
+                        "llm_classifier route {route_name} mode escalation cannot use classify_trigger"
+                    )));
+                }
                 if mode.is_some()
                     && (base_threshold.is_some()
                         || threshold_step.is_some()
-                        || *session_affinity
                         || *message_hash_fallback
                         || recent_turn_window.is_some())
                 {
@@ -828,7 +833,7 @@ impl RouteConfig {
                             response_schema,
                         )?,
                         policy: required_classifier_field(route_name, "policy", policy)?,
-                        session_affinity: *session_affinity,
+                        classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
                         max_output_tokens: *max_output_tokens,
@@ -975,7 +980,7 @@ fn build_algorithm(
                     let classifier_config = TaskClassifierConfig {
                         base_threshold: config.base_threshold,
                         threshold_step: config.threshold_step,
-                        session_affinity: config.session_affinity,
+                        classify_trigger: config.classify_trigger,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
                         contract: classifier_contract(config.prompt.as_deref())
@@ -1024,7 +1029,7 @@ fn build_algorithm(
                         response_schema,
                         config.policy.into_libsy(),
                     );
-                    classifier_config.session_affinity = config.session_affinity;
+                    classifier_config.classify_trigger = config.classify_trigger;
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
                     classifier_config.max_output_tokens = config.max_output_tokens;
@@ -1496,7 +1501,14 @@ classifier_magic = true
                     "base_threshold = 0.5",
                     "base_threshold = 0.5\nmessage_hash_fallback = true",
                 ),
-                "message_hash_fallback requires session_affinity",
+                "message_hash_fallback requires classify_trigger = new_session",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "base_threshold = 0.5",
+                    "escalation = { confirmations = 2 }\nclassify_trigger = \"user_turn\"",
+                ),
+                "mode escalation cannot use classify_trigger",
             ),
             (
                 VALID_CONFIG.replace("schema_version = 1", "schema_version = 2"),
@@ -1612,10 +1624,10 @@ target = "azure"
     }
 
     #[test]
-    fn accepts_session_affinity_with_message_hash_fallback() -> ServerResult<()> {
+    fn accepts_new_session_trigger_with_message_hash_fallback() -> ServerResult<()> {
         let configured = VALID_CONFIG.replace(
             "base_threshold = 0.5",
-            "base_threshold = 0.25\nthreshold_step = 0.1\nsession_affinity = true\nmessage_hash_fallback = true",
+            "base_threshold = 0.25\nthreshold_step = 0.1\nclassify_trigger = \"new_session\"\nmessage_hash_fallback = true",
         );
         server_state_from_toml(&configured)?;
         Ok(())

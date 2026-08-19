@@ -12,7 +12,7 @@ use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyVal
 use pyo3::prelude::*;
 use serde_json::Value;
 use switchyard_libsy::{
-    Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat,
+    Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger,
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
     PickerMode, Random, RoutingOutcome, StageRouter, StageRouterConfig, Step as RustStep,
@@ -26,6 +26,15 @@ use tokio::sync::Mutex;
 
 use crate::errors::{ContextWindowExceededError, py_libsy_error};
 use crate::py_serde::{from_python, to_python};
+
+/// The Python API keeps its `session_affinity` flag, which selects the per-session trigger.
+fn classify_trigger(session_affinity: bool) -> ClassifyTrigger {
+    if session_affinity {
+        ClassifyTrigger::NewSession
+    } else {
+        ClassifyTrigger::EveryRequest
+    }
+}
 
 /// Convert Python-owned headers into the request metadata expected by libsy.
 fn header_map_from_python(headers: &HashMap<String, String>) -> PyResult<http::HeaderMap> {
@@ -155,7 +164,7 @@ impl PyCustomClassifierConfig {
             from_python::<Value>(response_schema)?,
             CustomClassifierPolicy::target_selector(selector),
         );
-        inner.session_affinity = session_affinity;
+        inner.classify_trigger = classify_trigger(session_affinity);
         inner.message_hash_fallback = message_hash_fallback;
         inner.recent_turn_window = recent_turn_window;
         inner.max_output_tokens = max_output_tokens;
@@ -273,7 +282,7 @@ impl PyTaskClassifierConfig {
             inner: TaskClassifierConfig {
                 base_threshold,
                 threshold_step,
-                session_affinity,
+                classify_trigger: classify_trigger(session_affinity),
                 message_hash_fallback,
                 recent_turn_window,
                 contract: classifier_contract(prompt, response_format_type)?,
