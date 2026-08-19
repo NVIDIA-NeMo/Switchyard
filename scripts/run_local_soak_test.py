@@ -20,6 +20,7 @@ from typing import TextIO
 
 from benchmark_routing_algorithms import (
     BenchmarkConfig,
+    DirectBaseline,
     RequiredBinary,
     positive_int,
     resolve_binaries,
@@ -93,7 +94,13 @@ def parser() -> argparse.ArgumentParser:
         "--mock-latency-ms",
         type=nonnegative_int,
         default=40,
-        help="response latency the local scenario backend adds to ordinary calls",
+        help="latency before the local scenario backend sends its first token",
+    )
+    command.add_argument(
+        "--mock-token-latency-ms",
+        type=nonnegative_int,
+        default=1,
+        help="latency the local scenario backend adds between streamed output tokens",
     )
     command.add_argument(
         "--server-port",
@@ -243,7 +250,7 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
                 "AIPerf",
                 "AIPERF_BIN",
                 os.environ.get("AIPERF_BIN", "aiperf"),
-                "Install AIPerf with: uv tool install --python 3.12 aiperf",
+                "Install AIPerf with: uv tool install --python 3.12 'aiperf==0.11.0'",
             ),
         )
     )
@@ -274,6 +281,8 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
                 str(MOCK_PORT),
                 "--latency-ms",
                 str(args.mock_latency_ms),
+                "--token-latency-ms",
+                str(args.mock_token_latency_ms),
             ],
             output_dir / "scenario-backend.log",
         )
@@ -297,7 +306,9 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
                 concurrency=args.concurrency,
                 request_count=args.request_count,
                 backend_label=(
-                    f"request-aware local backend with {args.mock_latency_ms} ms response latency"
+                    "request-aware local backend with "
+                    f"{args.mock_latency_ms} ms TTFT and "
+                    f"{args.mock_token_latency_ms} ms per output token"
                 ),
                 output_dir=output_dir / "routing-benchmark",
                 oha_bin=oha_bin,
@@ -305,6 +316,10 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
                 soak_bin=soak_bin,
                 profile_runs=1,
                 scenario_backend_reset_url=f"http://127.0.0.1:{MOCK_PORT}/reset",
+                direct_baseline=DirectBaseline(
+                    base_url=f"http://127.0.0.1:{MOCK_PORT}",
+                    model="mock/weak",
+                ),
             )
         )
 

@@ -82,6 +82,8 @@ The command runs oha and AIPerf sequentially for every model id, then writes `re
 ```bash
 python3.12 scripts/benchmark_routing_algorithms.py \
   --base-url http://127.0.0.1:4000 \
+  --direct-base-url http://127.0.0.1:8100 \
+  --direct-model mock/weak \
   --model noop=switchyard/noop \
   --model passthrough=switchyard/passthrough \
   --model random=switchyard/random \
@@ -95,14 +97,30 @@ python3.12 scripts/benchmark_routing_algorithms.py \
   --backend-label "release model deployment"
 ```
 
+`--direct-base-url` and `--direct-model` add an AIPerf arm that calls the backend without
+Switchyard. The report writes the end-to-end latency and throughput difference for every routed
+arm. That difference isolates Switchyard overhead only when the direct and routed arms use the
+same backend deployment, model, and response settings. Resilience scenarios have different
+failure semantics, so the script does not run or compare the direct arm for them. For an
+authenticated backend, pass the name of the key variable, not the key itself, with
+`--direct-api-key-env NVIDIA_API_KEY`.
+
+The Markdown report starts with one overhead row for each route and workload. Positive request or
+TTFT latency means the routed request took longer than the direct request. Negative request or
+token throughput means the routed path processed less work. The `standard` scenario set includes
+all non-resilience request patterns exported by the Rust crate: short and long contexts, long
+outputs, shared prefixes, mixed request sizes, growing conversations, large tool catalogs,
+tool-call bursts, stage changes, and easy/hard classifier mixes.
+
 The Rust crate exports one AIPerf `inputs-json` file per scenario. oha reuses the first exported
 `short-interactive` payload as a non-streaming fixed body and reports the raw HTTP request rate and
 latency ceiling. AIPerf replays every selected streaming session and reports request latency, time
 to first token (TTFT), inter-token latency (ITL), request throughput, output-token throughput, and
-multi-run confidence intervals. The command saves `/v1/stats` before and after each AIPerf run so
-the report also records selected-target calls and shares, classifier calls/errors and latency, and
-mean routing overhead. It runs
-jobs sequentially because simultaneous tools would compete for the same server capacity.
+multi-run confidence intervals. The command saves `/v1/stats` before and after each scenario/load
+cell, so the routing calls and errors total all independent repetitions in that cell. The report
+also records selected-target shares, classifier calls/errors and latency, and mean routing
+overhead. It runs jobs sequentially because simultaneous tools would compete for the same server
+capacity.
 
 Use the load schedules after the fixed scenario comparison establishes a baseline:
 
@@ -150,8 +168,14 @@ Install [oha](https://github.com/hatoo/oha) and
 
 ```bash
 cargo install oha
-uv tool install --python 3.12 aiperf
+uv tool install --python 3.12 'aiperf==0.11.0'
 ```
+
+The benchmark checks the AIPerf version before it creates an output directory. It runs each
+repetition in a separate AIPerf process and calculates confidence intervals from those independent
+runs. Each process starts one required record processor before profiling. The benchmark gives each
+process a deadline based on its request schedule, then stops the whole process group if that deadline
+expires. This prevents a startup failure from leaving a benchmark stuck at zero processed records.
 
 Then run the local test from the repository root:
 
@@ -161,6 +185,11 @@ python3.12 scripts/run_local_soak_test.py \
   --concurrency 4 \
   --request-count 100
 ```
+
+The local backend waits 40 ms before the first token and 1 ms between output tokens by default.
+It streams the output limit from each Rust scenario, so decode-heavy requests produce 512 or 1,024
+tokens and AIPerf can measure TTFT, ITL, and token throughput separately. Use
+`--mock-latency-ms` and `--mock-token-latency-ms` to change that deterministic timing model.
 
 `--duration` controls how long the Rust soak tester runs. `--request-count` controls how many
 measured requests each load tool sends to each algorithm. `--help` explains every flag. Set

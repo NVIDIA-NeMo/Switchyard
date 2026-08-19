@@ -4,16 +4,19 @@
 //! Request-aware local backend used by `scripts/run_local_soak_test.py`.
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Json, State};
-use axum::http::{StatusCode, header};
+use axum::http::StatusCode;
+use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use clap::Parser;
+use futures_util::{StreamExt, stream};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
@@ -32,13 +35,21 @@ struct Args {
     /// Artificial delay, in milliseconds, added to ordinary responses.
     #[arg(long, default_value_t = 40)]
     latency_ms: u64,
+
+    /// Artificial delay between streamed output tokens, in milliseconds.
+    #[arg(long, default_value_t = 1)]
+    token_latency_ms: u64,
 }
 
 #[derive(Clone)]
 struct BackendState {
     latency: Duration,
+    token_latency: Duration,
     attempts: Arc<Mutex<HashMap<String, u64>>>,
 }
+
+// AIPerf requires this OpenAI field; a fixed value keeps local runs deterministic.
+const FIXED_CREATED_AT: u64 = 1_700_000_000;
 
 fn scenario_marker(body: &Value) -> Option<&str> {
     body.get("messages")?
@@ -65,6 +76,7 @@ fn completion(model: &str, content: &str) -> Value {
     json!({
         "id": "chatcmpl-switchyard-soak",
         "object": "chat.completion",
+        "created": FIXED_CREATED_AT,
         "model": model,
         "choices": [{
             "index": 0,
@@ -75,30 +87,69 @@ fn completion(model: &str, content: &str) -> Value {
     })
 }
 
-fn stream(model: &str, truncated: bool) -> Response {
-    let first = json!({
-        "id": "chatcmpl-switchyard-soak",
-        "object": "chat.completion.chunk",
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "delta": {"role": "assistant", "content": "OK"},
-            "finish_reason": null
-        }]
-    });
-    let end = json!({
-        "id": "chatcmpl-switchyard-soak",
-        "object": "chat.completion.chunk",
-        "model": model,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 32, "completion_tokens": 2, "total_tokens": 34}
-    });
-    let body = if truncated {
-        format!("data: {first}\n\n")
-    } else {
-        format!("data: {first}\n\ndata: {end}\n\ndata: [DONE]\n\n")
-    };
-    ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+fn requested_output_tokens(body: &Value) -> u64 {
+    body.get("max_completion_tokens")
+        .or_else(|| body.get("max_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(2)
+        .clamp(1, 4_096)
+}
+
+fn stream(
+    model: &str,
+    truncated: bool,
+    completion_tokens: u64,
+    token_latency: Duration,
+) -> Response {
+    let mut events = Vec::with_capacity(completion_tokens as usize + 2);
+    for index in 0..completion_tokens {
+        events.push(
+            json!({
+                "id": "chatcmpl-switchyard-soak",
+                "object": "chat.completion.chunk",
+                "created": FIXED_CREATED_AT,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": (index == 0).then_some("assistant"),
+                        "content": if index == 0 { "token" } else { " token" }
+                    },
+                    "finish_reason": null
+                }]
+            })
+            .to_string(),
+        );
+        if truncated {
+            break;
+        }
+    }
+    if !truncated {
+        events.push(
+            json!({
+                "id": "chatcmpl-switchyard-soak",
+                "object": "chat.completion.chunk",
+                "created": FIXED_CREATED_AT,
+                "model": model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 32,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": 32 + completion_tokens
+                }
+            })
+            .to_string(),
+        );
+        events.push("[DONE]".to_string());
+    }
+    let events =
+        stream::iter(events.into_iter().enumerate()).then(move |(index, data)| async move {
+            if index > 0 {
+                tokio::time::sleep(token_latency).await;
+            }
+            Ok::<Event, Infallible>(Event::default().data(data))
+        });
+    Sse::new(events).into_response()
 }
 
 async fn chat(State(state): State<BackendState>, Json(body): Json<Value>) -> Response {
@@ -154,7 +205,12 @@ async fn chat(State(state): State<BackendState>, Json(body): Json<Value>) -> Res
     }
 
     if body.get("stream") == Some(&Value::Bool(true)) {
-        return stream(model, marker == Some("truncated_stream"));
+        return stream(
+            model,
+            marker == Some("truncated_stream"),
+            requested_output_tokens(&body),
+            state.token_latency,
+        );
     }
     Json(completion(model, "OK")).into_response()
 }
@@ -169,6 +225,7 @@ async fn run(args: Args) -> Result<(), String> {
     let address = listener.local_addr().map_err(|error| error.to_string())?;
     let state = BackendState {
         latency: Duration::from_millis(args.latency_ms),
+        token_latency: Duration::from_millis(args.token_latency_ms),
         attempts: Arc::new(Mutex::new(HashMap::new())),
     };
     let app = Router::new()
@@ -192,6 +249,23 @@ async fn run(args: Args) -> Result<(), String> {
         })
         .await
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::requested_output_tokens;
+
+    #[test]
+    fn output_tokens_follow_openai_limits_and_stay_bounded() {
+        assert_eq!(requested_output_tokens(&json!({"max_tokens": 512})), 512);
+        assert_eq!(
+            requested_output_tokens(&json!({"max_completion_tokens": 8_192})),
+            4_096
+        );
+        assert_eq!(requested_output_tokens(&json!({})), 2);
+    }
 }
 
 #[tokio::main]

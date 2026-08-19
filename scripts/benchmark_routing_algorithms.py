@@ -14,9 +14,18 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+
+if __package__:
+    from .aiperf_runner import aggregate_exports, run_profile, validate_aiperf_version
+else:
+    from aiperf_runner import aggregate_exports, run_profile, validate_aiperf_version
+
+MAX_MATERIALIZED_REQUESTS = 1_000_000
+MAX_MATERIALIZED_BYTES = 256 * 1024 * 1024
+AIPERF_LIFECYCLE_ALLOWANCE_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -27,6 +36,15 @@ class RequiredBinary:
     env_var: str
     value: str
     setup: str
+
+
+@dataclass(frozen=True)
+class DirectBaseline:
+    """A backend endpoint that AIPerf calls without going through Switchyard."""
+
+    base_url: str
+    model: str
+    api_key_env: str | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +70,18 @@ class BenchmarkConfig:
     context_window_tokens: int = 32_768
     request_rate: float | None = None
     scenario_backend_reset_url: str | None = None
+    direct_baseline: DirectBaseline | None = None
+
+
+@dataclass(frozen=True)
+class BenchmarkArm:
+    """One endpoint and model pair included in the comparison."""
+
+    label: str
+    model: str
+    base_url: str
+    bypasses_switchyard: bool
+    api_key_env: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +118,7 @@ class BenchmarkResult:
     algorithm: str
     model: str
     scenario: str
+    scenario_description: str
     scenario_group: str
     load_profile: str
     expected_behavior: str
@@ -116,6 +147,12 @@ class BenchmarkResult:
     classifier_errors: int
     classifier_latency_avg_ms: float | None
     routing_overhead_avg_ms: float | None
+    bypasses_switchyard: bool
+    aiperf_request_throughput_delta_pct: float | None = None
+    aiperf_request_latency_p50_delta_ms: float | None = None
+    aiperf_ttft_p50_delta_ms: float | None = None
+    aiperf_ttft_p99_delta_ms: float | None = None
+    aiperf_output_tokens_per_second_delta_pct: float | None = None
 
 
 def positive_int(value: str) -> int:
@@ -152,6 +189,18 @@ def parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     command.add_argument("--base-url", required=True, help="URL of a running Switchyard server")
+    command.add_argument(
+        "--direct-base-url",
+        help="backend URL for an AIPerf baseline that bypasses Switchyard",
+    )
+    command.add_argument(
+        "--direct-model",
+        help="backend model id for the direct baseline; requires --direct-base-url",
+    )
+    command.add_argument(
+        "--direct-api-key-env",
+        help="environment variable containing the direct backend API key",
+    )
     command.add_argument(
         "--model",
         action="append",
@@ -303,18 +352,19 @@ def reset_scenario_backend(url: str | None) -> None:
         raise RuntimeError(f"scenario backend reset returned an invalid response from {url}")
 
 
-def _nested_number(document: dict[str, object], *keys: str) -> float:
-    current: object = document
-    for key in keys:
-        current = current.get(key) if isinstance(current, dict) else None
-    return float(current) if isinstance(current, int | float) else 0.0
+def _nested_number(document: dict[str, object], section: str, field: str) -> float:
+    section_value = document.get(section)
+    value = section_value.get(field) if isinstance(section_value, dict) else None
+    return float(value) if isinstance(value, int | float) else 0.0
 
 
 def _histogram_delta(
-    before: dict[str, object], after: dict[str, object], *keys: str
+    before: dict[str, object], after: dict[str, object], histogram: str
 ) -> float | None:
-    count = _nested_number(after, *keys, "count") - _nested_number(before, *keys, "count")
-    total = _nested_number(after, *keys, "total_ms") - _nested_number(before, *keys, "total_ms")
+    count = _nested_number(after, histogram, "count") - _nested_number(before, histogram, "count")
+    total = _nested_number(after, histogram, "total_ms") - _nested_number(
+        before, histogram, "total_ms"
+    )
     return total / count if count > 0 else None
 
 
@@ -578,8 +628,7 @@ def _latency(document: dict[str, object], metric: str, statistic: str, path: Pat
 
 
 def parse_result(
-    algorithm: str,
-    model: str,
+    arm: BenchmarkArm,
     scenario: ScenarioDefinition,
     load_profile: str,
     oha_path: Path | None,
@@ -593,7 +642,7 @@ def parse_result(
         oha = read_json_object(oha_path)
         success, _unit = _metric(oha, "summary", "successRate")
         if success != 1:
-            raise RuntimeError(f"oha success rate for {model} was {success}; see {oha_path}")
+            raise RuntimeError(f"oha success rate for {arm.model} was {success}; see {oha_path}")
         oha_rps, _unit = _metric(oha, "summary", "requestsPerSec")
         p50, _unit = _metric(oha, "latencyPercentiles", "p50")
         p99, _unit = _metric(oha, "latencyPercentiles", "p99")
@@ -620,9 +669,10 @@ def parse_result(
     )
     routing = stats_delta(before_stats, after_stats)
     return BenchmarkResult(
-        algorithm=algorithm,
-        model=model,
+        algorithm=arm.label,
+        model=arm.model,
         scenario=scenario.id,
+        scenario_description=scenario.description,
         scenario_group=scenario.group,
         load_profile=load_profile,
         expected_behavior=scenario.expected,
@@ -666,12 +716,98 @@ def parse_result(
         classifier_errors=routing.classifier_errors,
         classifier_latency_avg_ms=routing.classifier_latency_avg_ms,
         routing_overhead_avg_ms=routing.routing_overhead_avg_ms,
+        bypasses_switchyard=arm.bypasses_switchyard,
     )
+
+
+def _percent_change(value: float | None, baseline: float | None) -> float | None:
+    if value is None or baseline is None or baseline == 0:
+        return None
+    return (value / baseline - 1) * 100
+
+
+def _difference(value: float | None, baseline: float | None) -> float | None:
+    if value is None or baseline is None:
+        return None
+    return value - baseline
+
+
+def _direct_baselines(
+    results: Sequence[BenchmarkResult],
+) -> dict[tuple[str, str], BenchmarkResult]:
+    """Index the one direct-backend result allowed for each workload."""
+    baselines = {}
+    for result in results:
+        if not result.bypasses_switchyard:
+            continue
+        key = (result.scenario, result.load_profile)
+        if key in baselines:
+            raise RuntimeError(
+                f"duplicate direct baseline for {result.scenario} {result.load_profile}"
+            )
+        baselines[key] = result
+    return baselines
+
+
+def compare_to_direct_backend(results: Sequence[BenchmarkResult]) -> list[BenchmarkResult]:
+    """Attach AIPerf deltas from the direct-backend row for each workload."""
+    baselines = _direct_baselines(results)
+    if not baselines:
+        return list(results)
+
+    compared = []
+    for result in results:
+        if result.bypasses_switchyard:
+            compared.append(result)
+            continue
+        key = (result.scenario, result.load_profile)
+        baseline = baselines.get(key)
+        if baseline is None:
+            if result.scenario_group != "resilience":
+                raise RuntimeError(
+                    f"missing direct baseline for {result.scenario} {result.load_profile}"
+                )
+            compared.append(result)
+            continue
+        if result.aiperf_error_rate != 0 or baseline.aiperf_error_rate != 0:
+            compared.append(result)
+            continue
+        compared.append(
+            replace(
+                result,
+                aiperf_request_throughput_delta_pct=_percent_change(
+                    result.aiperf_requests_per_second,
+                    baseline.aiperf_requests_per_second,
+                ),
+                aiperf_request_latency_p50_delta_ms=_difference(
+                    result.aiperf_request_latency_p50_ms,
+                    baseline.aiperf_request_latency_p50_ms,
+                ),
+                aiperf_ttft_p50_delta_ms=_difference(
+                    result.aiperf_ttft_p50_ms,
+                    baseline.aiperf_ttft_p50_ms,
+                ),
+                aiperf_ttft_p99_delta_ms=_difference(
+                    result.aiperf_ttft_p99_ms,
+                    baseline.aiperf_ttft_p99_ms,
+                ),
+                aiperf_output_tokens_per_second_delta_pct=_percent_change(
+                    result.aiperf_output_tokens_per_second,
+                    baseline.aiperf_output_tokens_per_second,
+                ),
+            )
+        )
+    return compared
 
 
 def format_metric(value: float | None) -> str:
     """Render a report value without implying precision the benchmark lacks."""
     return "n/a" if value is None else f"{value:.2f}"
+
+
+def format_delta(value: float | None, suffix: str = "") -> str:
+    """Render a signed direct-backend comparison."""
+    return "n/a" if value is None else f"{value:+.2f}{suffix}"
 
 
 def write_report(config: BenchmarkConfig, results: Sequence[BenchmarkResult]) -> None:
@@ -683,6 +819,9 @@ def write_report(config: BenchmarkConfig, results: Sequence[BenchmarkResult]) ->
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "backend": config.backend_label,
         "base_url": config.base_url,
+        "direct_baseline": (
+            asdict(config.direct_baseline) if config.direct_baseline is not None else None
+        ),
         "concurrency": config.concurrency,
         "request_count": config.request_count,
         "profile_runs": config.profile_runs,
@@ -700,21 +839,90 @@ def write_report(config: BenchmarkConfig, results: Sequence[BenchmarkResult]) ->
         writer.writeheader()
         writer.writerows(rows)
 
-    lines = [
-        "# Routing algorithm performance",
-        "",
+    lines = ["# Routing algorithm performance", ""]
+    run_details = [
         f"- Backend: {config.backend_label}",
         f"- AIPerf repetitions per row: {config.profile_runs}",
         f"- Scenario set: {config.scenario_set}",
         "- Run order: algorithms ran back-to-back within each scenario and load; all jobs "
         "remained sequential",
-        "",
-        "## Throughput and latency",
-        "",
-        "| Algorithm | Scenario | Load | oha req/s | AIPerf req/s | request p50 ms | "
-        "TTFT p50 ms | TTFT p99 ms | ITL p50 ms | output tok/s | error rate | gate |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
+    if config.direct_baseline is not None:
+        run_details.append(
+            f"- Direct baseline: `{config.direct_baseline.model}` at "
+            f"`{config.direct_baseline.base_url}`; this arm bypasses Switchyard"
+        )
+        overhead_results = [
+            result
+            for result in results
+            if not result.bypasses_switchyard and result.scenario_group != "resilience"
+        ]
+        lines.extend(
+            (
+                "## Routing overhead versus the direct backend",
+                "",
+                "The direct arm sends the same Rust-exported requests without Switchyard. These "
+                "deltas isolate Switchyard overhead only when both arms use the same backend "
+                "deployment, model, and response settings. Positive latency means the routed "
+                "request took longer. Negative throughput means the routed path processed less "
+                "work. Resilience workloads are shown later but are not compared because their "
+                "failure behavior differs.",
+                "",
+            )
+        )
+        if not overhead_results:
+            lines.append("No successful direct-backend comparisons were available.")
+        else:
+            lines.extend(
+                (
+                    "| Workload | Route | Load | Request p50 | TTFT p50 | Request throughput | "
+                    "Token throughput |",
+                    "|---|---|---|---:|---:|---:|---:|",
+                )
+            )
+            for result in overhead_results:
+                lines.append(
+                    f"| {result.scenario.replace('-', ' ')} | {result.algorithm} | "
+                    f"{result.load_profile} | "
+                    f"{format_delta(result.aiperf_request_latency_p50_delta_ms, ' ms')} | "
+                    f"{format_delta(result.aiperf_ttft_p50_delta_ms, ' ms')} | "
+                    f"{format_delta(result.aiperf_request_throughput_delta_pct, '%')} | "
+                    f"{format_delta(result.aiperf_output_tokens_per_second_delta_pct, '%')} |"
+                )
+        lines.extend(
+            (
+                "",
+                "Use the confidence intervals in the detailed results before treating a small "
+                "throughput change as meaningful. A small negative latency or positive "
+                "throughput delta is run-to-run noise when those intervals overlap. Request and "
+                "token throughput percentage changes match when every arm emits the same fixed "
+                "output length; the detailed table shows the absolute token rates.",
+                "",
+                "## Workloads measured",
+                "",
+                "| Workload | Request pattern |",
+                "|---|---|",
+            )
+        )
+        seen_scenarios = set()
+        for result in overhead_results:
+            if result.scenario in seen_scenarios:
+                continue
+            seen_scenarios.add(result.scenario)
+            lines.append(
+                f"| {result.scenario.replace('-', ' ')} | {result.scenario_description} |"
+            )
+    lines.extend(("", "## Run details", "", *run_details))
+    lines.extend(
+        (
+            "",
+            "## Throughput and latency",
+            "",
+            "| Algorithm | Scenario | Load | oha req/s | AIPerf req/s | request p50 ms | "
+            "TTFT p50 ms | TTFT p99 ms | ITL p50 ms | output tok/s | error rate | gate |",
+            "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        )
+    )
     for result in results:
         if result.scenario_group == "resilience":
             continue
@@ -730,17 +938,54 @@ def write_report(config: BenchmarkConfig, results: Sequence[BenchmarkResult]) ->
             f"{result.aiperf_error_rate:.2%} | "
             f"{'PASS' if result.expectation_met else 'FAIL'} |"
         )
+    if config.profile_runs > 1:
+        lines.extend(
+            (
+                "",
+                "## Repeatability",
+                "",
+                "The script calculates variation and confidence intervals across independent "
+                "AIPerf runs. "
+                "Treat a small throughput delta as noise when these intervals overlap.",
+                "",
+                "| Algorithm | Scenario | Load | req/s average | req/s CV | req/s 95% CI |",
+                "|---|---|---|---:|---:|---:|",
+            )
+        )
+        for result in results:
+            if result.scenario_group == "resilience":
+                continue
+            confidence_interval = (
+                "n/a"
+                if result.aiperf_request_throughput_ci_low is None
+                or result.aiperf_request_throughput_ci_high is None
+                else f"{result.aiperf_request_throughput_ci_low:.2f}–"
+                f"{result.aiperf_request_throughput_ci_high:.2f}"
+            )
+            coefficient_of_variation = (
+                "n/a"
+                if result.aiperf_request_throughput_cv is None
+                else f"{result.aiperf_request_throughput_cv:.2%}"
+            )
+            lines.append(
+                f"| {result.algorithm} | {result.scenario} | {result.load_profile} | "
+                f"{format_metric(result.aiperf_requests_per_second)} | "
+                f"{coefficient_of_variation} | {confidence_interval} |"
+            )
     lines.extend(
         (
             "",
             "## Routing behavior",
             "",
             "| Algorithm | Scenario | Load | selected target calls | selected target share | target errors | "
-            "classifier calls | classifier errors | classifier avg ms | routing avg ms |",
+            "classifier calls | classifier errors | classifier avg ms | "
+            "Switchyard routing time avg ms |",
             "|---|---|---|---|---|---|---:|---:|---:|---:|",
         )
     )
     for result in results:
+        if result.bypasses_switchyard:
+            continue
         lines.append(
             f"| {result.algorithm} | {result.scenario} | {result.load_profile} | "
             f"`{result.selected_model_calls}` | `{result.selected_model_share}` | "
@@ -763,6 +1008,8 @@ def write_report(config: BenchmarkConfig, results: Sequence[BenchmarkResult]) ->
             )
         )
         for result in resilience:
+            if result.bypasses_switchyard:
+                continue
             lines.append(
                 f"| {result.algorithm} | {result.scenario} | {result.load_profile} | "
                 f"{result.aiperf_error_rate:.2%} | "
@@ -834,50 +1081,123 @@ def run_oha(
     return result_path
 
 
+def materialize_aiperf_input(
+    scenario: ScenarioDefinition,
+    output_path: Path,
+    minimum_request_count: int,
+    namespace: str = "load",
+) -> Path:
+    """Repeat Rust-owned sessions with unique ids so AIPerf never wraps the dataset."""
+    if minimum_request_count > MAX_MATERIALIZED_REQUESTS:
+        raise RuntimeError(
+            f"AIPerf input needs {minimum_request_count} requests; maximum is "
+            f"{MAX_MATERIALIZED_REQUESTS}"
+        )
+    document = read_json_object(scenario.input_file)
+    data = document.get("data")
+    if not isinstance(data, list) or not data:
+        raise RuntimeError(f"AIPerf input has no sessions: {scenario.input_file}")
+
+    validated = []
+    requests_per_replica = 0
+    bytes_per_replica = 0
+    for raw_session in data:
+        if not isinstance(raw_session, dict):
+            raise RuntimeError(f"invalid AIPerf session in {scenario.input_file}")
+        session_id = raw_session.get("session_id")
+        payloads = raw_session.get("payloads")
+        if not isinstance(session_id, str) or not isinstance(payloads, list) or not payloads:
+            raise RuntimeError(f"invalid AIPerf session in {scenario.input_file}")
+        validated.append((raw_session, session_id, len(payloads)))
+        requests_per_replica += len(payloads)
+        bytes_per_replica += len(json.dumps(raw_session).encode()) + 64
+    replica_count = math.ceil(minimum_request_count / requests_per_replica)
+    estimated_bytes = replica_count * bytes_per_replica
+    if estimated_bytes > MAX_MATERIALIZED_BYTES:
+        raise RuntimeError(
+            f"AIPerf input would use about {estimated_bytes} bytes; maximum is "
+            f"{MAX_MATERIALIZED_BYTES}"
+        )
+
+    sessions = []
+    request_count = 0
+    replica = 0
+    for _replica_index in range(replica_count):
+        for raw_session, session_id, payload_count in validated:
+            sessions.append(
+                {
+                    **raw_session,
+                    "session_id": f"{session_id}-{namespace}-{replica:06d}",
+                }
+            )
+            request_count += payload_count
+            replica += 1
+            if request_count >= minimum_request_count:
+                break
+        if request_count >= minimum_request_count:
+            break
+    output_path.write_text(json.dumps({"data": sessions}), encoding="utf-8")
+    return output_path
+
+
+def profile_request_count(config: BenchmarkConfig, profile: dict[str, object]) -> int:
+    """Return a conservative request bound for one AIPerf schedule."""
+    if profile.get("kind") != "traffic_burst":
+        return config.request_count
+    duration = profile.get("duration_seconds")
+    points = profile.get("points")
+    if not isinstance(duration, int) or not isinstance(points, list):
+        raise RuntimeError("traffic-burst profile is missing its duration or points")
+    parsed_points = []
+    for point in points:
+        if not isinstance(point, dict):
+            raise RuntimeError("traffic-burst profile has an invalid point")
+        time_s = point.get("time_s")
+        multiplier = point.get("rate_multiplier")
+        if not isinstance(time_s, int | float) or not isinstance(multiplier, int | float):
+            raise RuntimeError("traffic-burst profile has an invalid point")
+        parsed_points.append((float(time_s), float(multiplier)))
+    request_multiplier_seconds = sum(
+        (right_time - left_time) * (left_rate + right_rate) / 2
+        for (left_time, left_rate), (right_time, right_rate) in zip(
+            parsed_points, parsed_points[1:], strict=False
+        )
+    )
+    return math.ceil(request_multiplier_seconds * (config.request_rate or config.concurrency))
+
+
+def aiperf_timeout_seconds(
+    config: BenchmarkConfig,
+    scenario: ScenarioDefinition,
+    profile: dict[str, object],
+    concurrency: int | None,
+) -> int:
+    """Bound one process by its schedule and per-request timeout."""
+    request_timeout = 1 if scenario.id == "client-cancellation" else 30
+    if profile.get("kind") == "traffic_burst":
+        duration = profile.get("duration_seconds")
+        if not isinstance(duration, int):
+            raise RuntimeError(f"traffic-burst profile has no duration for {scenario.id}")
+        workload_seconds = duration + request_timeout
+    else:
+        effective_concurrency = concurrency or config.concurrency
+        workload_seconds = math.ceil(config.request_count / effective_concurrency) * request_timeout
+    return AIPERF_LIFECYCLE_ALLOWANCE_SECONDS + workload_seconds
+
+
 def run_aiperf(
     config: BenchmarkConfig,
-    label: str,
-    model: str,
+    arm: BenchmarkArm,
     scenario: ScenarioDefinition,
     profile: dict[str, object],
     output_dir: Path,
+    artifact_label: str,
     concurrency: int | None = None,
 ) -> Path:
-    """Run one isolated AIPerf profile using a Rust-exported inputs-json dataset."""
-    artifact_dir = output_dir / label
-    command = [
-        config.aiperf_bin,
-        "profile",
-        "--model",
-        model,
-        "--url",
-        config.base_url,
-        "--endpoint-type",
-        "chat",
-        "--streaming",
-        "--tokenizer",
-        config.tokenizer,
-        "--custom-dataset-type",
-        "inputs-json",
-        "--input-file",
-        str(scenario.input_file),
-        "--session-header",
-        "x-switchyard-session-id",
-        "--random-seed",
-        "42",
-        "--warmup-duration",
-        "1",
-        "--num-profile-runs",
-        str(config.profile_runs),
-        "--failed-request-threshold",
-        "1",
-        "--request-timeout-seconds",
-        "1" if scenario.id == "client-cancellation" else "30",
-        "--ui",
-        "none",
-        "--artifact-dir",
-        str(artifact_dir),
-    ]
+    """Run independent AIPerf repetitions using Rust-exported inputs-json datasets."""
+    artifact_root = output_dir / artifact_label
+    effective_concurrency = concurrency or config.concurrency
+    load_arguments: list[str] = []
     kind = profile.get("kind")
     if kind == "traffic_burst":
         points = profile.get("points")
@@ -894,20 +1214,80 @@ def run_aiperf(
                     "qps": base_rate * float(point["rate_multiplier"]),
                 }
             )
-        series_path = output_dir / f"{label}-request-rate.json"
+        series_path = output_dir / f"{artifact_label}-request-rate.json"
         series_path.write_text(
             f"{json.dumps({'points': rate_points}, indent=2)}\n", encoding="utf-8"
         )
-        command.extend(("--request-rate-series", str(series_path), "--arrival-pattern", "constant"))
-        command.extend(("--benchmark-duration", str(profile.get("duration_seconds"))))
-        command.extend(("--concurrency", str(config.concurrency)))
+        load_arguments.extend(
+            ("--request-rate-series", str(series_path), "--arrival-pattern", "constant")
+        )
+        load_arguments.extend(("--benchmark-duration", str(profile.get("duration_seconds"))))
+        load_arguments.extend(("--concurrency", str(config.concurrency)))
     else:
-        command.extend(("--concurrency", str(concurrency or config.concurrency)))
-        command.extend(("--request-count", str(config.request_count)))
-    run_checked(f"AIPerf {label}", command, output_dir / f"{label}.log")
-    if config.profile_runs > 1:
-        return artifact_dir / "aggregate" / "profile_export_aiperf_aggregate.json"
-    return artifact_dir / "profile_export_aiperf.json"
+        load_arguments.extend(("--concurrency", str(effective_concurrency)))
+        load_arguments.extend(("--request-count", str(config.request_count)))
+
+    exports: list[Path] = []
+    for trial in range(1, config.profile_runs + 1):
+        run_label = f"{artifact_label}-run-{trial:02d}"
+        input_path = materialize_aiperf_input(
+            scenario,
+            output_dir / f"{run_label}-inputs.json",
+            profile_request_count(config, profile),
+            namespace=f"{artifact_label}-run-{trial:02d}",
+        )
+        command = [
+            config.aiperf_bin,
+            "profile",
+            "--model",
+            arm.model,
+            "--url",
+            arm.base_url,
+            "--endpoint-type",
+            "chat",
+            "--streaming",
+            "--tokenizer",
+            config.tokenizer,
+            "--custom-dataset-type",
+            "inputs-json",
+            "--input-file",
+            str(input_path),
+            "--session-header",
+            "x-switchyard-session-id",
+            "--random-seed",
+            "42",
+            "--num-profile-runs",
+            "1",
+            "--record-processors",
+            "1",
+            "--request-timeout-seconds",
+            "1" if scenario.id == "client-cancellation" else "30",
+            "--ui",
+            "none",
+            *load_arguments,
+        ]
+        if arm.api_key_env is not None:
+            command.extend(("--api-key", f"${{{arm.api_key_env}}}"))
+        trial_root = (
+            artifact_root / "profile_runs" / f"run_{trial:04d}"
+            if config.profile_runs > 1
+            else artifact_root
+        )
+        exports.append(
+            run_profile(
+                command,
+                output_dir / f"{run_label}.log",
+                trial_root,
+                aiperf_timeout_seconds(config, scenario, profile, concurrency),
+            )
+        )
+    if len(exports) == 1:
+        return exports[0]
+    aggregate_path: Path = aggregate_exports(
+        exports,
+        artifact_root / "aggregate" / "profile_export_aiperf_aggregate.json",
+    )
+    return aggregate_path
 
 
 def run_benchmark(config: BenchmarkConfig) -> Path:
@@ -916,7 +1296,20 @@ def run_benchmark(config: BenchmarkConfig) -> Path:
         raise RuntimeError("at least one algorithm model is required")
     if config.profile_runs > 10:
         raise RuntimeError("--profile-runs must be between 1 and 10")
-    labels = [label for label, _model in config.models]
+    validate_aiperf_version(config.aiperf_bin)
+    arms = [BenchmarkArm(label, model, config.base_url, False) for label, model in config.models]
+    if config.direct_baseline is not None:
+        arms.insert(
+            0,
+            BenchmarkArm(
+                "direct-backend",
+                config.direct_baseline.model,
+                config.direct_baseline.base_url,
+                True,
+                config.direct_baseline.api_key_env,
+            ),
+        )
+    labels = [arm.label for arm in arms]
     if len(labels) != len(set(labels)):
         raise RuntimeError("algorithm labels must be unique")
     config.output_dir.mkdir(parents=True, exist_ok=False)
@@ -925,10 +1318,7 @@ def run_benchmark(config: BenchmarkConfig) -> Path:
     oha_dir.mkdir()
     aiperf_dir.mkdir()
     results = []
-    definition_sets = [
-        export_scenarios(config, index, model)
-        for index, (_algorithm, model) in enumerate(config.models)
-    ]
+    definition_sets = [export_scenarios(config, index, arm.model) for index, arm in enumerate(arms)]
     expected_ids = [scenario.id for scenario in definition_sets[0]]
     for definitions in definition_sets[1:]:
         if [scenario.id for scenario in definitions] != expected_ids:
@@ -950,36 +1340,54 @@ def run_benchmark(config: BenchmarkConfig) -> Path:
                 )
             for concurrency in concurrencies:
                 load_label = profile_id if concurrency is None else f"{profile_id}@{concurrency}"
-                for index, (algorithm, model) in enumerate(config.models):
+                for index, arm in enumerate(arms):
                     scenario = definition_sets[index][scenario_index]
+                    if arm.bypasses_switchyard and scenario.group == "resilience":
+                        continue
                     artifact_label = (
                         f"algorithm-{index:02d}-{scenario.id}-{load_label.replace('@', '-')}"
                     )
                     oha_path = None
-                    if scenario.id == "short-interactive" and profile_id == "fixed":
-                        oha_path = run_oha(config, artifact_label, scenario, oha_dir)
+                    if (
+                        not arm.bypasses_switchyard
+                        and scenario.id == "short-interactive"
+                        and profile_id == "fixed"
+                    ):
+                        oha_path = run_oha(
+                            config,
+                            artifact_label,
+                            scenario,
+                            oha_dir,
+                        )
                     reset_scenario_backend(config.scenario_backend_reset_url)
-                    before = capture_stats(
-                        config.base_url,
-                        aiperf_dir / f"{artifact_label}-stats-before.json",
+                    before = (
+                        {}
+                        if arm.bypasses_switchyard
+                        else capture_stats(
+                            config.base_url,
+                            aiperf_dir / f"{artifact_label}-stats-before.json",
+                        )
                     )
                     aiperf_path = run_aiperf(
                         config,
-                        artifact_label,
-                        model,
+                        arm,
                         scenario,
                         profile,
                         aiperf_dir,
+                        artifact_label,
                         concurrency,
                     )
-                    after = capture_stats(
-                        config.base_url,
-                        aiperf_dir / f"{artifact_label}-stats-after.json",
+                    after = (
+                        {}
+                        if arm.bypasses_switchyard
+                        else capture_stats(
+                            config.base_url,
+                            aiperf_dir / f"{artifact_label}-stats-after.json",
+                        )
                     )
                     results.append(
                         parse_result(
-                            algorithm,
-                            model,
+                            arm,
                             scenario,
                             load_label,
                             oha_path,
@@ -988,6 +1396,7 @@ def run_benchmark(config: BenchmarkConfig) -> Path:
                             after,
                         )
                     )
+    results = compare_to_direct_backend(results)
     write_report(config, results)
     failures = [result for result in results if not result.expectation_met]
     if failures:
@@ -1007,7 +1416,12 @@ def default_output_dir() -> Path:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse arguments, run the comparison, and print one actionable failure."""
-    args = parser().parse_args(argv)
+    command = parser()
+    args = command.parse_args(argv)
+    if (args.direct_base_url is None) != (args.direct_model is None):
+        command.error("--direct-base-url and --direct-model must be used together")
+    if args.direct_api_key_env is not None and args.direct_base_url is None:
+        command.error("--direct-api-key-env requires --direct-base-url and --direct-model")
     try:
         binaries = resolve_binaries(
             (
@@ -1018,7 +1432,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "AIPerf",
                     "AIPERF_BIN",
                     args.aiperf_bin,
-                    "Install AIPerf with: uv tool install --python 3.12 aiperf",
+                    "Install AIPerf with: uv tool install --python 3.12 'aiperf==0.11.0'",
                 ),
                 RequiredBinary(
                     "switchyard-soak",
@@ -1049,6 +1463,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 aiperf_bin=binaries["AIPerf"],
                 soak_bin=binaries["switchyard-soak"],
                 scenario_backend_reset_url=args.scenario_backend_reset_url,
+                direct_baseline=(
+                    DirectBaseline(
+                        args.direct_base_url,
+                        args.direct_model,
+                        args.direct_api_key_env,
+                    )
+                    if args.direct_base_url is not None and args.direct_model is not None
+                    else None
+                ),
             )
         )
     except (OSError, RuntimeError) as error:

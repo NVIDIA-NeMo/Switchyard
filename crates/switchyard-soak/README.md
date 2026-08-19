@@ -92,14 +92,17 @@ The catalog contains:
 NVIDIA AIPerf sequentially for every routing algorithm. The backend returns valid classifier
 verdicts and injects the context, retry, stream, and cancellation cases named by resilience
 scenarios. It resets transient-failure counters before each AIPerf cell so every routing algorithm
-receives the same attempts. The local test needs no provider key and incurs no inference cost.
+receives the same attempts. For streaming requests it emits the scenario's requested output length
+with a configurable delay between tokens, which keeps local TTFT, ITL, and token-throughput
+comparisons deterministic. The local test needs no provider key and incurs no inference cost.
 
 Run `scripts/benchmark_routing_algorithms.py` by itself against an existing Switchyard server to
 compare the same routes with real model output. oha runs only for the fixed `short-interactive`
 baseline. AIPerf replays every selected session and reports TTFT, ITL, request throughput, output
 token throughput, multi-run confidence, selected-target calls, classifier calls, and routing
-overhead. The operations guide explains how to keep the comparison fair and when to use the local
-backend or real models.
+overhead. Add `--direct-base-url` and `--direct-model` to compare each route with the same backend
+without Switchyard. The operations guide explains how to keep the comparison fair and when to use
+the local backend or real models.
 
 The script needs the built Rust programs plus installed `oha` and AIPerf commands.
 `switchyard-soak` itself does not require those extra programs and can run by itself against a
