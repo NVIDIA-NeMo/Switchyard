@@ -1375,26 +1375,42 @@ The command runs oha and AIPerf sequentially for every model id, then writes <co
 <code>report.csv</code>, and <code>report.json</code> beside both tools' raw results:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>python3.12<span class="w"> </span>scripts/benchmark_routing_algorithms.py<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">noop</span><span class="o">=</span>switchyard/noop<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">passthrough</span><span class="o">=</span>switchyard/passthrough<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">random</span><span class="o">=</span>switchyard/random<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">llm_classifier</span><span class="o">=</span>switchyard/classifier<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">stage_router</span><span class="o">=</span>switchyard/stage<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span>--request-count<span class="w"> </span><span class="m">1000</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">  </span>--scenario-set<span class="w"> </span>standard<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">  </span>--load-profile<span class="w"> </span>fixed<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">  </span>--profile-runs<span class="w"> </span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">  </span>--backend-label<span class="w"> </span><span class="s2">&quot;release model deployment&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--direct-base-url<span class="w"> </span>http://127.0.0.1:8100<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--direct-model<span class="w"> </span>mock/weak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">noop</span><span class="o">=</span>switchyard/noop<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">passthrough</span><span class="o">=</span>switchyard/passthrough<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">random</span><span class="o">=</span>switchyard/random<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">llm_classifier</span><span class="o">=</span>switchyard/classifier<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">stage_router</span><span class="o">=</span>switchyard/stage<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">  </span>--request-count<span class="w"> </span><span class="m">1000</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">  </span>--scenario-set<span class="w"> </span>standard<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">  </span>--load-profile<span class="w"> </span>fixed<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">  </span>--profile-runs<span class="w"> </span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">  </span>--backend-label<span class="w"> </span><span class="s2">&quot;release model deployment&quot;</span>
 </span></code></pre></div>
+<p><code>--direct-base-url</code> and <code>--direct-model</code> add an AIPerf arm that calls the backend without
+Switchyard. The report writes the end-to-end latency and throughput difference for every routed
+arm. That difference isolates Switchyard overhead only when the direct and routed arms use the
+same backend deployment, model, and response settings. Resilience scenarios have different
+failure semantics, so the script does not run or compare the direct arm for them. For an
+authenticated backend, pass the name of the key variable, not the key itself, with
+<code>--direct-api-key-env NVIDIA_API_KEY</code>.</p>
+<p>The Markdown report starts with one overhead row for each route and workload. Positive request or
+TTFT latency means the routed request took longer than the direct request. Negative request or
+token throughput means the routed path processed less work. The <code>standard</code> scenario set includes
+all non-resilience request patterns exported by the Rust crate: short and long contexts, long
+outputs, shared prefixes, mixed request sizes, growing conversations, large tool catalogs,
+tool-call bursts, stage changes, and easy/hard classifier mixes.</p>
 <p>The Rust crate exports one AIPerf <code>inputs-json</code> file per scenario. oha reuses the first exported
 <code>short-interactive</code> payload as a non-streaming fixed body and reports the raw HTTP request rate and
 latency ceiling. AIPerf replays every selected streaming session and reports request latency, time
 to first token (TTFT), inter-token latency (ITL), request throughput, output-token throughput, and
-multi-run confidence intervals. The command saves <code>/v1/stats</code> before and after each AIPerf run so
-the report also records selected-target calls and shares, classifier calls/errors and latency, and
-mean routing overhead. It runs
-jobs sequentially because simultaneous tools would compete for the same server capacity.</p>
+multi-run confidence intervals. The command saves <code>/v1/stats</code> before and after each scenario/load
+cell, so the routing calls and errors total all independent repetitions in that cell. The report
+also records selected-target shares, classifier calls/errors and latency, and mean routing
+overhead. It runs jobs sequentially because simultaneous tools would compete for the same server
+capacity.</p>
 <p>Use the load schedules after the fixed scenario comparison establishes a baseline:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>python3.12<span class="w"> </span>scripts/benchmark_routing_algorithms.py<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
@@ -1429,14 +1445,23 @@ and scenario backend from the commit under test:</p>
 <p>Install <a href="https://github.com/hatoo/oha">oha</a> and
 <a href="https://docs.nvidia.com/aiperf/reference/command-line-options">NVIDIA AIPerf</a>:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>oha
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span>aiperf
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span><span class="s1">&#39;aiperf==0.11.0&#39;</span>
 </span></code></pre></div>
+<p>The benchmark checks the AIPerf version before it creates an output directory. It runs each
+repetition in a separate AIPerf process and calculates confidence intervals from those independent
+runs. Each process starts one required record processor before profiling. The benchmark gives each
+process a deadline based on its request schedule, then stops the whole process group if that deadline
+expires. This prevents a startup failure from leaving a benchmark stuck at zero processed records.</p>
 <p>Then run the local test from the repository root:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>python3.12<span class="w"> </span>scripts/run_local_soak_test.py<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--duration<span class="w"> </span>10s<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--request-count<span class="w"> </span><span class="m">100</span>
 </span></code></pre></div>
+<p>The local backend waits 40 ms before the first token and 1 ms between output tokens by default.
+It streams the output limit from each Rust scenario, so decode-heavy requests produce 512 or 1,024
+tokens and AIPerf can measure TTFT, ITL, and token throughput separately. Use
+<code>--mock-latency-ms</code> and <code>--mock-token-latency-ms</code> to change that deterministic timing model.</p>
 <p><code>--duration</code> controls how long the Rust soak tester runs. <code>--request-count</code> controls how many
 measured requests each load tool sends to each algorithm. <code>--help</code> explains every flag. Set
 <code>OHA_BIN</code>, <code>AIPERF_BIN</code>,

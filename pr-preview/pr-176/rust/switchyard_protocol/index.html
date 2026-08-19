@@ -3,7 +3,7 @@
 shared by Switchyard algorithms, clients, and translation codecs. This crate
 defines contracts; it does not route, translate, or perform network calls.</p>
 <h3 id="setup"><a class="doc-anchor" href="#setup">§</a>Setup</h3><div class="example-wrap"><pre class="language-toml"><code>[dependencies]
-switchyard-protocol = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }
+switchyard-protocol = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;, tag = &quot;v0.2.0&quot; }
 serde_json = &quot;1&quot;</code></pre></div><h3 id="main-types"><a class="doc-anchor" href="#main-types">§</a>Main types</h3><div><table><thead><tr><th>Area</th><th>Types</th></tr></thead><tbody>
 <tr><td>Conversation</td><td><a href="llm/struct.LlmRequest.html" title="struct switchyard_protocol::llm::LlmRequest"><code>LlmRequest</code></a>, <a href="llm/struct.Message.html" title="struct switchyard_protocol::llm::Message"><code>Message</code></a>, <a href="llm/struct.InstructionBlock.html" title="struct switchyard_protocol::llm::InstructionBlock"><code>InstructionBlock</code></a>, <a href="llm/enum.ContentBlock.html" title="enum switchyard_protocol::llm::ContentBlock"><code>ContentBlock</code></a></td></tr>
 <tr><td>Tools</td><td><a href="llm/struct.ToolDefinition.html" title="struct switchyard_protocol::llm::ToolDefinition"><code>ToolDefinition</code></a>, <a href="llm/enum.ToolChoice.html" title="enum switchyard_protocol::llm::ToolChoice"><code>ToolChoice</code></a>, <a href="llm/struct.ToolCall.html" title="struct switchyard_protocol::llm::ToolCall"><code>ToolCall</code></a>, <a href="llm/struct.ToolResult.html" title="struct switchyard_protocol::llm::ToolResult"><code>ToolResult</code></a></td></tr>
