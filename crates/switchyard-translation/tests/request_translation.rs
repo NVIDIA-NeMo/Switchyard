@@ -1449,6 +1449,138 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
     Ok(())
 }
 
+// Builds an Anthropic request whose structured output uses the given field shape.
+fn anthropic_structured_output_request(output: Value) -> Value {
+    let mut body = json!({
+        "model": "captured-model",
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "ping"}]
+    });
+    let object = body.as_object_mut().expect("request object");
+    for (key, value) in output.as_object().expect("output object") {
+        object.insert(key.clone(), value.clone());
+    }
+    body
+}
+
+fn city_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+        "additionalProperties": false
+    })
+}
+
+// Anthropic carries structured output in `output_config.format`, with the top-level
+// `output_format` as the earlier beta spelling it still accepts. The neutral contract
+// is OpenAI-shaped, so an ingress schema has to survive into `response_format` or the
+// upstream is never asked for structured output. A shape that cannot be mapped is
+// reported rather than forwarded unconstrained, and reasoning effort shares
+// `output_config`, so reading the schema must leave it alone.
+#[test]
+fn anthropic_structured_output_maps_to_openai_response_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = json!({"type": "json_schema", "schema": city_schema()});
+    let stale = json!({"type": "json_schema", "schema": {"type": "object"}});
+    let cases: Vec<(&str, Value, Option<Value>, Option<&str>)> = vec![
+        (
+            "current field, alongside effort",
+            json!({"output_config": {"effort": "high", "format": format}}),
+            Some(city_schema()),
+            Some("high"),
+        ),
+        (
+            "legacy beta field",
+            json!({"output_format": format}),
+            Some(city_schema()),
+            None,
+        ),
+        (
+            "current field wins over legacy",
+            json!({"output_config": {"format": format}, "output_format": stale}),
+            Some(city_schema()),
+            None,
+        ),
+        ("no structured output", json!({}), None, None),
+        (
+            "unsupported format type",
+            json!({"output_config": {"format": {"type": "json_object"}}}),
+            None,
+            None,
+        ),
+        (
+            "schema is not an object",
+            json!({"output_config": {"format": {"type": "json_schema", "schema": "nope"}}}),
+            None,
+            None,
+        ),
+    ];
+
+    for (label, output, expected_schema, expected_effort) in cases {
+        let translated = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &anthropic_structured_output_request(output.clone()),
+            &TranslationPolicy::default(),
+        )?;
+        let response_format = translated.body.get("response_format");
+
+        match &expected_schema {
+            Some(schema) => {
+                let response_format = response_format.ok_or(label)?;
+                assert_eq!(response_format["json_schema"]["schema"], *schema, "{label}");
+                assert!(
+                    response_format["json_schema"]["name"]
+                        .as_str()
+                        .is_some_and(|name| !name.is_empty()),
+                    "{label}"
+                );
+            }
+            None => assert!(response_format.is_none(), "{label}"),
+        }
+        if let Some(effort) = expected_effort {
+            assert_eq!(translated.body["reasoning_effort"], effort, "{label}");
+        }
+
+        // A format that was present but unmapped is the only case that must report.
+        let unmapped = expected_schema.is_none() && output.get("output_config").is_some();
+        assert_eq!(
+            translated
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("Anthropic structured output")),
+            unmapped,
+            "{label}"
+        );
+    }
+    Ok(())
+}
+
+// Strict callers get an error instead of an unconstrained upstream request.
+#[test]
+fn anthropic_unmappable_output_format_is_rejected_under_strict_policy() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+    let body = anthropic_structured_output_request(json!({
+        "output_config": {"format": {"type": "json_object"}}
+    }));
+
+    match engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &body,
+        &policy,
+    ) {
+        Ok(_) => panic!("an unmappable output format should be rejected by strict policy"),
+        Err(error) => assert_eq!(error.kind(), "LossyConversion"),
+    }
+    Ok(())
+}
+
 // Verifies Anthropic receives its supported schema subset without mutating the neutral contract.
 #[test]
 fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestResult {
