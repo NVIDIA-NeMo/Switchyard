@@ -705,12 +705,9 @@ async fn decision(
     };
     match state.decision_response(route, &outcome, response) {
         Some(response) => Json(response).into_response(),
-        None => error_response(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "routing outcome contains a model with no callable target configuration",
-            "invalid_request_error",
-            "decision_not_callable",
-        ),
+        None => {
+            server_error("routing outcome contains a model with no callable target configuration")
+        }
     }
 }
 
