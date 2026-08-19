@@ -246,6 +246,9 @@ fn build_multi_format_client(
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
+- `ModelConfig::with_responses_reasoning` controls reasoning-item replay for a
+  Responses model. `PreserveEncrypted` keeps signed provider state without
+  plaintext; `Drop` removes reasoning while retaining messages and tool history.
 
 Retries replay the same upstream request to the same model. Each candidate's
 `max_retries` budget is exhausted before candidate fallback advances to the next

@@ -62,6 +62,7 @@ pub struct ModelConfig {
     model_name: ModelId,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
+    responses_reasoning: crate::ResponsesReasoningPolicy,
 }
 
 impl ModelConfig {
@@ -76,7 +77,15 @@ impl ModelConfig {
             model_name: model_name.into(),
             default_backend,
             other_backends,
+            responses_reasoning: crate::ResponsesReasoningPolicy::default(),
         }
+    }
+
+    /// Sets how Responses reasoning items are replayed to this model.
+    #[must_use]
+    pub fn with_responses_reasoning(mut self, policy: crate::ResponsesReasoningPolicy) -> Self {
+        self.responses_reasoning = policy;
+        self
     }
 }
 
@@ -220,6 +229,13 @@ impl TranslatingLlmClient {
         if matches!(backend, Backend::Anthropic(_)) {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
+        }
+        if matches!(backend, Backend::OpenAiResponses(_)) {
+            self.model_to_config
+                .get(model)
+                .map(|config| config.responses_reasoning)
+                .unwrap_or_default()
+                .normalize(&mut body);
         }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
@@ -871,6 +887,21 @@ mod tests {
         )]
     }
 
+    fn responses_map(base_url: &str) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(config(base_url)),
+            None,
+        )]
+    }
+
+    fn local_responses_map(base_url: &str) -> Vec<ModelConfig> {
+        vec![
+            ModelConfig::new("local", Backend::OpenAiResponses(config(base_url)), None)
+                .with_responses_reasoning(crate::ResponsesReasoningPolicy::Drop),
+        ]
+    }
+
     fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {
         vec![ModelConfig::new(
             "gpt",
@@ -1363,6 +1394,149 @@ mod tests {
                 None,
                 Some(&ModelId::from("claude")),
                 WireFormat::AnthropicMessages,
+            )
+            .await?;
+        Ok(())
+    }
+
+    // Local Responses backends can emit plaintext reasoning that strict upstreams cannot replay.
+    // Conversely, local backends require signed reasoning replayed from a strict
+    // upstream to retain `content` as an array, even though it must be empty.
+    #[tokio::test]
+    async fn responses_requests_drop_unsigned_reasoning_items()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let Some(input) = body.get("input").and_then(Value::as_array) else {
+                    return false;
+                };
+                let reasoning: Vec<&Value> = input
+                    .iter()
+                    .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+                    .collect();
+                reasoning.len() == 1
+                    && reasoning[0]
+                        .get("encrypted_content")
+                        .and_then(Value::as_str)
+                        == Some("encrypted")
+                    && reasoning[0].get("content") == Some(&json!([]))
+                    && input.iter().any(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call")
+                    })
+                    && input.iter().any(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    })
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "gpt",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&responses_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "input": [
+                {"type": "message", "role": "user", "content": "inspect the repo"},
+                {
+                    "type": "reasoning",
+                    "content": [{"type": "reasoning_text", "text": "private local reasoning"}],
+                    "encrypted_content": ""
+                },
+                {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+                {
+                    "type": "reasoning",
+                    "content": [{"type": "reasoning_text", "text": "must not be replayed"}],
+                    "encrypted_content": "encrypted"
+                }
+            ]
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?;
+        Ok(())
+    }
+
+    // Encrypted hosted reasoning is opaque to a local Responses backend. Dropping
+    // it avoids llama.cpp rejecting a missing or empty `content` array while
+    // retaining the conversation and tool-call history it can consume.
+    #[tokio::test]
+    async fn local_responses_requests_drop_encrypted_reasoning_items()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let Some(input) = body.get("input").and_then(Value::as_array) else {
+                    return false;
+                };
+                input
+                    .iter()
+                    .all(|item| item.get("type").and_then(Value::as_str) != Some("reasoning"))
+                    && input.iter().any(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call")
+                    })
+                    && input.iter().any(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    })
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_local",
+                "object": "response",
+                "model": "local",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client =
+            TranslatingLlmClient::new(&local_responses_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "inspect"}]},
+                {
+                    "type": "reasoning",
+                    "encrypted_content": "opaque-provider-reasoning"
+                },
+                {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+            ]
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("local")),
+                WireFormat::OpenAiResponses,
             )
             .await?;
         Ok(())
