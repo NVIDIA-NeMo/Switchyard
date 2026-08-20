@@ -144,44 +144,30 @@ mod tests {
         completion_text, text_request,
     };
 
-    struct AlternatingClassifier {
+    struct ScriptedClassifier {
         calls: AtomicUsize,
     }
 
     #[async_trait]
-    impl Classifier<State> for AlternatingClassifier {
+    impl Classifier<State> for ScriptedClassifier {
         async fn score(
             &self,
             _state: &mut State,
             _request: &mut Request,
             _driver: Option<&Driver>,
         ) -> crate::Result<(Classification, Option<Response>)> {
-            let target = if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
-                "worker"
-            } else {
-                "reviewer"
-            };
-            Ok((
-                Classification::Scores(vec![Score {
+            let scores = match self.calls.fetch_add(1, Ordering::Relaxed) {
+                0 => vec![Score {
                     confidence: 1.0,
-                    target: ModelId::from(target),
-                }]),
-                None,
-            ))
-        }
-    }
-
-    struct AbstainingClassifier;
-
-    #[async_trait]
-    impl Classifier<State> for AbstainingClassifier {
-        async fn score(
-            &self,
-            _state: &mut State,
-            _request: &mut Request,
-            _driver: Option<&Driver>,
-        ) -> crate::Result<(Classification, Option<Response>)> {
-            Ok((Classification::Scores(Vec::new()), None))
+                    target: ModelId::from("worker"),
+                }],
+                1 => vec![Score {
+                    confidence: 1.0,
+                    target: ModelId::from("reviewer"),
+                }],
+                _ => Vec::new(),
+            };
+            Ok((Classification::Scores(scores), None))
         }
     }
 
@@ -243,51 +229,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn parent_traffic_keeps_the_passthrough_target() -> crate::Result<()> {
-        let router = configured(Arc::new(AlternatingClassifier {
-            calls: AtomicUsize::new(0),
-        }))?;
-
-        let (selected, _) = test_drive(router, request(None), echo()).await?;
-
-        assert_eq!(selected, "parent");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn classifier_decision_is_retained_per_child() -> crate::Result<()> {
-        let classifier = Arc::new(AlternatingClassifier {
+    async fn routes_parent_and_children_with_affinity_and_default() -> crate::Result<()> {
+        let classifier = Arc::new(ScriptedClassifier {
             calls: AtomicUsize::new(0),
         });
         let router = configured(classifier.clone())?;
 
+        let (parent, _) = test_drive(router.clone(), request(None), echo()).await?;
         let (first, _) = test_drive(router.clone(), child("child-1"), echo()).await?;
         let (same_child, _) = test_drive(router.clone(), child("child-1"), echo()).await?;
-        let (sibling, _) = test_drive(router, child("child-2"), echo()).await?;
-
-        assert_eq!(first, "worker");
-        assert_eq!(same_child, "worker");
-        assert_eq!(sibling, "reviewer");
-        assert_eq!(classifier.calls.load(Ordering::Relaxed), 2);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn an_abstaining_child_classifier_uses_the_child_default() -> crate::Result<()> {
-        let router = configured(Arc::new(AbstainingClassifier))?;
-
-        let (selected, _) = test_drive(router, child("child-1"), echo()).await?;
-
-        assert_eq!(selected, "worker");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn maintenance_traffic_ignores_an_existing_child_pin() -> crate::Result<()> {
-        let router = configured(Arc::new(AlternatingClassifier {
-            calls: AtomicUsize::new(0),
-        }))?;
-        test_drive(router.clone(), child("child-1"), echo()).await?;
+        let (sibling, _) = test_drive(router.clone(), child("child-2"), echo()).await?;
+        let (defaulted, _) = test_drive(router.clone(), child("child-3"), echo()).await?;
         let maintenance = request(Some(Metadata {
             session_id: Some("session-1".to_string()),
             agent_id: Some("child-1".to_string()),
@@ -295,10 +247,15 @@ mod tests {
             is_delegated_work: false,
             ..Metadata::default()
         }));
+        let (maintenance, _) = test_drive(router, maintenance, echo()).await?;
 
-        let (selected, _) = test_drive(router, maintenance, echo()).await?;
-
-        assert_eq!(selected, "parent");
+        assert_eq!(parent, "parent");
+        assert_eq!(first, "worker");
+        assert_eq!(same_child, "worker");
+        assert_eq!(sibling, "reviewer");
+        assert_eq!(defaulted, "worker");
+        assert_eq!(maintenance, "parent");
+        assert_eq!(classifier.calls.load(Ordering::Relaxed), 3);
         Ok(())
     }
 

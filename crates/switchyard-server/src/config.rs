@@ -1379,6 +1379,29 @@ target = "weak"
         }
     }
 
+    fn passthrough_with_subagent_classifier(extra: &str) -> String {
+        let configured = VALID_CONFIG.replace(
+            "[routes.passthrough]\nid = \"switchyard/passthrough\"\ntype = \"passthrough\"\ntarget = \"weak\"",
+            r#"[routes.passthrough]
+id = "switchyard/passthrough"
+type = "passthrough"
+target = "weak"
+
+[routes.passthrough.subagent_classifier]
+classifier_target = "classifier"
+targets = ["strong", "weak"]
+default_target = "weak"
+prompt = "Select a target for this delegated task."
+response_schema = '{"type":"object","properties":{"target":{"type":"string","enum":["strong","weak"]}},"required":["target"],"additionalProperties":false}'
+policy = { type = "target_selector", selector = "/target" }
+classify_trigger = "new_session""#,
+        );
+        configured.replace(
+            "classify_trigger = \"new_session\"",
+            &format!("classify_trigger = \"new_session\"{extra}"),
+        )
+    }
+
     #[test]
     fn builds_all_supported_algorithm_types() -> ServerResult<()> {
         let state = server_state_from_toml(VALID_CONFIG)?;
@@ -1397,52 +1420,10 @@ target = "weak"
 
     #[test]
     fn passthrough_accepts_a_custom_subagent_classifier() -> ServerResult<()> {
-        let configured = VALID_CONFIG.replace(
-            "[routes.passthrough]\nid = \"switchyard/passthrough\"\ntype = \"passthrough\"\ntarget = \"weak\"",
-            r#"[routes.passthrough]
-id = "switchyard/passthrough"
-type = "passthrough"
-target = "weak"
-
-[routes.passthrough.subagent_classifier]
-classifier_target = "classifier"
-targets = ["strong", "weak"]
-default_target = "weak"
-prompt = "Select a target for this delegated task."
-response_schema = '{"type":"object","properties":{"target":{"type":"string","enum":["strong","weak"]}},"required":["target"],"additionalProperties":false}'
-policy = { type = "target_selector", selector = "/target" }
-classify_trigger = "new_session""#,
-        );
+        let configured = passthrough_with_subagent_classifier("");
 
         server_state_from_toml(&configured)?;
         Ok(())
-    }
-
-    #[test]
-    fn passthrough_subagent_classifier_rejects_message_hash_fallback() {
-        let configured = VALID_CONFIG.replace(
-            "[routes.passthrough]\nid = \"switchyard/passthrough\"\ntype = \"passthrough\"\ntarget = \"weak\"",
-            r#"[routes.passthrough]
-id = "switchyard/passthrough"
-type = "passthrough"
-target = "weak"
-
-[routes.passthrough.subagent_classifier]
-classifier_target = "classifier"
-targets = ["strong", "weak"]
-default_target = "weak"
-prompt = "Select a target for this delegated task."
-response_schema = '{"type":"object","properties":{"target":{"type":"string","enum":["strong","weak"]}},"required":["target"],"additionalProperties":false}'
-policy = { type = "target_selector", selector = "/target" }
-classify_trigger = "new_session"
-message_hash_fallback = true"#,
-        );
-
-        assert!(
-            error_message(&configured).contains("cannot use message_hash_fallback"),
-            "{}",
-            error_message(&configured)
-        );
     }
 
     #[test]
@@ -1648,6 +1629,10 @@ classifier_magic = true
                     "base_threshold = 0.5\nmessage_hash_fallback = true",
                 ),
                 "message_hash_fallback requires classify_trigger = new_session",
+            ),
+            (
+                passthrough_with_subagent_classifier("\nmessage_hash_fallback = true"),
+                "cannot use message_hash_fallback",
             ),
             (
                 VALID_CONFIG.replace(
