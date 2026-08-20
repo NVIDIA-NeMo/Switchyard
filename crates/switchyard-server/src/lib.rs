@@ -692,6 +692,9 @@ async fn decision(
                 Ok(aggregate) => aggregate,
                 Err(error) => return client_error(&error),
             };
+            // The request moved into the decision run, so its namespace mapping
+            // is gone by here. A Codex tool call in this preview keeps its
+            // qualified name.
             match encode_aggregated_response(
                 &aggregate,
                 input_format,
@@ -924,6 +927,8 @@ async fn handle_llm_request(
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
+    // Only the Codex namespace mapping is needed downstream, not the whole request.
+    let request_extensions = request.llm_request.extensions.clone();
     let algorithm = Arc::clone(&route.algorithm);
     let client_router = route.target_clients.clone();
     let observer = stats_observer(
@@ -956,10 +961,11 @@ async fn handle_llm_request(
     };
 
     let response_model = served_model.as_ref().map(ToString::to_string);
-    let mut response = match into_http_response(response, wire_format, response_model) {
-        Ok(response) => response,
-        Err(error) => return server_error(error.to_string()),
-    };
+    let mut response =
+        match into_http_response(response, wire_format, response_model, request_extensions) {
+            Ok(response) => response,
+            Err(error) => return server_error(error.to_string()),
+        };
     if let Some(served_model) = served_model.as_ref() {
         attach_routing_headers(&mut response, served_model.as_str());
     }

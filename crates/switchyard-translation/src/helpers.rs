@@ -56,12 +56,34 @@ pub fn encode_aggregated_response(
     wire_format: WireFormat,
     served_model: Option<&str>,
 ) -> Result<Value> {
+    encode_aggregated_response_with_extensions(
+        agg,
+        wire_format,
+        served_model,
+        &switchyard_protocol::ProviderExtensions::default(),
+    )
+}
+
+/// Encodes an aggregated response, honouring request extensions.
+///
+/// Identical to [`encode_aggregated_response`] except that Codex tool
+/// namespaces recorded on the request are restored on the encoded body.
+pub fn encode_aggregated_response_with_extensions(
+    agg: &AggLlmResponse,
+    wire_format: WireFormat,
+    served_model: Option<&str>,
+    request_extensions: &switchyard_protocol::ProviderExtensions,
+) -> Result<Value> {
     let mut body = DEFAULT_TRANSLATION_ENGINE
         .encode_response(wire_format, agg, &DEFAULT_TRANSLATION_POLICY)?
         .body;
     if let (Some(model), Value::Object(object)) = (served_model, &mut body) {
         object.insert("model".to_string(), Value::String(model.to_string()));
     }
+    crate::codex_namespaces::restore_qualified_tool_names(
+        &mut body,
+        &crate::codex_namespaces::qualified_tool_origins(request_extensions),
+    );
     Ok(body)
 }
 
@@ -86,6 +108,25 @@ pub fn encode_stream(
     target: WireFormat,
     served_model: Option<String>,
 ) -> std::result::Result<RawEventStream, LlmClientError> {
+    encode_stream_with_extensions(
+        chunks,
+        target,
+        served_model,
+        &switchyard_protocol::ProviderExtensions::default(),
+    )
+}
+
+/// Encodes a response stream, honouring request extensions.
+///
+/// Identical to [`encode_stream`] except that Codex tool namespaces recorded on
+/// the request are restored on each encoded event.
+pub fn encode_stream_with_extensions(
+    chunks: LlmResponseStream,
+    target: WireFormat,
+    served_model: Option<String>,
+    request_extensions: &switchyard_protocol::ProviderExtensions,
+) -> std::result::Result<RawEventStream, LlmClientError> {
+    let origins = crate::codex_namespaces::qualified_tool_origins(request_extensions);
     let target_format: FormatId = target.into();
     // The target is always a built-in wire format, so this lookup cannot fail; a
     // failure returns as an `Err` rather than a panic.
@@ -115,6 +156,7 @@ pub fn encode_stream(
                     target,
                     served_model_for_events.as_deref(),
                 );
+                crate::codex_namespaces::restore_qualified_tool_names(&mut value, &origins);
                 yield value;
             }
             if state.errored {
@@ -127,6 +169,7 @@ pub fn encode_stream(
                 target,
                 served_model_for_events.as_deref(),
             );
+            crate::codex_namespaces::restore_qualified_tool_names(&mut value, &origins);
             yield value;
         }
     };
