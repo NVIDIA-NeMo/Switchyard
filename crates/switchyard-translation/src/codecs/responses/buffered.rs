@@ -166,7 +166,10 @@ impl FormatCodec for OpenAiResponsesCodec {
             );
         }
         if let Some(choice) = &request.tool_choice
-            && let Some(choice) = encode_responses_tool_choice(choice)
+            && let Some(choice) = encode_responses_tool_choice(
+                choice,
+                crate::codex_namespaces::tool_namespaces(&request.extensions),
+            )
         {
             body.insert("tool_choice".to_string(), choice);
         }
@@ -895,12 +898,22 @@ fn decode_responses_tool_choice(value: &Value) -> Option<ToolChoice> {
         Value::String(text) if text == "required" => Some(ToolChoice::Required),
         Value::String(text) if text == "none" => Some(ToolChoice::None),
         Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("function") => {
-            object
-                .get("name")
-                .and_then(Value::as_str)
-                .map(|name| ToolChoice::Tool {
-                    name: name.to_string(),
-                })
+            // A forced tool has to name the same thing its definition does, or
+            // the upstream rejects a choice naming a tool it was never offered.
+            object.get("name").and_then(Value::as_str).map(|name| {
+                match object
+                    .get("namespace")
+                    .and_then(Value::as_str)
+                    .filter(|namespace| !namespace.is_empty())
+                {
+                    Some(namespace) => ToolChoice::Tool {
+                        name: crate::codex_namespaces::qualified_tool_name(namespace, name),
+                    },
+                    None => ToolChoice::Tool {
+                        name: name.to_string(),
+                    },
+                }
+            })
         }
         Value::Object(_) => None,
         _ => Some(ToolChoice::Raw(value.clone())),
@@ -1221,12 +1234,25 @@ fn encode_responses_tools(
 }
 
 // Encodes normalized tool choice into Responses JSON.
-fn encode_responses_tool_choice(choice: &ToolChoice) -> Option<Value> {
+fn encode_responses_tool_choice(
+    choice: &ToolChoice,
+    namespaces: Option<&Map<String, Value>>,
+) -> Option<Value> {
     match choice {
         ToolChoice::Auto => Some(Value::String("auto".to_string())),
         ToolChoice::Required => Some(Value::String("required".to_string())),
         ToolChoice::None => Some(Value::String("none".to_string())),
-        ToolChoice::Tool { name } => Some(json!({"type": "function", "name": name})),
+        ToolChoice::Tool { name } => {
+            let split = namespaces.and_then(|namespaces| {
+                crate::codex_namespaces::split_qualified_name(namespaces, name)
+            });
+            Some(match split {
+                Some((tool, namespace)) => {
+                    json!({"type": "function", "name": tool, "namespace": namespace})
+                }
+                None => json!({"type": "function", "name": name}),
+            })
+        }
         ToolChoice::Raw(value) => Some(value.clone()),
     }
 }

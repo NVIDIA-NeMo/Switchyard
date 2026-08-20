@@ -152,8 +152,9 @@ async fn upstream_chat(
         // Streamed tool call, for the namespace-on-every-event assertions. The
         // model calls a tool by the name it was given, so echo that name back.
         if body["messages"][0]["content"] == "mcp-tool-call" {
-            let called = body["tools"][0]["function"]["name"]
+            let called = body["tool_choice"]["function"]["name"]
                 .as_str()
+                .or_else(|| body["tools"][0]["function"]["name"].as_str())
                 .unwrap_or("search")
                 .to_string();
             let events = [
@@ -232,8 +233,9 @@ async fn upstream_chat(
 
     // Buffered tool call, the non-streaming counterpart of the branch above.
     if body["messages"][0]["content"] == "mcp-tool-call" {
-        let called = body["tools"][0]["function"]["name"]
+        let called = body["tool_choice"]["function"]["name"]
             .as_str()
+            .or_else(|| body["tools"][0]["function"]["name"].as_str())
             .unwrap_or("search")
             .to_string();
         return Json(json!({
@@ -3278,110 +3280,91 @@ fn sse_events(body: &str) -> Vec<Value> {
         .collect()
 }
 
-// The Codex request shape: tools wrapped in a `namespace` container.
-fn codex_mcp_responses_request(stream: bool) -> Value {
-    json!({
-        "model": ROUTE_MODEL,
-        "input": "mcp-tool-call",
-        "stream": stream,
-        "tools": [{
-            "type": "namespace",
-            "name": "mcp__open_websearch",
-            "description": "Web search MCP tools",
-            "tools": [{
-                "type": "function",
-                "name": "search",
-                "description": "Search the web",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"q": {"type": "string"}},
-                    "required": ["q"]
-                }
-            }]
-        }]
-    })
-}
-
-// The namespace is folded into the upstream tool name, then split back into name
-// and namespace on the Responses call that returns to Codex.
+// The end-to-end contract for Codex tool namespaces, in one request.
+//
+// Two MCP servers expose the same tool name, so the flat upstream can only tell
+// them apart by the namespace folded into each name. Everything naming a tool —
+// the definitions, the recorded call in history, and the forced tool choice —
+// has to use that same spelling, and the response has to split it back into the
+// name and namespace Codex dispatches on.
 #[tokio::test]
-async fn responses_buffered_restores_codex_mcp_namespace() -> TestResult {
-    const MODEL: &str = "model/mcp-buffered";
+async fn responses_round_trips_codex_tool_namespaces() -> TestResult {
+    const MODEL: &str = "model/mcp-namespaces";
     let (upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
 
     let response = send(
         &app,
         "POST",
         "/v1/responses",
-        Some(codex_mcp_responses_request(false)),
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "stream": true,
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "mcp-tool-call"}]},
+                {"type": "function_call", "call_id": "call_prior", "name": "search",
+                 "namespace": "mcp__b", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_prior", "output": "earlier"}
+            ],
+            "tool_choice": {"type": "function", "name": "search", "namespace": "mcp__b"},
+            "tools": [
+                {"type": "namespace", "name": "mcp__a", "tools": [{
+                    "type": "function", "name": "search",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+                }]},
+                {"type": "namespace", "name": "mcp__b", "tools": [{
+                    "type": "function", "name": "search",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+                }]}
+            ]
+        })),
     )
     .await?;
-
     assert_eq!(response.status, StatusCode::OK);
-    let body = response.json()?;
-    assert_eq!(body["output"][0]["type"], "function_call");
-    assert_eq!(body["output"][0]["name"], "search");
-    assert_eq!(body["output"][0]["namespace"], "mcp__open_websearch");
 
+    // The upstream sees two distinct tools, and every reference to the forced
+    // one uses the qualified spelling.
     let calls = upstream.calls.lock().await;
-    let tools = calls[0]["tools"]
+    let sent = &calls[0];
+    let offered = sent["tools"]
         .as_array()
-        .ok_or("upstream received no tools")?;
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["type"], "function");
-    // The upstream sees the namespace folded into the name, so two tools that
-    // differ only by namespace stay distinct.
-    assert_eq!(tools[0]["function"]["name"], "mcp__open_websearch__search");
-    assert_ne!(
-        calls[0]["tools"][0]["type"], "namespace",
-        "namespace container leaked upstream"
-    );
-    Ok(())
-}
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(offered, vec!["mcp__a__search", "mcp__b__search"]);
+    assert_eq!(sent["tool_choice"]["function"]["name"], "mcp__b__search");
+    let recorded = sent["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find_map(|message| message["tool_calls"][0]["function"]["name"].as_str())
+        })
+        .ok_or("no recorded tool call reached the upstream")?;
+    assert_eq!(recorded, "mcp__b__search");
+    drop(calls);
 
-// The namespace has to survive on every output-item event, not only on the
-// terminal aggregate.
-#[tokio::test]
-async fn responses_stream_restores_codex_mcp_namespace() -> TestResult {
-    const MODEL: &str = "model/mcp-stream";
-    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
-
-    let response = send(
-        &app,
-        "POST",
-        "/v1/responses",
-        Some(codex_mcp_responses_request(true)),
-    )
-    .await?;
-
-    assert_eq!(response.status, StatusCode::OK);
+    // The upstream answers with the qualified name; Codex must receive the tool
+    // name and the namespace it dispatches on, on every event that names a call.
     let events = sse_events(response.text()?);
-
-    let namespace_of = |event_type: &str| -> Option<Value> {
-        events
+    for event_type in ["response.output_item.added", "response.output_item.done"] {
+        let item = events
             .iter()
             .find(|event| event["type"] == event_type)
-            .map(|event| event["item"]["namespace"].clone())
-    };
-    assert_eq!(
-        namespace_of("response.output_item.added"),
-        Some(json!("mcp__open_websearch")),
-        "namespace missing from response.output_item.added"
-    );
-    assert_eq!(
-        namespace_of("response.output_item.done"),
-        Some(json!("mcp__open_websearch")),
-        "namespace missing from response.output_item.done"
-    );
-
+            .map(|event| event["item"].clone())
+            .ok_or(format!("stream produced no {event_type}"))?;
+        assert_eq!(item["name"], "search", "{event_type}");
+        assert_eq!(item["namespace"], "mcp__b", "{event_type}");
+    }
     let completed = events
         .iter()
         .find(|event| event["type"] == "response.completed")
         .ok_or("stream produced no response.completed event")?;
-    assert_eq!(
-        completed["response"]["output"][0]["namespace"], "mcp__open_websearch",
-        "namespace missing from the response.completed aggregate"
-    );
     assert_eq!(completed["response"]["output"][0]["name"], "search");
+    assert_eq!(completed["response"]["output"][0]["namespace"], "mcp__b");
     Ok(())
 }

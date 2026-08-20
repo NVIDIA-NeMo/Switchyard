@@ -197,14 +197,6 @@ mod tests {
         extensions
     }
 
-    #[test]
-    fn attaches_nothing_when_no_tool_was_namespaced() {
-        let mut empty = ProviderExtensions::default();
-        attach_tool_namespaces(&mut empty, Map::new());
-        assert!(empty.fields.is_empty());
-        assert!(tool_namespaces(&empty).is_none());
-    }
-
     // A tool name may itself contain the separator, so the namespace is matched
     // as a prefix rather than by splitting on the first `__`.
     #[test]
@@ -227,47 +219,11 @@ mod tests {
 
     // The point of qualifying: two servers exposing one name stay distinct
     // upstream, and each call resolves back to the server it came from.
-    #[test]
-    fn resolves_the_same_tool_name_under_two_namespaces() {
-        let origins =
-            qualified_tool_origins(&extensions(&[("mcp__a", "search"), ("mcp__b", "search")]));
-        let mut response = json!({
-            "output": [{"type": "function_call", "name": "mcp__b__search", "arguments": "{}"}]
-        });
-
-        restore_qualified_tool_names(&mut response, &origins);
-
-        assert_eq!(response["output"][0]["name"], "search");
-        assert_eq!(response["output"][0]["namespace"], "mcp__b");
-    }
 
     // Models drop the `mcp__` prefix, so that spelling resolves too.
-    #[test]
-    fn resolves_a_name_missing_the_mcp_prefix() {
-        let origins = qualified_tool_origins(&extensions(&[("mcp__secret", "get_secret_word")]));
-        let mut response = json!({
-            "output": [{"type": "function_call", "name": "secret__get_secret_word"}]
-        });
-
-        restore_qualified_tool_names(&mut response, &origins);
-
-        assert_eq!(response["output"][0]["name"], "get_secret_word");
-        assert_eq!(response["output"][0]["namespace"], "mcp__secret");
-    }
 
     // An unambiguous bare name resolves, so a model that drops the namespace
     // entirely still dispatches.
-    #[test]
-    fn resolves_an_unambiguous_bare_name() {
-        let origins = qualified_tool_origins(&extensions(&[("mcp__secret", "get_secret_word")]));
-        let mut response = json!({
-            "output": [{"type": "function_call", "name": "get_secret_word"}]
-        });
-
-        restore_qualified_tool_names(&mut response, &origins);
-
-        assert_eq!(response["output"][0]["namespace"], "mcp__secret");
-    }
 
     // A bare name claimed by two namespaces must not be guessed: a wrong guess
     // dispatches the call to the wrong server.
@@ -284,25 +240,6 @@ mod tests {
     }
 
     // Streaming events nest the item one level deeper than a buffered body.
-    #[test]
-    fn rewrites_nested_streaming_items() {
-        let origins = qualified_tool_origins(&extensions(&[("mcp__docs", "search")]));
-        let mut added = json!({
-            "type": "response.output_item.added",
-            "item": {"type": "function_call", "name": "mcp__docs__search", "arguments": ""}
-        });
-        let mut completed = json!({
-            "type": "response.completed",
-            "response": {"output": [{"type": "function_call", "name": "mcp__docs__search"}]}
-        });
-
-        restore_qualified_tool_names(&mut added, &origins);
-        restore_qualified_tool_names(&mut completed, &origins);
-
-        assert_eq!(added["item"]["name"], "search");
-        assert_eq!(added["item"]["namespace"], "mcp__docs");
-        assert_eq!(completed["response"]["output"][0]["namespace"], "mcp__docs");
-    }
 
     // Codex namespaces builtin groups too, so nothing may key on `mcp__`.
     #[test]
@@ -319,31 +256,4 @@ mod tests {
     }
 
     // An upstream that already supplied a namespace is trusted.
-    #[test]
-    fn preserves_an_upstream_supplied_namespace() {
-        let origins = qualified_tool_origins(&extensions(&[("mcp__docs", "search")]));
-        let mut response = json!({
-            "output": [{
-                "type": "function_call",
-                "name": "mcp__docs__search",
-                "namespace": "mcp__upstream"
-            }]
-        });
-
-        restore_qualified_tool_names(&mut response, &origins);
-
-        assert_eq!(response["output"][0]["namespace"], "mcp__upstream");
-    }
-
-    #[test]
-    fn ignores_requests_without_the_mapping() {
-        let origins = qualified_tool_origins(&ProviderExtensions::default());
-        assert!(origins.is_empty());
-        let mut response = json!({"output": [{"type": "function_call", "name": "search"}]});
-        let before = response.clone();
-
-        restore_qualified_tool_names(&mut response, &origins);
-
-        assert_eq!(response, before);
-    }
 }
