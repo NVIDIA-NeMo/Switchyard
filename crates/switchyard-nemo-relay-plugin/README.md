@@ -8,8 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 This crate builds the external `nvidia.switchyard` native plugin. It embeds
 `switchyard-libsy`, drives it through `switchyard-llm-client::run`, and uses
 `switchyard-llm-client` for provider HTTP calls. Managed calls use Relay's
-completion-based asynchronous middleware hooks and do not require a targeted
-provider continuation from Relay.
+typed asynchronous middleware API and do not require a targeted provider
+continuation from Relay.
 
 The plugin uses NeMo Relay native API v1. It depends on the small
 `nemo-relay-plugin` authoring SDK, not the Relay runtime, and does not start
@@ -59,40 +59,29 @@ This boundary has two important consequences:
   transport activity is therefore not represented as nested Relay LLM
   lifecycle events. Relay records the outer managed call and the plugin emits
   Switchyard routing marks; bridging Switchyard transport spans into Relay is
-  future work. The adapter captures the active Relay scope before returning
-  `Pending`, so asynchronous routing marks retain their event parent.
+  future work. Relay's typed middleware adapter propagates the active scope so
+  asynchronous routing marks retain their event parent.
 - Switchyard owns provider URLs, credentials, HTTP retry behavior, and
   translation for managed calls. Relay neither validates nor transports those
   target details.
 
-## Native API v1 and asynchronous execution
+## Native API v1 and typed asynchronous execution
 
-The manifest remains `compat.native_api = "1"`, but the plugin requires the
-generic host-table v3 extension shipped by Relay 0.7. It registers through
-v3's completion-based buffered and incremental streaming hooks, returns
-`Pending` immediately, and performs libsy and provider HTTP work on a
-plugin-owned Tokio runtime. Relay workers therefore do not wait synchronously
-for provider I/O.
+The manifest remains `compat.native_api = "1"`, and the plugin requires Relay
+`>=0.8.0,<1.0` with native host ABI v4. It registers typed buffered and
+incremental streaming intercepts through `nemo-relay-plugin`. Relay owns the plugin executor,
+continuation and output-stream lifecycle, cancellation, backpressure, and
+scope propagation; Relay workers therefore do not wait synchronously for
+provider I/O.
 
-The stream adapter forwards the plugin's bounded 32-message channel into
-Relay's bounded output queue. It retries a logical event when the host queue is
-full and checks cancellation between attempts. Managed HTTP work is selected
-against Relay caller cancellation, so cancelling a buffered or streaming call
-drops its in-flight provider future.
+The stream adapter preserves the plugin's bounded 32-message routing channel.
+Relay's typed stream adapter forwards response events to its bounded output
+queue and handles cancellation and backpressure. Cancelling a buffered or
+streaming call drops its in-flight provider future.
 
-Unmanaged profiles use the same v3 continuation hooks for pass-through. V3's
-downstream stream callback has continue/cancel control but no asynchronous
-acknowledgement, so the adapter uses a nonblocking bridge capped at 8 MiB of
-queued encoded payloads and 256 events. A pass-through stream that outruns
-either bound is rejected rather than consuming unbounded memory.
-
-This is a raw C boundary: Switchyard contains a small ownership adapter for
-host strings, completion and stream handles, continuation handles, and captured
-scope handles because Relay 0.7 does not expose a safe Rust facade for its
-generic asynchronous surface. The HTTP, routing, and translation behavior
-remains in Switchyard. NeMo Relay plans to provide the equivalent safe typed
-surface in 0.8.0; once that is available, the raw-FFI compatibility adapter
-should be removable.
+Unmanaged profiles use Relay's typed continuations for pass-through. The HTTP,
+routing, and translation behavior remains in Switchyard; Relay owns the native
+dynamic-library boundary.
 
 ## Supported routers
 
@@ -197,12 +186,11 @@ per-event preservation envelope.
 
 ## Configuration
 
-The manifest declares `compat.native_api = "1"` and Relay `>=0.7.0,<0.8`, and
-the Rust SDK uses the exact published `0.7.0` crate. The manifest API value
-selects Relay's released native plugin contract; the binary also requires the
-v3 C host table shipped on the Relay 0.7 line. Rebuild the bundle when changing
-SDK versions rather than assuming Rust dynamic-library compatibility from the
-manifest value alone.
+The manifest declares `compat.native_api = "1"` and Relay `>=0.8.0,<1.0`.
+The manifest API value selects Relay's native plugin contract; the binary uses
+Relay 0.8's typed middleware API and native host ABI v4. Rebuild the bundle
+when changing SDK versions rather than assuming Rust dynamic-library
+compatibility from the manifest value alone.
 
 A Relay project can configure a seeded weighted-random router as follows:
 
