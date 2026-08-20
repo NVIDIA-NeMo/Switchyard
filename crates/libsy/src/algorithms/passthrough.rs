@@ -8,9 +8,8 @@ use std::sync::Arc;
 use switchyard_protocol::{ModelId, Request};
 
 use super::fall_through::{DefaultTarget, FallThrough};
-use super::util::affinity::AffinityRouter;
+use super::util::affinity::{AffinityRouter, ClassifyTrigger};
 use super::util::subagent::{SubagentGate, SubagentOverride};
-use super::util::turn_pin::ClassifyTrigger;
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::Classifier;
 use crate::core::state::State;
