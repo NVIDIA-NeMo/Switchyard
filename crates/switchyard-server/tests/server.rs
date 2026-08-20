@@ -2128,8 +2128,8 @@ target = "shared"
         json!(true)
     );
     assert_eq!(codex_metadata["reasoning"]["default_verbosity"], "low");
-    // An undeclared route: null context window, non-reasoning, but tools default on
-    // so `switchyard launch codex` stays usable out of the box.
+    // An undeclared route: null context window, non-reasoning, but tools default on so Codex
+    // remains usable when connected directly to the server.
     assert_eq!(codex_metadata["undeclared"]["context_window"], json!(null));
     assert_eq!(
         codex_metadata["undeclared"]["supported_reasoning_levels"],

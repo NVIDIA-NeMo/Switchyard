@@ -33,12 +33,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Python coding-agent launcher CLI** — the `switchyard` command, its Claude
+  Code, Codex, and OpenClaw wrappers, and the shared launcher runtime are
+  removed. Connect clients directly to the standalone native server instead.
 - **Deprecated Python server stack** — `switchyard serve`, YAML route bundles,
   the FastAPI endpoints and legacy chain, the `switchyard-components` crate,
   and their compatibility PyO3 bindings are removed. Use `switchyard-server`
-  with native TOML deployments, or `switchyard launch` for coding agents.
-- **Packaging extras `[server]`, `[gpu]`, and `[all]`** — dropped together
-  with the deprecated Python server stack; only `[cli]` remains. Install
+  with native TOML deployments.
+- **Packaging extras `[server]`, `[gpu]`, `[all]`, and `[cli]`** — dropped
+  together with the deprecated Python server stack and launcher CLI. Install
   server functionality via the standalone `switchyard-server` binary instead.
 
 ### Fixed
@@ -58,8 +61,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so moderation stops remain distinguishable. (#370)
 - **JSON rejection statuses preserved** — request-body rejections keep the
   underlying status code instead of always returning 400. (#406)
-- **Launcher config errors without tracebacks** — `switchyard launch` reports
-  configuration errors as messages rather than Python tracebacks. (#475)
 - **Default log level** — logging defaults to `info` for all crates instead of
   discarding logs from crates without an explicit level; an unnecessary `rand`
   callback was removed on the way. (#471)

@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Helpers for generating Codex model-catalog JSON.
+"""Helpers for generating benchmark Codex model-catalog JSON.
 
 Codex only forwards reasoning controls for models it recognizes as
-reasoning-capable. Switchyard often exposes synthetic route ids, so launchers
-and benchmark harnesses generate a tiny catalog that maps those route ids onto
+reasoning-capable. Switchyard often exposes synthetic route ids, so the
+benchmark harness generates a tiny catalog that maps those route ids onto
 Codex's bundled GPT-5-style metadata.
 """
 
@@ -14,9 +14,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
 import subprocess
-import tempfile
 from collections.abc import Sequence
 from typing import Any, TypeAlias
 
@@ -122,37 +120,6 @@ def _build_codex_model_catalog(
         model["upgrade"] = None
         models.append(model)
     return {"models": models}
-
-
-def _write_codex_model_catalog(
-    codex_bin: str,
-    entries: Sequence[CodexModelCatalogEntry],
-) -> str | None:
-    """Write a temporary Codex catalog file and return its path."""
-    if not entries:
-        return None
-
-    catalog = _build_codex_model_catalog(codex_bin, entries)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        prefix="switchyard-codex-models-",
-        suffix=".json",
-        delete=False,
-    ) as handle:
-        json.dump(catalog, handle, separators=(",", ":"))
-        handle.write("\n")
-        return handle.name
-
-
-def _remove_codex_model_catalog(path: str | None) -> None:
-    """Remove a temporary catalog created by :func:`_write_codex_model_catalog`."""
-    if path is None:
-        return
-    try:
-        os.unlink(path)
-    except OSError:
-        logger.debug("failed to remove temporary Codex model catalog %s", path, exc_info=True)
 
 
 def _codex_model_display_name(model_id: str) -> str:

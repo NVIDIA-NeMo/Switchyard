@@ -1358,10 +1358,10 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 
 // Builds the metadata Codex requires when it discovers models from a direct provider.
 //
-// This mirrors Codex's `ModelInfo` card. The launcher path builds the same card in
-// `switchyard/cli/launchers/codex_model_catalog.py`; keep the two in sync when Codex
-// changes the shape. Every field below is either derived from the route's declared
-// capabilities or a required `ModelInfo` field the server has no better value for.
+// This mirrors Codex's `ModelInfo` card. The benchmark harness builds the same card in
+// `benchmark/codex_model_catalog_lib.py`; keep the two in sync when Codex changes
+// the shape. Every field below is either derived from the route's declared capabilities or a
+// required `ModelInfo` field the server has no better value for.
 //
 // Two kinds of fields live here. context_window, tool_calling, and reasoning are model
 // facts a backend can publish; the route declares them in config today. The rest
@@ -1417,7 +1417,7 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
 }
 
 // The reasoning-effort presets Codex offers for a reasoning-capable route. Kept in
-// step with the launcher template in `codex_model_catalog.py`.
+// step with the benchmark template in `codex_model_catalog_lib.py`.
 fn reasoning_levels() -> Value {
     json!([
         {"effort": "low", "description": "Fast responses with lighter reasoning"},

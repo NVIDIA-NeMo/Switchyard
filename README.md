@@ -31,39 +31,8 @@ Switchyard is pre-alpha software that is evolving rapidly. The API and algorithm
 
 ## Quick Start
 
-Choose the launcher path to run Claude Code, Codex CLI, or OpenClaw through
-Switchyard. Choose the server path to run Switchyard as a standalone proxy.
-Choose the library path to embed routing in your own Rust application.
-
-### Launcher Path
-
-Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) if it is
-not already available, then install the published Switchyard tool:
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source "$HOME/.local/bin/env"
-uv tool install --python 3.10 "nemo-switchyard[cli]"
-```
-
-The coding agent you launch must also be installed and on your `PATH`. This does
-not install the standalone `switchyard-server` binary; use the Server Path for
-that.
-
-Set an OpenRouter key and launch against the packaged deployment:
-
-```bash
-export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-switchyard launch claude --model switchyard
-switchyard launch codex --model switchyard
-switchyard launch openclaw --model switchyard
-```
-
-To use your own native TOML deployment, pass its route ID and configuration:
-
-```bash
-switchyard launch claude --model my-route --config routes.toml
-```
+Choose the server path to run Switchyard as a standalone proxy. Choose the library path to embed
+routing in your own Rust application.
 
 ### Server Path
 

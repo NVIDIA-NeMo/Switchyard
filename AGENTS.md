@@ -127,7 +127,6 @@ testing, and review do not require loading a skill.
 | Skill | Use it for |
 |---|---|
 | `publish-python-release` | Python wheel artifacts, PyPI releases, and release workflow changes |
-| `switchyard-coding-agent-launchers` | Claude Code, Codex, or OpenClaw launcher behavior |
 | `switchyard-docs` | Published MkDocs pages, strict builds, previews, and docs CI |
 | `switchyard-rust-review` | Focused review of Rust, PyO3, async, streaming, and crate boundaries |
 | `switchyard-testing-ci` | Selecting non-obvious validation or diagnosing CI failures |
@@ -149,8 +148,7 @@ OpenAI Responses, and Anthropic Messages APIs. `switchyard-libsy` owns routing
 algorithms, `switchyard-protocol` owns provider-neutral request and response
 types, and `switchyard-llm-client` performs translated HTTP calls.
 
-Python is an integration layer. `switchyard launch` hosts the native server for
-coding agents, `switchyard.libsy` exposes selected algorithms, and
+Python is an integration layer. `switchyard.libsy` exposes selected algorithms, and
 `switchyard_rust.server` exposes the native server lifecycle through PyO3.
 
 ## Project Structure
@@ -158,11 +156,6 @@ coding agents, `switchyard.libsy` exposes selected algorithms, and
 ```
 switchyard/
 ├── __init__.py                     # Package version
-├── cli/                            # CLI (requires `nemo-switchyard[cli]`)
-│   ├── switchyard_cli.py           # `switchyard` entry point
-│   ├── launch_command.py           # `switchyard launch`
-│   ├── defaults/                   # packaged OpenRouter TOML deployment
-│   └── launchers/                  # Claude, Codex, and OpenClaw launchers
 └── libsy/                          # typed Python wrappers for libsy algorithms
 
 switchyard_rust/                    # Python facades over the PyO3 extension
@@ -179,8 +172,7 @@ tests/                              # Unit tests (pytest)
 ## Tech Stack
 
 - **Rust 1.96.1**, edition 2024, Tokio, Axum, and PyO3
-- **Python 3.10+** for launchers and native bindings
-- **prompt-toolkit** for interactive launcher sessions
+- **Python 3.10+** for native bindings
 - **uv** as the package manager (preferred over pip)
 - **Cargo test + pytest** for testing
 - **ruff** for linting, **mypy** (strict) for type checking
@@ -202,16 +194,7 @@ and their transitives never appear in downstream vulnerability scans.
 ### Running Switchyard
 
 ```bash
-export OPENROUTER_API_KEY="sk-or-..."
-
-# Launch against the packaged OpenRouter deployment.
-switchyard launch claude --model switchyard
-switchyard launch codex --model switchyard
-
-# Or select a route from a custom native TOML deployment.
-switchyard launch claude --model my-route --config routes.toml
-
-# Run a standalone native server.
+# Run the standalone native server.
 switchyard-server --config routes.toml --port 4000
 ```
 
@@ -222,7 +205,7 @@ switchyard-server --config routes.toml --port 4000
 uv run pytest tests/ -v
 
 # Single test file / function
-uv run pytest tests/test_launchers.py -v
+uv run pytest tests/test_libsy_minimal_bindings.py -v
 
 # Live end-to-end tests are not part of the public test suite; if you write
 # one, set the provider key explicitly and run it directly, e.g.:
