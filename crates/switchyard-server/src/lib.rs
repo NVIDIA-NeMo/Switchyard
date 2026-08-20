@@ -351,7 +351,7 @@ impl ServerState {
                 model: &target.id,
                 llm_client: DecisionLlmClientResponse {
                     format: client.format.wire_format(),
-                    base_url: &client.base_url,
+                    base_url: client.base_url.as_str(),
                 },
                 extra_body: &target.extra_body,
             })

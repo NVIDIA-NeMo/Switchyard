@@ -138,8 +138,10 @@ impl ServerConfig {
             .map(|name| (name.clone(), Vec::new()))
             .collect::<BTreeMap<String, Vec<ModelConfig>>>();
 
-        for name in self.llm_clients.keys() {
+        // Validate every declared client even when no target currently references it.
+        for (name, client_config) in &self.llm_clients {
             validate_value("llm client name", name)?;
+            build_backend(name, client_config, &BTreeMap::new())?;
         }
         for (target_name, target) in &self.targets {
             let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
@@ -260,11 +262,42 @@ fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
         .unwrap_or(3)
 }
 
+/// A client endpoint, parsed when the config loads rather than checked afterwards.
+///
+/// Holding a `HttpBaseUrl` is proof the value is an absolute HTTP(S) URL, so no
+/// later stage has to re-check it or can forget to.
+#[derive(Clone, Debug)]
+pub(crate) struct HttpBaseUrl(reqwest::Url);
+
+impl HttpBaseUrl {
+    pub(crate) fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for HttpBaseUrl {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        let url = reqwest::Url::parse(raw.trim()).map_err(|error| {
+            serde::de::Error::custom(format!("base_url must be an absolute HTTP(S) URL: {error}"))
+        })?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err(serde::de::Error::custom(
+                "base_url must be an absolute HTTP(S) URL",
+            ));
+        }
+        Ok(Self(url))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LlmClientConfig {
     pub(crate) format: ClientFormat,
-    pub(crate) base_url: String,
+    pub(crate) base_url: HttpBaseUrl,
     api_key_env: Option<String>,
     #[serde(default)]
     forward_auth: bool,
@@ -911,12 +944,6 @@ fn build_backend(
     config: &LlmClientConfig,
     extra_body: &BTreeMap<String, Value>,
 ) -> ServerResult<Backend> {
-    let base_url = config.base_url.trim();
-    if base_url.is_empty() {
-        return Err(ServerError::new(format!(
-            "llm client {client_name} base_url must not be empty"
-        )));
-    }
     if config.max_retries > MAX_CONFIGURED_RETRIES {
         return Err(ServerError::new(format!(
             "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
@@ -950,18 +977,19 @@ fn build_backend(
         })
         .transpose()?;
     let http = HttpBackendConfig {
-        base_url: base_url.to_string(),
+        base_url: config.base_url.as_str().to_string(),
         api_key,
         forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
         max_retries: config.max_retries,
     };
-    Ok(match config.format {
+    let backend = match config.format {
         ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
         ClientFormat::OpenAiResponses => Backend::OpenAiResponses(http),
         ClientFormat::AnthropicMessages => Backend::Anthropic(http),
-    })
+    };
+    Ok(backend)
 }
 
 const fn default_max_retries() -> u32 {
@@ -1424,6 +1452,21 @@ classify_trigger = "new_session""#,
 
         server_state_from_toml(&configured)?;
         Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_unreferenced_llm_client() {
+        let invalid = format!(
+            "{VALID_CONFIG}\n\
+             [llm_clients.unused]\n\
+             format = \"openai_chat\"\n\
+             base_url = \"not a url\"\n"
+        );
+        let message = error_message(&invalid);
+        assert!(
+            message.contains("base_url must be an absolute HTTP(S) URL"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]
