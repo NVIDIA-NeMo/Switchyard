@@ -12,8 +12,8 @@ use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
     ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig,
     GateTrigger, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
-    Passthrough, PassthroughConfig, PassthroughSubagentConfig, PickerMode, Random, StageRouter,
-    StageRouterConfig, TargetPrompts, TaskClassifierConfig,
+    Passthrough, PassthroughConfig, PickerMode, Random, StageRouter, StageRouterConfig,
+    SubagentRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -1085,7 +1085,7 @@ fn build_algorithm(
                         ))
                     })?,
                 );
-                Some(PassthroughSubagentConfig {
+                Some(SubagentRouterConfig {
                     targets: subagent_targets,
                     classifier,
                     default_target: subagent_default_target,
@@ -1093,9 +1093,9 @@ fn build_algorithm(
                     message_hash_fallback: config.message_hash_fallback,
                 })
             } else if let Some(SubagentRouteConfig::Passthrough { target }) = subagents {
-                Some(PassthroughSubagentConfig::fixed_target(
-                    resolve_target_model_id(route_name, target, targets)?,
-                ))
+                Some(SubagentRouterConfig::fixed_target(resolve_target_model_id(
+                    route_name, target, targets,
+                )?))
             } else {
                 None
             };

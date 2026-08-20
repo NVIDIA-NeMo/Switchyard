@@ -23,6 +23,7 @@ pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::{Passthrough, PassthroughConfig, PassthroughSubagentConfig};
 pub use algorithms::rand::{Random, RandomClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
+pub use algorithms::subagent::{SubagentRouter, SubagentRouterConfig};
 pub use algorithms::util::affinity::{AffinityRouter, ClassifyTrigger};
 pub use algorithms::util::classifier_contract::{
     ClassifierContractConfig, ClassifierResponseFormat,

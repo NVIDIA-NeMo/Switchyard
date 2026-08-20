@@ -1,60 +1,31 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Direct parent routing with an optional delegated-work gate.
+//! Direct parent routing with an optional delegated-work route.
 
 use std::sync::Arc;
 
 use switchyard_protocol::{ModelId, Request};
 
 use super::fall_through::{DefaultTarget, FallThrough};
-use super::util::affinity::{AffinityRouter, ClassifyTrigger};
-use super::util::subagent::{SubagentGate, SubagentOverride};
-use crate::core::algorithm::{self, Algorithm, Driver};
-use crate::core::classifier::Classifier;
-use crate::core::state::State;
-use crate::{LibsyError, Result, RoutingOutcome};
+use super::subagent::{SubagentRouter, SubagentRouterConfig};
+use crate::core::algorithm::{Algorithm, Driver};
+use crate::{Result, RoutingOutcome};
+
+/// Backwards-compatible name for [`SubagentRouterConfig`].
+pub use super::subagent::SubagentRouterConfig as PassthroughSubagentConfig;
 
 /// Routes parent traffic directly and optionally routes delegated sub-agent work.
 pub struct Passthrough {
-    parent_target: ModelId,
-    route: FallThrough<State>,
-}
-
-/// Runtime components for delegated sub-agent routing.
-pub struct PassthroughSubagentConfig {
-    /// Targets the delegated-work classifier may select.
-    pub targets: Vec<ModelId>,
-    /// Classifier invoked for delegated work according to `classify_trigger`.
-    pub classifier: Arc<dyn Classifier<State>>,
-    /// Child target used when `classifier` abstains.
-    pub default_target: ModelId,
-    /// Controls whether each child is classified once or on every request.
-    pub classify_trigger: ClassifyTrigger,
-    /// Unsupported for child routing because child identity must come from harness metadata.
-    pub message_hash_fallback: bool,
-}
-
-impl PassthroughSubagentConfig {
-    /// Routes delegated work directly to one fixed target.
-    pub fn fixed_target(target: impl Into<ModelId>) -> Self {
-        let target = target.into();
-        Self {
-            targets: vec![target.clone()],
-            classifier: Arc::new(DefaultTarget::new(target.clone())),
-            default_target: target,
-            classify_trigger: ClassifyTrigger::EveryRequest,
-            message_hash_fallback: false,
-        }
-    }
+    route: Arc<dyn Algorithm>,
 }
 
 /// Complete construction settings for [`Passthrough`].
 pub struct PassthroughConfig {
     /// Target used for parent and harness-maintenance traffic.
     pub parent_target: ModelId,
-    /// Optional delegated-work decision gate.
-    pub subagent: Option<PassthroughSubagentConfig>,
+    /// Optional delegated-work routing.
+    pub subagent: Option<SubagentRouterConfig>,
 }
 
 impl Passthrough {
@@ -66,51 +37,19 @@ impl Passthrough {
     ///
     /// # Errors
     ///
-    /// Returns an error when the configured child default is not a child target.
+    /// Returns an error when the delegated-work routing configuration is invalid.
     pub fn new(config: PassthroughConfig) -> Result<Self> {
         let parent_target = config.parent_target;
-        let route = match config.subagent {
-            None => FallThrough::new_with_state(vec![parent_target.clone()])
+        let parent: Arc<dyn Algorithm> = Arc::new(
+            FallThrough::new(vec![parent_target.clone()])
                 .with_name("passthrough")
-                .with_classifier(Arc::new(DefaultTarget::new(parent_target.clone()))),
-            Some(subagent) => {
-                algorithm::ensure_model_is_target(&subagent.targets, &subagent.default_target)?;
-                if subagent.message_hash_fallback {
-                    return Err(LibsyError::AlgorithmError {
-                        message: "sub-agent routing cannot use message_hash_fallback".to_string(),
-                    });
-                }
-                let mut targets = subagent.targets;
-                if !targets.contains(&parent_target) {
-                    targets.push(parent_target.clone());
-                }
-                let mut route = FallThrough::new_with_state(targets).with_name("passthrough");
-                match subagent.classify_trigger {
-                    ClassifyTrigger::EveryRequest => {}
-                    ClassifyTrigger::NewSession => {
-                        let affinity = Arc::new(AffinityRouter::for_subagents());
-                        route = route
-                            .with_processor(affinity.clone())
-                            .with_classifier(affinity);
-                    }
-                    ClassifyTrigger::UserTurn => {
-                        return Err(LibsyError::AlgorithmError {
-                            message: "sub-agent routing cannot use classify_trigger = user_turn"
-                                .to_string(),
-                        });
-                    }
-                }
-                route
-                    .with_classifier(Arc::new(SubagentGate::new(subagent.classifier)))
-                    .with_classifier(Arc::new(SubagentOverride::new(subagent.default_target)))
-                    .with_classifier(Arc::new(DefaultTarget::new(parent_target.clone())))
-            }
+                .with_classifier(Arc::new(DefaultTarget::new(parent_target))),
+        );
+        let route: Arc<dyn Algorithm> = match config.subagent {
+            Some(subagent) => Arc::new(SubagentRouter::new(parent, subagent)?),
+            None => parent,
         };
-
-        Ok(Self {
-            parent_target,
-            route,
-        })
+        Ok(Self { route })
     }
 }
 
@@ -121,68 +60,18 @@ impl Algorithm for Passthrough {
     }
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
-        let mut outcome = self.route.execute(driver, request).await?;
-        // Parent traffic preserves passthrough's no-fallback contract. Child traffic may
-        // fall back only within the child target set, never into the parent route.
-        if outcome.selected_model_id == self.parent_target {
-            outcome.fallback_models.clear();
-        } else {
-            outcome
-                .fallback_models
-                .retain(|target| *target != self.parent_target);
-        }
-        Ok(outcome)
+        self.route.clone().route(driver, request).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use async_trait::async_trait;
-    use parking_lot::Mutex;
-    use serde_json::json;
 
     use super::{Passthrough, PassthroughConfig, PassthroughSubagentConfig};
     use crate::core::algorithm::Algorithm;
-    use crate::core::classifier::{Classification, Classifier, Score};
-    use crate::core::testing::{echo, reply, test_drive};
-    use crate::{
-        ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, Driver,
-        LlmClassifierConfig, LlmTaskClassifier, State,
-    };
-    use switchyard_protocol::{
-        ContentBlock, InstructionBlock, Message, Metadata, ModelId, Request, Response, Role,
-        completion_text, text_request,
-    };
-
-    struct ScriptedClassifier {
-        calls: AtomicUsize,
-    }
-
-    #[async_trait]
-    impl Classifier<State> for ScriptedClassifier {
-        async fn score(
-            &self,
-            _state: &mut State,
-            _request: &mut Request,
-            _driver: Option<&Driver>,
-        ) -> crate::Result<(Classification, Option<Response>)> {
-            let scores = match self.calls.fetch_add(1, Ordering::Relaxed) {
-                0 => vec![Score {
-                    confidence: 1.0,
-                    target: ModelId::from("worker"),
-                }],
-                1 => vec![Score {
-                    confidence: 1.0,
-                    target: ModelId::from("reviewer"),
-                }],
-                _ => Vec::new(),
-            };
-            Ok((Classification::Scores(scores), None))
-        }
-    }
+    use crate::core::testing::{echo, test_drive};
+    use switchyard_protocol::{Metadata, ModelId, Request, completion_text, text_request};
 
     fn request(metadata: Option<Metadata>) -> Request {
         Request {
@@ -200,19 +89,6 @@ mod tests {
             is_delegated_work: true,
             ..Metadata::default()
         }))
-    }
-
-    fn configured(classifier: Arc<dyn Classifier<State>>) -> crate::Result<Arc<Passthrough>> {
-        Ok(Arc::new(Passthrough::new(PassthroughConfig {
-            parent_target: ModelId::from("parent"),
-            subagent: Some(PassthroughSubagentConfig {
-                targets: vec![ModelId::from("worker"), ModelId::from("reviewer")],
-                classifier,
-                default_target: ModelId::from("worker"),
-                classify_trigger: ClassifyTrigger::NewSession,
-                message_hash_fallback: false,
-            }),
-        })?))
     }
 
     #[tokio::test]
@@ -242,37 +118,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routes_parent_and_children_with_affinity_and_default() -> crate::Result<()> {
-        let classifier = Arc::new(ScriptedClassifier {
-            calls: AtomicUsize::new(0),
-        });
-        let router = configured(classifier.clone())?;
-
-        let (parent, _) = test_drive(router.clone(), request(None), echo()).await?;
-        let (first, _) = test_drive(router.clone(), child("child-1"), echo()).await?;
-        let (same_child, _) = test_drive(router.clone(), child("child-1"), echo()).await?;
-        let (sibling, _) = test_drive(router.clone(), child("child-2"), echo()).await?;
-        let (defaulted, _) = test_drive(router.clone(), child("child-3"), echo()).await?;
-        let maintenance = request(Some(Metadata {
-            session_id: Some("session-1".to_string()),
-            agent_id: Some("child-1".to_string()),
-            is_subagent: true,
-            is_delegated_work: false,
-            ..Metadata::default()
-        }));
-        let (maintenance, _) = test_drive(router, maintenance, echo()).await?;
-
-        assert_eq!(parent, "parent");
-        assert_eq!(first, "worker");
-        assert_eq!(same_child, "worker");
-        assert_eq!(sibling, "reviewer");
-        assert_eq!(defaulted, "worker");
-        assert_eq!(maintenance, "parent");
-        assert_eq!(classifier.calls.load(Ordering::Relaxed), 3);
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn fixed_subagent_gate_routes_parent_and_child() -> crate::Result<()> {
         let router = Arc::new(Passthrough::new(PassthroughConfig {
             parent_target: ModelId::from("parent"),
@@ -284,83 +129,6 @@ mod tests {
 
         assert_eq!(parent, "parent");
         assert_eq!(child, "worker");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn custom_classifier_receives_only_the_delegated_prompt() -> crate::Result<()> {
-        let classifier = LlmTaskClassifier::new(LlmClassifierConfig::Custom {
-            judge_target: ModelId::from("judge"),
-            targets: vec![
-                ("worker".to_string(), ModelId::from("worker")),
-                ("reviewer".to_string(), ModelId::from("reviewer")),
-            ],
-            default_target: "worker".to_string(),
-            config: CustomClassifierConfig::new(
-                "classify the delegated task",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "target": {"type": "string", "enum": ["worker", "reviewer"]}
-                    },
-                    "required": ["target"],
-                    "additionalProperties": false
-                }),
-                CustomClassifierPolicy::target_selector("/target"),
-            ),
-        })?;
-        let router = configured(Arc::new(classifier))?;
-        let mut request = child("child-1");
-        request.llm_request.instructions = vec![InstructionBlock {
-            role: Role::System,
-            content: Message::text(Role::System, "child system instructions").content,
-        }];
-        request.llm_request.messages = vec![
-            Message::text(Role::User, "harness context"),
-            Message {
-                role: Role::User,
-                content: vec![
-                    ContentBlock::Text {
-                        text: "<system-reminder>tool context</system-reminder>".to_string(),
-                    },
-                    ContentBlock::Text {
-                        text: "review this parser".to_string(),
-                    },
-                ],
-            },
-        ];
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let served_calls = calls.clone();
-
-        let (selected, _) = test_drive(router, request, move |target, request| {
-            let calls = served_calls.clone();
-            async move {
-                let completion = if target == "judge" {
-                    r#"{"target":"reviewer"}"#
-                } else {
-                    "child answer"
-                };
-                calls.lock().push((target, request));
-                Ok(reply(completion))
-            }
-        })
-        .await?;
-
-        assert_eq!(selected, "reviewer");
-        let calls = calls.lock();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].0, "judge");
-        assert_eq!(
-            calls[0].1.llm_request.instructions[0].content,
-            Message::text(Role::System, "classify the delegated task").content
-        );
-        assert_eq!(
-            calls[0].1.llm_request.messages,
-            vec![Message::text(Role::User, "review this parser")]
-        );
-        assert_eq!(calls[1].0, "reviewer");
-        assert_eq!(calls[1].1.llm_request.instructions.len(), 1);
-        assert_eq!(calls[1].1.llm_request.messages.len(), 2);
         Ok(())
     }
 }
