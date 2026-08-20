@@ -14,8 +14,8 @@
 //!
 //! Identity is derived from correlation metadata: by default, a request is keyed by its
 //! session, and a sub-agent is keyed more finely by `session + agent` — a subset of its
-//! session. [`AffinityRouter::for_subagents`] narrows affinity to explicitly identified
-//! child agents, leaving root traffic to later classifiers on every turn.
+//! session. [`AffinityRouter::for_subagents`] narrows affinity to delegated child-agent
+//! work, leaving root and harness-maintenance traffic to later classifiers on every turn.
 
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
@@ -47,7 +47,7 @@ const MAX_ASSIGNMENTS: usize = 4096;
 pub struct AffinityRouter {
     /// When set, only these models are retained; a decision for any other model is not latched.
     latch_only: Option<HashSet<ModelId>>,
-    /// Whether root-session requests should abstain instead of being retained.
+    /// Whether requests other than delegated sub-agent work should abstain.
     subagents_only: bool,
     /// In absence of headers, use the message hash based fallback key to do task based routing
     message_hash_fallback: bool,
@@ -66,9 +66,10 @@ impl AffinityRouter {
         Self::default()
     }
 
-    /// Creates a router that retains assignments only for explicitly identified child agents.
+    /// Creates a router that retains assignments only for delegated child-agent work.
     ///
-    /// Root-agent requests always abstain, so a later classifier selects them on every turn.
+    /// Root and harness-maintenance requests always abstain, so a later classifier selects
+    /// them on every turn.
     pub fn for_subagents() -> Self {
         Self {
             subagents_only: true,
@@ -100,8 +101,9 @@ impl AffinityRouter {
     fn affinity_key(&self, request: &Request) -> Option<RoutingIdentity> {
         let metadata = request.metadata.as_ref();
         let is_subagent = metadata.is_some_and(|metadata| metadata.is_subagent);
-        // This mode handles only subagent requests; root requests intentionally fall through.
-        if self.subagents_only && !is_subagent {
+        let is_subagent_work = metadata.is_some_and(|metadata| metadata.is_subagent_work());
+        // This mode handles only delegated work; root and maintenance requests fall through.
+        if self.subagents_only && !is_subagent_work {
             return None;
         }
 
@@ -274,6 +276,7 @@ mod tests {
             agent_id: Some(agent_id.to_string()),
             task_id: Some(task_id.to_string()),
             is_subagent: true,
+            is_delegated_work: true,
             ..Metadata::default()
         }
     }
