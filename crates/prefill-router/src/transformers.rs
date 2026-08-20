@@ -183,47 +183,14 @@ fn extract_output(result: &Bound<'_, PyAny>) -> Result<ForwardOutput> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     use super::*;
     use crate::{LayerSelection, Pooling};
 
-    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-    struct TestDirectory(PathBuf);
-
-    impl TestDirectory {
-        fn create() -> Result<Self> {
-            let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "switchyard-prefill-parity-{}-{sequence}",
-                std::process::id()
-            ));
-            std::fs::create_dir(&path).map_err(|error| {
-                crate::PrefillRouterError::InvalidResult(format!(
-                    "failed to create test directory {}: {error}",
-                    path.display()
-                ))
-            })?;
-            Ok(Self(path))
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    const REFERENCE_MODEL: &str = "Qwen/Qwen3.5-0.8B";
 
     #[test]
-    #[ignore = "run through the crate-local uv environment"]
+    #[ignore = "downloads and runs the Qwen3.5-0.8B reference model"]
     fn matches_the_reference_transformers_tensors_exactly() -> Result<()> {
-        let directory = TestDirectory::create()?;
         Python::attach(|py| {
             add_venv_site_packages(py)?;
             PyModule::from_code(
@@ -231,14 +198,13 @@ mod tests {
                 c_str!(include_str!("../tests/reference_transformers_forward.py")),
                 c"reference_transformers_forward.py",
                 c"_switchyard_prefill_reference",
-            )?
-            .call_method1("create_tiny_model", (directory.path(),))?;
+            )?;
             Ok(())
         })
         .map_err(|error| python_error("test setup", error))?;
 
         let config = TransformersForwardConfig {
-            model: directory.path().to_string_lossy().into_owned(),
+            model: REFERENCE_MODEL.to_string(),
             device: Some("cpu".to_string()),
             cache_dir: None,
         };
@@ -253,15 +219,16 @@ mod tests {
         request.layers = LayerSelection::All;
         request.pooling = vec![Pooling::Last, Pooling::Mean];
         request.batch_size = 2;
-        request.max_length = 16;
+        request.max_length = 32;
 
         let actual = backend.forward(&request)?;
+        backend.unload()?;
         let expected = Python::attach(|py| {
             let reference = PyModule::import(py, "_switchyard_prefill_reference")?;
             let result = reference.call_method1(
                 "extract_reference",
                 (
-                    directory.path(),
+                    REFERENCE_MODEL,
                     &request.prompts,
                     vec!["last", "mean"],
                     true,
@@ -273,6 +240,6 @@ mod tests {
         .map_err(|error| python_error("reference forward", error))?;
 
         assert_eq!(actual, expected);
-        backend.unload()
+        Ok(())
     }
 }
