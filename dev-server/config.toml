@@ -12,11 +12,12 @@ api_key_env = "NVIDIA_API_KEY"
 [targets.capable]
 id = "openai/openai/gpt-5.6-sol"
 llm_client = "inference_hub"
-extra_body = { output_config = { effort = "medium" } }
+extra_body = { reasoning = { effort = "medium" } }
 
 [targets.efficient]
 id = "openai/openai/gpt-5.6-luna"
 llm_client = "inference_hub"
+extra_body = { reasoning = { effort = "medium" } }
 
 # Basic routes
 
