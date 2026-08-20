@@ -116,7 +116,7 @@ configured LLM client selects one upstream format.
 
 ## Documentation
 
-- **[Getting Started](docs/getting_started.md)**: complete launcher and standalone server walkthroughs
+- **[Getting Started](docs/getting_started.md)**: complete standalone server walkthrough
 - **[Core Concepts](docs/core_concepts.md)**: LLM clients, targets, routes, model IDs, and routing algorithms
 - **[Routing Overview](docs/routing_algorithms/overview.md)**: choose and configure a routing algorithm
 - **[`switchyard-server`](crates/switchyard-server/README.md)**: server configuration, routing algorithms, and metrics

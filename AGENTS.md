@@ -225,7 +225,7 @@ cargo test --workspace
 | `OPENAI_BASE_URL` | Base URL for OpenAI-compatible API |
 | `ANTHROPIC_API_KEY` | API key for Anthropic Claude |
 | `NVIDIA_API_KEY` | API key for NVIDIA NIM / Inference Hub |
-| `OPENROUTER_API_KEY` | OpenRouter key used by the packaged launcher deployment |
+| `OPENROUTER_API_KEY` | API key for OpenRouter-backed routes |
 
 ## Code Style
 
