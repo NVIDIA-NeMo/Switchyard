@@ -35,7 +35,7 @@ nav:
       - Context-Window Handling: operations/context_window.md
       - Soak Testing: operations/soak_test.md
   - Reference:
-      - CLI Reference: cli_reference.md
+      - Server CLI Reference: cli_reference.md
       - TOML Schema: reference/toml_schema.md
       - Rust API: reference/rust_api.md
 

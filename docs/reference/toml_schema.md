@@ -1,8 +1,7 @@
 # TOML Schema
 
-The native deployment file defines the LLM clients, targets, and routes a
-Switchyard server serves. It is read by `switchyard-server --config` and by
-`switchyard launch --config`.
+The native deployment file defines the LLM clients, targets, and routes that a
+Switchyard server serves. It is read by `switchyard-server --config`.
 
 Validate a file without starting the server:
 

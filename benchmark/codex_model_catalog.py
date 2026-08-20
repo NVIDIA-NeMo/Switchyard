@@ -9,7 +9,7 @@ import argparse
 import json
 from pathlib import Path
 
-from switchyard.cli.launchers.codex_model_catalog import (
+from codex_model_catalog_lib import (
     _build_codex_model_catalog,
     _codex_model_display_name,
 )

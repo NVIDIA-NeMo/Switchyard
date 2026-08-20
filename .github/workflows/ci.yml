@@ -168,7 +168,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SWITCHYARD_DEFAULT_PACKAGE: "nemo-switchyard @ file://${{ github.workspace }}"
-      SWITCHYARD_EXTRAS_PACKAGE: "nemo-switchyard[cli] @ file://${{ github.workspace }}"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -213,19 +212,6 @@ jobs:
               sys.exit(f"FAIL: heavy packages pulled into slim install: {extras}")
           print(f"OK: all {len(forbidden)} heavy packages absent from slim install.")
           PY
-      - name: Verify CLI works with its extra
-        working-directory: /tmp
-        run: |
-          uv run --isolated --no-project --python 3.10 \
-            --with "${SWITCHYARD_EXTRAS_PACKAGE}" \
-            switchyard launch claude --help > /dev/null
-          uv run --isolated --no-project --python 3.10 \
-            --with "${SWITCHYARD_EXTRAS_PACKAGE}" \
-            switchyard launch claude --help 2>&1 | grep -q -- '--model' || { echo 'FAIL: --model flag missing from help'; exit 1; }
-          uv run --isolated --no-project --python 3.10 \
-            --with "${SWITCHYARD_EXTRAS_PACKAGE}" \
-            switchyard launch claude --help 2>&1 | grep -q -- '--config' || { echo 'FAIL: --config flag missing from help'; exit 1; }
-
   # Single required check for branch protection. Gates on every job above so
   # the ruleset never needs editing when jobs are added or renamed.
   ci-success:
