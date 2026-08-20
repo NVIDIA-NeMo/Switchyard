@@ -1116,7 +1116,7 @@ through the <code>passthrough</code> route's optional <code>subagent_classifier<
 </span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span>
 </span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;worker&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;reviewer&quot;</span><span class="p">]</span>
 </span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a><span class="n">default_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;worker&quot;</span>
-</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a><span class="n">session_affinity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a><span class="n">classify_trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;new_session&quot;</span>
 </span><span id="__span-0-37"><a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a><span class="n">max_output_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">64</span>
 </span><span id="__span-0-38"><a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
 </span><span id="__span-0-39"><a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a><span class="s2">Select exactly one target for the delegated task.</span>
@@ -1146,9 +1146,10 @@ before starting the server:</p>
 </span></code></pre></div>
 <p>The parent always uses <code>parent</code>. For a delegated request, the classifier sees
 the prompt supplied by the parent and selects one configured target. With
-<code>session_affinity = true</code>, Switchyard reuses that decision for later requests
-from the same <code>session + agent</code> identity. Harness-maintenance requests continue
-to the parent target.</p>
+<code>classify_trigger = "new_session"</code>, Switchyard reuses that decision for later
+requests from the same <code>session + agent</code> identity. Use <code>every_request</code> to
+classify each delegated request. <code>user_turn</code> is not supported for sub-agent
+routing. Harness-maintenance requests continue to the parent target.</p>
 <p>Clients must still request the route ID (<code>agent</code> above). An explicit model name
 that is not registered as a route is rejected before sub-agent classification.
 <code>message_hash_fallback</code> is not supported for sub-agent routing because affinity

@@ -72,7 +72,7 @@
 <a href=#72 id=72 data-nosnippet>72</a>    </span><span class="kw">pub </span>judge_target: ModelId,
 <a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// Judge configuration. `recent_turn_window` is worth setting to this router's
 <a href=#74 id=74 data-nosnippet>74</a>    /// `recent_window` so the judge reads the same span the signal scorer scored.
-<a href=#75 id=75 data-nosnippet>75</a>    /// Note: `session_affinity` and `message_hash_fallback` have no effect here —
+<a href=#75 id=75 data-nosnippet>75</a>    /// Note: `classify_trigger = new_session` and `message_hash_fallback` have no effect here —
 <a href=#76 id=76 data-nosnippet>76</a>    /// the judge runs as a cascade classifier, not a standalone algorithm.
 <a href=#77 id=77 data-nosnippet>77</a>    </span><span class="kw">pub </span>config: TaskClassifierConfig,
 <a href=#78 id=78 data-nosnippet>78</a>}
