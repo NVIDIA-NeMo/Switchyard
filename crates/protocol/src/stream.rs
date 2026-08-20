@@ -119,6 +119,7 @@ impl From<LlmResponseChunk> for LlmResponseStreamEvent {
 /// Not `Clone` — the `Stream` variant owns a single-consumption stream. A buffered
 /// backend returns `Agg` directly; a streaming one returns `Stream` and the consumer
 /// drives it, folding to an [`AggLlmResponse`] when it needs the whole response.
+#[allow(clippy::large_enum_variant)]
 pub enum LlmResponse {
     /// Live, single-consumption response stream.
     Stream(LlmResponseStream),
