@@ -115,7 +115,7 @@ algorithm.
 | Streaming responses | Supported | Supported after the judge selects a target | Conditional: an unlatched weak stream is aggregated before the judge runs | Supported after the signal cascade selects a target |
 | Retained routing state | No selection affinity; context-overflow eviction can use session identity | Optional session affinity and message-hash fallback | Confirmation streak and strong latch require stable session identity | No classifier affinity; context-overflow eviction can use session identity |
 | Router-specific prompts | Not applicable | Optional judge prompt | Optional escalation-judge prompt | Optional tier prompts, handoff notes, and classifier prompt |
-| Relay decision marks | Algorithm, attempt, selected target, reasoning, answer-call status, and identity | Algorithm, attempt, selected target, reasoning, answer-call status, and identity | Algorithm, attempt, selected target, reasoning, answer-call status, and identity | Algorithm, attempt, selected target, reasoning, answer-call status, and identity |
+| Relay decision marks | Algorithm, attempt, selected target, and identity | Algorithm, attempt, selected target, and identity | Algorithm, attempt, selected target, and identity | Algorithm, attempt, selected target, and identity |
 | ATOF routing-LLM usage | Not applicable unless a failed candidate is replaced | Judge calls, plus failed candidates | Judge calls and discarded weak candidates | Optional classifier judge calls, plus failed candidates |
 
 Anthropic Messages is supported for callers and serving targets, but not for a
@@ -155,17 +155,13 @@ provider response that omits usage, has `usage = null`. Consumers can therefore
 add these marks to the outer LLM usage to measure total request compute without
 double-counting the serving model.
 
-The plugin owns the outer routing retry loop. Each retry starts a fresh libsy
-run. Random routing draws again; an algorithm configured with persistent state,
-such as classifier session affinity, may intentionally retain its assignment.
-Each target's built-in HTTP retry count is set to zero to avoid retrying a
-failed target invisibly before reselection. A random target with `weight = 0`
-is fallback-only and is not considered by the algorithm. Trusted fallback is
-attempted at most once and, for streaming responses, only before the first
-caller event is emitted. Outer routing retries use exponential backoff starting
-at 250 milliseconds and capped at 2 seconds. They do not currently honor
-provider `Retry-After` headers because the client error contract does not expose
-that metadata to the routing loop.
+`switchyard-llm-client` owns provider retries. Every target, including the
+trusted fallback target, uses its default of two additional attempts for
+transient provider failures and honors capped `Retry-After` delays. A retry
+stays on the selected target and does not rerun the routing algorithm. A random
+target with `weight = 0` is fallback-only and is not considered by the
+algorithm. Trusted fallback is attempted at most once and, for streaming
+responses, only before the first caller event is emitted.
 
 ## Translation and stream fidelity
 
@@ -203,8 +199,6 @@ manifest = "/opt/switchyard-relay-plugin/relay-plugin.toml"
 [plugins.dynamic.config]
 version = 2
 priority = 0
-max_retries = 3
-
 [plugins.dynamic.config.algorithm]
 kind = "random"
 seed = 42

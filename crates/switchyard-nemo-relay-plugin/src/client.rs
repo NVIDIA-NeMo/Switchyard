@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use serde_json::Value as Json;
-use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+use switchyard_llm_client::{
+    Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
+};
 use switchyard_protocol::{
     LlmClientError, ModelId, Request, Response, RoutedLlmClient, WireFormat,
 };
@@ -47,9 +49,7 @@ impl TargetClient {
             forward_auth: false,
             extra_headers: headers,
             extra_body,
-            // Routing retries belong to the plugin: every retry must start a
-            // fresh libsy run and obtain a fresh decision.
-            max_retries: 0,
+            max_retries: DEFAULT_MAX_RETRIES,
         };
         let backend = match target_format {
             WireFormat::OpenAiChat => Backend::OpenAiChat(backend_config),
@@ -106,9 +106,15 @@ impl RoutedLlmClient for TargetClient {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
     use super::*;
     use serde_json::json;
-    use switchyard_protocol::{LlmRequest, Metadata, PreservationMetadata, ProviderExtensions};
+    use switchyard_protocol::{
+        LlmRequest, LlmResponse, Metadata, PreservationMetadata, ProviderExtensions, text_request,
+    };
 
     fn client(format: WireFormat) -> TargetClient {
         TargetClient::new(
@@ -219,5 +225,56 @@ mod tests {
                 .values()
                 .all(|body| body.get("extra_body").is_none())
         );
+    }
+
+    #[tokio::test]
+    async fn target_client_retries_transient_provider_failures() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind provider stub");
+        let address = listener.local_addr().expect("read provider stub address");
+        let server = thread::spawn(move || -> std::io::Result<()> {
+            let response_body = "{\"id\":\"chatcmpl-1\",\"model\":\"provider/model\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"recovered\"},\"finish_reason\":\"stop\"}],\"usage\":{}}";
+            let responses = [
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunavailable".to_string(),
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunavailable".to_string(),
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                ),
+            ];
+            for response in responses {
+                let (mut stream, _) = listener.accept()?;
+                let mut request = [0_u8; 1024];
+                if stream.read(&mut request)? == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "client closed before sending a request",
+                    ));
+                }
+                stream.write_all(response.as_bytes())?;
+            }
+            Ok(())
+        });
+        let client = TargetClient::new(
+            "provider/model".into(),
+            WireFormat::OpenAiChat,
+            format!("http://{address}/v1"),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            false,
+        )
+        .expect("build target client");
+        let response = client
+            .call(Request {
+                llm_request: text_request(Some("route".into()), "hello"),
+                ..Request::default()
+            })
+            .await
+            .expect("third provider attempt succeeds");
+
+        assert!(matches!(response.llm_response, LlmResponse::Agg(_)));
+        server
+            .join()
+            .expect("provider stub panicked")
+            .expect("provider stub failed");
     }
 }

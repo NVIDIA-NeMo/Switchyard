@@ -292,15 +292,12 @@ pub(crate) struct SwitchyardConfig {
     version: u32,
     #[serde(default)]
     pub(crate) priority: i32,
-    #[serde(default = "default_max_retries")]
-    max_retries: u32,
     algorithm: AlgorithmConfig,
     targets: BTreeMap<String, TargetBinding>,
     default_targets: BTreeMap<WireFormat, String>,
 }
 
 pub(crate) struct PreparedConfig {
-    pub(crate) max_retries: u32,
     pub(crate) algorithm: Arc<dyn Algorithm>,
     pub(crate) targets: BTreeMap<String, PreparedTargetBinding>,
     pub(crate) default_targets: BTreeMap<WireFormat, String>,
@@ -318,9 +315,6 @@ impl SwitchyardConfig {
                 "unsupported Switchyard config version {}; version 1 used switchyard-server; migrate to version = 2",
                 self.version
             ));
-        }
-        if self.max_retries > 10 {
-            return Err("max_retries must not exceed 10".into());
         }
         if self.targets.is_empty() {
             return Err("targets must not be empty".into());
@@ -358,7 +352,6 @@ impl SwitchyardConfig {
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let algorithm = self.build_algorithm(Some(&targets))?;
         Ok(PreparedConfig {
-            max_retries: self.max_retries,
             algorithm,
             targets,
             default_targets: self.default_targets,
@@ -565,10 +558,6 @@ fn is_forbidden_target_header(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
     ) || name.starts_with("x-nemo-relay-internal-")
-}
-
-const fn default_max_retries() -> u32 {
-    3
 }
 
 const fn default_weight() -> f64 {

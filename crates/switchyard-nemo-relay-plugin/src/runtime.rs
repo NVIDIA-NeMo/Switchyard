@@ -3,7 +3,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
 use nemo_relay_plugin::{Json, LlmRequest as RelayRequest};
@@ -17,9 +16,6 @@ use switchyard_translation::{TranslationEngine, encode_stream};
 
 use crate::config::{PreparedTargetBinding, SwitchyardConfig, protocol_from_call};
 use crate::translation;
-
-const INITIAL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
-const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub(crate) struct RoutingMark {
@@ -35,7 +31,6 @@ pub(crate) enum StreamMessage {
 }
 
 pub(crate) struct SwitchyardRuntime {
-    max_retries: u32,
     algorithm: Arc<dyn Algorithm>,
     targets: BTreeMap<String, PreparedTargetBinding>,
     default_targets: BTreeMap<WireFormat, String>,
@@ -46,7 +41,6 @@ impl SwitchyardRuntime {
     pub(crate) fn new(config: SwitchyardConfig) -> Result<Self, String> {
         let prepared = config.prepare()?;
         Ok(Self {
-            max_retries: prepared.max_retries,
             algorithm: prepared.algorithm,
             targets: prepared.targets,
             default_targets: prepared.default_targets,
@@ -95,49 +89,33 @@ impl SwitchyardRuntime {
         marks: &mut Vec<RoutingMark>,
     ) -> Result<Json, String> {
         let metadata = identity_metadata(request.metadata.as_ref());
-        let max_attempts = self.max_retries + 1;
-        let mut attempt = 1;
-        loop {
-            self.mark(
-                marks,
-                "switchyard.routing.requested",
-                json!({"algorithm": self.algorithm.name(), "attempt": attempt}),
-                &metadata,
-            );
-            let result = self
-                .drive(request.clone(), attempt, marks, &metadata)
-                .await
-                .and_then(|response| {
-                    finalize_buffered_response(&self.translation, inbound, response)
-                        .map_err(|source| LibsyError::client_call("return_to_agent", source))
-                });
-            match result {
-                Ok(response) => return Ok(response),
-                Err(failure) if libsy_error_retryable(&failure) && attempt < max_attempts => {
-                    self.mark(
-                        marks,
-                        "switchyard.routing.retry",
-                        failure_mark_data(attempt, &failure),
-                        &metadata,
-                    );
-                    sleep_before_retry(attempt).await;
-                    attempt += 1;
-                }
-                Err(failure) => {
-                    self.mark(
-                        marks,
-                        "switchyard.routing.error",
-                        failure_mark_data(attempt, &failure),
-                        &metadata,
-                    );
-                    let response = self
-                        .fallback_response(inbound, request, marks, &metadata)
-                        .await?;
-                    return finalize_buffered_response(&self.translation, inbound, response)
-                        .map_err(|error| {
-                            public_response_failure("trusted fallback response", &error)
-                        });
-                }
+        self.mark(
+            marks,
+            "switchyard.routing.requested",
+            json!({"algorithm": self.algorithm.name(), "attempt": 1}),
+            &metadata,
+        );
+        let result = self
+            .drive(request.clone(), 1, marks, &metadata)
+            .await
+            .and_then(|response| {
+                finalize_buffered_response(&self.translation, inbound, response)
+                    .map_err(|source| LibsyError::client_call("return_to_agent", source))
+            });
+        match result {
+            Ok(response) => Ok(response),
+            Err(failure) => {
+                self.mark(
+                    marks,
+                    "switchyard.routing.error",
+                    failure_mark_data(1, &failure),
+                    &metadata,
+                );
+                let response = self
+                    .fallback_response(inbound, request, marks, &metadata)
+                    .await?;
+                finalize_buffered_response(&self.translation, inbound, response)
+                    .map_err(|error| public_response_failure("trusted fallback response", &error))
             }
         }
     }
@@ -149,38 +127,21 @@ impl SwitchyardRuntime {
         output: &async_channel::Sender<StreamMessage>,
     ) -> Result<(), String> {
         let metadata = identity_metadata(request.metadata.as_ref());
-        let max_attempts = self.max_retries + 1;
-        let mut attempt = 1;
         let mut marks = Vec::new();
-        'attempts: loop {
-            self.mark(
-                &mut marks,
-                "switchyard.routing.requested",
-                json!({"algorithm": self.algorithm.name(), "attempt": attempt}),
-                &metadata,
-            );
-            let (response, mut fallback_used) = match self
-                .drive(request.clone(), attempt, &mut marks, &metadata)
-                .await
-            {
+        self.mark(
+            &mut marks,
+            "switchyard.routing.requested",
+            json!({"algorithm": self.algorithm.name(), "attempt": 1}),
+            &metadata,
+        );
+        let (response, mut fallback_used) =
+            match self.drive(request.clone(), 1, &mut marks, &metadata).await {
                 Ok(response) => (response, false),
-                Err(failure) if libsy_error_retryable(&failure) && attempt < max_attempts => {
-                    self.mark(
-                        &mut marks,
-                        "switchyard.routing.retry",
-                        failure_mark_data(attempt, &failure),
-                        &metadata,
-                    );
-                    send_marks(output, &mut marks).await?;
-                    sleep_before_retry(attempt).await;
-                    attempt += 1;
-                    continue;
-                }
                 Err(failure) => {
                     self.mark(
                         &mut marks,
                         "switchyard.routing.error",
-                        failure_mark_data(attempt, &failure),
+                        failure_mark_data(1, &failure),
                         &metadata,
                     );
                     let fallback = self
@@ -190,118 +151,84 @@ impl SwitchyardRuntime {
                     (fallback?, true)
                 }
             };
-            send_marks(output, &mut marks).await?;
+        send_marks(output, &mut marks).await?;
 
-            let mut events = match returned_events(response, inbound).await {
-                Ok(events) => events,
-                Err(failure)
-                    if !fallback_used
-                        && libsy_error_retryable(&failure)
-                        && attempt < max_attempts =>
-                {
-                    self.mark(
-                        &mut marks,
-                        "switchyard.routing.retry",
-                        failure_mark_data(attempt, &failure),
-                        &metadata,
-                    );
-                    send_marks(output, &mut marks).await?;
-                    sleep_before_retry(attempt).await;
-                    attempt += 1;
-                    continue;
+        let mut events = match returned_events(response, inbound).await {
+            Ok(events) => events,
+            Err(failure) if !fallback_used => {
+                self.mark(
+                    &mut marks,
+                    "switchyard.routing.error",
+                    failure_mark_data(1, &failure),
+                    &metadata,
+                );
+                fallback_used = true;
+                let fallback = self
+                    .fallback_response(inbound, request.clone(), &mut marks, &metadata)
+                    .await;
+                send_marks(output, &mut marks).await?;
+                let fallback = fallback?;
+                returned_events(fallback, inbound)
+                    .await
+                    .map_err(|error| public_libsy_failure("trusted fallback stream", &error))?
+            }
+            Err(failure) => {
+                return Err(public_libsy_failure("trusted fallback stream", &failure));
+            }
+        };
+
+        let mut committed = false;
+        while let Some(item) = events.next().await {
+            match item {
+                Ok(event) => {
+                    send_event(output, event).await?;
+                    committed = true;
                 }
-                Err(failure) if !fallback_used => {
+                Err(failure) if !fallback_used && !committed => {
                     self.mark(
                         &mut marks,
                         "switchyard.routing.error",
-                        failure_mark_data(attempt, &failure),
+                        failure_mark_data(1, &failure),
                         &metadata,
                     );
-                    fallback_used = true;
                     let fallback = self
                         .fallback_response(inbound, request.clone(), &mut marks, &metadata)
                         .await;
                     send_marks(output, &mut marks).await?;
                     let fallback = fallback?;
-                    returned_events(fallback, inbound)
+                    let mut fallback = returned_events(fallback, inbound)
                         .await
-                        .map_err(|error| public_libsy_failure("trusted fallback stream", &error))?
+                        .map_err(|error| public_libsy_failure("trusted fallback stream", &error))?;
+                    while let Some(item) = fallback.next().await {
+                        let event = item.map_err(|error| {
+                            public_libsy_failure("trusted fallback stream", &error)
+                        })?;
+                        send_event(output, event).await?;
+                    }
+                    return Ok(());
                 }
-                Err(failure) => {
+                Err(failure) if !committed => {
                     return Err(public_libsy_failure("trusted fallback stream", &failure));
                 }
-            };
-
-            let mut committed = false;
-            while let Some(item) = events.next().await {
-                match item {
-                    Ok(event) => {
-                        send_event(output, event).await?;
-                        committed = true;
-                    }
-                    Err(failure)
-                        if !fallback_used
-                            && !committed
-                            && libsy_error_retryable(&failure)
-                            && attempt < max_attempts =>
-                    {
-                        self.mark(
-                            &mut marks,
-                            "switchyard.routing.retry",
-                            failure_mark_data(attempt, &failure),
-                            &metadata,
-                        );
-                        send_marks(output, &mut marks).await?;
-                        sleep_before_retry(attempt).await;
-                        attempt += 1;
-                        continue 'attempts;
-                    }
-                    Err(failure) if !fallback_used && !committed => {
-                        self.mark(
-                            &mut marks,
-                            "switchyard.routing.error",
-                            failure_mark_data(attempt, &failure),
-                            &metadata,
-                        );
-                        let fallback = self
-                            .fallback_response(inbound, request.clone(), &mut marks, &metadata)
-                            .await;
-                        send_marks(output, &mut marks).await?;
-                        let fallback = fallback?;
-                        let mut fallback =
-                            returned_events(fallback, inbound).await.map_err(|error| {
-                                public_libsy_failure("trusted fallback stream", &error)
-                            })?;
-                        while let Some(item) = fallback.next().await {
-                            let event = item.map_err(|error| {
-                                public_libsy_failure("trusted fallback stream", &error)
-                            })?;
-                            send_event(output, event).await?;
-                        }
-                        return Ok(());
-                    }
-                    Err(failure) if !committed => {
-                        return Err(public_libsy_failure("trusted fallback stream", &failure));
-                    }
-                    Err(failure) => {
-                        self.mark(
-                            &mut marks,
-                            "switchyard.routing.error",
-                            failure_mark_data(attempt, &failure),
-                            &metadata,
-                        );
-                        send_marks(output, &mut marks).await?;
-                        return Err(public_libsy_failure(
-                            "Switchyard stream failed after response commitment",
-                            &failure,
-                        ));
-                    }
+                Err(failure) => {
+                    self.mark(
+                        &mut marks,
+                        "switchyard.routing.error",
+                        failure_mark_data(1, &failure),
+                        &metadata,
+                    );
+                    send_marks(output, &mut marks).await?;
+                    return Err(public_libsy_failure(
+                        "Switchyard stream failed after response commitment",
+                        &failure,
+                    ));
                 }
             }
-            if committed {
-                return Ok(());
-            }
-            return Err("Switchyard response stream produced no caller events".into());
+        }
+        if committed {
+            Ok(())
+        } else {
+            Err("Switchyard response stream produced no caller events".into())
         }
     }
 
@@ -525,38 +452,8 @@ async fn returned_events(
     })))
 }
 
-fn libsy_error_retryable(error: &LibsyError) -> bool {
-    let LibsyError::ClientCall { source, .. } = error else {
-        return false;
-    };
-    match source {
-        LlmClientError::UpstreamHttp { status, .. } => {
-            matches!(status.as_u16(), 408 | 425 | 429 | 500 | 502 | 503 | 504)
-        }
-        LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
-        _ => false,
-    }
-}
-
-fn retry_backoff(attempt: u32) -> Duration {
-    let exponent = attempt.saturating_sub(1).min(3);
-    INITIAL_RETRY_BACKOFF
-        .saturating_mul(1_u32 << exponent)
-        .min(MAX_RETRY_BACKOFF)
-}
-
-async fn sleep_before_retry(attempt: u32) {
-    tokio::time::sleep(retry_backoff(attempt)).await;
-}
-
 fn failure_mark_data(attempt: u32, failure: &LibsyError) -> Json {
-    let mut data = Map::from_iter([
-        ("attempt".into(), Json::from(attempt)),
-        (
-            "retryable".into(),
-            Json::from(libsy_error_retryable(failure)),
-        ),
-    ]);
+    let mut data = Map::from_iter([("attempt".into(), Json::from(attempt))]);
     match failure {
         LibsyError::ClientCall {
             source: LlmClientError::UpstreamHttp { status, .. },

@@ -21,7 +21,6 @@ fn config() -> SwitchyardConfig {
     SwitchyardConfig {
         version: 2,
         priority: 0,
-        max_retries: 3,
         algorithm: AlgorithmConfig::Random { seed: Some(42) },
         targets: BTreeMap::from([
             (
@@ -169,6 +168,28 @@ fn schema_required_contract_fields_do_not_default_during_deserialization() {
             .expect("required field must not default");
         assert!(error.to_string().contains(field), "field={field}: {error}");
     }
+}
+
+#[test]
+fn plugin_retry_budget_is_not_configurable() {
+    let value = json!({
+        "version": 2,
+        "max_retries": 3,
+        "algorithm": {"kind": "random"},
+        "targets": {
+            "chat": {
+                "model": "provider/chat",
+                "protocol": "openai_chat",
+                "base_url": "https://provider.example/v1"
+            }
+        },
+        "default_targets": {"openai_chat": "chat"}
+    });
+
+    let error = serde_json::from_value::<SwitchyardConfig>(value)
+        .err()
+        .expect("plugin retry budget must be rejected");
+    assert!(error.to_string().contains("max_retries"));
 }
 
 #[test]

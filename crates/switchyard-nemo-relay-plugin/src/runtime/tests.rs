@@ -9,7 +9,8 @@ use switchyard_libsy::{
     TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    LlmResponseStream, ModelId, RoutedLlmClient, Usage, text_request, text_response,
+    LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, ModelId, RoutedLlmClient, Usage,
+    text_request, text_response,
 };
 
 use super::*;
@@ -19,6 +20,7 @@ enum ScriptedBehavior {
     EmptyBuffered,
     EmptyStream,
     FailingStream,
+    PartialThenFailure,
     TransportFailure(&'static str),
 }
 
@@ -71,6 +73,21 @@ impl RoutedLlmClient for ScriptedClient {
                     metadata: None,
                 })
             }
+            ScriptedBehavior::PartialThenFailure => {
+                let stream: LlmResponseStream = Box::pin(stream::iter(vec![
+                    Ok(LlmResponseStreamEvent::from(LlmResponseChunk::TextDelta {
+                        index: 0,
+                        text: "partial".into(),
+                    })),
+                    Err(LlmClientError::Transport {
+                        source: Box::new(std::io::Error::other("stream failed after a chunk")),
+                    }),
+                ]));
+                Ok(Response {
+                    llm_response: LlmResponse::Stream(stream),
+                    metadata: None,
+                })
+            }
             ScriptedBehavior::TransportFailure(message) => Err(LlmClientError::Transport {
                 source: Box::new(std::io::Error::other(message)),
             }),
@@ -111,7 +128,6 @@ fn runtime_with_algorithm_clients(
         );
     }
     SwitchyardRuntime {
-        max_retries: 0,
         algorithm,
         targets,
         default_targets: BTreeMap::from([(protocol, "fallback".into())]),
@@ -271,7 +287,6 @@ async fn buffered_finalization_failure_uses_fallback_once() {
     let selected = scripted(ScriptedBehavior::EmptyStream);
     let fallback = scripted(ScriptedBehavior::EmptyBuffered);
     let runtime = SwitchyardRuntime {
-        max_retries: 1,
         algorithm: Arc::new(Passthrough::new(ModelId::from("selected"))),
         targets: BTreeMap::from([
             (
@@ -300,16 +315,10 @@ async fn buffered_finalization_failure_uses_fallback_once() {
     assert!(response.is_object());
     assert_eq!(selected.calls.load(Ordering::Relaxed), 1);
     assert_eq!(fallback.calls.load(Ordering::Relaxed), 1);
-    assert!(
-        !marks
-            .iter()
-            .any(|mark| mark.name == "switchyard.routing.retry")
-    );
     let error = marks
         .iter()
         .find(|mark| mark.name == "switchyard.routing.error")
         .expect("finalization failure should emit an error mark");
-    assert_eq!(error.data["retryable"], false);
     assert_eq!(error.data["non_http_kind"], "invalid_response");
     assert_eq!(
         marks
@@ -371,7 +380,6 @@ async fn invalid_selected_stream_does_not_invoke_failing_fallback_twice() {
     let selected = scripted(ScriptedBehavior::EmptyStream);
     let fallback = scripted(ScriptedBehavior::FailingStream);
     let runtime = SwitchyardRuntime {
-        max_retries: 0,
         algorithm: Arc::new(Passthrough::new(ModelId::from("selected"))),
         targets: BTreeMap::from([
             (
@@ -407,7 +415,6 @@ async fn failing_fallback_call_flushes_error_and_fallback_marks() {
     let selected = scripted(ScriptedBehavior::EmptyStream);
     let fallback = scripted(ScriptedBehavior::TransportFailure("fallback call failed"));
     let runtime = SwitchyardRuntime {
-        max_retries: 0,
         algorithm: Arc::new(Passthrough::new(ModelId::from("selected"))),
         targets: BTreeMap::from([
             (
@@ -453,13 +460,34 @@ async fn failing_fallback_call_flushes_error_and_fallback_marks() {
     );
 }
 
-#[test]
-fn retry_backoff_increases_exponentially_and_is_capped() {
-    assert_eq!(retry_backoff(1), Duration::from_millis(250));
-    assert_eq!(retry_backoff(2), Duration::from_millis(500));
-    assert_eq!(retry_backoff(3), Duration::from_secs(1));
-    assert_eq!(retry_backoff(4), Duration::from_secs(2));
-    assert_eq!(retry_backoff(u32::MAX), Duration::from_secs(2));
+#[tokio::test]
+async fn committed_stream_failure_does_not_fallback() {
+    let selected = scripted(ScriptedBehavior::PartialThenFailure);
+    let fallback = scripted(ScriptedBehavior::Text("fallback"));
+    let runtime = runtime_with_algorithm_clients(
+        Arc::new(Passthrough::new(ModelId::from("selected"))),
+        fallback.clone(),
+        WireFormat::OpenAiChat,
+        vec![("selected", selected.clone())],
+    );
+    let (output, messages) = async_channel::bounded(32);
+
+    let error = runtime
+        .execute_stream(WireFormat::OpenAiChat, Request::default(), &output)
+        .await
+        .expect_err("committed stream failures must reject the stream");
+
+    assert_eq!(
+        error,
+        "Switchyard stream failed after response commitment: provider transport failure"
+    );
+    assert_eq!(selected.calls.load(Ordering::Relaxed), 1);
+    assert_eq!(fallback.calls.load(Ordering::Relaxed), 0);
+    let mut emitted_event = false;
+    while let Ok(message) = messages.try_recv() {
+        emitted_event |= matches!(message, StreamMessage::Event(_));
+    }
+    assert!(emitted_event);
 }
 
 #[tokio::test]

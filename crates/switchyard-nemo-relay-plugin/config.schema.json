@@ -14,13 +14,6 @@
       "type": "integer",
       "default": 0
     },
-    "max_retries": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 10,
-      "default": 3,
-      "description": "Routing retries after the initial libsy run. Every retry starts a fresh run."
-    },
     "algorithm": {
       "description": "In-process random, capability, escalation, or stage-router configuration.",
       "oneOf": [
