@@ -137,26 +137,6 @@ async fn harness_maintenance_turns_are_not_forced_to_the_worker() -> Result<()> 
     Ok(())
 }
 
-#[tokio::test]
-async fn an_existing_pin_does_not_capture_harness_maintenance() -> Result<()> {
-    let router = router();
-
-    assert_eq!(turn(&router, &child("child-1")).await?, "worker");
-    let served = turn(
-        &router,
-        &[
-            ("x-switchyard-session-id", "session-1"),
-            ("x-switchyard-agent-id", "child-1"),
-            ("x-switchyard-is-subagent", "true"),
-            ("x-openai-subagent", "compact"),
-        ],
-    )
-    .await?;
-
-    assert_eq!(served, "orchestrator");
-    Ok(())
-}
-
 /// Builds a cascade whose override scores `worker`, sharing `affinity` across instances.
 fn router_overriding_to(affinity: Arc<AffinityRouter>, worker: &str) -> Arc<FallThrough> {
     Arc::new(

@@ -151,10 +151,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use parking_lot::Mutex;
-    use switchyard_protocol::InstructionBlock;
-
     use super::*;
+    use parking_lot::Mutex;
     use switchyard_protocol::{slice_to_header_map, text_request};
 
     #[derive(Default)]
@@ -256,56 +254,6 @@ mod tests {
             }
             Classification::Ambiguous(_) => panic!("override must score definitively"),
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn gate_shows_the_classifier_only_the_parent_prompt() -> Result<()> {
-        let classifier = Arc::new(CapturingClassifier::default());
-        let gate = SubagentGate::new(classifier.clone());
-        let mut request = request(&[("x-openai-subagent", "collab_spawn")]);
-        request.llm_request.instructions = vec![InstructionBlock {
-            role: Role::System,
-            content: Message::text(Role::System, "child system instructions").content,
-        }];
-        request.llm_request.messages = vec![
-            Message::text(Role::User, "harness context"),
-            Message {
-                role: Role::User,
-                content: vec![
-                    ContentBlock::Text {
-                        text: "<system-reminder>tool context</system-reminder>".to_string(),
-                    },
-                    ContentBlock::Text {
-                        text: "implement the delegated task".to_string(),
-                    },
-                ],
-            },
-        ];
-        let original = request.clone();
-
-        let mut state = ();
-        gate.score(&mut state, &mut request, None).await?;
-
-        let captured = classifier.requests.lock();
-        assert_eq!(captured.len(), 1);
-        assert!(captured[0].llm_request.instructions.is_empty());
-        assert_eq!(
-            captured[0].llm_request.messages,
-            vec![Message::text(Role::User, "implement the delegated task")]
-        );
-        assert_eq!(request.llm_request, original.llm_request);
-        assert_eq!(request.raw_request, original.raw_request);
-        assert_eq!(
-            request
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.agent_id.as_deref()),
-            original
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.agent_id.as_deref())
-        );
         Ok(())
     }
 

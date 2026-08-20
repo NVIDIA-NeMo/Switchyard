@@ -116,11 +116,13 @@ type = "noop"
 
 ### `passthrough`
 
-Sends every request to one target.
+Sends every request to one target. It can also classify delegated sub-agent work;
+see [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md).
 
 | Key | Required | Meaning |
 |---|:---:|---|
 | `target` | Yes | Target every request is sent to. |
+| `subagent_classifier` | No | Custom classifier used only for delegated sub-agent work. |
 
 ### `random`
 
