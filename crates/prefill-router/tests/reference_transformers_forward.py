@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -165,80 +164,20 @@ class PrefillExtractor:
         }
 
 
-def create_tiny_model(path: str | Path) -> None:
-    """Create a deterministic local model and tokenizer without network access."""
-    from tokenizers import Tokenizer
-    from tokenizers.models import WordLevel
-    from tokenizers.pre_tokenizers import Whitespace
-    from transformers import GPT2Config, GPT2LMHeadModel, PreTrainedTokenizerFast
-
-    torch.manual_seed(7)
-    tokenizer_impl = Tokenizer(
-        WordLevel(
-            {
-                "[UNK]": 0,
-                "[PAD]": 1,
-                "[EOS]": 2,
-                "user": 3,
-                "assistant": 4,
-                "Explain": 5,
-                "routing": 6,
-                "clearly": 7,
-                "Write": 8,
-                "a": 9,
-                "short": 10,
-                "proof": 11,
-                "think": 12,
-            },
-            unk_token="[UNK]",
-        )
-    )
-    tokenizer_impl.pre_tokenizer = Whitespace()
-    tokenizer = PreTrainedTokenizerFast(
-        tokenizer_object=tokenizer_impl,
-        unk_token="[UNK]",
-        pad_token="[PAD]",
-        eos_token="[EOS]",
-    )
-    tokenizer.chat_template = (
-        "{% if enable_thinking %}think {% endif %}"
-        "{% for message in messages %}{{ message['role'] }} "
-        "{{ message['content'] }} [EOS] {% endfor %}"
-        "{% if add_generation_prompt %}assistant {% endif %}"
-    )
-    model = GPT2LMHeadModel(
-        GPT2Config(
-            vocab_size=len(tokenizer),
-            n_positions=32,
-            n_embd=8,
-            n_layer=2,
-            n_head=2,
-            resid_pdrop=0.0,
-            embd_pdrop=0.0,
-            attn_pdrop=0.0,
-            bos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
-    ).eval()
-    tokenizer.save_pretrained(path)
-    model.save_pretrained(path)
-
-
 def extract_reference(
-    path: str | Path,
+    model: str,
     prompts: list[str],
     pooling_modes: list[str],
     enable_thinking: bool,
 ) -> dict[str, Any]:
     """Extract the complete tensor oracle for the Rust parity assertion."""
-    extractor = PrefillExtractor(str(path), device="cpu")
+    extractor = PrefillExtractor(model, device="cpu")
     return extractor.extract_batch(
         prompts,
         chat_template_kwargs={"enable_thinking": enable_thinking},
         extract_layers="all",
         pooling_modes=pooling_modes,
         batch_size=2,
-        max_length=16,
+        max_length=32,
         show_progress=False,
     )
