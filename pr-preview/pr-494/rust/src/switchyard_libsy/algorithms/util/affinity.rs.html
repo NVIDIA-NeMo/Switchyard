@@ -189,50 +189,50 @@
 <a href=#189 id=189 data-nosnippet>189</a>            &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(key) = <span class="self">self</span>.affinity_key(request)
 <a href=#190 id=190 data-nosnippet>190</a>        {
 <a href=#191 id=191 data-nosnippet>191</a>            <span class="kw">let </span><span class="kw-2">mut </span>assignments = <span class="self">self</span>.assignments.lock();
-<a href=#192 id=192 data-nosnippet>192</a>            <span class="kw">if </span><span class="self">self</span>.should_latch(selected_model_id) &amp;&amp; !assignments.contains_key(<span class="kw-2">&amp;</span>key) {
-<a href=#193 id=193 data-nosnippet>193</a>                evict_if_full(<span class="kw-2">&amp;mut </span>assignments);
-<a href=#194 id=194 data-nosnippet>194</a>                assignments.insert(key, selected_model_id.clone());
-<a href=#195 id=195 data-nosnippet>195</a>            }
-<a href=#196 id=196 data-nosnippet>196</a>        }
-<a href=#197 id=197 data-nosnippet>197</a>        <span class="prelude-val">Ok</span>(())
-<a href=#198 id=198 data-nosnippet>198</a>    }
-<a href=#199 id=199 data-nosnippet>199</a>}
-<a href=#200 id=200 data-nosnippet>200</a>
-<a href=#201 id=201 data-nosnippet>201</a><span class="doccomment">/// Hashes the first user message so later turns retain the initial task's affinity.
-<a href=#202 id=202 data-nosnippet>202</a>/// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we hash the initial user message.
-<a href=#203 id=203 data-nosnippet>203</a>/// TODO: Have not considered multi-modal payloads yet. That needs to be handled separately.
-<a href=#204 id=204 data-nosnippet>204</a></span><span class="kw">fn </span>first_user_message_hash(request: <span class="kw-2">&amp;</span>Request) -&gt; <span class="prelude-ty">Option</span>&lt;String&gt; {
-<a href=#205 id=205 data-nosnippet>205</a>    <span class="kw">let </span>message = request
-<a href=#206 id=206 data-nosnippet>206</a>        .llm_request
-<a href=#207 id=207 data-nosnippet>207</a>        .messages
-<a href=#208 id=208 data-nosnippet>208</a>        .iter()
-<a href=#209 id=209 data-nosnippet>209</a>        .find(|message| message.role == Role::User)<span class="question-mark">?</span>;
-<a href=#210 id=210 data-nosnippet>210</a>    <span class="kw">let </span><span class="kw-2">mut </span>hasher = DefaultHasher::new();
-<a href=#211 id=211 data-nosnippet>211</a>    message.text_content(<span class="string">""</span>)<span class="question-mark">?</span>.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#212 id=212 data-nosnippet>212</a>    <span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"{:016x}"</span>, hasher.finish()))
-<a href=#213 id=213 data-nosnippet>213</a>}
-<a href=#214 id=214 data-nosnippet>214</a>
-<a href=#215 id=215 data-nosnippet>215</a><span class="attr">#[async_trait]
-<a href=#216 id=216 data-nosnippet>216</a></span><span class="kw">impl</span>&lt;S&gt; Classifier&lt;S&gt; <span class="kw">for </span>AffinityRouter
-<a href=#217 id=217 data-nosnippet>217</a><span class="kw">where
-<a href=#218 id=218 data-nosnippet>218</a>    </span>S: Send + <span class="lifetime">'static</span>,
-<a href=#219 id=219 data-nosnippet>219</a>{
-<a href=#220 id=220 data-nosnippet>220</a>    <span class="kw">async fn </span>score(
-<a href=#221 id=221 data-nosnippet>221</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#222 id=222 data-nosnippet>222</a>        _state: <span class="kw-2">&amp;mut </span>S,
-<a href=#223 id=223 data-nosnippet>223</a>        request: <span class="kw-2">&amp;mut </span>Request,
-<a href=#224 id=224 data-nosnippet>224</a>        _driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
-<a href=#225 id=225 data-nosnippet>225</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;(Classification, <span class="prelude-ty">Option</span>&lt;switchyard_protocol::Response&gt;)&gt; {
-<a href=#226 id=226 data-nosnippet>226</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(key) = <span class="self">self</span>.affinity_key(request) <span class="kw">else </span>{
-<a href=#227 id=227 data-nosnippet>227</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>((Classification::Scores(Vec::new()), <span class="prelude-val">None</span>));
-<a href=#228 id=228 data-nosnippet>228</a>        };
-<a href=#229 id=229 data-nosnippet>229</a>        <span class="comment">// One guard, so a concurrent latch cannot land between the release and the read.
-<a href=#230 id=230 data-nosnippet>230</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>assignments = <span class="self">self</span>.assignments.lock();
-<a href=#231 id=231 data-nosnippet>231</a>        <span class="kw">if </span><span class="self">self</span>.release_on_user_turn &amp;&amp; has_new_user_turn(<span class="kw-2">&amp;</span>request.llm_request.messages) {
-<a href=#232 id=232 data-nosnippet>232</a>            assignments.remove(<span class="kw-2">&amp;</span>key);
-<a href=#233 id=233 data-nosnippet>233</a>        }
-<a href=#234 id=234 data-nosnippet>234</a>        <span class="kw">let </span>assigned = assignments.get(<span class="kw-2">&amp;</span>key).cloned();
-<a href=#235 id=235 data-nosnippet>235</a>        drop(assignments);
+<a href=#192 id=192 data-nosnippet>192</a>            <span class="kw">let </span>writable = <span class="self">self</span>.release_on_user_turn || !assignments.contains_key(<span class="kw-2">&amp;</span>key);
+<a href=#193 id=193 data-nosnippet>193</a>            <span class="kw">if </span><span class="self">self</span>.should_latch(selected_model_id) &amp;&amp; writable {
+<a href=#194 id=194 data-nosnippet>194</a>                evict_if_full(<span class="kw-2">&amp;mut </span>assignments);
+<a href=#195 id=195 data-nosnippet>195</a>                assignments.insert(key, selected_model_id.clone());
+<a href=#196 id=196 data-nosnippet>196</a>            }
+<a href=#197 id=197 data-nosnippet>197</a>        }
+<a href=#198 id=198 data-nosnippet>198</a>        <span class="prelude-val">Ok</span>(())
+<a href=#199 id=199 data-nosnippet>199</a>    }
+<a href=#200 id=200 data-nosnippet>200</a>}
+<a href=#201 id=201 data-nosnippet>201</a>
+<a href=#202 id=202 data-nosnippet>202</a><span class="doccomment">/// Hashes the first user message so later turns retain the initial task's affinity.
+<a href=#203 id=203 data-nosnippet>203</a>/// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we hash the initial user message.
+<a href=#204 id=204 data-nosnippet>204</a>/// TODO: Have not considered multi-modal payloads yet. That needs to be handled separately.
+<a href=#205 id=205 data-nosnippet>205</a></span><span class="kw">fn </span>first_user_message_hash(request: <span class="kw-2">&amp;</span>Request) -&gt; <span class="prelude-ty">Option</span>&lt;String&gt; {
+<a href=#206 id=206 data-nosnippet>206</a>    <span class="kw">let </span>message = request
+<a href=#207 id=207 data-nosnippet>207</a>        .llm_request
+<a href=#208 id=208 data-nosnippet>208</a>        .messages
+<a href=#209 id=209 data-nosnippet>209</a>        .iter()
+<a href=#210 id=210 data-nosnippet>210</a>        .find(|message| message.role == Role::User)<span class="question-mark">?</span>;
+<a href=#211 id=211 data-nosnippet>211</a>    <span class="kw">let </span><span class="kw-2">mut </span>hasher = DefaultHasher::new();
+<a href=#212 id=212 data-nosnippet>212</a>    message.text_content(<span class="string">""</span>)<span class="question-mark">?</span>.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#213 id=213 data-nosnippet>213</a>    <span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"{:016x}"</span>, hasher.finish()))
+<a href=#214 id=214 data-nosnippet>214</a>}
+<a href=#215 id=215 data-nosnippet>215</a>
+<a href=#216 id=216 data-nosnippet>216</a><span class="attr">#[async_trait]
+<a href=#217 id=217 data-nosnippet>217</a></span><span class="kw">impl</span>&lt;S&gt; Classifier&lt;S&gt; <span class="kw">for </span>AffinityRouter
+<a href=#218 id=218 data-nosnippet>218</a><span class="kw">where
+<a href=#219 id=219 data-nosnippet>219</a>    </span>S: Send + <span class="lifetime">'static</span>,
+<a href=#220 id=220 data-nosnippet>220</a>{
+<a href=#221 id=221 data-nosnippet>221</a>    <span class="kw">async fn </span>score(
+<a href=#222 id=222 data-nosnippet>222</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#223 id=223 data-nosnippet>223</a>        _state: <span class="kw-2">&amp;mut </span>S,
+<a href=#224 id=224 data-nosnippet>224</a>        request: <span class="kw-2">&amp;mut </span>Request,
+<a href=#225 id=225 data-nosnippet>225</a>        _driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
+<a href=#226 id=226 data-nosnippet>226</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;(Classification, <span class="prelude-ty">Option</span>&lt;switchyard_protocol::Response&gt;)&gt; {
+<a href=#227 id=227 data-nosnippet>227</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(key) = <span class="self">self</span>.affinity_key(request) <span class="kw">else </span>{
+<a href=#228 id=228 data-nosnippet>228</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>((Classification::Scores(Vec::new()), <span class="prelude-val">None</span>));
+<a href=#229 id=229 data-nosnippet>229</a>        };
+<a href=#230 id=230 data-nosnippet>230</a>        <span class="comment">// Abstaining rather than clearing keeps this read path free of writes, so the judge
+<a href=#231 id=231 data-nosnippet>231</a>        // decides the turn whatever order concurrent latches land in.
+<a href=#232 id=232 data-nosnippet>232</a>        </span><span class="kw">if </span><span class="self">self</span>.release_on_user_turn &amp;&amp; has_new_user_turn(<span class="kw-2">&amp;</span>request.llm_request.messages) {
+<a href=#233 id=233 data-nosnippet>233</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>((Classification::Scores(Vec::new()), <span class="prelude-val">None</span>));
+<a href=#234 id=234 data-nosnippet>234</a>        }
+<a href=#235 id=235 data-nosnippet>235</a>        <span class="kw">let </span>assigned = <span class="self">self</span>.assignments.lock().get(<span class="kw-2">&amp;</span>key).cloned();
 <a href=#236 id=236 data-nosnippet>236</a>        <span class="prelude-val">Ok</span>((
 <a href=#237 id=237 data-nosnippet>237</a>            Classification::Scores(<span class="kw">match </span>assigned {
 <a href=#238 id=238 data-nosnippet>238</a>                <span class="prelude-val">Some</span>(target) =&gt; <span class="macro">vec!</span>[Score {
