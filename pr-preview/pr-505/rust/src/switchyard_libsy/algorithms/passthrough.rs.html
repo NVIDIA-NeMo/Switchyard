@@ -25,7 +25,7 @@
 <a href=#25 id=25 data-nosnippet>25</a></span><span class="kw">pub struct </span>PassthroughSubagentConfig {
 <a href=#26 id=26 data-nosnippet>26</a>    <span class="doccomment">/// Targets the delegated-work classifier may select.
 <a href=#27 id=27 data-nosnippet>27</a>    </span><span class="kw">pub </span>targets: Vec&lt;ModelId&gt;,
-<a href=#28 id=28 data-nosnippet>28</a>    <span class="doccomment">/// Classifier invoked for the first request from each identified child.
+<a href=#28 id=28 data-nosnippet>28</a>    <span class="doccomment">/// Classifier invoked for delegated work according to `classify_trigger`.
 <a href=#29 id=29 data-nosnippet>29</a>    </span><span class="kw">pub </span>classifier: Arc&lt;<span class="kw">dyn </span>Classifier&lt;State&gt;&gt;,
 <a href=#30 id=30 data-nosnippet>30</a>    <span class="doccomment">/// Child target used when `classifier` abstains.
 <a href=#31 id=31 data-nosnippet>31</a>    </span><span class="kw">pub </span>default_target: ModelId,
