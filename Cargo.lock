@@ -1497,6 +1497,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prefill-router"
+version = "0.2.0"
+dependencies = [
+ "pyo3",
+ "pyo3-build-config",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "pretty_assertions"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

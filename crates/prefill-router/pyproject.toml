@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name = "prefill-router-tests"
+version = "0.0.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.45",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
