@@ -10,7 +10,6 @@ pub(crate) mod stage;
 pub mod subagent;
 pub(crate) mod target_selector;
 pub(crate) mod tool_signals;
-pub mod turn_pin;
 
 use switchyard_protocol::ModelId;
 

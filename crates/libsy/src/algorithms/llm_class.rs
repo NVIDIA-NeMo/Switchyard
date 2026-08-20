@@ -12,7 +12,7 @@ use serde_json::Value;
 use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
 
 use super::fall_through::{DefaultTarget, FallThrough};
-use super::util::affinity::AffinityRouter;
+use super::util::affinity::{AffinityRouter, ClassifyTrigger};
 use super::util::classifier_contract::{
     ClassifierContract, ClassifierContractConfig, ClassifierResponseFormat,
 };
@@ -22,7 +22,6 @@ use super::util::llm_judge::{
     SerdeDecoder, StructuredJudge,
 };
 use super::util::target_selector::TargetSelectorPolicy;
-use super::util::turn_pin::{ClassifyTrigger, TurnPin};
 use super::util::{DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, decisive};
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -579,6 +578,24 @@ impl Classifier<State> for EscalationClassifier {
     }
 }
 
+/// Builds the affinity router a trigger calls for, if any.
+fn affinity_router(
+    trigger: ClassifyTrigger,
+    message_hash_fallback: bool,
+) -> Option<Arc<AffinityRouter>> {
+    let router = match trigger {
+        ClassifyTrigger::EveryRequest => return None,
+        ClassifyTrigger::NewSession => AffinityRouter::new(),
+        ClassifyTrigger::UserTurn => AffinityRouter::new().with_release_on_user_turn(),
+    };
+    let router = if message_hash_fallback {
+        router.with_message_hash_fallback()
+    } else {
+        router
+    };
+    Some(Arc::new(router))
+}
+
 /// Routes requests through a capability, escalation, or custom classifier mode.
 pub struct LlmTaskClassifier {
     route: FallThrough<State>,
@@ -855,28 +872,15 @@ impl LlmTaskClassifier {
                     .to_string(),
             });
         }
-        // Wraps the classifier rather than the route, so the pin also holds when this is
-        // embedded in another cascade and only `score` is called.
-        let inner = if config.classify_trigger == ClassifyTrigger::UserTurn {
-            Arc::new(TurnPin::new(inner)) as Arc<dyn Classifier<State>>
-        } else {
-            inner
-        };
         // Affinity comes first so a retained assignment short-circuits the judge call.
-        // Note: when this classifier is embedded inside another cascade (e.g. StageRouter)
-        // the affinity processor never fires — only the inner score() is called.
         let mut route = FallThrough::<State>::new_with_state(targets).with_name(ALGORITHM_NAME);
-        if config.classify_trigger == ClassifyTrigger::NewSession {
-            let affinity = if config.message_hash_fallback {
-                AffinityRouter::new().with_message_hash_fallback()
-            } else {
-                AffinityRouter::new()
-            };
+        if let Some(affinity) =
+            affinity_router(config.classify_trigger, config.message_hash_fallback).as_ref()
+        {
             // Both roles must share one `Arc` so the classifier reads what the processor wrote.
-            let affinity = Arc::new(affinity);
             route = route
                 .with_processor(affinity.clone())
-                .with_classifier(affinity);
+                .with_classifier(affinity.clone());
         }
         let fallback = DefaultTarget::new(config.default_target);
         Ok(Self {
