@@ -25,7 +25,7 @@ pub struct Passthrough {
 pub struct PassthroughSubagentConfig {
     /// Targets the delegated-work classifier may select.
     pub targets: Vec<ModelId>,
-    /// Classifier invoked for the first request from each identified child.
+    /// Classifier invoked for delegated work according to `classify_trigger`.
     pub classifier: Arc<dyn Classifier<State>>,
     /// Child target used when `classifier` abstains.
     pub default_target: ModelId,

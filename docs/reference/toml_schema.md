@@ -121,7 +121,7 @@ see [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md).
 | Key | Required | Meaning |
 |---|:---:|---|
 | `target` | Yes | Target used for parent and harness-maintenance requests. |
-| `subagents` | No | Nested `passthrough` or `llm_classifier` policy used only for delegated sub-agent work. |
+| `subagents` | No | Nested `passthrough` or `llm_classifier` policy used only for delegated sub-agent work. Nested classifiers currently support only `mode = "custom"`. |
 
 ### `random`
 

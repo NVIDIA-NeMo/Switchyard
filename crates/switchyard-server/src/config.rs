@@ -396,8 +396,7 @@ struct EscalationClassifierRouteConfig {
     judge: EscalationJudgeConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 struct CustomClassifierRouteConfig {
     classifier_target: String,
     targets: Vec<String>,
@@ -405,13 +404,9 @@ struct CustomClassifierRouteConfig {
     prompt: String,
     response_schema: String,
     policy: ClassifierPolicyConfig,
-    #[serde(default)]
     classify_trigger: ClassifyTrigger,
-    #[serde(default)]
     message_hash_fallback: bool,
-    #[serde(default)]
     recent_turn_window: Option<usize>,
-    #[serde(default = "default_classifier_max_output_tokens")]
     max_output_tokens: u64,
 }
 
