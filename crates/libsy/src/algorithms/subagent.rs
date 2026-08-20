@@ -121,7 +121,7 @@ mod tests {
     };
 
     use super::{SubagentRouter, SubagentRouterConfig};
-    use crate::algorithms::passthrough::{Passthrough, PassthroughConfig};
+    use crate::algorithms::passthrough::Passthrough;
     use crate::core::algorithm::Algorithm;
     use crate::core::classifier::{Classification, Classifier, Score};
     use crate::core::testing::{echo, reply, test_drive};
@@ -175,16 +175,13 @@ mod tests {
         }))
     }
 
-    fn parent() -> crate::Result<Arc<dyn Algorithm>> {
-        Ok(Arc::new(Passthrough::new(PassthroughConfig {
-            parent_target: ModelId::from("parent"),
-            subagent: None,
-        })?))
+    fn parent() -> Arc<dyn Algorithm> {
+        Arc::new(Passthrough::new("parent"))
     }
 
     fn configured(classifier: Arc<dyn Classifier<State>>) -> crate::Result<Arc<SubagentRouter>> {
         Ok(Arc::new(SubagentRouter::new(
-            parent()?,
+            parent(),
             SubagentRouterConfig {
                 targets: vec![ModelId::from("worker"), ModelId::from("reviewer")],
                 classifier,

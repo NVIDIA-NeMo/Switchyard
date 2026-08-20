@@ -12,8 +12,8 @@ use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
     ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig,
     GateTrigger, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
-    Passthrough, PassthroughConfig, PickerMode, Random, StageRouter, StageRouterConfig,
-    SubagentRouter, SubagentRouterConfig, TargetPrompts, TaskClassifierConfig,
+    Passthrough, PickerMode, Random, StageRouter, StageRouterConfig, SubagentRouter,
+    SubagentRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -1161,13 +1161,7 @@ fn build_algorithm(
             target, subagents, ..
         } => {
             let parent_target = resolve_target_model_id(route_name, target, targets)?;
-            let algorithm = Passthrough::new(PassthroughConfig {
-                parent_target,
-                subagent: None,
-            })
-            .map_err(|error| {
-                ServerError::new(format!("passthrough route {route_name}: {error}"))
-            })?;
+            let algorithm = Passthrough::new(parent_target);
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
