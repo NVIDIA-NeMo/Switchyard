@@ -415,11 +415,49 @@ struct CustomClassifierRouteConfig {
     max_output_tokens: u64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LlmClassifierRouteConfig {
+    classifier_target: String,
+    #[serde(default)]
+    mode: Option<ClassifierMode>,
+    #[serde(default)]
+    strong_target: Option<String>,
+    #[serde(default)]
+    weak_target: Option<String>,
+    #[serde(default)]
+    base_threshold: Option<f64>,
+    #[serde(default)]
+    threshold_step: Option<f64>,
+    #[serde(default)]
+    classify_trigger: ClassifyTrigger,
+    #[serde(default)]
+    message_hash_fallback: bool,
+    #[serde(default)]
+    recent_turn_window: Option<usize>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    response_format_type: ClassifierResponseFormat,
+    #[serde(default = "default_classifier_max_output_tokens")]
+    max_output_tokens: u64,
+    #[serde(default)]
+    escalation: Option<EscalationJudgeConfig>,
+    #[serde(default)]
+    targets: Option<Vec<String>>,
+    #[serde(default)]
+    default_target: Option<String>,
+    #[serde(default)]
+    response_schema: Option<String>,
+    #[serde(default)]
+    policy: Option<ClassifierPolicyConfig>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum SubagentRouteConfig {
     Passthrough { target: String },
-    LlmClassifier(CustomClassifierRouteConfig),
+    LlmClassifier(Box<LlmClassifierRouteConfig>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -466,39 +504,8 @@ enum RouteConfig {
         tool_calling: Option<bool>,
         #[serde(default)]
         reasoning: Option<bool>,
-        classifier_target: String,
-        #[serde(default)]
-        mode: Option<ClassifierMode>,
-        #[serde(default)]
-        strong_target: Option<String>,
-        #[serde(default)]
-        weak_target: Option<String>,
-        #[serde(default)]
-        base_threshold: Option<f64>,
-        #[serde(default)]
-        threshold_step: Option<f64>,
-        #[serde(default)]
-        classify_trigger: ClassifyTrigger,
-        #[serde(default)]
-        message_hash_fallback: bool,
-        #[serde(default)]
-        recent_turn_window: Option<usize>,
-        #[serde(default)]
-        prompt: Option<String>,
-        #[serde(default)]
-        response_format_type: ClassifierResponseFormat,
-        #[serde(default = "default_classifier_max_output_tokens")]
-        max_output_tokens: u64,
-        #[serde(default)]
-        escalation: Option<EscalationJudgeConfig>,
-        #[serde(default)]
-        targets: Option<Vec<String>>,
-        #[serde(default)]
-        default_target: Option<String>,
-        #[serde(default)]
-        response_schema: Option<String>,
-        #[serde(default)]
-        policy: Option<ClassifierPolicyConfig>,
+        #[serde(flatten)]
+        config: LlmClassifierRouteConfig,
     },
     StageRouter {
         id: ModelId,
@@ -640,36 +647,38 @@ impl RouteConfig {
                 match subagents {
                     Some(SubagentRouteConfig::Passthrough { target }) => names.push(target),
                     Some(SubagentRouteConfig::LlmClassifier(classifier)) => {
-                        names.extend(classifier.targets.iter().map(String::as_str));
+                        names.extend(classifier.targets.iter().flatten().map(String::as_str));
                     }
                     None => {}
                 }
                 names
             }
-            Self::LlmClassifier {
-                mode,
-                strong_target,
-                weak_target,
-                escalation,
-                targets,
-                ..
-            } => match mode.unwrap_or(if escalation.is_some() {
-                ClassifierMode::Escalation
-            } else {
-                ClassifierMode::Capability
-            }) {
-                ClassifierMode::Capability => weak_target
-                    .iter()
-                    .chain(strong_target)
-                    .map(String::as_str)
-                    .collect(),
-                ClassifierMode::Escalation => strong_target
-                    .iter()
-                    .chain(weak_target)
-                    .map(String::as_str)
-                    .collect(),
-                ClassifierMode::Custom => targets.iter().flatten().map(String::as_str).collect(),
-            },
+            Self::LlmClassifier { config, .. } => {
+                match config.mode.unwrap_or(if config.escalation.is_some() {
+                    ClassifierMode::Escalation
+                } else {
+                    ClassifierMode::Capability
+                }) {
+                    ClassifierMode::Capability => config
+                        .weak_target
+                        .iter()
+                        .chain(&config.strong_target)
+                        .map(String::as_str)
+                        .collect(),
+                    ClassifierMode::Escalation => config
+                        .strong_target
+                        .iter()
+                        .chain(&config.weak_target)
+                        .map(String::as_str)
+                        .collect(),
+                    ClassifierMode::Custom => config
+                        .targets
+                        .iter()
+                        .flatten()
+                        .map(String::as_str)
+                        .collect(),
+                }
+            }
             Self::StageRouter {
                 capable_target,
                 efficient_target,
@@ -690,9 +699,7 @@ impl RouteConfig {
     fn callable_target_names(&self) -> Vec<&str> {
         let mut names = self.routing_target_names();
         match self {
-            Self::LlmClassifier {
-                classifier_target, ..
-            } => names.push(classifier_target),
+            Self::LlmClassifier { config, .. } => names.push(&config.classifier_target),
             Self::Passthrough {
                 subagents: Some(SubagentRouteConfig::LlmClassifier(classifier)),
                 ..
@@ -752,9 +759,11 @@ impl RouteConfig {
             },
         }
     }
+}
 
+impl LlmClassifierRouteConfig {
     fn classifier_mode(&self, route_name: &str) -> ServerResult<LlmClassifierModeConfig> {
-        let Self::LlmClassifier {
+        let Self {
             classifier_target,
             mode,
             strong_target,
@@ -772,11 +781,7 @@ impl RouteConfig {
             default_target,
             response_schema,
             policy,
-            ..
-        } = self
-        else {
-            return Err(ServerError::new("route is not an llm_classifier"));
-        };
+        } = self;
 
         let selected_mode = match (mode, escalation.is_some()) {
             (Some(mode), _) => *mode,
@@ -1029,6 +1034,12 @@ fn build_algorithm(
         } => {
             let parent_target = resolve_target_model_id(route_name, target, targets)?;
             let subagent = if let Some(SubagentRouteConfig::LlmClassifier(config)) = subagents {
+                let LlmClassifierModeConfig::Custom(config) = config.classifier_mode(route_name)?
+                else {
+                    return Err(ServerError::new(format!(
+                        "passthrough route {route_name}: subagents llm_classifier only supports mode custom"
+                    )));
+                };
                 let judge_target =
                     resolve_target_model_id(route_name, &config.classifier_target, targets)?;
                 let resolved_targets = config
@@ -1103,10 +1114,12 @@ fn build_algorithm(
             Ok(Arc::new(algorithm))
         }
         RouteConfig::LlmClassifier {
-            classifier_target, ..
+            config: classifier_config,
+            ..
         } => {
-            let classifier = resolve_target_model_id(route_name, classifier_target, targets)?;
-            let mode = config.classifier_mode(route_name)?;
+            let classifier =
+                resolve_target_model_id(route_name, &classifier_config.classifier_target, targets)?;
+            let mode = classifier_config.classifier_mode(route_name)?;
             let algorithm = match mode {
                 LlmClassifierModeConfig::Capability(config) => {
                     let strong =
@@ -1428,6 +1441,7 @@ target = "weak"
 
 [routes.passthrough.subagents]
 type = "llm_classifier"
+mode = "custom"
 classifier_target = "classifier"
 targets = ["strong", "weak"]
 default_target = "weak"
@@ -1698,6 +1712,11 @@ classifier_magic = true
             (
                 passthrough_with_subagent_llm_classifier("\nmessage_hash_fallback = true"),
                 "cannot use message_hash_fallback",
+            ),
+            (
+                passthrough_with_subagent_llm_classifier("")
+                    .replace("mode = \"custom\"", "mode = \"capability\""),
+                "mode capability cannot use custom classifier fields",
             ),
             (
                 VALID_CONFIG.replace(

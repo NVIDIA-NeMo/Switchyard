@@ -38,6 +38,7 @@ reasoning = true
 
 [routes.agent.subagents]
 type = "llm_classifier"
+mode = "custom"
 classifier_target = "classifier"
 targets = ["worker", "reviewer"]
 default_target = "worker"
