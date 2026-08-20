@@ -12,7 +12,7 @@ configuration and tuning. For the vocabulary these pages use, see
 
 | Strategy | Use it when | Route `type` |
 |---|---|---|
-| [Sub-Agent-Aware Routing](subagent_routing.md) | Parent traffic should use one target while delegated sub-agents use a separate routing policy. | `passthrough` with `subagents` |
+| [Sub-Agent-Aware Routing](subagent_routing.md) | Delegated sub-agents should use a separate routing policy from the parent agent. | `passthrough` or `stage_router` with `subagents` |
 | [Random Routing](random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
 | [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
 | [Stage-Router Routing](stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |

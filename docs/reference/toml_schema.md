@@ -209,6 +209,7 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
 | `classifier.classify_trigger` | No | `every_request` | When the judge runs. See the `llm_classifier` route. `new_session` has no effect here. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
+| `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
 ## Validation Errors
 

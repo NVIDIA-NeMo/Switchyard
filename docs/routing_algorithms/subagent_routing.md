@@ -1,8 +1,8 @@
 # Sub-Agent-Aware Routing
 
-Sub-agent-aware routing keeps parent-agent traffic on one target while routing
-delegated sub-agent work across separate targets. Current support is available
-through the `passthrough` route's optional `subagents` table.
+Sub-agent-aware routing leaves parent-agent traffic with its configured routing
+algorithm while routing delegated sub-agent work separately. It is available on
+`passthrough` and `stage_router` routes through the optional `subagents` table.
 
 ```toml
 schema_version = 1
@@ -79,7 +79,24 @@ the prompt supplied by the parent and selects one configured target. With
 `classify_trigger = "new_session"`, Switchyard reuses that decision for later
 requests from the same `session + agent` identity. Use `every_request` to
 classify each delegated request. `user_turn` is not supported for sub-agent
-routing. Harness-maintenance requests continue to the parent target.
+routing. Harness-maintenance requests continue through the parent route.
+
+To use Stage Router for parent traffic, replace the `[routes.agent]` table in the
+example with the following. The nested `[routes.agent.subagents]` classifier is
+unchanged.
+
+```toml
+[routes.agent]
+id = "agent"
+type = "stage_router"
+capable_target = "reviewer"
+efficient_target = "worker"
+picker = "efficient_first"
+confidence_threshold = 0.7
+context_window = 400000
+tool_calling = true
+reasoning = true
+```
 
 Clients must still request the route ID (`agent` above). An explicit model name
 that is not registered as a route is rejected before sub-agent classification.

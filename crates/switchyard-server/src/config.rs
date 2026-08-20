@@ -13,7 +13,7 @@ use libsy::{
     ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig,
     GateTrigger, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
     Passthrough, PassthroughConfig, PickerMode, Random, StageRouter, StageRouterConfig,
-    SubagentRouterConfig, TargetPrompts, TaskClassifierConfig,
+    SubagentRouter, SubagentRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -455,6 +455,27 @@ enum SubagentRouteConfig {
     LlmClassifier(Box<LlmClassifierRouteConfig>),
 }
 
+impl SubagentRouteConfig {
+    fn routing_target_names(&self) -> Vec<&str> {
+        match self {
+            Self::Passthrough { target } => vec![target],
+            Self::LlmClassifier(classifier) => classifier
+                .targets
+                .iter()
+                .flatten()
+                .map(String::as_str)
+                .collect(),
+        }
+    }
+
+    fn classifier_target_name(&self) -> Option<&str> {
+        match self {
+            Self::LlmClassifier(classifier) => Some(&classifier.classifier_target),
+            Self::Passthrough { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum RouteConfig {
@@ -529,6 +550,9 @@ enum RouteConfig {
         /// Capability judge consulted on turns the signals leave undecided.
         #[serde(default)]
         classifier: Option<StageClassifierConfig>,
+        /// Optional routing applied only to delegated sub-agent work.
+        #[serde(default)]
+        subagents: Option<SubagentRouteConfig>,
     },
     Advisor {
         id: ModelId,
@@ -639,12 +663,8 @@ impl RouteConfig {
                 target, subagents, ..
             } => {
                 let mut names = vec![target.as_str()];
-                match subagents {
-                    Some(SubagentRouteConfig::Passthrough { target }) => names.push(target),
-                    Some(SubagentRouteConfig::LlmClassifier(classifier)) => {
-                        names.extend(classifier.targets.iter().flatten().map(String::as_str));
-                    }
-                    None => {}
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.routing_target_names());
                 }
                 names
             }
@@ -677,8 +697,15 @@ impl RouteConfig {
             Self::StageRouter {
                 capable_target,
                 efficient_target,
+                subagents,
                 ..
-            } => vec![capable_target, efficient_target],
+            } => {
+                let mut names = vec![capable_target.as_str(), efficient_target.as_str()];
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.routing_target_names());
+                }
+                names
+            }
             // The advisor is judge-only: reviews go through its own client,
             // so it is not a completion (or count_tokens) destination.
             Self::Advisor {
@@ -696,13 +723,21 @@ impl RouteConfig {
         match self {
             Self::LlmClassifier { config, .. } => names.push(&config.classifier_target),
             Self::Passthrough {
-                subagents: Some(SubagentRouteConfig::LlmClassifier(classifier)),
+                subagents: Some(subagents),
                 ..
-            } => names.push(&classifier.classifier_target),
+            } => names.extend(subagents.classifier_target_name()),
             Self::StageRouter {
-                classifier: Some(classifier),
+                classifier,
+                subagents,
                 ..
-            } => names.push(&classifier.target),
+            } => {
+                if let Some(classifier) = classifier {
+                    names.push(&classifier.target);
+                }
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.classifier_target_name());
+                }
+            }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
             _ => {}
         }
@@ -1005,6 +1040,104 @@ const fn default_max_retries() -> u32 {
     DEFAULT_MAX_RETRIES
 }
 
+// Resolve nested policy once so every supported parent builds the same child route.
+fn build_subagent_router_config(
+    route_name: &str,
+    config: Option<&SubagentRouteConfig>,
+    targets: &BTreeMap<String, ModelId>,
+) -> ServerResult<Option<SubagentRouterConfig>> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    match config {
+        SubagentRouteConfig::Passthrough { target } => {
+            Ok(Some(SubagentRouterConfig::fixed_target(
+                resolve_target_model_id(route_name, target, targets)?,
+            )))
+        }
+        SubagentRouteConfig::LlmClassifier(config) => {
+            let LlmClassifierModeConfig::Custom(config) = config.classifier_mode(route_name)?
+            else {
+                return Err(ServerError::new(format!(
+                    "route {route_name}: subagents llm_classifier only supports mode custom"
+                )));
+            };
+            let judge_target =
+                resolve_target_model_id(route_name, &config.classifier_target, targets)?;
+            let resolved_targets = config
+                .targets
+                .iter()
+                .map(|name| {
+                    resolve_target_model_id(route_name, name, targets)
+                        .map(|target| (name.clone(), target))
+                })
+                .collect::<ServerResult<Vec<_>>>()?;
+            let default_target = resolved_targets
+                .iter()
+                .find(|(name, _)| *name == config.default_target)
+                .map(|(_, target)| target.clone())
+                .ok_or_else(|| {
+                    ServerError::new(format!(
+                        "route {route_name}: subagents llm_classifier default_target {:?} must be one of its configured targets",
+                        config.default_target
+                    ))
+                })?;
+            let response_schema =
+                serde_json::from_str(&config.response_schema).map_err(|error| {
+                    ServerError::new(format!(
+                        "route {route_name}: subagents llm_classifier response_schema is invalid JSON: {error}"
+                    ))
+                })?;
+            let mut classifier_config = CustomClassifierConfig::new(
+                config.prompt,
+                response_schema,
+                config.policy.into_libsy(),
+            );
+            classifier_config.recent_turn_window = config.recent_turn_window;
+            classifier_config.max_output_tokens = config.max_output_tokens;
+            let subagent_targets = resolved_targets
+                .iter()
+                .map(|(_, target)| target.clone())
+                .collect();
+            let classifier = Arc::new(
+                LlmTaskClassifier::new(LlmClassifierConfig::Custom {
+                    judge_target,
+                    targets: resolved_targets,
+                    default_target: config.default_target,
+                    config: classifier_config,
+                })
+                .map_err(|error| {
+                    ServerError::new(format!(
+                        "route {route_name}: subagents llm_classifier: {error}"
+                    ))
+                })?,
+            );
+            Ok(Some(SubagentRouterConfig {
+                targets: subagent_targets,
+                classifier,
+                default_target,
+                classify_trigger: config.classify_trigger,
+                message_hash_fallback: config.message_hash_fallback,
+            }))
+        }
+    }
+}
+
+fn attach_subagent_router(
+    route_name: &str,
+    parent: Arc<dyn Algorithm>,
+    config: Option<&SubagentRouteConfig>,
+    targets: &BTreeMap<String, ModelId>,
+) -> ServerResult<Arc<dyn Algorithm>> {
+    let Some(config) = build_subagent_router_config(route_name, config, targets)? else {
+        return Ok(parent);
+    };
+    let algorithm = SubagentRouter::new(parent, config).map_err(|error| {
+        ServerError::new(format!("route {route_name}: subagent routing: {error}"))
+    })?;
+    Ok(Arc::new(algorithm))
+}
+
 fn build_algorithm(
     route_name: &str,
     config: &RouteConfig,
@@ -1028,85 +1161,15 @@ fn build_algorithm(
             target, subagents, ..
         } => {
             let parent_target = resolve_target_model_id(route_name, target, targets)?;
-            let subagent = if let Some(SubagentRouteConfig::LlmClassifier(config)) = subagents {
-                let LlmClassifierModeConfig::Custom(config) = config.classifier_mode(route_name)?
-                else {
-                    return Err(ServerError::new(format!(
-                        "passthrough route {route_name}: subagents llm_classifier only supports mode custom"
-                    )));
-                };
-                let judge_target =
-                    resolve_target_model_id(route_name, &config.classifier_target, targets)?;
-                let resolved_targets = config
-                    .targets
-                    .iter()
-                    .map(|name| {
-                        resolve_target_model_id(route_name, name, targets)
-                            .map(|target| (name.clone(), target))
-                    })
-                    .collect::<ServerResult<Vec<_>>>()?;
-                let subagent_default_target = resolved_targets
-                    .iter()
-                    .find(|(name, _)| *name == config.default_target)
-                    .map(|(_, target)| target.clone())
-                    .ok_or_else(|| {
-                        ServerError::new(format!(
-                            "passthrough route {route_name}: subagents llm_classifier default_target {:?} must be one of its configured targets",
-                            config.default_target
-                        ))
-                    })?;
-                let response_schema =
-                    serde_json::from_str(&config.response_schema).map_err(|error| {
-                        ServerError::new(format!(
-                            "passthrough route {route_name}: subagents llm_classifier response_schema is invalid JSON: {error}"
-                        ))
-                    })?;
-                let mut classifier_config = CustomClassifierConfig::new(
-                    config.prompt.clone(),
-                    response_schema,
-                    config.policy.clone().into_libsy(),
-                );
-                classifier_config.recent_turn_window = config.recent_turn_window;
-                classifier_config.max_output_tokens = config.max_output_tokens;
-                let subagent_targets = resolved_targets
-                    .iter()
-                    .map(|(_, target)| target.clone())
-                    .collect();
-                let classifier = Arc::new(
-                    LlmTaskClassifier::new(LlmClassifierConfig::Custom {
-                        judge_target,
-                        targets: resolved_targets,
-                        default_target: config.default_target.clone(),
-                        config: classifier_config,
-                    })
-                    .map_err(|error| {
-                        ServerError::new(format!(
-                            "passthrough route {route_name}: subagents llm_classifier: {error}"
-                        ))
-                    })?,
-                );
-                Some(SubagentRouterConfig {
-                    targets: subagent_targets,
-                    classifier,
-                    default_target: subagent_default_target,
-                    classify_trigger: config.classify_trigger,
-                    message_hash_fallback: config.message_hash_fallback,
-                })
-            } else if let Some(SubagentRouteConfig::Passthrough { target }) = subagents {
-                Some(SubagentRouterConfig::fixed_target(resolve_target_model_id(
-                    route_name, target, targets,
-                )?))
-            } else {
-                None
-            };
             let algorithm = Passthrough::new(PassthroughConfig {
                 parent_target,
-                subagent,
+                subagent: None,
             })
             .map_err(|error| {
                 ServerError::new(format!("passthrough route {route_name}: {error}"))
             })?;
-            Ok(Arc::new(algorithm))
+            let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
+            attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
         RouteConfig::LlmClassifier {
             config: classifier_config,
@@ -1199,6 +1262,7 @@ fn build_algorithm(
             capable_system_prompt,
             efficient_system_prompt,
             classifier,
+            subagents,
             ..
         } => {
             if matches!(picker, PickerMode::CapableFirst) {
@@ -1233,7 +1297,8 @@ fn build_algorithm(
             let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
                 ServerError::new(format!("stage_router route {route_name}: {error}"))
             })?;
-            Ok(Arc::new(algorithm))
+            let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
+            attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
         RouteConfig::Advisor {
             executor_target,
@@ -1426,16 +1491,11 @@ target = "weak"
         }
     }
 
-    fn passthrough_with_subagent_llm_classifier(extra: &str) -> String {
-        let configured = VALID_CONFIG.replace(
-            "[routes.passthrough]\nid = \"switchyard/passthrough\"\ntype = \"passthrough\"\ntarget = \"weak\"",
-            r#"[routes.passthrough]
-id = "switchyard/passthrough"
-type = "passthrough"
-target = "weak"
-
-[routes.passthrough.subagents]
-type = "llm_classifier"
+    fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
+        let mut configured = config.to_string();
+        configured.push_str(&format!("\n[routes.{route}.subagents]\n"));
+        configured.push_str(
+            r#"type = "llm_classifier"
 mode = "custom"
 classifier_target = "classifier"
 targets = ["strong", "weak"]
@@ -1445,16 +1505,33 @@ response_schema = '{"type":"object","properties":{"target":{"type":"string","enu
 policy = { type = "target_selector", selector = "/target" }
 classify_trigger = "new_session""#,
         );
-        configured.replace(
-            "classify_trigger = \"new_session\"",
-            &format!("classify_trigger = \"new_session\"{extra}"),
-        )
+        configured.push_str(extra);
+        configured
     }
 
-    fn passthrough_with_subagent_passthrough() -> String {
-        VALID_CONFIG.replace(
-            "[routes.passthrough]\nid = \"switchyard/passthrough\"\ntype = \"passthrough\"\ntarget = \"weak\"",
-            "[routes.passthrough]\nid = \"switchyard/passthrough\"\ntype = \"passthrough\"\ntarget = \"weak\"\n\n[routes.passthrough.subagents]\ntype = \"passthrough\"\ntarget = \"strong\"",
+    fn with_subagent_passthrough(config: &str, route: &str) -> String {
+        format!("{config}\n[routes.{route}.subagents]\ntype = \"passthrough\"\ntarget = \"strong\"")
+    }
+
+    fn stage_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+[targets.stage_judge]
+id = "stage-judge/model"
+llm_client = "primary"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 1.0
+
+[routes.stage.classifier]
+target = "stage_judge"
+base_threshold = 0.5
+"#
         )
     }
 
@@ -1475,10 +1552,24 @@ classify_trigger = "new_session""#,
     }
 
     #[test]
-    fn passthrough_accepts_subagent_gates() -> ServerResult<()> {
+    fn passthrough_and_stage_accept_subagent_routing() -> ServerResult<()> {
+        let stage = stage_config();
+        let stage_with_classifier = with_subagent_llm_classifier(&stage, "stage", "");
+        let parsed: ServerConfig = toml::from_str(&stage_with_classifier)
+            .map_err(|error| ServerError::new(format!("failed to parse stage config: {error}")))?;
+        let Some(stage_route) = parsed.routes.get("stage") else {
+            return Err(ServerError::new("stage route is missing"));
+        };
+        let callable_targets = stage_route.callable_target_names();
+        for expected in ["strong", "weak", "stage_judge", "classifier"] {
+            assert!(callable_targets.contains(&expected));
+        }
+
         for configured in [
-            passthrough_with_subagent_llm_classifier(""),
-            passthrough_with_subagent_passthrough(),
+            with_subagent_llm_classifier(VALID_CONFIG, "passthrough", ""),
+            with_subagent_passthrough(VALID_CONFIG, "passthrough"),
+            stage_with_classifier,
+            with_subagent_passthrough(&stage, "stage"),
         ] {
             server_state_from_toml(&configured)?;
         }
@@ -1705,11 +1796,15 @@ classifier_magic = true
                 "message_hash_fallback requires classify_trigger = new_session",
             ),
             (
-                passthrough_with_subagent_llm_classifier("\nmessage_hash_fallback = true"),
+                with_subagent_llm_classifier(
+                    VALID_CONFIG,
+                    "passthrough",
+                    "\nmessage_hash_fallback = true",
+                ),
                 "cannot use message_hash_fallback",
             ),
             (
-                passthrough_with_subagent_llm_classifier("")
+                with_subagent_llm_classifier(VALID_CONFIG, "passthrough", "")
                     .replace("mode = \"custom\"", "mode = \"capability\""),
                 "mode capability cannot use custom classifier fields",
             ),
