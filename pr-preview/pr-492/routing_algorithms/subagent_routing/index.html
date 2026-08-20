@@ -11,10 +11,10 @@
       
       
       
-        <link rel="prev" href="../escalation_router_routing/">
+        <link rel="prev" href="../overview/">
       
       
-        <link rel="next" href="../../operations/context_window/">
+        <link rel="next" href="../random_routing/">
       
       
         
@@ -25,7 +25,7 @@
     
     
       
-        <title>Advisor-Gate Routing - Switchyard</title>
+        <title>Sub-Agent-Aware Routing - Switchyard</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#advisor-gate-routing" class="md-skip">
+        <a href="#sub-agent-aware-routing" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Advisor-Gate Routing
+              Sub-Agent-Aware Routing
             
           </span>
         </div>
@@ -598,10 +598,19 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../subagent_routing/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -617,6 +626,7 @@
   
 
       </a>
+      
     </li>
   
 
@@ -738,37 +748,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Advisor-Gate Routing
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../advisor_gate_routing/" class="md-nav__link">
         
   
   
@@ -784,61 +767,6 @@
   
 
       </a>
-      
-        
-
-  
-
-<nav class="md-nav md-nav--secondary" aria-label="On this page">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      On this page
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How it works
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#tuning" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tuning
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1131,47 +1059,6 @@
     
   
   
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      On this page
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How it works
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#tuning" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tuning
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
 </nav>
                   </div>
                 </div>
@@ -1190,179 +1077,82 @@
   
 
 
-<h1 id="advisor-gate-routing">Advisor-Gate Routing<a class="headerlink" href="#advisor-gate-routing" title="Permanent link">&para;</a></h1>
-<p>Advisor-gate routing pairs an <strong>executor</strong> (the model under test, serving every
-client-visible turn) with a stronger <strong>advisor</strong> that acts as a quality gate.
-The executor works the task with its own tools; when it produces a terminal
-turn — a plan before doing the work, or a claim that the task is complete — the
-advisor reviews the session transcript and either lets the turn through
-(APPROVE) or discards it and sends the executor back to work with a concrete
-plan (REDO). The advisor is judge-only: it reviews turns but never serves one,
-so clients only ever see executor output.</p>
-<p>This differs from the classifier and router strategies: those decide <em>which
-model serves a turn</em>, while the advisor gate keeps one model serving and spends
-the stronger model only on verdicts at the moments that decide task success.</p>
-<h2 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
-<p>Every request routes to the executor. The gate buffers each executor turn,
-decides whether it needs review, and only then releases it to the client.</p>
-<p>A review fires on one of two triggers:</p>
-<ul>
-<li><strong><code>no_tool_call</code></strong> (default) — the executor's first turn without tool calls,
-  the natural "I'm done or I have a plan" moment on function-calling agent
-  harnesses. <code>gate_min_tool_results</code> skips early chatty turns: a no-tool-call
-  turn is only reviewed once the conversation carries at least that many tool
-  results.</li>
-<li><strong><code>pattern</code></strong> — the first turn whose visible text matches
-  <code>gate_trigger_pattern</code>, for text-protocol harnesses where every turn lacks
-  tool calls and completion is declared with a textual marker instead.</li>
-</ul>
-<p>Independently, <code>gate_stall_turns</code> adds a mid-task checkpoint: when a
-conversation reaches that many assistant turns without ever triggering, the
-next turn is reviewed once — catching executors that grind without declaring
-completion.</p>
-<p>The advisor receives the serialized transcript (task, actions, results, and the
-gated turn) under a reviewer contract that demands APPROVE or REDO as the first
-word of its reply. On APPROVE the buffered turn replays to the client verbatim,
-preserved provider events included. On REDO the turn is discarded — the client
-never sees it — and the advisor's plan is appended as user feedback, the
-executor re-invoked, and its continuation served instead.</p>
-<pre class="mermaid"><code>%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
-flowchart LR
-    t["executor turn"] --&gt; g{"trigger fires?"}
-    g --&gt;|no| r["replay to client"]
-    g --&gt;|yes| c["advisor reviews transcript"]
-    c --&gt;|APPROVE| r
-    c --&gt;|REDO| f["discard turn, inject plan,\nre-invoke executor"]
-    f --&gt; r
-
-    classDef box font-family:monospace,fill:none,stroke:#9aa0a6,stroke-width:1px;
-    class t,g,r,c,f box;</code></pre>
-<p>Reviews draw from a per-session budget of <code>max_reviews</code>. The budget scope is
-the caller's <code>proxy_x_session_id</code> header when present — benchmark harnesses
-stamp every request of one evaluation with it, sub-agents included, so the
-budget means "reviews for this task" even behind a gateway shared by many
-tasks — and falls back to one scope per server otherwise. Failed consults
-refund the budget and count toward a separate cap of 3, which bounds consult
-latency against a down advisor. An unparseable verdict also refunds and passes
-the turn through as APPROVE.</p>
-<p>Long sessions are truncated middle-out before the consult: the transcript keeps
-the task statement at the start and the most recent work at the end, marked
-<code>...&lt;middle of the conversation truncated&gt;...</code>, capped at
-<code>transcript_max_chars</code>. With <code>fail_open = true</code> (default) any advisor failure
-degrades to APPROVE; <code>fail_open = false</code> surfaces it as a server error instead.</p>
-<p>Gate behavior is observable at <code>/v1/stats</code> under <code>advisor_gate</code>: verdicts by
-trigger, consult failures by reason, and REDO-discarded turns with their token
-counts (the client never saw those turns, so terminal usage accounting alone
-would miss them).</p>
-<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[targets.executor]</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;small/model&quot;</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;provider&quot;</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">[targets.advisor]</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;frontier/model&quot;</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;provider&quot;</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="k">[routes.gated]</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard/gated&quot;</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;advisor&quot;</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="n">executor_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;executor&quot;</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">advisor_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;advisor&quot;</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="n">max_reviews</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="n">gate_stall_turns</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="n">gate_min_tool_results</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
+<h1 id="sub-agent-aware-routing">Sub-Agent-Aware Routing<a class="headerlink" href="#sub-agent-aware-routing" title="Permanent link">&para;</a></h1>
+<p>Sub-agent-aware routing keeps parent-agent traffic on one target while routing
+delegated sub-agent work across separate targets. Current support is available
+through the <code>passthrough</code> route's optional <code>subagent_classifier</code> table.</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[llm_clients.openrouter]</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai_chat&quot;</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">api_key_env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;OPENROUTER_API_KEY&quot;</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">[targets.parent]</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;anthropic/claude-sonnet-5&quot;</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="k">[targets.classifier]</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4.1-mini&quot;</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="k">[targets.worker]</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-5.4-mini&quot;</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="k">[targets.reviewer]</span>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;anthropic/claude-opus-5&quot;</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="k">[routes.agent]</span>
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;agent&quot;</span>
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;passthrough&quot;</span>
+</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;parent&quot;</span>
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="n">context_window</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">400000</span>
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="n">tool_calling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="n">reasoning</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>
+</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a><span class="k">[routes.agent.subagent_classifier]</span>
+</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span>
+</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;worker&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;reviewer&quot;</span><span class="p">]</span>
+</span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a><span class="n">default_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;worker&quot;</span>
+</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a><span class="n">session_affinity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-0-37"><a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a><span class="n">max_output_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">64</span>
+</span><span id="__span-0-38"><a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-0-39"><a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a><span class="s2">Select exactly one target for the delegated task.</span>
+</span><span id="__span-0-40"><a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>
+</span><span id="__span-0-41"><a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a><span class="s2">- Select &quot;reviewer&quot; for code review, critique, auditing, or correctness analysis.</span>
+</span><span id="__span-0-42"><a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a><span class="s2">- Select &quot;worker&quot; for implementation, research, explanation, and other delegated work.</span>
+</span><span id="__span-0-43"><a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>
+</span><span id="__span-0-44"><a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a><span class="s2">Return only JSON matching the response schema.</span>
+</span><span id="__span-0-45"><a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-0-46"><a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a><span class="n">response_schema</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&#39;&#39;</span>
+</span><span id="__span-0-47"><a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a><span class="s1">{</span>
+</span><span id="__span-0-48"><a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a><span class="s1">  &quot;type&quot;: &quot;object&quot;,</span>
+</span><span id="__span-0-49"><a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a><span class="s1">  &quot;properties&quot;: {</span>
+</span><span id="__span-0-50"><a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a><span class="s1">    &quot;target&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;worker&quot;, &quot;reviewer&quot;]}</span>
+</span><span id="__span-0-51"><a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a><span class="s1">  },</span>
+</span><span id="__span-0-52"><a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a><span class="s1">  &quot;required&quot;: [&quot;target&quot;],</span>
+</span><span id="__span-0-53"><a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a><span class="s1">  &quot;additionalProperties&quot;: false</span>
+</span><span id="__span-0-54"><a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a><span class="s1">}</span>
+</span><span id="__span-0-55"><a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a><span class="s1">&#39;&#39;&#39;</span>
+</span><span id="__span-0-56"><a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a><span class="n">policy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">type</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;target_selector&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">selector</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;/target&quot;</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
-<table>
-<thead>
-<tr>
-<th>Key</th>
-<th>Default</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>executor_target</code></td>
-<td>required</td>
-<td>Serves every client-visible turn.</td>
-</tr>
-<tr>
-<td><code>advisor_target</code></td>
-<td>required</td>
-<td>Reviews gated turns; never a routing destination.</td>
-</tr>
-<tr>
-<td><code>gate_trigger</code></td>
-<td><code>"no_tool_call"</code></td>
-<td>What fires a review: <code>no_tool_call</code> or <code>pattern</code>.</td>
-</tr>
-<tr>
-<td><code>gate_trigger_pattern</code></td>
-<td>unset</td>
-<td>Regex for the <code>pattern</code> trigger; required by and exclusive to it.</td>
-</tr>
-<tr>
-<td><code>max_reviews</code></td>
-<td><code>1</code></td>
-<td>Review budget per session scope; later triggers re-review until spent.</td>
-</tr>
-<tr>
-<td><code>gate_stall_turns</code></td>
-<td><code>0</code> (off)</td>
-<td>Mid-task checkpoint after this many assistant turns.</td>
-</tr>
-<tr>
-<td><code>gate_min_tool_results</code></td>
-<td><code>0</code></td>
-<td>Minimum tool results before a <code>no_tool_call</code> turn is reviewable.</td>
-</tr>
-<tr>
-<td><code>advisor_max_tokens</code></td>
-<td><code>2048</code></td>
-<td>Output cap for each advisor consult.</td>
-</tr>
-<tr>
-<td><code>advisor_temperature</code></td>
-<td>unset</td>
-<td>Sampling temperature for consults; omitted when unset.</td>
-</tr>
-<tr>
-<td><code>transcript_max_chars</code></td>
-<td><code>200000</code></td>
-<td>Middle-out cap on the serialized transcript (~50k tokens).</td>
-</tr>
-<tr>
-<td><code>fail_open</code></td>
-<td><code>true</code></td>
-<td>Advisor failure passes the turn through instead of erroring.</td>
-</tr>
-<tr>
-<td><code>reviewer_system_prompt</code></td>
-<td>built-in</td>
-<td>Overrides the APPROVE/REDO reviewer contract.</td>
-</tr>
-<tr>
-<td><code>redo_feedback_prefix</code></td>
-<td>built-in</td>
-<td>Overrides the prefix injected before a REDO plan.</td>
-</tr>
-</tbody>
-</table>
-<h2 id="tuning">Tuning<a class="headerlink" href="#tuning" title="Permanent link">&para;</a></h2>
-<p>The defaults gate once per session at the first terminal turn. On agentic
-coding harnesses, the configuration that benchmarked best is <code>max_reviews = 3</code>,
-<code>gate_stall_turns = 30</code>, <code>gate_min_tool_results = 3</code>: skip the early commentary
-turns, keep a mid-task checkpoint for grinders, and allow a re-review after a
-REDO.</p>
-<p>Expect the gate's value to depend on the executor. On Terminal-Bench 2.1 with a
-coding agent it lifted a weak executor by 11 points (43.8% → 54.7% ± 0.7,
-k=3) by catching premature "done" claims and stalls, while on a strong executor
-it only matched the accuracy of the takeover-style routers — strong executors
-rarely produce the diligence failures a review can catch. If your executor is
-already frontier-class, benchmark
-<a href="../stage_router_routing/">stage-router routing</a> first; reach for the advisor
-gate when the executor is markedly weaker than the best model you can call, or
-when you need a review trail rather than a model swap.</p>
+<p>Set <code>OPENROUTER_API_KEY</code>, save the configuration as <code>routes.toml</code>, and validate it
+before starting the server:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;sk-or-v1-...&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+</span></code></pre></div>
+<p>The parent always uses <code>parent</code>. For a delegated request, the classifier sees
+the prompt supplied by the parent and selects one configured target. With
+<code>session_affinity = true</code>, Switchyard reuses that decision for later requests
+from the same <code>session + agent</code> identity. Harness-maintenance requests continue
+to the parent target.</p>
+<p>Clients must still request the route ID (<code>agent</code> above). An explicit model name
+that is not registered as a route is rejected before sub-agent classification.
+<code>message_hash_fallback</code> is not supported for sub-agent routing because affinity
+requires harness-provided child identity.</p>
 
 
 
