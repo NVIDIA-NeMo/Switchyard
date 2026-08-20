@@ -55,6 +55,23 @@ pub fn encode_aggregated_response(
     agg: &AggLlmResponse,
     wire_format: WireFormat,
     served_model: Option<&str>,
+) -> Result<Value> {
+    encode_aggregated_response_with_extensions(
+        agg,
+        wire_format,
+        served_model,
+        &switchyard_protocol::ProviderExtensions::default(),
+    )
+}
+
+/// Encodes an aggregated response, honouring request extensions.
+///
+/// Identical to [`encode_aggregated_response`] except that Codex tool
+/// namespaces recorded on the request are restored on the encoded body.
+pub fn encode_aggregated_response_with_extensions(
+    agg: &AggLlmResponse,
+    wire_format: WireFormat,
+    served_model: Option<&str>,
     request_extensions: &switchyard_protocol::ProviderExtensions,
 ) -> Result<Value> {
     let mut body = DEFAULT_TRANSLATION_ENGINE
@@ -87,6 +104,23 @@ pub type RawEventStream = Pin<
 /// The target stream codec is resolved once and reused per chunk; terminal events
 /// (`message_stop` / `response.completed`) come from `finish`.
 pub fn encode_stream(
+    chunks: LlmResponseStream,
+    target: WireFormat,
+    served_model: Option<String>,
+) -> std::result::Result<RawEventStream, LlmClientError> {
+    encode_stream_with_extensions(
+        chunks,
+        target,
+        served_model,
+        &switchyard_protocol::ProviderExtensions::default(),
+    )
+}
+
+/// Encodes a response stream, honouring request extensions.
+///
+/// Identical to [`encode_stream`] except that Codex tool namespaces recorded on
+/// the request are restored on each encoded event.
+pub fn encode_stream_with_extensions(
     chunks: LlmResponseStream,
     target: WireFormat,
     served_model: Option<String>,
@@ -338,12 +372,8 @@ mod tests {
         assert_eq!(completion_text(&agg), "Hi there");
 
         // `served_model` overrides the id the upstream reported.
-        let encoded = encode_aggregated_response(
-            &agg,
-            WireFormat::OpenAiChat,
-            Some("served/model"),
-            &Default::default(),
-        )?;
+        let encoded =
+            encode_aggregated_response(&agg, WireFormat::OpenAiChat, Some("served/model"))?;
         assert_eq!(encoded["model"], "served/model");
         assert_eq!(encoded["choices"][0]["message"]["content"], "Hi there");
         Ok(())
@@ -370,13 +400,8 @@ mod tests {
         .boxed();
 
         let events = block_on(
-            encode_stream(
-                chunks,
-                WireFormat::OpenAiChat,
-                Some("m".to_string()),
-                &Default::default(),
-            )?
-            .collect::<Vec<_>>(),
+            encode_stream(chunks, WireFormat::OpenAiChat, Some("m".to_string()))?
+                .collect::<Vec<_>>(),
         )
         .into_iter()
         .collect::<Result<Vec<Value>, BoxError>>()?;
@@ -418,7 +443,6 @@ mod tests {
                 chunks,
                 WireFormat::AnthropicMessages,
                 Some("served/model".to_string()),
-                &Default::default(),
             )?
             .collect::<Vec<_>>(),
         )
@@ -449,13 +473,7 @@ mod tests {
         .boxed();
 
         let events = block_on(
-            encode_stream(
-                chunks,
-                WireFormat::AnthropicMessages,
-                None,
-                &Default::default(),
-            )?
-            .collect::<Vec<_>>(),
+            encode_stream(chunks, WireFormat::AnthropicMessages, None)?.collect::<Vec<_>>(),
         )
         .into_iter()
         .collect::<Result<Vec<Value>, BoxError>>()?;
@@ -471,10 +489,8 @@ mod tests {
                 LlmClientError::General("chunk exploded".to_string()),
             )])
             .boxed();
-        let results = block_on(
-            encode_stream(chunks, WireFormat::OpenAiChat, None, &Default::default())?
-                .collect::<Vec<_>>(),
-        );
+        let results =
+            block_on(encode_stream(chunks, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>());
         assert!(results.iter().any(Result::is_err));
         Ok(())
     }
@@ -511,11 +527,9 @@ mod tests {
                     .into()),
                 ])
                 .boxed();
-                let events = block_on(
-                    encode_stream(chunks, target, None, &Default::default())?.collect::<Vec<_>>(),
-                )
-                .into_iter()
-                .collect::<Result<Vec<Value>, BoxError>>()?;
+                let events = block_on(encode_stream(chunks, target, None)?.collect::<Vec<_>>())
+                    .into_iter()
+                    .collect::<Result<Vec<Value>, BoxError>>()?;
                 let body = serde_json::to_string(&events)?;
                 assert!(
                     body.contains("before"),
@@ -550,17 +564,10 @@ mod tests {
             }))
             .boxed();
 
-        let events = block_on(
-            encode_stream(
-                chunks,
-                WireFormat::OpenAiResponses,
-                None,
-                &Default::default(),
-            )?
-            .collect::<Vec<_>>(),
-        )
-        .into_iter()
-        .collect::<Result<Vec<Value>, BoxError>>()?;
+        let events =
+            block_on(encode_stream(chunks, WireFormat::OpenAiResponses, None)?.collect::<Vec<_>>())
+                .into_iter()
+                .collect::<Result<Vec<Value>, BoxError>>()?;
 
         assert_eq!(events, vec![json!({"type": "error", "message": "boom"})]);
         Ok(())
@@ -587,12 +594,10 @@ mod tests {
             .into()),
         ])
         .boxed();
-        let events = block_on(
-            encode_stream(chunks, WireFormat::OpenAiChat, None, &Default::default())?
-                .collect::<Vec<_>>(),
-        )
-        .into_iter()
-        .collect::<Result<Vec<Value>, BoxError>>()?;
+        let events =
+            block_on(encode_stream(chunks, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>())
+                .into_iter()
+                .collect::<Result<Vec<Value>, BoxError>>()?;
         let body = serde_json::to_string(&events)?;
         assert!(
             events
@@ -637,12 +642,10 @@ mod tests {
             async move { Ok::<Vec<u8>, LlmClientError>(frame) }
         });
         let decoded = decode_stream(bytes, WireFormat::OpenAiChat)?;
-        let replayed = block_on(
-            encode_stream(decoded, WireFormat::OpenAiChat, None, &Default::default())?
-                .collect::<Vec<_>>(),
-        )
-        .into_iter()
-        .collect::<Result<Vec<Value>, BoxError>>()?;
+        let replayed =
+            block_on(encode_stream(decoded, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>())
+                .into_iter()
+                .collect::<Result<Vec<Value>, BoxError>>()?;
 
         assert_eq!(replayed, vec![provider_event]);
         Ok(())

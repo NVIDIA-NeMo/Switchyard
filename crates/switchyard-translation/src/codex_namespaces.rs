@@ -217,14 +217,6 @@ mod tests {
         );
     }
 
-    // The point of qualifying: two servers exposing one name stay distinct
-    // upstream, and each call resolves back to the server it came from.
-
-    // Models drop the `mcp__` prefix, so that spelling resolves too.
-
-    // An unambiguous bare name resolves, so a model that drops the namespace
-    // entirely still dispatches.
-
     // A bare name claimed by two namespaces must not be guessed: a wrong guess
     // dispatches the call to the wrong server.
     #[test]
@@ -239,8 +231,6 @@ mod tests {
         assert_eq!(response, before);
     }
 
-    // Streaming events nest the item one level deeper than a buffered body.
-
     // Codex namespaces builtin groups too, so nothing may key on `mcp__`.
     #[test]
     fn resolves_namespaces_that_are_not_mcp_servers() {
@@ -254,6 +244,4 @@ mod tests {
         assert_eq!(response["output"][0]["name"], "spawn_agent");
         assert_eq!(response["output"][0]["namespace"], "multi_agent_v1");
     }
-
-    // An upstream that already supplied a namespace is trusted.
 }

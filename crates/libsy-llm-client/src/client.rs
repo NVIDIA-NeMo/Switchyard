@@ -18,7 +18,7 @@ use switchyard_protocol::{
 };
 use switchyard_translation::{
     WireFormat, decode_aggregated_response, decode_request, decode_stream,
-    encode_aggregated_response, encode_request, encode_stream,
+    encode_aggregated_response_with_extensions, encode_request, encode_stream_with_extensions,
 };
 use tracing::Instrument;
 
@@ -513,7 +513,7 @@ impl TranslatingLlmClient {
 
         match response.llm_response {
             LlmResponse::Agg(agg) => {
-                let body = encode_aggregated_response(
+                let body = encode_aggregated_response_with_extensions(
                     &agg,
                     wire_format,
                     served_model.as_deref(),
@@ -523,7 +523,12 @@ impl TranslatingLlmClient {
                 Ok(RawResponse::Buffered(body))
             }
             LlmResponse::Stream(chunks) => {
-                let events = encode_stream(chunks, wire_format, served_model, &request_extensions)?;
+                let events = encode_stream_with_extensions(
+                    chunks,
+                    wire_format,
+                    served_model,
+                    &request_extensions,
+                )?;
                 Ok(RawResponse::Stream(events))
             }
         }

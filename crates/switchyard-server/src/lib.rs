@@ -699,7 +699,6 @@ async fn decision(
                 &aggregate,
                 input_format,
                 Some(outcome.selected_model_id.as_str()),
-                &Default::default(),
             ) {
                 Ok(response) => Some(response),
                 Err(error) => return server_error(error.to_string()),
