@@ -28,5 +28,5 @@ strong_target = "strong"
 weak_target = "weak"
 base_threshold = 0.5
 threshold_step = 0.0
-session_affinity = true
+classify_trigger = "new_session"
 message_hash_fallback = true

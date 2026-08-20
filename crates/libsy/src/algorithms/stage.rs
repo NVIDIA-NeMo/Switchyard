@@ -72,7 +72,7 @@ pub struct LlmFallback {
     pub judge_target: ModelId,
     /// Judge configuration. `recent_turn_window` is worth setting to this router's
     /// `recent_window` so the judge reads the same span the signal scorer scored.
-    /// Note: `session_affinity` and `message_hash_fallback` have no effect here —
+    /// Note: `classify_trigger = new_session` and `message_hash_fallback` have no effect here —
     /// the judge runs as a cascade classifier, not a standalone algorithm.
     pub config: TaskClassifierConfig,
 }
