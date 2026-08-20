@@ -23,7 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use switchyard_protocol::{ModelId, Request, Role};
+use serde::Deserialize;
+use switchyard_protocol::{ContentBlock, Message, ModelId, Request, Role};
 
 use crate::core::algorithm::{Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -32,6 +33,33 @@ use crate::core::processor::{Event, Processor};
 /// Upper bound on retained assignments, keeping the process-local map from growing
 /// without limit; the oldest entry is evicted once the bound is reached.
 const MAX_ASSIGNMENTS: usize = 4096;
+
+/// How often the classifier re-decides a session's target.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassifyTrigger {
+    /// Judge every request, tool continuations included.
+    #[default]
+    EveryRequest,
+    /// Judge each new user message, holding that target across the tool calls between.
+    UserTurn,
+    /// Judge once and reuse that target for the session.
+    NewSession,
+}
+
+/// Anthropic carries tool results as a `Role::User` message, so role alone cannot tell a
+/// human turn from a tool continuation.
+fn is_user_turn(message: &Message) -> bool {
+    message.role == Role::User
+        && !message
+            .content
+            .iter()
+            .all(|block| matches!(block, ContentBlock::ToolResult(_)))
+}
+
+fn has_new_user_turn(messages: &[Message]) -> bool {
+    messages.last().is_some_and(is_user_turn)
+}
 
 /// Retains a model per request identity and forces it on later matching requests.
 ///
@@ -51,6 +79,8 @@ pub struct AffinityRouter {
     subagents_only: bool,
     /// In absence of headers, use the message hash based fallback key to do task based routing
     message_hash_fallback: bool,
+    /// Whether a new user message drops the assignment so the judge runs again.
+    release_on_user_turn: bool,
     /// Retained assignments, shared across this router's processor and classifier roles.
     ///
     /// Held on the instance so the two roles share one process-local map through a
@@ -79,6 +109,12 @@ impl AffinityRouter {
     /// Uses the first user-message text as a fallback key when metadata has no session.
     pub fn with_message_hash_fallback(mut self) -> Self {
         self.message_hash_fallback = true;
+        self
+    }
+
+    /// Re-decides per user turn, holding the target across the tool calls between.
+    pub fn with_release_on_user_turn(mut self) -> Self {
+        self.release_on_user_turn = true;
         self
     }
 
@@ -153,7 +189,8 @@ where
             && let Some(key) = self.affinity_key(request)
         {
             let mut assignments = self.assignments.lock();
-            if self.should_latch(selected_model_id) && !assignments.contains_key(&key) {
+            let writable = self.release_on_user_turn || !assignments.contains_key(&key);
+            if self.should_latch(selected_model_id) && writable {
                 evict_if_full(&mut assignments);
                 assignments.insert(key, selected_model_id.clone());
             }
@@ -190,6 +227,11 @@ where
         let Some(key) = self.affinity_key(request) else {
             return Ok((Classification::Scores(Vec::new()), None));
         };
+        // Abstaining rather than clearing keeps this read path free of writes, so the judge
+        // decides the turn whatever order concurrent latches land in.
+        if self.release_on_user_turn && has_new_user_turn(&request.llm_request.messages) {
+            return Ok((Classification::Scores(Vec::new()), None));
+        }
         let assigned = self.assignments.lock().get(&key).cloned();
         Ok((
             Classification::Scores(match assigned {
@@ -219,7 +261,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use switchyard_protocol::{ContentBlock, LlmRequest, Message, Metadata, text_request};
+    use switchyard_protocol::{LlmRequest, Metadata, ToolResult, text_request};
 
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
@@ -744,6 +786,42 @@ mod tests {
 
         let len = router.assignments.lock().len();
         assert_eq!(len, MAX_ASSIGNMENTS);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn release_on_user_turn_drops_the_assignment_only_when_the_user_speaks()
+    -> Result<(), BoxErr> {
+        let router = AffinityRouter::new().with_release_on_user_turn();
+        let mut state = ();
+        let mut opening = task_request(Some(session("session-1", "agent-a")), "add caching", None);
+        retain(&router, &mut state, &mut opening, "weak").await?;
+
+        // A tool continuation holds the assignment, so no judge call.
+        let mut continued = opening.clone();
+        continued.llm_request.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "call-1".to_string(),
+                content: Vec::new(),
+                is_error: None,
+            })],
+        });
+        assert_eq!(
+            scores(&router, &mut state, &mut continued)
+                .await?
+                .first()
+                .map(|s| s.target.as_str()),
+            Some("weak")
+        );
+
+        // A new user message releases it, so the turn abstains and the judge runs.
+        let mut spoke = task_request(
+            Some(session("session-1", "agent-a")),
+            "add caching",
+            Some("no, shared across processes"),
+        );
+        assert!(scores(&router, &mut state, &mut spoke).await?.is_empty());
         Ok(())
     }
 
