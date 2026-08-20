@@ -1436,3 +1436,39 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
     }
     Ok(())
 }
+
+/// A decision made by the cascade fallback still names its routing tier.
+///
+/// The judge call fails, so `TaskClassifier` fails open and `DefaultTarget`
+/// decides. That decider defines no tier of its own, so without the cascade
+/// lookup the selection logs `tier: None` while a judged decision to the same
+/// target logs its tier. `AffinityRouter` reuse takes the same path.
+#[tokio::test]
+async fn fallback_decision_logs_the_routing_tier() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+
+    let client = Arc::new(JudgeClient {
+        judge_model: "ft-judge".into(),
+        outcome: JudgeOutcome::CallFailure,
+    }) as Arc<dyn RoutedLlmClient>;
+    run(
+        classifier_router("ft-judge", "ft-weak", "ft-strong")?,
+        client,
+        classifier_request(),
+    )
+    .await?;
+
+    let events = store.events();
+    assert!(
+        events.iter().any(|event| {
+            event.fields.get("target").map(String::as_str) == Some("ft-strong")
+                && event
+                    .fields
+                    .get("tier")
+                    .is_some_and(|tier| tier.contains("strong"))
+        }),
+        "fallback selection logged without its routing tier: {events:?}"
+    );
+    Ok(())
+}
