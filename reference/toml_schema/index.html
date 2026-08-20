@@ -1665,16 +1665,16 @@ table, which can be empty:</p>
 <td>Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. <code>base_threshold + 2 * threshold_step</code> must be at most <code>1</code>.</td>
 </tr>
 <tr>
-<td><code>session_affinity</code></td>
+<td><code>classify_trigger</code></td>
 <td style="text-align: center;">No</td>
-<td><code>false</code></td>
-<td>Reuses a session's first decision on later turns.</td>
+<td><code>every_request</code></td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and holds that target across the tool calls between. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Keys affinity on the first user message. Requires <code>session_affinity</code>.</td>
+<td>Keys affinity on the first user message. Requires <code>classify_trigger = "new_session"</code>.</td>
 </tr>
 <tr>
 <td><code>recent_turn_window</code></td>
@@ -1784,16 +1784,16 @@ policy selector, and routes to any configured target label.</p>
 <td>Policy table. <code>target_selector</code> accepts a JSON Pointer such as <code>/decision/target</code>.</td>
 </tr>
 <tr>
-<td><code>session_affinity</code></td>
+<td><code>classify_trigger</code></td>
 <td style="text-align: center;">No</td>
-<td><code>false</code></td>
-<td>Reuses a session's first decision on later turns.</td>
+<td><code>every_request</code></td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and holds that target across the tool calls between. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Keys affinity on the first user message. Requires <code>session_affinity</code>.</td>
+<td>Keys affinity on the first user message. Requires <code>classify_trigger = "new_session"</code>.</td>
 </tr>
 <tr>
 <td><code>recent_turn_window</code></td>
@@ -1861,6 +1861,12 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 <td style="text-align: center;">No</td>
 <td>unset</td>
 <td>System prompt handed to the efficient tier.</td>
+</tr>
+<tr>
+<td><code>classifier.classify_trigger</code></td>
+<td style="text-align: center;">No</td>
+<td><code>every_request</code></td>
+<td>When the judge runs. See the <code>llm_classifier</code> route. <code>new_session</code> has no effect here.</td>
 </tr>
 <tr>
 <td><code>classifier.response_format_type</code></td>
