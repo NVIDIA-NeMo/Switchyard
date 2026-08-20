@@ -15,13 +15,90 @@
 //! target delegated work belongs on, affinity decides *how long* a decision lives, and
 //! neither needs to know about the other.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use crate::Result;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
-use switchyard_protocol::ModelId;
-use switchyard_protocol::{Metadata, Request, Response};
+use switchyard_protocol::{
+    ContentBlock, LlmRequest, Message, Metadata, ModelId, Request, Response, Role,
+};
+
+/// Classifies delegated work from its parent-supplied prompt and abstains otherwise.
+///
+/// The inner classifier receives a prompt-only request clone. The original request remains
+/// unchanged for the selected child model.
+pub struct SubagentGate<S> {
+    inner: Arc<dyn Classifier<S>>,
+}
+
+impl<S> SubagentGate<S> {
+    /// Wraps `inner` with delegated-work detection.
+    pub fn new(inner: Arc<dyn Classifier<S>>) -> Self {
+        Self { inner }
+    }
+}
+
+/// Builds the prompt-only request shown to a delegated-work classifier.
+fn delegated_prompt_request(request: &Request) -> Option<Request> {
+    // Coding harnesses append the parent's task after their injected user context and reminders.
+    let prompt = request
+        .llm_request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::User)?
+        .content
+        .iter()
+        .rev()
+        .find_map(|block| match block {
+            ContentBlock::Text { text } if !text.trim().is_empty() => Some(text.clone()),
+            _ => None,
+        })?;
+
+    Some(Request {
+        llm_request: LlmRequest {
+            model: request.llm_request.model.clone(),
+            messages: vec![Message::text(Role::User, prompt)],
+            ..LlmRequest::default()
+        },
+        raw_request: None,
+        metadata: request.metadata.clone(),
+    })
+}
+
+#[async_trait]
+impl<S> Classifier<S> for SubagentGate<S>
+where
+    S: Send + 'static,
+{
+    fn routing_tier(&self, selected_model_id: &ModelId) -> Option<&'static str> {
+        self.inner.routing_tier(selected_model_id)
+    }
+
+    async fn score(
+        &self,
+        state: &mut S,
+        request: &mut Request,
+        driver: Option<&Driver>,
+    ) -> Result<(Classification, Option<Response>)> {
+        if !request
+            .metadata
+            .as_ref()
+            .is_some_and(Metadata::is_subagent_work)
+        {
+            return Ok((Classification::Scores(Vec::new()), None));
+        }
+        let Some(mut classifier_request) = delegated_prompt_request(request) else {
+            return Ok((Classification::Scores(Vec::new()), None));
+        };
+        self.inner
+            .score(state, &mut classifier_request, driver)
+            .await
+    }
+}
 
 /// Scores a fixed worker target for delegated sub-agent work; abstains otherwise.
 pub struct SubagentOverride {
@@ -75,7 +152,32 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
     use switchyard_protocol::{slice_to_header_map, text_request};
+
+    #[derive(Default)]
+    struct CapturingClassifier {
+        requests: Mutex<Vec<Request>>,
+    }
+
+    #[async_trait]
+    impl Classifier<()> for CapturingClassifier {
+        async fn score(
+            &self,
+            _state: &mut (),
+            request: &mut Request,
+            _driver: Option<&Driver>,
+        ) -> Result<(Classification, Option<Response>)> {
+            self.requests.lock().push(request.clone());
+            Ok((
+                Classification::Scores(vec![Score {
+                    confidence: 1.0,
+                    target: ModelId::from("worker"),
+                }]),
+                None,
+            ))
+        }
+    }
 
     fn request(headers: &[(&str, &str)]) -> Request {
         let metadata =
@@ -152,6 +254,22 @@ mod tests {
             }
             Classification::Ambiguous(_) => panic!("override must score definitively"),
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gate_abstains_when_delegated_work_has_no_text_prompt() -> Result<()> {
+        let classifier = Arc::new(CapturingClassifier::default());
+        let gate = SubagentGate::new(classifier.clone());
+        let mut request = request(&[("x-openai-subagent", "collab_spawn")]);
+        request.llm_request.messages = vec![Message::text(Role::Assistant, "no user prompt")];
+
+        let mut state = ();
+        let (classification, response) = gate.score(&mut state, &mut request, None).await?;
+
+        assert!(classification.argmax(false)?.is_none());
+        assert!(response.is_none());
+        assert!(classifier.requests.lock().is_empty());
         Ok(())
     }
 }
