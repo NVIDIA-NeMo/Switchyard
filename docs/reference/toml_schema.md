@@ -115,13 +115,13 @@ type = "noop"
 
 ### `passthrough`
 
-Sends every request to one target. It can also classify delegated sub-agent work;
+Sends parent requests to one target. It can also route delegated sub-agent work;
 see [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md).
 
 | Key | Required | Meaning |
 |---|:---:|---|
-| `target` | Yes | Target every request is sent to. |
-| `subagent_classifier` | No | Custom classifier used only for delegated sub-agent work. |
+| `target` | Yes | Target used for parent and harness-maintenance requests. |
+| `subagents` | No | Nested `passthrough` or `llm_classifier` policy used only for delegated sub-agent work. |
 
 ### `random`
 

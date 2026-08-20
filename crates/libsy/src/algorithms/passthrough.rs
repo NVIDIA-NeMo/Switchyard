@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Direct parent routing with an optional delegated-work classifier cascade.
+//! Direct parent routing with an optional delegated-work gate.
 
 use std::sync::Arc;
 
@@ -15,13 +15,13 @@ use crate::core::classifier::Classifier;
 use crate::core::state::State;
 use crate::{LibsyError, Result, RoutingOutcome};
 
-/// Routes parent traffic directly and optionally classifies delegated sub-agent work.
+/// Routes parent traffic directly and optionally routes delegated sub-agent work.
 pub struct Passthrough {
     parent_target: ModelId,
     route: FallThrough<State>,
 }
 
-/// Runtime components for classifying and retaining delegated sub-agent work.
+/// Runtime components for delegated sub-agent routing.
 pub struct PassthroughSubagentConfig {
     /// Targets the delegated-work classifier may select.
     pub targets: Vec<ModelId>,
@@ -35,6 +35,20 @@ pub struct PassthroughSubagentConfig {
     pub message_hash_fallback: bool,
 }
 
+impl PassthroughSubagentConfig {
+    /// Routes delegated work directly to one fixed target.
+    pub fn fixed_target(target: impl Into<ModelId>) -> Self {
+        let target = target.into();
+        Self {
+            targets: vec![target.clone()],
+            classifier: Arc::new(DefaultTarget::new(target.clone())),
+            default_target: target,
+            classify_trigger: ClassifyTrigger::EveryRequest,
+            message_hash_fallback: false,
+        }
+    }
+}
+
 /// Complete construction settings for [`Passthrough`].
 pub struct PassthroughConfig {
     /// Target used for parent and harness-maintenance traffic.
@@ -46,9 +60,9 @@ pub struct PassthroughConfig {
 impl Passthrough {
     /// Creates direct parent routing, optionally with a decision gate for sub-agents.
     ///
-    /// When configured, the sub-agent classifier runs once per identified child. Its first
-    /// decision is retained by `session + agent`; an abstaining classifier uses the child
-    /// default. Root and harness-maintenance traffic continue to the parent target.
+    /// A `new_session` classifier retains its first decision by `session + agent`; an
+    /// `every_request` gate decides each delegated request independently. An abstaining gate uses
+    /// the child default. Root and harness-maintenance traffic continue to the parent target.
     ///
     /// # Errors
     ///
@@ -255,6 +269,21 @@ mod tests {
         assert_eq!(defaulted, "worker");
         assert_eq!(maintenance, "parent");
         assert_eq!(classifier.calls.load(Ordering::Relaxed), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fixed_subagent_gate_routes_parent_and_child() -> crate::Result<()> {
+        let router = Arc::new(Passthrough::new(PassthroughConfig {
+            parent_target: ModelId::from("parent"),
+            subagent: Some(PassthroughSubagentConfig::fixed_target("worker")),
+        })?);
+
+        let (parent, _) = test_drive(router.clone(), request(None), echo()).await?;
+        let (child, _) = test_drive(router, child("child-1"), echo()).await?;
+
+        assert_eq!(parent, "parent");
+        assert_eq!(child, "worker");
         Ok(())
     }
 

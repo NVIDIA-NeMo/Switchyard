@@ -415,6 +415,13 @@ struct CustomClassifierRouteConfig {
     max_output_tokens: u64,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum SubagentRouteConfig {
+    Passthrough { target: String },
+    LlmClassifier(CustomClassifierRouteConfig),
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum RouteConfig {
@@ -449,7 +456,7 @@ enum RouteConfig {
         reasoning: Option<bool>,
         target: String,
         #[serde(default)]
-        subagent_classifier: Option<CustomClassifierRouteConfig>,
+        subagents: Option<SubagentRouteConfig>,
     },
     LlmClassifier {
         id: ModelId,
@@ -627,13 +634,15 @@ impl RouteConfig {
             Self::Noop { .. } => Vec::new(),
             Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
             Self::Passthrough {
-                target,
-                subagent_classifier,
-                ..
+                target, subagents, ..
             } => {
                 let mut names = vec![target.as_str()];
-                if let Some(classifier) = subagent_classifier {
-                    names.extend(classifier.targets.iter().map(String::as_str));
+                match subagents {
+                    Some(SubagentRouteConfig::Passthrough { target }) => names.push(target),
+                    Some(SubagentRouteConfig::LlmClassifier(classifier)) => {
+                        names.extend(classifier.targets.iter().map(String::as_str));
+                    }
+                    None => {}
                 }
                 names
             }
@@ -685,7 +694,7 @@ impl RouteConfig {
                 classifier_target, ..
             } => names.push(classifier_target),
             Self::Passthrough {
-                subagent_classifier: Some(classifier),
+                subagents: Some(SubagentRouteConfig::LlmClassifier(classifier)),
                 ..
             } => names.push(&classifier.classifier_target),
             Self::StageRouter {
@@ -1016,12 +1025,10 @@ fn build_algorithm(
             Ok(Arc::new(algorithm))
         }
         RouteConfig::Passthrough {
-            target,
-            subagent_classifier,
-            ..
+            target, subagents, ..
         } => {
             let parent_target = resolve_target_model_id(route_name, target, targets)?;
-            let subagent = if let Some(config) = subagent_classifier {
+            let subagent = if let Some(SubagentRouteConfig::LlmClassifier(config)) = subagents {
                 let judge_target =
                     resolve_target_model_id(route_name, &config.classifier_target, targets)?;
                 let resolved_targets = config
@@ -1038,14 +1045,14 @@ fn build_algorithm(
                     .map(|(_, target)| target.clone())
                     .ok_or_else(|| {
                         ServerError::new(format!(
-                            "passthrough route {route_name}: subagent_classifier default_target {:?} must be one of its configured targets",
+                            "passthrough route {route_name}: subagents llm_classifier default_target {:?} must be one of its configured targets",
                             config.default_target
                         ))
                     })?;
                 let response_schema =
                     serde_json::from_str(&config.response_schema).map_err(|error| {
                         ServerError::new(format!(
-                            "passthrough route {route_name}: subagent_classifier response_schema is invalid JSON: {error}"
+                            "passthrough route {route_name}: subagents llm_classifier response_schema is invalid JSON: {error}"
                         ))
                     })?;
                 let mut classifier_config = CustomClassifierConfig::new(
@@ -1068,7 +1075,7 @@ fn build_algorithm(
                     })
                     .map_err(|error| {
                         ServerError::new(format!(
-                            "passthrough route {route_name}: subagent_classifier: {error}"
+                            "passthrough route {route_name}: subagents llm_classifier: {error}"
                         ))
                     })?,
                 );
@@ -1079,6 +1086,10 @@ fn build_algorithm(
                     classify_trigger: config.classify_trigger,
                     message_hash_fallback: config.message_hash_fallback,
                 })
+            } else if let Some(SubagentRouteConfig::Passthrough { target }) = subagents {
+                Some(PassthroughSubagentConfig::fixed_target(
+                    resolve_target_model_id(route_name, target, targets)?,
+                ))
             } else {
                 None
             };
@@ -1407,7 +1418,7 @@ target = "weak"
         }
     }
 
-    fn passthrough_with_subagent_classifier(extra: &str) -> String {
+    fn passthrough_with_subagent_llm_classifier(extra: &str) -> String {
         let configured = VALID_CONFIG.replace(
             "[routes.passthrough]\nid = \"switchyard/passthrough\"\ntype = \"passthrough\"\ntarget = \"weak\"",
             r#"[routes.passthrough]
@@ -1415,7 +1426,8 @@ id = "switchyard/passthrough"
 type = "passthrough"
 target = "weak"
 
-[routes.passthrough.subagent_classifier]
+[routes.passthrough.subagents]
+type = "llm_classifier"
 classifier_target = "classifier"
 targets = ["strong", "weak"]
 default_target = "weak"
@@ -1427,6 +1439,13 @@ classify_trigger = "new_session""#,
         configured.replace(
             "classify_trigger = \"new_session\"",
             &format!("classify_trigger = \"new_session\"{extra}"),
+        )
+    }
+
+    fn passthrough_with_subagent_passthrough() -> String {
+        VALID_CONFIG.replace(
+            "[routes.passthrough]\nid = \"switchyard/passthrough\"\ntype = \"passthrough\"\ntarget = \"weak\"",
+            "[routes.passthrough]\nid = \"switchyard/passthrough\"\ntype = \"passthrough\"\ntarget = \"weak\"\n\n[routes.passthrough.subagents]\ntype = \"passthrough\"\ntarget = \"strong\"",
         )
     }
 
@@ -1447,10 +1466,13 @@ classify_trigger = "new_session""#,
     }
 
     #[test]
-    fn passthrough_accepts_a_custom_subagent_classifier() -> ServerResult<()> {
-        let configured = passthrough_with_subagent_classifier("");
-
-        server_state_from_toml(&configured)?;
+    fn passthrough_accepts_subagent_gates() -> ServerResult<()> {
+        for configured in [
+            passthrough_with_subagent_llm_classifier(""),
+            passthrough_with_subagent_passthrough(),
+        ] {
+            server_state_from_toml(&configured)?;
+        }
         Ok(())
     }
 
@@ -1674,7 +1696,7 @@ classifier_magic = true
                 "message_hash_fallback requires classify_trigger = new_session",
             ),
             (
-                passthrough_with_subagent_classifier("\nmessage_hash_fallback = true"),
+                passthrough_with_subagent_llm_classifier("\nmessage_hash_fallback = true"),
                 "cannot use message_hash_fallback",
             ),
             (
