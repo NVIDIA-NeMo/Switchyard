@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Switchyard-owned HTTP clients bound to one semantic routing target.
+//! Switchyard-owned target adapters over a shared HTTP client.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value as Json;
@@ -17,7 +18,7 @@ use switchyard_translation::TranslationEngine;
 
 use crate::translation;
 
-/// A provider client bound to one configured Switchyard target.
+/// A provider target adapter over a shared HTTP client.
 ///
 /// libsy routes with a stable semantic name (for example `fast`). The provider
 /// still expects its own model id (for example `meta/llama-3.1-8b-instruct`).
@@ -27,19 +28,18 @@ pub(crate) struct TargetClient {
     provider_model: ModelId,
     target_format: WireFormat,
     drop_caller_extra_body: bool,
-    inner: TranslatingLlmClient,
+    inner: Arc<TranslatingLlmClient>,
     translation: TranslationEngine,
 }
 
 impl TargetClient {
-    pub(crate) fn new(
+    pub(crate) fn model_config(
         provider_model: String,
         target_format: WireFormat,
         dispatch_url: String,
         headers: BTreeMap<String, String>,
         extra_body: BTreeMap<String, Json>,
-        drop_caller_extra_body: bool,
-    ) -> Result<Self, LlmClientError> {
+    ) -> ModelConfig {
         let backend_config = HttpBackendConfig {
             // `dispatch_url` is already resolved by configuration. Backend URL
             // joining accepts a complete canonical endpoint as well as a base
@@ -56,15 +56,22 @@ impl TargetClient {
             WireFormat::OpenAiResponses => Backend::OpenAiResponses(backend_config),
             WireFormat::AnthropicMessages => Backend::Anthropic(backend_config),
         };
-        let model = ModelConfig::new(provider_model.clone(), backend, None);
-        let inner = TranslatingLlmClient::new(&[model])?;
-        Ok(Self {
-            provider_model: ModelId::from(provider_model),
+        ModelConfig::new(provider_model, backend, None)
+    }
+
+    pub(crate) fn new(
+        provider_model: ModelId,
+        target_format: WireFormat,
+        drop_caller_extra_body: bool,
+        inner: Arc<TranslatingLlmClient>,
+    ) -> Self {
+        Self {
+            provider_model,
             target_format,
             drop_caller_extra_body,
             inner,
             translation: TranslationEngine::default(),
-        })
+        }
     }
 
     /// Retargets only the provider-facing transport metadata.
@@ -117,19 +124,36 @@ mod tests {
     };
 
     fn client(format: WireFormat) -> TargetClient {
-        TargetClient::new(
-            "provider/model".into(),
+        client_with_options(
             format,
             match format {
                 WireFormat::OpenAiChat => "https://provider.example/v1/chat/completions".into(),
                 WireFormat::OpenAiResponses => "https://provider.example/v1/responses".into(),
                 WireFormat::AnthropicMessages => "https://provider.example/v1/messages".into(),
             },
-            BTreeMap::new(),
-            BTreeMap::new(),
             false,
         )
-        .unwrap()
+    }
+
+    fn client_with_options(
+        format: WireFormat,
+        dispatch_url: String,
+        drop_caller_extra_body: bool,
+    ) -> TargetClient {
+        let model = TargetClient::model_config(
+            "provider/model".into(),
+            format,
+            dispatch_url,
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        let inner = Arc::new(TranslatingLlmClient::new(&[model]).unwrap());
+        TargetClient::new(
+            ModelId::from("provider/model"),
+            format,
+            drop_caller_extra_body,
+            inner,
+        )
     }
 
     #[test]
@@ -173,15 +197,11 @@ mod tests {
 
     #[test]
     fn configured_target_drops_intercepted_caller_extra_body() {
-        let client = TargetClient::new(
-            "provider/model".into(),
+        let client = client_with_options(
             WireFormat::OpenAiChat,
             "https://provider.example/v1/chat/completions".into(),
-            BTreeMap::new(),
-            BTreeMap::new(),
             true,
-        )
-        .unwrap();
+        );
         let request = Request {
             llm_request: LlmRequest {
                 extensions: ProviderExtensions {
@@ -254,15 +274,11 @@ mod tests {
             }
             Ok(())
         });
-        let client = TargetClient::new(
-            "provider/model".into(),
+        let client = client_with_options(
             WireFormat::OpenAiChat,
             format!("http://{address}/v1"),
-            BTreeMap::new(),
-            BTreeMap::new(),
             false,
-        )
-        .expect("build target client");
+        );
         let response = client
             .call(Request {
                 llm_request: text_request(Some("route".into()), "hello"),

@@ -13,6 +13,7 @@ use switchyard_libsy::{
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, PickerMode, Random, StageRouter,
     StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
+use switchyard_llm_client::{ModelConfig, TranslatingLlmClient};
 use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
 use crate::client::TargetClient;
@@ -113,7 +114,7 @@ impl TargetBinding {
         Ok(())
     }
 
-    fn prepare(&self) -> Result<PreparedTargetBinding, String> {
+    fn prepare(&self) -> Result<PreparedTargetTransport, String> {
         let mut headers = BTreeMap::new();
         for (name, variable) in &self.header_env {
             let value = std::env::var(variable)
@@ -121,20 +122,27 @@ impl TargetBinding {
             validate_header(name, &value)?;
             headers.insert(name.clone(), value);
         }
-        let dispatch_url = self.dispatch_url();
-        let client = TargetClient::new(
+        let model_config = TargetClient::model_config(
             self.model.clone(),
             self.protocol,
-            dispatch_url,
+            self.dispatch_url(),
             headers,
             self.extra_body.clone(),
-            self.drop_caller_extra_body,
-        )
-        .map_err(|error| format!("failed to create target HTTP client: {error}"))?;
-        Ok(PreparedTargetBinding {
-            client: Arc::new(client),
+        );
+        Ok(PreparedTargetTransport {
+            provider_model: ModelId::from(self.model.clone()),
+            protocol: self.protocol,
+            drop_caller_extra_body: self.drop_caller_extra_body,
+            model_config,
         })
     }
+}
+
+struct PreparedTargetTransport {
+    provider_model: ModelId,
+    protocol: WireFormat,
+    drop_caller_extra_body: bool,
+    model_config: ModelConfig,
 }
 
 pub(crate) struct PreparedTargetBinding {
@@ -345,11 +353,37 @@ impl SwitchyardConfig {
 
     pub(crate) fn prepare(self) -> Result<PreparedConfig, String> {
         self.validate_structure()?;
-        let targets = self
+        let transports = self
             .targets
             .iter()
             .map(|(name, target)| target.prepare().map(|prepared| (name.clone(), prepared)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let models = transports
+            .values()
+            .map(|transport| transport.model_config.clone())
+            .collect::<Vec<_>>();
+        // One multi-model client shares reqwest connection pools across targets.
+        let client = Arc::new(
+            TranslatingLlmClient::new(&models)
+                .map_err(|error| format!("failed to create target HTTP client: {error}"))?,
+        );
+        let targets = transports
+            .into_iter()
+            .map(|(name, transport)| {
+                let target = TargetClient::new(
+                    transport.provider_model,
+                    transport.protocol,
+                    transport.drop_caller_extra_body,
+                    client.clone(),
+                );
+                (
+                    name,
+                    PreparedTargetBinding {
+                        client: Arc::new(target),
+                    },
+                )
+            })
+            .collect();
         let algorithm = self.build_algorithm(Some(&targets))?;
         Ok(PreparedConfig {
             algorithm,
