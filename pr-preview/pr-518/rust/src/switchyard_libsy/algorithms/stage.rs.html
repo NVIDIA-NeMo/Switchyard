@@ -10,8 +10,8 @@
 <a href=#10 id=10 data-nosnippet>10</a>//!
 <a href=#11 id=11 data-nosnippet>11</a>//! Signals do not decide every turn. An under-threshold turn abstains and falls
 <a href=#12 id=12 data-nosnippet>12</a>//! through to the optional [`LlmTaskClassifier`] — the capability route's judge,
-<a href=#13 id=13 data-nosnippet>13</a>//! joined in unchanged — and then to the picker's default tier, or to another
-<a href=#14 id=14 data-nosnippet>14</a>//! floor a decider ahead of stage holds in its place.
+<a href=#13 id=13 data-nosnippet>13</a>//! joined in unchanged — and then to the picker's fall-open tier, or to an
+<a href=#14 id=14 data-nosnippet>14</a>//! override a decider ahead of stage set in its place.
 <a href=#15 id=15 data-nosnippet>15</a>//!
 <a href=#16 id=16 data-nosnippet>16</a></span><span class="kw">use </span>std::sync::Arc;
 <a href=#17 id=17 data-nosnippet>17</a>
@@ -22,7 +22,7 @@
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">super</span>::util::prompts::{SystemPromptProcessor, TargetPrompts};
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span><span class="kw">super</span>::util::stage::{
 <a href=#24 id=24 data-nosnippet>24</a>    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets, Tier,
-<a href=#25 id=25 data-nosnippet>25</a>    current_floor, record_decision_source, record_routing_decision,
+<a href=#25 id=25 data-nosnippet>25</a>    fall_open_tier, record_decision_source, record_routing_decision,
 <a href=#26 id=26 data-nosnippet>26</a>};
 <a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span><span class="kw">super</span>::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 <a href=#28 id=28 data-nosnippet>28</a><span class="kw">use </span><span class="kw">crate</span>::core::algorithm::{Algorithm, Driver};
@@ -65,21 +65,21 @@
 <a href=#65 id=65 data-nosnippet>65</a>    }
 <a href=#66 id=66 data-nosnippet>66</a>}
 <a href=#67 id=67 data-nosnippet>67</a>
-<a href=#68 id=68 data-nosnippet>68</a><span class="doccomment">/// Closes the cascade at zero confidence: a floor, not a judgement.
-<a href=#69 id=69 data-nosnippet>69</a></span><span class="kw">struct </span>HeldFloor {
+<a href=#68 id=68 data-nosnippet>68</a><span class="doccomment">/// Closes the cascade at zero confidence: a fallback, not a judgement.
+<a href=#69 id=69 data-nosnippet>69</a></span><span class="kw">struct </span>FallOpen {
 <a href=#70 id=70 data-nosnippet>70</a>    targets: StageTargets,
 <a href=#71 id=71 data-nosnippet>71</a>    default_tier: Tier,
 <a href=#72 id=72 data-nosnippet>72</a>}
 <a href=#73 id=73 data-nosnippet>73</a>
 <a href=#74 id=74 data-nosnippet>74</a><span class="attr">#[async_trait]
-<a href=#75 id=75 data-nosnippet>75</a></span><span class="kw">impl </span>Classifier&lt;State&gt; <span class="kw">for </span>HeldFloor {
+<a href=#75 id=75 data-nosnippet>75</a></span><span class="kw">impl </span>Classifier&lt;State&gt; <span class="kw">for </span>FallOpen {
 <a href=#76 id=76 data-nosnippet>76</a>    <span class="kw">async fn </span>score(
 <a href=#77 id=77 data-nosnippet>77</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
 <a href=#78 id=78 data-nosnippet>78</a>        state: <span class="kw-2">&amp;mut </span>State,
 <a href=#79 id=79 data-nosnippet>79</a>        _request: <span class="kw-2">&amp;mut </span>Request,
 <a href=#80 id=80 data-nosnippet>80</a>        _driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
 <a href=#81 id=81 data-nosnippet>81</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
-<a href=#82 id=82 data-nosnippet>82</a>        <span class="kw">let </span>tier = current_floor(state).unwrap_or(<span class="self">self</span>.default_tier);
+<a href=#82 id=82 data-nosnippet>82</a>        <span class="kw">let </span>tier = fall_open_tier(state).unwrap_or(<span class="self">self</span>.default_tier);
 <a href=#83 id=83 data-nosnippet>83</a>        <span class="kw">let </span>target = <span class="self">self</span>.targets.name(tier).clone();
 <a href=#84 id=84 data-nosnippet>84</a>        <span class="prelude-val">Ok</span>((
 <a href=#85 id=85 data-nosnippet>85</a>            Classification::Scores(<span class="macro">vec!</span>[Score {
@@ -192,7 +192,7 @@
 <a href=#192 id=192 data-nosnippet>192</a>    // them, and the classifier scores onto those names.
 <a href=#193 id=193 data-nosnippet>193</a>    </span><span class="kw">let </span>targets = StageTargets::new(capable.clone(), efficient.clone());
 <a href=#194 id=194 data-nosnippet>194</a>    <span class="kw">let </span>default_tier = config.mode.default_tier();
-<a href=#195 id=195 data-nosnippet>195</a>    <span class="kw">let </span>floor = HeldFloor {
+<a href=#195 id=195 data-nosnippet>195</a>    <span class="kw">let </span>fall_open = FallOpen {
 <a href=#196 id=196 data-nosnippet>196</a>        targets: targets.clone(),
 <a href=#197 id=197 data-nosnippet>197</a>        default_tier,
 <a href=#198 id=198 data-nosnippet>198</a>    };
@@ -224,7 +224,7 @@
 <a href=#224 id=224 data-nosnippet>224</a>    }
 <a href=#225 id=225 data-nosnippet>225</a>    <span class="comment">// Nothing behind this, so no turn is left unrouted.
 <a href=#226 id=226 data-nosnippet>226</a>    </span>router = router.with_classifier(Arc::new(SourceStamp {
-<a href=#227 id=227 data-nosnippet>227</a>        inner: Arc::new(floor),
+<a href=#227 id=227 data-nosnippet>227</a>        inner: Arc::new(fall_open),
 <a href=#228 id=228 data-nosnippet>228</a>        source: DecisionSource::FallOpen,
 <a href=#229 id=229 data-nosnippet>229</a>    }));
 <a href=#230 id=230 data-nosnippet>230</a>    <span class="comment">// Runs on the post-decision hook, so it applies to the target the cascade
@@ -246,7 +246,7 @@
 <a href=#246 id=246 data-nosnippet>246</a>    };
 <a href=#247 id=247 data-nosnippet>247</a>
 <a href=#248 id=248 data-nosnippet>248</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#249 id=249 data-nosnippet>249</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::util::stage::{DECISION_SOURCE_KEY, clear_floor, set_floor};
+<a href=#249 id=249 data-nosnippet>249</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::util::stage::{DECISION_SOURCE_KEY, clear_fall_open, set_fall_open};
 <a href=#250 id=250 data-nosnippet>250</a>    <span class="kw">use </span><span class="kw">crate</span>::core::processor::{Event, Processor};
 <a href=#251 id=251 data-nosnippet>251</a>    <span class="kw">use </span><span class="kw">crate</span>::core::state::StateValue;
 <a href=#252 id=252 data-nosnippet>252</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, reply, test_drive};
@@ -494,19 +494,19 @@
 <a href=#494 id=494 data-nosnippet>494</a>
 <a href=#495 id=495 data-nosnippet>495</a>    <span class="doccomment">/// Stands in for a decider ahead of stage.
 <a href=#496 id=496 data-nosnippet>496</a>    </span><span class="attr">#[derive(Default)]
-<a href=#497 id=497 data-nosnippet>497</a>    </span><span class="kw">struct </span>FloorDecider {
+<a href=#497 id=497 data-nosnippet>497</a>    </span><span class="kw">struct </span>TierDecider {
 <a href=#498 id=498 data-nosnippet>498</a>        requests: Mutex&lt;u32&gt;,
 <a href=#499 id=499 data-nosnippet>499</a>    }
 <a href=#500 id=500 data-nosnippet>500</a>
 <a href=#501 id=501 data-nosnippet>501</a>    <span class="attr">#[async_trait]
-<a href=#502 id=502 data-nosnippet>502</a>    </span><span class="kw">impl </span>Processor&lt;State&gt; <span class="kw">for </span>FloorDecider {
+<a href=#502 id=502 data-nosnippet>502</a>    </span><span class="kw">impl </span>Processor&lt;State&gt; <span class="kw">for </span>TierDecider {
 <a href=#503 id=503 data-nosnippet>503</a>        <span class="kw">async fn </span>process(<span class="kw-2">&amp;</span><span class="self">self</span>, state: <span class="kw-2">&amp;mut </span>State, event: Event&lt;<span class="lifetime">'_</span>&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
 <a href=#504 id=504 data-nosnippet>504</a>            <span class="kw">if </span><span class="macro">matches!</span>(event, Event::Request(<span class="kw">_</span>)) {
 <a href=#505 id=505 data-nosnippet>505</a>                <span class="kw">let </span><span class="kw-2">mut </span>requests = <span class="self">self</span>.requests.lock();
 <a href=#506 id=506 data-nosnippet>506</a>                <span class="kw-2">*</span>requests += <span class="number">1</span>;
 <a href=#507 id=507 data-nosnippet>507</a>                <span class="kw">match </span><span class="kw-2">*</span>requests {
-<a href=#508 id=508 data-nosnippet>508</a>                    <span class="number">3 </span>=&gt; clear_floor(state),
-<a href=#509 id=509 data-nosnippet>509</a>                    <span class="kw">_ </span>=&gt; set_floor(state, Tier::Efficient),
+<a href=#508 id=508 data-nosnippet>508</a>                    <span class="number">3 </span>=&gt; clear_fall_open(state),
+<a href=#509 id=509 data-nosnippet>509</a>                    <span class="kw">_ </span>=&gt; set_fall_open(state, Tier::Efficient),
 <a href=#510 id=510 data-nosnippet>510</a>                }
 <a href=#511 id=511 data-nosnippet>511</a>            }
 <a href=#512 id=512 data-nosnippet>512</a>            <span class="prelude-val">Ok</span>(())
@@ -514,13 +514,13 @@
 <a href=#514 id=514 data-nosnippet>514</a>    }
 <a href=#515 id=515 data-nosnippet>515</a>
 <a href=#516 id=516 data-nosnippet>516</a>    <span class="attr">#[tokio::test]
-<a href=#517 id=517 data-nosnippet>517</a>    </span><span class="kw">async fn </span>a_held_floor_replaces_the_picker_default_and_leaves_the_signals_alone() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#517 id=517 data-nosnippet>517</a>    </span><span class="kw">async fn </span>an_override_replaces_the_picker_default_and_leaves_the_signals_alone() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
 <a href=#518 id=518 data-nosnippet>518</a>        <span class="kw">let </span>recorder = Arc::new(Recorder::default());
-<a href=#519 id=519 data-nosnippet>519</a>        <span class="comment">// The picker would fall open to "strong"; the held floor says "weak".
+<a href=#519 id=519 data-nosnippet>519</a>        <span class="comment">// The picker would fall open to "strong"; the override says "weak".
 <a href=#520 id=520 data-nosnippet>520</a>        </span><span class="kw">let </span>config = StageRouterConfig::new(PickerMode::CapableFirst, <span class="number">0.5</span>);
 <a href=#521 id=521 data-nosnippet>521</a>        <span class="kw">let </span>route: Arc&lt;<span class="kw">dyn </span>Algorithm&gt; = Arc::new(
 <a href=#522 id=522 data-nosnippet>522</a>            build_route(ModelId::from(<span class="string">"strong"</span>), ModelId::from(<span class="string">"weak"</span>), config)<span class="question-mark">?
-<a href=#523 id=523 data-nosnippet>523</a>                </span>.with_processor(Arc::new(FloorDecider::default())),
+<a href=#523 id=523 data-nosnippet>523</a>                </span>.with_processor(Arc::new(TierDecider::default())),
 <a href=#524 id=524 data-nosnippet>524</a>        );
 <a href=#525 id=525 data-nosnippet>525</a>
 <a href=#526 id=526 data-nosnippet>526</a>        test_drive(route.clone(), turn_request(<span class="bool-val">false</span>), recorder.serve()).<span class="kw">await</span><span class="question-mark">?</span>;
@@ -530,7 +530,7 @@
 <a href=#530 id=530 data-nosnippet>530</a>        <span class="kw">let </span>routed = recorder.routed();
 <a href=#531 id=531 data-nosnippet>531</a>        <span class="macro">assert_eq!</span>(
 <a href=#532 id=532 data-nosnippet>532</a>            routed[<span class="number">0</span>].target, <span class="string">"weak"</span>,
-<a href=#533 id=533 data-nosnippet>533</a>            <span class="string">"an undecided turn takes the floor"
+<a href=#533 id=533 data-nosnippet>533</a>            <span class="string">"an undecided turn takes the override"
 <a href=#534 id=534 data-nosnippet>534</a>        </span>);
 <a href=#535 id=535 data-nosnippet>535</a>        <span class="macro">assert_eq!</span>(
 <a href=#536 id=536 data-nosnippet>536</a>            routed[<span class="number">1</span>].target, <span class="string">"strong"</span>,
@@ -538,7 +538,7 @@
 <a href=#538 id=538 data-nosnippet>538</a>        </span>);
 <a href=#539 id=539 data-nosnippet>539</a>        <span class="macro">assert_eq!</span>(
 <a href=#540 id=540 data-nosnippet>540</a>            routed[<span class="number">2</span>].target, <span class="string">"strong"</span>,
-<a href=#541 id=541 data-nosnippet>541</a>            <span class="string">"releasing restores the picker default"
+<a href=#541 id=541 data-nosnippet>541</a>            <span class="string">"clearing restores the picker default"
 <a href=#542 id=542 data-nosnippet>542</a>        </span>);
 <a href=#543 id=543 data-nosnippet>543</a>        <span class="prelude-val">Ok</span>(())
 <a href=#544 id=544 data-nosnippet>544</a>    }
