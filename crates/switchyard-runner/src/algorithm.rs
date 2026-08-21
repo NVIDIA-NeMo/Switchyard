@@ -55,17 +55,27 @@ impl Error for AlgorithmConfigError {
 
 type AlgorithmResult<T> = Result<T, AlgorithmConfigError>;
 
+/// How a custom classifier turns the judge's JSON verdict into a target.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClassifierPolicyConfig {
-    TargetSelector { selector: String },
+    /// Reads the target name straight out of the judge's verdict.
+    TargetSelector {
+        /// JSON Pointer to the name, such as `/decision/target`.
+        selector: String,
+    },
 }
 
+/// Which of the three `llm_classifier` behaviors a route uses.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClassifierMode {
+    /// Judges the request first, then serves the strong or weak target.
     Capability,
+    /// Serves the weak target first and judges the finished turn, moving to the
+    /// strong target once the session latches.
     Escalation,
+    /// Judges against your own JSON schema and routes to any configured target.
     Custom,
 }
 
@@ -122,33 +132,65 @@ struct CustomClassifierRouteConfig {
     max_output_tokens: u64,
 }
 
+/// Settings for an `llm_classifier` route. Which fields are required depends on
+/// the [`ClassifierMode`]; using a field from the wrong mode is an error.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LlmClassifierRouteConfig {
+    /// Target the judge is called through. Never a routing destination itself.
     pub classifier_target: String,
+    /// Mode to run. Defaults to escalation when `escalation` is set, otherwise capability.
     pub mode: Option<ClassifierMode>,
+    /// Capability and escalation modes: the capable tier.
     pub strong_target: Option<String>,
+    /// Capability and escalation modes: the efficient tier.
     pub weak_target: Option<String>,
+    /// Capability mode: lowest solve probability that still routes to the weak
+    /// target, from 0 to 1.
     pub base_threshold: Option<f64>,
+    /// Capability mode: how much to raise the threshold when the judge is
+    /// uncertain. Added once for an uncertain verdict and twice for unsupported.
     pub threshold_step: Option<f64>,
+    /// How often the judge runs: every request, once per user turn, or once per session.
     pub classify_trigger: ClassifyTrigger,
+    /// Reuses the session's target by hashing the first user message when no
+    /// session ID is available. Needs `classify_trigger = "new_session"`.
     pub message_hash_fallback: bool,
+    /// How many trailing turns the judge sees. Unset shows it the opening task
+    /// and the latest user follow-up only.
     pub recent_turn_window: Option<usize>,
+    /// Replaces the packaged judge prompt. Required in custom mode.
     pub prompt: Option<String>,
+    /// How the judge is asked for structured output. Use `json_object` when the
+    /// provider cannot do JSON Schema.
     pub response_format_type: ClassifierResponseFormat,
+    /// Most completion tokens the judge verdict may use.
     #[serde(default = "default_classifier_max_output_tokens")]
     pub max_output_tokens: u64,
+    /// Escalation mode: how many escalate verdicts latch the session, and how
+    /// much of the transcript the judge sees.
     pub escalation: Option<EscalationJudgeConfig>,
+    /// Custom mode: the target names the policy may pick from.
     pub targets: Option<Vec<String>>,
+    /// Custom mode: target used when the judge fails or its verdict cannot be routed.
     pub default_target: Option<String>,
+    /// Custom mode: JSON Schema the verdict must match, written as a string.
     pub response_schema: Option<String>,
+    /// Custom mode: how to read the chosen target out of the verdict.
     pub policy: Option<ClassifierPolicyConfig>,
 }
 
+/// Routing policy applied only to delegated sub-agent work, nested inside a
+/// `passthrough` or `stage_router` route.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SubagentRouteConfig {
-    Passthrough { target: String },
+    /// Sends all sub-agent work to one target.
+    Passthrough {
+        /// Target that serves sub-agent requests.
+        target: String,
+    },
+    /// Judges each sub-agent request. Only [`ClassifierMode::Custom`] is supported here.
     LlmClassifier(Box<LlmClassifierRouteConfig>),
 }
 
@@ -177,62 +219,100 @@ impl SubagentRouteConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AlgorithmSpec {
+    /// Replies `OK` without calling any model. Useful for smoke tests.
     Noop {},
+    /// Splits traffic across several targets.
     Random {
+        /// Target names to choose from.
         targets: Vec<String>,
+        /// Relative weights in `targets` order. Equal weights when unset.
         weights: Option<Vec<f64>>,
+        /// Makes the sequence of choices repeatable.
         seed: Option<u64>,
     },
+    /// Sends every request to one target.
     Passthrough {
+        /// Target that serves the request.
         target: String,
+        /// Separate policy for delegated sub-agent work.
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// Asks a judge model which target should serve the request.
     LlmClassifier {
+        /// Judge and tier settings, written directly in the route table.
         #[serde(flatten)]
         config: LlmClassifierRouteConfig,
     },
+    /// Picks a tier per turn by scoring signals from recent tool results.
     StageRouter {
+        /// The capable tier.
         capable_target: String,
+        /// The efficient tier.
         efficient_target: String,
+        /// Tier to use when the signals are not confident.
         picker: PickerMode,
+        /// How much agreement a decisive pick needs, from 0 to 1.
         confidence_threshold: f64,
+        /// How many trailing tool results the signals are scored over.
         #[serde(default)]
         recent_turn_window: Option<usize>,
+        /// Notes handed to a tier when the router switches to it.
         #[serde(default)]
         handoff_notes: Option<HandoffNoteConfig>,
+        /// System prompt handed to the capable tier.
         #[serde(default)]
         capable_system_prompt: Option<String>,
+        /// System prompt handed to the efficient tier.
         #[serde(default)]
         efficient_system_prompt: Option<String>,
+        /// Judge consulted for turns the tool signals cannot decide.
         #[serde(default)]
         classifier: Option<StageClassifierConfig>,
+        /// Separate policy for delegated sub-agent work.
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// Serves every turn from one target, and has a second model review some of
+    /// those turns before the caller sees them.
     Advisor {
+        /// Serves every client-visible turn.
         executor_target: String,
+        /// Reviews gated turns. Never a routing destination.
         advisor_target: String,
+        /// Replaces the built-in APPROVE/REDO reviewer prompt.
         #[serde(default)]
         reviewer_system_prompt: Option<String>,
+        /// Replaces the built-in text put in front of a REDO plan.
         #[serde(default)]
         redo_feedback_prefix: Option<String>,
+        /// What fires a review.
         #[serde(default)]
         gate_trigger: AdvisorTriggerConfig,
+        /// Regular expression for the `pattern` trigger. Required by it, and unused otherwise.
         #[serde(default)]
         gate_trigger_pattern: Option<String>,
+        /// How many reviews one session may spend.
         #[serde(default = "default_max_reviews")]
         max_reviews: u32,
+        /// Reviews a turn after this many assistant turns, as a mid-task
+        /// checkpoint. Zero turns the checkpoint off.
         #[serde(default)]
         gate_stall_turns: u32,
+        /// Tool results a turn needs before it can be reviewed. Skips early chatty turns.
         #[serde(default)]
         gate_min_tool_results: u32,
+        /// Most output tokens one review may use.
         #[serde(default = "default_advisor_max_tokens")]
         advisor_max_tokens: u64,
+        /// Sampling temperature for reviews. Left off the request when unset.
         #[serde(default)]
         advisor_temperature: Option<f64>,
+        /// Size cap on the transcript sent to the advisor. Longer transcripts
+        /// are trimmed from the middle.
         #[serde(default = "default_transcript_max_chars")]
         transcript_max_chars: usize,
+        /// Lets the turn through when the advisor fails, instead of erroring.
         #[serde(default = "default_fail_open")]
         fail_open: bool,
     },
@@ -255,19 +335,31 @@ pub enum AdvisorTriggerConfig {
 pub struct StageClassifierConfig {
     /// Target the judge is called through. Not a routing destination.
     pub target: String,
+    /// Lowest solve probability that still routes to the efficient tier, from 0 to 1.
     pub base_threshold: f64,
+    /// How much to raise the threshold when the judge is uncertain. Added once
+    /// for an uncertain verdict and twice for unsupported.
     #[serde(default)]
     pub threshold_step: f64,
+    /// How often the judge runs. `new_session` has no effect here.
     #[serde(default)]
     pub classify_trigger: ClassifyTrigger,
+    /// Reuses the session's target by hashing the first user message when no
+    /// session ID is available.
     #[serde(default)]
     pub message_hash_fallback: bool,
+    /// How many trailing turns the judge sees. Unset shows it the opening task
+    /// and the latest user follow-up only.
     #[serde(default)]
     pub recent_turn_window: Option<usize>,
+    /// Replaces the packaged judge prompt.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// How the judge is asked for structured output. Use `json_object` when the
+    /// provider cannot do JSON Schema.
     #[serde(default)]
     pub response_format_type: ClassifierResponseFormat,
+    /// Most completion tokens the judge verdict may use.
     #[serde(default = "default_classifier_max_output_tokens")]
     pub max_output_tokens: u64,
 }
@@ -288,7 +380,7 @@ impl StageClassifierConfig {
 }
 
 impl AlgorithmSpec {
-    // Completion targets in algorithm order; judge-only targets are excluded.
+    /// Completion targets in algorithm order; judge-only targets are excluded.
     pub fn routing_target_names(&self) -> Vec<&str> {
         match self {
             Self::Noop { .. } => Vec::new(),
@@ -510,7 +602,7 @@ impl LlmClassifierRouteConfig {
                     || *response_format_type != ClassifierResponseFormat::JsonSchema
                 {
                     return Err(AlgorithmConfigError::new(format!(
-                        "llm_classifier route {route_name} mode custom cannot use capability or escalation fields"
+                        "llm_classifier route {route_name} mode custom cannot use capability or escalation fields and response_format_type must be 'json_schema'"
                     )));
                 }
                 Ok(LlmClassifierModeConfig::Custom(

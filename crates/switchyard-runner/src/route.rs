@@ -218,13 +218,46 @@ impl Route {
 }
 
 async fn serve_decision_dependency(clients: ClientRouter, call: CallModel) -> libsy::Result<()> {
-    let model = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
-    let result = match clients.route(&model) {
-        Ok(client) => client
-            .call(call.request.clone())
-            .await
-            .map_err(|source| LibsyError::client_call(model, source)),
-        Err(source) => Err(LibsyError::client_call(model, source)),
-    };
+    let mut result = Err(LibsyError::NoTargets);
+    for (index, model) in call.models.iter().enumerate() {
+        // The driver stamps only the first candidate, so every fallback must replace it.
+        let mut request = call.request.clone();
+        request.llm_request.model = Some(model.to_string());
+        let response = match clients.route(model) {
+            Ok(client) => client.call(request).await,
+            Err(source) => Err(source),
+        };
+        match response {
+            Ok(response) => {
+                result = Ok(response);
+                break;
+            }
+            Err(source) => {
+                let try_next = index + 1 < call.models.len() && eligible_routing_fallback(&source);
+                result = Err(LibsyError::client_call(model.clone(), source));
+                if !try_next {
+                    break;
+                }
+            }
+        }
+    }
     call.respond(result)
+}
+
+/// Whether a routing-time candidate failure may fall through to the next model.
+fn eligible_routing_fallback(error: &LlmClientError) -> bool {
+    match error {
+        LlmClientError::ContextWindowExceeded { .. }
+        | LlmClientError::Transport { .. }
+        | LlmClientError::Timeout { .. } => true,
+        LlmClientError::UpstreamHttp { status, .. } => {
+            matches!(
+                *status,
+                reqwest::StatusCode::FORBIDDEN
+                    | reqwest::StatusCode::REQUEST_TIMEOUT
+                    | reqwest::StatusCode::TOO_MANY_REQUESTS
+            ) || status.is_server_error()
+        }
+        _ => false,
+    }
 }

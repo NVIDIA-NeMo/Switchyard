@@ -460,11 +460,11 @@ fn build_backend(
     Ok(backend)
 }
 
+// A function so that serde default can use it.
 const fn default_max_retries() -> u32 {
     DEFAULT_MAX_RETRIES
 }
 
-// Resolve nested policy once so every supported parent builds the same child route.
 fn validate_value(label: &str, value: &str) -> RunnerResult<()> {
     if value.trim().is_empty() || value.trim() != value {
         return Err(RunnerError::configuration(format!(

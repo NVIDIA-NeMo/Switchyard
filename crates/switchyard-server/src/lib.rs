@@ -90,7 +90,14 @@ impl Error for ServerError {}
 
 impl From<RunnerError> for ServerError {
     fn from(error: RunnerError) -> Self {
-        Self::new(error.to_string())
+        let mut message = error.to_string();
+        let mut source = error.source();
+        while let Some(error) = source {
+            message.push_str(": ");
+            message.push_str(&error.to_string());
+            source = error.source();
+        }
+        Self::new(message)
     }
 }
 
@@ -1197,9 +1204,9 @@ async fn not_found() -> Response {
 fn model_list_payload<'a>(
     entries: impl IntoIterator<Item = (&'a str, ModelCapabilities)>,
 ) -> Value {
-    let entries = entries.into_iter().collect::<Vec<_>>();
-    let mut model_ids = entries.iter().map(|(model, _)| *model).collect::<Vec<_>>();
-    model_ids.sort_unstable();
+    let mut entries = entries.into_iter().collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|(model_id, _)| *model_id);
+    let model_ids = entries.iter().map(|(model, _)| *model).collect::<Vec<_>>();
     let first_id = model_ids.first().copied();
     let last_id = model_ids.last().copied();
     json!({
