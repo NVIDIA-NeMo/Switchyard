@@ -212,6 +212,12 @@ impl FormatCodec for OpenAiChatCodec {
         for message in &request.messages {
             messages.extend(encode_message_to_openai(message, &mut diagnostics, policy)?);
         }
+        // Some upstreams (e.g. Moonshot/Kimi) reject an assistant message whose
+        // `content` is an empty string, which normalized turns with no text and
+        // no tool calls (e.g. a replayed reasoning-only turn) would otherwise
+        // produce. Such a message carries no information, so drop it rather than
+        // send it upstream.
+        messages.retain(|message| !is_empty_assistant_message(message));
         body.insert("messages".to_string(), Value::Array(messages));
 
         if !request.tools.is_empty() {
@@ -956,6 +962,16 @@ fn copy_openai_chat_request_extensions(
 // Detects placeholder empty text generated while decoding assistant tool calls.
 fn is_empty_text_only(content: &[ContentBlock]) -> bool {
     matches!(content, [ContentBlock::Text { text }] if text.is_empty())
+}
+
+// An assistant message with an empty string `content` and no `tool_calls` — a
+// tool-call-only turn instead encodes `content` as `null` (see
+// `encode_message_without_tool_results_to_openai`), so this only matches a
+// turn that carries no information at all.
+fn is_empty_assistant_message(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("assistant")
+        && message.get("content") == Some(&Value::String(String::new()))
+        && message.get("tool_calls").is_none()
 }
 
 /// Encodes normalized content into OpenAI Chat content JSON.

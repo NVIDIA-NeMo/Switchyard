@@ -2134,3 +2134,55 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
     );
     Ok(())
 }
+
+// A replayed assistant turn that carried only thinking blocks (no text, no
+// tool call) would otherwise encode as `{"role": "assistant", "content": ""}`
+// for OpenAI Chat — a shape some upstreams (e.g. Moonshot/Kimi) reject outright
+// ("the message at position N with role 'assistant' must not be empty"). The
+// turn carries no information once its thinking is dropped, so it must not
+// appear in the encoded messages at all.
+#[test]
+fn anthropic_thinking_only_turn_does_not_encode_an_empty_openai_chat_message() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-opus-4-20250514",
+        "messages": [
+            {"role": "user", "content": "Think about it."},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Just thinking, nothing to say.",
+                        "signature": "sig-abc"
+                    }
+                ]
+            },
+            {"role": "user", "content": "Continue."}
+        ],
+        "max_tokens": 2048
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let messages = output["messages"]
+        .as_array()
+        .ok_or("messages is not an array")?;
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message["role"] == "assistant" && message["content"] == ""),
+        "thinking-only turn leaked an empty assistant message: {messages:?}"
+    );
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[1]["role"], "user");
+    Ok(())
+}
