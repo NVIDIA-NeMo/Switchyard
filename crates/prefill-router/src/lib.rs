@@ -10,7 +10,7 @@
 mod error;
 mod transformers;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub use error::{PrefillRouterError, Result};
 pub use transformers::{TransformersForward, TransformersForwardConfig};
@@ -94,50 +94,159 @@ impl Pooling {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ForwardOutput {
     /// Last-token vectors keyed by direct hidden-state index.
-    pub hidden_last: BTreeMap<usize, Vec<Vec<f32>>>,
+    hidden_last: BTreeMap<usize, Vec<Vec<f32>>>,
     /// Mean-pooled vectors keyed by direct hidden-state index.
-    pub hidden_mean: BTreeMap<usize, Vec<Vec<f32>>>,
+    hidden_mean: BTreeMap<usize, Vec<Vec<f32>>>,
     /// Number of transformer layers reported by the model.
-    pub n_layers: usize,
+    n_layers: usize,
     /// Width of each hidden-state vector.
-    pub hidden_dim: usize,
+    hidden_dim: usize,
 }
 
 impl ForwardOutput {
-    pub(crate) fn validate(self, prompt_count: usize) -> Result<Self> {
-        if self.n_layers == 0 || self.hidden_dim == 0 {
+    pub(crate) fn parse(
+        request: &ForwardRequest,
+        hidden_last: BTreeMap<usize, Vec<Vec<f32>>>,
+        hidden_mean: BTreeMap<usize, Vec<Vec<f32>>>,
+        n_layers: usize,
+        hidden_dim: usize,
+    ) -> Result<Self> {
+        if n_layers == 0 || hidden_dim == 0 {
             return Err(PrefillRouterError::InvalidResult(
                 "model dimensions must be non-zero".to_string(),
             ));
         }
-        if self.hidden_last.is_empty() && self.hidden_mean.is_empty() {
+
+        let expected_layers: BTreeSet<usize> = match &request.layers {
+            LayerSelection::UpperHalf => (n_layers / 2..n_layers).collect(),
+            LayerSelection::All => (0..n_layers).collect(),
+            LayerSelection::Selected(layers) => layers.iter().copied().collect(),
+        };
+        if expected_layers.is_empty() || expected_layers.iter().any(|layer| *layer >= n_layers) {
             return Err(PrefillRouterError::InvalidResult(
-                "no hidden states were returned".to_string(),
+                "requested layers are empty or outside the encoder range".to_string(),
             ));
         }
 
-        for (pooling, layers) in [("last", &self.hidden_last), ("mean", &self.hidden_mean)] {
-            for (layer, rows) in layers {
-                if *layer >= self.n_layers {
-                    return Err(PrefillRouterError::InvalidResult(format!(
-                        "{pooling} layer {layer} is outside encoder range 0..{}",
-                        self.n_layers - 1
-                    )));
-                }
-                if rows.len() != prompt_count {
-                    return Err(PrefillRouterError::InvalidResult(format!(
-                        "{pooling} layer {layer} returned {} rows for {prompt_count} prompts",
-                        rows.len()
-                    )));
-                }
-                if rows.iter().any(|row| row.len() != self.hidden_dim) {
-                    return Err(PrefillRouterError::InvalidResult(format!(
-                        "{pooling} layer {layer} contains a vector with the wrong hidden width"
-                    )));
-                }
-            }
+        let wants_last = request.pooling.contains(&Pooling::Last);
+        let wants_mean = request.pooling.contains(&Pooling::Mean);
+        if !wants_last && !wants_mean {
+            return Err(PrefillRouterError::InvalidResult(
+                "at least one pooling mode is required".to_string(),
+            ));
         }
 
-        Ok(self)
+        parse_pooling(
+            "last",
+            wants_last,
+            &hidden_last,
+            &expected_layers,
+            request.prompts.len(),
+            hidden_dim,
+        )?;
+        parse_pooling(
+            "mean",
+            wants_mean,
+            &hidden_mean,
+            &expected_layers,
+            request.prompts.len(),
+            hidden_dim,
+        )?;
+
+        Ok(Self {
+            hidden_last,
+            hidden_mean,
+            n_layers,
+            hidden_dim,
+        })
+    }
+
+    /// Returns last-token vectors keyed by hidden-state layer.
+    pub fn hidden_last(&self) -> &BTreeMap<usize, Vec<Vec<f32>>> {
+        &self.hidden_last
+    }
+
+    /// Returns mean-pooled vectors keyed by hidden-state layer.
+    pub fn hidden_mean(&self) -> &BTreeMap<usize, Vec<Vec<f32>>> {
+        &self.hidden_mean
+    }
+
+    /// Returns the number of transformer layers reported by the model.
+    pub const fn n_layers(&self) -> usize {
+        self.n_layers
+    }
+
+    /// Returns the width of each hidden-state vector.
+    pub const fn hidden_dim(&self) -> usize {
+        self.hidden_dim
+    }
+}
+
+fn parse_pooling(
+    name: &str,
+    requested: bool,
+    layers: &BTreeMap<usize, Vec<Vec<f32>>>,
+    expected_layers: &BTreeSet<usize>,
+    prompt_count: usize,
+    hidden_dim: usize,
+) -> Result<()> {
+    let actual_layers = layers.keys().copied().collect::<BTreeSet<_>>();
+    let expected = if requested {
+        expected_layers.clone()
+    } else {
+        BTreeSet::new()
+    };
+    if actual_layers != expected {
+        return Err(PrefillRouterError::InvalidResult(format!(
+            "{name} pooling returned layers {actual_layers:?}, expected {expected:?}"
+        )));
+    }
+
+    for (layer, rows) in layers {
+        if rows.len() != prompt_count {
+            return Err(PrefillRouterError::InvalidResult(format!(
+                "{name} layer {layer} returned {} rows for {prompt_count} prompts",
+                rows.len()
+            )));
+        }
+        if rows.iter().any(|row| row.len() != hidden_dim) {
+            return Err(PrefillRouterError::InvalidResult(format!(
+                "{name} layer {layer} contains a vector with the wrong hidden width"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_parser_requires_every_requested_pooling_and_layer() {
+        let mut request = ForwardRequest::new(vec!["test prompt".to_string()]);
+        request.layers = LayerSelection::Selected(vec![0, 1]);
+
+        let pooled = || BTreeMap::from([(0, vec![vec![0.0, 1.0]]), (1, vec![vec![2.0, 3.0]])]);
+        let output = ForwardOutput::parse(&request, pooled(), pooled(), 2, 2)
+            .expect("complete output should parse");
+        assert_eq!(output.hidden_last().len(), 2);
+        assert_eq!(output.hidden_mean().len(), 2);
+
+        assert!(matches!(
+            ForwardOutput::parse(&request, pooled(), BTreeMap::new(), 2, 2),
+            Err(PrefillRouterError::InvalidResult(_))
+        ));
+        assert!(matches!(
+            ForwardOutput::parse(
+                &request,
+                BTreeMap::from([(0, vec![vec![0.0, 1.0]])]),
+                pooled(),
+                2,
+                2,
+            ),
+            Err(PrefillRouterError::InvalidResult(_))
+        ));
     }
 }

@@ -56,7 +56,6 @@ class TransformersForward:
         self._tokenizer = AutoTokenizer.from_pretrained(
             self._model_path,
             cache_dir=cache_dir,
-            trust_remote_code=True,
         )
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
@@ -64,7 +63,6 @@ class TransformersForward:
         load_kwargs: dict[str, Any] = {
             "dtype": dtype,
             "cache_dir": cache_dir,
-            "trust_remote_code": True,
         }
         if device != "cpu":
             load_kwargs["device_map"] = "auto"
@@ -145,11 +143,10 @@ class TransformersForward:
                 )
 
             hidden_states = outputs.hidden_states
-            sequence_lengths = attention_mask.sum(dim=1)
             for batch_index in range(input_ids.shape[0]):
-                sequence_length = int(sequence_lengths[batch_index].item())
+                token_mask = attention_mask[batch_index].bool()
                 for layer in layers:
-                    hidden = hidden_states[layer][batch_index, :sequence_length, :].float()
+                    hidden = hidden_states[layer][batch_index, token_mask, :].float()
                     if "last" in pools:
                         all_last[layer].append(hidden[-1].cpu())
                     if "mean" in pools:
