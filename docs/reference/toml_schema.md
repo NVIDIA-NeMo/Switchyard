@@ -155,7 +155,7 @@ Capability mode classifies before serving. See
 | `weak_target` | Yes | — | Efficient tier. |
 | `base_threshold` | Yes | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. |
 | `threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
-| `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
+| `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between only when requests carry a session ID; without one, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 | `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
@@ -184,7 +184,7 @@ policy selector, and routes to any configured target label.
 | `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
 | `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
-| `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
+| `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between only when requests carry a session ID; without one, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 
