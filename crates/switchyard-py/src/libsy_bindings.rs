@@ -422,6 +422,7 @@ impl PyDecision {
         }
     }
 
+    /// Returns a debug string showing the selected model id and whether this is the final answer call.
     fn __repr__(&self) -> String {
         format!(
             "Decision(selected_model_id={:?}, is_answer_call={})",

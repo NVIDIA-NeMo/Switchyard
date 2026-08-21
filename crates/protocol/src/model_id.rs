@@ -149,8 +149,8 @@ impl PartialEq<ModelId> for String {
 
 /// A routing choice: the model selected by an algorithm and whether that call is the final answer.
 ///
-/// Published by [`switchyard_libsy::Driver::decide`] as a [`switchyard_libsy::Step::Decision`]
-/// so downstream observers see each routing choice as it happens.
+/// Published by the algorithm driver as a stream step so downstream observers
+/// see each routing choice as it happens.
 #[derive(Debug, Clone)]
 pub struct Decision {
     selected_model_id: ModelId,

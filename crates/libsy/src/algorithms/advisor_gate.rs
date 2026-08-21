@@ -333,8 +333,9 @@ impl AdvisorGate {
         }
 
         // Gated phase: generate the turn once, fully buffered, so the gate
-        // can inspect it before the client sees anything.
-        driver.decide(Decision::new(self.executor.clone(), true), HashMap::new()).await?;
+        // can inspect it before the client sees anything. The buffered probe is
+        // not the final answer; is_answer_call=false signals it may be discarded.
+        driver.decide(Decision::new(self.executor.clone(), false), HashMap::new()).await?;
         let response = driver
             .call_model(request.clone(), vec![self.executor.clone()])
             .await?;
@@ -358,6 +359,7 @@ impl AdvisorGate {
             }
         };
         if !(triggered || stall) {
+            driver.decide(Decision::new(self.executor.clone(), true), HashMap::new()).await?;
             return Ok(RoutingOutcome::answered(
                 self.executor.clone(),
                 request,
@@ -370,6 +372,7 @@ impl AdvisorGate {
             self.mark_stall_fired(stall_key);
         }
         if !self.try_reserve(scope) {
+            driver.decide(Decision::new(self.executor.clone(), true), HashMap::new()).await?;
             return Ok(RoutingOutcome::answered(
                 self.executor.clone(),
                 request,
@@ -389,19 +392,18 @@ impl AdvisorGate {
             .consult(driver, &request, review_tail.as_deref(), trigger_label)
             .await
         {
-            Ok(ConsultOutcome::Approve) => Ok(RoutingOutcome::answered(
-                self.executor.clone(),
-                request,
-                turn.into_response(),
-            )),
-            Ok(ConsultOutcome::Redo { plan }) => Ok(self.redo(request, turn, &plan)),
+            Ok(ConsultOutcome::Approve) => {
+                driver.decide(Decision::new(self.executor.clone(), true), HashMap::new()).await?;
+                Ok(RoutingOutcome::answered(self.executor.clone(), request, turn.into_response()))
+            }
+            Ok(ConsultOutcome::Redo { plan }) => {
+                driver.decide(Decision::new(self.executor.clone(), true), HashMap::new()).await?;
+                Ok(self.redo(request, turn, &plan))
+            }
             Ok(ConsultOutcome::Failed) => {
                 self.refund_failure(scope);
-                Ok(RoutingOutcome::answered(
-                    self.executor.clone(),
-                    request,
-                    turn.into_response(),
-                ))
+                driver.decide(Decision::new(self.executor.clone(), true), HashMap::new()).await?;
+                Ok(RoutingOutcome::answered(self.executor.clone(), request, turn.into_response()))
             }
             Err(error) => {
                 self.refund_failure(scope);
