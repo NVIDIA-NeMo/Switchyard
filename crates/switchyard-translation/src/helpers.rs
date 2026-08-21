@@ -84,6 +84,11 @@ pub fn encode_aggregated_response_with_extensions(
         &mut body,
         &crate::codex_namespaces::qualified_tool_origins(request_extensions),
     );
+    crate::codex_tools::restore_custom_tool_calls(
+        &mut body,
+        &crate::codex_tools::custom_tool_names(request_extensions),
+        &mut crate::codex_tools::CustomToolStreamState::default(),
+    );
     Ok(body)
 }
 
@@ -127,6 +132,10 @@ pub fn encode_stream_with_extensions(
     request_extensions: &switchyard_protocol::ProviderExtensions,
 ) -> std::result::Result<RawEventStream, LlmClientError> {
     let origins = crate::codex_namespaces::qualified_tool_origins(request_extensions);
+    // One state for the whole stream: a delta names only its `item_id`, so the
+    // rewrite depends on the `output_item.added` event seen earlier.
+    let custom_names = crate::codex_tools::custom_tool_names(request_extensions);
+    let mut custom_state = crate::codex_tools::CustomToolStreamState::default();
     let target_format: FormatId = target.into();
     // The target is always a built-in wire format, so this lookup cannot fail; a
     // failure returns as an `Err` rather than a panic.
@@ -157,6 +166,11 @@ pub fn encode_stream_with_extensions(
                     served_model_for_events.as_deref(),
                 );
                 crate::codex_namespaces::restore_qualified_tool_names(&mut value, &origins);
+                crate::codex_tools::restore_custom_tool_calls(
+                    &mut value,
+                    &custom_names,
+                    &mut custom_state,
+                );
                 yield value;
             }
             if state.errored {
@@ -170,6 +184,11 @@ pub fn encode_stream_with_extensions(
                 served_model_for_events.as_deref(),
             );
             crate::codex_namespaces::restore_qualified_tool_names(&mut value, &origins);
+            crate::codex_tools::restore_custom_tool_calls(
+                &mut value,
+                &custom_names,
+                &mut custom_state,
+            );
             yield value;
         }
     };
