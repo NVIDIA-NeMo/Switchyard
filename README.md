@@ -21,6 +21,7 @@ algorithm you write yourself.
 - **Protocol Translation**: convert between OpenAI Chat, Anthropic Messages, and OpenAI Responses formats
 - **Multi-Backend Routing**: random routing, LLM-as-classifier routing, signal-driven stage-router, or your own algorithm
 - **Operational Metrics**: Prometheus metrics cover requests, errors, latency, tokens, and routing overhead
+- **NeMo Relay Plugin**: run random, classifier, escalation, or stage routing in Relay while Switchyard owns provider HTTP dispatch
 
 ## Maturity
 
@@ -123,6 +124,7 @@ configured LLM client selects one upstream format.
 - **[`switchyard-libsy`](crates/libsy/README.md)**: embed routing algorithms in a Rust application
 - **[`switchyard-protocol`](crates/protocol/README.md)**: provider-neutral request, response, and streaming types
 - **[`switchyard-translation`](crates/switchyard-translation/README.md)**: request, response, and stream translation
+- **[`switchyard-nemo-relay-plugin`](crates/switchyard-nemo-relay-plugin/README.md)**: install Switchyard as a native NeMo Relay plugin
 
 ## Community
 

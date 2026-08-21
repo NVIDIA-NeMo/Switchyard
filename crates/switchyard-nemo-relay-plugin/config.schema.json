@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Switchyard NeMo Relay Plugin",
+  "description": "In-process Switchyard routing with Switchyard-owned provider HTTP dispatch.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "algorithm", "targets", "default_targets"],
+  "properties": {
+    "version": {
+      "const": 2,
+      "description": "Library-only Switchyard configuration version."
+    },
+    "priority": {
+      "type": "integer",
+      "default": 0
+    },
+    "algorithm": {
+      "description": "In-process random, capability, escalation, or stage-router configuration.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "random" },
+            "seed": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "classifier_target",
+            "weak_target",
+            "strong_target",
+            "base_threshold"
+          ],
+          "properties": {
+            "kind": { "const": "llm_classifier" },
+            "mode": { "const": "capability", "default": "capability" },
+            "classifier_target": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Semantic target name for the judge. The target must use openai_chat or openai_responses because the judge requires a JSON-schema response format."
+            },
+            "weak_target": { "type": "string", "minLength": 1 },
+            "strong_target": { "type": "string", "minLength": 1 },
+            "base_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+            "threshold_step": { "type": "number", "minimum": 0, "default": 0 },
+            "recent_turn_window": {
+              "type": ["integer", "null"],
+              "minimum": 0
+            },
+            "max_output_tokens": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 4096
+            },
+            "prompt": { "type": "string" },
+            "session_affinity": { "type": "boolean", "default": false },
+            "message_hash_fallback": { "type": "boolean", "default": false }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "mode",
+            "classifier_target",
+            "weak_target",
+            "strong_target",
+            "escalation"
+          ],
+          "properties": {
+            "kind": { "const": "llm_classifier" },
+            "mode": { "const": "escalation" },
+            "classifier_target": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Semantic target name for the trajectory judge. The target must use openai_chat or openai_responses."
+            },
+            "weak_target": { "type": "string", "minLength": 1 },
+            "strong_target": { "type": "string", "minLength": 1 },
+            "prompt": { "type": "string" },
+            "max_output_tokens": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 4096
+            },
+            "escalation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "confirmations": { "type": "integer", "minimum": 1, "default": 2 },
+                "recent_turn_window": { "type": "integer", "minimum": 1, "default": 28 },
+                "window_message_chars": { "type": "integer", "minimum": 50, "default": 500 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "capable_target",
+            "efficient_target",
+            "picker",
+            "confidence_threshold"
+          ],
+          "properties": {
+            "kind": { "const": "stage_router" },
+            "capable_target": { "type": "string", "minLength": 1 },
+            "efficient_target": { "type": "string", "minLength": 1 },
+            "picker": { "enum": ["capable_first", "efficient_first"] },
+            "confidence_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+            "recent_turn_window": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "Trailing tool results scored for the current turn. Null uses libsy's default window."
+            },
+            "capable_system_prompt": { "type": "string" },
+            "efficient_system_prompt": { "type": "string" },
+            "handoff_notes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["escalation_note"],
+              "properties": {
+                "escalation_note": { "type": "string", "minLength": 1 },
+                "deescalation_note": { "type": ["string", "null"], "minLength": 1 },
+                "only_on_wrong_signal_escalation": { "type": "boolean", "default": true }
+              }
+            },
+            "classifier": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["target", "base_threshold"],
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Judge target used only when stage signals are ambiguous. It must use openai_chat or openai_responses."
+                },
+                "base_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+                "threshold_step": { "type": "number", "minimum": 0, "default": 0 },
+                "recent_turn_window": { "type": ["integer", "null"], "minimum": 0 },
+                "prompt": { "type": "string" },
+                "max_output_tokens": { "type": "integer", "minimum": 1, "default": 4096 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "targets": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model", "protocol", "base_url"],
+        "properties": {
+          "model": { "type": "string", "minLength": 1 },
+          "protocol": {
+            "enum": ["openai_chat", "openai_responses", "anthropic_messages"]
+          },
+          "endpoint": {
+            "type": "string",
+            "pattern": "^$|^/",
+            "description": "Optional provider endpoint override. The resolved URL must end in the canonical route for the selected protocol."
+          },
+          "base_url": {
+            "type": "string",
+            "pattern": "^https?://"
+          },
+          "weight": { "type": "number", "minimum": 0, "default": 1 },
+          "drop_caller_extra_body": {
+            "type": "boolean",
+            "default": false,
+            "description": "Drop an intercepted OpenAI SDK extra_body wrapper instead of forwarding it to targets that reject caller-specific extensions."
+          },
+          "extra_body": {
+            "type": "object",
+            "default": {},
+            "description": "Non-secret provider request defaults, such as judge reasoning controls. Caller-provided fields take precedence.",
+            "additionalProperties": true
+          },
+          "header_env": {
+            "type": "object",
+            "description": "Sole custom provider-header source. Maps header names to environment-variable names resolved by the plugin process so literal values are never stored in configuration.",
+            "additionalProperties": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "default_targets": {
+      "type": "object",
+      "description": "Maps each managed inbound protocol to its trusted fallback target.",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "openai_chat": { "type": "string", "minLength": 1 },
+        "openai_responses": { "type": "string", "minLength": 1 },
+        "anthropic_messages": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

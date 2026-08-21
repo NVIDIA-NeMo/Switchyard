@@ -8,6 +8,7 @@ members = [
     "crates/libsy-llm-client",
     "crates/switchyard-py",
     "crates/protocol",
+    "crates/switchyard-nemo-relay-plugin",
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
     "crates/switchyard-soak",
@@ -23,6 +24,7 @@ repository = "https://github.com/NVIDIA-NeMo/Switchyard"
 rust-version = "1.96.1"
 
 [workspace.dependencies]
+async-channel = "2"
 async-stream = "0.3"
 async-trait = "0.1"
 futures = "0.3"
@@ -31,6 +33,7 @@ http = "1"
 httpdate = "1"
 jsonschema = { version = "0.49.4", default-features = false }
 jsonptr = { version = "0.8.1", default-features = false, features = ["std", "json", "resolve"] }
+nemo-relay-plugin = { git = "https://github.com/NVIDIA/NeMo-Relay.git", rev = "ca08901629e6058c2d5d65cc7708ec5264073d7b" }
 parking_lot = "0.12"
 rand = "0.10"
 regex = "1"
