@@ -727,6 +727,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../routing_algorithms/subagent_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sub-Agent-Aware Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../routing_algorithms/random_routing/" class="md-nav__link">
         
   
@@ -1048,7 +1076,7 @@
   <span class="md-ellipsis">
     
   
-    CLI Reference
+    Server CLI Reference
   
 
     
@@ -1265,9 +1293,6 @@ the result through OpenAI- and Anthropic-compatible APIs. For setup, see
   targets and algorithms directly and can let libsy make calls or fulfill its
   requested model calls themselves.</li>
 </ul>
-<p>The <code>switchyard launch</code> command is a launcher for coding agents. It hosts the
-native Rust server through the packaged PyO3 binding and points the selected
-agent at that server.</p>
 <h2 id="request-flow">Request Flow<a class="headerlink" href="#request-flow" title="Permanent link">&para;</a></h2>
 <p>The standalone server translates an inbound provider format into the shared
 protocol types before routing. The selected target's LLM client translates the
@@ -1374,11 +1399,11 @@ selected target uses a different upstream protocol.</p>
 <h2 id="where-to-go-next">Where to Go Next<a class="headerlink" href="#where-to-go-next" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../getting_started/">Getting Started</a>: install and run either execution path.</li>
-<li><a href="../cli_reference/">CLI Reference</a>: launcher and standalone server arguments.</li>
+<li><a href="../cli_reference/">Server CLI Reference</a>: standalone server arguments.</li>
 <li><a href="../routing_algorithms/llm_classifier_routing/">LLM Classifier Routing</a>: configure classifier routing.</li>
 <li><a href="../architecture/">Architecture</a>: follow a request through the server and Rust crates.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1980009a16968cc1662daaff86ed7fb55851752d/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, endpoints, and metrics.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1980009a16968cc1662daaff86ed7fb55851752d/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed and extend routing algorithms in Rust.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7295a7b57fb186261c5a00603cad24dfc39d90ac/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, endpoints, and metrics.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7295a7b57fb186261c5a00603cad24dfc39d90ac/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed and extend routing algorithms in Rust.</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol documentation.</li>
 </ul>
 

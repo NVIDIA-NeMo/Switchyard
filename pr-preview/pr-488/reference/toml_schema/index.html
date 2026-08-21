@@ -599,6 +599,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../routing_algorithms/subagent_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sub-Agent-Aware Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../routing_algorithms/random_routing/" class="md-nav__link">
         
   
@@ -922,7 +950,7 @@
   <span class="md-ellipsis">
     
   
-    CLI Reference
+    Server CLI Reference
   
 
     
@@ -1351,9 +1379,8 @@
 
 
 <h1 id="toml-schema">TOML Schema<a class="headerlink" href="#toml-schema" title="Permanent link">&para;</a></h1>
-<p>The native deployment file defines the LLM clients, targets, and routes a
-Switchyard server serves. It is read by <code>switchyard-server --config</code> and by
-<code>switchyard launch --config</code>.</p>
+<p>The native deployment file defines the LLM clients, targets, and routes that a
+Switchyard server serves. It is read by <code>switchyard-server --config</code>.</p>
 <p>Validate a file without starting the server:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
 </span></code></pre></div>
@@ -1539,7 +1566,8 @@ table, which can be empty:</p>
 </span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop&quot;</span>
 </span></code></pre></div>
 <h3 id="passthrough"><code>passthrough</code><a class="headerlink" href="#passthrough" title="Permanent link">&para;</a></h3>
-<p>Sends every request to one target.</p>
+<p>Sends every request to one target. It can also classify delegated sub-agent work;
+see <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing</a>.</p>
 <table>
 <thead>
 <tr>
@@ -1553,6 +1581,11 @@ table, which can be empty:</p>
 <td><code>target</code></td>
 <td style="text-align: center;">Yes</td>
 <td>Target every request is sent to.</td>
+</tr>
+<tr>
+<td><code>subagent_classifier</code></td>
+<td style="text-align: center;">No</td>
+<td>Custom classifier used only for delegated sub-agent work.</td>
 </tr>
 </tbody>
 </table>
@@ -1665,16 +1698,16 @@ table, which can be empty:</p>
 <td>Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. <code>base_threshold + 2 * threshold_step</code> must be at most <code>1</code>.</td>
 </tr>
 <tr>
-<td><code>session_affinity</code></td>
+<td><code>classify_trigger</code></td>
 <td style="text-align: center;">No</td>
-<td><code>false</code></td>
-<td>Reuses a session's first decision on later turns.</td>
+<td><code>every_request</code></td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and holds that target across the tool calls between. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Keys affinity on the first user message. Requires <code>session_affinity</code>.</td>
+<td>Keys affinity on the first user message. Requires <code>classify_trigger = "new_session"</code>.</td>
 </tr>
 <tr>
 <td><code>recent_turn_window</code></td>
@@ -1784,16 +1817,16 @@ policy selector, and routes to any configured target label.</p>
 <td>Policy table. <code>target_selector</code> accepts a JSON Pointer such as <code>/decision/target</code>.</td>
 </tr>
 <tr>
-<td><code>session_affinity</code></td>
+<td><code>classify_trigger</code></td>
 <td style="text-align: center;">No</td>
-<td><code>false</code></td>
-<td>Reuses a session's first decision on later turns.</td>
+<td><code>every_request</code></td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and holds that target across the tool calls between. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Keys affinity on the first user message. Requires <code>session_affinity</code>.</td>
+<td>Keys affinity on the first user message. Requires <code>classify_trigger = "new_session"</code>.</td>
 </tr>
 <tr>
 <td><code>recent_turn_window</code></td>
@@ -1861,6 +1894,12 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 <td style="text-align: center;">No</td>
 <td>unset</td>
 <td>System prompt handed to the efficient tier.</td>
+</tr>
+<tr>
+<td><code>classifier.classify_trigger</code></td>
+<td style="text-align: center;">No</td>
+<td><code>every_request</code></td>
+<td>When the judge runs. See the <code>llm_classifier</code> route. <code>new_session</code> has no effect here.</td>
 </tr>
 <tr>
 <td><code>classifier.response_format_type</code></td>
