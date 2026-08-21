@@ -10,6 +10,11 @@ dependencies = [
     "transformers>=4.45",
 ]
 
+[dependency-groups]
+dev = [
+    "model-router-toolkit @ https://github.com/NVIDIA-AI-Blueprints/llm-router/archive/8a9d3509fbde879d9795258081bab9553b458e04.tar.gz",
+]
+
 [tool.uv]
 package = false
 

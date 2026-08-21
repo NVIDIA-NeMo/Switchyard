@@ -61,7 +61,7 @@ class TransformersForward:
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
         load_kwargs: dict[str, Any] = {
-            "dtype": dtype,
+            "torch_dtype": dtype,
             "cache_dir": cache_dir,
         }
         if device != "cpu":

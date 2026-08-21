@@ -185,24 +185,13 @@ fn extract_output(result: &Bound<'_, PyAny>, request: &ForwardRequest) -> Result
 mod tests {
     use super::*;
     use crate::{LayerSelection, Pooling};
+    use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 
     const REFERENCE_MODEL: &str = "Qwen/Qwen3.5-0.8B";
 
     #[test]
     #[ignore = "downloads and runs the Qwen3.5-0.8B reference model"]
     fn matches_the_reference_transformers_tensors_exactly() -> Result<()> {
-        Python::attach(|py| {
-            add_venv_site_packages(py)?;
-            PyModule::from_code(
-                py,
-                c_str!(include_str!("../tests/reference_transformers_forward.py")),
-                c"reference_transformers_forward.py",
-                c"_switchyard_prefill_reference",
-            )?;
-            Ok(())
-        })
-        .map_err(|error| python_error("test setup", error))?;
-
         let config = TransformersForwardConfig {
             model: REFERENCE_MODEL.to_string(),
             device: Some("cpu".to_string()),
@@ -224,22 +213,50 @@ mod tests {
         let actual = backend.forward(&request)?;
         backend.unload()?;
         let expected = Python::attach(|py| {
-            let reference = PyModule::import(py, "_switchyard_prefill_reference")?;
-            let result = reference.call_method1(
-                "extract_reference",
-                (
-                    REFERENCE_MODEL,
-                    &request.prompts,
-                    vec!["last", "mean"],
-                    true,
-                ),
-            )?;
-            extract_output(&result, &request)
-                .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+            add_venv_site_packages(py)?;
+            let reference = PyModule::import(py, "model_router_toolkit.prefill.extract")?;
+            let constructor_kwargs = PyDict::new(py);
+            constructor_kwargs.set_item("device", "cpu")?;
+            let extractor = reference
+                .getattr("PrefillExtractor")?
+                .call((REFERENCE_MODEL,), Some(&constructor_kwargs))?;
+
+            let template_kwargs = PyDict::new(py);
+            template_kwargs.set_item("enable_thinking", true)?;
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("chat_template_kwargs", template_kwargs)?;
+            kwargs.set_item("extract_layers", "all")?;
+            kwargs.set_item("pooling_modes", vec!["last", "mean"])?;
+            kwargs.set_item("batch_size", request.batch_size)?;
+            kwargs.set_item("max_length", request.max_length)?;
+            kwargs.set_item("show_progress", false)?;
+            let result =
+                extractor.call_method("extract_batch", (&request.prompts,), Some(&kwargs))?;
+
+            ForwardOutput::parse(
+                &request,
+                extract_tensor_map(&result.getattr("hidden_last")?)?,
+                extract_tensor_map(&result.getattr("hidden_mean")?)?,
+                result.getattr("n_layers")?.extract()?,
+                result.getattr("hidden_dim")?.extract()?,
+            )
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))
         })
         .map_err(|error| python_error("reference forward", error))?;
 
         assert_eq!(actual, expected);
         Ok(())
+    }
+
+    fn extract_tensor_map(value: &Bound<'_, PyAny>) -> PyResult<BTreeMap<usize, Vec<Vec<f32>>>> {
+        let tensors = value
+            .cast::<PyDict>()
+            .map_err(|error| PyTypeError::new_err(error.to_string()))?;
+        tensors
+            .iter()
+            .map(|(layer, tensor)| {
+                Ok((layer.extract()?, tensor.call_method0("tolist")?.extract()?))
+            })
+            .collect()
     }
 }
