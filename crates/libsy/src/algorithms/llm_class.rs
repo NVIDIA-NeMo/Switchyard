@@ -342,9 +342,12 @@ impl TaskClassifierConfig {
                 message: "max_output_tokens must be at least 1".to_string(),
             });
         }
-        if self.message_hash_fallback && self.classify_trigger != ClassifyTrigger::NewSession {
+        // Only `every_request` is rejected: it retains nothing, so a fallback identity has
+        // nothing to key. Both retaining triggers can use it.
+        if self.message_hash_fallback && self.classify_trigger == ClassifyTrigger::EveryRequest {
             return Err(LibsyError::AlgorithmError {
-                message: "message_hash_fallback requires classify_trigger = new_session"
+                message: "message_hash_fallback requires classify_trigger = new_session or \
+                          user_turn"
                     .to_string(),
             });
         }
@@ -414,9 +417,12 @@ impl CustomClassifierConfig {
                 message: "max_output_tokens must be at least 1".to_string(),
             });
         }
-        if self.message_hash_fallback && self.classify_trigger != ClassifyTrigger::NewSession {
+        // Only `every_request` is rejected: it retains nothing, so a fallback identity has
+        // nothing to key. Both retaining triggers can use it.
+        if self.message_hash_fallback && self.classify_trigger == ClassifyTrigger::EveryRequest {
             return Err(LibsyError::AlgorithmError {
-                message: "message_hash_fallback requires classify_trigger = new_session"
+                message: "message_hash_fallback requires classify_trigger = new_session or \
+                          user_turn"
                     .to_string(),
             });
         }
@@ -866,9 +872,13 @@ impl LlmTaskClassifier {
         config: ClassifierRouteConfig,
     ) -> Result<Self> {
         algorithm::ensure_model_is_target(&targets, &config.default_target)?;
-        if config.message_hash_fallback && config.classify_trigger != ClassifyTrigger::NewSession {
+        // Only `every_request` is rejected: it retains nothing, so a fallback identity has
+        // nothing to key. Both retaining triggers can use it.
+        if config.message_hash_fallback && config.classify_trigger == ClassifyTrigger::EveryRequest
+        {
             return Err(LibsyError::AlgorithmError {
-                message: "message_hash_fallback requires classify_trigger = new_session"
+                message: "message_hash_fallback requires classify_trigger = new_session or \
+                          user_turn"
                     .to_string(),
             });
         }
@@ -1295,6 +1305,68 @@ mod tests {
                 .contains("unknown field `classifier_magic`"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn user_turn_holds_its_target_without_a_session_id() -> Result<()> {
+        // The reason the combination is allowed: benchmark harnesses and raw API callers
+        // often send no session id, and without a fallback identity `user_turn` re-judges
+        // every request, which is `every_request` under a different name.
+        let recorder = Arc::new(Recorder::default());
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+            judge_target: ModelId::from("judge"),
+            efficient_target: ModelId::from("efficient"),
+            capable_target: ModelId::from("capable"),
+            config: TaskClassifierConfig {
+                classify_trigger: ClassifyTrigger::UserTurn,
+                message_hash_fallback: true,
+                recent_turn_window: None,
+                ..test_config(TEST_THRESHOLD)
+            },
+        })?);
+
+        // A tool continuation of the same conversation: the last message is not the user's.
+        let mut continuation = classify_request();
+        continuation
+            .llm_request
+            .messages
+            .push(Message::text(Role::Assistant, "calling a tool"));
+
+        test_drive(router.clone(), classify_request(), recorder.serve()).await?;
+        test_drive(router.clone(), continuation, recorder.serve()).await?;
+
+        // The judge runs once, for the opening user turn; the continuation rides the
+        // retained target rather than being judged again.
+        assert_eq!(
+            recorder.calls(),
+            vec!["judge", "efficient", "efficient"],
+            "the continuation should reuse the retained target"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn message_hash_fallback_is_allowed_on_every_retaining_trigger() -> Result<()> {
+        // Both triggers retain a target between requests, so both can key that target on
+        // a message hash when the caller sends no session id. `every_request` retains
+        // nothing and stays rejected, which `invalid_classifier_config_is_rejected` covers.
+        for trigger in [ClassifyTrigger::NewSession, ClassifyTrigger::UserTurn] {
+            LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                judge_target: ModelId::from("judge"),
+                efficient_target: ModelId::from("e"),
+                capable_target: ModelId::from("c"),
+                config: TaskClassifierConfig {
+                    base_threshold: 0.5,
+                    message_hash_fallback: true,
+                    classify_trigger: trigger,
+                    ..TaskClassifierConfig::default()
+                },
+            })
+            .map_err(|error| LibsyError::AlgorithmError {
+                message: format!("{trigger:?} with message_hash_fallback rejected: {error}"),
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
