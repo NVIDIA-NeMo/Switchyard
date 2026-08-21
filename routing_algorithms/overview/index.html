@@ -1253,8 +1253,8 @@ configuration and tuning. For the vocabulary these pages use, see
 <tbody>
 <tr>
 <td><a href="../subagent_routing/">Sub-Agent-Aware Routing</a></td>
-<td>Parent traffic should use one target while delegated sub-agents are classified across other targets.</td>
-<td><code>passthrough</code> with <code>subagent_classifier</code></td>
+<td>Delegated sub-agents should use a separate routing policy from the parent agent.</td>
+<td><code>passthrough</code> or <code>stage_router</code> with <code>subagents</code></td>
 </tr>
 <tr>
 <td><a href="../random_routing/">Random Routing</a></td>
