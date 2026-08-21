@@ -8,6 +8,7 @@ members = [
     "crates/libsy-llm-client",
     "crates/switchyard-py",
     "crates/protocol",
+    "crates/switchyard-runner",
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
     "crates/switchyard-soak",
@@ -40,6 +41,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 switchyard-libsy = { path = "crates/libsy", version = "0.2.0" }
 switchyard-llm-client = { path = "crates/libsy-llm-client", version = "0.2.0" }
 switchyard-protocol = { path = "crates/protocol", version = "0.2.0" }
+switchyard-runner = { path = "crates/switchyard-runner", version = "0.2.0" }
 switchyard-server = { path = "crates/switchyard-server", version = "0.2.0" }
 switchyard-translation = { path = "crates/switchyard-translation", version = "0.2.0" }
 thiserror = "2"
