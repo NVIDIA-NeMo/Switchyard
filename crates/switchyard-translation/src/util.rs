@@ -6,11 +6,12 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
+use switchyard_protocol::ModelId;
 
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
-use crate::llm::{ContentBlock, LlmRequest, Message, PreservationMetadata};
+use crate::llm::{ContentBlock, InstructionBlock, LlmRequest, Message, PreservationMetadata, Role};
 use crate::policy::{
     LossyConversionPolicy, PreservationPolicy, TranslationPolicy, UnknownFieldPolicy,
 };
@@ -269,6 +270,30 @@ pub fn exact_preserved_response(
     (policy.preservation != PreservationPolicy::Disabled)
         .then(|| preservation.responses.get(&format).cloned())
         .flatten()
+}
+
+/// Applies a selected target model and optionally prepends its system prompt.
+///
+/// Adding a prompt invalidates preserved provider bodies because they predate the mutation.
+/// Call this once per candidate using a request that has not already received a target prompt.
+pub fn prepare_request_for_target(
+    request: &mut LlmRequest,
+    target: &ModelId,
+    prompt: Option<&str>,
+) {
+    request.model = Some(target.to_string());
+    if let Some(prompt) = prompt {
+        request.instructions.insert(
+            0,
+            InstructionBlock {
+                role: Role::System,
+                content: vec![ContentBlock::Text {
+                    text: prompt.to_string(),
+                }],
+            },
+        );
+        request.preservation.requests.clear();
+    }
 }
 
 /// Embeds preservation metadata into a translated wire body when requested.

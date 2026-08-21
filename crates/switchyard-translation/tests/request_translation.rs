@@ -9,11 +9,69 @@ use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
     LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    prepare_request_for_target,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
-type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+// A target prompt makes every preserved provider body stale.
+#[test]
+fn preparing_a_target_prompt_invalidates_exact_replay() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "route",
+        "messages": [
+            {"role": "system", "name": "caller", "content": "client prompt"},
+            {"role": "user", "content": "hi"}
+        ]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(
+        &mut request,
+        &"selected/model".into(),
+        Some("target prompt"),
+    );
+
+    assert!(request.preservation.requests.is_empty());
+    let encoded = engine
+        .encode_request(WireFormat::OpenAiChat, &request, &policy)?
+        .body;
+    assert_eq!(encoded["model"], "selected/model");
+    assert_eq!(encoded["messages"][0]["content"], "target prompt");
+    assert_eq!(encoded["messages"][1]["content"], "client prompt");
+    assert!(encoded["messages"][1].get("name").is_none());
+    Ok(())
+}
+
+// Stamping only the normalized target does not invalidate exact replay.
+#[test]
+fn preparing_without_a_prompt_preserves_exact_replay() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "route",
+        "messages": [{"role": "user", "content": "hi"}],
+        "provider_field": true
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(&mut request, &"selected/model".into(), None);
+
+    assert_eq!(request.model.as_deref(), Some("selected/model"));
+    assert_eq!(
+        request.preservation.requests[&WireFormat::OpenAiChat.into()],
+        body
+    );
+    Ok(())
+}
 
 // Verifies Anthropic-only request fields are dropped or mapped for OpenAI Chat.
 #[test]
