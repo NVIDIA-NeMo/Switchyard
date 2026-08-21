@@ -194,6 +194,8 @@ impl FormatCodec for OpenAiResponsesCodec {
         if request.stream {
             body.insert("stream".to_string(), Value::Bool(true));
         }
+        copy_responses_request_extensions(&mut body, &request.extensions.fields);
+
         let body = embed_preservation(Value::Object(body), &request.preservation, _policy);
         Ok(EncodedRequest { body, diagnostics })
     }
@@ -1462,4 +1464,32 @@ fn encode_responses_usage(usage: &Usage) -> Value {
         "input_tokens_details": {"cached_tokens": usage.cached_input_tokens().unwrap_or(0)},
         "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
     })
+}
+
+/// Re-emits captured request extensions that the Responses format accepts.
+///
+/// The allowlist is Responses-specific: Chat-only fields such as
+/// `stream_options` and `top_logprobs` are deliberately absent, so they stay
+/// dropped on a Chat-to-Responses hop. Fields already present in `body` are
+/// left untouched — anything the encoder generated is authoritative over a
+/// captured extension of the same name.
+fn copy_responses_request_extensions(
+    body: &mut Map<String, Value>,
+    extensions: &Map<String, Value>,
+) {
+    for field in [
+        "metadata",
+        "parallel_tool_calls",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "safety_identifier",
+        "service_tier",
+        "store",
+        "user",
+    ] {
+        if let Some(value) = extensions.get(field) {
+            body.entry(field.to_string())
+                .or_insert_with(|| value.clone());
+        }
+    }
 }
