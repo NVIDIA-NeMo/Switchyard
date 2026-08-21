@@ -887,9 +887,7 @@ fn encode_openai_message_plaintext_reasoning(message: &mut Value, content: &[Con
         })
         .collect::<Vec<_>>()
         .join("\n");
-    if !reasoning.is_empty() {
-        message["reasoning"] = Value::String(reasoning);
-    }
+    set_openai_reasoning_text(message, reasoning);
 }
 
 // Adds exact provider details and text that cannot be recovered from those details.
@@ -913,9 +911,22 @@ fn encode_openai_message_structured_reasoning(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    if !fallback.is_empty() {
-        message["reasoning"] = Value::String(fallback);
+    set_openai_reasoning_text(message, fallback);
+}
+
+// Writes replayed reasoning under both OpenAI-compatible spellings.
+//
+// `reasoning` is what most OpenAI-compatible providers read. Reasoning-required
+// upstreams look for `reasoning_content` specifically and reject a follow-up turn
+// whose assistant history lacks it, treating the field as present-or-absent rather
+// than reading the alias, so both are written. The decode side already accepts
+// either spelling.
+fn set_openai_reasoning_text(message: &mut Value, reasoning: String) {
+    if reasoning.is_empty() {
+        return;
     }
+    message["reasoning"] = Value::String(reasoning.clone());
+    message["reasoning_content"] = Value::String(reasoning);
 }
 
 // Checks whether any block in a message is a tool result.

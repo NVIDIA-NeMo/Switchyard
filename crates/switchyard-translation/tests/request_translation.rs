@@ -8,7 +8,7 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    LossyConversionPolicy, PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -1056,6 +1056,85 @@ fn responses_reasoning_items_attach_to_tool_call_turn_for_openai_chat() -> TestR
     Ok(())
 }
 
+// Reasoning-required upstreams look for `reasoning_content` and treat it as
+// present-or-absent, so replaying only `reasoning` fails the next turn. Both
+// spellings carry the same text, and tool calls stay alongside them.
+#[test]
+fn openai_chat_replays_reasoning_under_both_spellings() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "deepseek-reasoner",
+        "messages": [
+            {"role": "user", "content": "What is 2+2? Use the calculator."},
+            {
+                "role": "assistant",
+                "content": "I'll call the tool.",
+                "reasoning_content": "The user wants 2+2. Call the calculator.",
+                "tool_calls": [{
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {"name": "calculator", "arguments": "{\"a\": 2, \"b\": 2}"}
+                }]
+            },
+            {"role": "tool", "tool_call_id": "call_abc123", "content": "4"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy {
+                preservation: PreservationPolicy::Disabled,
+                ..TranslationPolicy::default()
+            },
+        )?
+        .body;
+
+    let assistant = &output["messages"][1];
+    assert_eq!(
+        assistant["reasoning_content"],
+        "The user wants 2+2. Call the calculator."
+    );
+    assert_eq!(assistant["reasoning"], assistant["reasoning_content"]);
+    assert_eq!(assistant["content"], "I'll call the tool.");
+    assert_eq!(assistant["tool_calls"][0]["id"], "call_abc123");
+    assert_eq!(output["messages"][2]["role"], "tool");
+    assert_eq!(output["messages"][2]["tool_call_id"], "call_abc123");
+    Ok(())
+}
+
+// A turn carrying no reasoning must not gain either spelling.
+#[test]
+fn openai_chat_without_reasoning_sends_neither_spelling() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "deepseek-reasoner",
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "continue"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy {
+                preservation: PreservationPolicy::Disabled,
+                ..TranslationPolicy::default()
+            },
+        )?
+        .body;
+
+    assert!(output["messages"][1].get("reasoning").is_none());
+    assert!(output["messages"][1].get("reasoning_content").is_none());
+    Ok(())
+}
+
 // Verifies a reasoning item merges into the assistant message that follows it.
 #[test]
 fn responses_reasoning_item_merges_into_next_assistant_message_for_openai_chat() -> TestResult {
@@ -1089,6 +1168,7 @@ fn responses_reasoning_item_merges_into_next_assistant_message_for_openai_chat()
             {
                 "role": "assistant",
                 "content": "Let me check.",
+                "reasoning_content": "Reading.",
                 "reasoning": "Reading."
             }
         ])
@@ -1179,6 +1259,7 @@ fn openai_chat_encrypted_reasoning_details_retain_fallback() -> TestResult {
 
     assert_eq!(output["messages"][0]["reasoning_details"], details);
     assert_eq!(output["messages"][0]["reasoning"], "fallback text");
+    assert_eq!(output["messages"][0]["reasoning_content"], "fallback text");
     Ok(())
 }
 
