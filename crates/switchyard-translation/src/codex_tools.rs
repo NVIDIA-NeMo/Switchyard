@@ -36,7 +36,7 @@
 //! strictly better than dropping it: the model can still call the tool, and Codex
 //! validates the input on receipt.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value, json};
 use switchyard_protocol::ProviderExtensions;
@@ -100,7 +100,7 @@ pub fn additional_tool_names(extensions: &ProviderExtensions) -> HashSet<String>
 ///
 /// Prefixed so it cannot collide with a real provider field, and so a codec that
 /// allowlists provider fields never forwards it.
-pub const CUSTOM_TOOLS_KEY: &str = "switchyard_codex_tools";
+pub const CUSTOM_TOOLS_KEY: &str = "switchyard_codex_custom_tools";
 
 /// Property name carrying a custom tool's freeform input on the chat wire.
 pub const CUSTOM_INPUT_PROPERTY: &str = "input";
@@ -176,36 +176,71 @@ pub fn custom_input_from_arguments(arguments: &Value) -> String {
     }
 }
 
-/// Tracks which streamed items belong to a custom tool.
+/// Item-id prefix a Responses backend requires on a custom tool call.
+///
+/// A strict backend validates the prefix per item type: Azure rejects a
+/// `custom_tool_call` whose id starts with `fc` -- "Expected an ID that begins
+/// with 'ctc'". The client persists the item and replays it next turn, so a
+/// wrong prefix here fails the *following* request, not this one.
+const CUSTOM_CALL_ID_PREFIX: &str = "ctc";
+
+/// Prefix a function call id carries, and which a custom call must not keep.
+const FUNCTION_CALL_ID_PREFIX: &str = "fc";
+
+/// Re-prefixes a function-call item id for a custom tool call.
+///
+/// The suffix is preserved so the id stays as stable and as traceable as the one
+/// the upstream or the id policy produced.
+fn custom_call_item_id(id: &str) -> String {
+    if id.starts_with(CUSTOM_CALL_ID_PREFIX) {
+        return id.to_string();
+    }
+    let suffix = id
+        .strip_prefix(FUNCTION_CALL_ID_PREFIX)
+        .unwrap_or(id)
+        .trim_start_matches('_');
+    if suffix.is_empty() {
+        CUSTOM_CALL_ID_PREFIX.to_string()
+    } else {
+        format!("{CUSTOM_CALL_ID_PREFIX}_{suffix}")
+    }
+}
+
+/// Tracks the streamed items that belong to a custom tool, and their new ids.
 ///
 /// A Responses stream announces the tool name once, on
 /// `response.output_item.added`, and every later delta identifies the item only
-/// by `item_id`. Rewriting those deltas therefore needs the name-to-item mapping
-/// this type accumulates as the stream is walked.
+/// by `item_id`. Rewriting those deltas therefore needs the mapping this type
+/// accumulates as the stream is walked. It maps the id as the upstream sent it to
+/// the re-prefixed one, so every reference to the item stays consistent.
 #[derive(Debug, Default)]
 pub struct CustomToolStreamState {
-    custom_item_ids: HashSet<String>,
+    custom_item_ids: HashMap<String, String>,
 }
 
 impl CustomToolStreamState {
-    /// Remembers `item_id` as belonging to a custom tool call.
-    fn remember(&mut self, item_id: &str) {
-        if !item_id.is_empty() {
-            self.custom_item_ids.insert(item_id.to_string());
+    /// Remembers that the item once called `old_id` is now `new_id`.
+    fn remember(&mut self, old_id: &str, new_id: &str) {
+        if !old_id.is_empty() {
+            self.custom_item_ids
+                .insert(old_id.to_string(), new_id.to_string());
         }
     }
 
-    /// Whether `item_id` was announced as a custom tool call.
-    fn is_custom(&self, item_id: &str) -> bool {
-        self.custom_item_ids.contains(item_id)
+    /// The new id of an item announced as a custom tool call, if any.
+    fn new_id_of(&self, item_id: &str) -> Option<&str> {
+        self.custom_item_ids.get(item_id).map(String::as_str)
     }
 }
 
 /// Rewrites a `function_call` item into a `custom_tool_call`.
 ///
-/// Returns the item's id when it was rewritten, so a caller walking a stream can
-/// remember it for the deltas that follow.
-fn rewrite_call_item(object: &mut Map<String, Value>, names: &HashSet<String>) -> Option<String> {
+/// Returns the item's old and new id when it was rewritten, so a caller walking a
+/// stream can remap the deltas that follow.
+fn rewrite_call_item(
+    object: &mut Map<String, Value>,
+    names: &HashSet<String>,
+) -> Option<(String, String)> {
     if object.get("type").and_then(Value::as_str) != Some("function_call") {
         return None;
     }
@@ -223,10 +258,11 @@ fn rewrite_call_item(object: &mut Map<String, Value>, names: &HashSet<String>) -
     // `arguments` has no meaning on a custom tool call, and leaving it would
     // present the same call twice in two different shapes.
     object.remove("arguments");
-    object
-        .get("id")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
+
+    let old_id = object.get("id").and_then(Value::as_str)?.to_string();
+    let new_id = custom_call_item_id(&old_id);
+    object.insert("id".to_string(), Value::String(new_id.clone()));
+    Some((old_id, new_id))
 }
 
 /// Turns `function_call` items and their argument deltas back into custom tool
@@ -254,13 +290,15 @@ fn restore_in_value(value: &mut Value, names: &HashSet<String>, state: &mut Cust
             }
         }
         Value::Object(object) => {
-            if let Some(item_id) = rewrite_call_item(object, names) {
-                state.remember(&item_id);
-            }
-            rewrite_stream_event(object, state);
+            // Children first: an `item` inside a `response.output_item.added` event
+            // must register its new id before the event's own `item_id` is remapped.
             for value in object.values_mut() {
                 restore_in_value(value, names, state);
             }
+            if let Some((old_id, new_id)) = rewrite_call_item(object, names) {
+                state.remember(&old_id, &new_id);
+            }
+            rewrite_stream_event(object, state);
         }
         _ => {}
     }
@@ -273,6 +311,19 @@ fn restore_in_value(value: &mut Value, names: &HashSet<String>, state: &mut Cust
 /// `function_call_arguments` events, so an unrenamed delta stream leaves the call
 /// with empty input even once the item itself is the right type.
 fn rewrite_stream_event(object: &mut Map<String, Value>, state: &CustomToolStreamState) {
+    // The item is identified only by id here, so an event for a function tool must
+    // be left alone. Every event that names a rewritten item carries its new id,
+    // including the ones that keep their own type.
+    let Some(new_id) = object
+        .get("item_id")
+        .and_then(Value::as_str)
+        .and_then(|item_id| state.new_id_of(item_id))
+        .map(ToOwned::to_owned)
+    else {
+        return;
+    };
+    object.insert("item_id".to_string(), Value::String(new_id));
+
     let Some(event) = object.get("type").and_then(Value::as_str) else {
         return;
     };
@@ -281,15 +332,6 @@ fn rewrite_stream_event(object: &mut Map<String, Value>, state: &CustomToolStrea
         "response.function_call_arguments.done" => "response.custom_tool_call_input.done",
         _ => return,
     };
-    // The item is identified only by id here, so an event for a function tool
-    // must be left alone.
-    let item_id = object
-        .get("item_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if !state.is_custom(item_id) {
-        return;
-    }
     object.insert("type".to_string(), Value::String(renamed.into()));
     // The payload field is named for the tool kind as well.
     if let Some(delta) = object.remove("delta") {
@@ -306,8 +348,9 @@ mod tests {
     use switchyard_protocol::ProviderExtensions;
 
     use super::{
-        CustomToolStreamState, attach_custom_tools, custom_input_from_arguments, custom_tool_names,
-        record_custom_tool, restore_custom_tool_calls,
+        CustomToolStreamState, attach_custom_tools, custom_call_item_id,
+        custom_input_from_arguments, custom_tool_names, record_custom_tool,
+        restore_custom_tool_calls,
     };
 
     fn extensions(names: &[&str]) -> ProviderExtensions {
@@ -405,6 +448,7 @@ mod tests {
         });
         restore_custom_tool_calls(&mut added, &names, &mut state);
         assert_eq!(added["item"]["type"], "custom_tool_call");
+        assert_eq!(added["item"]["id"], "ctc_1");
 
         let mut delta = json!({
             "type": "response.function_call_arguments.delta",
@@ -414,6 +458,9 @@ mod tests {
         restore_custom_tool_calls(&mut delta, &names, &mut state);
         assert_eq!(delta["type"], "response.custom_tool_call_input.delta");
         assert_eq!(delta["delta"], "echo hi");
+        // The delta must name the item by its new id, or the client cannot attach
+        // the input to the call it announced.
+        assert_eq!(delta["item_id"], "ctc_1");
 
         // An item that was never announced as custom keeps the function events.
         let mut other = json!({
@@ -423,6 +470,21 @@ mod tests {
         });
         restore_custom_tool_calls(&mut other, &names, &mut state);
         assert_eq!(other["type"], "response.function_call_arguments.delta");
+    }
+
+    // A strict Responses backend validates the item-id prefix per item type. Azure
+    // rejected a replayed `custom_tool_call` with
+    //   Invalid 'input[8].id': 'fc_2'. Expected an ID that begins with 'ctc'.
+    // The client persists the item, so a wrong prefix fails the FOLLOWING request.
+    #[test]
+    fn re_prefixes_the_item_id_for_a_custom_call() {
+        assert_eq!(custom_call_item_id("fc_2"), "ctc_2");
+        assert_eq!(custom_call_item_id("fc2"), "ctc_2");
+        // An id the upstream already made a custom one is left untouched.
+        assert_eq!(custom_call_item_id("ctc_9"), "ctc_9");
+        // An id with no recognizable prefix still comes back valid.
+        assert_eq!(custom_call_item_id("abc"), "ctc_abc");
+        assert_eq!(custom_call_item_id("fc"), "ctc");
     }
 
     #[test]
