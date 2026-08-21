@@ -79,11 +79,9 @@ fn register_buffered(
                 };
                 let request = runtime.decode_request(inbound, &request, false)?;
                 let mut marks = Vec::new();
-                let response = runtime
-                    .execute_buffered(inbound, request, &mut marks)
-                    .await?;
+                let response = runtime.execute_buffered(inbound, request, &mut marks).await;
                 emit_marks(&plugin_runtime, marks);
-                Ok(response)
+                response
             }
         },
     )
@@ -153,7 +151,8 @@ type StreamExecution = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 struct ManagedStream {
     execution: Option<StreamExecution>,
     messages: Pin<Box<async_channel::Receiver<StreamMessage>>>,
-    plugin_runtime: PluginRuntime,
+    emit_mark: Arc<dyn Fn(RoutingMark) + Send + Sync>,
+    terminal_error: Option<String>,
 }
 
 impl ManagedStream {
@@ -165,10 +164,12 @@ impl ManagedStream {
     ) -> Self {
         let (sender, messages) = async_channel::bounded(32);
         let execution = async move { runtime.execute_stream(inbound, request, &sender).await };
+        let emit_mark = Arc::new(move |mark| emit_mark(&plugin_runtime, mark));
         Self {
             execution: Some(Box::pin(execution)),
             messages: Box::pin(messages),
-            plugin_runtime,
+            emit_mark,
+            terminal_error: None,
         }
     }
 }
@@ -182,7 +183,7 @@ impl futures_util::Stream for ManagedStream {
                 Poll::Ready(Ok(())) => self.execution = None,
                 Poll::Ready(Err(error)) => {
                     self.execution = None;
-                    return Poll::Ready(Some(Err(error)));
+                    self.terminal_error = Some(error);
                 }
                 Poll::Pending => {}
             }
@@ -190,13 +191,13 @@ impl futures_util::Stream for ManagedStream {
 
         loop {
             match self.messages.as_mut().poll_next(cx) {
-                Poll::Ready(Some(StreamMessage::Mark(mark))) => {
-                    emit_mark(&self.plugin_runtime, mark)
-                }
+                Poll::Ready(Some(StreamMessage::Mark(mark))) => (self.emit_mark)(mark),
                 Poll::Ready(Some(StreamMessage::Event(event))) => {
                     return Poll::Ready(Some(Ok(event)));
                 }
-                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Ready(None) => {
+                    return Poll::Ready(self.terminal_error.take().map(Err));
+                }
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -207,9 +208,37 @@ nemo_relay_plugin::nemo_relay_plugin!(nemo_relay_register_plugin, SwitchyardPlug
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use futures_util::StreamExt;
     use serde_json::json;
 
     use super::*;
+
+    #[tokio::test]
+    async fn managed_stream_delivers_queued_events_before_terminal_error() {
+        let (sender, messages) = async_channel::bounded(32);
+        let execution = async move {
+            sender
+                .send(StreamMessage::Event(json!({"id": "committed"})))
+                .await
+                .expect("queue committed event");
+            Err("stream failed after commitment".into())
+        };
+        let mut stream = ManagedStream {
+            execution: Some(Box::pin(execution)),
+            messages: Box::pin(messages),
+            emit_mark: Arc::new(|_| {}),
+            terminal_error: None,
+        };
+
+        assert_eq!(stream.next().await, Some(Ok(json!({"id": "committed"}))));
+        assert_eq!(
+            stream.next().await,
+            Some(Err("stream failed after commitment".into()))
+        );
+        assert_eq!(stream.next().await, None);
+    }
 
     #[test]
     fn version_one_service_config_gets_a_migration_error_before_v2_deserialization() {
