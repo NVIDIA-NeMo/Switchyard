@@ -115,13 +115,13 @@ type = "noop"
 
 ### `passthrough`
 
-Sends every request to one target. It can also classify delegated sub-agent work;
+Sends parent requests to one target. It can also route delegated sub-agent work;
 see [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md).
 
 | Key | Required | Meaning |
 |---|:---:|---|
-| `target` | Yes | Target every request is sent to. |
-| `subagent_classifier` | No | Custom classifier used only for delegated sub-agent work. |
+| `target` | Yes | Target used for parent and harness-maintenance requests. |
+| `subagents` | No | Nested `passthrough` or `llm_classifier` policy used only for delegated sub-agent work. Nested classifiers currently support only `mode = "custom"`. |
 
 ### `random`
 
@@ -209,6 +209,7 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
 | `classifier.classify_trigger` | No | `every_request` | When the judge runs. See the `llm_classifier` route. `new_session` has no effect here. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
+| `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
 ## Validation Errors
 

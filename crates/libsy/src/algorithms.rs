@@ -13,6 +13,7 @@ pub mod noop;
 pub mod passthrough;
 pub mod rand;
 pub mod stage;
+pub mod subagent;
 
 pub mod util;
 
