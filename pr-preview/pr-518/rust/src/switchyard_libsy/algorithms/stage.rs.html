@@ -494,12 +494,12 @@
 <a href=#494 id=494 data-nosnippet>494</a>
 <a href=#495 id=495 data-nosnippet>495</a>    <span class="doccomment">/// Stands in for a decider ahead of stage.
 <a href=#496 id=496 data-nosnippet>496</a>    </span><span class="attr">#[derive(Default)]
-<a href=#497 id=497 data-nosnippet>497</a>    </span><span class="kw">struct </span>HoldFloor {
+<a href=#497 id=497 data-nosnippet>497</a>    </span><span class="kw">struct </span>FloorDecider {
 <a href=#498 id=498 data-nosnippet>498</a>        requests: Mutex&lt;u32&gt;,
 <a href=#499 id=499 data-nosnippet>499</a>    }
 <a href=#500 id=500 data-nosnippet>500</a>
 <a href=#501 id=501 data-nosnippet>501</a>    <span class="attr">#[async_trait]
-<a href=#502 id=502 data-nosnippet>502</a>    </span><span class="kw">impl </span>Processor&lt;State&gt; <span class="kw">for </span>HoldFloor {
+<a href=#502 id=502 data-nosnippet>502</a>    </span><span class="kw">impl </span>Processor&lt;State&gt; <span class="kw">for </span>FloorDecider {
 <a href=#503 id=503 data-nosnippet>503</a>        <span class="kw">async fn </span>process(<span class="kw-2">&amp;</span><span class="self">self</span>, state: <span class="kw-2">&amp;mut </span>State, event: Event&lt;<span class="lifetime">'_</span>&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
 <a href=#504 id=504 data-nosnippet>504</a>            <span class="kw">if </span><span class="macro">matches!</span>(event, Event::Request(<span class="kw">_</span>)) {
 <a href=#505 id=505 data-nosnippet>505</a>                <span class="kw">let </span><span class="kw-2">mut </span>requests = <span class="self">self</span>.requests.lock();
@@ -520,7 +520,7 @@
 <a href=#520 id=520 data-nosnippet>520</a>        </span><span class="kw">let </span>config = StageRouterConfig::new(PickerMode::CapableFirst, <span class="number">0.5</span>);
 <a href=#521 id=521 data-nosnippet>521</a>        <span class="kw">let </span>route: Arc&lt;<span class="kw">dyn </span>Algorithm&gt; = Arc::new(
 <a href=#522 id=522 data-nosnippet>522</a>            build_route(ModelId::from(<span class="string">"strong"</span>), ModelId::from(<span class="string">"weak"</span>), config)<span class="question-mark">?
-<a href=#523 id=523 data-nosnippet>523</a>                </span>.with_processor(Arc::new(HoldFloor::default())),
+<a href=#523 id=523 data-nosnippet>523</a>                </span>.with_processor(Arc::new(FloorDecider::default())),
 <a href=#524 id=524 data-nosnippet>524</a>        );
 <a href=#525 id=525 data-nosnippet>525</a>
 <a href=#526 id=526 data-nosnippet>526</a>        test_drive(route.clone(), turn_request(<span class="bool-val">false</span>), recorder.serve()).<span class="kw">await</span><span class="question-mark">?</span>;
