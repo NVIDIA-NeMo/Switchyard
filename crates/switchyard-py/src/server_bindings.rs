@@ -44,10 +44,7 @@ impl PyServer {
             .map_err(|error| ServerConfigError::new_err(error.to_string()))?;
         let caller_auth_by_model = state
             .models()
-            .map(|model| match state.caller_auth_kind(model) {
-                Some(kind) => (model.to_string(), Some(kind)),
-                None => (model.to_string(), None),
-            })
+            .map(|model| (model.to_string(), state.caller_auth_kind(model)))
             .collect::<HashMap<_, _>>();
         let runtime = pyo3_async_runtimes::tokio::get_runtime();
         let server = {
