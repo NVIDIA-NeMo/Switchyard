@@ -147,6 +147,33 @@ impl PartialEq<ModelId> for String {
     }
 }
 
+/// A routing choice: the model selected by an algorithm and whether that call is the final answer.
+///
+/// Published by [`switchyard_libsy::Driver::decide`] as a [`switchyard_libsy::Step::Decision`]
+/// so downstream observers see each routing choice as it happens.
+#[derive(Debug, Clone)]
+pub struct Decision {
+    selected_model_id: ModelId,
+    is_answer_call: bool,
+}
+
+impl Decision {
+    /// Creates a new decision.
+    pub fn new(selected_model_id: impl Into<ModelId>, is_answer_call: bool) -> Self {
+        Self { selected_model_id: selected_model_id.into(), is_answer_call }
+    }
+
+    /// The model selected by this routing decision.
+    pub fn selected_model_id(&self) -> &str {
+        self.selected_model_id.as_str()
+    }
+
+    /// Whether this call is expected to produce the final answer to the user.
+    pub fn is_answer_call(&self) -> bool {
+        self.is_answer_call
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

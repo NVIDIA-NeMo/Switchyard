@@ -199,7 +199,7 @@ impl Driver {
             .send(Ok(Step::Decision { decision: decision.clone(), extra }))
             .await
             .map_err(|_| DriverError::StreamClosed)?;
-        observability::record_decision(&self.algorithm, &decision);
+        observability::record_decision(&self.algorithm, &ModelId::from(decision.selected_model_id()));
         Ok(())
     }
 
@@ -208,18 +208,11 @@ impl Driver {
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
-        let selected_model = result
-            .as_ref()
-            .ok()
-            .map(|outcome| outcome.selected_model_id.clone());
         let step = result.map(|outcome| Step::Done(Box::new(outcome)));
         self.step_tx
             .send(step)
             .await
             .map_err(|_| DriverError::StreamClosed)?;
-        if let Some(selected_model) = selected_model {
-            observability::record_decision(&self.algorithm, &selected_model);
-        }
         Ok(())
     }
 }

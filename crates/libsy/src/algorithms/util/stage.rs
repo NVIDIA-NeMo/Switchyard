@@ -775,6 +775,28 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn classifier_writes_signal_keys_to_state_extra() -> Result<()> {
+        // A signal with known values produces exact state.extra entries that Python callers rely on.
+        let signal = ToolSignals {
+            severity: HARD_SEVERITY as f32,
+            ..Default::default()
+        };
+        let dims = dimensions_from_signal(&signal);
+        let scored = score_signal(&signal);
+        let mut state = state_with(signal);
+        StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut Request::default(), None)
+            .await?;
+        assert_eq!(state.extra.get("signal_severity"), Some(&StateValue::Scalar(dims.severity as f32)));
+        assert_eq!(state.extra.get("signal_spinning"), Some(&StateValue::Scalar(dims.spinning as f32)));
+        assert_eq!(state.extra.get("signal_exploring"), Some(&StateValue::Scalar(dims.exploring as f32)));
+        assert_eq!(state.extra.get("signal_production_intensity"), Some(&StateValue::Scalar(dims.production_intensity as f32)));
+        assert_eq!(state.extra.get("signal_score"), Some(&StateValue::Scalar(scored.score as f32)));
+        assert_eq!(state.extra.get("signal_confidence"), Some(&StateValue::Scalar(scored.confidence as f32)));
+        Ok(())
+    }
+
     const ESCALATION: &str = "recovering from an error";
     const DEESCALATION: &str = "settled — carry on";
 

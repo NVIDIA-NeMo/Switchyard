@@ -97,6 +97,21 @@ if TYPE_CHECKING:
         ) -> None: ...
 
     @final
+    class Decision:
+        """A semantic routing choice produced by an algorithm."""
+
+        @property
+        def selected_model_id(self) -> str: ...
+
+        def get(self, key: str) -> float | None:
+            """Return the scalar routing metadata value for *key*, or ``None`` if absent or non-scalar."""
+            ...
+
+        def get_str(self, key: str) -> str | None:
+            """Return the string routing metadata value for *key*, or ``None`` if absent or non-string."""
+            ...
+
+    @final
     class ModelCall:
         @property
         def algorithm(self) -> str: ...
@@ -130,6 +145,11 @@ if TYPE_CHECKING:
         class CallModel:
             __match_args__: ClassVar[tuple[Literal["call"]]] = ("call",)
             call: ModelCall
+
+        @final
+        class Decision:
+            __match_args__: ClassVar[tuple[Literal["decision"]]] = ("decision",)
+            decision: Decision
 
         @final
         class Done:

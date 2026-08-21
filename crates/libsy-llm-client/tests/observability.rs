@@ -467,7 +467,7 @@ impl Algorithm for SingleCallAlgo {
 
     async fn route(
         self: Arc<Self>,
-        _driver: Driver,
+        driver: Driver,
         request: Request,
     ) -> switchyard_libsy::Result<RoutingOutcome> {
         let target = self

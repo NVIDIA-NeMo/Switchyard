@@ -220,6 +220,8 @@ impl JudgePolicy for TaskClassifierPolicy {
         }])
     }
 
+    /// Writes judge fields to `state.extra`: `judge_p_solve` (scalar), `judge_crux`,
+    /// `judge_primary_rule`, and `judge_capability_boundary` (strings). No-op when `verdict` is `None`.
     fn record_to_state(&self, verdict: Option<&Self::Verdict>, state: &mut State) {
         let Some(verdict) = verdict else { return };
         state.extra.insert("judge_p_solve".into(), StateValue::Scalar(verdict.p_solve as f32));
@@ -1009,6 +1011,27 @@ mod tests {
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "policy abstained".to_string(),
             })
+    }
+
+    #[test]
+    fn record_to_state_writes_judge_keys() {
+        // Known verdict values must appear verbatim in state.extra so Python callers can read them.
+        let policy = policy();
+        let v = verdict(0.75, "core_capability", "high_confidence");
+        let mut state = State::default();
+        policy.record_to_state(Some(&v), &mut state);
+        assert_eq!(state.extra.get("judge_p_solve"), Some(&StateValue::Scalar(0.75_f32)));
+        assert_eq!(state.extra.get("judge_crux"), Some(&StateValue::String("test crux".to_string())));
+        assert_eq!(state.extra.get("judge_primary_rule"), Some(&StateValue::String("high_confidence".to_string())));
+        assert_eq!(state.extra.get("judge_capability_boundary"), Some(&StateValue::String("core_capability".to_string())));
+    }
+
+    #[test]
+    fn record_to_state_is_noop_without_verdict() {
+        let policy = policy();
+        let mut state = State::default();
+        policy.record_to_state(None, &mut state);
+        assert!(state.extra.is_empty());
     }
 
     /// Records what each target received; answers the judge with a supported verdict and
