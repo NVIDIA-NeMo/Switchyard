@@ -34,6 +34,17 @@ const SCHEMA_TEMPLATE: &str = include_str!("../prompts/capability-classifier/sch
 /// Telemetry label for this algorithm's spans, metrics, and logs.
 const ALGORITHM_NAME: &str = "llm_task_classifier";
 
+/// Restates the task after the conversation the judge is asked to route.
+///
+/// The rubric leads the request, which works while the payload is a single short
+/// message. Once `recent_turn_window` includes real conversation, those instructions
+/// sit far from the generation point and the judge sometimes *answers* the
+/// conversation instead of classifying it — the reply then fails to parse, the
+/// verdict is unavailable, and the turn silently falls back. Repeating the task at
+/// the end is what reliably prevents that.
+const TRAILING_ROUTING_INSTRUCTION: &str =
+    "Route the conversation above. Output ONLY the routing JSON object, nothing else.";
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TaskClassifierVerdict {
@@ -157,10 +168,20 @@ impl ClassifierInput for TaskInput {
     fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
         // The default preserves the whole-task anchor and latest user update. A
         // configured window widens that to the surrounding conversation.
-        match self.recent_turn_window {
+        let mut messages = match self.recent_turn_window {
             Some(window) => trim_messages(&request.llm_request.messages, window),
             None => task_messages(&request.llm_request.messages),
+        };
+        // Only the windowed path carries assistant turns and tool traffic for the judge
+        // to be distracted by. The default path is user task messages only — the anchor
+        // and the latest follow-up — so there is nothing there to outrank.
+        if self.recent_turn_window.is_some() {
+            messages.push(Message::text(
+                Role::User,
+                TRAILING_ROUTING_INSTRUCTION.to_string(),
+            ));
         }
+        messages
     }
 }
 
@@ -1591,6 +1612,50 @@ mod tests {
                 Message::text(Role::User, "recent 2"),
             ]
         );
+    }
+
+    #[test]
+    fn a_window_restates_the_routing_instruction_last() -> Result<()> {
+        let contents = judged_contents(2)?;
+
+        // Last, not merely present: the instruction only works in final position,
+        // after the conversation content it is meant to outrank.
+        assert_eq!(
+            contents.last().map(String::as_str),
+            Some(TRAILING_ROUTING_INSTRUCTION)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_default_path_is_left_unchanged() -> Result<()> {
+        // No window means no conversation to be distracted by, so the default
+        // request shape stays exactly as it was.
+        let judge = capability_judge(None)?;
+        let request = Request {
+            llm_request: LlmRequest {
+                messages: vec![Message::text(Role::User, "the task")],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+
+        let built = judge.build_request(&State::default(), &request);
+
+        // The task message alone; the rubric reaches the judge as an instruction block
+        // rather than a message, so nothing was dropped by it not being counted here.
+        assert_eq!(built.llm_request.messages.len(), 1);
+        assert!(!built.llm_request.instructions.is_empty());
+        assert!(
+            !built
+                .llm_request
+                .messages
+                .iter()
+                .filter_map(|message| message.text_content("\n"))
+                .any(|text| text.contains(TRAILING_ROUTING_INSTRUCTION))
+        );
+        Ok(())
     }
 
     #[test]
