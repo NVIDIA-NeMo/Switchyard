@@ -1,0 +1,185 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Two-tier conversation routing, config-only — no custom code. Two routes
+# implement the two zero-code paths from the conversation routing proposal:
+#
+# - `switchyard/conversation`: a pre-hoc scoring card (`llm_classifier` custom
+#   mode) that reads the turn and decides efficient vs capable.
+# - `switchyard/conversation-regret`: regret-driven escalation (`llm_classifier`
+#   escalation mode with a conversation judge prompt) — efficient answers by
+#   default, and the session latches to capable when the judge sees user regret.
+#
+# Replace the model ids with your own tiers. See README.md.
+
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.classifier]
+id = "google/gemini-3.5-flash" # small judge model; replace with your own
+llm_client = "openrouter"
+
+[targets.efficient]
+id = "moonshotai/kimi-k2.7-code" # cheap tier; replace with your own
+llm_client = "openrouter"
+
+[targets.capable]
+id = "anthropic/claude-opus-4.7" # strong tier; replace with your own
+llm_client = "openrouter"
+
+# Route A — pre-hoc conversation scoring card. The judge reads the turn and the
+# capability card below, then names a target; the policy maps that verdict field
+# to a routing target. `default_target` is the fallback when the verdict is
+# unusable, and it is deliberately conservative.
+[routes.conversation]
+id = "switchyard/conversation"
+type = "llm_classifier"
+mode = "custom"
+classifier_target = "classifier"
+targets = ["efficient", "capable"]
+default_target = "capable"
+prompt = '''
+You are a router for a two-tier conversation service. You receive the
+conversation's opening message and, when present, the latest user follow-up.
+
+Decide which tier answers this turn:
+- EFFICIENT: a cheap model that handles everyday conversation well but is
+  weaker on fact precision, multi-step reasoning, long structured output, and
+  low-resource languages.
+- CAPABLE: a frontier model, used when the efficient tier would likely get
+  the answer wrong.
+
+Use only evidence in the messages. Do not assume a specific audience, hidden
+context, or follow-up opportunities. When the evidence is thin, prefer
+CAPABLE: a cheap wrong answer costs more than a conservative route.
+
+# Assessment procedure
+
+1. State the crux: the hardest requirement of this turn.
+2. Select the one capability rule below that best describes the crux. Use
+   primary_rule=none when no rule applies.
+3. Decide the tier last. Length alone does not decide: a long message can be
+   easy, and a short one can be hard.
+
+# Conversation capability card
+
+- CONV-1 [efficient]: The turn has a checkable output contract stated in the
+  message itself — translate, summarize, reformat, or rewrite the provided
+  text against an explicit structure.
+- CONV-2 [efficient]: Everyday small talk, chit-chat, or common-knowledge
+  questions where an imperfect answer is cheap to recover from.
+- CONV-3 [efficient]: Short, low-stakes writing the user can judge at a
+  glance — greetings, simple emails, list generation.
+- CONV-4 [capable]: Knowledge-intensive questions where factual precision
+  matters: medicine, law, finance, specific citations, or up-to-date facts.
+- CONV-5 [capable]: Multi-step reasoning: mathematics, logic puzzles,
+  step-by-step analysis, or comparing options on stated criteria.
+- CONV-6 [capable]: Long structured output: reports, essays, plans, or
+  multi-part documents with formatting constraints.
+- CONV-7 [capable]: Low-resource languages, dialect-heavy requests, or
+  requests mixing several languages.
+- CONV-8 [capable]: High-stakes or emotionally sensitive situations where a
+  clumsy answer is costly: grief, medical symptoms, legal rights.
+- CONV-9 [capable]: Requests whose audience or depth is unstated ("explain
+  quantum entanglement", "tell me about the war") — the same question can be
+  asked by a child or by an expert.
+
+# Output
+
+Return exactly one JSON object matching the supplied response schema:
+{"decision": {"target": "efficient" or "capable"}, "crux": "...",
+"primary_rule": "...", "p_solve": <0.0-1.0>}
+
+p_solve is your estimate that EFFICIENT alone would produce an acceptable
+answer. It is recorded for calibration and does not change the decision.
+'''
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "object",
+      "properties": {
+        "target": {"type": "string", "enum": ["efficient", "capable"]}
+      },
+      "required": ["target"],
+      "additionalProperties": false
+    },
+    "crux": {"type": "string"},
+    "primary_rule": {
+      "type": "string",
+      "enum": ["CONV-1", "CONV-2", "CONV-3", "CONV-4", "CONV-5", "CONV-6", "CONV-7", "CONV-8", "CONV-9", "none"]
+    },
+    "p_solve": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+  },
+  "required": ["decision", "crux", "primary_rule", "p_solve"],
+  "additionalProperties": false
+}
+'''
+
+[routes.conversation.policy]
+type = "target_selector"
+selector = "/decision/target"
+
+# Route B — regret-driven escalation. The efficient tier answers every turn
+# until the judge confirms user regret; from that turn on the session latches
+# to capable. `confirmations = 1` escalates on the first confirmed regret.
+[routes.conversation-regret]
+id = "switchyard/conversation-regret"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "classifier"
+strong_target = "capable"
+weak_target = "efficient"
+escalation = { confirmations = 1 }
+prompt = '''
+You are an escalation judge inside a two-tier conversation service. Each turn
+is answered by the EFFICIENT tier (a cheap model) unless you escalate; after
+escalation the session stays on the STRONG tier.
+
+You see the conversation so far: the opening message and the most recent
+turns, including every user message and the assistant's answers. Judge the
+trajectory: is this conversation going wrong in a way the strong tier would
+fix? Return exactly one JSON object:
+
+{"escalate": boolean, "reason": "one short sentence naming the pattern"}
+
+The user is the only verifier this conversation has. Escalate only on a clear
+pattern of trouble, never on a single mild follow-up. When the evidence is
+thin, return {"escalate": false}.
+
+# Escalate on user regret
+
+- Direct correction: "wrong", "that's not what I asked", "rephrase", "redo
+  it", or the user repeating a question the assistant already got.
+- Re-explaining information the user already gave, after the assistant
+  ignored or misread it.
+- Explicit dissatisfaction: "that doesn't help", "too vague", "too long",
+  "that makes no sense".
+
+# Escalate on answer failure (even without user feedback)
+
+- Non-answer: the assistant dodged the question, refused without reason, or
+  answered a different question than the one asked.
+- Invented specifics the conversation provides no basis for.
+- Self-contradiction: the answer contradicts something established earlier
+  in the conversation.
+- Asking the user for information that was already given.
+
+# Hold — do not escalate on these
+
+- A single mild "could you say more" or "give an example" — that is a normal
+  follow-up, not regret.
+- Short answers to small talk, greetings, or list requests, even if terse.
+- A user asking for more detail, a different angle, or a follow-up question —
+  engagement is not regret.
+- Open-ended or unverifiable requests answered reasonably — no verifier means
+  no grounds to escalate.
+- A single unremarked slip the user has not challenged.
+
+Do not emit markdown, commentary, or chain-of-thought — only the JSON object.
+'''
