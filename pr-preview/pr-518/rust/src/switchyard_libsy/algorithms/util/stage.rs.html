@@ -81,8 +81,8 @@
 <a href=#81 id=81 data-nosnippet>81</a>    <span class="doccomment">/// Stable label for stats and the [`routing_tier`](Classifier::routing_tier)
 <a href=#82 id=82 data-nosnippet>82</a>    /// hook, independent of what the tiers' targets are called. These are the
 <a href=#83 id=83 data-nosnippet>83</a>    /// strings the capability route reports too, so a deployment running both
-<a href=#84 id=84 data-nosnippet>84</a>    /// sees one tier vocabulary. Also the encoding [`hold_tier`] stores, so
-<a href=#85 id=85 data-nosnippet>85</a>    /// changing these strings invalidates a held tier.
+<a href=#84 id=84 data-nosnippet>84</a>    /// sees one tier vocabulary. Also the encoding [`set_floor`] stores, so
+<a href=#85 id=85 data-nosnippet>85</a>    /// changing these strings invalidates a set floor.
 <a href=#86 id=86 data-nosnippet>86</a>    </span><span class="kw">fn </span>label(<span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
 <a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">match </span><span class="self">self </span>{
 <a href=#88 id=88 data-nosnippet>88</a>            <span class="self">Self</span>::Capable =&gt; <span class="string">"strong"</span>,
@@ -162,25 +162,25 @@
 <a href=#162 id=162 data-nosnippet>162</a><span class="doccomment">/// `State.extra` key under which the turn's [`DecisionSource`] is recorded.
 <a href=#163 id=163 data-nosnippet>163</a></span><span class="kw">pub const </span>DECISION_SOURCE_KEY: <span class="kw-2">&amp;</span>str = <span class="string">"decision_source"</span>;
 <a href=#164 id=164 data-nosnippet>164</a>
-<a href=#165 id=165 data-nosnippet>165</a><span class="doccomment">/// `State.extra` key under which a held fall-open tier is recorded.
-<a href=#166 id=166 data-nosnippet>166</a></span><span class="kw">const </span>HELD_TIER_KEY: <span class="kw-2">&amp;</span>str = <span class="string">"held_tier"</span>;
+<a href=#165 id=165 data-nosnippet>165</a><span class="doccomment">/// `State.extra` key under which a fall-open floor is recorded.
+<a href=#166 id=166 data-nosnippet>166</a></span><span class="kw">const </span>FLOOR_KEY: <span class="kw-2">&amp;</span>str = <span class="string">"tier_floor"</span>;
 <a href=#167 id=167 data-nosnippet>167</a>
-<a href=#168 id=168 data-nosnippet>168</a><span class="doccomment">/// Sets the tier undecided turns fall open to, until [`release_tier`] drops it.
-<a href=#169 id=169 data-nosnippet>169</a></span><span class="kw">pub fn </span>hold_tier(state: <span class="kw-2">&amp;mut </span>State, tier: Tier) {
+<a href=#168 id=168 data-nosnippet>168</a><span class="doccomment">/// Sets the tier undecided turns fall open to, until [`clear_floor`] drops it.
+<a href=#169 id=169 data-nosnippet>169</a></span><span class="kw">pub fn </span>set_floor(state: <span class="kw-2">&amp;mut </span>State, tier: Tier) {
 <a href=#170 id=170 data-nosnippet>170</a>    state.extra.insert(
-<a href=#171 id=171 data-nosnippet>171</a>        HELD_TIER_KEY.to_string(),
+<a href=#171 id=171 data-nosnippet>171</a>        FLOOR_KEY.to_string(),
 <a href=#172 id=172 data-nosnippet>172</a>        StateValue::String(tier.label().to_string()),
 <a href=#173 id=173 data-nosnippet>173</a>    );
 <a href=#174 id=174 data-nosnippet>174</a>}
 <a href=#175 id=175 data-nosnippet>175</a>
 <a href=#176 id=176 data-nosnippet>176</a><span class="doccomment">/// Restores the picker's default tier.
-<a href=#177 id=177 data-nosnippet>177</a></span><span class="kw">pub fn </span>release_tier(state: <span class="kw-2">&amp;mut </span>State) {
-<a href=#178 id=178 data-nosnippet>178</a>    state.extra.remove(HELD_TIER_KEY);
+<a href=#177 id=177 data-nosnippet>177</a></span><span class="kw">pub fn </span>clear_floor(state: <span class="kw-2">&amp;mut </span>State) {
+<a href=#178 id=178 data-nosnippet>178</a>    state.extra.remove(FLOOR_KEY);
 <a href=#179 id=179 data-nosnippet>179</a>}
 <a href=#180 id=180 data-nosnippet>180</a>
-<a href=#181 id=181 data-nosnippet>181</a><span class="doccomment">/// The tier held for this session, if any.
-<a href=#182 id=182 data-nosnippet>182</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>held_tier(state: <span class="kw-2">&amp;</span>State) -&gt; <span class="prelude-ty">Option</span>&lt;Tier&gt; {
-<a href=#183 id=183 data-nosnippet>183</a>    <span class="kw">match </span>state.extra.get(HELD_TIER_KEY) {
+<a href=#181 id=181 data-nosnippet>181</a><span class="doccomment">/// The floor set for this session, if any.
+<a href=#182 id=182 data-nosnippet>182</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>current_floor(state: <span class="kw-2">&amp;</span>State) -&gt; <span class="prelude-ty">Option</span>&lt;Tier&gt; {
+<a href=#183 id=183 data-nosnippet>183</a>    <span class="kw">match </span>state.extra.get(FLOOR_KEY) {
 <a href=#184 id=184 data-nosnippet>184</a>        <span class="prelude-val">Some</span>(StateValue::String(label)) =&gt; Tier::from_label(label),
 <a href=#185 id=185 data-nosnippet>185</a>        <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
 <a href=#186 id=186 data-nosnippet>186</a>    }

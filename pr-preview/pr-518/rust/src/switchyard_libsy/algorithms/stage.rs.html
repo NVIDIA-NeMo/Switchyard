@@ -21,8 +21,8 @@
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="kw">super</span>::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">super</span>::util::prompts::{SystemPromptProcessor, TargetPrompts};
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span><span class="kw">super</span>::util::stage::{
-<a href=#24 id=24 data-nosnippet>24</a>    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets, Tier, held_tier,
-<a href=#25 id=25 data-nosnippet>25</a>    record_decision_source, record_routing_decision,
+<a href=#24 id=24 data-nosnippet>24</a>    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets, Tier,
+<a href=#25 id=25 data-nosnippet>25</a>    current_floor, record_decision_source, record_routing_decision,
 <a href=#26 id=26 data-nosnippet>26</a>};
 <a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span><span class="kw">super</span>::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 <a href=#28 id=28 data-nosnippet>28</a><span class="kw">use </span><span class="kw">crate</span>::core::algorithm::{Algorithm, Driver};
@@ -79,7 +79,7 @@
 <a href=#79 id=79 data-nosnippet>79</a>        _request: <span class="kw-2">&amp;mut </span>Request,
 <a href=#80 id=80 data-nosnippet>80</a>        _driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
 <a href=#81 id=81 data-nosnippet>81</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
-<a href=#82 id=82 data-nosnippet>82</a>        <span class="kw">let </span>tier = held_tier(state).unwrap_or(<span class="self">self</span>.default_tier);
+<a href=#82 id=82 data-nosnippet>82</a>        <span class="kw">let </span>tier = current_floor(state).unwrap_or(<span class="self">self</span>.default_tier);
 <a href=#83 id=83 data-nosnippet>83</a>        <span class="kw">let </span>target = <span class="self">self</span>.targets.name(tier).clone();
 <a href=#84 id=84 data-nosnippet>84</a>        <span class="prelude-val">Ok</span>((
 <a href=#85 id=85 data-nosnippet>85</a>            Classification::Scores(<span class="macro">vec!</span>[Score {
@@ -246,7 +246,7 @@
 <a href=#246 id=246 data-nosnippet>246</a>    };
 <a href=#247 id=247 data-nosnippet>247</a>
 <a href=#248 id=248 data-nosnippet>248</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#249 id=249 data-nosnippet>249</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::util::stage::{DECISION_SOURCE_KEY, hold_tier, release_tier};
+<a href=#249 id=249 data-nosnippet>249</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::util::stage::{DECISION_SOURCE_KEY, clear_floor, set_floor};
 <a href=#250 id=250 data-nosnippet>250</a>    <span class="kw">use </span><span class="kw">crate</span>::core::processor::{Event, Processor};
 <a href=#251 id=251 data-nosnippet>251</a>    <span class="kw">use </span><span class="kw">crate</span>::core::state::StateValue;
 <a href=#252 id=252 data-nosnippet>252</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, reply, test_drive};
@@ -505,8 +505,8 @@
 <a href=#505 id=505 data-nosnippet>505</a>                <span class="kw">let </span><span class="kw-2">mut </span>requests = <span class="self">self</span>.requests.lock();
 <a href=#506 id=506 data-nosnippet>506</a>                <span class="kw-2">*</span>requests += <span class="number">1</span>;
 <a href=#507 id=507 data-nosnippet>507</a>                <span class="kw">match </span><span class="kw-2">*</span>requests {
-<a href=#508 id=508 data-nosnippet>508</a>                    <span class="number">3 </span>=&gt; release_tier(state),
-<a href=#509 id=509 data-nosnippet>509</a>                    <span class="kw">_ </span>=&gt; hold_tier(state, Tier::Efficient),
+<a href=#508 id=508 data-nosnippet>508</a>                    <span class="number">3 </span>=&gt; clear_floor(state),
+<a href=#509 id=509 data-nosnippet>509</a>                    <span class="kw">_ </span>=&gt; set_floor(state, Tier::Efficient),
 <a href=#510 id=510 data-nosnippet>510</a>                }
 <a href=#511 id=511 data-nosnippet>511</a>            }
 <a href=#512 id=512 data-nosnippet>512</a>            <span class="prelude-val">Ok</span>(())
