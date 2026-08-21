@@ -10,23 +10,23 @@
 //!
 //! Signals do not decide every turn. An under-threshold turn abstains and falls
 //! through to the optional [`LlmTaskClassifier`] — the capability route's judge,
-//! joined in unchanged — and then to the picker's default tier. The judge is
-//! asked per turn and its verdict is never pinned to the session.
+//! joined in unchanged — and then to the picker's default tier, or to an
+//! override a decider ahead of stage set in its place.
 //!
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::fall_through::{DefaultTarget, FallThrough};
+use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
-    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
-    record_decision_source, record_routing_decision,
+    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets, Tier,
+    fall_open_tier, record_decision_source, record_routing_decision,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
-use crate::core::classifier::{Classification, Classifier};
+use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{ModelId, Request, Response};
@@ -62,6 +62,32 @@ impl Classifier<State> for SourceStamp {
             record_routing_decision(self.source, &winner.target);
         }
         Ok((classification, served))
+    }
+}
+
+/// Closes the cascade at zero confidence: a fallback, not a judgement.
+struct FallOpen {
+    targets: StageTargets,
+    default_tier: Tier,
+}
+
+#[async_trait]
+impl Classifier<State> for FallOpen {
+    async fn score(
+        &self,
+        state: &mut State,
+        _request: &mut Request,
+        _driver: Option<&Driver>,
+    ) -> Result<(Classification, Option<Response>)> {
+        let tier = fall_open_tier(state).unwrap_or(self.default_tier);
+        let target = self.targets.name(tier).clone();
+        Ok((
+            Classification::Scores(vec![Score {
+                target,
+                confidence: 0.0,
+            }]),
+            None,
+        ))
     }
 }
 
@@ -165,9 +191,11 @@ fn build_route(
     // The tiers are a fixed pair; their targets are whatever the deployment calls
     // them, and the classifier scores onto those names.
     let targets = StageTargets::new(capable.clone(), efficient.clone());
-    // The picker's mode fixes the fallback tier up front, so the terminal
-    // classifier is a constant rather than a per-turn lookup.
-    let fall_open = targets.name(config.mode.default_tier()).to_string();
+    let default_tier = config.mode.default_tier();
+    let fall_open = FallOpen {
+        targets: targets.clone(),
+        default_tier,
+    };
 
     let mut classifier = StageClassifier::new(targets, config.mode, config.confidence_threshold);
     if let Some(notes) = config.handoff_notes {
@@ -194,10 +222,9 @@ fn build_route(
             source: DecisionSource::LlmClassifier,
         }));
     }
-    // Nothing behind this, so the turn lands on the picker's default tier —
-    // including when the judge could not tell.
+    // Nothing behind this, so no turn is left unrouted.
     router = router.with_classifier(Arc::new(SourceStamp {
-        inner: Arc::new(DefaultTarget::new(fall_open)),
+        inner: Arc::new(fall_open),
         source: DecisionSource::FallOpen,
     }));
     // Runs on the post-decision hook, so it applies to the target the cascade
@@ -219,8 +246,8 @@ mod tests {
     };
 
     use super::*;
-    use crate::algorithms::util::stage::DECISION_SOURCE_KEY;
-    use crate::core::classifier::Score;
+    use crate::algorithms::util::stage::{DECISION_SOURCE_KEY, clear_fall_open, set_fall_open};
+    use crate::core::processor::{Event, Processor};
     use crate::core::state::StateValue;
     use crate::core::testing::{Serve, reply, test_drive};
     use switchyard_protocol::{Metadata, Response};
@@ -463,6 +490,64 @@ mod tests {
                 ..Default::default()
             }),
         }
+    }
+
+    /// Stands in for a decider ahead of stage: sets the override once, clears it
+    /// once, and leaves the turns between alone.
+    #[derive(Default)]
+    struct TierDecider {
+        requests: Mutex<u32>,
+    }
+
+    #[async_trait]
+    impl Processor<State> for TierDecider {
+        async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
+            if matches!(event, Event::Request(_)) {
+                let mut requests = self.requests.lock();
+                *requests += 1;
+                match *requests {
+                    1 => set_fall_open(state, Tier::Efficient),
+                    4 => clear_fall_open(state),
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_override_replaces_the_picker_default_and_leaves_the_signals_alone() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        // The picker would fall open to "strong"; the override says "weak".
+        let config = StageRouterConfig::new(PickerMode::CapableFirst, 0.5);
+        let route: Arc<dyn Algorithm> = Arc::new(
+            build_route(ModelId::from("strong"), ModelId::from("weak"), config)?
+                .with_processor(Arc::new(TierDecider::default())),
+        );
+
+        test_drive(route.clone(), turn_request(false), recorder.serve()).await?;
+        test_drive(route.clone(), turn_request(false), recorder.serve()).await?;
+        test_drive(route.clone(), turn_request(true), recorder.serve()).await?;
+        test_drive(route.clone(), turn_request(false), recorder.serve()).await?;
+
+        let routed = recorder.routed();
+        assert_eq!(
+            routed[0].target, "weak",
+            "an undecided turn takes the override"
+        );
+        assert_eq!(
+            routed[1].target, "weak",
+            "which outlives the turn that set it"
+        );
+        assert_eq!(
+            routed[2].target, "strong",
+            "a critical failure still reaches the signals"
+        );
+        assert_eq!(
+            routed[3].target, "strong",
+            "clearing restores the picker default"
+        );
+        Ok(())
     }
 
     #[tokio::test]
