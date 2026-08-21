@@ -689,8 +689,8 @@ mod tests {
         };
         let client = Arc::new(
             TranslatingLlmClient::new(&[
-                ModelConfig::new("weak", backend(), None),
-                ModelConfig::new("strong", backend(), None),
+                ModelConfig::new("weak", backend(), None, "weak"),
+                ModelConfig::new("strong", backend(), None, "strong"),
             ])
             .map_err(|error| LibsyError::external("building test client", error))?,
         );

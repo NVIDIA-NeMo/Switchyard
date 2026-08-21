@@ -157,6 +157,10 @@ impl ServerConfig {
                 target.id.clone(),
                 build_backend(&target.llm_client, client_config, &target.extra_body)?,
                 None,
+                target
+                    .upstream_model
+                    .clone()
+                    .unwrap_or_else(|| target.id.clone()),
             ));
         }
 
@@ -311,6 +315,11 @@ pub(crate) struct LlmClientConfig {
 #[serde(deny_unknown_fields)]
 pub(crate) struct TargetConfig {
     pub(crate) id: ModelId,
+    /// The model id written into upstream requests. Defaults to `id`, so existing
+    /// single-supplier configs are unaffected; set it when the same model is served
+    /// by multiple clients and each target needs its own unique routing `id`.
+    #[serde(default)]
+    pub(crate) upstream_model: Option<ModelId>,
     pub(crate) llm_client: String,
     #[serde(default)]
     pub(crate) extra_body: BTreeMap<String, Value>,

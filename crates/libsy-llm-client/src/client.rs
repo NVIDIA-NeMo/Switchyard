@@ -59,21 +59,29 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 /// pin a wire format, plus any `other_backends` reachable over additional formats.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
+    /// Lookup key — the name callers address this model by (e.g. a target id that
+    /// must be unique across a deployment).
     model_name: ModelId,
+    /// The model id written into upstream requests. May differ from `model_name`
+    /// when a target remaps the model en route to its backend.
+    wire_model: ModelId,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
 }
 
 impl ModelConfig {
     /// A model named `model_name` served by `default_backend`, optionally reachable
-    /// over additional wire formats via `other_backends`.
+    /// over additional wire formats via `other_backends`. Upstream requests carry
+    /// `wire_model`; pass the same name when no remap is wanted.
     pub fn new(
         model_name: impl Into<ModelId>,
         default_backend: Backend,
         other_backends: Option<Vec<Backend>>,
+        wire_model: impl Into<ModelId>,
     ) -> Self {
         Self {
             model_name: model_name.into(),
+            wire_model: wire_model.into(),
             default_backend,
             other_backends,
         }
@@ -165,14 +173,21 @@ impl TranslatingLlmClient {
             metadata,
             ..
         } = request;
-        llm_request.model = Some(model.to_string());
+        // Resolve the wire model through the config table so the upstream request
+        // carries the remapped name when one is configured.
+        let wire_model = self
+            .model_to_config
+            .get(model)
+            .map(|config| config.wire_model.clone())
+            .unwrap_or_else(|| model.clone());
+        llm_request.model = Some(wire_model.to_string());
         let http_response = self
             .send_encoded(
                 backend,
                 WireFormat::AnthropicMessages,
                 llm_request,
                 metadata.as_ref(),
-                model,
+                &wire_model,
                 UpstreamEndpoint::CountTokens,
             )
             .await?;
@@ -400,12 +415,17 @@ impl TranslatingLlmClient {
             .ok_or_else(|| LlmClientError::InvalidRequest {
                 message: "no model given".to_string(),
             })?;
-        llm_request.model = Some(model_id.to_string());
+        // The lookup key names the model for routing and response restamping; the
+        // wire model is what the upstream provider actually receives.
+        let config = self.model_to_config.get(&model_id);
+        let wire_model = config
+            .map(|config| config.wire_model.clone())
+            .unwrap_or_else(|| model_id.clone());
+        llm_request.model = Some(wire_model.to_string());
 
         let orig_format = metadata.as_ref().and_then(|m| m.wire_format);
         let wire_format = orig_format.unwrap_or(
-            self.model_to_config
-                .get(&model_id)
+            config
                 .map(|config| config.default_backend.wire_format())
                 .ok_or_else(|| LlmClientError::Configuration {
                     message: format!("no backend configured for model {model_id:?}"),
@@ -423,7 +443,7 @@ impl TranslatingLlmClient {
                 wire_format,
                 llm_request,
                 metadata.as_ref(),
-                &model_id,
+                &wire_model,
                 UpstreamEndpoint::Completion,
             )
             .await?;
@@ -889,6 +909,7 @@ mod tests {
             "gpt",
             Backend::OpenAiChat(config(base_url)),
             None,
+            "gpt",
         )]
     }
 
@@ -898,7 +919,12 @@ mod tests {
     ) -> Vec<ModelConfig> {
         let mut backend = config(base_url);
         backend.extra_body = extra_body;
-        vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(backend),
+            None,
+            "gpt",
+        )]
     }
 
     fn anthropic_map(base_url: &str) -> Vec<ModelConfig> {
@@ -906,6 +932,7 @@ mod tests {
             "claude",
             Backend::Anthropic(config(base_url)),
             None,
+            "claude",
         )]
     }
 
@@ -914,6 +941,7 @@ mod tests {
             "gpt",
             Backend::OpenAiChat(config_with_retries(base_url, max_retries)),
             None,
+            "gpt",
         )]
     }
 
@@ -1340,6 +1368,40 @@ mod tests {
             )
             .await?;
         // The body_partial_json matcher asserts the upstream saw model "gpt".
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wire_model_remaps_the_upstream_name()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        // The lookup key is a unique target id; the upstream must receive the bare
+        // model name it actually serves.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({"model": "deepseek-v4-flash"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1", "model": "deepseek-v4-flash",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let configs = vec![ModelConfig::new(
+            "deepseek-v4-flash@sensenova",
+            Backend::OpenAiChat(config(&format!("{}/v1", server.uri()))),
+            None,
+            "deepseek-v4-flash",
+        )];
+        let client = TranslatingLlmClient::new(&configs)?;
+        let response = client
+            .call_rewrite_model(
+                request_for(Some("deepseek-v4-flash@sensenova"), false),
+                Some(&ModelId::from("deepseek-v4-flash@sensenova")),
+            )
+            .await?;
+        // The body_partial_json matcher asserts the upstream saw the bare model.
         Ok(())
     }
 

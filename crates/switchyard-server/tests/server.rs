@@ -453,7 +453,7 @@ fn random_state_with_retries(
         .collect::<HashSet<_>>();
     let model_configs = target_models
         .into_iter()
-        .map(|model| ModelConfig::new(model, backend.clone(), None))
+        .map(|model| ModelConfig::new(model.clone(), backend.clone(), None, model))
         .collect::<Vec<_>>();
     let client: Arc<dyn RoutedLlmClient> = Arc::new(TranslatingLlmClient::new(&model_configs)?);
     let entries = routes
