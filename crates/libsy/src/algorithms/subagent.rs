@@ -64,14 +64,16 @@ impl SubagentRouter {
             });
         }
 
-        let mut subagent = FallThrough::new_with_state(config.targets).with_name("subagent");
-        match config.classify_trigger {
-            ClassifyTrigger::EveryRequest => {}
+        let mut subagent = match config.classify_trigger {
+            ClassifyTrigger::EveryRequest => {
+                FallThrough::new_with_state(config.targets).with_name("subagent")
+            }
             ClassifyTrigger::NewSession => {
                 let affinity = Arc::new(AffinityRouter::for_subagents());
-                subagent = subagent
+                FallThrough::new_with_state(config.targets)
+                    .with_name("subagent")
                     .with_processor(affinity.clone())
-                    .with_classifier(affinity);
+                    .with_classifier(affinity)
             }
             ClassifyTrigger::UserTurn => {
                 return Err(LibsyError::AlgorithmError {
@@ -79,7 +81,7 @@ impl SubagentRouter {
                         .to_string(),
                 });
             }
-        }
+        };
         subagent = subagent
             .with_classifier(Arc::new(SubagentGate::new(config.classifier)))
             .with_classifier(Arc::new(DefaultTarget::new(config.default_target)));

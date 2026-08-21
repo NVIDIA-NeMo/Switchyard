@@ -410,41 +410,26 @@ struct CustomClassifierRouteConfig {
     max_output_tokens: u64,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct LlmClassifierRouteConfig {
     classifier_target: String,
-    #[serde(default)]
     mode: Option<ClassifierMode>,
-    #[serde(default)]
     strong_target: Option<String>,
-    #[serde(default)]
     weak_target: Option<String>,
-    #[serde(default)]
     base_threshold: Option<f64>,
-    #[serde(default)]
     threshold_step: Option<f64>,
-    #[serde(default)]
     classify_trigger: ClassifyTrigger,
-    #[serde(default)]
     message_hash_fallback: bool,
-    #[serde(default)]
     recent_turn_window: Option<usize>,
-    #[serde(default)]
     prompt: Option<String>,
-    #[serde(default)]
     response_format_type: ClassifierResponseFormat,
     #[serde(default = "default_classifier_max_output_tokens")]
     max_output_tokens: u64,
-    #[serde(default)]
     escalation: Option<EscalationJudgeConfig>,
-    #[serde(default)]
     targets: Option<Vec<String>>,
-    #[serde(default)]
     default_target: Option<String>,
-    #[serde(default)]
     response_schema: Option<String>,
-    #[serde(default)]
     policy: Option<ClassifierPolicyConfig>,
 }
 
@@ -1043,18 +1028,13 @@ const fn default_max_retries() -> u32 {
 // Resolve nested policy once so every supported parent builds the same child route.
 fn build_subagent_router_config(
     route_name: &str,
-    config: Option<&SubagentRouteConfig>,
+    config: &SubagentRouteConfig,
     targets: &BTreeMap<String, ModelId>,
-) -> ServerResult<Option<SubagentRouterConfig>> {
-    let Some(config) = config else {
-        return Ok(None);
-    };
+) -> ServerResult<SubagentRouterConfig> {
     match config {
-        SubagentRouteConfig::Passthrough { target } => {
-            Ok(Some(SubagentRouterConfig::fixed_target(
-                resolve_target_model_id(route_name, target, targets)?,
-            )))
-        }
+        SubagentRouteConfig::Passthrough { target } => Ok(SubagentRouterConfig::fixed_target(
+            resolve_target_model_id(route_name, target, targets)?,
+        )),
         SubagentRouteConfig::LlmClassifier(config) => {
             let LlmClassifierModeConfig::Custom(config) = config.classifier_mode(route_name)?
             else {
@@ -1112,13 +1092,13 @@ fn build_subagent_router_config(
                     ))
                 })?,
             );
-            Ok(Some(SubagentRouterConfig {
+            Ok(SubagentRouterConfig {
                 targets: subagent_targets,
                 classifier,
                 default_target,
                 classify_trigger: config.classify_trigger,
                 message_hash_fallback: config.message_hash_fallback,
-            }))
+            })
         }
     }
 }
@@ -1129,9 +1109,10 @@ fn attach_subagent_router(
     config: Option<&SubagentRouteConfig>,
     targets: &BTreeMap<String, ModelId>,
 ) -> ServerResult<Arc<dyn Algorithm>> {
-    let Some(config) = build_subagent_router_config(route_name, config, targets)? else {
+    let Some(config) = config else {
         return Ok(parent);
     };
+    let config = build_subagent_router_config(route_name, config, targets)?;
     let algorithm = SubagentRouter::new(parent, config).map_err(|error| {
         ServerError::new(format!("route {route_name}: subagent routing: {error}"))
     })?;
@@ -1760,6 +1741,24 @@ classifier_magic = true
             (
                 VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 1.5"),
                 "base_threshold must be between 0 and 1",
+            ),
+            (
+                VALID_CONFIG.replace("classifier_target = \"classifier\"\n", ""),
+                "route references unknown target",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "classifier_target = \"classifier\"",
+                    "classifier_target = \"\"",
+                ),
+                "route references unknown target",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "classifier_target = \"classifier\"",
+                    "classifier_target = \"   \"",
+                ),
+                "route references unknown target",
             ),
             (
                 VALID_CONFIG.replace(
