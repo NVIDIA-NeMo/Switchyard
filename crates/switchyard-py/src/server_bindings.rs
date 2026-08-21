@@ -44,13 +44,11 @@ impl PyServer {
             .map_err(|error| ServerConfigError::new_err(error.to_string()))?;
         let caller_auth_by_model = state
             .models()
-            .map(|model| {
-                state
-                    .caller_auth_kind(model)
-                    .map(|kind| (model.to_string(), kind))
+            .map(|model| match state.caller_auth_kind(model) {
+                Some(kind) => (model.to_string(), Some(kind)),
+                None => (model.to_string(), None),
             })
-            .collect::<ServerResult<HashMap<_, _>>>()
-            .map_err(server_error)?;
+            .collect::<HashMap<_, _>>();
         let runtime = pyo3_async_runtimes::tokio::get_runtime();
         let server = {
             let _guard = runtime.enter();
