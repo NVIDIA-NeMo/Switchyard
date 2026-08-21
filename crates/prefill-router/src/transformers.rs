@@ -143,8 +143,7 @@ impl PrefillForward for TransformersForward {
                 .bind(py)
                 .call_method("extract_batch", (&request.prompts,), Some(&kwargs))
                 .map_err(|error| python_error("forward", error))?;
-            let output = extract_output(&result)?;
-            output.validate(request.prompts.len())
+            extract_output(&result, request)
         })
     }
 
@@ -159,26 +158,27 @@ impl PrefillForward for TransformersForward {
     }
 }
 
-fn extract_output(result: &Bound<'_, PyAny>) -> Result<ForwardOutput> {
+fn extract_output(result: &Bound<'_, PyAny>, request: &ForwardRequest) -> Result<ForwardOutput> {
     let item = |name| {
         result
             .get_item(name)
             .map_err(|error| python_error("result decoding", error))
     };
-    Ok(ForwardOutput {
-        hidden_last: item("hidden_last")?
+    ForwardOutput::parse(
+        request,
+        item("hidden_last")?
             .extract::<BTreeMap<usize, Vec<Vec<f32>>>>()
             .map_err(|error| python_error("result decoding", error))?,
-        hidden_mean: item("hidden_mean")?
+        item("hidden_mean")?
             .extract::<BTreeMap<usize, Vec<Vec<f32>>>>()
             .map_err(|error| python_error("result decoding", error))?,
-        n_layers: item("n_layers")?
+        item("n_layers")?
             .extract::<usize>()
             .map_err(|error| python_error("result decoding", error))?,
-        hidden_dim: item("hidden_dim")?
+        item("hidden_dim")?
             .extract::<usize>()
             .map_err(|error| python_error("result decoding", error))?,
-    })
+    )
 }
 
 #[cfg(test)]
@@ -234,7 +234,7 @@ mod tests {
                     true,
                 ),
             )?;
-            extract_output(&result)
+            extract_output(&result, &request)
                 .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
         })
         .map_err(|error| python_error("reference forward", error))?;
