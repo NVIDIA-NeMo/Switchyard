@@ -6,6 +6,7 @@ resolver = "3"
 members = [
     "crates/libsy",
     "crates/libsy-llm-client",
+    "crates/prefill-router",
     "crates/switchyard-py",
     "crates/protocol",
     "crates/switchyard-server",
