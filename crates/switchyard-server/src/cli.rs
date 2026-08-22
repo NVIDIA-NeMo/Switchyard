@@ -16,6 +16,27 @@ use switchyard_server::{
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 const DEFAULT_PORT: u16 = 4000;
 
+/// Default pidfile path used by `--detach` when `--pidfile` is omitted.
+///
+/// Uses a private runtime directory rather than the shared temporary
+/// directory, so the path is not a predictable world-writable location another
+/// user could pre-create (symlink / toctou) to hijack the recorded pid.
+pub(crate) fn default_pidfile() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let mut p = PathBuf::from(dir);
+        p.push("switchyard-server.pid");
+        return p;
+    }
+    // Fall back to a per-user private state dir (~/.local/state/switchyard),
+    // mirroring the debug-log location used elsewhere in the project.
+    let mut p = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
+    p.push(".local");
+    p.push("state");
+    p.push("switchyard");
+    p.push("switchyard-server.pid");
+    p
+}
+
 /// Command-line arguments accepted by the Rust server binary.
 #[derive(Debug, Parser)]
 #[command(
@@ -59,6 +80,14 @@ pub(crate) struct ServerArgs {
     /// TLS private-key path in PEM format.
     #[arg(long, requires = "tls_cert")]
     tls_key: Option<PathBuf>,
+
+    /// Detach into a new session and run in the background (Unix `setsid`).
+    #[arg(long)]
+    pub(crate) detach: bool,
+
+    /// Write the background process id to this file when `--detach` is set.
+    #[arg(long, value_name = "PATH", default_value_os_t = default_pidfile())]
+    pub(crate) pidfile: PathBuf,
 }
 
 impl ServerArgs {
