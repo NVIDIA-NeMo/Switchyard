@@ -12,7 +12,6 @@ use serde_json::{Value, json};
 use switchyard_protocol::{LlmResponseStreamEvent, ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
-    sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
@@ -401,46 +400,34 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
     Ok(())
 }
 
-// Verifies unsafe streamed tool IDs use the same reversible Anthropic-safe encoding.
+// Restores Anthropic-safe IDs before emitting OpenAI tool-call deltas.
 #[test]
-fn openai_chat_stream_tool_id_is_anthropic_safe() -> TestResult {
+fn anthropic_stream_tool_id_is_restored_for_openai_chat() -> TestResult {
     let engine = TranslationEngine::default();
     let mut state =
-        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiChat);
     let raw_id = "functions.list_skills:0";
-    let chunk = json!({
-        "id": "chatcmpl-test",
-        "object": "chat.completion.chunk",
-        "model": "moonshotai/kimi-k2",
-        "choices": [{
-            "index": 0,
-            "delta": {
-                "tool_calls": [{
-                    "index": 0,
-                    "id": raw_id,
-                    "type": "function",
-                    "function": {"name": "list_skills", "arguments": "{}"}
-                }]
-            },
-            "finish_reason": null
-        }]
+    let event = json!({
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+            "type": "tool_use",
+            "id": "sy64_ZnVuY3Rpb25zLmxpc3Rfc2tpbGxzOjA",
+            "name": "list_skills",
+            "input": {}
+        }
     });
 
-    let events = engine.translate_event(
+    let chunks = engine.translate_event(
         &mut state,
-        WireFormat::OpenAiChat,
         WireFormat::AnthropicMessages,
-        &chunk,
+        WireFormat::OpenAiChat,
+        &event,
     )?;
-    let Some(tool_start) = events.iter().find(|event| {
-        event["type"] == "content_block_start" && event["content_block"]["type"] == "tool_use"
-    }) else {
-        return Err("expected an Anthropic tool_use content block".into());
-    };
 
     assert_eq!(
-        tool_start["content_block"]["id"],
-        sanitize_anthropic_tool_use_id(raw_id)
+        chunks[0]["choices"][0]["delta"]["tool_calls"][0]["id"],
+        raw_id
     );
     Ok(())
 }

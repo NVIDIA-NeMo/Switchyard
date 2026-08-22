@@ -19,10 +19,10 @@ use crate::llm::{
     SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
-use crate::util::sanitize_anthropic_tool_use_id;
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response,
+    capture_request_preservation, capture_response_preservation, desanitize_anthropic_tool_use_id,
+    embed_preservation, exact_preserved_request, exact_preserved_response,
+    sanitize_anthropic_tool_use_id,
 };
 use crate::util::{
     json_string, push_lossy, stable_id, string_value, validate_request_capabilities,
@@ -589,7 +589,7 @@ fn decode_anthropic_content_block(
                 .get("id")
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
-                .map(ToOwned::to_owned)
+                .map(desanitize_anthropic_tool_use_id)
                 .unwrap_or_else(|| match &policy.deterministic_ids {
                     DeterministicIdPolicy::GenerateStable { prefix } => {
                         stable_id(prefix, generated_counter)
@@ -607,8 +607,8 @@ fn decode_anthropic_content_block(
             tool_call_id: block
                 .get("tool_use_id")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+                .map(desanitize_anthropic_tool_use_id)
+                .unwrap_or_default(),
             content: decode_tool_result_content(block.get("content").unwrap_or(&Value::Null)),
             is_error: block.get("is_error").and_then(Value::as_bool),
         })],

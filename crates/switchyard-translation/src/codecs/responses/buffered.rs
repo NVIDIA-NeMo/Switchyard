@@ -24,9 +24,9 @@ use crate::llm::{
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, desanitize_anthropic_tool_use_id,
-    embed_preservation, exact_preserved_request, exact_preserved_response, json_string, push_lossy,
-    stable_id, string_value, validate_request_capabilities,
+    capture_request_preservation, capture_response_preservation, embed_preservation,
+    exact_preserved_request, exact_preserved_response, json_string, push_lossy, stable_id,
+    string_value, validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Responses payloads.
@@ -997,13 +997,13 @@ fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
         })),
         ContentBlock::ToolCall(call) => Some(json!({
             "type": "function_call",
-            "call_id": desanitize_anthropic_tool_use_id(&call.id),
+            "call_id": call.id,
             "name": call.name,
             "arguments": json_string(&call.arguments),
         })),
         ContentBlock::ToolResult(result) => Some(json!({
             "type": "function_call_output",
-            "call_id": desanitize_anthropic_tool_use_id(&result.tool_call_id),
+            "call_id": result.tool_call_id,
             "output": text_from_blocks(&result.content, " "),
         })),
         _ => None,

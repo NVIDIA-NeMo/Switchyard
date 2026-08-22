@@ -286,12 +286,17 @@ fn anthropic_unknown_content_does_not_leak_into_responses_request_blocks() -> Te
 #[test]
 fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult {
     let engine = TranslationEngine::default();
+    let raw_id = "functions.list_skills:0";
     let body = json!({
         "model": "claude-sonnet-4-20250514",
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "72F"},
+                {
+                    "type": "tool_result",
+                    "tool_use_id": sanitize_anthropic_tool_use_id(raw_id),
+                    "content": "72F"
+                },
                 {"type": "text", "text": "Now summarize it."}
             ]
         }],
@@ -310,130 +315,10 @@ fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult
     assert_eq!(
         output["messages"],
         json!([
-            {"role": "tool", "tool_call_id": "toolu_1", "content": "72F"},
+            {"role": "tool", "tool_call_id": raw_id, "content": "72F"},
             {"role": "user", "content": "Now summarize it."}
         ])
     );
-    Ok(())
-}
-
-// Restores IDs sanitized on the Anthropic response leg before calling OpenAI Chat upstreams.
-#[test]
-fn anthropic_tool_ids_are_restored_for_openai_chat() -> TestResult {
-    let engine = TranslationEngine::default();
-    let raw_id = "functions.list_skills:0";
-    let upstream_response = json!({
-        "id": "chatcmpl-test",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "kimi-k2",
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": raw_id,
-                    "type": "function",
-                    "function": {"name": "list_skills", "arguments": "{}"}
-                }]
-            },
-            "finish_reason": "tool_calls"
-        }]
-    });
-    let anthropic_response = engine
-        .translate_response(
-            WireFormat::OpenAiChat,
-            WireFormat::AnthropicMessages,
-            &upstream_response,
-            &TranslationPolicy::default(),
-        )?
-        .body;
-    let safe_id = anthropic_response["content"]
-        .as_array()
-        .and_then(|content| content.iter().find(|block| block["type"] == "tool_use"))
-        .and_then(|block| block["id"].as_str())
-        .ok_or_else(|| format!("translated tool_use should have an ID: {anthropic_response}"))?;
-    assert_ne!(safe_id, raw_id);
-    let body = json!({
-        "model": "claude-sonnet-4-20250514",
-        "messages": [
-            {
-                "role": "assistant",
-                "content": [{
-                    "type": "tool_use",
-                    "id": safe_id,
-                    "name": "list_skills",
-                    "input": {}
-                }]
-            },
-            {
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": safe_id,
-                    "content": "done"
-                }]
-            }
-        ],
-        "max_tokens": 100
-    });
-
-    let output = engine
-        .translate_request(
-            WireFormat::AnthropicMessages,
-            WireFormat::OpenAiChat,
-            &body,
-            &TranslationPolicy::default(),
-        )?
-        .body;
-
-    assert_eq!(output["messages"][0]["tool_calls"][0]["id"], raw_id);
-    assert_eq!(output["messages"][1]["tool_call_id"], raw_id);
-    Ok(())
-}
-
-// Restores the same IDs for OpenAI Responses function calls and outputs.
-#[test]
-fn anthropic_tool_ids_are_restored_for_openai_responses() -> TestResult {
-    let engine = TranslationEngine::default();
-    let raw_id = "functions.list_skills:0";
-    let safe_id = sanitize_anthropic_tool_use_id(raw_id);
-    let body = json!({
-        "model": "claude-sonnet-4-20250514",
-        "messages": [
-            {
-                "role": "assistant",
-                "content": [{
-                    "type": "tool_use",
-                    "id": safe_id,
-                    "name": "list_skills",
-                    "input": {}
-                }]
-            },
-            {
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": safe_id,
-                    "content": "done"
-                }]
-            }
-        ],
-        "max_tokens": 100
-    });
-
-    let output = engine
-        .translate_request(
-            WireFormat::AnthropicMessages,
-            WireFormat::OpenAiResponses,
-            &body,
-            &TranslationPolicy::default(),
-        )?
-        .body;
-
-    assert_eq!(output["input"][0]["call_id"], raw_id);
-    assert_eq!(output["input"][1]["call_id"], raw_id);
     Ok(())
 }
 
@@ -2109,6 +1994,7 @@ fn responses_to_chat_preserves_tool_choice_when_tools_survive() -> TestResult {
 #[test]
 fn anthropic_tool_use_encodes_responses_arguments_as_json_string() -> TestResult {
     let engine = TranslationEngine::default();
+    let raw_id = "functions.list_skills:0";
     let body = json!({
         "model": "claude-sonnet",
         "messages": [
@@ -2117,7 +2003,7 @@ fn anthropic_tool_use_encodes_responses_arguments_as_json_string() -> TestResult
                 "role": "assistant",
                 "content": [{
                     "type": "tool_use",
-                    "id": "toolu_1",
+                    "id": sanitize_anthropic_tool_use_id(raw_id),
                     "name": "get_weather",
                     "input": {"city": "SF"}
                 }]
@@ -2143,6 +2029,7 @@ fn anthropic_tool_use_encodes_responses_arguments_as_json_string() -> TestResult
     let arguments = call["arguments"]
         .as_str()
         .ok_or("function_call arguments must be a JSON string")?;
+    assert_eq!(call["call_id"], raw_id);
     assert_eq!(
         serde_json::from_str::<Value>(arguments)?,
         json!({"city": "SF"})
