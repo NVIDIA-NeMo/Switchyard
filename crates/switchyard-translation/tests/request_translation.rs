@@ -732,13 +732,18 @@ fn responses_unknown_input_item_is_preserved_for_openai_chat() -> TestResult {
     Ok(())
 }
 
-// Responses accepts message-shaped input items without an explicit discriminator.
+// Responses accepts message-shaped input items without an explicit discriminator, and inline
+// system and developer items keep their roles instead of being demoted to user.
 #[test]
-fn responses_input_message_without_type_translates_normally() -> TestResult {
+fn responses_input_messages_translate_with_instruction_roles_intact() -> TestResult {
     let engine = TranslationEngine::default();
     let body = json!({
         "model": "gpt-4",
-        "input": [{"role": "user", "content": "hello"}]
+        "input": [
+            {"type": "message", "role": "system", "content": "Be terse."},
+            {"type": "message", "role": "developer", "content": "Return JSON only."},
+            {"role": "user", "content": "hello"}
+        ]
     });
 
     let output = engine
@@ -752,8 +757,43 @@ fn responses_input_message_without_type_translates_normally() -> TestResult {
 
     assert_eq!(
         output["messages"],
-        json!([{"role": "user", "content": "hello"}])
+        json!([
+            {"role": "system", "content": "Be terse."},
+            {"role": "developer", "content": "Return JSON only."},
+            {"role": "user", "content": "hello"}
+        ])
     );
+    Ok(())
+}
+
+// Inline instruction items must not detach pending reasoning from the assistant
+// turn that produced it.
+#[test]
+fn responses_inline_instruction_does_not_detach_reasoning() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": [
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "thinking..."}], "summary": []},
+            {"type": "message", "role": "system", "content": "Be terse."},
+            {"type": "message", "role": "assistant", "content": "hello"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["messages"].as_array().map(Vec::len), Some(2));
+    assert_eq!(output["messages"][0]["role"], "system");
+    assert_eq!(output["messages"][1]["role"], "assistant");
+    assert_eq!(output["messages"][1]["content"], "hello");
+    assert_eq!(output["messages"][1]["reasoning"], "thinking...");
     Ok(())
 }
 
