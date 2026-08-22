@@ -18,7 +18,7 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    AggLlmResponse, ContentBlock, LlmRequest, MediaSource, Message, OutputParams,
+    AggLlmResponse, ContentBlock, InstructionBlock, LlmRequest, MediaSource, Message, OutputParams,
     ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
     ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
@@ -82,11 +82,13 @@ impl FormatCodec for OpenAiResponsesCodec {
                 }],
             });
         }
-        request.messages = decode_responses_input(
+        let (messages, instructions) = decode_responses_input(
             body.get("input").unwrap_or(&Value::String(String::new())),
             &mut diagnostics,
             policy,
         )?;
+        request.messages = messages;
+        request.instructions.extend(instructions);
         let mut tool_namespaces = Map::new();
         request.tools = decode_responses_tools(body.get("tools"), &mut tool_namespaces);
         request.tool_choice = body
@@ -322,16 +324,23 @@ impl FormatCodec for OpenAiResponsesCodec {
     }
 }
 
-// Decodes Responses `input` into ordered normalized messages.
+/// Decodes Responses `input` into ordered normalized messages and inline
+/// instruction blocks.
+///
+/// Inline `system` and `developer` message items are returned as instruction
+/// blocks rather than conversation turns. Classifying them here, before any
+/// reasoning or tool-call state-machine transitions, prevents an instruction
+/// item from flushing pending reasoning or disturbing tool-call grouping.
 fn decode_responses_input(
     value: &Value,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
-) -> Result<Vec<Message>> {
+) -> Result<(Vec<Message>, Vec<InstructionBlock>)> {
     match value {
-        Value::String(text) => Ok(vec![Message::text(Role::User, text)]),
+        Value::String(text) => Ok((vec![Message::text(Role::User, text)], Vec::new())),
         Value::Array(items) => {
             let mut messages = Vec::new();
+            let mut instructions = Vec::new();
             let mut pending_tool_calls = Vec::new();
             let mut pending_tool_outputs = Vec::new();
             let mut deferred_messages = Vec::new();
@@ -365,8 +374,17 @@ fn decode_responses_input(
                             item.get("role").and_then(Value::as_str),
                             &format!("$.input[{index}].role"),
                         )?;
-                        let mut content =
+                        let content =
                             decode_responses_content(item.get("content").unwrap_or(&Value::Null));
+                        // Inline system and developer input items are instructions, not
+                        // conversation turns. Classify them before any state-machine
+                        // transitions so they do not flush pending reasoning or disturb
+                        // tool-call grouping.
+                        if matches!(role, Role::System | Role::Developer) {
+                            instructions.push(InstructionBlock { role, content });
+                            continue;
+                        }
+                        let mut content = content;
                         // Reasoning that precedes an assistant message belongs to
                         // that turn; fold it in so it never surfaces as its own
                         // (empty-looking) assistant message downstream.
@@ -519,7 +537,7 @@ fn decode_responses_input(
                     content: pending_reasoning,
                 });
             }
-            Ok(messages)
+            Ok((messages, instructions))
         }
         _ => Err(TranslationError::InvalidType {
             path: "$.input".to_string(),
@@ -528,7 +546,7 @@ fn decode_responses_input(
     }
 }
 
-// Places non-tool input items without breaking Responses tool-call adjacency.
+/// Places non-tool input items without breaking Responses tool-call adjacency.
 fn push_responses_non_tool_message(
     messages: &mut Vec<Message>,
     pending_tool_calls: &mut Vec<ToolCall>,
@@ -553,9 +571,9 @@ fn push_responses_non_tool_message(
     messages.push(message);
 }
 
-// Emits reasoning that cannot join an assistant turn as a standalone assistant
-// message at its original position. While tool calls are pending, the
-// reasoning belongs to the in-flight turn and stays pending for the flush.
+/// Emits reasoning that cannot join an assistant turn as a standalone assistant
+/// message at its original position. While tool calls are pending, the
+/// reasoning belongs to the in-flight turn and stays pending for the flush.
 fn flush_unattached_responses_reasoning(
     messages: &mut Vec<Message>,
     pending_tool_calls: &mut Vec<ToolCall>,
@@ -580,9 +598,9 @@ fn flush_unattached_responses_reasoning(
     );
 }
 
-// Flushes pending function calls and matching outputs while preserving adjacency.
-// Pending reasoning rides in the same assistant message as the tool calls so a
-// Codex reasoning + function_call turn stays one assistant turn downstream.
+/// Flushes pending function calls and matching outputs while preserving adjacency.
+/// Pending reasoning rides in the same assistant message as the tool calls so a
+/// Codex reasoning + function_call turn stays one assistant turn downstream.
 fn flush_responses_tool_block(
     messages: &mut Vec<Message>,
     pending_tool_calls: &mut Vec<ToolCall>,
