@@ -16,6 +16,13 @@ use switchyard_server::{
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 const DEFAULT_PORT: u16 = 4000;
 
+/// Default pidfile path used by `--detach` when `--pidfile` is omitted.
+pub(crate) fn default_pidfile() -> PathBuf {
+    let mut dir = std::env::temp_dir();
+    dir.push("switchyard-server.pid");
+    dir
+}
+
 /// Command-line arguments accepted by the Rust server binary.
 #[derive(Debug, Parser)]
 #[command(
@@ -59,6 +66,14 @@ pub(crate) struct ServerArgs {
     /// TLS private-key path in PEM format.
     #[arg(long, requires = "tls_cert")]
     tls_key: Option<PathBuf>,
+
+    /// Detach into a new session and run in the background (Unix `setsid`).
+    #[arg(long)]
+    pub(crate) detach: bool,
+
+    /// Write the background process id to this file when `--detach` is set.
+    #[arg(long, value_name = "PATH", default_value_os_t = default_pidfile())]
+    pub(crate) pidfile: PathBuf,
 }
 
 impl ServerArgs {

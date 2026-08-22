@@ -6,6 +6,7 @@
 use std::process::ExitCode;
 
 mod cli;
+mod daemon;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {
@@ -13,7 +14,17 @@ async fn main() -> ExitCode {
         eprintln!("failed to initialize observability: {error}");
         return ExitCode::FAILURE;
     }
-    let exit_code = match cli::run(cli::ServerArgs::parse_args()).await {
+    let args = cli::ServerArgs::parse_args();
+    // Detach must happen before the async runtime does significant work; the
+    // detached child re-parses args without `--detach` and serves normally.
+    if args.detach {
+        if let Err(error) = daemon::detach_into_background(&args.pidfile) {
+            eprintln!("failed to detach switchyard-server: {error}");
+            return ExitCode::FAILURE;
+        }
+        // Unreachable: detach_into_background exits the parent process.
+    }
+    let exit_code = match cli::run(args).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
