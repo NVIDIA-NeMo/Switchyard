@@ -17,10 +17,24 @@ const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 const DEFAULT_PORT: u16 = 4000;
 
 /// Default pidfile path used by `--detach` when `--pidfile` is omitted.
+///
+/// Uses a private runtime directory rather than the shared temporary
+/// directory, so the path is not a predictable world-writable location another
+/// user could pre-create (symlink / toctou) to hijack the recorded pid.
 pub(crate) fn default_pidfile() -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    dir.push("switchyard-server.pid");
-    dir
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let mut p = PathBuf::from(dir);
+        p.push("switchyard-server.pid");
+        return p;
+    }
+    // Fall back to a per-user private state dir (~/.local/state/switchyard),
+    // mirroring the debug-log location used elsewhere in the project.
+    let mut p = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
+    p.push(".local");
+    p.push("state");
+    p.push("switchyard");
+    p.push("switchyard-server.pid");
+    p
 }
 
 /// Command-line arguments accepted by the Rust server binary.
