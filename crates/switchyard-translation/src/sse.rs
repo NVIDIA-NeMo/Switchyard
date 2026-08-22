@@ -61,7 +61,7 @@ pub(crate) fn is_terminal_event(format: WireFormat, event: &Value) -> bool {
                 .get("type")
                 .or_else(|| event.get("event"))
                 .and_then(Value::as_str),
-            Some("response.completed" | "response.incomplete")
+            Some("response.completed" | "response.incomplete" | "response.failed")
         ),
     }
 }
@@ -206,6 +206,14 @@ mod tests {
         assert!(is_terminal_event(
             WireFormat::OpenAiResponses,
             &json!({"type": "response.completed"})
+        ));
+        assert!(is_terminal_event(
+            WireFormat::OpenAiResponses,
+            &json!({"type": "response.incomplete"})
+        ));
+        assert!(is_terminal_event(
+            WireFormat::OpenAiResponses,
+            &json!({"type": "response.failed"})
         ));
         assert!(!is_terminal_event(
             WireFormat::OpenAiChat,

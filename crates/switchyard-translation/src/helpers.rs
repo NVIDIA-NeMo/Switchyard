@@ -744,6 +744,40 @@ mod tests {
     }
 
     #[test]
+    fn responses_failed_before_done_remains_a_stream_error() -> Result<(), BoxError> {
+        let sse = b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"upstream failed\"}}}\n\ndata: [DONE]\n\n".to_vec();
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
+        let events = decode_all(bytes, WireFormat::OpenAiResponses)?;
+
+        let Some(LlmResponseChunk::StreamError { message }) =
+            events.first().and_then(|event| event.normalized().first())
+        else {
+            return Err("expected response.failed to decode as StreamError".into());
+        };
+        assert_eq!(message, "upstream failed");
+
+        let chunks: LlmResponseStream = stream::iter(
+            events
+                .into_iter()
+                .map(Ok::<LlmResponseStreamEvent, LlmClientError>),
+        )
+        .boxed();
+        let replayed =
+            block_on(encode_stream(chunks, WireFormat::OpenAiResponses, None)?.collect::<Vec<_>>())
+                .into_iter()
+                .collect::<Result<Vec<Value>, BoxError>>()?;
+
+        assert_eq!(
+            replayed,
+            vec![json!({
+                "type": "response.failed",
+                "response": {"error": {"message": "upstream failed"}}
+            })]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn decode_stream_decodes_crlf_delimited_frames() -> Result<(), BoxError> {
         // CRLF framing: blank lines are `\r\n\r\n` and the bare `\r` must not
         // block the frame boundary.
