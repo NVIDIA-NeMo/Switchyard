@@ -11,7 +11,7 @@ use crate::codecs::stream::{
     target_message_id_or_source_message_id, target_model_or_source_model,
 };
 use crate::format::{FormatId, WireFormat};
-use crate::util::sanitize_anthropic_tool_use_id;
+use crate::util::{desanitize_anthropic_tool_use_id, sanitize_anthropic_tool_use_id};
 
 /// Stream codec for Anthropic Messages events.
 pub struct AnthropicMessagesStreamCodec;
@@ -336,7 +336,7 @@ fn decode_anthropic_content_block_start(object: &Map<String, Value>) -> Vec<LlmR
                 id: block
                     .get("id")
                     .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
+                    .map(desanitize_anthropic_tool_use_id),
                 name: block
                     .get("name")
                     .and_then(Value::as_str)

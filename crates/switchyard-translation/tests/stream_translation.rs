@@ -400,6 +400,38 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
     Ok(())
 }
 
+// Restores Anthropic-safe IDs before emitting OpenAI tool-call deltas.
+#[test]
+fn anthropic_stream_tool_id_is_restored_for_openai_chat() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiChat);
+    let raw_id = "functions.list_skills:0";
+    let event = json!({
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+            "type": "tool_use",
+            "id": "sy64_ZnVuY3Rpb25zLmxpc3Rfc2tpbGxzOjA",
+            "name": "list_skills",
+            "input": {}
+        }
+    });
+
+    let chunks = engine.translate_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &event,
+    )?;
+
+    assert_eq!(
+        chunks[0]["choices"][0]["delta"]["tool_calls"][0]["id"],
+        raw_id
+    );
+    Ok(())
+}
+
 // A mixed chunk must emit reasoning before text, matching the buffered decoder.
 #[test]
 fn openai_chat_mixed_reasoning_and_content_stream_in_reasoning_first_order() -> TestResult {
