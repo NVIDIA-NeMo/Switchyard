@@ -165,6 +165,8 @@ crates/protocol/                    # provider-neutral protocol types
 crates/switchyard-server/           # native HTTP server and TOML config
 crates/switchyard-translation/      # wire-format codecs
 crates/switchyard-py/               # libsy and server PyO3 bindings
+crates/switchyard-skill-distillation/  # skill-distillation records and port traits
+crates/switchyard-soak/             # release-candidate soak tester
 
 tests/                              # Unit tests (pytest)
 ```
@@ -236,8 +238,8 @@ cargo test --workspace
 - **Type hints**: throughout. `py.typed` marker present; mypy runs strict.
 - **Async**: async-only. If you need sync, use `asyncio.run()`.
 - **Testing**: `respx` for HTTP mocking, `pytest-mock` for general mocking. `asyncio_mode = "auto"` — no `@pytest.mark.asyncio` needed.
-- **Rust**: Panicking calls such as `panic!()`, `unwrap()` and `.except()` are not allowed in production source code. Propagate errors with `?`. They are allowed in tests.
-  return typed errors, or match explicitly in tests so failures stay intentional and visible.
+- **Rust**: Panicking calls such as `panic!()`, `unwrap()`, and `.expect()` are not allowed in production source code (they are allowed in tests).
+  Propagate errors with `?` — return typed errors, or match explicitly in tests so failures stay intentional and visible.
 - **Comments**: For Rust changes, add concise comments for module/file intent, public structs/enums,
   public methods, private helpers with non-obvious behavior, and tests that encode important
   behavior. Prefer one-line comments when enough. Add block comments before complex validation,
