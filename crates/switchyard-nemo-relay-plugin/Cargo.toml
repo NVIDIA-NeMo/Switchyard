@@ -16,15 +16,13 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-async-channel.workspace = true
-async-trait.workspace = true
 futures-util.workspace = true
 http.workspace = true
 nemo-relay-plugin.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-switchyard-libsy.workspace = true
 switchyard-llm-client.workspace = true
 switchyard-protocol.workspace = true
+switchyard-runner.workspace = true
 switchyard-translation.workspace = true
 tokio.workspace = true

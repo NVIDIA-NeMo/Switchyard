@@ -8,20 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **NeMo Relay native plugin** — a dynamically loaded integration that runs
-  libsy's weighted-random, LLM-classifier, escalation, and stage-router
-  algorithms in process while Switchyard owns provider HTTP dispatch,
-  credentials, translation, retries, and fallback. Managed calls require NeMo
-  Relay 0.7 or newer and do not depend on `switchyard-server`. Target bindings
-  accept non-secret `extra_body` provider defaults, preserved requests are
-  re-encoded after routing mutations, and synthetic Relay gateway identities do
-  not become shared router session state.
+- **NeMo Relay native plugin** — a dynamically loaded integration that loads
+  Switchyard's standard TOML deployment and executes its named routes in
+  process. Managed calls require NeMo Relay 0.8.0 or newer; unknown models use
+  Relay's continuation unchanged.
 
-- **NeMo Relay routing-model usage marks** — classifier judges, escalation
-  judges and discarded weak candidates, and failed routing candidates now emit
-  `switchyard.routing.llm_call` ATOF marks with normalized token usage and
-  latency. The final serving call remains represented only by Relay's outer LLM
-  lifecycle event to prevent double-counting.
+- **NeMo Relay routing marks** — routing-model usage, measured routing
+  overhead, and selected-model decisions are emitted as ATOF marks. The final
+  serving call remains represented only by Relay's outer LLM lifecycle event to
+  prevent double-counting.
 
 - **Advisor-gate routing** — new `advisor` route type pairing the serving
   executor with a stronger judge-only advisor that reviews terminal turns:

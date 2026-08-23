@@ -1,20 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeMap, HashMap};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use futures_util::{StreamExt, stream};
+use futures_util::{Stream, StreamExt};
 use nemo_relay_plugin::{Json, LlmRequest as RelayRequest};
 use serde_json::{Map, json};
-use switchyard_libsy::{Algorithm, LibsyError};
-use switchyard_llm_client::{ClientRouter, LlmCallObservation, RunObservation, RunObserver, run};
-use switchyard_protocol::{
-    LlmClientError, LlmResponse, Metadata, ModelId, Request, Response, WireFormat,
-};
+use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
+use switchyard_protocol::{LlmResponse, Metadata, Request, Response, WireFormat};
+use switchyard_runner::{Route, Runner};
 use switchyard_translation::{TranslationEngine, encode_stream};
 
-use crate::config::{PreparedTargetBinding, SwitchyardConfig, protocol_from_call};
+use crate::config::SwitchyardConfig;
 use crate::translation;
 
 #[derive(Debug)]
@@ -24,32 +22,32 @@ pub(crate) struct RoutingMark {
     pub(crate) metadata: Json,
 }
 
-#[derive(Debug)]
-pub(crate) enum StreamMessage {
-    Mark(RoutingMark),
-    Event(Json),
+pub(crate) type ReturnedEventStream = Pin<Box<dyn Stream<Item = Result<Json, String>> + Send>>;
+
+pub(crate) struct Execution<T> {
+    pub(crate) result: Result<T, String>,
+    pub(crate) marks: Vec<RoutingMark>,
 }
 
 pub(crate) struct SwitchyardRuntime {
-    algorithm: Arc<dyn Algorithm>,
-    targets: BTreeMap<String, PreparedTargetBinding>,
-    default_targets: BTreeMap<WireFormat, String>,
+    runner: Runner,
     translation: TranslationEngine,
 }
 
 impl SwitchyardRuntime {
     pub(crate) fn new(config: SwitchyardConfig) -> Result<Self, String> {
-        let prepared = config.prepare()?;
         Ok(Self {
-            algorithm: prepared.algorithm,
-            targets: prepared.targets,
-            default_targets: prepared.default_targets,
+            runner: config.load_runner()?,
             translation: TranslationEngine::default(),
         })
     }
 
-    pub(crate) fn managed_protocol(&self, name: &str) -> Option<WireFormat> {
-        protocol_from_call(name).filter(|protocol| self.default_targets.contains_key(protocol))
+    pub(crate) fn manages(&self, request: &Request) -> bool {
+        request
+            .llm_request
+            .model
+            .as_deref()
+            .is_some_and(|model| self.runner.route(model).is_some())
     }
 
     pub(crate) fn decode_request(
@@ -71,8 +69,6 @@ impl SwitchyardRuntime {
         if relay_gateway_placeholder {
             metadata.session_id = None;
         }
-        // Keep identity/routing metadata, but target clients deliberately clear
-        // these caller headers before HTTP dispatch.
         metadata.http_headers = Some(headers);
         metadata.wire_format = Some(inbound);
         Ok(Request {
@@ -86,289 +82,155 @@ impl SwitchyardRuntime {
         &self,
         inbound: WireFormat,
         request: Request,
-        marks: &mut Vec<RoutingMark>,
-    ) -> Result<Json, String> {
-        let metadata = identity_metadata(request.metadata.as_ref());
-        self.mark(
-            marks,
-            "switchyard.routing.requested",
-            json!({"algorithm": self.algorithm.name(), "attempt": 1}),
-            &metadata,
-        );
-        let result = self
-            .drive(request.clone(), 1, marks, &metadata)
-            .await
-            .and_then(|response| {
-                finalize_buffered_response(&self.translation, inbound, response)
-                    .map_err(|source| LibsyError::client_call("return_to_agent", source))
-            });
-        match result {
-            Ok(response) => Ok(response),
-            Err(failure) => {
-                self.mark(
-                    marks,
-                    "switchyard.routing.error",
-                    failure_mark_data(1, &failure),
-                    &metadata,
-                );
-                let response = self
-                    .fallback_response(inbound, request, marks, &metadata)
-                    .await?;
-                finalize_buffered_response(&self.translation, inbound, response)
-                    .map_err(|error| public_response_failure("trusted fallback response", &error))
+    ) -> Execution<Json> {
+        let mut execution = self.execute(request).await;
+        if let Ok(response) = execution.result {
+            execution.result = finalize_buffered_response(&self.translation, inbound, response);
+            if execution.result.is_err() {
+                self.error_mark(&mut execution.marks, "response_finalization", None);
             }
         }
+        execution
     }
 
     pub(crate) async fn execute_stream(
         &self,
         inbound: WireFormat,
         request: Request,
-        output: &async_channel::Sender<StreamMessage>,
-    ) -> Result<(), String> {
-        let metadata = identity_metadata(request.metadata.as_ref());
-        let mut marks = Vec::new();
-        self.mark(
-            &mut marks,
-            "switchyard.routing.requested",
-            json!({"algorithm": self.algorithm.name(), "attempt": 1}),
-            &metadata,
-        );
-        let (response, mut fallback_used) =
-            match self.drive(request.clone(), 1, &mut marks, &metadata).await {
-                Ok(response) => (response, false),
-                Err(failure) => {
-                    self.mark(
-                        &mut marks,
-                        "switchyard.routing.error",
-                        failure_mark_data(1, &failure),
-                        &metadata,
-                    );
-                    let fallback = self
-                        .fallback_response(inbound, request.clone(), &mut marks, &metadata)
-                        .await;
-                    send_marks(output, &mut marks).await?;
-                    (fallback?, true)
-                }
+    ) -> Execution<ReturnedEventStream> {
+        let mut execution = self.execute(request).await;
+        if let Ok(response) = execution.result {
+            execution.result = returned_events(response, inbound);
+            if execution.result.is_err() {
+                self.error_mark(&mut execution.marks, "response_finalization", None);
+            }
+        }
+        execution
+    }
+
+    async fn execute(&self, request: Request) -> Execution<Response> {
+        let Some(route) = self.route(&request) else {
+            return Execution {
+                result: Err("Switchyard has no route for this request model".into()),
+                marks: Vec::new(),
             };
-        send_marks(output, &mut marks).await?;
-
-        let mut events = match returned_events(response, inbound).await {
-            Ok(events) => events,
-            Err(failure) if !fallback_used => {
-                self.mark(
-                    &mut marks,
-                    "switchyard.routing.error",
-                    failure_mark_data(1, &failure),
-                    &metadata,
-                );
-                fallback_used = true;
-                let fallback = self
-                    .fallback_response(inbound, request.clone(), &mut marks, &metadata)
-                    .await;
-                send_marks(output, &mut marks).await?;
-                let fallback = fallback?;
-                returned_events(fallback, inbound)
-                    .await
-                    .map_err(|error| public_libsy_failure("trusted fallback stream", &error))?
-            }
-            Err(failure) => {
-                return Err(public_libsy_failure("trusted fallback stream", &failure));
-            }
         };
-
-        let mut committed = false;
-        while let Some(item) = events.next().await {
-            match item {
-                Ok(event) => {
-                    send_event(output, event).await?;
-                    committed = true;
-                }
-                Err(failure) if !fallback_used && !committed => {
-                    self.mark(
-                        &mut marks,
-                        "switchyard.routing.error",
-                        failure_mark_data(1, &failure),
-                        &metadata,
-                    );
-                    let fallback = self
-                        .fallback_response(inbound, request.clone(), &mut marks, &metadata)
-                        .await;
-                    send_marks(output, &mut marks).await?;
-                    let fallback = fallback?;
-                    let mut fallback = returned_events(fallback, inbound)
-                        .await
-                        .map_err(|error| public_libsy_failure("trusted fallback stream", &error))?;
-                    while let Some(item) = fallback.next().await {
-                        let event = item.map_err(|error| {
-                            public_libsy_failure("trusted fallback stream", &error)
-                        })?;
-                        send_event(output, event).await?;
-                    }
-                    return Ok(());
-                }
-                Err(failure) if !committed => {
-                    return Err(public_libsy_failure("trusted fallback stream", &failure));
-                }
-                Err(failure) => {
-                    self.mark(
-                        &mut marks,
-                        "switchyard.routing.error",
-                        failure_mark_data(1, &failure),
-                        &metadata,
-                    );
-                    send_marks(output, &mut marks).await?;
-                    return Err(public_libsy_failure(
-                        "Switchyard stream failed after response commitment",
-                        &failure,
-                    ));
-                }
-            }
+        let metadata = identity_metadata(request.metadata.as_ref());
+        let mut marks = vec![RoutingMark {
+            name: "switchyard.routing.requested".into(),
+            data: json!({"algorithm": route.algorithm_name()}),
+            metadata: metadata.clone(),
+        }];
+        if let Err(error) = route.check_caller_format(metadata_wire_format(&request)) {
+            self.error_mark(&mut marks, "caller_format", None);
+            return Execution {
+                result: Err(format!("Switchyard caller format is incompatible: {error}")),
+                marks,
+            };
         }
-        if committed {
-            Ok(())
-        } else {
-            Err("Switchyard response stream produced no caller events".into())
-        }
-    }
-
-    async fn drive(
-        &self,
-        request: Request,
-        attempt: u32,
-        marks: &mut Vec<RoutingMark>,
-        mark_metadata: &Json,
-    ) -> Result<Response, LibsyError> {
         let observations = Arc::new(Mutex::new(Vec::new()));
-        let observed_calls = observations.clone();
+        let observed = Arc::clone(&observations);
         let observer: RunObserver = Arc::new(move |observation| {
-            if let RunObservation::LlmCall(call) = observation {
-                observed_calls
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .push(call);
-            }
+            observed
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(observation);
         });
-        let clients = ClientRouter::new(
-            self.targets
-                .iter()
-                .map(|(name, target)| (ModelId::from(name.as_str()), target.client.clone()))
-                .collect::<HashMap<_, _>>(),
-        );
-        match run(self.algorithm.clone(), clients, request, Some(observer)).await {
-            Ok((selected_model_id, response)) => {
-                self.emit_decision(marks, &selected_model_id, attempt, mark_metadata);
-                self.emit_routing_llm_calls(
+        match route.execute(request, Some(observer)).await {
+            Ok(output) => {
+                self.emit_observations(&mut marks, take_observations(&observations), &metadata);
+                marks.push(RoutingMark {
+                    name: "switchyard.routing.decision".into(),
+                    data: json!({
+                        "algorithm": route.algorithm_name(),
+                        "selected_model": output.selected_model,
+                    }),
+                    metadata,
+                });
+                Execution {
+                    result: Ok(output.response),
                     marks,
-                    take_observed_calls(&observations),
-                    attempt,
-                    mark_metadata,
-                );
-                Ok(response)
+                }
             }
-            Err(error) => {
-                self.emit_routing_llm_calls(
+            Err(_) => {
+                self.emit_observations(&mut marks, take_observations(&observations), &metadata);
+                self.error_mark(&mut marks, "route_execution", None);
+                Execution {
+                    result: Err("Switchyard route execution failed".into()),
                     marks,
-                    take_observed_calls(&observations),
-                    attempt,
-                    mark_metadata,
-                );
-                Err(error)
+                }
             }
         }
     }
 
-    async fn fallback_response(
+    fn route(&self, request: &Request) -> Option<&Route> {
+        request
+            .llm_request
+            .model
+            .as_deref()
+            .and_then(|model| self.runner.route(model))
+    }
+
+    fn emit_observations(
         &self,
-        inbound: WireFormat,
-        request: Request,
         marks: &mut Vec<RoutingMark>,
+        observations: Vec<RunObservation>,
         metadata: &Json,
-    ) -> Result<Response, String> {
-        let target_name = self.default_target(inbound)?;
-        let target = self.target(target_name)?;
-        self.mark(
-            marks,
-            "switchyard.routing.fallback",
-            json!({"selected_target": target_name}),
-            metadata,
-        );
-        target
-            .client
-            .call(request)
-            .await
-            .map_err(|error| public_client_failure("trusted fallback", &error))
+    ) {
+        let mut call_index = 0;
+        for observation in observations {
+            match observation {
+                RunObservation::LlmCall(call) => {
+                    call_index += 1;
+                    self.routing_call_mark(marks, call, call_index, metadata);
+                }
+                RunObservation::RoutingOverhead(duration) => marks.push(RoutingMark {
+                    name: "switchyard.routing.overhead".into(),
+                    data: json!({"latency_ms": duration.as_secs_f64() * 1_000.0}),
+                    metadata: metadata.clone(),
+                }),
+                RunObservation::AnswerCall(_) => {}
+            }
+        }
     }
 
-    fn target(&self, name: &str) -> Result<&PreparedTargetBinding, String> {
-        self.targets
-            .get(name)
-            .ok_or_else(|| format!("libsy selected unknown target {name:?}"))
-    }
-
-    fn default_target(&self, protocol: WireFormat) -> Result<&str, String> {
-        self.default_targets
-            .get(&protocol)
-            .map(String::as_str)
-            .ok_or_else(|| format!("managed protocol {protocol} has no default target"))
-    }
-
-    fn mark(&self, marks: &mut Vec<RoutingMark>, name: &str, data: Json, metadata: &Json) {
+    fn routing_call_mark(
+        &self,
+        marks: &mut Vec<RoutingMark>,
+        call: LlmCallObservation,
+        call_index: usize,
+        metadata: &Json,
+    ) {
         marks.push(RoutingMark {
-            name: name.to_string(),
-            data,
+            name: "switchyard.routing.llm_call".into(),
+            data: json!({
+                "call_index": call_index,
+                "selected_model": call.selected_model,
+                "call_role": "routing",
+                "outcome": if call.is_success { "ok" } else { "error" },
+                "latency_ms": call.duration.as_secs_f64() * 1_000.0,
+                "usage": call.usage,
+            }),
             metadata: metadata.clone(),
         });
     }
 
-    fn emit_decision(
-        &self,
-        marks: &mut Vec<RoutingMark>,
-        selected_model_id: &ModelId,
-        attempt: u32,
-        metadata: &Json,
-    ) {
-        self.mark(
-            marks,
-            "switchyard.routing.decision",
-            json!({
-                "algorithm": self.algorithm.name(),
-                "attempt": attempt,
-                "selected_target": selected_model_id,
-            }),
+    fn error_mark(&self, marks: &mut Vec<RoutingMark>, failure_kind: &str, metadata: Option<&Json>) {
+        let metadata = metadata.cloned().unwrap_or_else(|| {
+            marks
+                .first()
+                .map(|mark| mark.metadata.clone())
+                .unwrap_or_else(|| Json::Object(Map::new()))
+        });
+        marks.push(RoutingMark {
+            name: "switchyard.routing.error".into(),
+            data: json!({"failure_kind": failure_kind}),
             metadata,
-        );
-    }
-
-    fn emit_routing_llm_calls(
-        &self,
-        marks: &mut Vec<RoutingMark>,
-        calls: Vec<LlmCallObservation>,
-        attempt: u32,
-        metadata: &Json,
-    ) {
-        for (index, call) in calls.into_iter().enumerate() {
-            self.mark(
-                marks,
-                "switchyard.routing.llm_call",
-                json!({
-                    "algorithm": self.algorithm.name(),
-                    "attempt": attempt,
-                    "call_index": index + 1,
-                    "selected_target": call.selected_model,
-                    "call_role": "routing",
-                    "outcome": if call.is_success { "ok" } else { "error" },
-                    "latency_ms": call.duration.as_secs_f64() * 1_000.0,
-                    "usage": call.usage,
-                    "contributes_to_routing_overhead": true,
-                }),
-                metadata,
-            );
-        }
+        });
     }
 }
 
-fn take_observed_calls(observations: &Mutex<Vec<LlmCallObservation>>) -> Vec<LlmCallObservation> {
+fn take_observations(observations: &Mutex<Vec<RunObservation>>) -> Vec<RunObservation> {
     std::mem::take(
         &mut *observations
             .lock()
@@ -376,148 +238,35 @@ fn take_observed_calls(observations: &Mutex<Vec<LlmCallObservation>>) -> Vec<Llm
     )
 }
 
-async fn send_marks(
-    output: &async_channel::Sender<StreamMessage>,
-    marks: &mut Vec<RoutingMark>,
-) -> Result<(), String> {
-    for mark in marks.drain(..) {
-        output
-            .send(StreamMessage::Mark(mark))
-            .await
-            .map_err(|_| "Relay cancelled the Switchyard response stream".to_string())?;
-    }
-    Ok(())
+fn metadata_wire_format(request: &Request) -> WireFormat {
+    request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.wire_format)
+        .expect("decoded Relay requests always carry a wire format")
 }
-
-async fn send_event(
-    output: &async_channel::Sender<StreamMessage>,
-    event: Json,
-) -> Result<(), String> {
-    output
-        .send(StreamMessage::Event(event))
-        .await
-        .map_err(|_| "Relay cancelled the Switchyard response stream".to_string())
-}
-
-type ReturnedEventStream =
-    std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Json, LibsyError>> + Send>>;
 
 fn finalize_buffered_response(
     translation_engine: &TranslationEngine,
     inbound: WireFormat,
     response: Response,
-) -> Result<Json, LlmClientError> {
+) -> Result<Json, String> {
     let LlmResponse::Agg(response) = response.llm_response else {
-        return Err(LlmClientError::InvalidResponse {
-            source: Box::new(std::io::Error::other(
-                "libsy returned a stream for a buffered request",
-            )),
-        });
+        return Err("Switchyard returned a stream for a buffered request".into());
     };
     translation::encode_response(translation_engine, inbound, &response)
-        .map_err(LlmClientError::ResponseTranslation)
 }
 
-async fn returned_events(
-    response: Response,
-    inbound: WireFormat,
-) -> Result<ReturnedEventStream, LibsyError> {
+fn returned_events(response: Response, inbound: WireFormat) -> Result<ReturnedEventStream, String> {
     let chunks = match response.llm_response {
         LlmResponse::Agg(response) => response.into_stream(),
-        LlmResponse::Stream(mut chunks) => {
-            let Some(first) = chunks.next().await else {
-                return Err(LibsyError::client_call(
-                    "return_to_agent",
-                    LlmClientError::InvalidResponse {
-                        source: Box::new(std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "provider returned an empty stream",
-                        )),
-                    },
-                ));
-            };
-            Box::pin(stream::once(async move { first }).chain(chunks))
-        }
+        LlmResponse::Stream(chunks) => chunks,
     };
     let events = encode_stream(chunks, inbound, None)
-        .map_err(|error| LibsyError::client_call("return_to_agent", error))?;
+        .map_err(|error| format!("Switchyard response stream setup failed: {error}"))?;
     Ok(Box::pin(events.map(|item| {
-        item.map_err(|source| match source.downcast::<LlmClientError>() {
-            Ok(source) => LibsyError::client_call("return_to_agent", *source),
-            Err(source) => LibsyError::client_call(
-                "return_to_agent",
-                LlmClientError::ResponseTranslation(source.to_string()),
-            ),
-        })
+        item.map_err(|error| format!("Switchyard response stream failed: {error}"))
     })))
-}
-
-fn failure_mark_data(attempt: u32, failure: &LibsyError) -> Json {
-    let mut data = Map::from_iter([("attempt".into(), Json::from(attempt))]);
-    match failure {
-        LibsyError::ClientCall {
-            source: LlmClientError::UpstreamHttp { status, .. },
-            ..
-        } => {
-            data.insert("failure_kind".into(), Json::from("http"));
-            data.insert("http_status".into(), Json::from(status.as_u16()));
-        }
-        LibsyError::ClientCall { source, .. } => {
-            data.insert("failure_kind".into(), Json::from("non_http"));
-            data.insert(
-                "non_http_kind".into(),
-                Json::from(client_error_label(source)),
-            );
-        }
-        _ => {
-            data.insert("failure_kind".into(), Json::from("algorithm"));
-        }
-    }
-    Json::Object(data)
-}
-
-fn client_error_label(error: &LlmClientError) -> &'static str {
-    match error {
-        LlmClientError::InvalidRequest { .. } => "invalid_request",
-        LlmClientError::RequestTranslation(_) => "request_translation",
-        LlmClientError::RequestEncoding(_) => "request_encoding",
-        LlmClientError::ResponseTranslation(_) => "response_translation",
-        LlmClientError::Configuration { .. } => "configuration",
-        LlmClientError::Transport { .. } => "transport",
-        LlmClientError::Timeout { .. } => "timeout",
-        LlmClientError::ContextWindowExceeded { .. } => "context_window_exceeded",
-        LlmClientError::UpstreamHttp { .. } => "http",
-        LlmClientError::InvalidResponse { .. } => "invalid_response",
-        LlmClientError::Ffi { .. } => "ffi",
-        LlmClientError::General(_) => "general",
-        _ => "unknown",
-    }
-}
-
-fn public_libsy_failure(prefix: &str, error: &LibsyError) -> String {
-    match error {
-        LibsyError::ClientCall { source, .. } => public_client_failure(prefix, source),
-        _ => format!("{prefix}: Switchyard algorithm failure"),
-    }
-}
-
-fn public_response_failure(prefix: &str, error: &LlmClientError) -> String {
-    match error {
-        LlmClientError::InvalidResponse { .. } => format!("{prefix}: invalid response"),
-        LlmClientError::ResponseTranslation(_) => {
-            format!("{prefix}: response translation failure")
-        }
-        _ => format!("{prefix}: response finalization failure"),
-    }
-}
-
-fn public_client_failure(prefix: &str, error: &LlmClientError) -> String {
-    match error {
-        LlmClientError::UpstreamHttp { status, .. } => {
-            format!("{prefix}: provider returned HTTP {status}")
-        }
-        _ => format!("{prefix}: provider {} failure", client_error_label(error)),
-    }
 }
 
 fn string_headers(headers: &Map<String, Json>) -> http::HeaderMap {
@@ -549,4 +298,46 @@ fn identity_metadata(metadata: Option<&Metadata>) -> Json {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use switchyard_llm_client::ClientRouter;
+    use switchyard_protocol::{ModelId, text_request};
+    use switchyard_runner::{AlgorithmSpec, ModelCapabilities};
+
+    use super::*;
+
+    fn runtime_for(model: &str) -> SwitchyardRuntime {
+        let algorithm = AlgorithmSpec::Noop {}
+            .build("relay", &BTreeMap::new())
+            .expect("noop route should build");
+        let route = Route::new(
+            algorithm,
+            ClientRouter::new(HashMap::new()),
+            None,
+            ModelCapabilities::default(),
+            None,
+            Vec::new(),
+        );
+        SwitchyardRuntime {
+            runner: Runner::new(vec![(ModelId::from(model), route)]),
+            translation: TranslationEngine::default(),
+        }
+    }
+
+    #[test]
+    fn only_configured_route_models_are_managed() {
+        let runtime = runtime_for("switchyard");
+        let configured = Request {
+            llm_request: text_request(Some("switchyard".into()), "hello"),
+            ..Request::default()
+        };
+        let other = Request {
+            llm_request: text_request(Some("other".into()), "hello"),
+            ..Request::default()
+        };
+
+        assert!(runtime.manages(&configured));
+        assert!(!runtime.manages(&other));
+    }
+}
