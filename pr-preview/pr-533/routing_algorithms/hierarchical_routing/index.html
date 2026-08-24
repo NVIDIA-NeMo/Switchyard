@@ -1199,7 +1199,8 @@
 <h1 id="hierarchical-routing">Hierarchical Routing<a class="headerlink" href="#hierarchical-routing" title="Permanent link">&para;</a></h1>
 <p>A routing strategy for stacking other algorithms in a hierarchy. An algorithm
 higher in the stack can set the configuration of the one below it before handing
-off, so the two decide together rather than one deciding alone.</p>
+off, so each algorithm is used where its evidence is strongest instead of one
+deciding everything.</p>
 <p>Today one pairing is supported: an LLM classifier sets a stage router's <code>picker</code>,
 the tier it defaults to when its own signals are not confident.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
