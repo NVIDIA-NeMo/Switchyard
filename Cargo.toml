@@ -36,7 +36,7 @@ http = "1"
 httpdate = "1"
 jsonschema = { version = "0.49.4", default-features = false }
 jsonptr = { version = "0.8.1", default-features = false, features = ["std", "json", "resolve"] }
-nemo-relay-plugin = { git = "https://github.com/NVIDIA/NeMo-Relay.git", rev = "ca08901629e6058c2d5d65cc7708ec5264073d7b" }
+nemo-relay-plugin = { git = "https://github.com/NVIDIA/NeMo-Relay.git", tag = "0.8.0-rc.2" }
 parking_lot = "0.12"
 rand = "0.10"
 regex = "1"
