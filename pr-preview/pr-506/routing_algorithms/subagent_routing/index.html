@@ -1078,9 +1078,9 @@
 
 
 <h1 id="sub-agent-aware-routing">Sub-Agent-Aware Routing<a class="headerlink" href="#sub-agent-aware-routing" title="Permanent link">&para;</a></h1>
-<p>Sub-agent-aware routing keeps parent-agent traffic on one target while routing
-delegated sub-agent work across separate targets. Current support is available
-through the <code>passthrough</code> route's optional <code>subagent_classifier</code> table.</p>
+<p>Sub-agent-aware routing leaves parent-agent traffic with its configured routing
+algorithm while routing delegated sub-agent work separately. It is available on
+<code>passthrough</code> and <code>stage_router</code> routes through the optional <code>subagents</code> table.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[llm_clients.openrouter]</span>
@@ -1112,31 +1112,33 @@ through the <code>passthrough</code> route's optional <code>subagent_classifier<
 </span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="n">tool_calling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="n">reasoning</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>
-</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a><span class="k">[routes.agent.subagent_classifier]</span>
-</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span>
-</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;worker&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;reviewer&quot;</span><span class="p">]</span>
-</span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a><span class="n">default_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;worker&quot;</span>
-</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a><span class="n">classify_trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;new_session&quot;</span>
-</span><span id="__span-0-37"><a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a><span class="n">max_output_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">64</span>
-</span><span id="__span-0-38"><a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
-</span><span id="__span-0-39"><a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a><span class="s2">Select exactly one target for the delegated task.</span>
-</span><span id="__span-0-40"><a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>
-</span><span id="__span-0-41"><a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a><span class="s2">- Select &quot;reviewer&quot; for code review, critique, auditing, or correctness analysis.</span>
-</span><span id="__span-0-42"><a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a><span class="s2">- Select &quot;worker&quot; for implementation, research, explanation, and other delegated work.</span>
-</span><span id="__span-0-43"><a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>
-</span><span id="__span-0-44"><a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a><span class="s2">Return only JSON matching the response schema.</span>
-</span><span id="__span-0-45"><a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a><span class="s2">&quot;&quot;&quot;</span>
-</span><span id="__span-0-46"><a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a><span class="n">response_schema</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&#39;&#39;</span>
-</span><span id="__span-0-47"><a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a><span class="s1">{</span>
-</span><span id="__span-0-48"><a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a><span class="s1">  &quot;type&quot;: &quot;object&quot;,</span>
-</span><span id="__span-0-49"><a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a><span class="s1">  &quot;properties&quot;: {</span>
-</span><span id="__span-0-50"><a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a><span class="s1">    &quot;target&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;worker&quot;, &quot;reviewer&quot;]}</span>
-</span><span id="__span-0-51"><a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a><span class="s1">  },</span>
-</span><span id="__span-0-52"><a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a><span class="s1">  &quot;required&quot;: [&quot;target&quot;],</span>
-</span><span id="__span-0-53"><a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a><span class="s1">  &quot;additionalProperties&quot;: false</span>
-</span><span id="__span-0-54"><a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a><span class="s1">}</span>
-</span><span id="__span-0-55"><a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a><span class="s1">&#39;&#39;&#39;</span>
-</span><span id="__span-0-56"><a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a><span class="n">policy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">type</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;target_selector&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">selector</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;/target&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a><span class="k">[routes.agent.subagents]</span>
+</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
+</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
+</span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span>
+</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;worker&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;reviewer&quot;</span><span class="p">]</span>
+</span><span id="__span-0-37"><a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a><span class="n">default_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;worker&quot;</span>
+</span><span id="__span-0-38"><a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a><span class="n">classify_trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;new_session&quot;</span>
+</span><span id="__span-0-39"><a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a><span class="n">max_output_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">64</span>
+</span><span id="__span-0-40"><a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-0-41"><a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a><span class="s2">Select exactly one target for the delegated task.</span>
+</span><span id="__span-0-42"><a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>
+</span><span id="__span-0-43"><a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a><span class="s2">- Select &quot;reviewer&quot; for code review, critique, auditing, or correctness analysis.</span>
+</span><span id="__span-0-44"><a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a><span class="s2">- Select &quot;worker&quot; for implementation, research, explanation, and other delegated work.</span>
+</span><span id="__span-0-45"><a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>
+</span><span id="__span-0-46"><a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a><span class="s2">Return only JSON matching the response schema.</span>
+</span><span id="__span-0-47"><a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-0-48"><a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a><span class="n">response_schema</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&#39;&#39;</span>
+</span><span id="__span-0-49"><a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a><span class="s1">{</span>
+</span><span id="__span-0-50"><a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a><span class="s1">  &quot;type&quot;: &quot;object&quot;,</span>
+</span><span id="__span-0-51"><a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a><span class="s1">  &quot;properties&quot;: {</span>
+</span><span id="__span-0-52"><a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a><span class="s1">    &quot;target&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;worker&quot;, &quot;reviewer&quot;]}</span>
+</span><span id="__span-0-53"><a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a><span class="s1">  },</span>
+</span><span id="__span-0-54"><a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a><span class="s1">  &quot;required&quot;: [&quot;target&quot;],</span>
+</span><span id="__span-0-55"><a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a><span class="s1">  &quot;additionalProperties&quot;: false</span>
+</span><span id="__span-0-56"><a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a><span class="s1">}</span>
+</span><span id="__span-0-57"><a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a><span class="s1">&#39;&#39;&#39;</span>
+</span><span id="__span-0-58"><a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a><span class="n">policy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">type</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;target_selector&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">selector</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;/target&quot;</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
 <p>Set <code>OPENROUTER_API_KEY</code>, save the configuration as <code>routes.toml</code>, and validate it
 before starting the server:</p>
@@ -1149,11 +1151,31 @@ the prompt supplied by the parent and selects one configured target. With
 <code>classify_trigger = "new_session"</code>, Switchyard reuses that decision for later
 requests from the same <code>session + agent</code> identity. Use <code>every_request</code> to
 classify each delegated request. <code>user_turn</code> is not supported for sub-agent
-routing. Harness-maintenance requests continue to the parent target.</p>
+routing. Harness-maintenance requests continue through the parent route.</p>
+<p>To use Stage Router for parent traffic, replace the <code>[routes.agent]</code> table in the
+example with the following. The nested <code>[routes.agent.subagents]</code> classifier is
+unchanged.</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[routes.agent]</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;agent&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;stage_router&quot;</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;reviewer&quot;</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;worker&quot;</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">picker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;efficient_first&quot;</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">confidence_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.7</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">context_window</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">400000</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">tool_calling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">reasoning</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span></code></pre></div>
 <p>Clients must still request the route ID (<code>agent</code> above). An explicit model name
 that is not registered as a route is rejected before sub-agent classification.
 <code>message_hash_fallback</code> is not supported for sub-agent routing because affinity
 requires harness-provided child identity.</p>
+<p>To send every delegated sub-agent request to one fixed target without calling a
+classifier, replace the <code>subagents</code> table above with:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[routes.agent.subagents]</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;passthrough&quot;</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;worker&quot;</span>
+</span></code></pre></div>
 
 
 
