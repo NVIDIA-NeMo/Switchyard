@@ -83,10 +83,7 @@ impl SwitchyardRuntime {
         inbound: WireFormat,
         request: Request,
     ) -> Execution<Json> {
-        let Execution {
-            result,
-            mut marks,
-        } = self.execute(request).await;
+        let Execution { result, mut marks } = self.execute(request).await;
         let (result, finalization_failed) = match result {
             Ok(response) => {
                 let result = finalize_buffered_response(&self.translation, inbound, response);
@@ -106,10 +103,7 @@ impl SwitchyardRuntime {
         inbound: WireFormat,
         request: Request,
     ) -> Execution<ReturnedEventStream> {
-        let Execution {
-            result,
-            mut marks,
-        } = self.execute(request).await;
+        let Execution { result, mut marks } = self.execute(request).await;
         let (result, finalization_failed) = match result {
             Ok(response) => {
                 let result = returned_events(response, inbound);
@@ -231,7 +225,12 @@ impl SwitchyardRuntime {
         });
     }
 
-    fn error_mark(&self, marks: &mut Vec<RoutingMark>, failure_kind: &str, metadata: Option<&Json>) {
+    fn error_mark(
+        &self,
+        marks: &mut Vec<RoutingMark>,
+        failure_kind: &str,
+        metadata: Option<&Json>,
+    ) {
         let metadata = metadata.cloned().unwrap_or_else(|| {
             marks
                 .first()

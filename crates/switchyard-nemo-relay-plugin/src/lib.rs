@@ -122,7 +122,10 @@ fn parse_config(plugin_config: &Map<String, Json>) -> Result<SwitchyardConfig, S
 fn emit_marks(runtime: &PluginRuntime, marks: Vec<RoutingMark>) {
     for mark in marks {
         if let Err(error) = runtime.emit_mark(&mark.name, Some(&mark.data), Some(&mark.metadata)) {
-            eprintln!("Switchyard could not emit routing mark {:?}: {error}", mark.name);
+            eprintln!(
+                "Switchyard could not emit routing mark {:?}: {error}",
+                mark.name
+            );
         }
     }
 }
