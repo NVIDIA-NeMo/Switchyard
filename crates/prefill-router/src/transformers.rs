@@ -39,6 +39,8 @@ impl TransformersForwardConfig {
 /// Embedded Python Transformers implementation of [`PrefillForward`].
 pub struct TransformersForward {
     extractor: Py<PyAny>,
+    model: String,
+    loaded: bool,
 }
 
 impl TransformersForward {
@@ -70,10 +72,12 @@ impl TransformersForward {
                 )
                 .map_err(|error| python_error("configuration", error))?;
             let extractor = class
-                .call((config.model,), Some(&kwargs))
+                .call((config.model.as_str(),), Some(&kwargs))
                 .map_err(|error| python_error("construction", error))?;
             Ok(Self {
                 extractor: extractor.unbind(),
+                model: config.model,
+                loaded: false,
             })
         })
     }
@@ -106,6 +110,17 @@ fn add_venv_site_packages(py: Python<'_>) -> PyResult<()> {
 impl PrefillForward for TransformersForward {
     fn forward(&mut self, request: &ForwardRequest) -> Result<ForwardOutput> {
         Python::attach(|py| {
+            if !self.loaded {
+                let device = self
+                    .extractor
+                    .bind(py)
+                    .call_method0("_ensure_loaded")
+                    .and_then(|value| value.extract::<String>())
+                    .map_err(|error| python_error("model loading", error))?;
+                tracing::info!(model = %self.model, %device, "prefill model loaded");
+                self.loaded = true;
+            }
+
             let kwargs = PyDict::new(py);
             let template_json = serde_json::to_string(&request.chat_template_kwargs)
                 .map_err(|error| crate::PrefillRouterError::InvalidResult(error.to_string()))?;
@@ -118,7 +133,7 @@ impl PrefillForward for TransformersForward {
                 .map_err(|error| python_error("forward configuration", error))?;
             match &request.layers {
                 LayerSelection::UpperHalf => kwargs
-                    .set_item("extract_layers", py.None())
+                    .set_item("extract_layers", "upper_half")
                     .map_err(|error| python_error("forward configuration", error))?,
                 LayerSelection::All => kwargs
                     .set_item("extract_layers", "all")
@@ -153,6 +168,7 @@ impl PrefillForward for TransformersForward {
                 .bind(py)
                 .call_method0("unload")
                 .map_err(|error| python_error("unload", error))?;
+            self.loaded = false;
             Ok(())
         })
     }

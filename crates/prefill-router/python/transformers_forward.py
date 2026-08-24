@@ -5,16 +5,10 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
-
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
 def _detect_device(torch: Any) -> str:
-    override = os.environ.get("ROUTER_DEVICE", "").lower()
-    if override in ("cpu", "cuda", "mps"):
-        return override
     if torch.cuda.is_available():
         return "cuda"
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -41,9 +35,9 @@ class TransformersForward:
         self.n_layers = 0
         self.hidden_dim = 0
 
-    def _ensure_loaded(self) -> None:
+    def _ensure_loaded(self) -> str:
         if self._model is not None:
-            return
+            return str(self._model.device)
 
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -51,18 +45,17 @@ class TransformersForward:
         self._torch = torch
         device = self._device_override or _detect_device(torch)
         dtype = torch.float32 if device == "cpu" else torch.bfloat16
-        cache_dir = self._cache_dir or os.environ.get("HF_HUB_CACHE")
 
         self._tokenizer = AutoTokenizer.from_pretrained(
             self._model_path,
-            cache_dir=cache_dir,
+            cache_dir=self._cache_dir,
         )
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
         load_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
-            "cache_dir": cache_dir,
+            "cache_dir": self._cache_dir,
         }
         if device != "cpu":
             load_kwargs["device_map"] = "auto"
@@ -74,13 +67,14 @@ class TransformersForward:
         self._model.eval()
         self.n_layers = self._model.config.num_hidden_layers
         self.hidden_dim = self._model.config.hidden_size
+        return str(self._model.device)
 
     def extract_batch(
         self,
         prompts: list[str],
         *,
         chat_template_kwargs: dict[str, Any] | None = None,
-        extract_layers: list[int] | str | None = None,
+        extract_layers: list[int] | str = "upper_half",
         pooling_modes: list[str] | None = None,
         batch_size: int = 4,
         max_length: int = 2048,
@@ -90,7 +84,7 @@ class TransformersForward:
 
         if extract_layers == "all":
             layers = list(range(self.n_layers))
-        elif extract_layers is None:
+        elif extract_layers == "upper_half":
             layers = list(range(self.n_layers // 2, self.n_layers))
         else:
             layers = [int(layer) for layer in extract_layers]
