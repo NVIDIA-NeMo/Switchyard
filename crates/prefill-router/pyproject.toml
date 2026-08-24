@@ -6,8 +6,9 @@ name = "prefill-router-tests"
 version = "0.0.0"
 requires-python = ">=3.10"
 dependencies = [
+    "numpy>=1.26",
     "torch>=2.0",
-    "transformers>=4.45",
+    "transformers>=5.0",
 ]
 
 [dependency-groups]

@@ -34,9 +34,9 @@ pub struct ForwardRequest {
     pub prompts: Vec<String>,
     /// Extra keyword arguments passed to the tokenizer's chat template.
     pub chat_template_kwargs: serde_json::Map<String, serde_json::Value>,
-    /// Hidden-state layers to extract.
+    /// Reference-compatible direct hidden-state indexes to extract.
     pub layers: LayerSelection,
-    /// Pooling modes to calculate for every requested layer.
+    /// Pooling modes to calculate for every requested hidden-state index.
     pub pooling: Vec<Pooling>,
     /// Maximum number of prompts in each model forward pass.
     pub batch_size: usize,
@@ -56,15 +56,47 @@ impl ForwardRequest {
             max_length: 2_048,
         }
     }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.prompts.is_empty() {
+            return Err(PrefillRouterError::InvalidRequest(
+                "at least one prompt is required".to_string(),
+            ));
+        }
+        if self.batch_size == 0 {
+            return Err(PrefillRouterError::InvalidRequest(
+                "batch_size must be greater than zero".to_string(),
+            ));
+        }
+        if self.max_length == 0 {
+            return Err(PrefillRouterError::InvalidRequest(
+                "max_length must be greater than zero".to_string(),
+            ));
+        }
+        if self.pooling.is_empty() {
+            return Err(PrefillRouterError::InvalidRequest(
+                "at least one pooling mode is required".to_string(),
+            ));
+        }
+        if matches!(&self.layers, LayerSelection::Selected(layers) if layers.is_empty()) {
+            return Err(PrefillRouterError::InvalidRequest(
+                "at least one hidden-state index is required".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
-/// Hidden-state layers requested from the encoder.
+/// Reference-compatible direct indexes into Transformers hidden states.
+///
+/// Index zero is the embedding output. To preserve parity with the reference
+/// extractor, valid indexes stop before the final transformer-block output.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum LayerSelection {
-    /// Extract the upper half of the encoder layers.
+    /// Extract the upper half of the reference-compatible indexes.
     #[default]
     UpperHalf,
-    /// Extract every encoder layer.
+    /// Extract every reference-compatible index.
     All,
     /// Extract the listed direct hidden-state indexes in order.
     Selected(Vec<usize>),
@@ -97,7 +129,7 @@ pub struct ForwardOutput {
     hidden_last: BTreeMap<usize, Vec<Vec<f32>>>,
     /// Mean-pooled vectors keyed by direct hidden-state index.
     hidden_mean: BTreeMap<usize, Vec<Vec<f32>>>,
-    /// Number of transformer layers reported by the model.
+    /// Transformer layer count used as the direct-index upper bound.
     n_layers: usize,
     /// Width of each hidden-state vector.
     hidden_dim: usize,
@@ -161,17 +193,17 @@ impl ForwardOutput {
         })
     }
 
-    /// Returns last-token vectors keyed by hidden-state layer.
+    /// Returns last-token vectors keyed by direct hidden-state index.
     pub fn hidden_last(&self) -> &BTreeMap<usize, Vec<Vec<f32>>> {
         &self.hidden_last
     }
 
-    /// Returns mean-pooled vectors keyed by hidden-state layer.
+    /// Returns mean-pooled vectors keyed by direct hidden-state index.
     pub fn hidden_mean(&self) -> &BTreeMap<usize, Vec<Vec<f32>>> {
         &self.hidden_mean
     }
 
-    /// Returns the number of transformer layers reported by the model.
+    /// Returns the transformer layer count used as the direct-index upper bound.
     pub const fn n_layers(&self) -> usize {
         self.n_layers
     }
@@ -224,9 +256,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_parser_requires_every_requested_pooling_and_layer() {
+    fn validates_requests_and_outputs() {
+        assert!(matches!(
+            ForwardRequest::new(Vec::new()).validate(),
+            Err(PrefillRouterError::InvalidRequest(_))
+        ));
+
         let mut request = ForwardRequest::new(vec!["test prompt".to_string()]);
+        request.batch_size = 0;
+        assert!(matches!(
+            request.validate(),
+            Err(PrefillRouterError::InvalidRequest(_))
+        ));
+        request.batch_size = 1;
+        request.max_length = 0;
+        assert!(matches!(
+            request.validate(),
+            Err(PrefillRouterError::InvalidRequest(_))
+        ));
+        request.max_length = 1;
+        request.pooling.clear();
+        assert!(matches!(
+            request.validate(),
+            Err(PrefillRouterError::InvalidRequest(_))
+        ));
+        request.pooling = vec![Pooling::Last, Pooling::Mean];
+        request.layers = LayerSelection::Selected(Vec::new());
+        assert!(matches!(
+            request.validate(),
+            Err(PrefillRouterError::InvalidRequest(_))
+        ));
         request.layers = LayerSelection::Selected(vec![0, 1]);
+        request.validate().expect("request should be valid");
 
         let pooled = || BTreeMap::from([(0, vec![vec![0.0, 1.0]]), (1, vec![vec![2.0, 3.0]])]);
         let output = ForwardOutput::parse(&request, pooled(), pooled(), 2, 2)

@@ -7,6 +7,10 @@ use thiserror::Error;
 /// Errors produced while extracting prefill features.
 #[derive(Debug, Error)]
 pub enum PrefillRouterError {
+    /// The caller supplied an invalid prefill request.
+    #[error("invalid prefill request: {0}")]
+    InvalidRequest(String),
+
     /// The embedded Transformers implementation failed.
     #[error("Transformers {operation} failed: {source}")]
     Python {

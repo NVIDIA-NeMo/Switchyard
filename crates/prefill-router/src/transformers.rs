@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::env;
+use std::mem::size_of;
 use std::path::PathBuf;
 
 use pyo3::ffi::c_str;
@@ -109,6 +110,7 @@ fn add_venv_site_packages(py: Python<'_>) -> PyResult<()> {
 
 impl PrefillForward for TransformersForward {
     fn forward(&mut self, request: &ForwardRequest) -> Result<ForwardOutput> {
+        request.validate()?;
         Python::attach(|py| {
             if !self.loaded {
                 let device = self
@@ -180,21 +182,69 @@ fn extract_output(result: &Bound<'_, PyAny>, request: &ForwardRequest) -> Result
             .get_item(name)
             .map_err(|error| python_error("result decoding", error))
     };
+    let n_layers = item("n_layers")?
+        .extract::<usize>()
+        .map_err(|error| python_error("result decoding", error))?;
+    let hidden_dim = item("hidden_dim")?
+        .extract::<usize>()
+        .map_err(|error| python_error("result decoding", error))?;
+    if n_layers == 0 || hidden_dim == 0 {
+        return Err(crate::PrefillRouterError::InvalidResult(
+            "model dimensions must be non-zero".to_string(),
+        ));
+    }
+
     ForwardOutput::parse(
         request,
-        item("hidden_last")?
-            .extract::<BTreeMap<usize, Vec<Vec<f32>>>>()
-            .map_err(|error| python_error("result decoding", error))?,
-        item("hidden_mean")?
-            .extract::<BTreeMap<usize, Vec<Vec<f32>>>>()
-            .map_err(|error| python_error("result decoding", error))?,
-        item("n_layers")?
-            .extract::<usize>()
-            .map_err(|error| python_error("result decoding", error))?,
-        item("hidden_dim")?
-            .extract::<usize>()
-            .map_err(|error| python_error("result decoding", error))?,
+        decode_tensor_map(&item("hidden_last")?, request.prompts.len(), hidden_dim)?,
+        decode_tensor_map(&item("hidden_mean")?, request.prompts.len(), hidden_dim)?,
+        n_layers,
+        hidden_dim,
     )
+}
+
+fn decode_tensor_map(
+    value: &Bound<'_, PyAny>,
+    prompt_count: usize,
+    hidden_dim: usize,
+) -> Result<BTreeMap<usize, Vec<Vec<f32>>>> {
+    let tensors = value
+        .extract::<BTreeMap<usize, Vec<u8>>>()
+        .map_err(|error| python_error("result decoding", error))?;
+    let row_bytes = hidden_dim.checked_mul(size_of::<f32>()).ok_or_else(|| {
+        crate::PrefillRouterError::InvalidResult("hidden width is too large".to_string())
+    })?;
+    let expected_bytes = prompt_count.checked_mul(row_bytes).ok_or_else(|| {
+        crate::PrefillRouterError::InvalidResult("tensor shape is too large".to_string())
+    })?;
+
+    tensors
+        .into_iter()
+        .map(|(layer, bytes)| {
+            if bytes.len() != expected_bytes {
+                return Err(crate::PrefillRouterError::InvalidResult(format!(
+                    "layer {layer} returned {} bytes, expected {expected_bytes}",
+                    bytes.len()
+                )));
+            }
+            let values = bytes
+                .chunks_exact(size_of::<f32>())
+                .map(|encoded| {
+                    let encoded = <[u8; size_of::<f32>()]>::try_from(encoded).map_err(|_| {
+                        crate::PrefillRouterError::InvalidResult(
+                            "invalid f32 tensor encoding".to_string(),
+                        )
+                    })?;
+                    Ok(f32::from_ne_bytes(encoded))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let rows = values
+                .chunks_exact(hidden_dim)
+                .map(<[f32]>::to_vec)
+                .collect();
+            Ok((layer, rows))
+        })
+        .collect()
 }
 
 #[cfg(test)]
