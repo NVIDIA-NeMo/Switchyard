@@ -222,6 +222,7 @@ configuration. Today a classifier sets a stage router's `picker`, the tier it de
 | `classifier.target` | Yes | — | Target the tier judge is called through. Not a routing destination. |
 | `classifier.base_threshold` | Yes | — | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
+| `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the `llm_classifier` route, this works on either trigger. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
 | `stage.confidence_threshold` | Yes | — | Corroboration a decisive signal needs. In `[0, 1]`. |
@@ -230,8 +231,9 @@ configuration. Today a classifier sets a stage router's `picker`, the tier it de
 | `stage.efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
 | `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |
 
-The tier is session state, so a deployment that sends no session ID gets a fresh
-tier on every request. The stage table takes no `picker`: the classifier sets the tier. A turn the
+The tier is retained per session. A deployment that sends no session ID needs
+`classifier.message_hash_fallback = true`, which keys on the first user message
+instead. The stage table takes no `picker`: the classifier sets the tier. A turn the
 classifier cannot reach falls open to the efficient tier. It takes no
 `classifier` either, since that judge would overrule the tier already picked.
 

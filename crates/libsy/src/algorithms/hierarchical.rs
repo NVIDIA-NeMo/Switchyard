@@ -4,8 +4,7 @@
 //! Routing that stacks a judge over a stage router.
 //!
 //! The judge runs as a [`Preroute`]: it sets configuration the stage router reads,
-//! and picks no target itself. The tier lives in session state, so a deployment
-//! without a session ID gets a fresh tier on every request.
+//! and picks no target itself.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,9 +29,9 @@ const HIERARCHICAL: &str = "hierarchical";
 
 /// Sets the stage router's fall-open tier from a judge verdict.
 ///
-/// Keeps its own tier per routing identity rather than relying on the composition's
-/// session state, which a request carrying no session ID never retains. The retained
-/// tier is replayed into state on every request so the cascade below reads it.
+/// Retains the tier per routing identity, so it survives requests that carry no
+/// session ID when `message_hash_fallback` is on. The retained tier is replayed
+/// into state on every request so the cascade below reads it.
 struct TierSetter {
     judge: Arc<dyn Classifier<State>>,
     targets: StageTargets,
@@ -73,10 +72,11 @@ impl Preroute<State> for TierSetter {
                 if let Some(identity) = identity {
                     self.retain(identity, tier);
                 }
+                return Ok(());
             }
-            return Ok(());
         }
-        // Not this request's turn to judge, so replay whatever the last verdict set.
+        // Either not this request's turn or the judge had no verdict, so the last
+        // tier stands rather than dropping back to the picker default.
         if let Some(tier) = identity.and_then(|identity| self.tiers.lock().get(&identity).copied())
         {
             set_fall_open(state, tier);
@@ -95,9 +95,9 @@ pub struct TierClassifier {
 
 /// A judge stacked over a stage router.
 pub struct HierarchicalRouterConfig {
-    /// Sets the tier below it, as often as its `classify_trigger` says.
+    /// Picks the tier, as often as its `classify_trigger` says.
     pub classifier: TierClassifier,
-    /// Serves every request.
+    /// Serves the turns, with the tier the judge picked as its fall-open default.
     pub stage: StageRouterConfig,
 }
 
@@ -130,11 +130,19 @@ impl HierarchicalRouter {
         }
         let trigger = config.classifier.config.classify_trigger;
         let message_hash_fallback = config.classifier.config.message_hash_fallback;
+        // Only the judge's Classifier face is used, so its own affinity never runs.
+        // Leaving these set would apply the standalone route's pairing rules to a
+        // trigger this router implements itself.
+        let judge_config = TaskClassifierConfig {
+            classify_trigger: ClassifyTrigger::EveryRequest,
+            message_hash_fallback: false,
+            ..config.classifier.config
+        };
         let judge = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: config.classifier.judge_target,
             efficient_target: efficient.clone(),
             capable_target: capable.clone(),
-            config: config.classifier.config,
+            config: judge_config,
         })?;
         let setter = TierSetter {
             judge: Arc::new(judge),
@@ -294,7 +302,7 @@ mod tests {
                     judge_target: ModelId::from(JUDGE),
                     config: TaskClassifierConfig {
                         base_threshold: 0.5,
-                        classify_trigger: ClassifyTrigger::NewSession,
+                        classify_trigger: ClassifyTrigger::UserTurn,
                         message_hash_fallback: true,
                         ..Default::default()
                     },
@@ -335,6 +343,21 @@ mod tests {
                 config: TaskClassifierConfig::default(),
             },
             stage,
+        };
+        assert!(matches!(
+            HierarchicalRouter::new(ModelId::from("strong"), ModelId::from("weak"), config),
+            Err(LibsyError::AlgorithmError { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_every_request_as_a_trigger() {
+        let config = HierarchicalRouterConfig {
+            classifier: TierClassifier {
+                judge_target: ModelId::from(JUDGE),
+                config: TaskClassifierConfig::default(),
+            },
+            stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
         };
         assert!(matches!(
             HierarchicalRouter::new(ModelId::from("strong"), ModelId::from("weak"), config),
