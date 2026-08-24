@@ -144,6 +144,12 @@ fn client_failure_summary(
     phase: RouteFailurePhase,
     target: Option<&ModelId>,
 ) -> RouteFailureSummary {
+    let target = target.or(match error {
+        // Context-window errors carry the resolved target model when a caller has not
+        // already supplied the route's selected or served target.
+        LlmClientError::ContextWindowExceeded { model, .. } => Some(model),
+        _ => None,
+    });
     let (category, upstream_status) = match error {
         LlmClientError::UpstreamHttp { status, .. } => {
             (RouteFailureCategory::UpstreamHttp, Some(status.as_u16()))
@@ -233,6 +239,24 @@ mod tests {
             summary.target.as_ref().map(ModelId::as_str),
             Some("fallback")
         );
+        assert!(!format!("{summary:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn stream_summary_uses_context_window_model_without_a_served_target() {
+        let error = LlmClientError::ContextWindowExceeded {
+            model: ModelId::from("weak"),
+            message: SECRET.to_string(),
+        };
+
+        let summary = stream_failure_summary(&error, None);
+
+        assert_eq!(
+            summary.category,
+            RouteFailureCategory::ContextWindowExceeded
+        );
+        assert_eq!(summary.phase, RouteFailurePhase::DuringStream);
+        assert_eq!(summary.target.as_ref().map(ModelId::as_str), Some("weak"));
         assert!(!format!("{summary:?}").contains(SECRET));
     }
 
