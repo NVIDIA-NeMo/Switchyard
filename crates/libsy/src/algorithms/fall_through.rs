@@ -28,7 +28,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
-use crate::core::prelude::Prelude;
+use crate::core::preroute::Preroute;
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result, RoutingOutcome};
 use switchyard_protocol::{ModelId, Request, Response};
@@ -92,7 +92,7 @@ impl<S: Send> Classifier<S> for DefaultTarget {
 /// The generic state type is shared by every processor and classifier in the composition.
 pub struct FallThrough<S = ()> {
     name: String,
-    preludes: Vec<Arc<dyn Prelude<S>>>,
+    preroutes: Vec<Arc<dyn Preroute<S>>>,
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: Vec<ModelId>,
@@ -105,7 +105,7 @@ impl FallThrough<()> {
     pub fn new(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
-            preludes: Vec::new(),
+            preroutes: Vec::new(),
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -123,7 +123,7 @@ where
     pub fn new_with_state(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
-            preludes: Vec::new(),
+            preroutes: Vec::new(),
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -144,9 +144,9 @@ where
         self
     }
 
-    /// Appends a prelude, run ahead of the processors and the cascade.
-    pub fn with_prelude(mut self, prelude: Arc<dyn Prelude<S>>) -> Self {
-        self.preludes.push(prelude);
+    /// Appends a preroute step, run ahead of the processors and the cascade.
+    pub fn with_preroute(mut self, preroute: Arc<dyn Preroute<S>>) -> Self {
+        self.preroutes.push(preroute);
         self
     }
 
@@ -248,9 +248,9 @@ where
         driver: &Driver,
         request: &mut Request,
     ) -> Result<(ModelId, Option<Response>)> {
-        // 0. Preludes run first so a decision they record is in place for everything behind them.
-        for prelude in &self.preludes {
-            prelude.run(state, request, driver).await?;
+        // 0. Preroutes run first so anything they record is in place for the cascade behind them.
+        for preroute in &self.preroutes {
+            preroute.run(state, request, driver).await?;
         }
 
         // 1. Processor chain accumulates request-side facts into the composition's state.

@@ -360,6 +360,9 @@ pub struct StageClassifierConfig {
 }
 
 /// The tier pair and scoring settings shared by every stage-router-backed route.
+///
+/// `deny_unknown_fields` here is what rejects a typo on a flattened `stage_router`
+/// route, since the enum's own `deny_unknown_fields` does not apply through a flatten.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageTierConfig {

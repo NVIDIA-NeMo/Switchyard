@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Routing that stacks one algorithm on top of another.
+//! Routing that stacks a judge over a stage router.
 //!
-//! The algorithm above runs as a [`Prelude`]: it sets configuration the one below
-//! reads, and decides nothing itself.
+//! The judge runs as a [`Preroute`]: it sets configuration the stage router reads,
+//! and picks no target itself. The tier lives in session state, so a deployment
+//! without a session ID gets a fresh tier on every request.
 
 use std::sync::Arc;
 
@@ -14,41 +15,46 @@ use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::stage::{StageRouterConfig, build_stage_route};
 use super::util::affinity::{ClassifyTrigger, has_new_user_turn};
-use super::util::stage::{StageTargets, fall_open_tier, set_fall_open};
+use super::util::stage::{StageTargets, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::Classifier;
-use crate::core::prelude::Prelude;
-use crate::core::state::State;
+use crate::core::preroute::Preroute;
+use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
 use switchyard_protocol::{ModelId, Request};
 
 const HIERARCHICAL: &str = "hierarchical";
 
-/// Sets the stage router's fall-open tier from a judge verdict at each user turn.
-struct TierPicker {
+/// Marks that the judge has run, independent of whether it produced a tier.
+const JUDGED_KEY: &str = "hierarchical_judged";
+
+/// Sets the stage router's fall-open tier from a judge verdict.
+struct TierSetter {
     judge: Arc<dyn Classifier<State>>,
     targets: StageTargets,
     trigger: ClassifyTrigger,
 }
 
-impl TierPicker {
-    fn due(&self, state: &State, request: &Request) -> bool {
+impl TierSetter {
+    fn is_due(&self, state: &State, request: &Request) -> bool {
         match self.trigger {
             ClassifyTrigger::EveryRequest => true,
             ClassifyTrigger::UserTurn => has_new_user_turn(&request.llm_request.messages),
-            // The tier it set is the record that it has already run.
-            ClassifyTrigger::NewSession => fall_open_tier(state).is_none(),
+            ClassifyTrigger::NewSession => !state.extra.contains_key(JUDGED_KEY),
         }
     }
 }
 
 #[async_trait]
-impl Prelude<State> for TierPicker {
+impl Preroute<State> for TierSetter {
     async fn run(&self, state: &mut State, request: &mut Request, driver: &Driver) -> Result<()> {
-        if !self.due(state, request) {
+        if !self.is_due(state, request) {
             return Ok(());
         }
         let (classification, _) = self.judge.score(state, request, Some(driver)).await?;
+        state
+            .extra
+            .insert(JUDGED_KEY.to_string(), StateValue::Count(1));
         if let Some(winner) = classification.argmax(false)?
             && let Some(tier) = self.targets.tier_for(&winner.target)
         {
@@ -58,7 +64,7 @@ impl Prelude<State> for TierPicker {
     }
 }
 
-/// The judge that picks a user turn's tier.
+/// The judge that picks the tier.
 pub struct TierClassifier {
     /// Target the judge is called through. Not a routing destination.
     pub judge_target: ModelId,
@@ -66,15 +72,15 @@ pub struct TierClassifier {
     pub config: TaskClassifierConfig,
 }
 
-/// An algorithm stacked on top of a stage router.
+/// A judge stacked over a stage router.
 pub struct HierarchicalRouterConfig {
-    /// Runs at each user turn and sets the tier below it.
+    /// Sets the tier below it, as often as its `classify_trigger` says.
     pub classifier: TierClassifier,
     /// Serves every request.
     pub stage: StageRouterConfig,
 }
 
-/// Runs a stage router with a tier the classifier picks once per user turn.
+/// Runs a stage router with a tier the judge picks.
 pub struct HierarchicalRouter {
     route: FallThrough<State>,
 }
@@ -90,6 +96,12 @@ impl HierarchicalRouter {
         efficient: ModelId,
         config: HierarchicalRouterConfig,
     ) -> Result<Self> {
+        if config.classifier.config.classify_trigger == ClassifyTrigger::EveryRequest {
+            return Err(LibsyError::AlgorithmError {
+                message: "hierarchical: classify_trigger must be user_turn or new_session"
+                    .to_string(),
+            });
+        }
         if config.stage.llm_fallback.is_some() {
             return Err(LibsyError::AlgorithmError {
                 message: "hierarchical: the stage router cannot also carry a judge".to_string(),
@@ -102,14 +114,14 @@ impl HierarchicalRouter {
             capable_target: capable.clone(),
             config: config.classifier.config,
         })?;
-        let picker = TierPicker {
+        let setter = TierSetter {
             judge: Arc::new(judge),
             targets: StageTargets::new(capable.clone(), efficient.clone()),
             trigger,
         };
         let route = build_stage_route(capable, efficient, config.stage)?
             .with_name(HIERARCHICAL)
-            .with_prelude(Arc::new(picker));
+            .with_preroute(Arc::new(setter));
         Ok(Self { route })
     }
 }

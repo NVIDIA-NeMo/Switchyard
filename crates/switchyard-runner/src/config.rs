@@ -649,6 +649,7 @@ type = "hierarchical"
 [routes.hier.classifier]
 target = "tier_judge"
 base_threshold = 0.5
+classify_trigger = "user_turn"
 
 [routes.hier.stage]
 capable_target = "strong"
