@@ -62,6 +62,35 @@ class PackageBundleTest(unittest.TestCase):
                 self.assertNotIn("<artifact-sha256>", manifest)
                 self.assertEqual(self.archive_members(archive), {f"{PACKAGE_NAME}/{name}" for name in expected})
 
+    def test_rejects_archive_inside_output_before_materializing_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            library = root / "libswitchyard_nemo_relay_plugin.so"
+            library.write_bytes(b"compiled plugin")
+            output = root / "bundle"
+            archive = output / "plugin.zip"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PACKAGER),
+                    "--library",
+                    str(library),
+                    "--output",
+                    str(output),
+                    "--archive",
+                    str(archive),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("bundle archive must be outside output directory", result.stderr)
+            self.assertFalse(output.exists())
+            self.assertFalse(archive.exists())
+
     @staticmethod
     def archive_members(archive: Path) -> set[str]:
         """Return regular-file paths from a supported bundle archive."""

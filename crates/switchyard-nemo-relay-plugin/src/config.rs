@@ -16,7 +16,7 @@ pub(crate) fn protocol_from_call(name: &str) -> Option<WireFormat> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SwitchyardConfig {
     #[serde(default)]

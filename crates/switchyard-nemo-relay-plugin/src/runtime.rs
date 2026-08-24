@@ -83,14 +83,22 @@ impl SwitchyardRuntime {
         inbound: WireFormat,
         request: Request,
     ) -> Execution<Json> {
-        let mut execution = self.execute(request).await;
-        if let Ok(response) = execution.result {
-            execution.result = finalize_buffered_response(&self.translation, inbound, response);
-            if execution.result.is_err() {
-                self.error_mark(&mut execution.marks, "response_finalization", None);
+        let Execution {
+            result,
+            mut marks,
+        } = self.execute(request).await;
+        let (result, finalization_failed) = match result {
+            Ok(response) => {
+                let result = finalize_buffered_response(&self.translation, inbound, response);
+                let failed = result.is_err();
+                (result, failed)
             }
+            Err(error) => (Err(error), false),
+        };
+        if finalization_failed {
+            self.error_mark(&mut marks, "response_finalization", None);
         }
-        execution
+        Execution { result, marks }
     }
 
     pub(crate) async fn execute_stream(
@@ -98,14 +106,22 @@ impl SwitchyardRuntime {
         inbound: WireFormat,
         request: Request,
     ) -> Execution<ReturnedEventStream> {
-        let mut execution = self.execute(request).await;
-        if let Ok(response) = execution.result {
-            execution.result = returned_events(response, inbound);
-            if execution.result.is_err() {
-                self.error_mark(&mut execution.marks, "response_finalization", None);
+        let Execution {
+            result,
+            mut marks,
+        } = self.execute(request).await;
+        let (result, finalization_failed) = match result {
+            Ok(response) => {
+                let result = returned_events(response, inbound);
+                let failed = result.is_err();
+                (result, failed)
             }
+            Err(error) => (Err(error), false),
+        };
+        if finalization_failed {
+            self.error_mark(&mut marks, "response_finalization", None);
         }
-        execution
+        Execution { result, marks }
     }
 
     async fn execute(&self, request: Request) -> Execution<Response> {

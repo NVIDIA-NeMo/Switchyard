@@ -28,6 +28,8 @@ def digest(path: Path) -> str:
 
 def archive_bundle(bundle: Path, archive: Path) -> None:
     """Archive a materialized bundle under the stable package directory name."""
+    if archive.parent.is_relative_to(bundle):
+        raise ValueError(f"bundle archive must be outside output directory: {archive}")
     archive.parent.mkdir(parents=True, exist_ok=True)
     if archive.exists():
         raise ValueError(f"bundle archive already exists: {archive}")
@@ -70,6 +72,10 @@ def main() -> None:
         parser.error(f"bundle output exists and is not a directory: {output}")
     if output.is_dir() and any(output.iterdir()):
         parser.error(f"bundle output directory must be empty: {output}")
+
+    archive = args.archive.resolve() if args.archive is not None else None
+    if archive is not None and archive.parent.is_relative_to(output):
+        parser.error(f"bundle archive must be outside output directory: {archive}")
     output.mkdir(parents=True, exist_ok=True)
 
     artifact = output / library.name
@@ -83,11 +89,10 @@ def main() -> None:
     manifest = manifest.replace("<artifact-sha256>", artifact_digest)
     (output / "relay-plugin.toml").write_text(manifest, encoding="utf-8")
 
-    if args.archive is None:
+    if archive is None:
         print(output)
         return
 
-    archive = args.archive.resolve()
     try:
         archive_bundle(output, archive)
     except ValueError as error:
