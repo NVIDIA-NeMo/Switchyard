@@ -19,12 +19,14 @@ TERRA_MODEL = "openrouter/openai/gpt-5.6-terra"
 
 
 def _free_port() -> int:
+    """Reserve and return an available loopback port for one Compose project."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
 
 
 def _require_live_environment() -> None:
+    """Skip paid tests unless the explicit opt-in, key, and Docker are available."""
     if os.environ.get("SWITCHYARD_LITELLM_E2E") != "1":
         pytest.skip("SWITCHYARD_LITELLM_E2E=1 is required for paid E2E tests")
     if not os.environ.get("OPENROUTER_API_KEY"):
@@ -40,6 +42,7 @@ def _require_live_environment() -> None:
 
 @pytest.fixture
 def litellm_base_url(request: pytest.FixtureRequest) -> Iterator[str]:
+    """Build one profile, yield its local proxy URL, and tear it down."""
     _require_live_environment()
 
     profile = str(request.param)
@@ -72,6 +75,7 @@ def litellm_base_url(request: pytest.FixtureRequest) -> Iterator[str]:
 def test_paid_e2e_requires_explicit_spend_opt_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Avoid checking Docker or spending unless live E2E is explicitly enabled."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.delenv("SWITCHYARD_LITELLM_E2E", raising=False)
 
@@ -86,6 +90,7 @@ def test_paid_e2e_requires_explicit_spend_opt_in(
 def test_paid_e2e_requires_openrouter_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Require the profile's OpenRouter credential before checking Docker."""
     monkeypatch.setenv("SWITCHYARD_LITELLM_E2E", "1")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
@@ -98,6 +103,7 @@ def test_paid_e2e_requires_openrouter_key(
 
 
 def _critical_tool_history() -> list[dict[str, object]]:
+    """Build a critical failed-tool turn that Stage must send to capable."""
     return [
         {"role": "user", "content": "Fix the failing tests, then report the result."},
         {
@@ -126,6 +132,7 @@ async def _complete(
     base_url: str,
     messages: list[dict[str, object]],
 ) -> tuple[dict[str, object], str]:
+    """Send one chat request and return its body and concrete selected model."""
     async with httpx.AsyncClient(timeout=180) as client:
         response = await client.post(
             f"{base_url}/chat/completions",
@@ -140,6 +147,7 @@ def _assert_selected(
     selected_model: str,
     expected: str,
 ) -> None:
+    """Check the public group response and concrete deployment selection."""
     assert response.get("model") == MODEL_GROUP
     assert selected_model == expected
     choices = response.get("choices")
@@ -151,6 +159,7 @@ def _assert_selected(
 async def test_stage_plugin_routes_live_requests_to_both_gpt_5_6_models(
     litellm_base_url: str,
 ) -> None:
+    """Exercise efficient and capable Stage decisions against live deployments."""
     efficient, efficient_model = await _complete(
         litellm_base_url,
         [{"role": "user", "content": "Reply with the word hello."}],
@@ -166,6 +175,7 @@ async def test_stage_plugin_routes_live_requests_to_both_gpt_5_6_models(
 async def test_random_plugin_routes_live_requests_to_both_gpt_5_6_models(
     litellm_base_url: str,
 ) -> None:
+    """Exercise the seeded Random profile against both live deployments."""
     selected = []
     for index in range(2):
         _, selected_model = await _complete(

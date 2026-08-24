@@ -69,6 +69,18 @@ def critical_tool_history() -> list[dict[str, Any]]:
     ]
 
 
+def test_litellm_preserves_declaration_order_for_stage_candidates() -> None:
+    """Lock the pinned LiteLLM contract that gives Stage capable then efficient."""
+    router = Router(model_list=model_list(), plugins=[stage_plugin()])
+    deployments = router.get_model_list(model_name=MODEL_GROUP)
+
+    assert deployments is not None
+    assert [deployment["litellm_params"]["model"] for deployment in deployments] == [
+        CAPABLE_MODEL,
+        EFFICIENT_MODEL,
+    ]
+
+
 async def test_stage_plugin_controls_real_litellm_router_pipeline() -> None:
     router = Router(model_list=model_list(), plugins=[stage_plugin()])
 

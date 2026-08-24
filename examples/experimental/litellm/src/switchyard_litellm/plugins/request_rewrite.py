@@ -39,18 +39,21 @@ _EXTENSION_FIELDS = {
 
 
 def _mapping(value: object, path: str) -> Mapping[str, object]:
+    """Require a mapping and include its request path in validation errors."""
     if not isinstance(value, Mapping):
         raise ValueError(f"{path} must be a mapping")
     return cast(Mapping[str, object], value)
 
 
 def _sequence(value: object, path: str) -> Sequence[object]:
+    """Require a non-string sequence at the given request path."""
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise ValueError(f"{path} must be a sequence")
     return cast(Sequence[object], value)
 
 
 def _text_content(value: object, path: str, separator: str) -> str:
+    """Join normalized text blocks for a LiteLLM message field."""
     parts: list[str] = []
     for index, raw_block in enumerate(_sequence(value, path)):
         block_path = f"{path}[{index}]"
@@ -63,6 +66,7 @@ def _text_content(value: object, path: str, separator: str) -> str:
 
 
 def _instructions(value: object) -> list[dict[str, object]]:
+    """Convert normalized system and developer instructions to chat messages."""
     instructions: list[dict[str, object]] = []
     for index, raw_instruction in enumerate(_sequence(value, "request.instructions")):
         path = f"request.instructions[{index}]"
@@ -80,6 +84,7 @@ def _instructions(value: object) -> list[dict[str, object]]:
 
 
 def _tool_call(block: Mapping[str, object], path: str) -> dict[str, object]:
+    """Convert one normalized tool call to OpenAI function-call shape."""
     call_id = block.get("id")
     name = block.get("name")
     if not isinstance(call_id, str) or not call_id:
@@ -97,6 +102,7 @@ def _tool_call(block: Mapping[str, object], path: str) -> dict[str, object]:
 
 
 def _tool_result(block: Mapping[str, object], path: str) -> dict[str, object]:
+    """Convert one normalized tool result to an OpenAI tool message."""
     tool_call_id = block.get("tool_call_id")
     if not isinstance(tool_call_id, str) or not tool_call_id:
         raise ValueError(f"{path}.tool_call_id cannot safely apply an empty ID to LiteLLM")
@@ -108,6 +114,7 @@ def _tool_result(block: Mapping[str, object], path: str) -> dict[str, object]:
 
 
 def _messages(value: object) -> list[dict[str, object]]:
+    """Convert normalized Switchyard messages to LiteLLM chat messages."""
     messages: list[dict[str, object]] = []
     for index, raw_message in enumerate(_sequence(value, "request.messages")):
         path = f"request.messages[{index}]"
@@ -149,6 +156,7 @@ def _messages(value: object) -> list[dict[str, object]]:
 
 
 def _tools(value: object) -> list[dict[str, object]]:
+    """Convert normalized tool definitions to OpenAI function tools."""
     tools: list[dict[str, object]] = []
     for index, raw_tool in enumerate(_sequence(value, "request.tools")):
         path = f"request.tools[{index}]"
@@ -171,6 +179,7 @@ def _tools(value: object) -> list[dict[str, object]]:
 
 
 def _tool_choice(value: object) -> object:
+    """Convert normalized tool-selection policy to LiteLLM form."""
     if value is None:
         return None
     choice = _mapping(value, "request.tool_choice")
@@ -193,6 +202,7 @@ def _changed_fields(
     rewritten: Mapping[str, object],
     fields: Sequence[str],
 ) -> list[str]:
+    """Return the requested fields whose normalized values changed."""
     return [field for field in fields if original.get(field) != rewritten.get(field)]
 
 

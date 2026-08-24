@@ -209,9 +209,11 @@ efficient_system_prompt = "Handle this request as the efficient tier."
 | `capable_system_prompt` | no | nonempty system instruction used for the capable tier |
 | `efficient_system_prompt` | no | nonempty system instruction used for the efficient tier |
 
-Stage requires exactly two unique candidate model IDs. Their first occurrence in LiteLLM's
-candidate order defines the capable model first and the efficient model second. `picker` controls
-which tier is chosen in the absence of an escalation signal; it does not change those roles.
+Stage requires exactly two unique candidate model IDs. In pinned LiteLLM 1.97.0, the routing context
+preserves the matching `model_list` declaration order. Declare the capable model first and the
+efficient model second, as in the checked-in profile; an integration test locks this ordering
+contract. `picker` controls which tier is chosen without an escalation signal; it does not change
+those roles.
 
 ### Random fields
 

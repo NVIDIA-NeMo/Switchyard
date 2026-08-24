@@ -1,7 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Create candidate-bound LiteLLM plugins from Switchyard TOML configuration."""
+"""Create candidate-bound LiteLLM plugins from Switchyard TOML configuration.
+
+``tomllib`` decodes TOML values into Python types. This module's helpers enforce
+the plugin schema and value constraints after that decoding step.
+"""
 
 from __future__ import annotations
 
@@ -65,6 +69,7 @@ def load_routing_plugin_from_environment(
 
 
 def _stage_plugin(values: Mapping[str, object], config_path: Path) -> StageRoutingPlugin:
+    """Validate parsed Stage fields and construct its candidate-bound plugin."""
     _reject_unknown_keys(values, _STAGE_KEYS, config_path)
     picker = _required_string(values, "picker", config_path)
     if picker not in {"capable_first", "efficient_first"}:
@@ -108,6 +113,7 @@ def _stage_plugin(values: Mapping[str, object], config_path: Path) -> StageRouti
 
 
 def _random_plugin(values: Mapping[str, object], config_path: Path) -> RandomRoutingPlugin:
+    """Validate parsed Random fields and construct its candidate-bound plugin."""
     _reject_unknown_keys(values, _RANDOM_KEYS, config_path)
     return RandomRoutingPlugin(
         seed=_optional_integer(
@@ -125,6 +131,7 @@ def _reject_unknown_keys(
     allowed: Collection[str],
     config_path: Path,
 ) -> None:
+    """Reject parsed TOML keys outside an algorithm's supported schema."""
     unknown = sorted(set(values) - set(allowed))
     if unknown:
         raise ValueError(
@@ -137,6 +144,7 @@ def _required_string(
     key: str,
     config_path: Path,
 ) -> str:
+    """Return a required nonempty string already decoded by ``tomllib``."""
     value = values.get(key)
     if not isinstance(value, str) or not value:
         raise ValueError(f"Switchyard routing config {config_path} {key} must be a nonempty string")
@@ -148,6 +156,7 @@ def _optional_string(
     key: str,
     config_path: Path,
 ) -> str | None:
+    """Return an optional nonempty string already decoded by ``tomllib``."""
     if key not in values:
         return None
     value = values[key]
@@ -160,6 +169,7 @@ def _required_confidence_threshold(
     values: Mapping[str, object],
     config_path: Path,
 ) -> float:
+    """Validate and return the parsed Stage confidence threshold."""
     value = values.get("confidence_threshold")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(
@@ -185,6 +195,7 @@ def _optional_integer(
     *,
     maximum: int | None = None,
 ) -> int | None:
+    """Validate and return an optional nonnegative TOML integer."""
     if key not in values:
         return None
     value = values[key]
@@ -208,6 +219,7 @@ def _optional_boolean(
     *,
     default: bool,
 ) -> bool:
+    """Validate and return an optional TOML Boolean with its default."""
     value = values.get(key, default)
     if not isinstance(value, bool):
         raise ValueError(f"Switchyard routing config {config_path} {key} must be a boolean")
@@ -218,6 +230,7 @@ def _optional_weights(
     values: Mapping[str, object],
     config_path: Path,
 ) -> list[float] | None:
+    """Validate and normalize optional Random weights decoded from TOML."""
     if "weights" not in values:
         return None
     value = values["weights"]

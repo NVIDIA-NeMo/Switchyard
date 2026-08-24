@@ -55,6 +55,23 @@ def test_compose_builds_the_pinned_plugin_image_and_selects_a_profile() -> None:
     )
 
 
+def test_dockerfile_runs_the_final_image_as_litellm_user() -> None:
+    """Require the final runtime stage to select the dedicated non-root account."""
+    instructions = [
+        line.strip()
+        for line in (DEPLOYMENT_ROOT / "Dockerfile").read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    final_stage = max(index for index, line in enumerate(instructions) if line.startswith("FROM "))
+    runtime_users = [
+        line.split(maxsplit=1)[1]
+        for line in instructions[final_stage + 1 :]
+        if line.startswith("USER ")
+    ]
+
+    assert runtime_users == ["litellm"]
+
+
 def test_deployment_profiles_contain_only_model_and_policy_configuration() -> None:
     for profile in ("stage", "random"):
         assert {path.name for path in (DEPLOYMENT_ROOT / "profiles" / profile).iterdir()} == {

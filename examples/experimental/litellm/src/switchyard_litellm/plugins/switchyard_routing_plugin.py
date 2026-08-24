@@ -18,18 +18,21 @@ from .request_rewrite import build_request_patch
 
 
 def _mapping(value: object, path: str) -> Mapping[str, object]:
+    """Require a mapping and preserve its message path in validation errors."""
     if not isinstance(value, Mapping):
         raise ValueError(f"{path} must be a mapping")
     return cast(Mapping[str, object], value)
 
 
 def _sequence(value: object, path: str) -> Sequence[object]:
+    """Require a non-string sequence at the given message path."""
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise ValueError(f"{path} must be a sequence")
     return cast(Sequence[object], value)
 
 
 def _text_blocks(value: object, path: str, *, allow_none: bool = False) -> list[dict[str, object]]:
+    """Normalize LiteLLM string or text-block content for Switchyard."""
     if value is None and allow_none:
         return []
     if isinstance(value, str):
@@ -46,6 +49,7 @@ def _text_blocks(value: object, path: str, *, allow_none: bool = False) -> list[
 
 
 def _tool_calls(value: object, path: str) -> list[dict[str, object]]:
+    """Normalize OpenAI function calls and parse their JSON arguments."""
     calls: list[dict[str, object]] = []
     for index, raw_call in enumerate(_sequence(value, path)):
         call_path = f"{path}[{index}]"
@@ -82,6 +86,7 @@ def _tool_calls(value: object, path: str) -> list[dict[str, object]]:
 
 
 def _messages(structured_messages: Sequence[object]) -> list[dict[str, object]]:
+    """Normalize LiteLLM structured chat history for Switchyard algorithms."""
     if not structured_messages:
         raise ValueError("structured_messages must not be empty")
 

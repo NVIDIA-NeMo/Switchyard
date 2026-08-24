@@ -75,6 +75,61 @@ async def test_loads_stage_prompt_and_handoff_rewrites(tmp_path: Path) -> None:
         "content": "Use the capable tier.",
     }
 
+    settled_messages = [
+        {"role": "user", "content": "Implement the change."},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "write_1",
+                    "type": "function",
+                    "function": {
+                        "name": "Write",
+                        "arguments": '{"file_path":"x.py","content":"pass"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "write_1", "content": "Wrote x.py"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "test_1",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": '{"command":"pytest"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "test_1", "content": "5 passed in 0.12s"},
+    ]
+    settled_context = routing_context(
+        settled_messages,
+        ["provider/capable", "provider/efficient"],
+    )
+
+    await plugin.run(settled_context)
+    settled_rewrite = await plugin.async_pre_call_deployment_hook(
+        {
+            "messages": settled_messages,
+            "metadata": {"routing_plugin_signals": settled_context.signals},
+        },
+        None,
+    )
+
+    assert settled_context.candidate_models == ["provider/efficient"]
+    assert settled_rewrite is not None
+    assert settled_rewrite["messages"][0] == {
+        "role": "system",
+        "content": "Use the efficient tier.",
+    }
+    assert settled_rewrite["messages"][-1] == {
+        "role": "user",
+        "content": "The capable tier recovered.",
+    }
+
 
 async def test_loads_random_weights(tmp_path: Path) -> None:
     config_path = tmp_path / "switchyard.toml"

@@ -14,7 +14,12 @@ from .switchyard_routing_plugin import SwitchyardRoutingPlugin
 
 
 class StageRoutingPlugin(LiteLLMRequestRewriter):
-    """Route between LiteLLM's first capable and second efficient candidate."""
+    """Route between LiteLLM's first capable and second efficient candidate.
+
+    LiteLLM 1.97 preserves ``model_list`` declaration order when it constructs
+    the routing context. The checked-in profile and integration tests make that
+    order an explicit deployment contract.
+    """
 
     def __init__(
         self,

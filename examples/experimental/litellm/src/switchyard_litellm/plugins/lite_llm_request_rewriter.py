@@ -103,6 +103,7 @@ class LiteLLMRequestRewriter(CustomLogger):
         Mapping[str, object],
         Mapping[str, object],
     ] | None:
+        """Find a Switchyard request patch in either LiteLLM metadata field."""
         for metadata_key in ("litellm_metadata", "metadata"):
             raw_metadata = kwargs.get(metadata_key)
             if not isinstance(raw_metadata, Mapping):
