@@ -3,10 +3,8 @@
 
 //! Routing that stacks one algorithm on top of another.
 //!
-//! The algorithm above runs as a [`Prelude`]: it decides nothing itself, it sets
-//! configuration the algorithm below reads. Today that is an
-//! [`LlmTaskClassifier`] setting a stage router's fall-open tier once per user
-//! turn, leaving the tool steps to the stage router's own signals.
+//! The algorithm above runs as a [`Prelude`]: it sets configuration the one below
+//! reads, and decides nothing itself.
 
 use std::sync::Arc;
 
@@ -24,7 +22,6 @@ use crate::core::prelude::Prelude;
 use crate::core::state::State;
 use switchyard_protocol::{ModelId, Request};
 
-/// Telemetry name for a router this module assembles.
 const HIERARCHICAL: &str = "hierarchical";
 
 /// Sets the stage router's fall-open tier from a judge verdict at each user turn.
@@ -51,7 +48,7 @@ impl Prelude<State> for TierPicker {
 
 /// The judge that picks a user turn's tier.
 pub struct TierClassifier {
-    /// Target the judge model is called through, not a routing destination.
+    /// Target the judge is called through. Not a routing destination.
     pub judge_target: ModelId,
     /// Judge configuration. `classify_trigger` has no effect here.
     pub config: TaskClassifierConfig,
@@ -61,7 +58,7 @@ pub struct TierClassifier {
 pub struct HierarchicalRouterConfig {
     /// Runs at each user turn and sets the tier below it.
     pub classifier: TierClassifier,
-    /// The stage router that serves every request.
+    /// Serves every request.
     pub stage: StageRouterConfig,
 }
 
@@ -73,8 +70,7 @@ pub struct HierarchicalRouter {
 impl HierarchicalRouter {
     /// Stacks the classifier over a stage router across the same tier pair.
     ///
-    /// Errors on a stage configuration the stage router itself would reject, and
-    /// on a judge configuration the capability classifier rejects.
+    /// Errors on a stage or judge configuration either algorithm rejects.
     pub fn new(
         capable: ModelId,
         efficient: ModelId,
@@ -128,7 +124,6 @@ mod tests {
 
     const JUDGE: &str = "judge";
 
-    /// Answers the judge with a settable verdict and echoes every other target.
     #[derive(Default)]
     struct Recorder {
         targets: Mutex<Vec<String>>,
@@ -174,7 +169,6 @@ mod tests {
         }
     }
 
-    /// A tool continuation: the last message is a tool result, not the user.
     fn turn_request(failed: bool) -> Request {
         let content = if failed {
             "fatal runtime error: out of memory"
@@ -207,15 +201,7 @@ mod tests {
                 ],
                 ..LlmRequest::default()
             },
-            raw_request: Some(json!({
-                "model": "auto",
-                "messages": [
-                    {"role": "user", "content": "fix the build"},
-                    {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function",
-                        "function": {"name": "Bash", "arguments": "{\"command\": \"cargo test\"}"}}]},
-                    {"role": "tool", "tool_call_id": "call_1", "content": content},
-                ],
-            })),
+            raw_request: None,
             metadata: Some(Metadata {
                 wire_format: Some(WireFormat::OpenAiChat),
                 session_id: Some("session-1".to_string()),

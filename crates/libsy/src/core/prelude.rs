@@ -3,10 +3,8 @@
 
 //! A step that runs before routing and decides nothing.
 //!
-//! Sits between [`Processor`](crate::core::processor::Processor), which cannot
-//! reach a model, and [`Classifier`](crate::core::classifier::Classifier), which
-//! is expected to pick a target. A prelude gets the [`Driver`] so it can consult
-//! one, and writes what it learns to state for the cascade behind it to use.
+//! Unlike a [`Processor`](crate::core::processor::Processor) it holds the
+//! [`Driver`], so it can consult a model before the cascade runs.
 
 use async_trait::async_trait;
 
