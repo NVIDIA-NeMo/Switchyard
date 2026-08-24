@@ -786,32 +786,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-a-turn-is-decided" class="md-nav__link">
+  <a href="#when-to-use-it" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How a turn is decided
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#do-not-add-a-fallthrough-judge" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Do not add a fallthrough judge
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cost" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cost
+        When to use it
       
     </span>
   </a>
@@ -1188,32 +1166,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-a-turn-is-decided" class="md-nav__link">
+  <a href="#when-to-use-it" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How a turn is decided
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#do-not-add-a-fallthrough-judge" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Do not add a fallthrough judge
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cost" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cost
+        When to use it
       
     </span>
   </a>
@@ -1241,15 +1197,11 @@
 
 
 <h1 id="hierarchical-routing">Hierarchical Routing<a class="headerlink" href="#hierarchical-routing" title="Permanent link">&para;</a></h1>
-<p>A <code>hierarchical</code> route composes two algorithms that already exist. An LLM
-classifier picks the tier at the start of each user turn, and a stage router
-runs the tool steps within it.</p>
-<p>Use it when a hard prompt should reach the capable tier immediately. A stage
-router on its own scores tool results, so it has nothing to read until the agent
-has already done some work, and the first response to a hard request comes from
-the efficient tier. A classifier reads the request itself and can make that call
-straight away, but running it on every tool step is expensive and switches models
-mid-task.</p>
+<p>An algorithm's target is usually a model. Under a <code>hierarchical</code> route it can be
+another algorithm, and the algorithm in front can adjust the configuration of the
+one behind it before handing off.</p>
+<p>Today one pairing is supported: an LLM classifier sets the <code>picker</code> for a stage
+router.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[routes.switchyard]</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
@@ -1264,30 +1216,18 @@ mid-task.</p>
 </span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
 </span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="n">confidence_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
 </span></code></pre></div>
-<p><code>[routes.switchyard.classifier]</code> takes the same fields as a <code>stage_router</code>
-classifier block. <code>[routes.switchyard.stage]</code> takes the <code>stage_router</code> fields
-except <code>picker</code>, which the classifier sets.</p>
-<h2 id="how-a-turn-is-decided">How a turn is decided<a class="headerlink" href="#how-a-turn-is-decided" title="Permanent link">&para;</a></h2>
-<ol>
-<li>The user sends a message. The classifier reads it and picks a tier.</li>
-<li>That tier becomes the stage router's fall-open tier for the rest of the turn.</li>
-<li>Tool steps run on the stage router's own signals. A confident signal still
-   decides its own step, so a failing tool call escalates to the capable tier
-   even on a turn the classifier sent to the efficient one.</li>
-<li>The next user message runs the classifier again and replaces the tier.</li>
-</ol>
-<p>The classifier never serves a turn itself. It sets a floor and the signals work
-above it.</p>
+<p><code>[routes.switchyard.classifier]</code> takes the <code>stage_router</code> classifier fields.
+<code>[routes.switchyard.stage]</code> takes the <code>stage_router</code> fields except <code>picker</code>,
+which the classifier sets, and <code>classifier</code>, which would overrule it.</p>
+<h2 id="when-to-use-it">When to use it<a class="headerlink" href="#when-to-use-it" title="Permanent link">&para;</a></h2>
+<p>An interactive coding agent. The classifier reads the user's message and sets the
+picker, then the stage router runs the tool execution loop against its own
+signals with that picker in place. The next user message sets it again.</p>
+<p>A stage router alone has no signals to read until the agent has done some work,
+so the first response to a hard request comes from the efficient tier. A
+classifier alone would run on every tool step, which is expensive and switches
+models mid-task.</p>
 <p>A turn the classifier cannot reach falls open to the efficient tier.</p>
-<h2 id="do-not-add-a-fallthrough-judge">Do not add a fallthrough judge<a class="headerlink" href="#do-not-add-a-fallthrough-judge" title="Permanent link">&para;</a></h2>
-<p>A <code>stage_router</code> accepts an optional <code>classifier</code> block, a judge consulted on
-turns the signals leave undecided. Under <code>hierarchical</code> those are the turns whose
-tier the classifier has already picked, so a second judge would sit between the
-signals and that decision and overrule it. The stage block has no <code>classifier</code>
-field for this reason.</p>
-<h2 id="cost">Cost<a class="headerlink" href="#cost" title="Permanent link">&para;</a></h2>
-<p>The classifier costs one judge call per user turn, not per request. A turn with
-twenty tool steps calls the judge once.</p>
 
 
 
