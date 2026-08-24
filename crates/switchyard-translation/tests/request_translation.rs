@@ -575,7 +575,8 @@ fn anthropic_tool_without_name_is_dropped_before_openai_chat() -> TestResult {
     Ok(())
 }
 
-// Verifies OpenAI-compatible Anthropic extension fields are preserved.
+// Verifies Anthropic extension fields translate to their Chat equivalents:
+// metadata.user_id becomes Chat's `user` (some endpoints reject user_id).
 #[test]
 fn anthropic_openai_compatible_extensions_are_preserved_for_openai_chat() -> TestResult {
     let engine = TranslationEngine::default();
@@ -597,7 +598,8 @@ fn anthropic_openai_compatible_extensions_are_preserved_for_openai_chat() -> Tes
         )?
         .body;
 
-    assert_eq!(output["metadata"], json!({"user_id": "u123"}));
+    assert_eq!(output["user"], json!("u123"));
+    assert!(output.get("metadata").is_none());
     assert_eq!(output["stop"], json!(["END"]));
     assert!(output.get("thinking").is_none());
     Ok(())

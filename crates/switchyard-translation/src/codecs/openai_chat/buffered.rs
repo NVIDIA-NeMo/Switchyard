@@ -932,7 +932,6 @@ fn copy_openai_chat_request_extensions(
     extensions: &Map<String, Value>,
 ) {
     for field in [
-        "metadata",
         "parallel_tool_calls",
         "prompt_cache_key",
         "prompt_cache_retention",
@@ -947,6 +946,20 @@ fn copy_openai_chat_request_extensions(
             body.entry(field.to_string())
                 .or_insert_with(|| value.clone());
         }
+    }
+    match extensions.get("metadata") {
+        // Anthropic {"user_id": ...} metadata causes some endpoints to reject
+        // as an invalid parameter. Translate this to Chat's `user`
+        Some(Value::Object(map)) if !map.is_empty() && map.keys().all(|k| k == "user_id") => {
+            if let Some(user) = map.get("user_id") {
+                body.entry("user").or_insert_with(|| user.clone());
+            }
+        }
+        Some(value) => {
+            body.entry("metadata".to_string())
+                .or_insert_with(|| value.clone());
+        }
+        None => {}
     }
     if let Some(stop_sequences) = extensions.get("stop_sequences") {
         body.entry("stop").or_insert_with(|| stop_sequences.clone());
