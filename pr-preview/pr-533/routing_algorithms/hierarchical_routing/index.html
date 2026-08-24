@@ -786,10 +786,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#when-to-use-it" class="md-nav__link">
+  <a href="#example-use" class="md-nav__link">
     <span class="md-ellipsis">
       
-        When to use it
+        Example use
       
     </span>
   </a>
@@ -1166,10 +1166,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#when-to-use-it" class="md-nav__link">
+  <a href="#example-use" class="md-nav__link">
     <span class="md-ellipsis">
       
-        When to use it
+        Example use
       
     </span>
   </a>
@@ -1220,15 +1220,10 @@ the tier it defaults to when its own signals are not confident.</p>
 <p><code>[routes.switchyard.classifier]</code> takes the <code>stage_router</code> classifier fields.
 <code>[routes.switchyard.stage]</code> takes the <code>stage_router</code> fields except <code>picker</code>,
 which the classifier sets, and <code>classifier</code>, which would overrule it.</p>
-<h2 id="when-to-use-it">When to use it<a class="headerlink" href="#when-to-use-it" title="Permanent link">&para;</a></h2>
-<p>An interactive coding agent. The classifier reads the user's message and picks
-the tier, then the stage router runs the tool execution loop, defaulting to that
-tier on any step its signals cannot call. The next user message picks again.</p>
-<p>A stage router alone has no signals to read until the agent has done some work,
-so the first response to a hard request comes from the efficient tier. A
-classifier alone would run on every tool step, which is expensive and switches
-models mid-task.</p>
-<p>A turn the classifier cannot reach falls open to the efficient tier.</p>
+<h2 id="example-use">Example use<a class="headerlink" href="#example-use" title="Permanent link">&para;</a></h2>
+<p>An interactive coding agent in auto-mode. The classifier reads the user turn and
+picks the tier. The stage router runs the tool execution loop on its own signals
+until the next user turn.</p>
 
 
 
