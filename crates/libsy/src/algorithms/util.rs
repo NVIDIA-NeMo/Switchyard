@@ -10,6 +10,8 @@ pub(crate) mod robustness;
 pub(crate) mod stage;
 pub mod subagent;
 pub(crate) mod target_selector;
+#[cfg(test)]
+pub(crate) mod tier_fixtures;
 pub(crate) mod tool_signals;
 
 use switchyard_protocol::ModelId;

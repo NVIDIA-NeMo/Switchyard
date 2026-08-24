@@ -52,6 +52,8 @@ impl TierSetter {
         }
     }
 
+    /// A judge call sits between the `is_due` check and this insert, so two first
+    /// requests for one identity can both judge. The later verdict wins.
     fn retain(&self, identity: RoutingIdentity, tier: Tier) {
         let mut tiers = self.tiers.lock();
         evict_if_full(&mut tiers);
@@ -85,18 +87,12 @@ impl Preroute<State> for TierSetter {
     }
 }
 
-/// The judge that picks the tier.
-pub struct TierClassifier {
-    /// Target the judge is called through. Not a routing destination.
-    pub judge_target: ModelId,
-    /// Judge configuration, including how often `classify_trigger` runs it.
-    pub config: TaskClassifierConfig,
-}
-
 /// A judge stacked over a stage router.
 pub struct HierarchicalRouterConfig {
-    /// Picks the tier, as often as its `classify_trigger` says.
-    pub classifier: TierClassifier,
+    /// Target the judge is called through. Not a routing destination.
+    pub judge_target: ModelId,
+    /// Judge settings, including how often `classify_trigger` runs it.
+    pub judge: TaskClassifierConfig,
     /// Serves the turns, with the tier the judge picked as its fall-open default.
     pub stage: StageRouterConfig,
 }
@@ -117,7 +113,7 @@ impl HierarchicalRouter {
         efficient: ModelId,
         config: HierarchicalRouterConfig,
     ) -> Result<Self> {
-        if config.classifier.config.classify_trigger == ClassifyTrigger::EveryRequest {
+        if config.judge.classify_trigger == ClassifyTrigger::EveryRequest {
             return Err(LibsyError::AlgorithmError {
                 message: "hierarchical: classify_trigger must be user_turn or new_session"
                     .to_string(),
@@ -128,18 +124,18 @@ impl HierarchicalRouter {
                 message: "hierarchical: the stage router cannot also carry a judge".to_string(),
             });
         }
-        let trigger = config.classifier.config.classify_trigger;
-        let message_hash_fallback = config.classifier.config.message_hash_fallback;
+        let trigger = config.judge.classify_trigger;
+        let message_hash_fallback = config.judge.message_hash_fallback;
         // Only the judge's Classifier face is used, so its own affinity never runs.
         // Leaving these set would apply the standalone route's pairing rules to a
         // trigger this router implements itself.
         let judge_config = TaskClassifierConfig {
             classify_trigger: ClassifyTrigger::EveryRequest,
             message_hash_fallback: false,
-            ..config.classifier.config
+            ..config.judge
         };
         let judge = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
-            judge_target: config.classifier.judge_target,
+            judge_target: config.judge_target,
             efficient_target: efficient.clone(),
             capable_target: capable.clone(),
             config: judge_config,
@@ -177,104 +173,13 @@ impl Algorithm for HierarchicalRouter {
 mod tests {
     use std::sync::Arc;
 
-    use parking_lot::Mutex;
-    use serde_json::json;
-    use switchyard_protocol::{
-        ContentBlock, LlmRequest, Message, Metadata, Role, ToolCall, ToolResult, WireFormat,
-    };
+    use switchyard_protocol::{Message, Role};
 
     use super::*;
     use crate::algorithms::stage::LlmFallback;
     use crate::algorithms::util::stage::PickerMode;
-    use crate::core::testing::{Serve, reply, test_drive};
-
-    const JUDGE: &str = "judge";
-
-    #[derive(Default)]
-    struct Recorder {
-        targets: Mutex<Vec<String>>,
-        judge_p_solve: Mutex<f64>,
-    }
-
-    impl Recorder {
-        fn routed(&self) -> Vec<String> {
-            self.targets
-                .lock()
-                .iter()
-                .filter(|target| *target != JUDGE)
-                .cloned()
-                .collect()
-        }
-
-        fn judge_calls(&self) -> usize {
-            self.targets
-                .lock()
-                .iter()
-                .filter(|target| *target == JUDGE)
-                .count()
-        }
-
-        fn serve(self: &Arc<Self>) -> impl Serve {
-            let recorder = Arc::clone(self);
-            move |target: ModelId, _request: Request| {
-                let recorder = Arc::clone(&recorder);
-                async move {
-                    let target = target.to_string();
-                    recorder.targets.lock().push(target.clone());
-                    let completion = if target == JUDGE {
-                        let p_solve = *recorder.judge_p_solve.lock();
-                        format!(
-                            r#"{{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":{p_solve}}}"#
-                        )
-                    } else {
-                        target
-                    };
-                    Ok(reply(completion))
-                }
-            }
-        }
-    }
-
-    fn turn_request(failed: bool) -> Request {
-        let content = if failed {
-            "fatal runtime error: out of memory"
-        } else {
-            "ok"
-        };
-        Request {
-            llm_request: LlmRequest {
-                model: Some("auto".to_string()),
-                messages: vec![
-                    Message::text(Role::User, "fix the build"),
-                    Message {
-                        role: Role::Assistant,
-                        content: vec![ContentBlock::ToolCall(ToolCall {
-                            id: "call_1".to_string(),
-                            name: "Bash".to_string(),
-                            arguments: json!({"command": "cargo test"}),
-                        })],
-                    },
-                    Message {
-                        role: Role::Tool,
-                        content: vec![ContentBlock::ToolResult(ToolResult {
-                            tool_call_id: "call_1".to_string(),
-                            content: vec![ContentBlock::Text {
-                                text: content.to_string(),
-                            }],
-                            is_error: Some(failed),
-                        })],
-                    },
-                ],
-                ..LlmRequest::default()
-            },
-            raw_request: None,
-            metadata: Some(Metadata {
-                wire_format: Some(WireFormat::OpenAiChat),
-                session_id: Some("session-1".to_string()),
-                ..Default::default()
-            }),
-        }
-    }
+    use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
+    use crate::core::testing::test_drive;
 
     fn user_turn_request() -> Request {
         let mut request = turn_request(false);
@@ -298,14 +203,12 @@ mod tests {
             ModelId::from("strong"),
             ModelId::from("weak"),
             HierarchicalRouterConfig {
-                classifier: TierClassifier {
-                    judge_target: ModelId::from(JUDGE),
-                    config: TaskClassifierConfig {
-                        base_threshold: 0.5,
-                        classify_trigger: ClassifyTrigger::UserTurn,
-                        message_hash_fallback: true,
-                        ..Default::default()
-                    },
+                judge_target: ModelId::from(JUDGE),
+                judge: TaskClassifierConfig {
+                    base_threshold: 0.5,
+                    classify_trigger: ClassifyTrigger::UserTurn,
+                    message_hash_fallback: true,
+                    ..Default::default()
                 },
                 stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
             },
@@ -317,13 +220,11 @@ mod tests {
             ModelId::from("strong"),
             ModelId::from("weak"),
             HierarchicalRouterConfig {
-                classifier: TierClassifier {
-                    judge_target: ModelId::from(JUDGE),
-                    config: TaskClassifierConfig {
-                        base_threshold: 0.5,
-                        classify_trigger: ClassifyTrigger::UserTurn,
-                        ..Default::default()
-                    },
+                judge_target: ModelId::from(JUDGE),
+                judge: TaskClassifierConfig {
+                    base_threshold: 0.5,
+                    classify_trigger: ClassifyTrigger::UserTurn,
+                    ..Default::default()
                 },
                 stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
             },
@@ -338,10 +239,8 @@ mod tests {
             config: TaskClassifierConfig::default(),
         });
         let config = HierarchicalRouterConfig {
-            classifier: TierClassifier {
-                judge_target: ModelId::from(JUDGE),
-                config: TaskClassifierConfig::default(),
-            },
+            judge_target: ModelId::from(JUDGE),
+            judge: TaskClassifierConfig::default(),
             stage,
         };
         assert!(matches!(
@@ -353,10 +252,8 @@ mod tests {
     #[test]
     fn rejects_every_request_as_a_trigger() {
         let config = HierarchicalRouterConfig {
-            classifier: TierClassifier {
-                judge_target: ModelId::from(JUDGE),
-                config: TaskClassifierConfig::default(),
-            },
+            judge_target: ModelId::from(JUDGE),
+            judge: TaskClassifierConfig::default(),
             stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
         };
         assert!(matches!(
@@ -390,7 +287,7 @@ mod tests {
             "new_session judges once without a session id"
         );
         assert_eq!(
-            recorder.routed()[1],
+            recorder.routed()[1].target,
             "strong",
             "and the tier survives the tool step"
         );
@@ -408,11 +305,11 @@ mod tests {
 
         let routed = recorder.routed();
         assert_eq!(
-            routed[0], "strong",
+            routed[0].target, "strong",
             "a quiet turn falls open to the verdict"
         );
         assert_eq!(
-            routed[1], "strong",
+            routed[1].target, "strong",
             "which holds across the tool steps after it"
         );
         assert_eq!(

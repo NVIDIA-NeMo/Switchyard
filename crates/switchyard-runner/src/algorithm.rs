@@ -14,7 +14,7 @@ use libsy::{
     GateTrigger, HandoffNoteConfig, HierarchicalRouter, HierarchicalRouterConfig,
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
     StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TargetPrompts,
-    TaskClassifierConfig, TierClassifier,
+    TaskClassifierConfig,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -1005,10 +1005,8 @@ fn build_algorithm(
                 stage.efficient_system_prompt.as_deref(),
             );
             let config = HierarchicalRouterConfig {
-                classifier: TierClassifier {
-                    judge_target,
-                    config: classifier.task_classifier_config(),
-                },
+                judge_target,
+                judge: classifier.task_classifier_config(),
                 stage: stage_config,
             };
             let algorithm =
