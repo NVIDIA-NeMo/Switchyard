@@ -17,9 +17,7 @@ use async_trait::async_trait;
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::stage::{StageRouterConfig, build_stage_route};
-use super::util::affinity::{
-    ClassifyTrigger, MAX_ASSIGNMENTS, first_user_message_hash, has_new_user_turn,
-};
+use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
 use super::util::stage::{StageTargets, Tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::Classifier;
@@ -44,15 +42,6 @@ struct TierSetter {
 }
 
 impl TierSetter {
-    /// The key this request's tier is retained under, or `None` when nothing identifies it.
-    fn identity(&self, request: &Request) -> Option<RoutingIdentity> {
-        RoutingIdentity::from_request(request).or_else(|| {
-            self.message_hash_fallback
-                .then(|| first_user_message_hash(request).map(RoutingIdentity::Session))
-                .flatten()
-        })
-    }
-
     fn is_due(&self, identity: Option<&RoutingIdentity>, request: &Request) -> bool {
         match self.trigger {
             ClassifyTrigger::EveryRequest => true,
@@ -66,11 +55,7 @@ impl TierSetter {
 
     fn retain(&self, identity: RoutingIdentity, tier: Tier) {
         let mut tiers = self.tiers.lock();
-        if tiers.len() >= MAX_ASSIGNMENTS
-            && let Some(evicted) = tiers.keys().next().cloned()
-        {
-            tiers.remove(&evicted);
-        }
+        evict_if_full(&mut tiers);
         tiers.insert(identity, tier);
     }
 }
@@ -78,7 +63,7 @@ impl TierSetter {
 #[async_trait]
 impl Preroute<State> for TierSetter {
     async fn run(&self, state: &mut State, request: &mut Request, driver: &Driver) -> Result<()> {
-        let identity = self.identity(request);
+        let identity = retention_key(request, self.message_hash_fallback);
         if self.is_due(identity.as_ref(), request) {
             let (classification, _) = self.judge.score(state, request, Some(driver)).await?;
             if let Some(winner) = classification.argmax(false)?

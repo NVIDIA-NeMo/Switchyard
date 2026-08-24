@@ -32,7 +32,7 @@ use crate::core::processor::{Event, Processor};
 
 /// Upper bound on retained assignments, keeping the process-local map from growing
 /// without limit; the oldest entry is evicted once the bound is reached.
-pub(crate) const MAX_ASSIGNMENTS: usize = 4096;
+const MAX_ASSIGNMENTS: usize = 4096;
 
 /// How often the classifier re-decides a session's target.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -143,19 +143,9 @@ impl AffinityRouter {
             return None;
         }
 
-        let key = match (RoutingIdentity::from_request(request), is_subagent) {
-            (Some(identity), _) => Some(identity),
-            // Child requests require their explicit session + agent identity and never fall
-            // back to task text.
-            (None, true) => None,
-            (None, false) if self.message_hash_fallback => {
-                first_user_message_hash(request).map(|hash| {
-                    tracing::debug!(affinity_key = %hash, "affinity using message hash fallback");
-                    RoutingIdentity::Session(hash)
-                })
-            }
-            (None, false) => None,
-        };
+        // Child requests require their explicit session + agent identity and never fall
+        // back to task text.
+        let key = retention_key(request, self.message_hash_fallback && !is_subagent);
         // Affinity that never keys anything is silent otherwise: the route reports itself as
         // configured while every turn is classified afresh. Say so once rather than per turn.
         if key.is_none() && self.should_warn_unkeyed() {
@@ -201,10 +191,28 @@ where
     }
 }
 
+/// The key a request's retained value is stored under.
+///
+/// Prefers the request's own identity and falls back to hashing the first user
+/// message when the caller allows it, which is the only handle on a client that
+/// sends no session ID.
+pub(crate) fn retention_key(request: &Request, hash_fallback: bool) -> Option<RoutingIdentity> {
+    if let Some(identity) = RoutingIdentity::from_request(request) {
+        return Some(identity);
+    }
+    if !hash_fallback {
+        return None;
+    }
+    first_user_message_hash(request).map(|hash| {
+        tracing::debug!(retention_key = %hash, "retaining by message hash fallback");
+        RoutingIdentity::Session(hash)
+    })
+}
+
 /// Hashes the first user message so later turns retain the initial task's affinity.
 /// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we hash the initial user message.
 /// TODO: Have not considered multi-modal payloads yet. That needs to be handled separately.
-pub(crate) fn first_user_message_hash(request: &Request) -> Option<String> {
+fn first_user_message_hash(request: &Request) -> Option<String> {
     let message = request
         .llm_request
         .messages
@@ -249,11 +257,11 @@ where
 }
 
 /// Evicts one arbitrary assignment when the map has reached [`MAX_ASSIGNMENTS`].
-fn evict_if_full(assignments: &mut HashMap<RoutingIdentity, ModelId>) {
-    if assignments.len() >= MAX_ASSIGNMENTS
-        && let Some(evicted) = assignments.keys().next().cloned()
+pub(crate) fn evict_if_full<V>(retained: &mut HashMap<RoutingIdentity, V>) {
+    if retained.len() >= MAX_ASSIGNMENTS
+        && let Some(evicted) = retained.keys().next().cloned()
     {
-        assignments.remove(&evicted);
+        retained.remove(&evicted);
     }
 }
 
