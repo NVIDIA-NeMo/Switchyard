@@ -1067,7 +1067,7 @@ fn openai_text_part(text: &str) -> Value {
 }
 
 // Maps IR image sources to OpenAI Chat image content parts when possible.
-fn openai_image_part(source: &ImageSource) -> Option<Value> {
+pub(crate) fn openai_image_part(source: &ImageSource) -> Option<Value> {
     match source {
         ImageSource::Url { url, detail } => {
             let mut image_url = json!({"url": url});
@@ -1119,7 +1119,7 @@ fn openai_raw_image_part(raw: &Value) -> Option<Value> {
 }
 
 // Converts image sources to deterministic text fallback content.
-fn image_source_text(source: &ImageSource) -> String {
+pub(crate) fn image_source_text(source: &ImageSource) -> String {
     match source {
         ImageSource::Url { url, detail } => json_string(&json!({
             "url": url,
@@ -1134,7 +1134,7 @@ fn image_source_text(source: &ImageSource) -> String {
 }
 
 // Maps IR file sources to OpenAI Chat file content parts when possible.
-fn openai_file_part(source: &FileSource) -> Option<Value> {
+pub(crate) fn openai_file_part(source: &FileSource) -> Option<Value> {
     match source {
         FileSource::FileId(file_id) => Some(json!({"type": "file", "file": {"file_id": file_id}})),
         FileSource::FileData { data, filename } => {
@@ -1167,7 +1167,7 @@ fn openai_raw_file_part(raw: &Value) -> Option<Value> {
 }
 
 // Converts file sources to deterministic text fallback content.
-fn file_source_text(source: &FileSource) -> String {
+pub(crate) fn file_source_text(source: &FileSource) -> String {
     match source {
         FileSource::FileId(file_id) => json_string(&json!({"file_id": file_id})),
         FileSource::FileData { data, filename } => json_string(&json!({
