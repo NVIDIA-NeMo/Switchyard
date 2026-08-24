@@ -32,7 +32,7 @@
 <a href=#32 id=32 data-nosnippet>32</a>
 <a href=#33 id=33 data-nosnippet>33</a><span class="doccomment">/// Upper bound on retained assignments, keeping the process-local map from growing
 <a href=#34 id=34 data-nosnippet>34</a>/// without limit; the oldest entry is evicted once the bound is reached.
-<a href=#35 id=35 data-nosnippet>35</a></span><span class="kw">const </span>MAX_ASSIGNMENTS: usize = <span class="number">4096</span>;
+<a href=#35 id=35 data-nosnippet>35</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>MAX_ASSIGNMENTS: usize = <span class="number">4096</span>;
 <a href=#36 id=36 data-nosnippet>36</a>
 <a href=#37 id=37 data-nosnippet>37</a><span class="doccomment">/// How often the classifier re-decides a session's target.
 <a href=#38 id=38 data-nosnippet>38</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -204,7 +204,7 @@
 <a href=#204 id=204 data-nosnippet>204</a><span class="doccomment">/// Hashes the first user message so later turns retain the initial task's affinity.
 <a href=#205 id=205 data-nosnippet>205</a>/// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we hash the initial user message.
 <a href=#206 id=206 data-nosnippet>206</a>/// TODO: Have not considered multi-modal payloads yet. That needs to be handled separately.
-<a href=#207 id=207 data-nosnippet>207</a></span><span class="kw">fn </span>first_user_message_hash(request: <span class="kw-2">&amp;</span>Request) -&gt; <span class="prelude-ty">Option</span>&lt;String&gt; {
+<a href=#207 id=207 data-nosnippet>207</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>first_user_message_hash(request: <span class="kw-2">&amp;</span>Request) -&gt; <span class="prelude-ty">Option</span>&lt;String&gt; {
 <a href=#208 id=208 data-nosnippet>208</a>    <span class="kw">let </span>message = request
 <a href=#209 id=209 data-nosnippet>209</a>        .llm_request
 <a href=#210 id=210 data-nosnippet>210</a>        .messages
