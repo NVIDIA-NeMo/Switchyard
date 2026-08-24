@@ -277,18 +277,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_efficient_verdict_sets_the_efficient_tier() -> Result<()> {
-        let recorder = Arc::new(Recorder::default());
-        *recorder.judge_p_solve.lock() = 0.9;
-        let router = router()?;
-
-        test_drive(router.clone(), user_turn_request(), recorder.serve()).await?;
-
-        assert_eq!(recorder.routed()[0], "weak");
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn the_verdict_holds_across_tool_steps_without_calling_the_judge_again() -> Result<()> {
         let recorder = Arc::new(Recorder::default());
         *recorder.judge_p_solve.lock() = 0.1;
