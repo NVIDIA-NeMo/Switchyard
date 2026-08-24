@@ -15,11 +15,11 @@ use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierCon
 use super::stage::{StageRouterConfig, build_stage_route};
 use super::util::affinity::has_new_user_turn;
 use super::util::stage::{StageTargets, set_fall_open};
-use crate::Result;
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::Classifier;
 use crate::core::prelude::Prelude;
 use crate::core::state::State;
+use crate::{LibsyError, Result};
 use switchyard_protocol::{ModelId, Request};
 
 const HIERARCHICAL: &str = "hierarchical";
@@ -70,12 +70,19 @@ pub struct HierarchicalRouter {
 impl HierarchicalRouter {
     /// Stacks the classifier over a stage router across the same tier pair.
     ///
-    /// Errors on a stage or judge configuration either algorithm rejects.
+    /// Errors on a stage or judge configuration either algorithm rejects, and on a
+    /// stage router carrying its own judge, which would decide the turns this
+    /// classifier set a tier for.
     pub fn new(
         capable: ModelId,
         efficient: ModelId,
         config: HierarchicalRouterConfig,
     ) -> Result<Self> {
+        if config.stage.llm_fallback.is_some() {
+            return Err(LibsyError::AlgorithmError {
+                message: "hierarchical: the stage router cannot also carry a judge".to_string(),
+            });
+        }
         let judge = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: config.classifier.judge_target,
             efficient_target: efficient.clone(),
@@ -119,6 +126,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::algorithms::stage::LlmFallback;
     use crate::algorithms::util::stage::PickerMode;
     use crate::core::testing::{Serve, reply, test_drive};
 
@@ -234,6 +242,26 @@ mod tests {
                 stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
             },
         )?))
+    }
+
+    #[test]
+    fn rejects_a_stage_router_that_carries_its_own_judge() {
+        let mut stage = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
+        stage.llm_fallback = Some(LlmFallback {
+            judge_target: ModelId::from(JUDGE),
+            config: TaskClassifierConfig::default(),
+        });
+        let config = HierarchicalRouterConfig {
+            classifier: TierClassifier {
+                judge_target: ModelId::from(JUDGE),
+                config: TaskClassifierConfig::default(),
+            },
+            stage,
+        };
+        assert!(matches!(
+            HierarchicalRouter::new(ModelId::from("strong"), ModelId::from("weak"), config),
+            Err(LibsyError::AlgorithmError { .. })
+        ));
     }
 
     #[tokio::test]
