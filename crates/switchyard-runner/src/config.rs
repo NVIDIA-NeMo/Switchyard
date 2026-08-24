@@ -635,6 +635,49 @@ base_threshold = 0.5
         )
     }
 
+    fn hierarchical_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+[targets.tier_judge]
+id = "tier-judge/model"
+llm_client = "primary"
+
+[routes.hier]
+id = "switchyard/hier"
+type = "hierarchical"
+
+[routes.hier.classifier]
+target = "tier_judge"
+base_threshold = 0.5
+
+[routes.hier.stage]
+capable_target = "strong"
+efficient_target = "weak"
+confidence_threshold = 0.5
+"#
+        )
+    }
+
+    #[test]
+    fn hierarchical_route_builds_and_claims_both_tiers_and_its_judge() -> RunnerResult<()> {
+        let runner = runner_from_toml(&hierarchical_config())?;
+        assert!(
+            runner
+                .models()
+                .any(|model| model.id.as_str() == "switchyard/hier")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hierarchical_route_rejects_an_unknown_target() {
+        let config = hierarchical_config().replace(
+            "capable_target = \"strong\"",
+            "capable_target = \"missing\"",
+        );
+        assert!(runner_from_toml(&config).is_err());
+    }
+
     #[test]
     fn builds_all_supported_algorithm_types() -> RunnerResult<()> {
         let state = runner_from_toml(VALID_CONFIG)?;

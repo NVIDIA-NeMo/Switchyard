@@ -16,6 +16,7 @@ configuration and tuning. For the vocabulary these pages use, see
 | [Random Routing](random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
 | [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
 | [Stage-Router Routing](stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
+| [Hierarchical Routing](hierarchical_routing.md) | Other algorithms should be stacked in a hierarchy, with one setting another's configuration. | `hierarchical` |
 | [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `llm_classifier` with `escalation` |
 | [Advisor-Gate Routing](advisor_gate_routing.md) | One model should serve every turn, with a stronger reviewer approving its "done" claims or sending back a redo plan. | `advisor` |
 

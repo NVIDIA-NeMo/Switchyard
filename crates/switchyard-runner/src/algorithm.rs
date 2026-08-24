@@ -13,7 +13,7 @@ use libsy::{
     ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig,
     GateTrigger, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
     Passthrough, PickerMode, Random, StageRouter, StageRouterConfig, SubagentRouter,
-    SubagentRouterConfig, TargetPrompts, TaskClassifierConfig,
+    SubagentRouterConfig, TargetPrompts, TaskClassifierConfig, TierClassifier,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -273,6 +273,16 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// A judge picks the tier at each user turn; a stage router runs the turns within it.
+    Hierarchical {
+        /// Judge that picks the tier. Called through its own target.
+        classifier: StageClassifierConfig,
+        /// The stage router the judge hands off to.
+        stage: HierarchicalStageConfig,
+        /// Separate policy for delegated sub-agent work.
+        #[serde(default)]
+        subagents: Option<SubagentRouteConfig>,
+    },
     /// Serves every turn from one target, and has a second model review some of
     /// those turns before the caller sees them.
     Advisor {
@@ -364,6 +374,31 @@ pub struct StageClassifierConfig {
     pub max_output_tokens: u64,
 }
 
+/// The stage router a `hierarchical` route hands off to. No `picker`: the judge
+/// sets the tier, and a turn it cannot reach falls open to the efficient tier.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HierarchicalStageConfig {
+    /// The capable tier.
+    pub capable_target: String,
+    /// The efficient tier.
+    pub efficient_target: String,
+    /// How much agreement a decisive pick needs, from 0 to 1.
+    pub confidence_threshold: f64,
+    /// How many trailing tool results the signals are scored over.
+    #[serde(default)]
+    pub recent_turn_window: Option<usize>,
+    /// Notes handed to a tier when the router switches to it.
+    #[serde(default)]
+    pub handoff_notes: Option<HandoffNoteConfig>,
+    /// System prompt handed to the capable tier.
+    #[serde(default)]
+    pub capable_system_prompt: Option<String>,
+    /// System prompt handed to the efficient tier.
+    #[serde(default)]
+    pub efficient_system_prompt: Option<String>,
+}
+
 impl StageClassifierConfig {
     fn task_classifier_config(&self) -> TaskClassifierConfig {
         TaskClassifierConfig {
@@ -432,6 +467,18 @@ impl AlgorithmSpec {
                 }
                 names
             }
+            Self::Hierarchical {
+                stage, subagents, ..
+            } => {
+                let mut names = vec![
+                    stage.capable_target.as_str(),
+                    stage.efficient_target.as_str(),
+                ];
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.routing_target_names());
+                }
+                names
+            }
             // The advisor is judge-only: reviews go through its own client,
             // so it is not a completion (or count_tokens) destination.
             Self::Advisor {
@@ -460,6 +507,16 @@ impl AlgorithmSpec {
                 if let Some(classifier) = classifier {
                     names.push(&classifier.target);
                 }
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.classifier_target_name());
+                }
+            }
+            Self::Hierarchical {
+                classifier,
+                subagents,
+                ..
+            } => {
+                names.push(&classifier.target);
                 if let Some(subagents) = subagents {
                     names.extend(subagents.classifier_target_name());
                 }
@@ -933,6 +990,37 @@ fn build_algorithm(
             let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("stage_router route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
+            attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
+        }
+        AlgorithmSpec::Hierarchical {
+            classifier,
+            stage,
+            subagents,
+        } => {
+            let capable = resolve_target_model_id(route_name, &stage.capable_target, targets)?;
+            let efficient = resolve_target_model_id(route_name, &stage.efficient_target, targets)?;
+            let judge_target = resolve_target_model_id(route_name, &classifier.target, targets)?;
+            let mut config =
+                StageRouterConfig::new(PickerMode::EfficientFirst, stage.confidence_threshold);
+            config.recent_window = stage.recent_turn_window;
+            config.handoff_notes = stage.handoff_notes.clone();
+            config.tier_prompts = tier_prompts(
+                &capable,
+                stage.capable_system_prompt.as_deref(),
+                &efficient,
+                stage.efficient_system_prompt.as_deref(),
+            );
+            config.tier_classifier = Some(TierClassifier {
+                judge_target,
+                config: classifier.task_classifier_config(),
+            });
+            let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("hierarchical route {route_name}: {error}"),
                     error,
                 )
             })?;

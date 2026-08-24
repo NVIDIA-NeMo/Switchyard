@@ -19,10 +19,11 @@ use async_trait::async_trait;
 
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
+use super::util::affinity::has_new_user_turn;
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets, Tier,
-    fall_open_tier, record_decision_source, record_routing_decision,
+    fall_open_tier, record_decision_source, record_routing_decision, set_fall_open,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
@@ -91,6 +92,40 @@ impl Classifier<State> for FallOpen {
     }
 }
 
+/// Sets the fall-open tier from a judge verdict, then abstains so the signals run.
+struct TierPicker {
+    judge: Arc<dyn Classifier<State>>,
+    targets: StageTargets,
+}
+
+#[async_trait]
+impl Classifier<State> for TierPicker {
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: Option<&Driver>,
+    ) -> Result<(Classification, Option<Response>)> {
+        if has_new_user_turn(&request.llm_request.messages) {
+            let (classification, _) = self.judge.score(state, request, driver).await?;
+            if let Some(winner) = classification.argmax(false)?
+                && let Some(tier) = self.targets.tier_for(&winner.target)
+            {
+                set_fall_open(state, tier);
+            }
+        }
+        Ok((Classification::Ambiguous(Vec::new()), None))
+    }
+}
+
+/// The judge that picks a user turn's tier, ahead of the signals.
+pub struct TierClassifier {
+    /// Target the judge model is called through, not a routing destination.
+    pub judge_target: ModelId,
+    /// Judge configuration. `classify_trigger` has no effect here.
+    pub config: TaskClassifierConfig,
+}
+
 /// The capability judge a stage router falls through to.
 pub struct LlmFallback {
     /// Target the judge model is called through. It is not a routing
@@ -122,6 +157,8 @@ pub struct StageRouterConfig {
     /// judge's own target, plus the same configuration the standalone capability
     /// route takes.
     pub llm_fallback: Option<LlmFallback>,
+    /// Judge that sets the fall-open tier at the start of each user turn.
+    pub tier_classifier: Option<TierClassifier>,
 }
 
 impl StageRouterConfig {
@@ -135,6 +172,7 @@ impl StageRouterConfig {
             handoff_notes: None,
             tier_prompts: TargetPrompts::default(),
             llm_fallback: None,
+            tier_classifier: None,
         }
     }
 }
@@ -197,7 +235,8 @@ fn build_route(
         default_tier,
     };
 
-    let mut classifier = StageClassifier::new(targets, config.mode, config.confidence_threshold);
+    let mut classifier =
+        StageClassifier::new(targets.clone(), config.mode, config.confidence_threshold);
     if let Some(notes) = config.handoff_notes {
         classifier = classifier.with_handoff_notes(notes);
     }
@@ -207,8 +246,21 @@ fn build_route(
     let target_set = vec![capable.clone(), efficient.clone()];
     let mut router = FallThrough::<State>::new_with_state(target_set)
         .with_name(STAGE_ROUTER)
-        .with_processor(Arc::new(signals))
-        .with_classifier(Arc::new(classifier));
+        .with_processor(Arc::new(signals));
+    // Ahead of the signals so a fresh turn's verdict is in place before they score.
+    if let Some(tier_classifier) = config.tier_classifier {
+        let judge = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+            judge_target: tier_classifier.judge_target,
+            efficient_target: efficient.clone(),
+            capable_target: capable.clone(),
+            config: tier_classifier.config,
+        })?;
+        router = router.with_classifier(Arc::new(TierPicker {
+            judge: Arc::new(judge),
+            targets,
+        }));
+    }
+    router = router.with_classifier(Arc::new(classifier));
     if let Some(fallback) = config.llm_fallback {
         // The capability judge takes its tiers in the same order the capability
         // route passes them: efficient first, capable second.
@@ -423,6 +475,27 @@ mod tests {
         )?))
     }
 
+    fn user_turn_request() -> Request {
+        let mut request = turn_request(false);
+        request
+            .llm_request
+            .messages
+            .push(Message::text(Role::User, "now rewrite the parser"));
+        request
+    }
+
+    fn hierarchical_config() -> StageRouterConfig {
+        let mut config = config();
+        config.tier_classifier = Some(TierClassifier {
+            judge_target: ModelId::from(JUDGE),
+            config: TaskClassifierConfig {
+                base_threshold: 0.5,
+                ..Default::default()
+            },
+        });
+        config
+    }
+
     fn config_with_notes() -> StageRouterConfig {
         let mut c = config();
         c.handoff_notes = Some(HandoffNoteConfig::new(ESCALATION, None, true));
@@ -546,6 +619,70 @@ mod tests {
         assert_eq!(
             routed[3].target, "strong",
             "clearing restores the picker default"
+        );
+        Ok(())
+    }
+
+    // ── hierarchical: the judge sets the tier, the signals run within it ─────
+
+    #[tokio::test]
+    async fn a_capable_verdict_sets_the_tier_a_quiet_turn_falls_open_to() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        *recorder.judge_p_solve.lock() = 0.1;
+        let router = recording_router(hierarchical_config())?;
+
+        test_drive(router.clone(), user_turn_request(), recorder.serve()).await?;
+
+        assert_eq!(recorder.routed()[0].target, "strong");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_efficient_verdict_sets_the_efficient_tier() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        *recorder.judge_p_solve.lock() = 0.9;
+        let router = recording_router(hierarchical_config())?;
+
+        test_drive(router.clone(), user_turn_request(), recorder.serve()).await?;
+
+        assert_eq!(recorder.routed()[0].target, "weak");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_verdict_holds_across_tool_steps_without_calling_the_judge_again() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        *recorder.judge_p_solve.lock() = 0.1;
+        let router = recording_router(hierarchical_config())?;
+
+        test_drive(router.clone(), user_turn_request(), recorder.serve()).await?;
+        test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
+
+        let judge_calls = recorder
+            .calls
+            .lock()
+            .iter()
+            .filter(|call| call.target == JUDGE)
+            .count();
+        assert_eq!(judge_calls, 1, "a tool step is not a new user turn");
+        assert_eq!(recorder.routed()[1].target, "strong");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn confident_signals_still_decide_a_turn_the_judge_set_a_tier_for() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        *recorder.judge_p_solve.lock() = 0.9;
+        let router = recording_router(hierarchical_config())?;
+
+        test_drive(router.clone(), user_turn_request(), recorder.serve()).await?;
+        test_drive(router.clone(), turn_request(true), recorder.serve()).await?;
+
+        let routed = recorder.routed();
+        assert_eq!(routed[0].target, "weak", "the verdict sets the floor");
+        assert_eq!(
+            routed[1].target, "strong",
+            "a critical failure escalates over it"
         );
         Ok(())
     }

@@ -57,7 +57,7 @@ fn is_user_turn(message: &Message) -> bool {
             .all(|block| matches!(block, ContentBlock::ToolResult(_)))
 }
 
-fn has_new_user_turn(messages: &[Message]) -> bool {
+pub(crate) fn has_new_user_turn(messages: &[Message]) -> bool {
     messages.last().is_some_and(is_user_turn)
 }
 
