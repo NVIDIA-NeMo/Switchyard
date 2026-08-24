@@ -82,6 +82,7 @@ impl RouteFailurePhase {
 }
 
 /// Safe, structured terminal-failure data for routing telemetry.
+#[non_exhaustive]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RouteFailureSummary {
     /// Stable failure classification.
