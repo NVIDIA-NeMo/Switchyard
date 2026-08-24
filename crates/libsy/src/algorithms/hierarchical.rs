@@ -9,9 +9,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-
 use async_trait::async_trait;
+use parking_lot::Mutex;
 
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
@@ -41,19 +40,20 @@ struct TierSetter {
 }
 
 impl TierSetter {
+    /// Two requests for one identity can both pass this and both judge, since a
+    /// judge call sits between here and [`retain`](Self::retain). The later wins.
     fn is_due(&self, identity: Option<&RoutingIdentity>, request: &Request) -> bool {
         match self.trigger {
-            ClassifyTrigger::EveryRequest => true,
             ClassifyTrigger::UserTurn => has_new_user_turn(&request.llm_request.messages),
             // Unkeyed requests cannot be told apart, so every one is a new session.
             ClassifyTrigger::NewSession => {
                 identity.is_none_or(|identity| !self.tiers.lock().contains_key(identity))
             }
+            // Rejected by the constructor, and only in the enum for the standalone route.
+            ClassifyTrigger::EveryRequest => true,
         }
     }
 
-    /// A judge call sits between the `is_due` check and this insert, so two first
-    /// requests for one identity can both judge. The later verdict wins.
     fn retain(&self, identity: RoutingIdentity, tier: Tier) {
         let mut tiers = self.tiers.lock();
         evict_if_full(&mut tiers);
@@ -103,11 +103,11 @@ pub struct HierarchicalRouter {
 }
 
 impl HierarchicalRouter {
-    /// Stacks the classifier over a stage router across the same tier pair.
+    /// Stacks the judge over a stage router across the same tier pair.
     ///
-    /// Errors on a stage or judge configuration either algorithm rejects, and on a
-    /// stage router carrying its own judge, which would decide the turns this
-    /// classifier set a tier for.
+    /// Errors on a configuration either algorithm rejects, on `every_request`, and
+    /// on a stage router carrying its own judge, which would decide the very turns
+    /// this judge set a tier for.
     pub fn new(
         capable: ModelId,
         efficient: ModelId,
