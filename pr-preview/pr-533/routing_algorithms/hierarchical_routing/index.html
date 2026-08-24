@@ -775,6 +775,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#what-exists-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What exists today
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1155,6 +1166,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#what-exists-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What exists today
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1201,8 +1223,14 @@
 higher in the stack can set the configuration of the one below it before handing
 off, so each algorithm is used where its evidence is strongest instead of one
 deciding everything.</p>
-<p>Today one pairing is supported: an LLM classifier sets a stage router's <code>picker</code>,
-the tier it defaults to when its own signals are not confident.</p>
+<h2 id="what-exists-today">What exists today<a class="headerlink" href="#what-exists-today" title="Permanent link">&para;</a></h2>
+<p>One pairing: an LLM classifier sets a stage router's <code>picker</code>, the tier it
+defaults to when its own signals are not confident. Both algorithms and the
+relationship between them are fixed, and the configuration below names them
+directly rather than composing arbitrary algorithms.</p>
+<p>The general form, where any algorithm can target another and set its
+configuration, is the direction rather than the current behaviour. Expect this
+route's configuration to change as more pairings are added.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[routes.switchyard]</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
