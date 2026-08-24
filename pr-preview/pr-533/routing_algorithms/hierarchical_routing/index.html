@@ -1197,11 +1197,11 @@
 
 
 <h1 id="hierarchical-routing">Hierarchical Routing<a class="headerlink" href="#hierarchical-routing" title="Permanent link">&para;</a></h1>
-<p>An algorithm's target is usually a model. Under a <code>hierarchical</code> route it can be
-another algorithm, and the algorithm in front can adjust the configuration of the
-one behind it before handing off.</p>
-<p>Today one pairing is supported: an LLM classifier sets the <code>picker</code> for a stage
-router.</p>
+<p>A routing strategy for stacking other algorithms in a hierarchy. An algorithm
+higher in the stack can set the configuration of the one below it before handing
+off, so the two decide together rather than one deciding alone.</p>
+<p>Today one pairing is supported: an LLM classifier sets a stage router's <code>picker</code>,
+the tier it defaults to when its own signals are not confident.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[routes.switchyard]</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
@@ -1220,9 +1220,9 @@ router.</p>
 <code>[routes.switchyard.stage]</code> takes the <code>stage_router</code> fields except <code>picker</code>,
 which the classifier sets, and <code>classifier</code>, which would overrule it.</p>
 <h2 id="when-to-use-it">When to use it<a class="headerlink" href="#when-to-use-it" title="Permanent link">&para;</a></h2>
-<p>An interactive coding agent. The classifier reads the user's message and sets the
-picker, then the stage router runs the tool execution loop against its own
-signals with that picker in place. The next user message sets it again.</p>
+<p>An interactive coding agent. The classifier reads the user's message and picks
+the tier, then the stage router runs the tool execution loop, defaulting to that
+tier on any step its signals cannot call. The next user message picks again.</p>
 <p>A stage router alone has no signals to read until the agent has done some work,
 so the first response to a hard request comes from the efficient tier. A
 classifier alone would run on every tool step, which is expensive and switches
