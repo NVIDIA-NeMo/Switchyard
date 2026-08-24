@@ -5,12 +5,16 @@
 
 mod algorithm;
 mod config;
+mod failure;
 mod route;
 mod runner;
 
 pub use algorithm::{
     AdvisorTriggerConfig, AlgorithmConfigError, AlgorithmSpec, ClassifierMode,
     ClassifierPolicyConfig, LlmClassifierRouteConfig, StageClassifierConfig, SubagentRouteConfig,
+};
+pub use failure::{
+    RouteFailureCategory, RouteFailurePhase, RouteFailureSummary, stream_failure_summary,
 };
 pub use route::{
     CallerAuthKind, CountTokensTarget, ModelCapabilities, Route, RunOutput, RunnerError,
