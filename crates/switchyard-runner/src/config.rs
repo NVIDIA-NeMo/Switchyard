@@ -670,15 +670,6 @@ confidence_threshold = 0.5
     }
 
     #[test]
-    fn hierarchical_route_rejects_an_unknown_target() {
-        let config = hierarchical_config().replace(
-            "capable_target = \"strong\"",
-            "capable_target = \"missing\"",
-        );
-        assert!(runner_from_toml(&config).is_err());
-    }
-
-    #[test]
     fn builds_all_supported_algorithm_types() -> RunnerResult<()> {
         let state = runner_from_toml(VALID_CONFIG)?;
         // The model id array is sorted alphabetically

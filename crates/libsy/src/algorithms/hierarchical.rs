@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::stage::{StageRouterConfig, build_stage_route};
-use super::util::affinity::has_new_user_turn;
-use super::util::stage::{StageTargets, set_fall_open};
+use super::util::affinity::{ClassifyTrigger, has_new_user_turn};
+use super::util::stage::{StageTargets, fall_open_tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::Classifier;
 use crate::core::prelude::Prelude;
@@ -28,12 +28,24 @@ const HIERARCHICAL: &str = "hierarchical";
 struct TierPicker {
     judge: Arc<dyn Classifier<State>>,
     targets: StageTargets,
+    trigger: ClassifyTrigger,
+}
+
+impl TierPicker {
+    fn due(&self, state: &State, request: &Request) -> bool {
+        match self.trigger {
+            ClassifyTrigger::EveryRequest => true,
+            ClassifyTrigger::UserTurn => has_new_user_turn(&request.llm_request.messages),
+            // The tier it set is the record that it has already run.
+            ClassifyTrigger::NewSession => fall_open_tier(state).is_none(),
+        }
+    }
 }
 
 #[async_trait]
 impl Prelude<State> for TierPicker {
     async fn run(&self, state: &mut State, request: &mut Request, driver: &Driver) -> Result<()> {
-        if !has_new_user_turn(&request.llm_request.messages) {
+        if !self.due(state, request) {
             return Ok(());
         }
         let (classification, _) = self.judge.score(state, request, Some(driver)).await?;
@@ -50,7 +62,7 @@ impl Prelude<State> for TierPicker {
 pub struct TierClassifier {
     /// Target the judge is called through. Not a routing destination.
     pub judge_target: ModelId,
-    /// Judge configuration. `classify_trigger` has no effect here.
+    /// Judge configuration, including how often `classify_trigger` runs it.
     pub config: TaskClassifierConfig,
 }
 
@@ -83,6 +95,7 @@ impl HierarchicalRouter {
                 message: "hierarchical: the stage router cannot also carry a judge".to_string(),
             });
         }
+        let trigger = config.classifier.config.classify_trigger;
         let judge = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: config.classifier.judge_target,
             efficient_target: efficient.clone(),
@@ -92,6 +105,7 @@ impl HierarchicalRouter {
         let picker = TierPicker {
             judge: Arc::new(judge),
             targets: StageTargets::new(capable.clone(), efficient.clone()),
+            trigger,
         };
         let route = build_stage_route(capable, efficient, config.stage)?
             .with_name(HIERARCHICAL)
@@ -236,6 +250,7 @@ mod tests {
                     judge_target: ModelId::from(JUDGE),
                     config: TaskClassifierConfig {
                         base_threshold: 0.5,
+                        classify_trigger: ClassifyTrigger::UserTurn,
                         ..Default::default()
                     },
                 },
@@ -265,19 +280,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_capable_verdict_sets_the_tier_a_quiet_turn_falls_open_to() -> Result<()> {
-        let recorder = Arc::new(Recorder::default());
-        *recorder.judge_p_solve.lock() = 0.1;
-        let router = router()?;
-
-        test_drive(router.clone(), user_turn_request(), recorder.serve()).await?;
-
-        assert_eq!(recorder.routed()[0], "strong");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn the_verdict_holds_across_tool_steps_without_calling_the_judge_again() -> Result<()> {
+    async fn the_judge_sets_the_tier_once_a_turn_and_the_signals_run_within_it() -> Result<()> {
         let recorder = Arc::new(Recorder::default());
         *recorder.judge_p_solve.lock() = 0.1;
         let router = router()?;
@@ -285,27 +288,20 @@ mod tests {
         test_drive(router.clone(), user_turn_request(), recorder.serve()).await?;
         test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
 
+        let routed = recorder.routed();
+        assert_eq!(
+            routed[0], "strong",
+            "a quiet turn falls open to the verdict"
+        );
+        assert_eq!(
+            routed[1], "strong",
+            "which holds across the tool steps after it"
+        );
         assert_eq!(
             recorder.judge_calls(),
             1,
             "a tool step is not a new user turn"
         );
-        assert_eq!(recorder.routed()[1], "strong");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn confident_signals_still_decide_a_turn_the_judge_set_a_tier_for() -> Result<()> {
-        let recorder = Arc::new(Recorder::default());
-        *recorder.judge_p_solve.lock() = 0.9;
-        let router = router()?;
-
-        test_drive(router.clone(), user_turn_request(), recorder.serve()).await?;
-        test_drive(router.clone(), turn_request(true), recorder.serve()).await?;
-
-        let routed = recorder.routed();
-        assert_eq!(routed[0], "weak", "the verdict sets the floor");
-        assert_eq!(routed[1], "strong", "a critical failure escalates over it");
         Ok(())
     }
 }

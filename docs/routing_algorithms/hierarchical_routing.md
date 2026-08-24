@@ -26,6 +26,7 @@ type = "hierarchical"
 [routes.switchyard.classifier]
 target = "judge"
 base_threshold = 0.5
+classify_trigger = "user_turn"
 
 [routes.switchyard.stage]
 capable_target = "strong"
@@ -34,6 +35,8 @@ confidence_threshold = 0.5
 ```
 
 `[routes.switchyard.classifier]` takes the `stage_router` classifier fields.
+`classify_trigger` sets how often the judge runs: `user_turn` re-picks the tier
+whenever the user speaks, `new_session` picks once and holds it.
 `[routes.switchyard.stage]` takes the `stage_router` fields except `picker`,
 which the classifier sets, and `classifier`, which would overrule it.
 
