@@ -1998,6 +1998,12 @@ configuration. Today a classifier sets a stage router's <code>picker</code>, the
 <td><code>user_turn</code> re-picks the tier whenever the user speaks, <code>new_session</code> picks once and holds it. <code>every_request</code> is rejected here: a judge call per tool step is the cost this route exists to avoid.</td>
 </tr>
 <tr>
+<td><code>classifier.message_hash_fallback</code></td>
+<td style="text-align: center;">No</td>
+<td><code>false</code></td>
+<td>Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the <code>llm_classifier</code> route, this works on either trigger.</td>
+</tr>
+<tr>
 <td><code>stage.capable_target</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
@@ -2041,8 +2047,9 @@ configuration. Today a classifier sets a stage router's <code>picker</code>, the
 </tr>
 </tbody>
 </table>
-<p>The tier is session state, so a deployment that sends no session ID gets a fresh
-tier on every request. The stage table takes no <code>picker</code>: the classifier sets the tier. A turn the
+<p>The tier is retained per session. A deployment that sends no session ID needs
+<code>classifier.message_hash_fallback = true</code>, which keys on the first user message
+instead. The stage table takes no <code>picker</code>: the classifier sets the tier. A turn the
 classifier cannot reach falls open to the efficient tier. It takes no
 <code>classifier</code> either, since that judge would overrule the tier already picked.</p>
 <h2 id="validation-errors">Validation Errors<a class="headerlink" href="#validation-errors" title="Permanent link">&para;</a></h2>
