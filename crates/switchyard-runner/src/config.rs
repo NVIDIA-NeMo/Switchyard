@@ -820,6 +820,24 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn stage_router_rejects_an_unknown_field() {
+        let config = stage_config().replace(
+            "picker = \"efficient_first\"",
+            "picker = \"efficient_first\"\nmagic = true",
+        );
+        assert!(error_message(&config).contains("unknown field"));
+    }
+
+    #[test]
+    fn hierarchical_stage_block_rejects_an_unknown_field() {
+        let config = hierarchical_config().replace(
+            "confidence_threshold = 0.5",
+            "confidence_threshold = 0.5\nmagic = true",
+        );
+        assert!(error_message(&config).contains("unknown field"));
+    }
+
+    #[test]
     fn rejects_unknown_fields_and_algorithm_types() {
         let unknown_field =
             VALID_CONFIG.replace("schema_version = 1", "schema_version = 1\nmagic = true");

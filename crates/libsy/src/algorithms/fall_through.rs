@@ -28,6 +28,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::prelude::Prelude;
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result, RoutingOutcome};
 use switchyard_protocol::{ModelId, Request, Response};
@@ -91,6 +92,7 @@ impl<S: Send> Classifier<S> for DefaultTarget {
 /// The generic state type is shared by every processor and classifier in the composition.
 pub struct FallThrough<S = ()> {
     name: String,
+    preludes: Vec<Arc<dyn Prelude<S>>>,
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: Vec<ModelId>,
@@ -103,6 +105,7 @@ impl FallThrough<()> {
     pub fn new(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
+            preludes: Vec::new(),
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -120,6 +123,7 @@ where
     pub fn new_with_state(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
+            preludes: Vec::new(),
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -137,6 +141,12 @@ where
     /// Appends a processor to the head-of-request chain.
     pub fn with_processor(mut self, processor: Arc<dyn Processor<S>>) -> Self {
         self.processors.push(processor);
+        self
+    }
+
+    /// Appends a prelude, run ahead of the processors and the cascade.
+    pub fn with_prelude(mut self, prelude: Arc<dyn Prelude<S>>) -> Self {
+        self.preludes.push(prelude);
         self
     }
 
@@ -238,6 +248,11 @@ where
         driver: &Driver,
         request: &mut Request,
     ) -> Result<(ModelId, Option<Response>)> {
+        // 0. Preludes run first so a decision they record is in place for everything behind them.
+        for prelude in &self.preludes {
+            prelude.run(state, request, driver).await?;
+        }
+
         // 1. Processor chain accumulates request-side facts into the composition's state.
         for processor in &self.processors {
             processor.process(state, Event::Request(request)).await?;
