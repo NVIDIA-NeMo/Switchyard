@@ -37,8 +37,8 @@ pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
 // core (scorer, picker, and the `StageClassifier`).
 pub use algorithms::util::stage::{
     CodingAgentDimensions, DECISION_SOURCE_KEY, DecisionSource, HandoffNoteConfig, PickOutcome,
-    PickerMode, ScoreResult, StageClassifier, StageTargets, Tier, dimensions_from_signal,
-    pick_tier, score_signal,
+    PickerMode, ScoreResult, StageClassifier, StageTargets, Tier, clear_fall_open,
+    dimensions_from_signal, pick_tier, score_signal, set_fall_open,
 };
 
 mod observability;
