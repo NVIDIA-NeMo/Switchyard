@@ -9,4 +9,7 @@ mod stream;
 pub use buffered::OpenAiChatCodec;
 pub use stream::OpenAiChatStreamCodec;
 
-pub(crate) use buffered::{decode_file_source, decode_image_source};
+pub(crate) use buffered::{
+    decode_file_source, decode_image_source, file_source_text, image_source_text, openai_file_part,
+    openai_image_part,
+};

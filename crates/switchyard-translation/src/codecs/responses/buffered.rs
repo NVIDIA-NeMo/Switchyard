@@ -10,7 +10,10 @@ use serde_json::{Map, Value, json};
 use crate::codecs::common::{
     is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
 };
-use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
+use crate::codecs::openai_chat::{
+    decode_file_source, decode_image_source, file_source_text, image_source_text, openai_file_part,
+    openai_image_part,
+};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -18,9 +21,9 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    AggLlmResponse, ContentBlock, InstructionBlock, LlmRequest, MediaSource, Message, OutputParams,
-    ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
-    ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
+    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput,
+    Role, SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -1159,9 +1162,17 @@ fn encode_responses_content(
             ContentBlock::Refusal { text } => {
                 blocks.push(json!({"type": "refusal", "refusal": text}));
             }
-            ContentBlock::Image { source } => {
-                blocks.push(json!({"type": "input_image", "image_url": source}));
-            }
+            ContentBlock::Image { source } => match responses_image_part(source) {
+                Some(part) => blocks.push(part),
+                None => {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "Responses codec could not map image content",
+                    )?;
+                    blocks.push(json!({"type": "input_text", "text": image_source_text(source)}));
+                }
+            },
             ContentBlock::Audio { source } => blocks.push(match source {
                 MediaSource::Raw(raw) => json!({"type": "input_text", "text": json_string(raw)}),
                 MediaSource::Url { url, media_type } => json!({
@@ -1186,9 +1197,17 @@ fn encode_responses_content(
                     "video": {"media_type": media_type, "data": data},
                 }),
             }),
-            ContentBlock::File { source } => {
-                blocks.push(json!({"type": "input_file", "file": source}));
-            }
+            ContentBlock::File { source } => match responses_file_part(source) {
+                Some(part) => blocks.push(part),
+                None => {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "Responses codec could not map file content",
+                    )?;
+                    blocks.push(json!({"type": "input_text", "text": file_source_text(source)}));
+                }
+            },
             ContentBlock::Unknown { raw, .. } => {
                 push_lossy(
                     diagnostics,
@@ -1203,6 +1222,29 @@ fn encode_responses_content(
         }
     }
     Ok(Value::Array(blocks))
+}
+
+// Maps IR image sources to Responses input_image parts when possible.
+//
+// Responses `image_url` is a plain string, unlike the Chat object shape, so
+// this reuses the Chat mapping (URL, data URI, raw-shape recognition) and
+// lifts its fields into the flat Responses layout.
+fn responses_image_part(source: &ImageSource) -> Option<Value> {
+    let chat_part = openai_image_part(source)?;
+    let image_url = chat_part.get("image_url")?;
+    let url = image_url.get("url")?.as_str()?;
+    let mut part = json!({"type": "input_image", "image_url": url});
+    if let Some(detail) = image_url.get("detail") {
+        part["detail"] = detail.clone();
+    }
+    Some(part)
+}
+
+// Maps IR file sources to Responses input_file parts when possible.
+fn responses_file_part(source: &FileSource) -> Option<Value> {
+    let mut part = openai_file_part(source)?;
+    part["type"] = Value::String("input_file".to_string());
+    Some(part)
 }
 
 // Encodes normalized tool definitions into Responses tool JSON.
