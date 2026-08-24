@@ -7,56 +7,92 @@
 //! and picks no target itself. The tier lives in session state, so a deployment
 //! without a session ID gets a fresh tier on every request.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use async_trait::async_trait;
 
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::stage::{StageRouterConfig, build_stage_route};
-use super::util::affinity::{ClassifyTrigger, has_new_user_turn};
-use super::util::stage::{StageTargets, set_fall_open};
-use crate::core::algorithm::{Algorithm, Driver};
+use super::util::affinity::{
+    ClassifyTrigger, MAX_ASSIGNMENTS, first_user_message_hash, has_new_user_turn,
+};
+use super::util::stage::{StageTargets, Tier, set_fall_open};
+use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::Classifier;
 use crate::core::preroute::Preroute;
-use crate::core::state::{State, StateValue};
+use crate::core::state::State;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{ModelId, Request};
 
 const HIERARCHICAL: &str = "hierarchical";
 
-/// Marks that the judge has run, independent of whether it produced a tier.
-const JUDGED_KEY: &str = "hierarchical_judged";
-
 /// Sets the stage router's fall-open tier from a judge verdict.
+///
+/// Keeps its own tier per routing identity rather than relying on the composition's
+/// session state, which a request carrying no session ID never retains. The retained
+/// tier is replayed into state on every request so the cascade below reads it.
 struct TierSetter {
     judge: Arc<dyn Classifier<State>>,
     targets: StageTargets,
     trigger: ClassifyTrigger,
+    message_hash_fallback: bool,
+    tiers: Mutex<HashMap<RoutingIdentity, Tier>>,
 }
 
 impl TierSetter {
-    fn is_due(&self, state: &State, request: &Request) -> bool {
+    /// The key this request's tier is retained under, or `None` when nothing identifies it.
+    fn identity(&self, request: &Request) -> Option<RoutingIdentity> {
+        RoutingIdentity::from_request(request).or_else(|| {
+            self.message_hash_fallback
+                .then(|| first_user_message_hash(request).map(RoutingIdentity::Session))
+                .flatten()
+        })
+    }
+
+    fn is_due(&self, identity: Option<&RoutingIdentity>, request: &Request) -> bool {
         match self.trigger {
             ClassifyTrigger::EveryRequest => true,
             ClassifyTrigger::UserTurn => has_new_user_turn(&request.llm_request.messages),
-            ClassifyTrigger::NewSession => !state.extra.contains_key(JUDGED_KEY),
+            // Unkeyed requests cannot be told apart, so every one is a new session.
+            ClassifyTrigger::NewSession => {
+                identity.is_none_or(|identity| !self.tiers.lock().contains_key(identity))
+            }
         }
+    }
+
+    fn retain(&self, identity: RoutingIdentity, tier: Tier) {
+        let mut tiers = self.tiers.lock();
+        if tiers.len() >= MAX_ASSIGNMENTS
+            && let Some(evicted) = tiers.keys().next().cloned()
+        {
+            tiers.remove(&evicted);
+        }
+        tiers.insert(identity, tier);
     }
 }
 
 #[async_trait]
 impl Preroute<State> for TierSetter {
     async fn run(&self, state: &mut State, request: &mut Request, driver: &Driver) -> Result<()> {
-        if !self.is_due(state, request) {
+        let identity = self.identity(request);
+        if self.is_due(identity.as_ref(), request) {
+            let (classification, _) = self.judge.score(state, request, Some(driver)).await?;
+            if let Some(winner) = classification.argmax(false)?
+                && let Some(tier) = self.targets.tier_for(&winner.target)
+            {
+                set_fall_open(state, tier);
+                if let Some(identity) = identity {
+                    self.retain(identity, tier);
+                }
+            }
             return Ok(());
         }
-        let (classification, _) = self.judge.score(state, request, Some(driver)).await?;
-        state
-            .extra
-            .insert(JUDGED_KEY.to_string(), StateValue::Count(1));
-        if let Some(winner) = classification.argmax(false)?
-            && let Some(tier) = self.targets.tier_for(&winner.target)
+        // Not this request's turn to judge, so replay whatever the last verdict set.
+        if let Some(tier) = identity.and_then(|identity| self.tiers.lock().get(&identity).copied())
         {
             set_fall_open(state, tier);
         }
@@ -108,6 +144,7 @@ impl HierarchicalRouter {
             });
         }
         let trigger = config.classifier.config.classify_trigger;
+        let message_hash_fallback = config.classifier.config.message_hash_fallback;
         let judge = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             judge_target: config.classifier.judge_target,
             efficient_target: efficient.clone(),
@@ -118,6 +155,8 @@ impl HierarchicalRouter {
             judge: Arc::new(judge),
             targets: StageTargets::new(capable.clone(), efficient.clone()),
             trigger,
+            message_hash_fallback,
+            tiers: Mutex::new(HashMap::new()),
         };
         let route = build_stage_route(capable, efficient, config.stage)?
             .with_name(HIERARCHICAL)
@@ -253,6 +292,33 @@ mod tests {
         request
     }
 
+    /// The same request shape with no session ID, so only the hash can key it.
+    fn unkeyed(mut request: Request) -> Request {
+        if let Some(metadata) = request.metadata.as_mut() {
+            metadata.session_id = None;
+        }
+        request
+    }
+
+    fn hash_keyed_router() -> Result<Arc<HierarchicalRouter>> {
+        Ok(Arc::new(HierarchicalRouter::new(
+            ModelId::from("strong"),
+            ModelId::from("weak"),
+            HierarchicalRouterConfig {
+                classifier: TierClassifier {
+                    judge_target: ModelId::from(JUDGE),
+                    config: TaskClassifierConfig {
+                        base_threshold: 0.5,
+                        classify_trigger: ClassifyTrigger::NewSession,
+                        message_hash_fallback: true,
+                        ..Default::default()
+                    },
+                },
+                stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+            },
+        )?))
+    }
+
     fn router() -> Result<Arc<HierarchicalRouter>> {
         Ok(Arc::new(HierarchicalRouter::new(
             ModelId::from("strong"),
@@ -289,6 +355,38 @@ mod tests {
             HierarchicalRouter::new(ModelId::from("strong"), ModelId::from("weak"), config),
             Err(LibsyError::AlgorithmError { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_session_without_an_id_keys_on_the_message_hash() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        *recorder.judge_p_solve.lock() = 0.1;
+        let router = hash_keyed_router()?;
+
+        test_drive(
+            router.clone(),
+            unkeyed(user_turn_request()),
+            recorder.serve(),
+        )
+        .await?;
+        test_drive(
+            router.clone(),
+            unkeyed(turn_request(false)),
+            recorder.serve(),
+        )
+        .await?;
+
+        assert_eq!(
+            recorder.judge_calls(),
+            1,
+            "new_session judges once without a session id"
+        );
+        assert_eq!(
+            recorder.routed()[1],
+            "strong",
+            "and the tier survives the tool step"
+        );
+        Ok(())
     }
 
     #[tokio::test]

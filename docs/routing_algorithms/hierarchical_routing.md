@@ -1,9 +1,8 @@
 # Hierarchical Routing
 
-A routing strategy for stacking other algorithms in a hierarchy. An algorithm
-higher in the stack can set the configuration of the one below it before handing
-off, so each algorithm is used where its evidence is strongest instead of one
-deciding everything.
+Routing algorithms composed in a hierarchy. An algorithm higher in the hierarchy
+sets the configuration of the one below it before handing off, so each algorithm
+runs where its evidence is strongest.
 
 ## What exists today
 

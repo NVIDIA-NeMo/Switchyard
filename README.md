@@ -90,7 +90,7 @@ algorithm list, or the [`switchyard-libsy`](crates/libsy/README.md) crate docs.
 | [LLM Classifier](docs/routing_algorithms/llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
 | [Stage Router](docs/routing_algorithms/stage_router_routing.md) | Signals already in the conversation, such as tool results and errors, should route most turns without an extra model call. | `stage_router` |
 | [Escalation Router](docs/routing_algorithms/escalation_router_routing.md) | Every turn runs on the weak tier first, and a judge reads that answer to decide whether to send the same request to the strong tier. | `llm_classifier` with `mode = "escalation"` |
-| [Hierarchical](docs/routing_algorithms/hierarchical_routing.md) | Algorithms should be stacked, with one setting another's configuration. Today an LLM classifier sets a stage router's default tier per user turn. | `hierarchical` |
+| [Hierarchical](docs/routing_algorithms/hierarchical_routing.md) | Routing algorithms are composed in a hierarchy, where one sets the configuration of another before handing off. Today an LLM classifier sets a stage router's default tier. | `hierarchical` |
 | [Random](docs/routing_algorithms/random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
 
 A `passthrough` route registers one target under one model ID with no routing
