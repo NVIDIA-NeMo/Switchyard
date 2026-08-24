@@ -22,17 +22,6 @@ pub(crate) fn decode_request(
     Ok(output.request)
 }
 
-pub(crate) fn validate_target_request(
-    engine: &TranslationEngine,
-    protocol: WireFormat,
-    request: &LlmRequest,
-) -> Result<(), String> {
-    let output = engine
-        .encode_request(protocol, request, &request_policy(protocol))
-        .map_err(error)?;
-    safe(&output.diagnostics)
-}
-
 pub(crate) fn encode_response(
     engine: &TranslationEngine,
     protocol: WireFormat,
@@ -57,16 +46,6 @@ fn policy() -> TranslationPolicy {
     }
 }
 
-fn request_policy(protocol: WireFormat) -> TranslationPolicy {
-    let mut policy = policy();
-    if protocol == WireFormat::AnthropicMessages {
-        policy
-            .target_capabilities
-            .supports_json_schema_response_format = Some(false);
-    }
-    policy
-}
-
 fn safe(diagnostics: &[TranslationDiagnostic]) -> Result<(), String> {
     let unsafe_diagnostics = diagnostics
         .iter()
@@ -83,34 +62,4 @@ fn safe(diagnostics: &[TranslationDiagnostic]) -> Result<(), String> {
 
 fn error(error: switchyard_translation::TranslationError) -> String {
     format!("Switchyard translation failed: {error}")
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::{Map, json};
-
-    use super::*;
-
-    #[test]
-    fn same_protocol_request_preserves_unknown_fields() {
-        let request = RelayRequest {
-            headers: Map::new(),
-            content: json!({
-                "model": "route",
-                "messages": [{"role": "user", "content": "hello"}],
-                "provider_extension": {"exact": true}
-            }),
-        };
-        let engine = TranslationEngine::default();
-        let decoded = decode_request(&engine, WireFormat::OpenAiChat, &request).unwrap();
-        validate_target_request(&engine, WireFormat::OpenAiChat, &decoded).unwrap();
-        assert_eq!(
-            decoded
-                .preservation
-                .requests
-                .get(&WireFormat::OpenAiChat.into())
-                .and_then(|body| body.get("provider_extension")),
-            Some(&json!({"exact": true}))
-        );
-    }
 }
