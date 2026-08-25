@@ -1317,6 +1317,98 @@ mod tests {
         Ok(())
     }
 
+    // A cross-origin redirect must not carry the deployment credential to the
+    // redirect target. The default client serves non-forward-auth backends and
+    // refuses to follow redirects, so the sink origin never receives x-api-key.
+    #[tokio::test]
+    async fn default_client_does_not_follow_cross_origin_redirect_with_credential()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        // The sink stands in for the redirect target on a different origin. It
+        // reports whether any request reached it carrying the credential.
+        let sink = std::net::TcpListener::bind("127.0.0.1:0")?;
+        sink.set_nonblocking(true)?;
+        let sink_addr = sink.local_addr()?;
+        let (sink_tx, sink_rx) = mpsc::channel::<bool>();
+        let sink_handle = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while Instant::now() < deadline {
+                match sink.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0_u8; 2048];
+                        let read = stream.read(&mut request).unwrap_or(0);
+                        let seen = String::from_utf8_lossy(&request[..read]).to_lowercase();
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                              Content-Length: 2\r\nConnection: close\r\n\r\n{}",
+                        );
+                        let _ = sink_tx.send(seen.contains("x-api-key"));
+                        return;
+                    }
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+
+        // The origin is the configured base_url. It sees the credential (allowed)
+        // and replies with a cross-origin redirect to the sink.
+        let origin = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let origin_addr = origin.local_addr()?;
+        let (origin_tx, origin_rx) = mpsc::channel::<bool>();
+        let origin_handle = std::thread::spawn(move || -> std::io::Result<()> {
+            let (mut stream, _) = origin.accept()?;
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request)?;
+            let seen = String::from_utf8_lossy(&request[..read]).to_lowercase();
+            let _ = origin_tx.send(seen.contains("x-api-key"));
+            let response = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\n\
+                 Location: http://{sink_addr}/v1/messages\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes())?;
+            Ok(())
+        });
+
+        let base_url = format!("http://{origin_addr}/v1");
+        let client = TranslatingLlmClient::new(&anthropic_map(&base_url))?;
+        // With redirects disabled the 307 surfaces as an upstream error rather than
+        // being followed; the call outcome is irrelevant, only where the key went.
+        let _ = client
+            .call_rewrite_model(request_for(Some("claude"), false), None)
+            .await;
+
+        let origin_saw_key = origin_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("the configured origin should receive the request");
+        assert!(
+            origin_saw_key,
+            "the configured origin should receive the deployment credential"
+        );
+
+        // The redirect target must never receive the credential. With the redirect
+        // refused it is not contacted at all, so the channel disconnects unused.
+        if let Ok(sink_saw_key) = sink_rx.recv_timeout(Duration::from_millis(700)) {
+            assert!(
+                !sink_saw_key,
+                "redirect target received x-api-key: the deployment credential leaked across origins"
+            );
+        }
+
+        sink_handle
+            .join()
+            .map_err(|_| std::io::Error::other("sink server thread panicked"))?;
+        origin_handle
+            .join()
+            .map_err(|_| std::io::Error::other("origin server thread panicked"))??;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn rewrites_model_to_resolved_upstream_id()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
