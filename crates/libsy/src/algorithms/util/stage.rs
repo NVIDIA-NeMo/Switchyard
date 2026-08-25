@@ -246,6 +246,17 @@ pub struct ScoreResult {
     pub confidence: f64,
 }
 
+impl ScoreResult {
+    /// `score` remapped from `(-1, +1)` onto a `(0, 1)` capable-tier
+    /// probability: `p = (score + 1) / 2`. Strictly increasing, so it carries
+    /// the picker's `[-1, -t], (-t, t), [t, 1]` score brackets onto
+    /// `[0, 0.5 - t/2], (0.5 - t/2, 0.5 + t/2), [0.5 + t/2, 1]` without
+    /// changing which bracket any given turn falls into.
+    fn probability(self) -> f64 {
+        (self.score + 1.0) / 2.0
+    }
+}
+
 /// The two-axis feature view of a single [`ToolSignals`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CodingAgentDimensions {
@@ -421,11 +432,17 @@ pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f
         return resolved(Tier::Efficient, DecisionSource::TestsPassed, 0.0, None);
     }
 
-    // 3. Scorer — no hard reason either way, so weigh error vs production. If
-    //    confident enough, follow the sign: positive → capable, negative → efficient.
+    // 3. Scorer — no hard reason either way, so weigh error vs production. Read
+    //    the score as a capable-tier probability `p`; outside the closed
+    //    ambiguous band `[0.5 - t/2, 0.5 + t/2]`, follow which side of 0.5 it
+    //    lands on. The band's endpoints count as ambiguous (strict `>`/`<`),
+    //    a one-point boundary flip from the old `confidence >= threshold`
+    //    framing that only bites at floating-point equality.
     let scored = score_signal(signal);
-    if scored.confidence >= confidence_threshold {
-        let tier = if scored.score > 0.0 {
+    let probability = scored.probability();
+    let half_threshold = confidence_threshold / 2.0;
+    if probability > 0.5 + half_threshold || probability < 0.5 - half_threshold {
+        let tier = if probability > 0.5 {
             Tier::Capable
         } else {
             Tier::Efficient
@@ -687,6 +704,95 @@ mod tests {
             scored.confidence < 0.5,
             "one signal should not clear 0.5: {scored:?}"
         );
+    }
+
+    #[test]
+    fn probability_remaps_the_score_brackets_onto_zero_point_five_plus_or_minus_half_threshold() {
+        assert_eq!(
+            ScoreResult {
+                score: -1.0,
+                confidence: 1.0
+            }
+            .probability(),
+            0.0
+        );
+        assert_eq!(
+            ScoreResult {
+                score: 0.0,
+                confidence: 0.0
+            }
+            .probability(),
+            0.5
+        );
+        assert_eq!(
+            ScoreResult {
+                score: 1.0,
+                confidence: 1.0
+            }
+            .probability(),
+            1.0
+        );
+        let t = 0.5;
+        assert_eq!(
+            ScoreResult {
+                score: t,
+                confidence: t
+            }
+            .probability(),
+            0.5 + t / 2.0
+        );
+        assert_eq!(
+            ScoreResult {
+                score: -t,
+                confidence: t
+            }
+            .probability(),
+            0.5 - t / 2.0
+        );
+    }
+
+    #[test]
+    fn pick_tier_agrees_with_the_pre_probability_score_based_decision_off_the_boundary() {
+        // Away from the exact `score == ±threshold` boundary, deciding on the
+        // probability `p = (score+1)/2` against `0.5 ± t/2` must pick the same
+        // tier as the original `confidence >= threshold` check on `score`.
+        for score_millis in -999..=999 {
+            let score = score_millis as f64 / 1000.0;
+            for threshold_millis in (0..=1000).step_by(50) {
+                let threshold = threshold_millis as f64 / 1000.0;
+                let confidence = score.abs();
+                if (confidence - threshold).abs() < 1e-9 {
+                    continue; // exact boundary: deliberately reclassified, see above.
+                }
+                let old_decisive = confidence >= threshold;
+                let old_tier = if score > 0.0 {
+                    Tier::Capable
+                } else {
+                    Tier::Efficient
+                };
+
+                let probability = (score + 1.0) / 2.0;
+                let half_threshold = threshold / 2.0;
+                let new_decisive =
+                    probability > 0.5 + half_threshold || probability < 0.5 - half_threshold;
+                let new_tier = if probability > 0.5 {
+                    Tier::Capable
+                } else {
+                    Tier::Efficient
+                };
+
+                assert_eq!(
+                    old_decisive, new_decisive,
+                    "decisiveness disagreement at score={score} threshold={threshold}"
+                );
+                if old_decisive {
+                    assert_eq!(
+                        old_tier, new_tier,
+                        "tier disagreement at score={score} threshold={threshold}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
