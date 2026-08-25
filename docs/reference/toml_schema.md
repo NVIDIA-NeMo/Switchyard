@@ -222,7 +222,7 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | `classifier.target` | Yes | — | Target the tier judge is called through. Not a routing destination. |
 | `classifier.base_threshold` | Yes | — | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
-| `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the `llm_classifier` route, this works on either trigger. |
+| `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the `llm_classifier` route, this works on either trigger. Conversations opening with the same text share a tier. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
 | `stage.confidence_threshold` | Yes | — | Corroboration a decisive signal needs. In `[0, 1]`. |

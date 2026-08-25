@@ -41,6 +41,15 @@ whenever the user speaks, `new_session` picks once and holds it.
 job the classifier does per turn. Leave `classifier` out as well: that judge runs
 ahead of the fall-open tier, so it answers most of the turns this one decided.
 
+## Sessions
+
+The tier is retained per session, so send `x-switchyard-session-id` and each
+conversation keeps its own. A client that sends no session ID can set
+`classifier.message_hash_fallback = true`, which keys on the first user message
+instead. Conversations that open with the same text then share a tier, which is
+what you want for repeated turns of one task and not what you want for parallel
+runs of the same task.
+
 ## Example use
 
 An interactive coding agent in auto-mode. The classifier reads the user turn and

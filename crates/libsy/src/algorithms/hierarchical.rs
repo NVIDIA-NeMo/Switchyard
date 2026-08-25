@@ -56,8 +56,13 @@ impl TierSetter {
 
     fn retain(&self, identity: RoutingIdentity, tier: Tier) {
         let mut tiers = self.tiers.lock();
-        evict_if_full(&mut tiers);
-        tiers.insert(identity, tier);
+        // A user turn re-decides, so it overwrites. A session keeps its first verdict,
+        // matching how affinity retains an assignment.
+        let writable = self.trigger == ClassifyTrigger::UserTurn || !tiers.contains_key(&identity);
+        if writable {
+            evict_if_full(&mut tiers);
+            tiers.insert(identity, tier);
+        }
     }
 }
 
