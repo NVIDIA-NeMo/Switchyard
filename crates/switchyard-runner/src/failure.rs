@@ -14,7 +14,7 @@ use crate::RunnerError;
 /// error. It is suitable for logs and telemetry, not client-facing rendering.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RouteFailureCategory {
+pub enum RouteErrorKind {
     /// The upstream returned a non-success HTTP response.
     UpstreamHttp,
     /// The selected target rejected the request because its context window was exceeded.
@@ -37,12 +37,12 @@ pub enum RouteFailureCategory {
     Configuration,
     /// The routing algorithm or driver could not produce an outcome.
     Algorithm,
-    /// A failure without a safe, more specific category.
+    /// A failure without a safe, more specific kind.
     Other,
 }
 
-impl RouteFailureCategory {
-    /// Returns the stable telemetry value for this category.
+impl RouteErrorKind {
+    /// Returns the stable telemetry value for this kind.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::UpstreamHttp => "upstream_http",
@@ -86,7 +86,7 @@ impl RouteFailurePhase {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RouteFailureSummary {
     /// Stable failure classification.
-    pub category: RouteFailureCategory,
+    pub kind: RouteErrorKind,
     /// Whether the error preceded response delivery or occurred while streaming.
     pub phase: RouteFailurePhase,
     /// Upstream HTTP status, when directly available.
@@ -106,7 +106,7 @@ impl RunnerError {
                 client_failure_summary(source, RouteFailurePhase::BeforeResponse, None)
             }
             Self::Configuration { .. } => summary(
-                RouteFailureCategory::Configuration,
+                RouteErrorKind::Configuration,
                 RouteFailurePhase::BeforeResponse,
                 None,
                 None,
@@ -114,13 +114,13 @@ impl RunnerError {
             Self::UnknownRouteModel(_)
             | Self::IncompatibleCallerFormat(_)
             | Self::CountTokensUnsupported => summary(
-                RouteFailureCategory::InvalidRequest,
+                RouteErrorKind::InvalidRequest,
                 RouteFailurePhase::BeforeResponse,
                 None,
                 None,
             ),
             Self::Algorithm(_) => summary(
-                RouteFailureCategory::Algorithm,
+                RouteErrorKind::Algorithm,
                 RouteFailurePhase::BeforeResponse,
                 None,
                 None,
@@ -150,37 +150,35 @@ fn client_failure_summary(
         LlmClientError::ContextWindowExceeded { model, .. } => Some(model),
         _ => None,
     });
-    let (category, upstream_status) = match error {
+    let (kind, upstream_status) = match error {
         LlmClientError::UpstreamHttp { status, .. } => {
-            (RouteFailureCategory::UpstreamHttp, Some(status.as_u16()))
+            (RouteErrorKind::UpstreamHttp, Some(status.as_u16()))
         }
         LlmClientError::ContextWindowExceeded { .. } => {
-            (RouteFailureCategory::ContextWindowExceeded, None)
+            (RouteErrorKind::ContextWindowExceeded, None)
         }
-        LlmClientError::Timeout { .. } => (RouteFailureCategory::Timeout, None),
-        LlmClientError::Transport { .. } => (RouteFailureCategory::Transport, None),
-        LlmClientError::InvalidResponse { .. } => (RouteFailureCategory::InvalidResponse, None),
-        LlmClientError::RequestTranslation(_) => (RouteFailureCategory::RequestTranslation, None),
-        LlmClientError::RequestEncoding(_) => (RouteFailureCategory::RequestEncoding, None),
-        LlmClientError::ResponseTranslation(_) => (RouteFailureCategory::ResponseTranslation, None),
-        LlmClientError::InvalidRequest { .. } => (RouteFailureCategory::InvalidRequest, None),
-        LlmClientError::Configuration { .. } => (RouteFailureCategory::Configuration, None),
-        LlmClientError::Ffi { .. } | LlmClientError::General(_) => {
-            (RouteFailureCategory::Other, None)
-        }
-        _ => (RouteFailureCategory::Other, None),
+        LlmClientError::Timeout { .. } => (RouteErrorKind::Timeout, None),
+        LlmClientError::Transport { .. } => (RouteErrorKind::Transport, None),
+        LlmClientError::InvalidResponse { .. } => (RouteErrorKind::InvalidResponse, None),
+        LlmClientError::RequestTranslation(_) => (RouteErrorKind::RequestTranslation, None),
+        LlmClientError::RequestEncoding(_) => (RouteErrorKind::RequestEncoding, None),
+        LlmClientError::ResponseTranslation(_) => (RouteErrorKind::ResponseTranslation, None),
+        LlmClientError::InvalidRequest { .. } => (RouteErrorKind::InvalidRequest, None),
+        LlmClientError::Configuration { .. } => (RouteErrorKind::Configuration, None),
+        LlmClientError::Ffi { .. } | LlmClientError::General(_) => (RouteErrorKind::Other, None),
+        _ => (RouteErrorKind::Other, None),
     };
-    summary(category, phase, upstream_status, target)
+    summary(kind, phase, upstream_status, target)
 }
 
 fn summary(
-    category: RouteFailureCategory,
+    kind: RouteErrorKind,
     phase: RouteFailurePhase,
     upstream_status: Option<u16>,
     target: Option<&ModelId>,
 ) -> RouteFailureSummary {
     RouteFailureSummary {
-        category,
+        kind,
         phase,
         upstream_status,
         target: target.cloned(),
@@ -205,7 +203,7 @@ mod tests {
 
         let summary = error.execution_failure_summary();
 
-        assert_eq!(summary.category, RouteFailureCategory::UpstreamHttp);
+        assert_eq!(summary.kind, RouteErrorKind::UpstreamHttp);
         assert_eq!(summary.phase, RouteFailurePhase::BeforeResponse);
         assert_eq!(summary.upstream_status, Some(503));
         assert_eq!(summary.target.as_ref().map(ModelId::as_str), Some("strong"));
@@ -220,7 +218,7 @@ mod tests {
 
         let summary = error.execution_failure_summary();
 
-        assert_eq!(summary.category, RouteFailureCategory::Algorithm);
+        assert_eq!(summary.kind, RouteErrorKind::Algorithm);
         assert_eq!(summary.target, None);
         assert!(!format!("{summary:?}").contains(SECRET));
     }
@@ -233,7 +231,7 @@ mod tests {
 
         let summary = stream_failure_summary(&error, Some(&ModelId::from("fallback")));
 
-        assert_eq!(summary.category, RouteFailureCategory::Timeout);
+        assert_eq!(summary.kind, RouteErrorKind::Timeout);
         assert_eq!(summary.phase, RouteFailurePhase::DuringStream);
         assert_eq!(
             summary.target.as_ref().map(ModelId::as_str),
@@ -251,10 +249,7 @@ mod tests {
 
         let summary = stream_failure_summary(&error, None);
 
-        assert_eq!(
-            summary.category,
-            RouteFailureCategory::ContextWindowExceeded
-        );
+        assert_eq!(summary.kind, RouteErrorKind::ContextWindowExceeded);
         assert_eq!(summary.phase, RouteFailurePhase::DuringStream);
         assert_eq!(summary.target.as_ref().map(ModelId::as_str), Some("weak"));
         assert!(!format!("{summary:?}").contains(SECRET));
@@ -268,63 +263,63 @@ mod tests {
                     model: ModelId::from("weak"),
                     message: SECRET.to_string(),
                 },
-                RouteFailureCategory::ContextWindowExceeded,
+                RouteErrorKind::ContextWindowExceeded,
                 "context_window_exceeded",
             ),
             (
                 LlmClientError::Transport {
                     source: std::io::Error::other(SECRET).into(),
                 },
-                RouteFailureCategory::Transport,
+                RouteErrorKind::Transport,
                 "transport",
             ),
             (
                 LlmClientError::InvalidResponse {
                     source: std::io::Error::other(SECRET).into(),
                 },
-                RouteFailureCategory::InvalidResponse,
+                RouteErrorKind::InvalidResponse,
                 "invalid_response",
             ),
             (
                 LlmClientError::RequestTranslation(SECRET.to_string()),
-                RouteFailureCategory::RequestTranslation,
+                RouteErrorKind::RequestTranslation,
                 "request_translation",
             ),
             (
                 LlmClientError::RequestEncoding(SECRET.to_string()),
-                RouteFailureCategory::RequestEncoding,
+                RouteErrorKind::RequestEncoding,
                 "request_encoding",
             ),
             (
                 LlmClientError::ResponseTranslation(SECRET.to_string()),
-                RouteFailureCategory::ResponseTranslation,
+                RouteErrorKind::ResponseTranslation,
                 "response_translation",
             ),
             (
                 LlmClientError::Configuration {
                     message: SECRET.to_string(),
                 },
-                RouteFailureCategory::Configuration,
+                RouteErrorKind::Configuration,
                 "configuration",
             ),
             (
                 LlmClientError::InvalidRequest {
                     message: SECRET.to_string(),
                 },
-                RouteFailureCategory::InvalidRequest,
+                RouteErrorKind::InvalidRequest,
                 "invalid_request",
             ),
             (
                 LlmClientError::General(SECRET.to_string()),
-                RouteFailureCategory::Other,
+                RouteErrorKind::Other,
                 "other",
             ),
         ];
 
-        for (error, category, value) in cases {
+        for (error, kind, value) in cases {
             let summary = stream_failure_summary(&error, None);
-            assert_eq!(summary.category, category);
-            assert_eq!(summary.category.as_str(), value);
+            assert_eq!(summary.kind, kind);
+            assert_eq!(summary.kind.as_str(), value);
             assert!(!format!("{summary:?}").contains(SECRET));
         }
     }
@@ -337,7 +332,7 @@ mod tests {
 
         let summary = error.execution_failure_summary();
 
-        assert_eq!(summary.category, RouteFailureCategory::Timeout);
+        assert_eq!(summary.kind, RouteErrorKind::Timeout);
         assert_eq!(summary.phase, RouteFailurePhase::BeforeResponse);
         assert_eq!(summary.target, None);
         assert!(!format!("{summary:?}").contains(SECRET));
@@ -347,14 +342,14 @@ mod tests {
     fn runner_request_and_configuration_errors_are_classified() {
         let configuration = RunnerError::configuration(SECRET);
         assert_eq!(
-            configuration.execution_failure_summary().category,
-            RouteFailureCategory::Configuration
+            configuration.execution_failure_summary().kind,
+            RouteErrorKind::Configuration
         );
 
         let unsupported = RunnerError::CountTokensUnsupported;
         assert_eq!(
-            unsupported.execution_failure_summary().category,
-            RouteFailureCategory::InvalidRequest
+            unsupported.execution_failure_summary().kind,
+            RouteErrorKind::InvalidRequest
         );
     }
 }
