@@ -122,7 +122,9 @@ fn register_stream(
 }
 
 fn parse_config(plugin_config: &Map<String, Json>) -> Result<SwitchyardConfig, String> {
-    serde_json::from_value(Json::Object(plugin_config.clone()))
+    let mut config = plugin_config.clone();
+    config.remove("executor");
+    serde_json::from_value(Json::Object(config))
         .map_err(|error| format!("invalid Switchyard configuration: {error}"))
 }
 
@@ -135,9 +137,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plugin_configuration_requires_a_deployment_path() {
+    fn plugin_configuration_requires_a_switchyard_source() {
         let config = json!({"priority": 0});
-        let error = parse_config(config.as_object().unwrap()).unwrap_err();
-        assert!(error.contains("deployment_path"));
+        assert!(matches!(
+            parse_config(config.as_object().unwrap()).and_then(SwitchyardRuntime::new),
+            Err(error) if error.contains("switchyard_config_path or switchyard_config")
+        ));
+    }
+
+    #[test]
+    fn plugin_configuration_ignores_the_sdk_executor_override() {
+        let config = json!({
+            "executor": {"worker_threads": 4},
+            "switchyard_config_path": "routes.toml"
+        });
+        assert!(parse_config(config.as_object().unwrap()).is_ok());
     }
 }

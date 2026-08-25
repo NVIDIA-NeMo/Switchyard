@@ -4,17 +4,37 @@
   "description": "Runs a Switchyard deployment through its shared in-process runner.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["deployment_path"],
+  "oneOf": [
+    { "required": ["switchyard_config_path"] },
+    { "required": ["switchyard_config"] }
+  ],
   "properties": {
     "priority": {
       "type": "integer",
       "default": 0,
       "description": "NeMo Relay execution-intercept priority."
     },
-    "deployment_path": {
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional NeMo Relay SDK executor override.",
+      "properties": {
+        "worker_threads": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of worker threads for the plugin's SDK-owned executor."
+        }
+      }
+    },
+    "switchyard_config_path": {
       "type": "string",
       "minLength": 1,
       "description": "Path to a Switchyard version-1 TOML deployment shared with switchyard-server."
+    },
+    "switchyard_config": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Inline Switchyard version-1 deployment using the same schema as switchyard-server."
     }
   }
 }

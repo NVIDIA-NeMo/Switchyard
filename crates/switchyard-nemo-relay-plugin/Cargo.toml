@@ -26,3 +26,7 @@ switchyard-protocol.workspace = true
 switchyard-runner.workspace = true
 switchyard-translation.workspace = true
 tokio.workspace = true
+toml = "1.1"
+
+[dev-dependencies]
+tempfile = "3"

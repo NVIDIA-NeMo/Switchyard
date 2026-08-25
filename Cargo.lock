@@ -2377,7 +2377,9 @@ dependencies = [
  "switchyard-protocol",
  "switchyard-runner",
  "switchyard-translation",
+ "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]

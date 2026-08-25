@@ -1,8 +1,8 @@
 # Switchyard NeMo Relay Plugin
 
 `switchyard-nemo-relay-plugin` is a native NeMo Relay dynamic plugin. It loads
-a standard Switchyard TOML deployment and executes its configured routes in
-Relay through `switchyard-runner`.
+a standard Switchyard TOML deployment from a file or Relay's nested plugin
+configuration and executes its configured routes through `switchyard-runner`.
 
 The plugin does not define a second routing or target configuration language.
 `switchyard-server` and Relay therefore use the same targets, client pooling,
@@ -16,21 +16,49 @@ the generated `relay-plugin.toml` manifest. The plugin requires NeMo Relay
 
 ## Configure Relay
 
-Point the dynamic plugin configuration at an existing Switchyard deployment:
+Use exactly one Switchyard deployment source. To share an existing deployment
+file with `switchyard-server`, configure its path:
 
 ```toml
 [[plugins.dynamic]]
-plugin_id = "nvidia.switchyard"
+manifest = "./plugins/switchyard/relay-plugin.toml"
 
 [plugins.dynamic.config]
 priority = 0
-deployment_path = "/etc/switchyard/routes.toml"
+switchyard_config_path = "/etc/switchyard/routes.toml"
 ```
 
-`deployment_path` is a Switchyard version-1 TOML deployment, accepted by both
+`switchyard_config_path` is a Switchyard version-1 TOML deployment, accepted by both
 `switchyard-server` and `switchyard-runner`. See the
 [server configuration guide](../switchyard-server/CONFIGURATION.md) for the
 deployment schema and routing algorithms.
+
+To keep the deployment in the Relay configuration, nest the same version-1
+Switchyard configuration under `switchyard_config`:
+
+```toml
+[[plugins.dynamic]]
+manifest = "./plugins/switchyard/relay-plugin.toml"
+
+[plugins.dynamic.config]
+priority = 0
+
+[plugins.dynamic.config.switchyard_config]
+schema_version = 1
+
+[plugins.dynamic.config.switchyard_config.llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[plugins.dynamic.config.switchyard_config.targets.default]
+id = "example/model"
+llm_client = "primary"
+
+[plugins.dynamic.config.switchyard_config.routes.default]
+id = "switchyard/default"
+type = "passthrough"
+target = "default"
+```
 
 ## Request handling
 
