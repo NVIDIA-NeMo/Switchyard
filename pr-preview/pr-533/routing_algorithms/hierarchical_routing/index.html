@@ -1249,8 +1249,9 @@ route's configuration to change as more pairings are added.</p>
 <p><code>[routes.switchyard.classifier]</code> takes the <code>stage_router</code> classifier fields.
 <code>classify_trigger</code> sets how often the judge runs: <code>user_turn</code> re-picks the tier
 whenever the user speaks, <code>new_session</code> picks once and holds it.
-<code>[routes.switchyard.stage]</code> takes the <code>stage_router</code> fields except <code>picker</code>,
-whose job the classifier does per turn, and <code>classifier</code>, which would overrule it.</p>
+<code>[routes.switchyard.stage]</code> takes the <code>stage_router</code> fields except <code>picker</code>, whose
+job the classifier does per turn. Leave <code>classifier</code> out as well: that judge runs
+ahead of the fall-open tier, so it answers most of the turns this one decided.</p>
 <h2 id="example-use">Example use<a class="headerlink" href="#example-use" title="Permanent link">&para;</a></h2>
 <p>An interactive coding agent in auto-mode. The classifier reads the user turn and
 picks the tier. The stage router runs the tool execution loop on its own signals

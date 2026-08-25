@@ -2050,8 +2050,8 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <p>The tier is retained per session. A deployment that sends no session ID needs
 <code>classifier.message_hash_fallback = true</code>, which keys on the first user message
 instead. The stage table takes no <code>picker</code>: the classifier supplies that tier per turn. A turn the
-classifier cannot reach falls open to the efficient tier. It takes no
-<code>classifier</code> either, since that judge would overrule the tier already picked.</p>
+classifier cannot reach falls open to the efficient tier. Leaving out
+<code>classifier</code> is recommended: that judge runs ahead of the fall-open tier.</p>
 <h2 id="validation-errors">Validation Errors<a class="headerlink" href="#validation-errors" title="Permanent link">&para;</a></h2>
 <p><code>--dry-run</code> prefixes configuration failures with
 <code>invalid server config &lt;path&gt;:</code>. Within that wrapper, TOML deserialization
