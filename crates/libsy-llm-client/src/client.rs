@@ -115,9 +115,9 @@ impl TranslatingLlmClient {
         // clients follow only same-origin redirects, so deployment and forwarded
         // credentials are re-sent exclusively within the configured origin.
         let client =
-            build_client(reqwest::Client::builder().redirect(restricted_redirect_policy()))?;
+            build_client(reqwest::Client::builder().redirect(same_origin_redirect_policy()))?;
         let forward_auth_client =
-            build_client(reqwest::Client::builder().redirect(restricted_redirect_policy()))?;
+            build_client(reqwest::Client::builder().redirect(same_origin_redirect_policy()))?;
         let model_to_config = model_configs
             .iter()
             .map(|config| (config.model_name.clone(), config.clone()))
@@ -645,7 +645,7 @@ fn record_gen_ai_request(url: &str, model: &str, streaming: bool) {
 // is followed only while it stays on the origin the request was first sent to,
 // so deployment or forwarded credentials never reach another origin. A refused
 // redirect is returned to the caller untouched instead of being followed.
-fn restricted_redirect_policy() -> reqwest::redirect::Policy {
+fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
         let stays_on_origin = attempt
             .previous()
@@ -1343,7 +1343,9 @@ mod tests {
     }
 
     // Reads until the end of an HTTP request head, so a TCP segment boundary
-    // cannot split the headers a later assertion matches against.
+    // cannot split the headers a later assertion matches against. Test requests
+    // sit far below the buffer size; exceeding it is a loud error, never a
+    // silent truncation.
     fn read_request_head(
         stream: &mut std::net::TcpStream,
         buffer: &mut [u8],
@@ -1352,8 +1354,21 @@ mod tests {
         loop {
             let read = stream.read(&mut buffer[total..])?;
             total += read;
-            if read == 0 || buffer[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+            let head_complete = buffer[..total].windows(4).any(|w| w == b"\r\n\r\n");
+            if read == 0 && !head_complete {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed before the request head was complete",
+                ));
+            }
+            if head_complete {
                 return Ok(total);
+            }
+            if total == buffer.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "request head exceeded the read buffer",
+                ));
             }
         }
     }
@@ -1471,25 +1486,20 @@ mod tests {
         Ok(())
     }
 
-    // Same-origin redirects are still followed: the credential rides each hop
-    // that stays within the configured origin, so gateways that redirect on
-    // their own origin keep working without credentials ever leaving it.
-    #[tokio::test]
-    async fn same_origin_redirect_is_followed_within_the_configured_origin()
-    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    // Serves two sequential responses from one origin and returns the lowercase
+    // request heads it received, so tests can pin what rode each hop.
+    fn two_hop_origin_server(
+        build_responses: impl FnOnce(&str) -> [String; 2] + Send + 'static,
+    ) -> std::io::Result<(
+        String,
+        std::thread::JoinHandle<std::io::Result<Vec<String>>>,
+    )> {
         let origin = std::net::TcpListener::bind("127.0.0.1:0")?;
         let origin_addr = origin.local_addr()?;
         let origin_url = format!("http://{origin_addr}");
-        let server_url = origin_url.clone();
-        let server = std::thread::spawn(move || -> std::io::Result<Vec<String>> {
-            let mut responses = [
-                format!(
-                    "HTTP/1.1 307 Temporary Redirect\r\n\
-                     Location: {server_url}/chat/completions\r\n\
-                     Content-Length: 0\r\nConnection: close\r\n\r\n"
-                ),
-                raw_chat_success_response(),
-            ];
+        let responses = build_responses(&origin_url);
+        let handle = std::thread::spawn(move || -> std::io::Result<Vec<String>> {
+            let mut responses = responses;
             let mut requests = Vec::with_capacity(responses.len());
             for response in &mut responses {
                 let (mut stream, _) = origin.accept()?;
@@ -1500,6 +1510,25 @@ mod tests {
             }
             Ok(requests)
         });
+        Ok((origin_url, handle))
+    }
+
+    // Same-origin redirects are still followed: the credential rides each hop
+    // that stays within the configured origin, so gateways that redirect on
+    // their own origin keep working without credentials ever leaving it.
+    #[tokio::test]
+    async fn same_origin_redirect_is_followed_within_the_configured_origin()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let (origin_url, server) = two_hop_origin_server(|origin_url| {
+            [
+                format!(
+                    "HTTP/1.1 307 Temporary Redirect\r\n\
+                     Location: {origin_url}/chat/completions\r\n\
+                     Content-Length: 0\r\nConnection: close\r\n\r\n"
+                ),
+                raw_chat_success_response(),
+            ]
+        })?;
 
         let client = TranslatingLlmClient::new(&chat_map(&format!("{origin_url}/v1")))?;
         let response = client
@@ -1519,6 +1548,63 @@ mod tests {
                 .iter()
                 .all(|request| request.contains("authorization:")),
             "the credential must ride every same-origin hop"
+        );
+        Ok(())
+    }
+
+    // The forwarded-auth client serves caller credentials and previously refused
+    // every redirect outright. Same-origin redirects must work there too, with
+    // the caller's own credential riding both hops without ever leaving the
+    // configured origin.
+    #[tokio::test]
+    async fn forward_auth_client_follows_same_origin_redirect_with_credential()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let (origin_url, server) = two_hop_origin_server(|origin_url| {
+            [
+                format!(
+                    "HTTP/1.1 307 Temporary Redirect\r\n\
+                     Location: {origin_url}/chat/completions\r\n\
+                     Content-Length: 0\r\nConnection: close\r\n\r\n"
+                ),
+                raw_chat_success_response(),
+            ]
+        })?;
+
+        let mut backend = config(&format!("{origin_url}/v1"));
+        backend.api_key = None;
+        backend.forward_auth = true;
+        let model_configs = vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)];
+        let client = TranslatingLlmClient::new(&model_configs)?;
+
+        // The caller's credential arrives as forwarded metadata, not as
+        // configured auth.
+        let request = Request {
+            llm_request: text_request(Some("gpt".to_string()), "hi"),
+            raw_request: None,
+            metadata: Some(Metadata {
+                http_headers: Some(HeaderMap::from_iter([(
+                    reqwest::header::AUTHORIZATION,
+                    reqwest::header::HeaderValue::from_static("Bearer caller-canary"),
+                )])),
+                wire_format: Some(WireFormat::OpenAiChat),
+                ..Default::default()
+            }),
+        };
+        let response = client.call_rewrite_model(request, None).await?;
+        assert_eq!(
+            completion_text(&response.llm_response.into_agg().await?),
+            "recovered"
+        );
+
+        let requests = server
+            .join()
+            .map_err(|_| std::io::Error::other("forward-auth redirect server panicked"))??;
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests.iter().all(|request| {
+                request.contains("authorization:") && request.contains("caller-canary")
+            }),
+            "the caller credential must ride every same-origin hop"
         );
         Ok(())
     }
