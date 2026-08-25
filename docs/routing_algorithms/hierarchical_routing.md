@@ -46,9 +46,7 @@ ahead of the fall-open tier, so it answers most of the turns this one decided.
 The tier is retained per session, so send `x-switchyard-session-id` and each
 conversation keeps its own. A client that sends no session ID can set
 `classifier.message_hash_fallback = true`, which keys on the first user message
-instead. Conversations that open with the same text then share a tier, which is
-what you want for repeated turns of one task and not what you want for parallel
-runs of the same task.
+instead. Conversations that open with the same text then share a tier.
 
 ## Example use
 
