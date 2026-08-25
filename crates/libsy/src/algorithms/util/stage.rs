@@ -50,8 +50,8 @@ const SEVERITY_CRITICAL: f32 = 1.0;
 /// Counts final stage-router choices by decision source and semantic target.
 const ROUTING_DECISIONS_METRIC: &str = "switchyard.stage_router.routing_decisions";
 
-/// Distribution of the stage scorer's signed routing score.
-const SCORE_METRIC: &str = "switchyard.stage_router.score";
+/// Distribution of the picker's capable-tier probability.
+const PROBABILITY_METRIC: &str = "switchyard.stage_router.probability";
 /// Distribution of the confidence used to resolve or defer a turn.
 const CONFIDENCE_METRIC: &str = "switchyard.stage_router.confidence";
 /// Distribution of detected tool-failure severity.
@@ -65,7 +65,7 @@ const PRODUCTION_INTENSITY_METRIC: &str = "switchyard.stage_router.production_in
 
 // Histogram boundaries live with the instruments so every host exports the
 // same stage-router distributions without duplicating algorithm knowledge.
-const SCORE_BUCKETS: &[f64] = &[-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0];
+const PROBABILITY_BUCKETS: &[f64] = &[0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
 const UNIT_BUCKETS: &[f64] = &[0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
 
 /// The two tiers a turn can route to.
@@ -247,11 +247,7 @@ pub struct ScoreResult {
 }
 
 impl ScoreResult {
-    /// `score` remapped from `(-1, +1)` onto a `(0, 1)` capable-tier
-    /// probability: `p = (score + 1) / 2`. Strictly increasing, so it carries
-    /// the picker's `[-1, -t], (-t, t), [t, 1]` score brackets onto
-    /// `[0, 0.5 - t/2], (0.5 - t/2, 0.5 + t/2), [0.5 + t/2, 1]` without
-    /// changing which bracket any given turn falls into.
+    /// `score` remapped from `(-1, +1)` onto a `(0, 1)` capable-tier probability.
     fn probability(self) -> f64 {
         (self.score + 1.0) / 2.0
     }
@@ -280,16 +276,17 @@ pub enum PickOutcome {
         tier: Tier,
         /// What produced it.
         source: DecisionSource,
-        /// Signed scorer value (`0.0` for override / tests-passed).
-        score: f64,
+        /// Capable-tier probability in `(0, 1)`; `0.5` (neutral) for the
+        /// hard-rule paths, which bypass the scorer.
+        probability: f64,
         /// Scorer confidence (`None` where the scorer did not run).
         confidence: Option<f64>,
     },
     /// The scorer was below threshold. The caller runs its classifier; if it
     /// has none (or it fails), fall open to `default_tier`.
     ConsultClassifier {
-        /// Signed scorer value, for logging.
-        score: f64,
+        /// Capable-tier probability, for logging.
+        probability: f64,
         /// Scorer confidence, for logging.
         confidence: f64,
         /// Tier to fall open to when no classifier resolves it.
@@ -335,18 +332,26 @@ pub(crate) fn record_routing_decision(source: DecisionSource, target_name: &str)
 
 /// Records the scorer's bounded inputs and output as six explicit histograms.
 fn record_score_metrics(signal: &ToolSignals, outcome: &PickOutcome) {
-    let (score, confidence) = match outcome {
+    let (probability, confidence) = match outcome {
         PickOutcome::Resolved {
-            score, confidence, ..
-        } => (*score, confidence.unwrap_or(score.abs())),
+            probability,
+            confidence,
+            ..
+        } => (
+            *probability,
+            // Distance from 0.5, doubled onto [0, 1] — probability's `score.abs()`.
+            confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs()),
+        ),
         PickOutcome::ConsultClassifier {
-            score, confidence, ..
-        } => (*score, *confidence),
+            probability,
+            confidence,
+            ..
+        } => (*probability, *confidence),
     };
     let dimensions = dimensions_from_signal(signal);
     let meter = meter();
     for (name, value, boundaries) in [
-        (SCORE_METRIC, score, SCORE_BUCKETS),
+        (PROBABILITY_METRIC, probability, PROBABILITY_BUCKETS),
         (CONFIDENCE_METRIC, confidence, UNIT_BUCKETS),
         (SEVERITY_METRIC, dimensions.severity, UNIT_BUCKETS),
         (SPINNING_METRIC, dimensions.spinning, UNIT_BUCKETS),
@@ -424,20 +429,16 @@ fn should_deescalate(signal: &ToolSignals) -> bool {
 pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f64) -> PickOutcome {
     // 1. Escalate — a hard reason to go capable, ahead of everything else.
     if should_escalate(signal) {
-        return resolved(Tier::Capable, DecisionSource::Override, 0.0, Some(1.0));
+        return resolved(Tier::Capable, DecisionSource::Override, 0.5, Some(1.0));
     }
 
     // 2. De-escalate — a hard reason to go cheap (the turn is winding down).
     if should_deescalate(signal) {
-        return resolved(Tier::Efficient, DecisionSource::TestsPassed, 0.0, None);
+        return resolved(Tier::Efficient, DecisionSource::TestsPassed, 0.5, None);
     }
 
-    // 3. Scorer — no hard reason either way, so weigh error vs production. Read
-    //    the score as a capable-tier probability `p`; outside the closed
-    //    ambiguous band `[0.5 - t/2, 0.5 + t/2]`, follow which side of 0.5 it
-    //    lands on. The band's endpoints count as ambiguous (strict `>`/`<`),
-    //    a one-point boundary flip from the old `confidence >= threshold`
-    //    framing that only bites at floating-point equality.
+    // 3. Scorer — no hard reason either way, so weigh error vs production.
+    //    Resolve outside the closed ambiguous band [0.5 - t/2, 0.5 + t/2].
     let scored = score_signal(signal);
     let probability = scored.probability();
     let half_threshold = confidence_threshold / 2.0;
@@ -450,7 +451,7 @@ pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f
         return resolved(
             tier,
             DecisionSource::Dimensions,
-            scored.score,
+            probability,
             Some(scored.confidence),
         );
     }
@@ -458,7 +459,7 @@ pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f
     // 4. Fall open — the signals didn't corroborate enough to be sure. Hand off
     //    to the caller's classifier; with none, land on the picker's default.
     PickOutcome::ConsultClassifier {
-        score: scored.score,
+        probability,
         confidence: scored.confidence,
         default_tier: mode.default_tier(),
     }
@@ -468,13 +469,13 @@ pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f
 fn resolved(
     tier: Tier,
     source: DecisionSource,
-    score: f64,
+    probability: f64,
     confidence: Option<f64>,
 ) -> PickOutcome {
     PickOutcome::Resolved {
         tier,
         source,
-        score,
+        probability,
         confidence,
     }
 }
@@ -623,7 +624,7 @@ impl Classifier<State> for StageClassifier {
             PickOutcome::Resolved {
                 tier,
                 source,
-                score,
+                probability,
                 confidence,
             } => {
                 let target = self.targets.name(tier);
@@ -633,10 +634,9 @@ impl Classifier<State> for StageClassifier {
                 // is the only branch whose tier the signals actually chose — an
                 // ambiguous turn is decided further down the cascade.
                 self.apply_handoff_note(request, tier, source);
-                // Use the confidence pick_tier already computed (e.g. `1.0` for
-                // an Override) rather than re-deriving it from `score`, which is
-                // `0.0` on both hard-rule paths and would understate them.
-                let conf = confidence.unwrap_or(score.abs());
+                // Prefer pick_tier's own confidence (e.g. 1.0 for an Override)
+                // over re-deriving it from the neutral 0.5 placeholder.
+                let conf = confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs());
                 Ok((
                     Classification::Scores(vec![Score {
                         target: target.clone(),
