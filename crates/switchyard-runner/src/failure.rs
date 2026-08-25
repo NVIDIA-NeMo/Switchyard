@@ -52,21 +52,19 @@ impl RouteErrorKind {
 
 /// When a terminal failure occurred relative to response delivery.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug)]
-pub enum RouteFailurePhase {
+#[derive(Clone, Copy, Debug, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum RouteErrorPhase {
     /// The route failed before returning a response to its caller.
     BeforeResponse,
     /// A previously returned streaming response failed while it was consumed.
     DuringStream,
 }
 
-impl RouteFailurePhase {
+impl RouteErrorPhase {
     /// Returns the stable telemetry value for this phase.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::BeforeResponse => "before_response",
-            Self::DuringStream => "during_stream",
-        }
+    pub fn as_str(self) -> &'static str {
+        self.into()
     }
 }
 
@@ -77,7 +75,7 @@ pub struct RouteFailureSummary {
     /// Stable failure classification.
     pub kind: RouteErrorKind,
     /// Whether the error preceded response delivery or occurred while streaming.
-    pub phase: RouteFailurePhase,
+    pub phase: RouteErrorPhase,
     /// Upstream HTTP status, when directly available.
     pub upstream_status: Option<u16>,
     /// Selected target that failed, when the runner knows it.
@@ -89,14 +87,14 @@ impl RunnerError {
     pub fn execution_failure_summary(&self) -> RouteFailureSummary {
         match self {
             Self::Algorithm(LibsyError::ClientCall { target, source }) => {
-                client_failure_summary(source, RouteFailurePhase::BeforeResponse, Some(target))
+                client_failure_summary(source, RouteErrorPhase::BeforeResponse, Some(target))
             }
             Self::Client(source) => {
-                client_failure_summary(source, RouteFailurePhase::BeforeResponse, None)
+                client_failure_summary(source, RouteErrorPhase::BeforeResponse, None)
             }
             Self::Configuration { .. } => summary(
                 RouteErrorKind::Configuration,
-                RouteFailurePhase::BeforeResponse,
+                RouteErrorPhase::BeforeResponse,
                 None,
                 None,
             ),
@@ -104,13 +102,13 @@ impl RunnerError {
             | Self::IncompatibleCallerFormat(_)
             | Self::CountTokensUnsupported => summary(
                 RouteErrorKind::InvalidRequest,
-                RouteFailurePhase::BeforeResponse,
+                RouteErrorPhase::BeforeResponse,
                 None,
                 None,
             ),
             Self::Algorithm(_) => summary(
                 RouteErrorKind::Algorithm,
-                RouteFailurePhase::BeforeResponse,
+                RouteErrorPhase::BeforeResponse,
                 None,
                 None,
             ),
@@ -125,12 +123,12 @@ pub fn stream_failure_summary(
     error: &LlmClientError,
     served_model: Option<&ModelId>,
 ) -> RouteFailureSummary {
-    client_failure_summary(error, RouteFailurePhase::DuringStream, served_model)
+    client_failure_summary(error, RouteErrorPhase::DuringStream, served_model)
 }
 
 fn client_failure_summary(
     error: &LlmClientError,
-    phase: RouteFailurePhase,
+    phase: RouteErrorPhase,
     target: Option<&ModelId>,
 ) -> RouteFailureSummary {
     let target = target.or(match error {
@@ -162,7 +160,7 @@ fn client_failure_summary(
 
 fn summary(
     kind: RouteErrorKind,
-    phase: RouteFailurePhase,
+    phase: RouteErrorPhase,
     upstream_status: Option<u16>,
     target: Option<&ModelId>,
 ) -> RouteFailureSummary {
@@ -193,7 +191,7 @@ mod tests {
         let summary = error.execution_failure_summary();
 
         assert!(matches!(summary.kind, RouteErrorKind::UpstreamHttp));
-        assert!(matches!(summary.phase, RouteFailurePhase::BeforeResponse));
+        assert!(matches!(summary.phase, RouteErrorPhase::BeforeResponse));
         assert_eq!(summary.upstream_status, Some(503));
         assert_eq!(summary.target.as_ref().map(ModelId::as_str), Some("strong"));
         assert!(!format!("{summary:?}").contains(SECRET));
@@ -221,7 +219,7 @@ mod tests {
         let summary = stream_failure_summary(&error, Some(&ModelId::from("fallback")));
 
         assert!(matches!(summary.kind, RouteErrorKind::Timeout));
-        assert!(matches!(summary.phase, RouteFailurePhase::DuringStream));
+        assert!(matches!(summary.phase, RouteErrorPhase::DuringStream));
         assert_eq!(
             summary.target.as_ref().map(ModelId::as_str),
             Some("fallback")
@@ -242,7 +240,7 @@ mod tests {
             summary.kind,
             RouteErrorKind::ContextWindowExceeded
         ));
-        assert!(matches!(summary.phase, RouteFailurePhase::DuringStream));
+        assert!(matches!(summary.phase, RouteErrorPhase::DuringStream));
         assert_eq!(summary.target.as_ref().map(ModelId::as_str), Some("weak"));
         assert!(!format!("{summary:?}").contains(SECRET));
     }
@@ -304,6 +302,12 @@ mod tests {
     }
 
     #[test]
+    fn route_error_phases_have_stable_telemetry_values() {
+        assert_eq!(RouteErrorPhase::BeforeResponse.as_str(), "before_response");
+        assert_eq!(RouteErrorPhase::DuringStream.as_str(), "during_stream");
+    }
+
+    #[test]
     fn direct_client_errors_do_not_claim_a_target() {
         let error = RunnerError::Client(LlmClientError::Timeout {
             source: std::io::Error::other(SECRET).into(),
@@ -312,7 +316,7 @@ mod tests {
         let summary = error.execution_failure_summary();
 
         assert!(matches!(summary.kind, RouteErrorKind::Timeout));
-        assert!(matches!(summary.phase, RouteFailurePhase::BeforeResponse));
+        assert!(matches!(summary.phase, RouteErrorPhase::BeforeResponse));
         assert_eq!(summary.target, None);
         assert!(!format!("{summary:?}").contains(SECRET));
     }
