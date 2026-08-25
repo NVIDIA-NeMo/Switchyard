@@ -47,6 +47,13 @@ impl Runner {
         config::load_runner(path)
     }
 
+    /// Loads and validates a version-1 deployment TOML document.
+    ///
+    /// Use [`Self::load`] when the deployment is stored in a file.
+    pub fn from_toml(source: &str) -> Result<Self, RunnerError> {
+        config::runner_from_toml(source)
+    }
+
     /// Builds a runner from named routes in caller-provided order.
     /// Pre-condition: There must be at least one route.
     pub fn new(routes: Vec<(ModelId, Route)>) -> Self {

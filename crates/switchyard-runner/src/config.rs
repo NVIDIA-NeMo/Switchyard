@@ -43,7 +43,7 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
     })
 }
 
-fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
+pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
     let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
         RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
     })?;
@@ -583,6 +583,15 @@ id = "switchyard/passthrough"
 type = "passthrough"
 target = "weak"
 "#;
+
+    #[test]
+    fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
+        let runner = Runner::from_toml(VALID_CONFIG)?;
+
+        assert!(runner.route("switchyard/classifier").is_some());
+        assert!(runner.route("switchyard/passthrough").is_some());
+        Ok(())
+    }
 
     fn error_message(toml: &str) -> String {
         match runner_from_toml(toml) {
