@@ -2001,7 +2001,7 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td><code>classifier.message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the <code>llm_classifier</code> route, this works on either trigger.</td>
+<td>Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the <code>llm_classifier</code> route, this works on either trigger. Conversations opening with the same text share a tier.</td>
 </tr>
 <tr>
 <td><code>stage.capable_target</code></td>
