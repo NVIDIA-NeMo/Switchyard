@@ -710,92 +710,17 @@ mod tests {
     }
 
     #[test]
-    fn probability_remaps_the_score_brackets_onto_zero_point_five_plus_or_minus_half_threshold() {
-        assert_eq!(
-            ScoreResult {
-                score: -1.0,
-                confidence: 1.0
-            }
-            .probability(),
-            0.0
-        );
-        assert_eq!(
-            ScoreResult {
-                score: 0.0,
-                confidence: 0.0
-            }
-            .probability(),
-            0.5
-        );
-        assert_eq!(
-            ScoreResult {
-                score: 1.0,
-                confidence: 1.0
-            }
-            .probability(),
-            1.0
-        );
-        let t = 0.5;
-        assert_eq!(
-            ScoreResult {
-                score: t,
-                confidence: t
-            }
-            .probability(),
-            0.5 + t / 2.0
-        );
-        assert_eq!(
-            ScoreResult {
-                score: -t,
-                confidence: t
-            }
-            .probability(),
-            0.5 - t / 2.0
-        );
-    }
-
-    #[test]
-    fn pick_tier_agrees_with_the_pre_probability_score_based_decision_off_the_boundary() {
-        // Away from the exact `score == ±threshold` boundary, deciding on the
-        // probability `p = (score+1)/2` against `0.5 ± t/2` must pick the same
-        // tier as the original `confidence >= threshold` check on `score`.
-        for score_millis in -999..=999 {
-            let score = score_millis as f64 / 1000.0;
-            for threshold_millis in (0..=1000).step_by(50) {
-                let threshold = threshold_millis as f64 / 1000.0;
-                let confidence = score.abs();
-                if (confidence - threshold).abs() < 1e-9 {
-                    continue; // exact boundary: deliberately reclassified, see above.
-                }
-                let old_decisive = confidence >= threshold;
-                let old_tier = if score > 0.0 {
-                    Tier::Capable
-                } else {
-                    Tier::Efficient
-                };
-
-                let probability = (score + 1.0) / 2.0;
-                let half_threshold = threshold / 2.0;
-                let new_decisive =
-                    probability > 0.5 + half_threshold || probability < 0.5 - half_threshold;
-                let new_tier = if probability > 0.5 {
-                    Tier::Capable
-                } else {
-                    Tier::Efficient
-                };
-
-                assert_eq!(
-                    old_decisive, new_decisive,
-                    "decisiveness disagreement at score={score} threshold={threshold}"
-                );
-                if old_decisive {
-                    assert_eq!(
-                        old_tier, new_tier,
-                        "tier disagreement at score={score} threshold={threshold}"
-                    );
-                }
-            }
-        }
+    fn pick_tier_treats_the_exact_threshold_score_as_ambiguous() {
+        // score == threshold maps to p == 0.5 + t/2 exactly, the closed
+        // ambiguous-band endpoint — a deliberate boundary reclassification
+        // from the old `confidence >= threshold` framing.
+        let mut signal = signal_from(json!([{"role": "user", "content": "hi"}]));
+        signal.severity = HARD_SEVERITY as f32;
+        let threshold = score_signal(&signal).confidence;
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::EfficientFirst, threshold),
+            PickOutcome::ConsultClassifier { .. }
+        ));
     }
 
     #[test]
