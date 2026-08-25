@@ -5,7 +5,10 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use futures_util::{Stream, StreamExt};
-use nemo_relay_plugin::{Json, LlmRequest as RelayRequest, PluginRuntime};
+use nemo_relay_plugin::{
+    Json, LlmRequest as RelayRequest, LogSeverity, MetricKind, MetricMeasurement, MetricValueType,
+    PluginRuntime,
+};
 use serde_json::{Map, json};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
 use switchyard_protocol::{LlmResponse, Metadata, Request, Response, WireFormat};
@@ -20,14 +23,36 @@ pub(crate) struct RoutingMark {
     pub(crate) name: String,
     pub(crate) data: Json,
     pub(crate) metadata: Json,
+    pub(crate) severity: Option<LogSeverity>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RoutingMetric {
+    pub(crate) name: String,
+    pub(crate) measurements: Vec<MetricMeasurement>,
+    pub(crate) metadata: Json,
+}
+
+#[derive(Debug)]
+pub(crate) enum RoutingEvent {
+    Mark(RoutingMark),
+    Metric(RoutingMetric),
+}
+
+struct MetricDescriptor<'a> {
+    name: &'a str,
+    kind: MetricKind,
+    value_type: MetricValueType,
+    unit: Option<&'a str>,
+    description: &'a str,
 }
 
 pub(crate) type ReturnedEventStream = Pin<Box<dyn Stream<Item = Result<Json, String>> + Send>>;
-pub(crate) type RoutingMarkEmitter = Arc<dyn Fn(RoutingMark) + Send + Sync>;
+pub(crate) type RoutingEventEmitter = Arc<dyn Fn(RoutingEvent) + Send + Sync>;
 
 pub(crate) struct Execution<T> {
     pub(crate) result: Result<T, String>,
-    pub(crate) marks: Vec<RoutingMark>,
+    pub(crate) events: Vec<RoutingEvent>,
 }
 
 pub(crate) struct SwitchyardRuntime {
@@ -84,7 +109,7 @@ impl SwitchyardRuntime {
         inbound: WireFormat,
         request: Request,
     ) -> Execution<Json> {
-        let Execution { result, mut marks } = self.execute(request).await;
+        let Execution { result, mut events } = self.execute(request).await;
         let (result, finalization_failed) = match result {
             Ok(response) => {
                 let result = finalize_buffered_response(&self.translation, inbound, response);
@@ -94,54 +119,59 @@ impl SwitchyardRuntime {
             Err(error) => (Err(error), false),
         };
         if finalization_failed {
-            self.error_mark(&mut marks, "response_finalization", None);
+            self.error_mark(&mut events, "response_finalization", None);
         }
-        Execution { result, marks }
+        Execution { result, events }
     }
 
     pub(crate) async fn execute_stream(
         &self,
         inbound: WireFormat,
         request: Request,
-        emit_mark: RoutingMarkEmitter,
+        emit_event: RoutingEventEmitter,
     ) -> Execution<ReturnedEventStream> {
-        let Execution { result, mut marks } = self.execute(request).await;
+        let Execution { result, mut events } = self.execute(request).await;
         let (result, finalization_failed) = match result {
             Ok(response) => {
-                let metadata = marks
-                    .first()
-                    .map(|mark| mark.metadata.clone())
+                let metadata = events
+                    .iter()
+                    .find_map(|event| match event {
+                        RoutingEvent::Mark(mark) => Some(mark.metadata.clone()),
+                        RoutingEvent::Metric(_) => None,
+                    })
                     .unwrap_or_else(|| Json::Object(Map::new()));
-                let result = returned_events(response, inbound, metadata, emit_mark);
+                let result = returned_events(response, inbound, metadata, emit_event);
                 let failed = result.is_err();
                 (result, failed)
             }
             Err(error) => (Err(error), false),
         };
         if finalization_failed {
-            self.error_mark(&mut marks, "response_finalization", None);
+            self.error_mark(&mut events, "response_finalization", None);
         }
-        Execution { result, marks }
+        Execution { result, events }
     }
 
     async fn execute(&self, request: Request) -> Execution<Response> {
         let Some(route) = self.route(&request) else {
             return Execution {
                 result: Err("Switchyard has no route for this request model".into()),
-                marks: Vec::new(),
+                events: Vec::new(),
             };
         };
         let metadata = identity_metadata(request.metadata.as_ref());
-        let mut marks = vec![RoutingMark {
+        let mut events = vec![RoutingEvent::Mark(RoutingMark {
             name: "switchyard.routing.requested".into(),
             data: json!({"algorithm": route.algorithm_name()}),
             metadata: metadata.clone(),
-        }];
+            severity: Some(LogSeverity::Info),
+        })];
+        events.push(request_metric(route.algorithm_name(), metadata.clone()));
         if let Err(error) = route.check_caller_format(metadata_wire_format(&request)) {
-            self.error_mark(&mut marks, "caller_format", None);
+            self.error_mark(&mut events, "caller_format", None);
             return Execution {
                 result: Err(format!("Switchyard caller format is incompatible: {error}")),
-                marks,
+                events,
             };
         }
         let observations = Arc::new(Mutex::new(Vec::new()));
@@ -154,26 +184,31 @@ impl SwitchyardRuntime {
         });
         match route.execute(request, Some(observer)).await {
             Ok(output) => {
-                self.emit_observations(&mut marks, take_observations(&observations), &metadata);
-                marks.push(RoutingMark {
+                self.emit_observations(&mut events, take_observations(&observations), &metadata);
+                events.push(RoutingEvent::Mark(RoutingMark {
                     name: "switchyard.routing.decision".into(),
                     data: json!({
                         "algorithm": route.algorithm_name(),
                         "selected_model": output.selected_model,
                     }),
                     metadata,
-                });
+                    severity: Some(LogSeverity::Info),
+                }));
                 Execution {
                     result: Ok(output.response),
-                    marks,
+                    events,
                 }
             }
             Err(error) => {
-                self.emit_observations(&mut marks, take_observations(&observations), &metadata);
-                self.route_execution_error_mark(&mut marks, &error.execution_error_summary(), None);
+                self.emit_observations(&mut events, take_observations(&observations), &metadata);
+                self.route_execution_error_mark(
+                    &mut events,
+                    &error.execution_error_summary(),
+                    None,
+                );
                 Execution {
                     result: Err("Switchyard route execution failed".into()),
-                    marks,
+                    events,
                 }
             }
         }
@@ -189,7 +224,7 @@ impl SwitchyardRuntime {
 
     fn emit_observations(
         &self,
-        marks: &mut Vec<RoutingMark>,
+        events: &mut Vec<RoutingEvent>,
         observations: Vec<RunObservation>,
         metadata: &Json,
     ) {
@@ -198,86 +233,102 @@ impl SwitchyardRuntime {
             match observation {
                 RunObservation::LlmCall(call) => {
                     call_index += 1;
-                    self.routing_call_mark(marks, call, call_index, metadata);
+                    self.routing_call_events(events, call, call_index, metadata);
                 }
-                RunObservation::RoutingOverhead(duration) => marks.push(RoutingMark {
-                    name: "switchyard.routing.overhead".into(),
-                    data: json!({"latency_ms": duration.as_secs_f64() * 1_000.0}),
-                    metadata: metadata.clone(),
-                }),
+                RunObservation::RoutingOverhead(duration) => {
+                    let latency_ms = duration.as_secs_f64() * 1_000.0;
+                    events.push(RoutingEvent::Mark(RoutingMark {
+                        name: "switchyard.routing.overhead".into(),
+                        data: json!({"latency_ms": latency_ms}),
+                        metadata: metadata.clone(),
+                        severity: Some(LogSeverity::Info),
+                    }));
+                    events.push(routing_overhead_metric(latency_ms, metadata.clone()));
+                }
                 RunObservation::AnswerCall(_) => {}
             }
         }
     }
 
-    fn routing_call_mark(
+    fn routing_call_events(
         &self,
-        marks: &mut Vec<RoutingMark>,
+        events: &mut Vec<RoutingEvent>,
         call: LlmCallObservation,
         call_index: usize,
         metadata: &Json,
     ) {
-        marks.push(RoutingMark {
+        let outcome = if call.is_success { "ok" } else { "error" };
+        let latency_ms = call.duration.as_secs_f64() * 1_000.0;
+        events.push(RoutingEvent::Mark(RoutingMark {
             name: "switchyard.routing.llm_call".into(),
             data: json!({
                 "call_index": call_index,
                 "selected_model": call.selected_model,
                 "call_role": "routing",
-                "outcome": if call.is_success { "ok" } else { "error" },
-                "latency_ms": call.duration.as_secs_f64() * 1_000.0,
+                "outcome": outcome,
+                "latency_ms": latency_ms,
                 "usage": call.usage,
             }),
             metadata: metadata.clone(),
-        });
+            severity: Some(LogSeverity::Debug),
+        }));
+        events.extend(routing_call_metrics(outcome, latency_ms, metadata.clone()));
     }
 
     fn error_mark(
         &self,
-        marks: &mut Vec<RoutingMark>,
+        events: &mut Vec<RoutingEvent>,
         failure_kind: &str,
         metadata: Option<&Json>,
     ) {
-        let metadata = metadata.cloned().unwrap_or_else(|| {
-            marks
-                .first()
-                .map(|mark| mark.metadata.clone())
-                .unwrap_or_else(|| Json::Object(Map::new()))
-        });
-        marks.push(RoutingMark {
+        let metadata = metadata
+            .cloned()
+            .unwrap_or_else(|| event_metadata(events).unwrap_or_else(|| Json::Object(Map::new())));
+        events.push(RoutingEvent::Mark(RoutingMark {
             name: "switchyard.routing.error".into(),
             data: json!({"failure_kind": failure_kind}),
-            metadata,
-        });
+            metadata: metadata.clone(),
+            severity: Some(LogSeverity::Error),
+        }));
+        events.push(failure_metric(failure_kind, None, None, metadata));
     }
 
     fn route_execution_error_mark(
         &self,
-        marks: &mut Vec<RoutingMark>,
+        events: &mut Vec<RoutingEvent>,
         summary: &RouteErrorSummary,
         metadata: Option<&Json>,
     ) {
-        let metadata = metadata.cloned().unwrap_or_else(|| {
-            marks
-                .first()
-                .map(|mark| mark.metadata.clone())
-                .unwrap_or_else(|| Json::Object(Map::new()))
-        });
-        marks.push(route_execution_error_mark(summary, metadata));
+        let metadata = metadata
+            .cloned()
+            .unwrap_or_else(|| event_metadata(events).unwrap_or_else(|| Json::Object(Map::new())));
+        events.extend(route_execution_error_events(summary, metadata));
     }
 }
 
-pub(crate) fn emit_marks(runtime: &PluginRuntime, marks: Vec<RoutingMark>) {
-    for mark in marks {
-        emit_mark(runtime, mark);
+pub(crate) fn emit_events(runtime: &PluginRuntime, events: Vec<RoutingEvent>) {
+    for event in events {
+        emit_event(runtime, event);
     }
 }
 
-pub(crate) fn emit_mark(runtime: &PluginRuntime, mark: RoutingMark) {
-    if let Err(error) = runtime.emit_mark(&mark.name, Some(&mark.data), Some(&mark.metadata)) {
-        eprintln!(
-            "Switchyard could not emit routing mark {:?}: {error}",
-            mark.name
-        );
+pub(crate) fn emit_event(runtime: &PluginRuntime, event: RoutingEvent) {
+    let result = match event {
+        RoutingEvent::Mark(mark) => runtime
+            .emit_mark_with_options(
+                &mark.name,
+                Some(&mark.data),
+                Some(&mark.metadata),
+                None,
+                mark.severity,
+            )
+            .map_err(|error| ("routing mark", mark.name, error)),
+        RoutingEvent::Metric(metric) => runtime
+            .emit_metric(&metric.name, metric.measurements, Some(&metric.metadata))
+            .map_err(|error| ("routing metric", metric.name, error)),
+    };
+    if let Err((kind, name, error)) = result {
+        eprintln!("Switchyard could not emit {kind} {name:?}: {error}");
     }
 }
 
@@ -312,7 +363,7 @@ fn returned_events(
     response: Response,
     inbound: WireFormat,
     metadata: Json,
-    emit_mark: RoutingMarkEmitter,
+    emit_event: RoutingEventEmitter,
 ) -> Result<ReturnedEventStream, String> {
     let served_model = response.served_model().cloned();
     let chunks = match response.llm_response {
@@ -321,10 +372,12 @@ fn returned_events(
     };
     let chunks = Box::pin(chunks.map(move |item| {
         if let Err(error) = &item {
-            emit_mark(route_execution_error_mark(
+            for event in route_execution_error_events(
                 &stream_error_summary(error, served_model.as_ref()),
                 metadata.clone(),
-            ));
+            ) {
+                emit_event(event);
+            }
         }
         item
     }));
@@ -346,7 +399,145 @@ fn route_execution_error_mark(summary: &RouteErrorSummary, metadata: Json) -> Ro
             "target": summary.target.as_ref().map(|target| target.as_str()),
         }),
         metadata,
+        severity: Some(LogSeverity::Error),
     }
+}
+
+fn route_execution_error_events(summary: &RouteErrorSummary, metadata: Json) -> Vec<RoutingEvent> {
+    vec![
+        RoutingEvent::Mark(route_execution_error_mark(summary, metadata.clone())),
+        failure_metric(
+            "route_execution",
+            Some(summary.kind.as_str()),
+            Some(summary.phase.as_str()),
+            metadata,
+        ),
+    ]
+}
+
+fn event_metadata(events: &[RoutingEvent]) -> Option<Json> {
+    events.iter().find_map(|event| match event {
+        RoutingEvent::Mark(mark) => Some(mark.metadata.clone()),
+        RoutingEvent::Metric(_) => None,
+    })
+}
+
+fn request_metric(algorithm: &str, metadata: Json) -> RoutingEvent {
+    counter_metric(
+        "switchyard.routing.requests",
+        "Requests managed by Switchyard routing.",
+        json!({"algorithm": algorithm}),
+        metadata,
+    )
+}
+
+fn routing_call_metrics(outcome: &str, latency_ms: f64, metadata: Json) -> [RoutingEvent; 2] {
+    let attributes = json!({"outcome": outcome});
+    [
+        counter_metric(
+            "switchyard.routing.llm_calls",
+            "Switchyard model calls made while routing.",
+            attributes.clone(),
+            metadata.clone(),
+        ),
+        histogram_metric(
+            "switchyard.routing.llm_call.duration",
+            "Duration of Switchyard model calls made while routing.",
+            latency_ms,
+            attributes,
+            metadata,
+        ),
+    ]
+}
+
+fn routing_overhead_metric(latency_ms: f64, metadata: Json) -> RoutingEvent {
+    histogram_metric(
+        "switchyard.routing.overhead",
+        "Time spent by Switchyard routing outside model calls.",
+        latency_ms,
+        json!({}),
+        metadata,
+    )
+}
+
+fn failure_metric(
+    failure_kind: &str,
+    category: Option<&str>,
+    phase: Option<&str>,
+    metadata: Json,
+) -> RoutingEvent {
+    let mut attributes = Map::new();
+    attributes.insert("failure_kind".into(), Json::String(failure_kind.into()));
+    if let Some(category) = category {
+        attributes.insert("category".into(), Json::String(category.into()));
+    }
+    if let Some(phase) = phase {
+        attributes.insert("phase".into(), Json::String(phase.into()));
+    }
+    counter_metric(
+        "switchyard.routing.failures",
+        "Terminal Switchyard routing failures.",
+        Json::Object(attributes),
+        metadata,
+    )
+}
+
+fn counter_metric(name: &str, description: &str, attributes: Json, metadata: Json) -> RoutingEvent {
+    metric(
+        MetricDescriptor {
+            name,
+            kind: MetricKind::Counter,
+            value_type: MetricValueType::U64,
+            unit: Some("{event}"),
+            description,
+        },
+        json!(1),
+        attributes,
+        metadata,
+    )
+}
+
+fn histogram_metric(
+    name: &str,
+    description: &str,
+    value: f64,
+    attributes: Json,
+    metadata: Json,
+) -> RoutingEvent {
+    metric(
+        MetricDescriptor {
+            name,
+            kind: MetricKind::Histogram,
+            value_type: MetricValueType::F64,
+            unit: Some("ms"),
+            description,
+        },
+        json!(value),
+        attributes,
+        metadata,
+    )
+}
+
+fn metric(
+    descriptor: MetricDescriptor<'_>,
+    value: Json,
+    attributes: Json,
+    metadata: Json,
+) -> RoutingEvent {
+    RoutingEvent::Metric(RoutingMetric {
+        name: descriptor.name.into(),
+        measurements: vec![MetricMeasurement {
+            name: descriptor.name.into(),
+            kind: descriptor.kind,
+            value_type: descriptor.value_type,
+            value,
+            unit: descriptor.unit.map(Into::into),
+            description: Some(descriptor.description.into()),
+            attributes: Some(attributes),
+            boundaries: None,
+        }],
+        metadata,
+    })
 }
 
 fn string_headers(headers: &Map<String, Json>) -> http::HeaderMap {
@@ -440,7 +631,93 @@ mod tests {
         assert_eq!(mark.data["phase"], "before_response");
         assert_eq!(mark.data["target"], "weak");
         assert_eq!(mark.data["upstream_status"], Json::Null);
+        assert_eq!(mark.severity, Some(LogSeverity::Error));
         assert!(!mark.data.to_string().contains(secret));
+    }
+
+    #[test]
+    fn routing_observations_emit_debug_marks_and_metrics() {
+        let runtime = runtime_for("switchyard");
+        let mut events = Vec::new();
+        runtime.emit_observations(
+            &mut events,
+            vec![
+                RunObservation::LlmCall(LlmCallObservation {
+                    selected_model: ModelId::from("routing-model"),
+                    is_success: false,
+                    duration: std::time::Duration::from_millis(12),
+                    usage: None,
+                }),
+                RunObservation::RoutingOverhead(std::time::Duration::from_millis(3)),
+            ],
+            &json!({"session_id": "session"}),
+        );
+
+        assert_eq!(events.len(), 5);
+        let RoutingEvent::Mark(call_mark) = &events[0] else {
+            panic!("first event should be the routing call mark");
+        };
+        assert_eq!(call_mark.name, "switchyard.routing.llm_call");
+        assert_eq!(call_mark.severity, Some(LogSeverity::Debug));
+        assert_eq!(call_mark.data["outcome"], "error");
+
+        let RoutingEvent::Metric(call_count) = &events[1] else {
+            panic!("second event should be the routing call counter");
+        };
+        assert_eq!(call_count.name, "switchyard.routing.llm_calls");
+        assert_eq!(call_count.measurements[0].kind, MetricKind::Counter);
+        assert_eq!(
+            call_count.measurements[0].attributes,
+            Some(json!({"outcome": "error"}))
+        );
+
+        let RoutingEvent::Metric(call_duration) = &events[2] else {
+            panic!("third event should be the routing call histogram");
+        };
+        assert_eq!(call_duration.name, "switchyard.routing.llm_call.duration");
+        assert_eq!(call_duration.measurements[0].kind, MetricKind::Histogram);
+        assert_eq!(call_duration.measurements[0].value, json!(12.0));
+
+        let RoutingEvent::Mark(overhead_mark) = &events[3] else {
+            panic!("fourth event should be the routing overhead mark");
+        };
+        assert_eq!(overhead_mark.severity, Some(LogSeverity::Info));
+
+        let RoutingEvent::Metric(overhead) = &events[4] else {
+            panic!("fifth event should be the routing overhead histogram");
+        };
+        assert_eq!(overhead.name, "switchyard.routing.overhead");
+        assert_eq!(overhead.measurements[0].attributes, Some(json!({})));
+    }
+
+    #[test]
+    fn request_and_failure_metrics_use_bounded_attributes() {
+        let RoutingEvent::Metric(request) = request_metric("stage_router", json!({})) else {
+            panic!("request should be a metric");
+        };
+        assert_eq!(request.name, "switchyard.routing.requests");
+        assert_eq!(
+            request.measurements[0].attributes,
+            Some(json!({"algorithm": "stage_router"}))
+        );
+
+        let RoutingEvent::Metric(failure) = failure_metric(
+            "route_execution",
+            Some("upstream_http"),
+            Some("before_response"),
+            json!({}),
+        ) else {
+            panic!("failure should be a metric");
+        };
+        assert_eq!(failure.name, "switchyard.routing.failures");
+        assert_eq!(
+            failure.measurements[0].attributes,
+            Some(json!({
+                "failure_kind": "route_execution",
+                "category": "upstream_http",
+                "phase": "before_response",
+            }))
+        );
     }
 
     #[tokio::test]
@@ -473,11 +750,27 @@ mod tests {
 
         let events = stream.collect::<Vec<_>>().await;
         assert!(events[0].is_err());
-        let marks = captured.lock().unwrap();
-        assert_eq!(marks.len(), 1);
-        assert_eq!(marks[0].data["category"], "context_window_exceeded");
-        assert_eq!(marks[0].data["phase"], "during_stream");
-        assert_eq!(marks[0].data["target"], "strong");
-        assert!(!marks[0].data.to_string().contains(secret));
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        let RoutingEvent::Mark(mark) = &events[0] else {
+            panic!("first event should be the safe failure mark");
+        };
+        assert_eq!(mark.data["category"], "context_window_exceeded");
+        assert_eq!(mark.data["phase"], "during_stream");
+        assert_eq!(mark.data["target"], "strong");
+        assert_eq!(mark.severity, Some(LogSeverity::Error));
+        assert!(!mark.data.to_string().contains(secret));
+        let RoutingEvent::Metric(metric) = &events[1] else {
+            panic!("second event should be the failure counter");
+        };
+        assert_eq!(metric.name, "switchyard.routing.failures");
+        assert_eq!(
+            metric.measurements[0].attributes,
+            Some(json!({
+                "failure_kind": "route_execution",
+                "category": "context_window_exceeded",
+                "phase": "during_stream",
+            }))
+        );
     }
 }

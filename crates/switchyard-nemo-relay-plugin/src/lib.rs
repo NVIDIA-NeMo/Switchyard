@@ -14,7 +14,7 @@ use nemo_relay_plugin::{
 use serde_json::Map;
 
 use crate::config::{SwitchyardConfig, protocol_from_call};
-use crate::runtime::{SwitchyardRuntime, emit_mark, emit_marks};
+use crate::runtime::{SwitchyardRuntime, emit_event, emit_events};
 
 #[derive(Default)]
 struct SwitchyardPlugin;
@@ -77,7 +77,7 @@ fn register_buffered(
                     return next.call(request).await;
                 }
                 let execution = runtime.execute_buffered(inbound, decoded).await;
-                emit_marks(&plugin_runtime, execution.marks);
+                emit_events(&plugin_runtime, execution.events);
                 execution.result
             }
         },
@@ -109,10 +109,10 @@ fn register_stream(
                     .execute_stream(
                         inbound,
                         decoded,
-                        Arc::new(move |mark| emit_mark(&stream_plugin_runtime, mark)),
+                        Arc::new(move |event| emit_event(&stream_plugin_runtime, event)),
                     )
                     .await;
-                emit_marks(&plugin_runtime, execution.marks);
+                emit_events(&plugin_runtime, execution.events);
                 execution
                     .result
                     .map(|stream| Box::pin(stream) as LlmJsonAsyncStream)

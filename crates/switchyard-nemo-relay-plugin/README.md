@@ -76,6 +76,28 @@ The plugin emits a routing request mark, routing-model usage marks, measured
 routing-overhead marks, and a selected-model decision mark. Answer-call usage
 continues to belong to Relay's outer LLM lifecycle.
 
+## Observability
+
+When Relay is configured with OTLP logs and metrics exporters, the plugin emits
+typed telemetry through Relay's native plugin runtime:
+
+- Routing request, decision, and overhead marks are Info logs.
+- Per-routing-model call marks are Debug logs, including their outcome and
+  normalized usage when available.
+- Terminal routing and response-finalization failures are Error logs. Their
+  payload contains only the safe Switchyard failure summary; it excludes
+  provider response bodies and free-form provider messages.
+- Metrics use bounded attributes only: algorithm for
+  `switchyard.routing.requests`; outcome for `switchyard.routing.llm_calls`
+  and `switchyard.routing.llm_call.duration`;
+  and safe failure kind, category, and phase for
+  `switchyard.routing.failures`. The plugin also records
+  `switchyard.routing.overhead` as a histogram. Durations use milliseconds.
+
+The plugin deliberately does not attach model IDs, sessions, requests, or
+provider messages as metric attributes, preventing unbounded cardinality or
+sensitive data from reaching the metrics exporter.
+
 ## Failure policy
 
 `switchyard-llm-client` owns provider retry and route-candidate fallback
