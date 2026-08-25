@@ -6,8 +6,9 @@ runs where its evidence is strongest.
 
 ## What exists today
 
-One pairing: an LLM classifier sets a stage router's `picker`, the tier it
-defaults to when its own signals are not confident. Both algorithms and the
+One pairing: an LLM classifier sets the tier a stage router falls open to when
+its own signals are not confident. The stage router's `picker` mode is unchanged,
+and so is how it scores signals, escalates, and de-escalates. Both algorithms and the
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.
 
@@ -37,7 +38,7 @@ confidence_threshold = 0.5
 `classify_trigger` sets how often the judge runs: `user_turn` re-picks the tier
 whenever the user speaks, `new_session` picks once and holds it.
 `[routes.switchyard.stage]` takes the `stage_router` fields except `picker`,
-which the classifier sets, and `classifier`, which would overrule it.
+whose job the classifier does per turn, and `classifier`, which would overrule it.
 
 ## Example use
 

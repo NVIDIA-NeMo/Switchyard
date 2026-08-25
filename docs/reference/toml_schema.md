@@ -214,7 +214,7 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 ### `hierarchical`
 
 Stacks other algorithms in a hierarchy, where one can set another's
-configuration. Today a classifier sets a stage router's `picker`, the tier it defaults to when its own signals are not confident. See
+configuration. Today a classifier sets the tier a stage router falls open to when its own signals are not confident, leaving its scoring and escalation logic untouched. See
 [Hierarchical Routing](../routing_algorithms/hierarchical_routing.md).
 
 | Key | Required | Default | Meaning |
@@ -233,7 +233,7 @@ configuration. Today a classifier sets a stage router's `picker`, the tier it de
 
 The tier is retained per session. A deployment that sends no session ID needs
 `classifier.message_hash_fallback = true`, which keys on the first user message
-instead. The stage table takes no `picker`: the classifier sets the tier. A turn the
+instead. The stage table takes no `picker`: the classifier supplies that tier per turn. A turn the
 classifier cannot reach falls open to the efficient tier. It takes no
 `classifier` either, since that judge would overrule the tier already picked.
 
