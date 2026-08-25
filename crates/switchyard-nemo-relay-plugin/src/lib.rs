@@ -14,7 +14,7 @@ use nemo_relay_plugin::{
 use serde_json::Map;
 
 use crate::config::{SwitchyardConfig, protocol_from_call};
-use crate::runtime::{RoutingMark, SwitchyardRuntime};
+use crate::runtime::{SwitchyardRuntime, emit_mark, emit_marks};
 
 #[derive(Default)]
 struct SwitchyardPlugin;
@@ -104,7 +104,14 @@ fn register_stream(
                 if !runtime.manages(&decoded) {
                     return next.call(request).await;
                 }
-                let execution = runtime.execute_stream(inbound, decoded).await;
+                let stream_plugin_runtime = plugin_runtime.clone();
+                let execution = runtime
+                    .execute_stream(
+                        inbound,
+                        decoded,
+                        Arc::new(move |mark| emit_mark(&stream_plugin_runtime, mark)),
+                    )
+                    .await;
                 emit_marks(&plugin_runtime, execution.marks);
                 execution
                     .result
@@ -117,17 +124,6 @@ fn register_stream(
 fn parse_config(plugin_config: &Map<String, Json>) -> Result<SwitchyardConfig, String> {
     serde_json::from_value(Json::Object(plugin_config.clone()))
         .map_err(|error| format!("invalid Switchyard configuration: {error}"))
-}
-
-fn emit_marks(runtime: &PluginRuntime, marks: Vec<RoutingMark>) {
-    for mark in marks {
-        if let Err(error) = runtime.emit_mark(&mark.name, Some(&mark.data), Some(&mark.metadata)) {
-            eprintln!(
-                "Switchyard could not emit routing mark {:?}: {error}",
-                mark.name
-            );
-        }
-    }
 }
 
 nemo_relay_plugin::nemo_relay_plugin!(nemo_relay_register_plugin, SwitchyardPlugin::default);

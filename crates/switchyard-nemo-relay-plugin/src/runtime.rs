@@ -5,11 +5,11 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use futures_util::{Stream, StreamExt};
-use nemo_relay_plugin::{Json, LlmRequest as RelayRequest};
+use nemo_relay_plugin::{Json, LlmRequest as RelayRequest, PluginRuntime};
 use serde_json::{Map, json};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
 use switchyard_protocol::{LlmResponse, Metadata, Request, Response, WireFormat};
-use switchyard_runner::{Route, Runner};
+use switchyard_runner::{Route, RouteFailureSummary, Runner, stream_failure_summary};
 use switchyard_translation::{TranslationEngine, encode_stream};
 
 use crate::config::SwitchyardConfig;
@@ -23,6 +23,7 @@ pub(crate) struct RoutingMark {
 }
 
 pub(crate) type ReturnedEventStream = Pin<Box<dyn Stream<Item = Result<Json, String>> + Send>>;
+pub(crate) type RoutingMarkEmitter = Arc<dyn Fn(RoutingMark) + Send + Sync>;
 
 pub(crate) struct Execution<T> {
     pub(crate) result: Result<T, String>,
@@ -102,11 +103,16 @@ impl SwitchyardRuntime {
         &self,
         inbound: WireFormat,
         request: Request,
+        emit_mark: RoutingMarkEmitter,
     ) -> Execution<ReturnedEventStream> {
         let Execution { result, mut marks } = self.execute(request).await;
         let (result, finalization_failed) = match result {
             Ok(response) => {
-                let result = returned_events(response, inbound);
+                let metadata = marks
+                    .first()
+                    .map(|mark| mark.metadata.clone())
+                    .unwrap_or_else(|| Json::Object(Map::new()));
+                let result = returned_events(response, inbound, metadata, emit_mark);
                 let failed = result.is_err();
                 (result, failed)
             }
@@ -162,9 +168,13 @@ impl SwitchyardRuntime {
                     marks,
                 }
             }
-            Err(_) => {
+            Err(error) => {
                 self.emit_observations(&mut marks, take_observations(&observations), &metadata);
-                self.error_mark(&mut marks, "route_execution", None);
+                self.route_execution_error_mark(
+                    &mut marks,
+                    &error.execution_failure_summary(),
+                    None,
+                );
                 Execution {
                     result: Err("Switchyard route execution failed".into()),
                     marks,
@@ -243,6 +253,36 @@ impl SwitchyardRuntime {
             metadata,
         });
     }
+
+    fn route_execution_error_mark(
+        &self,
+        marks: &mut Vec<RoutingMark>,
+        summary: &RouteFailureSummary,
+        metadata: Option<&Json>,
+    ) {
+        let metadata = metadata.cloned().unwrap_or_else(|| {
+            marks
+                .first()
+                .map(|mark| mark.metadata.clone())
+                .unwrap_or_else(|| Json::Object(Map::new()))
+        });
+        marks.push(route_execution_error_mark(summary, metadata));
+    }
+}
+
+pub(crate) fn emit_marks(runtime: &PluginRuntime, marks: Vec<RoutingMark>) {
+    for mark in marks {
+        emit_mark(runtime, mark);
+    }
+}
+
+pub(crate) fn emit_mark(runtime: &PluginRuntime, mark: RoutingMark) {
+    if let Err(error) = runtime.emit_mark(&mark.name, Some(&mark.data), Some(&mark.metadata)) {
+        eprintln!(
+            "Switchyard could not emit routing mark {:?}: {error}",
+            mark.name
+        );
+    }
 }
 
 fn take_observations(observations: &Mutex<Vec<RunObservation>>) -> Vec<RunObservation> {
@@ -272,16 +312,45 @@ fn finalize_buffered_response(
     translation::encode_response(translation_engine, inbound, &response)
 }
 
-fn returned_events(response: Response, inbound: WireFormat) -> Result<ReturnedEventStream, String> {
+fn returned_events(
+    response: Response,
+    inbound: WireFormat,
+    metadata: Json,
+    emit_mark: RoutingMarkEmitter,
+) -> Result<ReturnedEventStream, String> {
+    let served_model = response.served_model().cloned();
     let chunks = match response.llm_response {
         LlmResponse::Agg(response) => response.into_stream(),
         LlmResponse::Stream(chunks) => chunks,
     };
+    let chunks = Box::pin(chunks.map(move |item| {
+        if let Err(error) = &item {
+            emit_mark(route_execution_error_mark(
+                &stream_failure_summary(error, served_model.as_ref()),
+                metadata.clone(),
+            ));
+        }
+        item
+    }));
     let events = encode_stream(chunks, inbound, None)
         .map_err(|error| format!("Switchyard response stream setup failed: {error}"))?;
     Ok(Box::pin(events.map(|item| {
         item.map_err(|error| format!("Switchyard response stream failed: {error}"))
     })))
+}
+
+fn route_execution_error_mark(summary: &RouteFailureSummary, metadata: Json) -> RoutingMark {
+    RoutingMark {
+        name: "switchyard.routing.error".into(),
+        data: json!({
+            "failure_kind": "route_execution",
+            "category": summary.category.as_str(),
+            "phase": summary.phase.as_str(),
+            "upstream_status": summary.upstream_status,
+            "target": summary.target.as_ref().map(|target| target.as_str()),
+        }),
+        metadata,
+    }
 }
 
 fn string_headers(headers: &Map<String, Json>) -> http::HeaderMap {
@@ -317,8 +386,8 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use switchyard_llm_client::ClientRouter;
-    use switchyard_protocol::{ModelId, text_request};
-    use switchyard_runner::{AlgorithmSpec, ModelCapabilities};
+    use switchyard_protocol::{LlmClientError, LlmResponseStreamEvent, ModelId, text_request};
+    use switchyard_runner::{AlgorithmSpec, ModelCapabilities, RunnerError};
 
     use super::*;
 
@@ -354,5 +423,65 @@ mod tests {
 
         assert!(runtime.manages(&configured));
         assert!(!runtime.manages(&other));
+    }
+
+    #[test]
+    fn execution_failure_mark_uses_the_safe_runner_summary() {
+        let secret = "provider response body";
+        let error = RunnerError::Client(LlmClientError::ContextWindowExceeded {
+            model: ModelId::from("weak"),
+            message: secret.into(),
+        });
+
+        let mark = route_execution_error_mark(
+            &error.execution_failure_summary(),
+            json!({"session_id": "session"}),
+        );
+
+        assert_eq!(mark.name, "switchyard.routing.error");
+        assert_eq!(mark.data["failure_kind"], "route_execution");
+        assert_eq!(mark.data["category"], "context_window_exceeded");
+        assert_eq!(mark.data["phase"], "before_response");
+        assert_eq!(mark.data["target"], "weak");
+        assert_eq!(mark.data["upstream_status"], Json::Null);
+        assert!(!mark.data.to_string().contains(secret));
+    }
+
+    #[tokio::test]
+    async fn stream_failure_emits_a_safe_failure_mark() {
+        let secret = "provider response body";
+        let response = Response {
+            llm_response: LlmResponse::Stream(Box::pin(futures_util::stream::iter([Err::<
+                LlmResponseStreamEvent,
+                LlmClientError,
+            >(
+                LlmClientError::ContextWindowExceeded {
+                    model: ModelId::from("weak"),
+                    message: secret.into(),
+                },
+            )]))),
+            metadata: Some(Metadata {
+                served_model: Some(ModelId::from("strong")),
+                ..Default::default()
+            }),
+        };
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let emitted = Arc::clone(&captured);
+        let stream = returned_events(
+            response,
+            WireFormat::OpenAiChat,
+            json!({"session_id": "session"}),
+            Arc::new(move |mark| emitted.lock().unwrap().push(mark)),
+        )
+        .expect("stream setup should succeed");
+
+        let events = stream.collect::<Vec<_>>().await;
+        assert!(events[0].is_err());
+        let marks = captured.lock().unwrap();
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].data["category"], "context_window_exceeded");
+        assert_eq!(marks[0].data["phase"], "during_stream");
+        assert_eq!(marks[0].data["target"], "strong");
+        assert!(!marks[0].data.to_string().contains(secret));
     }
 }
