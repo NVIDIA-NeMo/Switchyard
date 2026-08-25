@@ -201,6 +201,15 @@ fn decode_responses_stream(
         Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
             reason: Some("max_tokens".to_string()),
         }],
+        Some("response.failed") => vec![LlmResponseChunk::StreamError {
+            message: event
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown Responses stream error")
+                .to_string(),
+        }],
         Some("error") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("message")

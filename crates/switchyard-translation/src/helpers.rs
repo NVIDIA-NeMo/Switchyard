@@ -18,8 +18,9 @@ use switchyard_protocol::LlmClientError;
 use crate::codecs::stream::encode_response_stream_event;
 use crate::sse;
 use crate::{
-    AggLlmResponse, FormatId, LlmRequest, LlmResponseStream, LlmResponseStreamEvent, Result,
-    StreamCodecRegistry, StreamTranslationState, TranslationEngine, TranslationPolicy, WireFormat,
+    AggLlmResponse, FormatId, LlmRequest, LlmResponseChunk, LlmResponseStream,
+    LlmResponseStreamEvent, Result, StreamCodecRegistry, StreamTranslationState, TranslationEngine,
+    TranslationPolicy, WireFormat,
 };
 
 static DEFAULT_TRANSLATION_POLICY: LazyLock<TranslationPolicy> =
@@ -208,12 +209,16 @@ fn stamp_streamed_response_model(
     }
 }
 
-/// Decodes a byte stream of `source`-format SSE frames into neutral IR chunks.
+/// Decodes provider SSE bytes into normalized stream events.
 ///
 /// Operates on raw bytes, not any HTTP client type: the caller adapts its
 /// transport's body stream into `Stream<Item = Result<Vec<u8>, _>>`. Frames are
 /// buffered across chunks (a partial frame waits for its boundary); the source
 /// stream codec is resolved once and reused for every frame.
+///
+/// The decoder tracks the source format's protocol-specific terminal event. If
+/// EOF arrives without that required event, the stream yields a deferred
+/// [`LlmClientError::ResponseTranslation`] error after any valid decoded events.
 pub fn decode_stream<S>(
     bytes: S,
     source: WireFormat,
@@ -243,6 +248,8 @@ where
         ..StreamTranslationState::default()
     };
     let mut frame = String::new();
+    let mut saw_terminal = false;
+    let mut saw_error = false;
     let stream = Box::pin(try_stream! {
         futures::pin_mut!(lines);
         while let Some(line) = lines.next().await {
@@ -254,9 +261,18 @@ where
                 frame.clear();
                 match parsed {
                     sse::SseFrame::Empty => {}
-                    sse::SseFrame::Done => break,
+                    sse::SseFrame::Done => {
+                        saw_terminal |= source != WireFormat::AnthropicMessages;
+                        break;
+                    }
                     sse::SseFrame::Data(value) => {
+                        saw_terminal |= sse::is_terminal_event(source, &value);
                         let normalized = codec.decode_event(&mut state, &value);
+                        saw_error |= normalized.iter().any(|chunk| matches!(
+                            chunk,
+                            LlmResponseChunk::DecodeError { .. }
+                                | LlmResponseChunk::StreamError { .. }
+                        ));
                         yield LlmResponseStreamEvent::preserved(
                             source_format.clone(),
                             value,
@@ -276,10 +292,28 @@ where
         if !frame.trim_end().is_empty() {
             let parsed = sse::parse_json_sse_frame(&frame, marker)
                 .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
-            if let sse::SseFrame::Data(value) = parsed {
-                let normalized = codec.decode_event(&mut state, &value);
-                yield LlmResponseStreamEvent::preserved(source_format, value, normalized);
+            match parsed {
+                sse::SseFrame::Done => {
+                    saw_terminal |= source != WireFormat::AnthropicMessages;
+                }
+                sse::SseFrame::Data(value) => {
+                    saw_terminal |= sse::is_terminal_event(source, &value);
+                    let normalized = codec.decode_event(&mut state, &value);
+                    saw_error |= normalized.iter().any(|chunk| matches!(
+                        chunk,
+                        LlmResponseChunk::DecodeError { .. }
+                            | LlmResponseChunk::StreamError { .. }
+                    ));
+                    yield LlmResponseStreamEvent::preserved(source_format, value, normalized);
+                }
+                sse::SseFrame::Empty => {}
             }
+        }
+
+        if !saw_terminal && !saw_error {
+            Err(LlmClientError::ResponseTranslation(format!(
+                "{source} stream ended before a terminal event"
+            )))?;
         }
     });
     Ok(stream)
@@ -726,10 +760,63 @@ mod tests {
     fn decode_stream_decodes_trailing_frame_without_blank_line() -> Result<(), BoxError> {
         // A non-standard upstream omits the final blank line; the last frame
         // must still be decoded rather than dropped.
-        let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}".to_vec();
+        let sse =
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}\n\ndata: [DONE]".to_vec();
         let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
         let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
         assert_eq!(text_of(&chunks), "tail");
+        Ok(())
+    }
+
+    #[test]
+    fn decode_stream_rejects_eof_before_a_terminal_event() -> Result<(), BoxError> {
+        // Preserve valid content before surfacing premature EOF as the terminal stream error.
+        let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n".to_vec();
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
+        let results = block_on(decode_stream(bytes, WireFormat::OpenAiChat)?.collect::<Vec<_>>());
+
+        let Some(Ok(first)) = results.first() else {
+            return Err("expected the partial event".into());
+        };
+        assert_eq!(text_of(std::slice::from_ref(first)), "partial");
+        let Some(Err(LlmClientError::ResponseTranslation(message))) = results.last() else {
+            panic!("expected incomplete OpenAI stream to fail");
+        };
+        assert_eq!(message, "openai_chat stream ended before a terminal event");
+        Ok(())
+    }
+
+    #[test]
+    fn responses_failed_before_done_remains_a_stream_error() -> Result<(), BoxError> {
+        let sse = b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"upstream failed\"}}}\n\ndata: [DONE]\n\n".to_vec();
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
+        let events = decode_all(bytes, WireFormat::OpenAiResponses)?;
+
+        let Some(LlmResponseChunk::StreamError { message }) =
+            events.first().and_then(|event| event.normalized().first())
+        else {
+            return Err("expected response.failed to decode as StreamError".into());
+        };
+        assert_eq!(message, "upstream failed");
+
+        let chunks: LlmResponseStream = stream::iter(
+            events
+                .into_iter()
+                .map(Ok::<LlmResponseStreamEvent, LlmClientError>),
+        )
+        .boxed();
+        let replayed =
+            block_on(encode_stream(chunks, WireFormat::OpenAiResponses, None)?.collect::<Vec<_>>())
+                .into_iter()
+                .collect::<Result<Vec<Value>, BoxError>>()?;
+
+        assert_eq!(
+            replayed,
+            vec![json!({
+                "type": "response.failed",
+                "response": {"error": {"message": "upstream failed"}}
+            })]
+        );
         Ok(())
     }
 
