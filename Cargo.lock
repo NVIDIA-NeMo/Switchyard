@@ -512,7 +512,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1243,7 +1243,7 @@ dependencies = [
 [[package]]
 name = "nemo-relay-plugin"
 version = "0.8.0"
-source = "git+https://github.com/NVIDIA/NeMo-Relay.git?tag=0.8.0-rc.2#34be6d0850eb71be8d44f738d3b7ce4b1f9d7044"
+source = "git+https://github.com/NVIDIA/NeMo-Relay.git?tag=0.8.0-rc.3#4b3e66e8f42b113be2b241914674082fa104cdc4"
 dependencies = [
  "futures",
  "nemo-relay-types",
@@ -1256,7 +1256,7 @@ dependencies = [
 [[package]]
 name = "nemo-relay-types"
 version = "0.8.0"
-source = "git+https://github.com/NVIDIA/NeMo-Relay.git?tag=0.8.0-rc.2#34be6d0850eb71be8d44f738d3b7ce4b1f9d7044"
+source = "git+https://github.com/NVIDIA/NeMo-Relay.git?tag=0.8.0-rc.3#4b3e66e8f42b113be2b241914674082fa104cdc4"
 dependencies = [
  "bitflags",
  "chrono",
@@ -1543,7 +1543,7 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "serde_json",
- "thiserror 2.0.18",
+ "thiserror 2.0.20",
  "tracing",
 ]
 
@@ -1760,7 +1760,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1994,7 +1994,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2051,7 +2051,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2564,7 +2564,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3113,7 +3113,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
