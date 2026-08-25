@@ -71,7 +71,7 @@ impl RouteErrorPhase {
 /// Safe, structured terminal-failure data for routing telemetry.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
-pub struct RouteFailureSummary {
+pub struct RouteErrorSummary {
     /// Stable failure classification.
     pub kind: RouteErrorKind,
     /// Whether the error preceded response delivery or occurred while streaming.
@@ -84,7 +84,7 @@ pub struct RouteFailureSummary {
 
 impl RunnerError {
     /// Returns a safe telemetry summary for a failure before response delivery.
-    pub fn execution_failure_summary(&self) -> RouteFailureSummary {
+    pub fn execution_failure_summary(&self) -> RouteErrorSummary {
         match self {
             Self::Algorithm(LibsyError::ClientCall { target, source }) => {
                 client_failure_summary(source, RouteErrorPhase::BeforeResponse, Some(target))
@@ -122,7 +122,7 @@ impl RunnerError {
 pub fn stream_failure_summary(
     error: &LlmClientError,
     served_model: Option<&ModelId>,
-) -> RouteFailureSummary {
+) -> RouteErrorSummary {
     client_failure_summary(error, RouteErrorPhase::DuringStream, served_model)
 }
 
@@ -130,7 +130,7 @@ fn client_failure_summary(
     error: &LlmClientError,
     phase: RouteErrorPhase,
     target: Option<&ModelId>,
-) -> RouteFailureSummary {
+) -> RouteErrorSummary {
     let target = target.or(match error {
         // Context-window errors carry the resolved target model when a caller has not
         // already supplied the route's selected or served target.
@@ -163,8 +163,8 @@ fn summary(
     phase: RouteErrorPhase,
     upstream_status: Option<u16>,
     target: Option<&ModelId>,
-) -> RouteFailureSummary {
-    RouteFailureSummary {
+) -> RouteErrorSummary {
+    RouteErrorSummary {
         kind,
         phase,
         upstream_status,
