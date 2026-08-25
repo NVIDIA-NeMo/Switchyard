@@ -1,0 +1,1735 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Typed, composable LLM routing and format translation for Python">
+      
+      
+      
+      
+        <link rel="prev" href="../context_window/">
+      
+      
+        <link rel="next" href="../../cli_reference/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Soak Testing - Switchyard</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/nvidia.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#soak-test-a-release-candidate" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Switchyard" class="md-header__button md-logo" aria-label="Switchyard" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Switchyard
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Soak Testing
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA-NeMo/Switchyard" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA-NeMo/Switchyard
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Switchyard" class="md-nav__button md-logo" aria-label="Switchyard" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Switchyard
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA-NeMo/Switchyard" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA-NeMo/Switchyard
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Get Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting_started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../known_issues/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Known Issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core_concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Routing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/subagent_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sub-Agent-Aware Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/random_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Random Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLM Classifier Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/stage_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stage-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/hierarchical_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchical Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/escalation_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Escalation-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/advisor_gate_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advisor-Gate Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../context_window/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context-Window Handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soak Testing
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soak Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#prepare-the-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prepare the server
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-the-soak-tester" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build the soak tester
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compare-routing-algorithm-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compare routing algorithm performance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#check-the-local-server-and-load-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Check the local server and load tools
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-the-48-hour-test" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run the 48-hour test
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pass-criteria" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass criteria
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#review-the-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Review the results
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/toml_schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TOML Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/rust_api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#prepare-the-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prepare the server
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-the-soak-tester" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build the soak tester
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compare-routing-algorithm-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compare routing algorithm performance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#check-the-local-server-and-load-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Check the local server and load tools
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-the-48-hour-test" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run the 48-hour test
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pass-criteria" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass criteria
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#review-the-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Review the results
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="soak-test-a-release-candidate">Soak test a release candidate<a class="headerlink" href="#soak-test-a-release-candidate" title="Permanent link">&para;</a></h1>
+<p>A Switchyard soak test sends sustained traffic through a release-candidate
+server long enough to expose failures that short tests miss. Run it for 48
+hours before code freeze when a release changes libsy, the Rust server,
+routing, streaming, translation, or server lifecycle behavior.</p>
+<p>The standard test sends closed-loop traffic through:</p>
+<ul>
+<li>OpenAI Chat Completions (<code>/v1/chat/completions</code>)</li>
+<li>Anthropic Messages (<code>/v1/messages</code>)</li>
+<li>OpenAI Responses (<code>/v1/responses</code>)</li>
+<li>streaming and non-streaming responses</li>
+<li>short and long inputs, long outputs, shared prefixes, and mixed request sizes</li>
+<li>growing conversations, large tool catalogs, tool-call bursts, and stage transitions</li>
+<li>deterministic easy/hard classifier mixes</li>
+</ul>
+<p>The runner also checks <code>/health</code> and <code>/metrics</code> every minute. Every five
+minutes, it sends an invalid Chat Completions request, expects HTTP 400, and
+then confirms the server is still live.</p>
+<p>The scenario catalog covers these distinct pressure angles:</p>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Pressure angle</th>
+<th>What to review</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>short-interactive</code></td>
+<td>Short prompts under fixed load, a concurrency knee, or a 10x request-rate burst</td>
+<td>HTTP ceiling, TTFT, routing overhead, and the saturation point</td>
+</tr>
+<tr>
+<td><code>long-context</code></td>
+<td>8K, 32K, and near-window inputs</td>
+<td>TTFT, memory, and context-sensitive route failures</td>
+</tr>
+<tr>
+<td><code>decode-heavy</code></td>
+<td>512-token and 1,024-token output limits</td>
+<td>ITL, output tokens/second, and stream stability</td>
+</tr>
+<tr>
+<td><code>prefix-reuse</code></td>
+<td>Matched shared and unique long prefixes</td>
+<td>Cache-sensitive TTFT and token accounting</td>
+</tr>
+<tr>
+<td><code>mixed-traffic</code></td>
+<td>A 70/20/10 short, medium, and long mix</td>
+<td>p99 latency and head-of-line effects</td>
+</tr>
+<tr>
+<td><code>growing-conversation</code></td>
+<td>Eight cumulative conversation turns in one session</td>
+<td>Affinity, history cost, and per-turn latency growth</td>
+</tr>
+<tr>
+<td><code>large-tool-catalog</code></td>
+<td>16-tool and 64-tool JSON-schema catalogs</td>
+<td>Serialization/routing overhead and intact tool forwarding</td>
+</tr>
+<tr>
+<td><code>tool-call-burst</code></td>
+<td>Eight linked assistant call/tool-result turns</td>
+<td>Session continuity and burst handling</td>
+</tr>
+<tr>
+<td><code>stage-transitions</code></td>
+<td>One growing history across exploration, critical failure, and productive work</td>
+<td>Stage-router tier changes and scorer output</td>
+</tr>
+<tr>
+<td><code>classifier-mix</code></td>
+<td>Deterministic 80/20 then 50/50 easy/hard requests</td>
+<td>Target share, classifier calls/errors, and classifier latency</td>
+</tr>
+<tr>
+<td><code>context-overflow</code></td>
+<td>One target rejects a near-window request</td>
+<td>Fallback to another eligible target</td>
+</tr>
+<tr>
+<td><code>failure-pressure</code></td>
+<td>Bounded 429, 500, malformed verdict, and truncated stream</td>
+<td>Retry recovery, explicit terminal errors, and connection health</td>
+</tr>
+<tr>
+<td><code>client-cancellation</code></td>
+<td>A client timeout during a delayed response</td>
+<td>Teardown and recovery of later traffic</td>
+</tr>
+</tbody>
+</table>
+<p><code>standard</code> includes the core and agentic rows. Run <code>resilience</code> separately because expected
+failures should not be compared as throughput samples.</p>
+<h2 id="prepare-the-server">Prepare the server<a class="headerlink" href="#prepare-the-server" title="Permanent link">&para;</a></h2>
+<p>Run the exact commit, build, server config, backend, and model planned for the
+release. Do not use a development server in front of a different Switchyard
+build.</p>
+<p>Start the standalone server and its libsy algorithms:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-server
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>release-routes.toml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>&gt;<span class="w"> </span>switchyard-soak.log<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="p">&amp;</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nv">SOAK_SERVER_PID</span><span class="o">=</span><span class="nv">$!</span>
+</span></code></pre></div>
+<p>Wait for <code>GET http://127.0.0.1:4000/health</code> to return HTTP 200 with the JSON
+body <code>{"status": "ok"}</code>; the runner requires both before it starts. Check
+<code>GET http://127.0.0.1:4000/v1/models</code> and choose the model id that represents
+the release workload. Pass that exact id with <code>--model</code>.</p>
+<p>Run the server and test from a dedicated host, job scheduler, or terminal
+multiplexer that will stay alive for the full test. Confirm that the host will
+not suspend or restart and has enough disk space for the server log.</p>
+<h2 id="build-the-soak-tester">Build the soak tester<a class="headerlink" href="#build-the-soak-tester" title="Permanent link">&para;</a></h2>
+<p>The soak tester is a Rust binary. Build it once from the same checkout as the
+release, then run it directly:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-soak
+</span></code></pre></div>
+<h2 id="compare-routing-algorithm-performance">Compare routing algorithm performance<a class="headerlink" href="#compare-routing-algorithm-performance" title="Permanent link">&para;</a></h2>
+<p>Use <code>scripts/benchmark_routing_algorithms.py</code> to compare routing algorithms under the same load.
+The command runs oha and AIPerf sequentially for every model id, then writes <code>report.md</code>,
+<code>report.csv</code>, <code>report.json</code>, and <code>routing-overhead.svg</code> beside both tools' raw results:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>python3.12<span class="w"> </span>scripts/benchmark_routing_algorithms.py<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--direct-base-url<span class="w"> </span>http://127.0.0.1:8100<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--direct-model<span class="w"> </span>mock/weak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">noop</span><span class="o">=</span>switchyard/noop<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">passthrough</span><span class="o">=</span>switchyard/passthrough<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">random</span><span class="o">=</span>switchyard/random<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">llm_classifier</span><span class="o">=</span>switchyard/classifier<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">stage_router</span><span class="o">=</span>switchyard/stage<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">  </span>--request-count<span class="w"> </span><span class="m">1000</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">  </span>--scenario-set<span class="w"> </span>standard<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">  </span>--load-profile<span class="w"> </span>fixed<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">  </span>--profile-runs<span class="w"> </span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">  </span>--backend-label<span class="w"> </span><span class="s2">&quot;release model deployment&quot;</span>
+</span></code></pre></div>
+<p><code>--direct-base-url</code> and <code>--direct-model</code> add an AIPerf arm that calls the backend without
+Switchyard. The report writes the end-to-end latency and throughput difference for every routed
+arm. That difference isolates Switchyard overhead only when the direct and routed arms use the
+same backend deployment, model, and response settings. Resilience scenarios have different
+failure semantics, so the script does not run or compare the direct arm for them. For an
+authenticated backend, pass the name of the key variable, not the key itself, with
+<code>--direct-api-key-env NVIDIA_API_KEY</code>.</p>
+<p>The Markdown report starts with one overhead row for each route and workload. Positive request or
+TTFT latency means the routed request took longer than the direct request. Negative request or
+token throughput means the routed path processed less work. The <code>standard</code> scenario set includes
+all non-resilience request patterns exported by the Rust crate: short and long contexts, long
+outputs, shared prefixes, mixed request sizes, growing conversations, large tool catalogs,
+tool-call bursts, stage changes, and easy/hard classifier mixes.</p>
+<p>When the run includes a direct backend, the Markdown report embeds <code>routing-overhead.svg</code> before
+the overhead table. The two annotated heatmaps show TTFT and output-token-throughput changes for
+every route and workload. Each cell shows the absolute change in milliseconds or tokens per second
+and the percent change. Red cells are worse than the direct backend, and blue cells are better.
+The script uses only the Python standard library to create the SVG, so the same benchmark command
+reproduces the plot without a plotting package.</p>
+<p>The Rust crate exports one AIPerf <code>inputs-json</code> file per scenario. oha reuses the first exported
+<code>short-interactive</code> payload as a non-streaming fixed body and reports the raw HTTP request rate and
+latency ceiling. AIPerf replays every selected streaming session and reports request latency, time
+to first token (TTFT), inter-token latency (ITL), request throughput, output-token throughput, and
+multi-run confidence intervals. The command saves <code>/v1/stats</code> before and after each scenario/load
+cell, so the routing calls and errors total all independent repetitions in that cell. The report
+also records selected-target shares, classifier calls/errors and latency, and mean routing
+overhead. It runs jobs sequentially because simultaneous tools would compete for the same server
+capacity.</p>
+<p>Use the load schedules after the fixed scenario comparison establishes a baseline:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>python3.12<span class="w"> </span>scripts/benchmark_routing_algorithms.py<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">random</span><span class="o">=</span>switchyard/random<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">classifier</span><span class="o">=</span>switchyard/classifier<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>--scenario<span class="w"> </span>short-interactive<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>--load-profile<span class="w"> </span>concurrency-knee<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span>--load-profile<span class="w"> </span>traffic-burst<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">128</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span>--request-rate<span class="w"> </span><span class="m">20</span>
+</span></code></pre></div>
+<p>The concurrency knee uses bounded steps up to <code>--concurrency</code>. The traffic burst holds the base
+request rate, raises it to 10 times that rate for five seconds, then returns to the base. Pass
+<code>--load-profile all</code> to run fixed, knee, and burst schedules. These schedules apply to the short
+baseline; they are not separate request scenarios.</p>
+<p>To isolate routing overhead, configure every route to use the same target deployment and keep the
+scenario manifest, concurrency, request count, and profile-run count fixed. Set <code>--tokenizer</code> to
+the real model tokenizer when exact token counts matter. AIPerf uses deterministic sessions and a
+fixed seed so each route receives the same requests.</p>
+<p>This comparison command does not start a backend or Switchyard. Point it at a running Switchyard
+server backed by real models to measure end-to-end TTFT and token throughput with real tokenization
+and generated tokens. Real-model runs cost tokens and include provider queuing and model variance,
+so use a dedicated deployment and repeat the run before treating a small difference as an
+algorithm effect. Use the local scenario backend first for deterministic routing correctness and
+overhead, then rerun the same manifest against real models for capacity claims.</p>
+<h2 id="check-the-local-server-and-load-tools">Check the local server and load tools<a class="headerlink" href="#check-the-local-server-and-load-tools" title="Permanent link">&para;</a></h2>
+<p>The local test uses a request-aware Axum backend from the soak crate. Build the server, soak tester,
+and scenario backend from the commit under test:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-server<span class="w"> </span>-p<span class="w"> </span>switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--bins<span class="w"> </span>--example<span class="w"> </span>switchyard-soak-mock
+</span></code></pre></div>
+<p>Install <a href="https://github.com/hatoo/oha">oha</a> and
+<a href="https://docs.nvidia.com/aiperf/reference/command-line-options">NVIDIA AIPerf</a>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>oha
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span><span class="s1">&#39;aiperf==0.11.0&#39;</span>
+</span></code></pre></div>
+<p>The benchmark checks the AIPerf version before it creates an output directory. It runs each
+repetition in a separate AIPerf process and calculates confidence intervals from those independent
+runs. Each process starts one required record processor before profiling. The benchmark gives each
+process a deadline based on its request schedule, then stops the whole process group if that deadline
+expires. This prevents a startup failure from leaving a benchmark stuck at zero processed records.</p>
+<p>Then run the local test from the repository root:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>python3.12<span class="w"> </span>scripts/run_local_soak_test.py<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--duration<span class="w"> </span>10s<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--request-count<span class="w"> </span><span class="m">100</span>
+</span></code></pre></div>
+<p>The local backend waits 40 ms before the first token and 1 ms between output tokens by default.
+It streams the output limit from each Rust scenario, so decode-heavy requests produce 512 or 1,024
+tokens and AIPerf can measure TTFT, ITL, and token throughput separately. Use
+<code>--mock-latency-ms</code> and <code>--mock-token-latency-ms</code> to change that deterministic timing model.</p>
+<p><code>--duration</code> controls how long the Rust soak tester runs. <code>--request-count</code> controls how many
+measured requests each load tool sends to each algorithm. <code>--help</code> explains every flag. Set
+<code>OHA_BIN</code>, <code>AIPERF_BIN</code>,
+<code>SWITCHYARD_SERVER_BIN</code>, <code>SWITCHYARD_SOAK_BIN</code>, or <code>SWITCHYARD_SOAK_MOCK_BIN</code> when a command is not
+on <code>PATH</code> or not under <code>target/release</code>.</p>
+<p>The script checks all five commands before starting a process. A missing command prints a warning,
+the build or install command, and the matching environment variable. Cargo builds the scenario
+backend, but it does not install oha or AIPerf during a normal build.</p>
+<p>The script gives each tool one job:</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Job in the local test</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Scenario backend</td>
+<td>Returns local OpenAI-compatible responses, valid easy/hard classifier verdicts, and bounded failures with no provider cost.</td>
+</tr>
+<tr>
+<td>oha</td>
+<td>Measures the non-streaming <code>short-interactive</code> HTTP baseline through every route.</td>
+</tr>
+<tr>
+<td>Python route checks</td>
+<td>Sends one ordinary Chat Completions request through each configured route before load starts.</td>
+</tr>
+<tr>
+<td>AIPerf</td>
+<td>Replays Rust-exported streaming sessions through every route and records LLM, token, response-time, and confidence results.</td>
+</tr>
+<tr>
+<td>Combined report</td>
+<td>Joins scenario, load, oha, AIPerf, and routing-counter metrics in Markdown, CSV, JSON, and an overhead plot. It keeps resilience rows separate from throughput rows.</td>
+</tr>
+<tr>
+<td><code>switchyard-soak</code></td>
+<td>Runs the standard scenario set while checking public API variants, server health, metrics, process use, and required results.</td>
+</tr>
+</tbody>
+</table>
+<p><code>scripts/local_soak_test.toml</code> exercises <code>noop</code>, <code>random</code>, <code>passthrough</code>, <code>llm_classifier</code>, and
+<code>stage_router</code>. It uses the accepted maximum retry count (10), a zero-weight random target, and the
+upper classifier and stage thresholds (1.0). Classifier affinity is disabled so every measured
+request includes the classifier call. The scenario backend returns <code>p_solve=1.0</code> for easy markers
+and <code>p_solve=0.1</code> for hard markers; with the configured threshold, those requests select the weak
+and strong targets respectively. The config is validated with
+<code>switchyard-server --dry-run</code> before either service starts.</p>
+<p>Run resilience cases separately so expected transport failures do not contaminate throughput
+comparisons:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>python3.12<span class="w"> </span>scripts/benchmark_routing_algorithms.py<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--model<span class="w"> </span><span class="nv">classifier</span><span class="o">=</span>switchyard/classifier<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--scenario-set<span class="w"> </span>resilience<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--load-profile<span class="w"> </span>fixed<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span>--profile-runs<span class="w"> </span><span class="m">1</span>
+</span></code></pre></div>
+<p><code>context-overflow</code> checks target fallback, <code>failure-pressure</code> injects bounded 429, 500, malformed
+classifier, and truncated-stream cases, and <code>client-cancellation</code> uses a one-second client timeout
+against a delayed response. Their expected error-rate ranges appear in the report's Resilience
+section, and the command fails after writing the report when any row misses its range. The local
+runner calls the scenario backend's <code>/reset</code> endpoint before each AIPerf cell so every algorithm
+receives the same transient-failure sequence. When you run the comparison command directly against
+that backend, pass <code>--scenario-backend-reset-url http://127.0.0.1:8100/reset</code> to preserve the same
+comparison.</p>
+<p>The runner does not add limits for target count or recent-turn history because the server does not
+limit them. Rust tests cover the real limits: 4,096 saved route assignments, 100,000 response-time
+samples, and 10,000 error records. Server tests cover invalid thresholds, bad classifier responses,
+missing stage-router request IDs, target errors, and retry count 11, which is one above the maximum.</p>
+<h2 id="run-the-48-hour-test">Run the 48-hour test<a class="headerlink" href="#run-the-48-hour-test" title="Permanent link">&para;</a></h2>
+<p>Choose concurrency from the release capacity plan. Increase it in short
+test runs until you find the highest expected steady load that remains below
+the backend's rate limit. Use that load for the 48-hour run. An overload test
+that spends most of its time throttled does not measure release stability.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>--duration<span class="w"> </span>48h<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span>--server-pid<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SOAK_SERVER_PID</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span>--max-rss-growth-mib<span class="w"> </span><span class="m">512</span>
+</span></code></pre></div>
+<p>The runner keeps 16 requests in flight until the test ends. This can generate
+large usage charges against a metered backend. Use a dedicated test deployment,
+estimate the request volume first with a short run, and get approval for any
+paid-provider cost.</p>
+<p>Use a five-minute run to confirm the route and result files:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span>--duration<span class="w"> </span>5m<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span>--report-interval<span class="w"> </span><span class="m">10</span>
+</span></code></pre></div>
+<p>If the Switchyard endpoint requires a bearer token, pass the environment
+variable name instead of putting the token on the command line:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_SOAK_TOKEN</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>--api-key-env<span class="w"> </span>SWITCHYARD_SOAK_TOKEN<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID
+</span></code></pre></div>
+<h2 id="pass-criteria">Pass criteria<a class="headerlink" href="#pass-criteria" title="Permanent link">&para;</a></h2>
+<p>The command exits with status 0 only when:</p>
+<ul>
+<li>the requested duration completes;</li>
+<li>at least one inference request completes;</li>
+<li>the inference error rate stays at or below <code>--max-error-rate</code> (default <code>0</code>,
+  which means no inference request may fail);</li>
+<li>every periodic liveness check passes;</li>
+<li>every <code>/metrics</code> read returns both Switchyard request counters;</li>
+<li>every requested process sample returns RSS and CPU data;</li>
+<li>every invalid-request recovery check passes;</li>
+<li>the server request counter never resets; and</li>
+<li>RSS growth stays within <code>--max-rss-growth-mib</code> when that limit is set.</li>
+</ul>
+<p>If the release plan permits transient failures from a remote provider, set an
+explicit error budget with <code>--max-error-rate</code>. Record the reason for that
+exception in the release record.</p>
+<p>The RSS limit is deployment-specific. Set it from an approved baseline for the
+same model, concurrency, and worker count. Omit <code>--server-pid</code> and
+<code>--max-rss-growth-mib</code> when the server runs on another host, then collect
+memory and restart data from that host's monitoring system.</p>
+<h2 id="review-the-results">Review the results<a class="headerlink" href="#review-the-results" title="Permanent link">&para;</a></h2>
+<p>Each run creates a timestamped directory under <code>soak-results/</code>:</p>
+<ul>
+<li><code>config.json</code> records the non-secret test inputs.</li>
+<li><code>intervals.csv</code> records request rate, errors, latency percentiles, health,
+  Switchyard counters, RSS, and CPU once per reporting interval. <code>cpu_percent</code>
+  is the <code>ps</code> lifetime-average CPU for the process, not the interval's usage, so
+  read it as a long-run average rather than a spike detector.</li>
+<li><code>errors.jsonl</code> records up to 10,000 request and canary failures.</li>
+<li><code>summary.json</code> records the final pass result and any failed gates.</li>
+</ul>
+<p>Tail the run log to monitor progress, cumulative error rate, health, RSS, and the
+<code>OK</code>, <code>DEGRADED</code>, or <code>STALLED</code> interval status while the test runs.</p>
+<p>Before approving the release, check <code>intervals.csv</code> for late failures, falling
+throughput, increasing p95 or p99 latency, and steady RSS growth. Compare the
+first and last several hours, not only the run-wide averages. Attach
+<code>summary.json</code>, the interval chart, the Switchyard log, the tested commit, and
+the server config to the release record.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; 2025-2026 NVIDIA Corporation
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.top", "navigation.sections", "search.suggest", "search.highlight", "content.code.copy", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
