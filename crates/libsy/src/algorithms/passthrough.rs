@@ -18,7 +18,7 @@ pub struct Passthrough {
 impl Passthrough {
     /// Creates an algorithm that always selects `target`.
     pub fn new(target: impl Into<ModelId>) -> Self {
-        Passthrough {
+        Self {
             target: target.into(),
         }
     }

@@ -38,7 +38,7 @@ strong_target = "strong"
 weak_target = "weak"
 base_threshold = 0.5
 threshold_step = 0.1
-session_affinity = true
+classify_trigger = "new_session"
 message_hash_fallback = true
 ```
 
@@ -106,8 +106,8 @@ for the server merge behavior.
 | `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
 | `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
 | `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
-| `session_affinity` | `false` | Retains the first selected target for a session and reuses it on later requests. |
-| `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `session_affinity = true`. |
+| `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
+| `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `classify_trigger = "new_session"`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
@@ -201,17 +201,34 @@ If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.
 
-## Session affinity
+## When the judge runs
 
-With `session_affinity = true`, the first selected target is retained for the
-request's session identity. This includes `strong_target` when it was selected
-as the fallback for an unavailable or unusable judge verdict. There is no
-warmup period. Later requests with the same identity reuse the target before
-classification, so the judge call is skipped.
+`classify_trigger` sets how often the target is re-decided.
 
-Affinity is process-local. Clients can send `x-switchyard-session-id`, or enable
-`message_hash_fallback` to key requests without session metadata from the first
-user-message text.
+`every_request`, the default, judges every request. In an agentic session that
+includes every tool continuation, so twenty tool steps means twenty-one
+classifications of one task, and the target can change between any two of them.
+
+`user_turn` judges each new user message and holds that target through the tool
+calls that follow:
+
+```toml
+[routes.smart]
+classify_trigger = "user_turn"
+```
+
+Tool results are the agent continuing work the user already asked for, so they
+do not re-open the decision. A failed or unusable verdict keeps the current
+target. When no target has been selected yet, the next request is judged again.
+
+`new_session` judges once and reuses that target for the rest of the session,
+including `strong_target` when it was selected as the fallback for an unusable
+verdict. There is no warmup period, and later requests skip the judge entirely.
+
+The selection is held in per-session state, so requests without a session
+identity are judged every time. Clients can send `x-switchyard-session-id`, or
+enable `message_hash_fallback` to key on the first user-message text under
+`new_session`.
 
 ## Run the route
 

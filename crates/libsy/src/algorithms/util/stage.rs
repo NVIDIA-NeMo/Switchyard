@@ -81,11 +81,20 @@ impl Tier {
     /// Stable label for stats and the [`routing_tier`](Classifier::routing_tier)
     /// hook, independent of what the tiers' targets are called. These are the
     /// strings the capability route reports too, so a deployment running both
-    /// sees one tier vocabulary.
+    /// sees one tier vocabulary. Also the encoding a default-tier override is
+    /// stored under, so changing these strings invalidates one.
     fn label(self) -> &'static str {
         match self {
             Self::Capable => "strong",
             Self::Efficient => "weak",
+        }
+    }
+
+    fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "strong" => Some(Self::Capable),
+            "weak" => Some(Self::Efficient),
+            _ => None,
         }
     }
 }
@@ -152,6 +161,32 @@ impl PickerMode {
 
 /// `State.extra` key under which the turn's [`DecisionSource`] is recorded.
 pub const DECISION_SOURCE_KEY: &str = "decision_source";
+
+/// `State.extra` key under which a default-tier override is recorded.
+const FALL_OPEN_KEY: &str = "fall_open";
+
+/// Overrides the default tier undecided turns fall open to, until
+/// [`clear_fall_open`] restores the picker's. Held in session state, so it
+/// survives later requests only when they carry a session id.
+pub fn set_fall_open(state: &mut State, tier: Tier) {
+    state.extra.insert(
+        FALL_OPEN_KEY.to_string(),
+        StateValue::String(tier.label().to_string()),
+    );
+}
+
+/// Restores the picker's default tier.
+pub fn clear_fall_open(state: &mut State) {
+    state.extra.remove(FALL_OPEN_KEY);
+}
+
+/// The default-tier override for this session, if any.
+pub(crate) fn fall_open_tier(state: &State) -> Option<Tier> {
+    match state.extra.get(FALL_OPEN_KEY) {
+        Some(StateValue::String(label)) => Tier::from_label(label),
+        _ => None,
+    }
+}
 
 /// Record which component decided the turn.
 pub(crate) fn record_decision_source(state: &mut State, source: DecisionSource) {

@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Two-tier custom-mode classifier routing for multi-turn customer-support traffic.
+# The classifier answers with a target name, which `policy.selector` reads directly.
+#
+# Calibrated against:
+#   Benchmark      tau2-bench, telecom customer support (multi-turn, tool-using), full 114 tasks
+#   Strong tier    Anthropic Claude Opus 4.7
+#   Weak tier      Qwen3.6-35B-A3B, served on-device (llama.cpp)
+#   Classifier     the same on-device Qwen3.6-35B-A3B
+#   Measured       0.903 +/- 0.071 solve rate at 45% of turns served by the weak tier
+#   Rubric         frozen; the `prompt` below is the text that was measured
+#
+# The routing parameters and the classifier rubric below are exactly as run. The model
+# wiring is not: the measured runs used NVIDIA-internal endpoints and an on-device weak
+# tier, replaced here with the closest publicly reachable OpenRouter models so the
+# deployment runs as written. The weak tier in particular is a near equivalent rather
+# than the same build, so treat the figures above as the operating point of the
+# calibrated pair, not a prediction for this file as configured.
+#
+# Balanced is the operating point that kept solve rate within noise of the strong-tier
+# anchor while moving just under half the traffic off it.
+#
+# These numbers describe this tier pair on this traffic. A different pair of models, or a
+# different traffic domain, will sit at a different operating point: recalibrate rather
+# than assuming the thresholds transfer.
+#
+#   switchyard-server --config benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml --port 4000
+
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.strong]
+id = "anthropic/claude-opus-4.7"
+llm_client = "openrouter"
+
+[targets.weak]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "openrouter"
+
+[targets.classifier]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "openrouter"
+
+[routes.switchyard]
+id = "switchyard"
+type = "llm_classifier"
+classifier_target = "classifier"
+mode = "custom"
+recent_turn_window = 6
+# Re-classify when the user speaks again, and hold that target across the tool calls
+# in between, so a tool chain never switches tier mid-task.
+classify_trigger = "user_turn"
+targets = ["weak", "strong"]
+default_target = "strong"
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "route": { "type": "string", "enum": ["weak", "strong"] },
+    "confidence": { "type": "number" },
+    "abstain": { "type": "boolean" }
+  },
+  "required": ["route", "confidence", "abstain"],
+  "additionalProperties": false
+}
+'''
+prompt = '''
+You are a routing classifier inside a customer-service agent (telecom support).
+You see a condensed view of the conversation: the original request, recent turns
+(including tool results), and the customer's newest message. Return exactly one
+JSON object:
+
+{"route": "weak" or "strong", "confidence": number 0..1, "abstain": boolean}
+
+State the route DIRECTLY: "weak" = the on-device assistant handles this turn;
+"strong" = escalate this turn to the frontier model. Decide for the customer's
+NEWEST request, using the recent turns as context.
+
+Route "weak" when the newest request is ROUTINE — the procedure is
+clear and it's about executing it:
+  account/order/status lookups, reading or relaying tool results, standard
+  single-step actions (toggle a setting, resend a code, restart a service),
+  collecting information from the customer, confirmations, pleasantries,
+  straightforward troubleshooting with an obvious next step.
+
+Route "strong" when the newest request needs NON-OBVIOUS
+JUDGMENT the routine tier may get wrong:
+  applying or reconciling POLICY with multiple conditions (eligibility, refunds,
+  exceptions, proration), conflicts between what the customer wants and what
+  policy/tools allow, multi-account or multi-line arithmetic, diagnosing a
+  problem whose cause is still unknown after tool checks, anything where a
+  plausible-but-wrong answer damages the customer or violates policy.
+
+Heuristic: "Is the procedure already clear (weak), or does this message require
+figuring out or justifying something (strong)?" A long routine task is WEAK; a
+one-line policy exception is STRONG.
+
+Set abstain=true only if truly unclassifiable. No markdown, no chain-of-thought —
+only the JSON object.
+'''
+
+[routes.switchyard.policy]
+type = "target_selector"
+selector = "/route"

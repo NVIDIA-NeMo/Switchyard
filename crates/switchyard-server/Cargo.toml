@@ -33,9 +33,9 @@ opentelemetry_sdk = { version = "0.32", default-features = false, features = ["m
 parking_lot.workspace = true
 prometheus = "0.14"
 serde.workspace = true
-toml = "1.1"
 switchyard-llm-client.workspace = true
 switchyard-protocol.workspace = true
+switchyard-runner.workspace = true
 serde_json.workspace = true
 switchyard-translation.workspace = true
 humantime = "2.4"

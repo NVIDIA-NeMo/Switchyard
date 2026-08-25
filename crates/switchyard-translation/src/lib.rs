@@ -8,6 +8,7 @@
 //! servers, Python objects, or FFI bindings.
 
 pub mod codecs;
+pub(crate) mod codex_namespaces;
 pub mod diagnostic;
 pub mod engine;
 pub mod error;
@@ -31,5 +32,6 @@ pub use llm::*;
 pub use policy::*;
 pub use stream::*;
 pub use util::{
-    PRESERVATION_METADATA_KEY, normalize_anthropic_tool_use_ids, sanitize_anthropic_tool_use_id,
+    PRESERVATION_METADATA_KEY, normalize_anthropic_tool_use_ids, prepare_request_for_target,
+    sanitize_anthropic_tool_use_id,
 };

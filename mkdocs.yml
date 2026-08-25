@@ -25,6 +25,7 @@ nav:
       - Architecture: architecture.md
   - Routing:
       - Overview: routing_algorithms/overview.md
+      - Sub-Agent-Aware Routing: routing_algorithms/subagent_routing.md
       - Random Routing: routing_algorithms/random_routing.md
       - LLM Classifier Routing: routing_algorithms/llm_classifier_routing.md
       - Stage-Router Routing: routing_algorithms/stage_router_routing.md
@@ -32,8 +33,9 @@ nav:
       - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
   - Operations:
       - Context-Window Handling: operations/context_window.md
+      - Soak Testing: operations/soak_test.md
   - Reference:
-      - CLI Reference: cli_reference.md
+      - Server CLI Reference: cli_reference.md
       - TOML Schema: reference/toml_schema.md
       - Rust API: reference/rust_api.md
 

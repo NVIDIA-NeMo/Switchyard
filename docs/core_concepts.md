@@ -16,10 +16,6 @@ Switchyard exposes the same Rust routing core through two runtime surfaces:
   targets and algorithms directly and can let libsy make calls or fulfill its
   requested model calls themselves.
 
-The `switchyard launch` command is a launcher for coding agents. It hosts the
-native Rust server through the packaged PyO3 binding and points the selected
-agent at that server.
-
 ## Request Flow
 
 The standalone server translates an inbound provider format into the shared
@@ -107,7 +103,7 @@ selected target uses a different upstream protocol.
 ## Where to Go Next
 
 - [Getting Started](getting_started.md): install and run either execution path.
-- [CLI Reference](cli_reference.md): launcher and standalone server arguments.
+- [Server CLI Reference](cli_reference.md): standalone server arguments.
 - [LLM Classifier Routing](routing_algorithms/llm_classifier_routing.md): configure classifier routing.
 - [Architecture](architecture.md): follow a request through the server and Rust crates.
 - [`switchyard-server`](../crates/switchyard-server/README.md): complete TOML schema, endpoints, and metrics.

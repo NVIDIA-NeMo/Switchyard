@@ -6,11 +6,12 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
+use switchyard_protocol::ModelId;
 
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
-use crate::format::FormatId;
-use crate::llm::{ContentBlock, LlmRequest, Message, PreservationMetadata};
+use crate::format::{FormatId, WireFormat};
+use crate::llm::{ContentBlock, InstructionBlock, LlmRequest, Message, PreservationMetadata, Role};
 use crate::policy::{
     LossyConversionPolicy, PreservationPolicy, TranslationPolicy, UnknownFieldPolicy,
 };
@@ -269,6 +270,48 @@ pub fn exact_preserved_response(
     (policy.preservation != PreservationPolicy::Disabled)
         .then(|| preservation.responses.get(&format).cloned())
         .flatten()
+}
+
+/// Applies a selected target model and optionally prepends its system prompt.
+///
+/// Model-only preparation restamps built-in preserved bodies so exact replay uses the target.
+/// Adding a prompt invalidates preserved bodies because they predate that content mutation.
+/// Call this once per candidate using a request that has not already received a target prompt.
+pub fn prepare_request_for_target(
+    request: &mut LlmRequest,
+    target: &ModelId,
+    prompt: Option<&str>,
+) {
+    let target = target.to_string();
+    request.model = Some(target.clone());
+    if let Some(prompt) = prompt {
+        request.instructions.insert(
+            0,
+            InstructionBlock {
+                role: Role::System,
+                content: vec![ContentBlock::Text {
+                    text: prompt.to_string(),
+                }],
+            },
+        );
+        request.preservation.requests.clear();
+    } else {
+        stamp_preserved_request_models(&mut request.preservation, &target);
+    }
+}
+
+// Retains exact replay only where the built-in wire model field can be updated safely.
+fn stamp_preserved_request_models(preservation: &mut PreservationMetadata, target: &str) {
+    preservation.requests.retain(|format, body| {
+        let is_builtin = format.as_str() == WireFormat::OpenAiChat.as_str()
+            || format.as_str() == WireFormat::OpenAiResponses.as_str()
+            || format.as_str() == WireFormat::AnthropicMessages.as_str();
+        let Some(body) = is_builtin.then_some(body).and_then(Value::as_object_mut) else {
+            return false;
+        };
+        body.insert("model".to_string(), Value::String(target.to_string()));
+        true
+    });
 }
 
 /// Embeds preservation metadata into a translated wire body when requested.

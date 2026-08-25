@@ -1497,6 +1497,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "prefill-router"
+version = "0.2.0"
+dependencies = [
+ "pyo3",
+ "pyo3-build-config",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "pretty_assertions"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2122,6 +2133,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -2343,6 +2355,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-runner"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "strum_macros",
+ "switchyard-libsy",
+ "switchyard-llm-client",
+ "switchyard-protocol",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "switchyard-server"
 version = "0.2.0"
 dependencies = [
@@ -2367,10 +2398,10 @@ dependencies = [
  "switchyard-libsy",
  "switchyard-llm-client",
  "switchyard-protocol",
+ "switchyard-runner",
  "switchyard-translation",
  "tempfile",
  "tokio",
- "toml",
  "tower",
  "tracing",
  "tracing-opentelemetry",
@@ -2385,6 +2416,23 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "switchyard-soak"
+version = "0.2.0"
+dependencies = [
+ "axum",
+ "clap",
+ "futures-util",
+ "humantime",
+ "parking_lot",
+ "rand 0.10.2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 

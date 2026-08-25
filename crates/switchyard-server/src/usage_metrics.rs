@@ -39,6 +39,8 @@ pub(crate) fn observe(
         LlmResponse::Stream(mut stream) => {
             let wrapped = async_stream::stream! {
                 let mut latest_usage = None;
+                let mut terminal_seen = false;
+                let mut recorded = false;
                 while let Some(item) = stream.next().await {
                     let failed = match &item {
                         Err(_) => true,
@@ -52,23 +54,42 @@ pub(crate) fn observe(
                     };
                     if let Ok(event) = &item {
                         for chunk in event.normalized() {
-                            if let LlmResponseChunk::Usage(usage) = chunk {
-                                latest_usage = Some(usage.clone());
+                            match chunk {
+                                LlmResponseChunk::Usage(usage) => {
+                                    latest_usage = Some(usage.clone());
+                                }
+                                LlmResponseChunk::MessageStop { .. } => {
+                                    terminal_seen = true;
+                                }
+                                _ => {}
                             }
                         }
                     }
                     if failed {
                         record_stream_error(&stats, &model);
                     }
+                    // Responses clients may stop polling immediately after the terminal event.
+                    // Commit first when that event already carries the final usage.
+                    if !failed && !recorded && terminal_seen
+                        && let Some(usage) = latest_usage.as_ref()
+                    {
+                        record_terminal(&stats, usage, &model, started, cache_eligible);
+                        if let Some((log, context)) = routing_log.as_ref() {
+                            log.append(context.clone(), &model, None, usage);
+                        }
+                        recorded = true;
+                    }
                     yield item;
                     if failed {
                         return;
                     }
                 }
-                let usage = latest_usage.unwrap_or_default();
-                record_terminal(&stats, &usage, &model, started, cache_eligible);
-                if let Some((log, context)) = routing_log {
-                    log.append(context, &model, None, &usage);
+                if !recorded {
+                    let usage = latest_usage.unwrap_or_default();
+                    record_terminal(&stats, &usage, &model, started, cache_eligible);
+                    if let Some((log, context)) = routing_log {
+                        log.append(context, &model, None, &usage);
+                    }
                 }
             };
             LlmResponse::Stream(Box::pin(wrapped))
@@ -159,4 +180,67 @@ fn record_latency(model: &str, latency: Duration) {
         .f64_histogram("switchyard.total_latency_ms")
         .build()
         .record(latency.as_secs_f64() * 1000.0, &attributes(model));
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_util::{StreamExt, stream};
+    use switchyard_protocol::{LlmResponseChunk, LlmResponseStreamEvent, Metadata, Response};
+
+    use super::*;
+
+    /// An OpenAI Responses client may stop polling immediately after receiving the
+    /// terminal `response.completed` event. Switchyard must record usage and routing
+    /// data before returning that event because the stream wrapper will not resume
+    /// after the client drops it.
+    #[tokio::test]
+    async fn terminal_event_is_recorded_before_the_client_drops_the_stream() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let log = SharedRoutingLog::new(dir.path().join("routing.jsonl")).expect("routing log");
+        let context = RoutingLogContext::from_metadata(&Metadata {
+            session_id: Some("streaming-session".to_string()),
+            ..Metadata::default()
+        });
+        let usage = Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(3),
+            ..Usage::default()
+        };
+        let source = stream::iter([Ok(LlmResponseStreamEvent::new(vec![
+            LlmResponseChunk::Usage(usage),
+            LlmResponseChunk::MessageStop { reason: None },
+        ]))]);
+        let response = Response {
+            llm_response: LlmResponse::Stream(Box::pin(source)),
+            metadata: None,
+        };
+        let stats = StatsAccumulator::default();
+        let observed = observe(
+            response,
+            "model/worker",
+            Instant::now(),
+            stats.clone(),
+            0.0,
+            Some((log.clone(), context)),
+        );
+
+        let LlmResponse::Stream(mut observed) = observed.llm_response else {
+            panic!("expected stream");
+        };
+        assert!(observed.next().await.is_some());
+        drop(observed);
+
+        let routing = log
+            .snapshot_session("streaming-session")
+            .expect("read routing log")
+            .expect("terminal event was recorded");
+        let routing = serde_json::to_value(routing).expect("serialize routing stats");
+        assert_eq!(routing["models"]["model/worker"]["calls"], 1);
+        assert_eq!(routing["models"]["model/worker"]["prompt_tokens"], 10);
+        assert_eq!(routing["models"]["model/worker"]["completion_tokens"], 3);
+
+        let process = stats.snapshot();
+        assert_eq!(process.models["model/worker"].prompt_tokens, 10);
+        assert_eq!(process.models["model/worker"].completion_tokens, 3);
+    }
 }

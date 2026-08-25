@@ -149,6 +149,27 @@ async fn upstream_chat(
             .into_response();
     }
     if body["stream"].as_bool() == Some(true) {
+        // Streamed tool call, for the namespace-on-every-event assertions. The
+        // model calls a tool by the name it was given, so echo that name back.
+        if body["messages"][0]["content"] == "mcp-tool-call" {
+            let called = body["tool_choice"]["function"]["name"]
+                .as_str()
+                .or_else(|| body["tools"][0]["function"]["name"].as_str())
+                .unwrap_or("search")
+                .to_string();
+            let events = [
+                json!({"id": "chatcmpl-mcp", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": called, "arguments": ""}}]}}]}).to_string(),
+                json!({"id": "chatcmpl-mcp", "model": model, "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{\"q\":\"rust\"}"}}]}}]}).to_string(),
+                json!({"id": "chatcmpl-mcp", "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}}).to_string(),
+                "[DONE]".to_string(),
+            ];
+            let stream = futures_util::stream::iter(
+                events
+                    .into_iter()
+                    .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
+            );
+            return Sse::new(stream).into_response();
+        }
         if body["messages"][0]["content"] == "stream-error" {
             let events = [
                 json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}).to_string(),
@@ -206,6 +227,35 @@ async fn upstream_chat(
                 "finish_reason": "stop"
             }],
             "usage": {"prompt_tokens": 40, "completion_tokens": 4, "total_tokens": 44}
+        }))
+        .into_response();
+    }
+
+    // Buffered tool call, the non-streaming counterpart of the branch above.
+    if body["messages"][0]["content"] == "mcp-tool-call" {
+        let called = body["tool_choice"]["function"]["name"]
+            .as_str()
+            .or_else(|| body["tools"][0]["function"]["name"].as_str())
+            .unwrap_or("search")
+            .to_string();
+        return Json(json!({
+            "id": "chatcmpl-mcp",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": called, "arguments": "{\"q\":\"rust\"}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}
         }))
         .into_response();
     }
@@ -953,6 +1003,132 @@ base_threshold = 0.5
         served[0] == "model/weak" || served[0] == "model/strong",
         "routed call went to {served:?}"
     );
+    Ok(())
+}
+
+/// Decision-only routing returns callable metadata and preserves any answer produced while routing.
+#[tokio::test]
+async fn decision_returns_callable_target_and_routing_answer() -> TestResult {
+    let judge_upstream = MockUpstream::start().await?;
+    let model_upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.judge_provider]
+format = "openai_chat"
+base_url = "{judge_url}"
+
+[llm_clients.model_provider]
+format = "openai_chat"
+base_url = "{model_url}"
+
+[targets.judge]
+id = "model/classifier"
+llm_client = "judge_provider"
+
+[targets.quality]
+id = "model/strong"
+llm_client = "model_provider"
+
+[targets.economy]
+id = "model/weak"
+llm_client = "model_provider"
+extra_body = {{ service_tier = "priority" }}
+
+[routes.classify]
+id = "switchyard/classify"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "quality"
+weak_target = "economy"
+base_threshold = 0.5
+
+[routes.escalation]
+id = "switchyard/escalation"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge"
+strong_target = "quality"
+weak_target = "economy"
+escalation = {{ confirmations = 1 }}
+"#,
+        judge_url = judge_upstream.base_url,
+        model_url = model_upstream.base_url,
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/decision",
+        Some(json!({
+            "input_format": "openai_chat",
+            "request": {
+                "model": "switchyard/classify",
+                "messages": [{"role": "user", "content": "bounded task"}]
+            }
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.json()?,
+        json!({
+            "selected": {
+                "target": "economy",
+                "model": "model/weak",
+                "llm_client": {
+                    "format": "openai_chat",
+                    "base_url": model_upstream.base_url,
+                },
+                "extra_body": {"service_tier": "priority"},
+            },
+            "fallbacks": [{
+                "target": "quality",
+                "model": "model/strong",
+                "llm_client": {
+                    "format": "openai_chat",
+                    "base_url": model_upstream.base_url,
+                },
+                "extra_body": {},
+            }],
+        })
+    );
+    assert_eq!(
+        judge_upstream.models().await,
+        vec!["model/classifier".to_string()]
+    );
+    assert!(model_upstream.models().await.is_empty());
+
+    judge_upstream.calls.lock().await.clear();
+    model_upstream.calls.lock().await.clear();
+    let response = send(
+        &app,
+        "POST",
+        "/v1/decision",
+        Some(json!({
+            "input_format": "openai_chat",
+            "request": {
+                "model": "switchyard/escalation",
+                "messages": [{"role": "user", "content": "bounded task"}]
+            }
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let response = response.json()?;
+    assert_eq!(response["selected"]["target"], "economy");
+    assert_eq!(response["fallbacks"], json!([]));
+    assert_eq!(response["response"]["model"], "model/weak");
+    assert_eq!(
+        response["response"]["choices"][0]["message"]["content"],
+        "ok"
+    );
+    assert_eq!(model_upstream.models().await, ["model/weak"]);
+    assert_eq!(judge_upstream.models().await, ["model/classifier"]);
     Ok(())
 }
 
@@ -2002,8 +2178,8 @@ target = "shared"
         json!(true)
     );
     assert_eq!(codex_metadata["reasoning"]["default_verbosity"], "low");
-    // An undeclared route: null context window, non-reasoning, but tools default on
-    // so `switchyard launch codex` stays usable out of the box.
+    // An undeclared route: null context window, non-reasoning, but tools default on so Codex
+    // remains usable when connected directly to the server.
     assert_eq!(codex_metadata["undeclared"]["context_window"], json!(null));
     assert_eq!(
         codex_metadata["undeclared"]["supported_reasoning_levels"],
@@ -3092,5 +3268,103 @@ async fn advisor_route_redo_fail_open_and_stats_projection() -> TestResult {
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(gate_count(&stats, &["reviews", "redo", "total"]), 0);
     assert_eq!(gate_count(&stats, &["discarded", "turns"]), 0);
+    Ok(())
+}
+
+// Returns every `data:` frame of an SSE body as JSON, skipping `[DONE]`.
+fn sse_events(body: &str) -> Vec<Value> {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .filter_map(|data| serde_json::from_str(data).ok())
+        .collect()
+}
+
+// The end-to-end contract for Codex tool namespaces, in one request.
+//
+// Two MCP servers expose the same tool name, so the flat upstream can only tell
+// them apart by the namespace folded into each name. Everything naming a tool —
+// the definitions, the recorded call in history, and the forced tool choice —
+// has to use that same spelling, and the response has to split it back into the
+// name and namespace Codex dispatches on.
+#[tokio::test]
+async fn responses_round_trips_codex_tool_namespaces() -> TestResult {
+    const MODEL: &str = "model/mcp-namespaces";
+    let (upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "stream": true,
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "mcp-tool-call"}]},
+                {"type": "function_call", "call_id": "call_prior", "name": "search",
+                 "namespace": "mcp__b", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_prior", "output": "earlier"}
+            ],
+            "tool_choice": {"type": "function", "name": "search", "namespace": "mcp__b"},
+            "tools": [
+                {"type": "namespace", "name": "mcp__a", "tools": [{
+                    "type": "function", "name": "search",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+                }]},
+                {"type": "namespace", "name": "mcp__b", "tools": [{
+                    "type": "function", "name": "search",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+                }]}
+            ]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    // The upstream sees two distinct tools, and every reference to the forced
+    // one uses the qualified spelling.
+    let calls = upstream.calls.lock().await;
+    let sent = &calls[0];
+    let offered = sent["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(offered, vec!["mcp__a__search", "mcp__b__search"]);
+    assert_eq!(sent["tool_choice"]["function"]["name"], "mcp__b__search");
+    let recorded = sent["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find_map(|message| message["tool_calls"][0]["function"]["name"].as_str())
+        })
+        .ok_or("no recorded tool call reached the upstream")?;
+    assert_eq!(recorded, "mcp__b__search");
+    drop(calls);
+
+    // The upstream answers with the qualified name; Codex must receive the tool
+    // name and the namespace it dispatches on, on every event that names a call.
+    let events = sse_events(response.text()?);
+    for event_type in ["response.output_item.added", "response.output_item.done"] {
+        let item = events
+            .iter()
+            .find(|event| event["type"] == event_type)
+            .map(|event| event["item"].clone())
+            .ok_or(format!("stream produced no {event_type}"))?;
+        assert_eq!(item["name"], "search", "{event_type}");
+        assert_eq!(item["namespace"], "mcp__b", "{event_type}");
+    }
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("stream produced no response.completed event")?;
+    assert_eq!(completed["response"]["output"][0]["name"], "search");
+    assert_eq!(completed["response"]["output"][0]["namespace"], "mcp__b");
     Ok(())
 }

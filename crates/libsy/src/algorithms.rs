@@ -7,12 +7,14 @@
 //! `use switchyard_libsy::Random`.
 
 pub mod advisor_gate;
+mod escalation;
 pub mod fall_through;
 pub mod llm_class;
 pub mod noop;
 pub mod passthrough;
 pub mod rand;
 pub mod stage;
+pub mod subagent;
 
 pub mod util;
 

@@ -22,20 +22,6 @@ pip install nemo-switchyard
 The base package has no Python runtime dependencies. Its native extension owns
 the libsy and server implementations.
 
-## Coding-Agent Launchers
-
-Install the CLI extra to launch Claude Code, Codex CLI, or OpenClaw through the
-packaged native server:
-
-```bash
-uv tool install --python 3.10 "nemo-switchyard[cli]"
-export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-switchyard launch claude --model switchyard
-```
-
-The selected coding agent must already be installed and available on `PATH`.
-Use `--config routes.toml` to select a custom native TOML deployment.
-
 ## Standalone Server
 
 Install the native Rust proxy from crates.io:

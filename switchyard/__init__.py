@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Switchyard's Python launcher and libsy bindings."""
+"""Switchyard's Python libsy bindings."""
 
 from importlib import metadata as _metadata
 

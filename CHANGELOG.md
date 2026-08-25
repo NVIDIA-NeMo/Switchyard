@@ -16,16 +16,54 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   harnesses, middle-out transcript truncation, fail-open consults, and an
   `advisor_gate` block in `/v1/stats` covering verdicts, consult failures, and
   REDO-discarded turns.
+- **switchyard-server container image** — a root `Dockerfile` builds the
+  server container image, consolidating the benchmark Dockerfile into it.
+  (#421)
+- **Run-span task metadata** — `task_kind` and `agent_role` are recorded on
+  the run span, so routing telemetry can be segmented by the semantic class of
+  work; span fields only, no new metric labels. (#249)
+- **Unified LLM-classifier bindings** — LLM-classifier routing is available
+  through the native PyO3 bindings, unifying the Python-side surface. (#465)
+
+### Changed
+
+- **`Algorithm::route` returns `Result<RoutingOutcome>`** — instead of the
+  bare final `Result`, so callers observe the full routing outcome (see #458
+  for the design). (#459)
 
 ### Removed
 
+- **Python coding-agent launcher CLI** — the `switchyard` command, its Claude
+  Code, Codex, and OpenClaw wrappers, and the shared launcher runtime are
+  removed. Connect clients directly to the standalone native server instead.
 - **Deprecated Python server stack** — `switchyard serve`, YAML route bundles,
   the FastAPI endpoints and legacy chain, the `switchyard-components` crate,
   and their compatibility PyO3 bindings are removed. Use `switchyard-server`
-  with native TOML deployments, or `switchyard launch` for coding agents.
-- **Packaging extras `[server]`, `[gpu]`, and `[all]`** — dropped together
-  with the deprecated Python server stack; only `[cli]` remains. Install
+  with native TOML deployments.
+- **Packaging extras `[server]`, `[gpu]`, `[all]`, and `[cli]`** — dropped
+  together with the deprecated Python server stack and launcher CLI. Install
   server functionality via the standalone `switchyard-server` binary instead.
+
+### Fixed
+
+- **Reasoning order in mixed stream chunks** — the OpenAI Chat stream decoder
+  emits reasoning deltas before content deltas from the same chunk, so
+  interleaved reasoning is no longer reordered. (#387)
+- **Anthropic structured output in requests** — a schema arriving on
+  `/v1/messages` now reaches the neutral request and the forwarded upstream
+  body; unmappable output formats produce diagnostics instead of silent drops.
+  (#462)
+- **Responses tool arguments emitted once** — `output_item.done` repeats the
+  complete function-call arguments the delta events already carried; the
+  decoder suppresses the repeat when they match. (#469)
+- **Content filter stops as Anthropic refusal** — `StopReason::ContentFilter`
+  maps to Anthropic's `refusal` stop reason (and back) instead of `end_turn`,
+  so moderation stops remain distinguishable. (#370)
+- **JSON rejection statuses preserved** — request-body rejections keep the
+  underlying status code instead of always returning 400. (#406)
+- **Default log level** — logging defaults to `info` for all crates instead of
+  discarding logs from crates without an explicit level; an unnecessary `rand`
+  callback was removed on the way. (#471)
 
 ## [0.2.0]
 
