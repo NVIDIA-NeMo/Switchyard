@@ -245,7 +245,9 @@ impl SwitchyardRuntime {
                     }));
                     events.push(routing_overhead_metric(latency_ms, metadata.clone()));
                 }
-                RunObservation::AnswerCall(_) => {}
+                RunObservation::AnswerCall(call) => {
+                    events.extend(token_usage_metrics("answer", &call, metadata));
+                }
             }
         }
     }
@@ -259,20 +261,21 @@ impl SwitchyardRuntime {
     ) {
         let outcome = if call.is_success { "ok" } else { "error" };
         let latency_ms = call.duration.as_secs_f64() * 1_000.0;
+        let token_metrics = token_usage_metrics("routing", &call, metadata);
         events.push(RoutingEvent::Mark(RoutingMark {
             name: "switchyard.routing.llm_call".into(),
             data: json!({
                 "call_index": call_index,
-                "selected_model": call.selected_model,
+                "selected_model": call.selected_model.as_str(),
                 "call_role": "routing",
                 "outcome": outcome,
                 "latency_ms": latency_ms,
-                "usage": call.usage,
             }),
             metadata: metadata.clone(),
             severity: Some(LogSeverity::Debug),
         }));
         events.extend(routing_call_metrics(outcome, latency_ms, metadata.clone()));
+        events.extend(token_metrics);
     }
 
     fn error_mark(
@@ -453,11 +456,51 @@ fn routing_call_metrics(outcome: &str, latency_ms: f64, metadata: Json) -> [Rout
 fn routing_overhead_metric(latency_ms: f64, metadata: Json) -> RoutingEvent {
     histogram_metric(
         "switchyard.routing.overhead",
-        "Time spent by Switchyard routing outside model calls.",
+        "Time needed to produce the Switchyard routing outcome, including routing model calls.",
         latency_ms,
         json!({}),
         metadata,
     )
+}
+
+fn token_usage_metrics(
+    call_role: &str,
+    call: &LlmCallObservation,
+    metadata: &Json,
+) -> Vec<RoutingEvent> {
+    let Some(usage) = call.usage.as_ref() else {
+        return Vec::new();
+    };
+    [
+        ("input", usage.input_tokens),
+        ("cached_input", usage.cached_input_tokens()),
+        ("cache_creation_input", usage.cache_creation_input_tokens()),
+        ("output", usage.output_tokens),
+        ("reasoning", usage.reasoning_tokens),
+        ("total", usage.total_tokens),
+    ]
+    .into_iter()
+    .filter_map(|(token_type, value)| {
+        value.map(|value| {
+            metric(
+                MetricDescriptor {
+                    name: "switchyard.routing.llm_tokens",
+                    kind: MetricKind::Counter,
+                    value_type: MetricValueType::U64,
+                    unit: Some("{token}"),
+                    description: "Normalized tokens used by Switchyard model calls.",
+                },
+                json!(value),
+                json!({
+                    "call_role": call_role,
+                    "target_model": call.selected_model.as_str(),
+                    "token_type": token_type,
+                }),
+                metadata.clone(),
+            )
+        })
+    })
+    .collect()
 }
 
 fn failure_metric(
@@ -573,7 +616,9 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use switchyard_llm_client::ClientRouter;
-    use switchyard_protocol::{LlmClientError, LlmResponseStreamEvent, ModelId, text_request};
+    use switchyard_protocol::{
+        LlmClientError, LlmResponseStreamEvent, ModelId, Usage, text_request,
+    };
     use switchyard_runner::{AlgorithmSpec, ModelCapabilities, RunnerError};
 
     use super::*;
@@ -646,20 +691,24 @@ mod tests {
                     selected_model: ModelId::from("routing-model"),
                     is_success: false,
                     duration: std::time::Duration::from_millis(12),
-                    usage: None,
+                    usage: Some(Usage {
+                        input_tokens: Some(4),
+                        ..Usage::default()
+                    }),
                 }),
                 RunObservation::RoutingOverhead(std::time::Duration::from_millis(3)),
             ],
             &json!({"session_id": "session"}),
         );
 
-        assert_eq!(events.len(), 5);
+        assert_eq!(events.len(), 6);
         let RoutingEvent::Mark(call_mark) = &events[0] else {
             panic!("first event should be the routing call mark");
         };
         assert_eq!(call_mark.name, "switchyard.routing.llm_call");
         assert_eq!(call_mark.severity, Some(LogSeverity::Debug));
         assert_eq!(call_mark.data["outcome"], "error");
+        assert!(call_mark.data.get("usage").is_none());
 
         let RoutingEvent::Metric(call_count) = &events[1] else {
             panic!("second event should be the routing call counter");
@@ -678,13 +727,18 @@ mod tests {
         assert_eq!(call_duration.measurements[0].kind, MetricKind::Histogram);
         assert_eq!(call_duration.measurements[0].value, json!(12.0));
 
-        let RoutingEvent::Mark(overhead_mark) = &events[3] else {
-            panic!("fourth event should be the routing overhead mark");
+        let RoutingEvent::Metric(tokens) = &events[3] else {
+            panic!("fourth event should be the routing token counter");
+        };
+        assert_eq!(tokens.name, "switchyard.routing.llm_tokens");
+
+        let RoutingEvent::Mark(overhead_mark) = &events[4] else {
+            panic!("fifth event should be the routing overhead mark");
         };
         assert_eq!(overhead_mark.severity, Some(LogSeverity::Info));
 
-        let RoutingEvent::Metric(overhead) = &events[4] else {
-            panic!("fifth event should be the routing overhead histogram");
+        let RoutingEvent::Metric(overhead) = &events[5] else {
+            panic!("sixth event should be the routing overhead histogram");
         };
         assert_eq!(overhead.name, "switchyard.routing.overhead");
         assert_eq!(overhead.measurements[0].attributes, Some(json!({})));
@@ -716,6 +770,96 @@ mod tests {
                 "failure_kind": "route_execution",
                 "category": "upstream_http",
                 "phase": "before_response",
+            }))
+        );
+    }
+
+    #[test]
+    fn token_usage_metrics_distinguish_routing_and_answer_targets() {
+        let call = LlmCallObservation {
+            selected_model: ModelId::from("judge-model"),
+            is_success: true,
+            duration: std::time::Duration::from_millis(1),
+            usage: Some(Usage {
+                input_tokens: Some(11),
+                cache: Usage::cache_details(Some(3), Some(2)),
+                output_tokens: Some(7),
+                total_tokens: Some(23),
+                reasoning_tokens: Some(5),
+            }),
+        };
+
+        let routing = token_usage_metrics("routing", &call, &json!({"session_id": "session"}));
+        assert_eq!(routing.len(), 6);
+        for event in &routing {
+            let RoutingEvent::Metric(metric) = event else {
+                panic!("token usage should be emitted as a metric");
+            };
+            assert_eq!(metric.name, "switchyard.routing.llm_tokens");
+            assert_eq!(metric.measurements[0].kind, MetricKind::Counter);
+            assert_eq!(metric.measurements[0].unit.as_deref(), Some("{token}"));
+            assert_eq!(
+                metric.measurements[0].attributes.as_ref().unwrap()["call_role"],
+                "routing"
+            );
+            assert_eq!(
+                metric.measurements[0].attributes.as_ref().unwrap()["target_model"],
+                "judge-model"
+            );
+        }
+        let token_values = routing
+            .iter()
+            .map(|event| {
+                let RoutingEvent::Metric(metric) = event else {
+                    panic!("token usage should be emitted as a metric");
+                };
+                metric.measurements[0].value.clone()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            token_values,
+            vec![json!(11), json!(3), json!(2), json!(7), json!(5), json!(23)]
+        );
+
+        let answer = token_usage_metrics("answer", &call, &json!({}));
+        let RoutingEvent::Metric(metric) = &answer[0] else {
+            panic!("answer usage should be emitted as a metric");
+        };
+        assert_eq!(
+            metric.measurements[0].attributes.as_ref().unwrap()["call_role"],
+            "answer"
+        );
+    }
+
+    #[test]
+    fn answer_observations_emit_token_metrics_without_answer_logs() {
+        let runtime = runtime_for("switchyard");
+        let mut events = Vec::new();
+        runtime.emit_observations(
+            &mut events,
+            vec![RunObservation::AnswerCall(LlmCallObservation {
+                selected_model: ModelId::from("selected-target"),
+                is_success: true,
+                duration: std::time::Duration::from_millis(2),
+                usage: Some(Usage {
+                    output_tokens: Some(9),
+                    ..Usage::default()
+                }),
+            })],
+            &json!({}),
+        );
+
+        assert_eq!(events.len(), 1);
+        let RoutingEvent::Metric(metric) = &events[0] else {
+            panic!("answer observation should only emit a token metric");
+        };
+        assert_eq!(metric.name, "switchyard.routing.llm_tokens");
+        assert_eq!(
+            metric.measurements[0].attributes,
+            Some(json!({
+                "call_role": "answer",
+                "target_model": "selected-target",
+                "token_type": "output",
             }))
         );
     }

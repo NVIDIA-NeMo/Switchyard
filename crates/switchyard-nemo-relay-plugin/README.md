@@ -72,9 +72,10 @@ deployment's route IDs.
 - Streaming responses are returned as unpolled translated streams; Relay owns
   cancellation and the outer serving-call lifecycle.
 
-The plugin emits a routing request mark, routing-model usage marks, measured
-routing-overhead marks, and a selected-model decision mark. Answer-call usage
-continues to belong to Relay's outer LLM lifecycle.
+The plugin emits a routing request mark, routing-model call marks, measured
+routing-overhead marks, and a selected-model decision mark. Token usage is
+emitted as Switchyard metrics for both routing-model and answer-model calls;
+Relay retains ownership of the outer LLM lifecycle.
 
 ## Observability
 
@@ -83,7 +84,7 @@ typed telemetry through Relay's native plugin runtime:
 
 - Routing request, decision, and overhead marks are Info logs.
 - Per-routing-model call marks are Debug logs, including their outcome and
-  normalized usage when available.
+  latency, but not token usage.
 - Terminal routing and response-finalization failures are Error logs. Their
   payload contains only the safe Switchyard failure summary; it excludes
   provider response bodies and free-form provider messages.
@@ -91,12 +92,17 @@ typed telemetry through Relay's native plugin runtime:
   `switchyard.routing.requests`; outcome for `switchyard.routing.llm_calls`
   and `switchyard.routing.llm_call.duration`;
   and safe failure kind, category, and phase for
-  `switchyard.routing.failures`. The plugin also records
-  `switchyard.routing.overhead` as a histogram. Durations use milliseconds.
+  `switchyard.routing.failures`. `switchyard.routing.overhead` records total
+  routing latency, including routing-model calls; durations use milliseconds.
+- `switchyard.routing.llm_tokens` records normalized token usage with
+  `call_role` (`routing` or `answer`), configured `target_model`, and
+  `token_type` attributes. A provider may omit usage for streaming responses;
+  the plugin does not synthesize zero-value measurements.
 
-The plugin deliberately does not attach model IDs, sessions, requests, or
-provider messages as metric attributes, preventing unbounded cardinality or
-sensitive data from reaching the metrics exporter.
+The plugin does not attach sessions, requests, or provider messages as metric
+attributes. `target_model` comes from the configured Switchyard target set,
+rather than arbitrary caller input, keeping the metric cardinality bounded by
+the deployment.
 
 ## Failure policy
 
