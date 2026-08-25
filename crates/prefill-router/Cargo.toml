@@ -4,7 +4,7 @@
 [package]
 name = "prefill-router"
 version.workspace = true
-description = "Prefill feature extraction for Switchyard routing"
+description = "Learned prefill routing for Switchyard"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 pyo3 = { version = "0.28.3", features = ["auto-initialize"] }
-serde_json.workspace = true
+switchyard-protocol.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
