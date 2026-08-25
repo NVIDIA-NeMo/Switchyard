@@ -395,7 +395,7 @@ mod tests {
     #[async_trait]
     impl Processor<State> for TierDecider {
         async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
-            if matches!(event, Event::Request(_)) {
+            if matches!(event, Event::Request { .. }) {
                 let mut requests = self.requests.lock();
                 *requests += 1;
                 match *requests {

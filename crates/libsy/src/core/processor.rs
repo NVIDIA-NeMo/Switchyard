@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::Result;
+use crate::core::algorithm::Driver;
 use async_trait::async_trait;
 use switchyard_protocol::{AggLlmResponse, ModelId, Request};
 
@@ -12,7 +13,12 @@ use switchyard_protocol::{AggLlmResponse, ModelId, Request};
 /// the chain and to the model call. The observation-only variants stay immutable.
 pub enum Event<'a> {
     /// The inbound request that begins a turn.
-    Request(&'a mut Request),
+    Request {
+        /// The request, rewritable in place.
+        request: &'a mut Request,
+        /// Offered so a processor can consult a model before the cascade runs.
+        driver: Option<&'a Driver>,
+    },
     /// A routing decision paired with the request that produced it.
     ///
     /// The request is rewritable: a processor may add instructions or notes here that
@@ -46,7 +52,7 @@ mod tests {
     /// The key each event variant tallies under.
     fn event_key(event: &Event<'_>) -> &'static str {
         match event {
-            Event::Request(_) => "requests",
+            Event::Request { .. } => "requests",
             Event::Decision { .. } => "decisions",
             Event::ModelResponse(_) => "model_responses",
         }
@@ -85,7 +91,13 @@ mod tests {
         let selected_model_id = ModelId::from("test/model");
         // Feed one of every event variant through the processor.
         processor
-            .process(&mut state, Event::Request(&mut req))
+            .process(
+                &mut state,
+                Event::Request {
+                    request: &mut req,
+                    driver: None,
+                },
+            )
             .await?;
         processor
             .process(&mut state, Event::ModelResponse(&response))
@@ -113,7 +125,13 @@ mod tests {
 
         for _ in 0..3 {
             processor
-                .process(&mut state, Event::Request(&mut req))
+                .process(
+                    &mut state,
+                    Event::Request {
+                        request: &mut req,
+                        driver: None,
+                    },
+                )
                 .await?;
         }
 
@@ -128,7 +146,7 @@ mod tests {
     impl Processor for RewritingProcessor {
         async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
             match event {
-                Event::Request(request) | Event::Decision { request, .. } => {
+                Event::Request { request, .. } | Event::Decision { request, .. } => {
                     request.llm_request.model = Some("rewritten".to_string());
                 }
                 _ => {}
@@ -144,7 +162,13 @@ mod tests {
         assert_eq!(req.model_id(), Some("auto".into()));
 
         RewritingProcessor
-            .process(&mut state, Event::Request(&mut req))
+            .process(
+                &mut state,
+                Event::Request {
+                    request: &mut req,
+                    driver: None,
+                },
+            )
             .await?;
 
         // The edit outlives the call, so the next component sees the rewritten request.

@@ -10,6 +10,5 @@ pub(crate) mod testing;
 
 pub mod algorithm;
 pub mod classifier;
-pub mod preroute;
 pub mod processor;
 pub mod state;

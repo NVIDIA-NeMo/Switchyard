@@ -3,7 +3,7 @@
 
 //! Routing that stacks a judge over a stage router.
 //!
-//! The judge runs as a [`Preroute`]: it sets configuration the stage router reads,
+//! The judge runs as a [`Processor`]: it sets configuration the stage router reads,
 //! and picks no target itself.
 
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, r
 use super::util::stage::{StageTargets, Tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::Classifier;
-use crate::core::preroute::Preroute;
+use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{ModelId, Request};
@@ -62,11 +62,14 @@ impl TierSetter {
 }
 
 #[async_trait]
-impl Preroute<State> for TierSetter {
-    async fn run(&self, state: &mut State, request: &mut Request, driver: &Driver) -> Result<()> {
+impl Processor<State> for TierSetter {
+    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
+        let Event::Request { request, driver } = event else {
+            return Ok(());
+        };
         let identity = retention_key(request, self.message_hash_fallback);
         if self.is_due(identity.as_ref(), request) {
-            let (classification, _) = self.judge.score(state, request, Some(driver)).await?;
+            let (classification, _) = self.judge.score(state, request, driver).await?;
             if let Some(winner) = classification.argmax(false)?
                 && let Some(tier) = self.targets.tier_for(&winner.target)
             {
@@ -105,9 +108,10 @@ pub struct HierarchicalRouter {
 impl HierarchicalRouter {
     /// Stacks the judge over a stage router across the same tier pair.
     ///
-    /// Errors on a configuration either algorithm rejects, on `every_request`, and
-    /// on a stage router carrying its own judge, which would decide the very turns
-    /// this judge set a tier for.
+    /// Errors on a configuration either algorithm rejects and on `every_request`.
+    ///
+    /// A stage router carrying its own judge is allowed, but that judge sits ahead
+    /// of the fall-open tier and so answers most of the turns this one set a tier for.
     pub fn new(
         capable: ModelId,
         efficient: ModelId,
@@ -117,11 +121,6 @@ impl HierarchicalRouter {
             return Err(LibsyError::AlgorithmError {
                 message: "hierarchical: classify_trigger must be user_turn or new_session"
                     .to_string(),
-            });
-        }
-        if config.stage.llm_fallback.is_some() {
-            return Err(LibsyError::AlgorithmError {
-                message: "hierarchical: the stage router cannot also carry a judge".to_string(),
             });
         }
         let trigger = config.judge.classify_trigger;
@@ -149,7 +148,7 @@ impl HierarchicalRouter {
         };
         let route = build_stage_route(capable, efficient, config.stage)?
             .with_name(HIERARCHICAL)
-            .with_preroute(Arc::new(setter));
+            .with_processor(Arc::new(setter));
         Ok(Self { route })
     }
 }
@@ -176,7 +175,6 @@ mod tests {
     use switchyard_protocol::{Message, Role};
 
     use super::*;
-    use crate::algorithms::stage::LlmFallback;
     use crate::algorithms::util::stage::PickerMode;
     use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
     use crate::core::testing::test_drive;
@@ -229,24 +227,6 @@ mod tests {
                 stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
             },
         )?))
-    }
-
-    #[test]
-    fn rejects_a_stage_router_that_carries_its_own_judge() {
-        let mut stage = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
-        stage.llm_fallback = Some(LlmFallback {
-            judge_target: ModelId::from(JUDGE),
-            config: TaskClassifierConfig::default(),
-        });
-        let config = HierarchicalRouterConfig {
-            judge_target: ModelId::from(JUDGE),
-            judge: TaskClassifierConfig::default(),
-            stage,
-        };
-        assert!(matches!(
-            HierarchicalRouter::new(ModelId::from("strong"), ModelId::from("weak"), config),
-            Err(LibsyError::AlgorithmError { .. })
-        ));
     }
 
     #[test]

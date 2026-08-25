@@ -28,7 +28,6 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
-use crate::core::preroute::Preroute;
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result, RoutingOutcome};
 use switchyard_protocol::{ModelId, Request, Response};
@@ -92,7 +91,6 @@ impl<S: Send> Classifier<S> for DefaultTarget {
 /// The generic state type is shared by every processor and classifier in the composition.
 pub struct FallThrough<S = ()> {
     name: String,
-    preroutes: Vec<Arc<dyn Preroute<S>>>,
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: Vec<ModelId>,
@@ -105,7 +103,6 @@ impl FallThrough<()> {
     pub fn new(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
-            preroutes: Vec::new(),
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -123,7 +120,6 @@ where
     pub fn new_with_state(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
-            preroutes: Vec::new(),
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -141,12 +137,6 @@ where
     /// Appends a processor to the head-of-request chain.
     pub fn with_processor(mut self, processor: Arc<dyn Processor<S>>) -> Self {
         self.processors.push(processor);
-        self
-    }
-
-    /// Appends a preroute step, run ahead of the processors and the cascade.
-    pub fn with_preroute(mut self, preroute: Arc<dyn Preroute<S>>) -> Self {
-        self.preroutes.push(preroute);
         self
     }
 
@@ -248,14 +238,14 @@ where
         driver: &Driver,
         request: &mut Request,
     ) -> Result<(ModelId, Option<Response>)> {
-        // 0. Preroutes run first so anything they record is in place for the cascade behind them.
-        for preroute in &self.preroutes {
-            preroute.run(state, request, driver).await?;
-        }
-
         // 1. Processor chain accumulates request-side facts into the composition's state.
+        //    The driver is offered here so a processor may consult a model first.
         for processor in &self.processors {
-            processor.process(state, Event::Request(request)).await?;
+            let event = Event::Request {
+                request,
+                driver: Some(driver),
+            };
+            processor.process(state, event).await?;
         }
 
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
@@ -755,7 +745,7 @@ mod tests {
         impl Processor for RecordingProcessor {
             async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
                 let kind = match event {
-                    Event::Request(_) => "request",
+                    Event::Request { .. } => "request",
                     Event::Decision { .. } => "decision",
                     _ => "other",
                 };
@@ -784,7 +774,7 @@ mod tests {
         #[async_trait]
         impl Processor for Appender {
             async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
-                if let Event::Request(request) = event {
+                if let Event::Request { request, .. } = event {
                     request
                         .llm_request
                         .messages
@@ -861,7 +851,7 @@ mod tests {
         #[async_trait]
         impl Processor<TurnState> for CountingProcessor {
             async fn process(&self, state: &mut TurnState, event: Event<'_>) -> Result<()> {
-                if let Event::Request(_) = event {
+                if let Event::Request { .. } = event {
                     state.count += 1;
                 }
                 Ok(())
