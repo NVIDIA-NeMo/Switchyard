@@ -14,7 +14,7 @@ use crate::RunnerError;
 /// This deliberately carries no provider message, response body, or source
 /// error. It is suitable for logs and telemetry, not client-facing rendering.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, Eq, IntoStaticStr, PartialEq)]
+#[derive(Clone, Copy, Debug, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum RouteErrorKind {
     /// The upstream returned a non-success HTTP response.
@@ -52,7 +52,7 @@ impl RouteErrorKind {
 
 /// When a terminal failure occurred relative to response delivery.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum RouteFailurePhase {
     /// The route failed before returning a response to its caller.
     BeforeResponse,
@@ -72,7 +72,7 @@ impl RouteFailurePhase {
 
 /// Safe, structured terminal-failure data for routing telemetry.
 #[non_exhaustive]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct RouteFailureSummary {
     /// Stable failure classification.
     pub kind: RouteErrorKind,
@@ -192,22 +192,22 @@ mod tests {
 
         let summary = error.execution_failure_summary();
 
-        assert_eq!(summary.kind, RouteErrorKind::UpstreamHttp);
-        assert_eq!(summary.phase, RouteFailurePhase::BeforeResponse);
+        assert!(matches!(summary.kind, RouteErrorKind::UpstreamHttp));
+        assert!(matches!(summary.phase, RouteFailurePhase::BeforeResponse));
         assert_eq!(summary.upstream_status, Some(503));
         assert_eq!(summary.target.as_ref().map(ModelId::as_str), Some("strong"));
         assert!(!format!("{summary:?}").contains(SECRET));
     }
 
     #[test]
-    fn execution_summary_reduces_untrusted_messages_to_categories() {
+    fn execution_summary_reduces_untrusted_messages_to_kinds() {
         let error = RunnerError::Algorithm(LibsyError::AlgorithmError {
             message: SECRET.to_string(),
         });
 
         let summary = error.execution_failure_summary();
 
-        assert_eq!(summary.kind, RouteErrorKind::Algorithm);
+        assert!(matches!(summary.kind, RouteErrorKind::Algorithm));
         assert_eq!(summary.target, None);
         assert!(!format!("{summary:?}").contains(SECRET));
     }
@@ -220,8 +220,8 @@ mod tests {
 
         let summary = stream_failure_summary(&error, Some(&ModelId::from("fallback")));
 
-        assert_eq!(summary.kind, RouteErrorKind::Timeout);
-        assert_eq!(summary.phase, RouteFailurePhase::DuringStream);
+        assert!(matches!(summary.kind, RouteErrorKind::Timeout));
+        assert!(matches!(summary.phase, RouteFailurePhase::DuringStream));
         assert_eq!(
             summary.target.as_ref().map(ModelId::as_str),
             Some("fallback")
@@ -238,76 +238,66 @@ mod tests {
 
         let summary = stream_failure_summary(&error, None);
 
-        assert_eq!(summary.kind, RouteErrorKind::ContextWindowExceeded);
-        assert_eq!(summary.phase, RouteFailurePhase::DuringStream);
+        assert!(matches!(
+            summary.kind,
+            RouteErrorKind::ContextWindowExceeded
+        ));
+        assert!(matches!(summary.phase, RouteFailurePhase::DuringStream));
         assert_eq!(summary.target.as_ref().map(ModelId::as_str), Some("weak"));
         assert!(!format!("{summary:?}").contains(SECRET));
     }
 
     #[test]
-    fn client_error_categories_have_stable_telemetry_values() {
+    fn client_error_kinds_have_stable_telemetry_values() {
         let cases = vec![
             (
                 LlmClientError::ContextWindowExceeded {
                     model: ModelId::from("weak"),
                     message: SECRET.to_string(),
                 },
-                RouteErrorKind::ContextWindowExceeded,
                 "context_window_exceeded",
             ),
             (
                 LlmClientError::Transport {
                     source: std::io::Error::other(SECRET).into(),
                 },
-                RouteErrorKind::Transport,
                 "transport",
             ),
             (
                 LlmClientError::InvalidResponse {
                     source: std::io::Error::other(SECRET).into(),
                 },
-                RouteErrorKind::InvalidResponse,
                 "invalid_response",
             ),
             (
                 LlmClientError::RequestTranslation(SECRET.to_string()),
-                RouteErrorKind::RequestTranslation,
                 "request_translation",
             ),
             (
                 LlmClientError::RequestEncoding(SECRET.to_string()),
-                RouteErrorKind::RequestEncoding,
                 "request_encoding",
             ),
             (
                 LlmClientError::ResponseTranslation(SECRET.to_string()),
-                RouteErrorKind::ResponseTranslation,
                 "response_translation",
             ),
             (
                 LlmClientError::Configuration {
                     message: SECRET.to_string(),
                 },
-                RouteErrorKind::Configuration,
                 "configuration",
             ),
             (
                 LlmClientError::InvalidRequest {
                     message: SECRET.to_string(),
                 },
-                RouteErrorKind::InvalidRequest,
                 "invalid_request",
             ),
-            (
-                LlmClientError::General(SECRET.to_string()),
-                RouteErrorKind::Other,
-                "other",
-            ),
+            (LlmClientError::General(SECRET.to_string()), "other"),
         ];
 
-        for (error, kind, value) in cases {
+        for (error, value) in cases {
             let summary = stream_failure_summary(&error, None);
-            assert_eq!(summary.kind, kind);
             assert_eq!(summary.kind.as_str(), value);
             assert!(!format!("{summary:?}").contains(SECRET));
         }
@@ -321,8 +311,8 @@ mod tests {
 
         let summary = error.execution_failure_summary();
 
-        assert_eq!(summary.kind, RouteErrorKind::Timeout);
-        assert_eq!(summary.phase, RouteFailurePhase::BeforeResponse);
+        assert!(matches!(summary.kind, RouteErrorKind::Timeout));
+        assert!(matches!(summary.phase, RouteFailurePhase::BeforeResponse));
         assert_eq!(summary.target, None);
         assert!(!format!("{summary:?}").contains(SECRET));
     }
@@ -330,15 +320,15 @@ mod tests {
     #[test]
     fn runner_request_and_configuration_errors_are_classified() {
         let configuration = RunnerError::configuration(SECRET);
-        assert_eq!(
+        assert!(matches!(
             configuration.execution_failure_summary().kind,
             RouteErrorKind::Configuration
-        );
+        ));
 
         let unsupported = RunnerError::CountTokensUnsupported;
-        assert_eq!(
+        assert!(matches!(
             unsupported.execution_failure_summary().kind,
             RouteErrorKind::InvalidRequest
-        );
+        ));
     }
 }
