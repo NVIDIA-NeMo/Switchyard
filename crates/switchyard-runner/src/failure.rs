@@ -84,13 +84,13 @@ pub struct RouteErrorSummary {
 
 impl RunnerError {
     /// Returns a safe telemetry summary for a failure before response delivery.
-    pub fn execution_failure_summary(&self) -> RouteErrorSummary {
+    pub fn execution_error_summary(&self) -> RouteErrorSummary {
         match self {
             Self::Algorithm(LibsyError::ClientCall { target, source }) => {
-                client_failure_summary(source, RouteErrorPhase::BeforeResponse, Some(target))
+                client_error_summary(source, RouteErrorPhase::BeforeResponse, Some(target))
             }
             Self::Client(source) => {
-                client_failure_summary(source, RouteErrorPhase::BeforeResponse, None)
+                client_error_summary(source, RouteErrorPhase::BeforeResponse, None)
             }
             Self::Configuration { .. } => summary(
                 RouteErrorKind::Configuration,
@@ -119,14 +119,14 @@ impl RunnerError {
 /// Returns a safe telemetry summary for an error yielded by an active response stream.
 ///
 /// `served_model` should be the target recorded on the response before its stream was returned.
-pub fn stream_failure_summary(
+pub fn stream_error_summary(
     error: &LlmClientError,
     served_model: Option<&ModelId>,
 ) -> RouteErrorSummary {
-    client_failure_summary(error, RouteErrorPhase::DuringStream, served_model)
+    client_error_summary(error, RouteErrorPhase::DuringStream, served_model)
 }
 
-fn client_failure_summary(
+fn client_error_summary(
     error: &LlmClientError,
     phase: RouteErrorPhase,
     target: Option<&ModelId>,
@@ -179,7 +179,7 @@ mod tests {
     const SECRET: &str = "patient name is Jane Doe";
 
     #[test]
-    fn execution_summary_keeps_http_status_and_target_without_body() {
+    fn execution_error_summary_keeps_http_status_and_target_without_body() {
         let error = RunnerError::Algorithm(LibsyError::ClientCall {
             target: ModelId::from("strong"),
             source: LlmClientError::UpstreamHttp {
@@ -188,7 +188,7 @@ mod tests {
             },
         });
 
-        let summary = error.execution_failure_summary();
+        let summary = error.execution_error_summary();
 
         assert!(matches!(summary.kind, RouteErrorKind::UpstreamHttp));
         assert!(matches!(summary.phase, RouteErrorPhase::BeforeResponse));
@@ -198,12 +198,12 @@ mod tests {
     }
 
     #[test]
-    fn execution_summary_reduces_untrusted_messages_to_kinds() {
+    fn execution_error_summary_reduces_untrusted_messages_to_kinds() {
         let error = RunnerError::Algorithm(LibsyError::AlgorithmError {
             message: SECRET.to_string(),
         });
 
-        let summary = error.execution_failure_summary();
+        let summary = error.execution_error_summary();
 
         assert!(matches!(summary.kind, RouteErrorKind::Algorithm));
         assert_eq!(summary.target, None);
@@ -211,12 +211,12 @@ mod tests {
     }
 
     #[test]
-    fn stream_summary_preserves_served_target_without_source_text() {
+    fn stream_error_summary_preserves_served_target_without_source_text() {
         let error = LlmClientError::Timeout {
             source: std::io::Error::other(SECRET).into(),
         };
 
-        let summary = stream_failure_summary(&error, Some(&ModelId::from("fallback")));
+        let summary = stream_error_summary(&error, Some(&ModelId::from("fallback")));
 
         assert!(matches!(summary.kind, RouteErrorKind::Timeout));
         assert!(matches!(summary.phase, RouteErrorPhase::DuringStream));
@@ -228,13 +228,13 @@ mod tests {
     }
 
     #[test]
-    fn stream_summary_uses_context_window_model_without_a_served_target() {
+    fn stream_error_summary_uses_context_window_model_without_a_served_target() {
         let error = LlmClientError::ContextWindowExceeded {
             model: ModelId::from("weak"),
             message: SECRET.to_string(),
         };
 
-        let summary = stream_failure_summary(&error, None);
+        let summary = stream_error_summary(&error, None);
 
         assert!(matches!(
             summary.kind,
@@ -295,7 +295,7 @@ mod tests {
         ];
 
         for (error, value) in cases {
-            let summary = stream_failure_summary(&error, None);
+            let summary = stream_error_summary(&error, None);
             assert_eq!(summary.kind.as_str(), value);
             assert!(!format!("{summary:?}").contains(SECRET));
         }
@@ -313,7 +313,7 @@ mod tests {
             source: std::io::Error::other(SECRET).into(),
         });
 
-        let summary = error.execution_failure_summary();
+        let summary = error.execution_error_summary();
 
         assert!(matches!(summary.kind, RouteErrorKind::Timeout));
         assert!(matches!(summary.phase, RouteErrorPhase::BeforeResponse));
@@ -325,13 +325,13 @@ mod tests {
     fn runner_request_and_configuration_errors_are_classified() {
         let configuration = RunnerError::configuration(SECRET);
         assert!(matches!(
-            configuration.execution_failure_summary().kind,
+            configuration.execution_error_summary().kind,
             RouteErrorKind::Configuration
         ));
 
         let unsupported = RunnerError::CountTokensUnsupported;
         assert!(matches!(
-            unsupported.execution_failure_summary().kind,
+            unsupported.execution_error_summary().kind,
             RouteErrorKind::InvalidRequest
         ));
     }
