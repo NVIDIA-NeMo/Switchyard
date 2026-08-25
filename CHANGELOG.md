@@ -46,6 +46,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Deployment credential leak on cross-origin redirect** — the default
+  upstream client no longer follows redirects, so a cross-origin 307/308 from
+  the configured `base_url` can no longer carry `x-api-key` or
+  `x-goog-api-key` to the redirect target; deployment credentials reach only
+  the configured origin, matching the forward-auth client. (#543)
 - **Reasoning order in mixed stream chunks** — the OpenAI Chat stream decoder
   emits reasoning deltas before content deltas from the same chunk, so
   interleaved reasoning is no longer reordered. (#387)
