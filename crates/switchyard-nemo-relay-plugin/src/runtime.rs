@@ -9,7 +9,7 @@ use nemo_relay_plugin::{Json, LlmRequest as RelayRequest, PluginRuntime};
 use serde_json::{Map, json};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
 use switchyard_protocol::{LlmResponse, Metadata, Request, Response, WireFormat};
-use switchyard_runner::{Route, RouteFailureSummary, Runner, stream_failure_summary};
+use switchyard_runner::{Route, RouteErrorSummary, Runner, stream_failure_summary};
 use switchyard_translation::{TranslationEngine, encode_stream};
 
 use crate::config::SwitchyardConfig;
@@ -257,7 +257,7 @@ impl SwitchyardRuntime {
     fn route_execution_error_mark(
         &self,
         marks: &mut Vec<RoutingMark>,
-        summary: &RouteFailureSummary,
+        summary: &RouteErrorSummary,
         metadata: Option<&Json>,
     ) {
         let metadata = metadata.cloned().unwrap_or_else(|| {
@@ -339,7 +339,7 @@ fn returned_events(
     })))
 }
 
-fn route_execution_error_mark(summary: &RouteFailureSummary, metadata: Json) -> RoutingMark {
+fn route_execution_error_mark(summary: &RouteErrorSummary, metadata: Json) -> RoutingMark {
     RoutingMark {
         name: "switchyard.routing.error".into(),
         data: json!({
