@@ -9,8 +9,9 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.types.router import RoutingContext
 from switchyard_litellm import SwitchyardRoutingPlugin
 from switchyard_litellm.plugins.request_rewrite import build_request_patch
+from switchyard_litellm.plugins.switchyard_routing_plugin import _request
 
-from switchyard.libsy import TaskClassifierConfig, algorithms
+from switchyard.libsy import Step, TaskClassifierConfig, algorithms
 
 SOL = "openrouter/openai/gpt-5.6-sol"
 TERRA = "openrouter/openai/gpt-5.6-terra"
@@ -84,6 +85,96 @@ async def test_stage_converts_tool_history_and_narrows_to_capable_candidate() ->
             "selected_model_id": SOL,
             "fallback_models": [TERRA],
         },
+    }
+
+
+async def test_litellm_conversion_preserves_stage_tool_signal_input() -> None:
+    """Match direct libsy and LiteLLM-plugin routing over the same tool history."""
+    litellm_messages = [
+        {"role": "user", "content": "Fix the failing tests."},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "Bash",
+                        "arguments": '{"command":"pytest"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "fatal runtime error: out of memory",
+        },
+    ]
+    original_messages: list[dict[str, object]] = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "Fix the failing tests."}],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_call",
+                    "id": "call_1",
+                    "name": "Bash",
+                    "arguments": {"command": "pytest"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_call_id": "call_1",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "fatal runtime error: out of memory",
+                        }
+                    ],
+                    "is_error": None,
+                }
+            ],
+        },
+    ]
+    original_request: dict[str, object] = {
+        "model": "auto",
+        "messages": original_messages,
+    }
+
+    direct_outcome = None
+    direct_algorithm = algorithms.stage_router(
+        SOL,
+        TERRA,
+        picker="efficient_first",
+        confidence_threshold=0.5,
+        recent_window=3,
+    )
+    async for step in direct_algorithm.run_stream(original_request):
+        match step:
+            case Step.Done(outcome):
+                direct_outcome = outcome
+
+    # ToolSignals reads only normalized messages, so exact equality protects every signal input.
+    assert _request(litellm_messages)["messages"] == original_messages
+    assert direct_outcome is not None
+    assert direct_outcome.selected_model_id == SOL
+    assert direct_outcome.fallback_models == [TERRA]
+
+    context = routing_context(litellm_messages)
+    await stage_plugin().run(context)
+
+    assert context.signals["switchyard"] == {
+        "selected_model_id": direct_outcome.selected_model_id,
+        "fallback_models": direct_outcome.fallback_models,
     }
 
 
