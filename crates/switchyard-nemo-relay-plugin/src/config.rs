@@ -29,3 +29,22 @@ impl SwitchyardConfig {
         Runner::load(&self.deployment_path).map_err(|error| error.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_supported_relay_call_names_to_wire_formats() {
+        let cases = [
+            ("openai.chat_completions", Some(WireFormat::OpenAiChat)),
+            ("openai.responses", Some(WireFormat::OpenAiResponses)),
+            ("anthropic.messages", Some(WireFormat::AnthropicMessages)),
+            ("unsupported.call", None),
+        ];
+
+        for (name, expected) in cases {
+            assert_eq!(protocol_from_call(name), expected, "{name}");
+        }
+    }
+}
