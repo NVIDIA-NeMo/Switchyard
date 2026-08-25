@@ -17,6 +17,13 @@ way — HTTP 413 or 422, for example — is not recognized as one. The request
 fails on the spot with the upstream's status code, and the upstream's body is
 returned inside Switchyard's error message.
 
+Streaming requests are covered as well. Some engines reject an over-limit
+streaming request with HTTP 200 and deliver the error as the first stream
+event; when that first event carries a message matching the phrases above, the
+call fails as an overflow and falls through before anything reaches the client.
+An error event arriving after content has streamed is not retried — delivered
+output cannot be taken back — and surfaces to the client as before.
+
 ## Configuration
 
 There is no eviction key. A route falls through whenever it has more than one
