@@ -293,7 +293,7 @@ impl SwitchyardRuntime {
             metadata: metadata.clone(),
             severity: Some(LogSeverity::Error),
         }));
-        events.push(failure_metric(failure_kind, None, None, metadata));
+        events.push(failure_metric(failure_kind, None, None, None, metadata));
     }
 
     fn route_execution_error_mark(
@@ -413,6 +413,7 @@ fn route_execution_error_events(summary: &RouteErrorSummary, metadata: Json) -> 
             "route_execution",
             Some(summary.kind.as_str()),
             Some(summary.phase.as_str()),
+            summary.upstream_status,
             metadata,
         ),
     ]
@@ -507,6 +508,7 @@ fn failure_metric(
     failure_kind: &str,
     category: Option<&str>,
     phase: Option<&str>,
+    upstream_status: Option<u16>,
     metadata: Json,
 ) -> RoutingEvent {
     let mut attributes = Map::new();
@@ -516,6 +518,9 @@ fn failure_metric(
     }
     if let Some(phase) = phase {
         attributes.insert("phase".into(), Json::String(phase.into()));
+    }
+    if let Some(upstream_status) = upstream_status {
+        attributes.insert("upstream_status".into(), Json::from(upstream_status));
     }
     counter_metric(
         "switchyard.routing.failures",
@@ -759,6 +764,7 @@ mod tests {
             "route_execution",
             Some("upstream_http"),
             Some("before_response"),
+            Some(503),
             json!({}),
         ) else {
             panic!("failure should be a metric");
@@ -770,6 +776,7 @@ mod tests {
                 "failure_kind": "route_execution",
                 "category": "upstream_http",
                 "phase": "before_response",
+                "upstream_status": 503,
             }))
         );
     }

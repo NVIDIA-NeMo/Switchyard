@@ -72,6 +72,12 @@ deployment's route IDs.
 - Streaming responses are returned as unpolled translated streams; Relay owns
   cancellation and the outer serving-call lifecycle.
 
+Each route's target client must use the caller's wire format: `openai_chat`,
+`openai_responses`, or `anthropic_messages`. The runner selects the upstream
+backend from that format rather than translating a route to a different
+provider API. When one upstream model must serve multiple caller formats,
+declare a target and route for each corresponding client format.
+
 The plugin emits a routing request mark, routing-model call marks, measured
 routing-overhead marks, and a selected-model decision mark. Token usage is
 emitted as Switchyard metrics for both routing-model and answer-model calls;
@@ -91,7 +97,7 @@ typed telemetry through Relay's native plugin runtime:
 - Metrics use bounded attributes only: algorithm for
   `switchyard.routing.requests`; outcome for `switchyard.routing.llm_calls`
   and `switchyard.routing.llm_call.duration`;
-  and safe failure kind, category, and phase for
+  and safe failure kind, category, phase, and optional upstream HTTP status for
   `switchyard.routing.failures`. `switchyard.routing.overhead` records total
   routing latency, including routing-model calls; durations use milliseconds.
 - `switchyard.routing.llm_tokens` records normalized token usage with
