@@ -624,7 +624,7 @@ impl Classifier<State> for StageClassifier {
                 tier,
                 source,
                 score,
-                ..
+                confidence,
             } => {
                 let target = self.targets.name(tier);
                 record_decision_source(state, source);
@@ -633,7 +633,10 @@ impl Classifier<State> for StageClassifier {
                 // is the only branch whose tier the signals actually chose — an
                 // ambiguous turn is decided further down the cascade.
                 self.apply_handoff_note(request, tier, source);
-                let conf = score.abs();
+                // Use the confidence pick_tier already computed (e.g. `1.0` for
+                // an Override) rather than re-deriving it from `score`, which is
+                // `0.0` on both hard-rule paths and would understate them.
+                let conf = confidence.unwrap_or(score.abs());
                 Ok((
                     Classification::Scores(vec![Score {
                         target: target.clone(),
@@ -858,6 +861,8 @@ mod tests {
             Classification::Scores(scores) => {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].target, "strong");
+                // An override is maximally certain, not `score.abs() == 0.0`.
+                assert_eq!(scores[0].confidence, 1.0);
             }
             _ => panic!("expected a definite classification"),
         }
