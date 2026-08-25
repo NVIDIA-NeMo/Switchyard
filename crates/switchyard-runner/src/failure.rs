@@ -4,6 +4,7 @@
 //! Safe, structured summaries of route-execution failures for telemetry.
 
 use libsy::LibsyError;
+use strum_macros::IntoStaticStr;
 use switchyard_protocol::{LlmClientError, ModelId};
 
 use crate::RunnerError;
@@ -13,7 +14,8 @@ use crate::RunnerError;
 /// This deliberately carries no provider message, response body, or source
 /// error. It is suitable for logs and telemetry, not client-facing rendering.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, IntoStaticStr, PartialEq)]
+#[strum(serialize_all = "snake_case")]
 pub enum RouteErrorKind {
     /// The upstream returned a non-success HTTP response.
     UpstreamHttp,
@@ -43,21 +45,8 @@ pub enum RouteErrorKind {
 
 impl RouteErrorKind {
     /// Returns the stable telemetry value for this kind.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::UpstreamHttp => "upstream_http",
-            Self::ContextWindowExceeded => "context_window_exceeded",
-            Self::Timeout => "timeout",
-            Self::Transport => "transport",
-            Self::InvalidResponse => "invalid_response",
-            Self::RequestTranslation => "request_translation",
-            Self::RequestEncoding => "request_encoding",
-            Self::ResponseTranslation => "response_translation",
-            Self::InvalidRequest => "invalid_request",
-            Self::Configuration => "configuration",
-            Self::Algorithm => "algorithm",
-            Self::Other => "other",
-        }
+    pub fn as_str(self) -> &'static str {
+        self.into()
     }
 }
 

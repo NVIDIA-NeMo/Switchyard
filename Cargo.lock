@@ -2363,6 +2363,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "strum_macros",
  "switchyard-libsy",
  "switchyard-llm-client",
  "switchyard-protocol",
