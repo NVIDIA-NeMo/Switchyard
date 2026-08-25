@@ -14,7 +14,7 @@
         <link rel="prev" href="../llm_classifier_routing/">
       
       
-        <link rel="next" href="../escalation_router_routing/">
+        <link rel="next" href="../hierarchical_routing/">
       
       
         
@@ -912,6 +912,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../hierarchical_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchical Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../escalation_router_routing/" class="md-nav__link">
         
   
@@ -1683,8 +1711,10 @@ tier when a settled signal drops the turn there.</p>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">efficient_system_prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;follow the settled plan&quot;</span>
 </span></code></pre></div>
 <h3 id="optional-llm-classifier-fallback">Optional: LLM classifier fallback<a class="headerlink" href="#optional-llm-classifier-fallback" title="Permanent link">&para;</a></h3>
-<p>By default the router uses tool signals only. To break ties on low-confidence
-turns with a model call, add a <code>[routes.stage.classifier]</code> block and set
+<p>The block is optional, and omitting it is the default. With no
+<code>[routes.stage.classifier]</code> block there is no judge and no fallthrough to one:
+a turn the signals leave undecided goes straight to the <code>picker</code> tier.</p>
+<p>To break ties on low-confidence turns with a model call, add the block and set
 <code>confidence_threshold</code> above <code>0.0</code>. The classifier is consulted only for turns
 that fall below the threshold:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[routes.stage.classifier]</span>
@@ -1700,6 +1730,10 @@ that fall below the threshold:</p>
 request. Set <code>response_format_type = "json_object"</code> for providers that only support
 JSON Object mode; Switchyard then adds the schema to the judge prompt and validates
 the returned object locally. The verdict schema and routing thresholds remain unchanged.</p>
+<p>Leave the block out under
+<a href="../hierarchical_routing/">Hierarchical Routing</a>. There the tier is already picked
+at the user turn, so a fallthrough judge would sit between the signals and that
+decision and overrule it.</p>
 <p>Give the classifier its own LLM client or quota bucket where possible. Sharing
 one provider bucket with the efficient tier adds a request per classified turn
 and can cause sustained 429s at scale.</p>
