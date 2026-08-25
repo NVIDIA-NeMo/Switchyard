@@ -15,9 +15,10 @@ operate the Rust server directly.
 ### Prerequisites
 
 - Git, a native build toolchain, and Rust with Cargo
-- An API key for OpenRouter, OpenAI, Anthropic, or another OpenAI-compatible endpoint.
+- An API key for OpenRouter, OpenAI, Anthropic, GAIB Token Kiosk, or another OpenAI-compatible endpoint.
   To use OpenRouter, create an account at [openrouter.ai](https://openrouter.ai/)
   and generate a key from the [OpenRouter keys page](https://openrouter.ai/keys).
+  To use GAIB Token Kiosk, set `base_url = "https://agent-router.gaib.ai/v1"` (see `examples/routes.token_kiosk.toml`).
 
 On Ubuntu or WSL, install the build prerequisites and Rust with `rustup`:
 

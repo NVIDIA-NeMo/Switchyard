@@ -1,0 +1,32 @@
+schema_version = 1
+
+# GAIB Token Kiosk provider integration preset
+# Base URL: https://agent-router.gaib.ai/v1
+
+[llm_clients.token_kiosk_openai]
+format = "openai_chat"
+base_url = "https://agent-router.gaib.ai/v1"
+api_key_env = "TOKEN_KIOSK_API_KEY"
+
+[llm_clients.token_kiosk_anthropic]
+format = "anthropic_messages"
+base_url = "https://agent-router.gaib.ai/v1"
+api_key_env = "TOKEN_KIOSK_API_KEY"
+
+[targets.token_kiosk_gpt]
+id = "gpt-4o"
+llm_client = "token_kiosk_openai"
+
+[targets.token_kiosk_claude]
+id = "claude-3-5-sonnet-20241022"
+llm_client = "token_kiosk_anthropic"
+
+[routes.token_kiosk_chat]
+id = "token-kiosk-openai"
+type = "passthrough"
+target = "token_kiosk_gpt"
+
+[routes.token_kiosk_messages]
+id = "token-kiosk-anthropic"
+type = "passthrough"
+target = "token_kiosk_claude"
