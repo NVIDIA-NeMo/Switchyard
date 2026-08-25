@@ -111,9 +111,11 @@ impl TranslatingLlmClient {
                 source: Box::new(error),
             })
         };
-        let client = build_client(reqwest::Client::builder())?;
         // A redirect could move provider-specific headers to another origin.
-        // Forwarded credentials are sent only to the configured URL.
+        // Deployment credentials are sent only to the configured URL, so neither
+        // client follows redirects.
+        let client =
+            build_client(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()))?;
         let forward_auth_client =
             build_client(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()))?;
         let model_to_config = model_configs
