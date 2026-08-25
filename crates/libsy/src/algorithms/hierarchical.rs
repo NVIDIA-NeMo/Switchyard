@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(
             recorder.judge_calls(),
             1,
-            "new_session judges once without a session id"
+            "a tool step is not a user turn, session id or not"
         );
         assert_eq!(
             recorder.routed()[1].target,
