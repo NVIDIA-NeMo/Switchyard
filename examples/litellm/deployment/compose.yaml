@@ -1,8 +1,8 @@
 services:
   litellm:
     build:
-      context: ../../../..
-      dockerfile: examples/experimental/litellm/deployment/Dockerfile
+      context: ../../..
+      dockerfile: examples/litellm/deployment/Dockerfile
     image: switchyard-litellm:1.97.0
     command:
       - --config

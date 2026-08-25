@@ -9,7 +9,7 @@ import yaml
 from switchyard_litellm import StageRoutingPlugin
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
-REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[1]
 DEPLOYMENT_ROOT = PACKAGE_ROOT / "deployment"
 
 
@@ -38,8 +38,8 @@ def test_compose_builds_the_pinned_plugin_image_and_selects_a_profile() -> None:
     service = compose["services"]["litellm"]
 
     assert service["build"] == {
-        "context": "../../../..",
-        "dockerfile": "examples/experimental/litellm/deployment/Dockerfile",
+        "context": "../../..",
+        "dockerfile": "examples/litellm/deployment/Dockerfile",
     }
     assert service["image"] == "switchyard-litellm:1.97.0"
     assert service["command"] == ["--config", "/app/deployment/litellm.yaml"]

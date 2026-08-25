@@ -309,10 +309,10 @@ including its proxy dependencies, then install this Switchyard checkout into tha
 Point the plugin loader at a routing TOML and LiteLLM at the matching model YAML:
 
 ```bash
-export SWITCHYARD_LITELLM_CONFIG=/absolute/path/to/switchyard-new/examples/experimental/litellm/deployment/profiles/stage/switchyard.toml
-PYTHONPATH=/absolute/path/to/switchyard-new/examples/experimental/litellm/src \
+export SWITCHYARD_LITELLM_CONFIG=/absolute/path/to/switchyard-new/examples/litellm/deployment/profiles/stage/switchyard.toml
+PYTHONPATH=/absolute/path/to/switchyard-new/examples/litellm/src \
   uv run litellm --config \
-  /absolute/path/to/switchyard-new/examples/experimental/litellm/deployment/profiles/stage/litellm.yaml
+  /absolute/path/to/switchyard-new/examples/litellm/deployment/profiles/stage/litellm.yaml
 ```
 
 Keep LiteLLM at v1.97.0 when reproducing this example's verified behavior.
@@ -322,9 +322,9 @@ Keep LiteLLM at v1.97.0 when reproducing this example's verified behavior.
 From the repository root, run the offline suite without an API key or provider calls:
 
 ```bash
-PYTHONPATH=examples/experimental/litellm/src \
-  uv run --project examples/experimental/litellm --locked \
-  pytest examples/experimental/litellm/tests -m "not e2e" -v
+PYTHONPATH=examples/litellm/src \
+  uv run --project examples/litellm --locked \
+  pytest examples/litellm/tests -m "not e2e" -v
 ```
 
 The paid suite has an explicit opt-in. It builds and starts the local proxy once for each profile
@@ -332,9 +332,9 @@ and verifies the concrete target through LiteLLM's `x-litellm-model-name` respon
 
 ```bash
 SWITCHYARD_LITELLM_E2E=1 \
-  uv run --env-file examples/experimental/litellm/deployment/.env \
-  --project examples/experimental/litellm --locked \
-  pytest examples/experimental/litellm/tests/integration/test_e2e.py -m e2e -v
+  uv run --env-file examples/litellm/deployment/.env \
+  --project examples/litellm --locked \
+  pytest examples/litellm/tests/integration/test_e2e.py -m e2e -v
 ```
 
 ## Troubleshooting

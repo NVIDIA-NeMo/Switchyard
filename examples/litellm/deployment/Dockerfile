@@ -27,7 +27,7 @@ COPY --from=switchyard-builder /wheels /wheels
 RUN uv pip install --python /app/.venv/bin/python --no-deps /wheels/*.whl \
     && rm -rf /wheels
 
-COPY examples/experimental/litellm/src /app/switchyard-plugin/src
+COPY examples/litellm/src /app/switchyard-plugin/src
 ENV PYTHONPATH=/app/switchyard-plugin/src
 
 RUN python -c "from importlib.metadata import version; \

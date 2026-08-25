@@ -21,7 +21,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-nemo-switchyard = { path = "../../..", editable = true }
+nemo-switchyard = { path = "../..", editable = true }
 
 [tool.setuptools.packages.find]
 where = ["src"]

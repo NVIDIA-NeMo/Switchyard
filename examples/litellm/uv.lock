@@ -461,7 +461,7 @@ wheels = [
 [[package]]
 name = "nemo-switchyard"
 version = "0.2.0"
-source = { editable = "../../../" }
+source = { editable = "../../" }
 
 [package.metadata]
 requires-dist = [{ name = "prompt-toolkit", marker = "extra == 'cli'", specifier = ">=3.0.52,<4.0" }]
@@ -777,7 +777,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "litellm", specifier = "==1.97.0" },
-    { name = "nemo-switchyard", editable = "../../../" },
+    { name = "nemo-switchyard", editable = "../../" },
 ]
 
 [package.metadata.requires-dev]
