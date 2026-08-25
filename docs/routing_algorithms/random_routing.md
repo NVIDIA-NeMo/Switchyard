@@ -99,7 +99,7 @@ curl http://localhost:4000/v1/chat/completions \
 ## Experimental LiteLLM integration
 
 The package's
-[developer guide](../../examples/experimental/litellm/README.md) is the
+[developer guide](../../examples/litellm/README.md) is the
 canonical documentation for integrating Switchyard with a Dockerized LiteLLM
 gateway. Its source-installable client adapts libsy's dictionary contract and
 demonstrates weighted random routing between model aliases backed by

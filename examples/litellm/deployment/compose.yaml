@@ -1,15 +1,19 @@
 services:
   litellm:
-    image: ghcr.io/berriai/litellm:v1.92.0
+    build:
+      context: ../../..
+      dockerfile: examples/litellm/deployment/Dockerfile
+    image: switchyard-litellm:1.97.0
     command:
       - --config
-      - /app/config.yaml
+      - /app/deployment/litellm.yaml
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY}
+      SWITCHYARD_LITELLM_CONFIG: /app/deployment/switchyard.toml
     ports:
       - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
     volumes:
-      - ./litellm-config.yaml:/app/config.yaml:ro
+      - ./profiles/${SWITCHYARD_LITELLM_PROFILE:-stage}:/app/deployment:ro
     healthcheck:
       test:
         - CMD-SHELL
