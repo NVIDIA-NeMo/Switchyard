@@ -111,13 +111,13 @@ impl TranslatingLlmClient {
                 source: Box::new(error),
             })
         };
-        // A redirect could move provider-specific headers to another origin.
-        // Deployment credentials are sent only to the configured URL, so neither
-        // client follows redirects.
+        // A redirect could move provider-specific headers to another origin. Both
+        // clients follow only same-origin redirects, so deployment and forwarded
+        // credentials are re-sent exclusively within the configured origin.
         let client =
-            build_client(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()))?;
+            build_client(reqwest::Client::builder().redirect(restricted_redirect_policy()))?;
         let forward_auth_client =
-            build_client(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()))?;
+            build_client(reqwest::Client::builder().redirect(restricted_redirect_policy()))?;
         let model_to_config = model_configs
             .iter()
             .map(|config| (config.model_name.clone(), config.clone()))
@@ -639,6 +639,31 @@ fn record_gen_ai_request(url: &str, model: &str, streaming: bool) {
             span.record("server.port", i64::from(port));
         }
     }
+}
+
+// Builds every upstream client with the same redirect confinement: a redirect
+// is followed only while it stays on the origin the request was first sent to,
+// so deployment or forwarded credentials never reach another origin. A refused
+// redirect is returned to the caller untouched instead of being followed.
+fn restricted_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let stays_on_origin = attempt
+            .previous()
+            .first()
+            .is_some_and(|first_url| is_same_origin(first_url, attempt.url()));
+        if stays_on_origin {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+// Whether two URLs share a scheme, host, and effective port.
+fn is_same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
@@ -1317,34 +1342,53 @@ mod tests {
         Ok(())
     }
 
-    // A cross-origin redirect must not carry the deployment credential to the
-    // redirect target. The default client serves non-forward-auth backends and
-    // refuses to follow redirects, so the sink origin never receives x-api-key.
+    // Reads until the end of an HTTP request head, so a TCP segment boundary
+    // cannot split the headers a later assertion matches against.
+    fn read_request_head(
+        stream: &mut std::net::TcpStream,
+        buffer: &mut [u8],
+    ) -> std::io::Result<usize> {
+        let mut total = 0;
+        loop {
+            let read = stream.read(&mut buffer[total..])?;
+            total += read;
+            if read == 0 || buffer[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                return Ok(total);
+            }
+        }
+    }
+
+    // A cross-origin redirect must not carry deployment credentials to the
+    // redirect target, whichever transport carries them: the anthropic
+    // `api_key` (`x-api-key`) or `extra_headers` (`x-goog-api-key`). The client
+    // refuses to leave the configured origin, so the sink origin is never
+    // contacted at all and the refused 307 surfaces as an upstream error.
     #[tokio::test]
-    async fn default_client_does_not_follow_cross_origin_redirect_with_credential()
+    async fn cross_origin_redirect_never_carries_deployment_credentials()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         use std::sync::mpsc;
         use std::time::Instant;
 
         // The sink stands in for the redirect target on a different origin. It
-        // reports whether any request reached it carrying the credential.
+        // reports whether any request reached it at all.
         let sink = std::net::TcpListener::bind("127.0.0.1:0")?;
         sink.set_nonblocking(true)?;
         let sink_addr = sink.local_addr()?;
         let (sink_tx, sink_rx) = mpsc::channel::<bool>();
         let sink_handle = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_millis(500);
+            let deadline = Instant::now() + Duration::from_millis(750);
             while Instant::now() < deadline {
                 match sink.accept() {
                     Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
                         let mut request = [0_u8; 2048];
-                        let read = stream.read(&mut request).unwrap_or(0);
+                        let read = read_request_head(&mut stream, &mut request).unwrap_or(0);
                         let seen = String::from_utf8_lossy(&request[..read]).to_lowercase();
                         let _ = stream.write_all(
                             b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
                               Content-Length: 2\r\nConnection: close\r\n\r\n{}",
                         );
-                        let _ = sink_tx.send(seen.contains("x-api-key"));
+                        let _ = sink_tx.send(!seen.is_empty());
                         return;
                     }
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1355,17 +1399,17 @@ mod tests {
             }
         });
 
-        // The origin is the configured base_url. It sees the credential (allowed)
-        // and replies with a cross-origin redirect to the sink.
+        // The origin is the configured base_url. It sees both credentials
+        // (allowed) and replies with a cross-origin redirect to the sink.
         let origin = std::net::TcpListener::bind("127.0.0.1:0")?;
         let origin_addr = origin.local_addr()?;
         let (origin_tx, origin_rx) = mpsc::channel::<bool>();
         let origin_handle = std::thread::spawn(move || -> std::io::Result<()> {
             let (mut stream, _) = origin.accept()?;
             let mut request = [0_u8; 2048];
-            let read = stream.read(&mut request)?;
+            let read = read_request_head(&mut stream, &mut request)?;
             let seen = String::from_utf8_lossy(&request[..read]).to_lowercase();
-            let _ = origin_tx.send(seen.contains("x-api-key"));
+            let _ = origin_tx.send(seen.contains("x-api-key") && seen.contains("x-goog-api-key"));
             let response = format!(
                 "HTTP/1.1 307 Temporary Redirect\r\n\
                  Location: http://{sink_addr}/v1/messages\r\n\
@@ -1375,29 +1419,47 @@ mod tests {
             Ok(())
         });
 
+        // The anthropic backend carries `x-api-key` from `api_key`; the extra
+        // header adds the gemini-style transport on the same request.
         let base_url = format!("http://{origin_addr}/v1");
-        let client = TranslatingLlmClient::new(&anthropic_map(&base_url))?;
-        // With redirects disabled the 307 surfaces as an upstream error rather than
-        // being followed; the call outcome is irrelevant, only where the key went.
-        let _ = client
+        let mut backend_config = config(&base_url);
+        backend_config
+            .extra_headers
+            .insert("x-goog-api-key".to_string(), "gemini-canary".to_string());
+        let model_configs = vec![ModelConfig::new(
+            "claude",
+            Backend::Anthropic(backend_config),
+            None,
+        )];
+        let client = TranslatingLlmClient::new(&model_configs)?;
+
+        let result = client
             .call_rewrite_model(request_for(Some("claude"), false), None)
             .await;
+        let Err(error) = result else {
+            panic!("expected the cross-origin redirect to be refused");
+        };
+        assert!(
+            matches!(
+                error,
+                LlmClientError::UpstreamHttp { status, .. } if status.as_u16() == 307
+            ),
+            "expected the refused redirect to surface as upstream HTTP 307, got {error}"
+        );
 
         let origin_saw_key = origin_rx
-            .recv_timeout(Duration::from_millis(500))
+            .recv_timeout(Duration::from_secs(2))
             .expect("the configured origin should receive the request");
         assert!(
             origin_saw_key,
-            "the configured origin should receive the deployment credential"
+            "the configured origin should receive both deployment credentials"
         );
 
-        // The redirect target must never receive the credential. With the redirect
-        // refused it is not contacted at all, so the channel disconnects unused.
-        if let Ok(sink_saw_key) = sink_rx.recv_timeout(Duration::from_millis(700)) {
-            assert!(
-                !sink_saw_key,
-                "redirect target received x-api-key: the deployment credential leaked across origins"
-            );
+        // The redirect target must never be contacted: no connection within the
+        // window is the success case, any accepted connection fails the test.
+        match sink_rx.recv_timeout(Duration::from_millis(1500)) {
+            Ok(_) => panic!("redirect target was contacted during the redirect"),
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {}
         }
 
         sink_handle
@@ -1406,6 +1468,58 @@ mod tests {
         origin_handle
             .join()
             .map_err(|_| std::io::Error::other("origin server thread panicked"))??;
+        Ok(())
+    }
+
+    // Same-origin redirects are still followed: the credential rides each hop
+    // that stays within the configured origin, so gateways that redirect on
+    // their own origin keep working without credentials ever leaving it.
+    #[tokio::test]
+    async fn same_origin_redirect_is_followed_within_the_configured_origin()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let origin = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let origin_addr = origin.local_addr()?;
+        let origin_url = format!("http://{origin_addr}");
+        let server_url = origin_url.clone();
+        let server = std::thread::spawn(move || -> std::io::Result<Vec<String>> {
+            let mut responses = [
+                format!(
+                    "HTTP/1.1 307 Temporary Redirect\r\n\
+                     Location: {server_url}/chat/completions\r\n\
+                     Content-Length: 0\r\nConnection: close\r\n\r\n"
+                ),
+                raw_chat_success_response(),
+            ];
+            let mut requests = Vec::with_capacity(responses.len());
+            for response in &mut responses {
+                let (mut stream, _) = origin.accept()?;
+                let mut request = [0_u8; 2048];
+                let read = read_request_head(&mut stream, &mut request)?;
+                requests.push(String::from_utf8_lossy(&request[..read]).to_lowercase());
+                stream.write_all(response.as_bytes())?;
+            }
+            Ok(requests)
+        });
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{origin_url}/v1")))?;
+        let response = client
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .await?;
+        assert_eq!(
+            completion_text(&response.llm_response.into_agg().await?),
+            "recovered"
+        );
+
+        let requests = server
+            .join()
+            .map_err(|_| std::io::Error::other("redirect server thread panicked"))??;
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.contains("authorization:")),
+            "the credential must ride every same-origin hop"
+        );
         Ok(())
     }
 
