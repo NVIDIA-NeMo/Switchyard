@@ -1967,7 +1967,7 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 </table>
 <h3 id="hierarchical"><code>hierarchical</code><a class="headerlink" href="#hierarchical" title="Permanent link">&para;</a></h3>
 <p>Stacks other algorithms in a hierarchy, where one can set another's
-configuration. Today a classifier sets a stage router's <code>picker</code>, the tier it defaults to when its own signals are not confident. See
+configuration. Today a classifier sets the tier a stage router falls open to when its own signals are not confident, leaving its scoring and escalation logic untouched. See
 <a href="../../routing_algorithms/hierarchical_routing/">Hierarchical Routing</a>.</p>
 <table>
 <thead>
@@ -2049,7 +2049,7 @@ configuration. Today a classifier sets a stage router's <code>picker</code>, the
 </table>
 <p>The tier is retained per session. A deployment that sends no session ID needs
 <code>classifier.message_hash_fallback = true</code>, which keys on the first user message
-instead. The stage table takes no <code>picker</code>: the classifier sets the tier. A turn the
+instead. The stage table takes no <code>picker</code>: the classifier supplies that tier per turn. A turn the
 classifier cannot reach falls open to the efficient tier. It takes no
 <code>classifier</code> either, since that judge would overrule the tier already picked.</p>
 <h2 id="validation-errors">Validation Errors<a class="headerlink" href="#validation-errors" title="Permanent link">&para;</a></h2>

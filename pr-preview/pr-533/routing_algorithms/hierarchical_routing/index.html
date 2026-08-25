@@ -1223,8 +1223,9 @@
 sets the configuration of the one below it before handing off, so each algorithm
 runs where its evidence is strongest.</p>
 <h2 id="what-exists-today">What exists today<a class="headerlink" href="#what-exists-today" title="Permanent link">&para;</a></h2>
-<p>One pairing: an LLM classifier sets a stage router's <code>picker</code>, the tier it
-defaults to when its own signals are not confident. Both algorithms and the
+<p>One pairing: an LLM classifier sets the tier a stage router falls open to when
+its own signals are not confident. The stage router's <code>picker</code> mode is unchanged,
+and so is how it scores signals, escalates, and de-escalates. Both algorithms and the
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.</p>
 <p>The general form, where any algorithm can target another and set its
@@ -1249,7 +1250,7 @@ route's configuration to change as more pairings are added.</p>
 <code>classify_trigger</code> sets how often the judge runs: <code>user_turn</code> re-picks the tier
 whenever the user speaks, <code>new_session</code> picks once and holds it.
 <code>[routes.switchyard.stage]</code> takes the <code>stage_router</code> fields except <code>picker</code>,
-which the classifier sets, and <code>classifier</code>, which would overrule it.</p>
+whose job the classifier does per turn, and <code>classifier</code>, which would overrule it.</p>
 <h2 id="example-use">Example use<a class="headerlink" href="#example-use" title="Permanent link">&para;</a></h2>
 <p>An interactive coding agent in auto-mode. The classifier reads the user turn and
 picks the tier. The stage router runs the tool execution loop on its own signals
