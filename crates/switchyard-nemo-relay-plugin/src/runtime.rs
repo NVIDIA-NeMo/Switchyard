@@ -9,7 +9,7 @@ use nemo_relay_plugin::{Json, LlmRequest as RelayRequest, PluginRuntime};
 use serde_json::{Map, json};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
 use switchyard_protocol::{LlmResponse, Metadata, Request, Response, WireFormat};
-use switchyard_runner::{Route, RouteErrorSummary, Runner, stream_failure_summary};
+use switchyard_runner::{Route, RouteErrorSummary, Runner, stream_error_summary};
 use switchyard_translation::{TranslationEngine, encode_stream};
 
 use crate::config::SwitchyardConfig;
@@ -170,11 +170,7 @@ impl SwitchyardRuntime {
             }
             Err(error) => {
                 self.emit_observations(&mut marks, take_observations(&observations), &metadata);
-                self.route_execution_error_mark(
-                    &mut marks,
-                    &error.execution_failure_summary(),
-                    None,
-                );
+                self.route_execution_error_mark(&mut marks, &error.execution_error_summary(), None);
                 Execution {
                     result: Err("Switchyard route execution failed".into()),
                     marks,
@@ -326,7 +322,7 @@ fn returned_events(
     let chunks = Box::pin(chunks.map(move |item| {
         if let Err(error) = &item {
             emit_mark(route_execution_error_mark(
-                &stream_failure_summary(error, served_model.as_ref()),
+                &stream_error_summary(error, served_model.as_ref()),
                 metadata.clone(),
             ));
         }
@@ -434,7 +430,7 @@ mod tests {
         });
 
         let mark = route_execution_error_mark(
-            &error.execution_failure_summary(),
+            &error.execution_error_summary(),
             json!({"session_id": "session"}),
         );
 
