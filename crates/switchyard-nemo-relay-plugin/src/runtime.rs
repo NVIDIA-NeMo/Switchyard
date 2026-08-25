@@ -344,7 +344,7 @@ fn route_execution_error_mark(summary: &RouteFailureSummary, metadata: Json) -> 
         name: "switchyard.routing.error".into(),
         data: json!({
             "failure_kind": "route_execution",
-            "category": summary.category.as_str(),
+            "category": summary.kind.as_str(),
             "phase": summary.phase.as_str(),
             "upstream_status": summary.upstream_status,
             "target": summary.target.as_ref().map(|target| target.as_str()),
