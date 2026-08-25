@@ -644,6 +644,41 @@ base_threshold = 0.5
         )
     }
 
+    fn hierarchical_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+[targets.tier_judge]
+id = "tier-judge/model"
+llm_client = "primary"
+
+[routes.hier]
+id = "switchyard/hier"
+type = "hierarchical"
+
+[routes.hier.classifier]
+target = "tier_judge"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[routes.hier.stage]
+capable_target = "strong"
+efficient_target = "weak"
+confidence_threshold = 0.5
+"#
+        )
+    }
+
+    #[test]
+    fn hierarchical_route_builds_and_claims_both_tiers_and_its_judge() -> RunnerResult<()> {
+        let runner = runner_from_toml(&hierarchical_config())?;
+        assert!(
+            runner
+                .models()
+                .any(|model| model.id.as_str() == "switchyard/hier")
+        );
+        Ok(())
+    }
+
     #[test]
     fn builds_all_supported_algorithm_types() -> RunnerResult<()> {
         let state = runner_from_toml(VALID_CONFIG)?;
@@ -783,6 +818,24 @@ base_threshold = 0.5
             error_message(&mixed)
                 .contains("mode custom cannot use capability or escalation fields")
         );
+    }
+
+    #[test]
+    fn stage_router_rejects_an_unknown_field() {
+        let config = stage_config().replace(
+            "picker = \"efficient_first\"",
+            "picker = \"efficient_first\"\nmagic = true",
+        );
+        assert!(error_message(&config).contains("unknown field"));
+    }
+
+    #[test]
+    fn hierarchical_stage_block_rejects_an_unknown_field() {
+        let config = hierarchical_config().replace(
+            "confidence_threshold = 0.5",
+            "confidence_threshold = 0.5\nmagic = true",
+        );
+        assert!(error_message(&config).contains("unknown field"));
     }
 
     #[test]

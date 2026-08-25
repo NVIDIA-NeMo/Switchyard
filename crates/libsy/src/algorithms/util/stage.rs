@@ -83,7 +83,7 @@ impl Tier {
     /// strings the capability route reports too, so a deployment running both
     /// sees one tier vocabulary. Also the encoding a default-tier override is
     /// stored under, so changing these strings invalidates one.
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Capable => "strong",
             Self::Efficient => "weak",
@@ -127,15 +127,20 @@ impl StageTargets {
         }
     }
 
-    /// The tier label for a routed target, or `None` for one outside the pair.
-    pub fn label_for(&self, target: &ModelId) -> Option<&'static str> {
+    /// The tier a routed target belongs to, or `None` for one outside the pair.
+    pub fn tier_for(&self, target: &ModelId) -> Option<Tier> {
         if *target == self.capable {
-            Some(Tier::Capable.label())
+            Some(Tier::Capable)
         } else if *target == self.efficient {
-            Some(Tier::Efficient.label())
+            Some(Tier::Efficient)
         } else {
             None
         }
+    }
+
+    /// The tier label for a routed target, or `None` for one outside the pair.
+    pub fn label_for(&self, target: &ModelId) -> Option<&'static str> {
+        self.tier_for(target).map(Tier::label)
     }
 }
 

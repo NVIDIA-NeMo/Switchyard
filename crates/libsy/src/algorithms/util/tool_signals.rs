@@ -291,7 +291,7 @@ impl Default for ToolSignalProcessor {
 #[async_trait]
 impl Processor<State> for ToolSignalProcessor {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
-        if let Event::Request(req) = event {
+        if let Event::Request { request: req, .. } = event {
             let tool_signal = ToolSignals::from_request(req, Some(self.recent_window));
             state.tool_signals = Some(tool_signal);
         }

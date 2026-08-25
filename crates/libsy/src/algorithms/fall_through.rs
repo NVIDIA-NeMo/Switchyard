@@ -239,8 +239,13 @@ where
         request: &mut Request,
     ) -> Result<(ModelId, Option<Response>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
+        //    The driver is offered here so a processor may consult a model first.
         for processor in &self.processors {
-            processor.process(state, Event::Request(request)).await?;
+            let event = Event::Request {
+                request,
+                driver: Some(driver),
+            };
+            processor.process(state, event).await?;
         }
 
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
@@ -740,7 +745,7 @@ mod tests {
         impl Processor for RecordingProcessor {
             async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
                 let kind = match event {
-                    Event::Request(_) => "request",
+                    Event::Request { .. } => "request",
                     Event::Decision { .. } => "decision",
                     _ => "other",
                 };
@@ -769,7 +774,7 @@ mod tests {
         #[async_trait]
         impl Processor for Appender {
             async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
-                if let Event::Request(request) = event {
+                if let Event::Request { request, .. } = event {
                     request
                         .llm_request
                         .messages
@@ -846,7 +851,7 @@ mod tests {
         #[async_trait]
         impl Processor<TurnState> for CountingProcessor {
             async fn process(&self, state: &mut TurnState, event: Event<'_>) -> Result<()> {
-                if let Event::Request(_) = event {
+                if let Event::Request { .. } = event {
                     state.count += 1;
                 }
                 Ok(())

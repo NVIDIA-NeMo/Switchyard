@@ -29,6 +29,7 @@ nav:
       - Random Routing: routing_algorithms/random_routing.md
       - LLM Classifier Routing: routing_algorithms/llm_classifier_routing.md
       - Stage-Router Routing: routing_algorithms/stage_router_routing.md
+      - Hierarchical Routing: routing_algorithms/hierarchical_routing.md
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
       - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
   - Operations:

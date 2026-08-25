@@ -211,6 +211,32 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
+### `hierarchical`
+
+Stacks other algorithms in a hierarchy, where one can set another's
+configuration. Today a classifier sets the tier a stage router falls open to when its own signals are not confident, leaving its scoring and escalation logic untouched. See
+[Hierarchical Routing](../routing_algorithms/hierarchical_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `classifier.target` | Yes | — | Target the tier judge is called through. Not a routing destination. |
+| `classifier.base_threshold` | Yes | — | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. |
+| `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
+| `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the `llm_classifier` route, this works on either trigger. Conversations opening with the same text share a tier. |
+| `stage.capable_target` | Yes | — | Capable tier. |
+| `stage.efficient_target` | Yes | — | Efficient tier. |
+| `stage.confidence_threshold` | Yes | — | Corroboration a decisive signal needs. In `[0, 1]`. |
+| `stage.recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
+| `stage.capable_system_prompt` | No | unset | System prompt handed to the capable tier. |
+| `stage.efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
+| `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |
+
+The tier is retained per session. A deployment that sends no session ID needs
+`classifier.message_hash_fallback = true`, which keys on the first user message
+instead. The stage table takes no `picker`: the classifier supplies that tier per turn. A turn the
+classifier cannot reach falls open to the efficient tier. Leaving out
+`classifier` is recommended: that judge runs ahead of the fall-open tier.
+
 ## Validation Errors
 
 `--dry-run` prefixes configuration failures with

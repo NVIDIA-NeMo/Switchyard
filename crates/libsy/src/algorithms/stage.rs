@@ -154,7 +154,7 @@ impl StageRouter {
     /// Errors if either threshold in `config` is outside `[0.0, 1.0]`.
     pub fn new(capable: ModelId, efficient: ModelId, config: StageRouterConfig) -> Result<Self> {
         Ok(Self {
-            route: build_route(capable, efficient, config)?,
+            route: build_stage_route(capable, efficient, config)?,
         })
     }
 }
@@ -174,8 +174,9 @@ impl Algorithm for StageRouter {
     }
 }
 
-/// Wires the cascade the wrapper drives.
-fn build_route(
+/// Wires the cascade the wrapper drives. Exposed so a composition above can
+/// stack a prelude onto it.
+pub(crate) fn build_stage_route(
     capable: ModelId,
     efficient: ModelId,
     config: StageRouterConfig,
@@ -240,17 +241,14 @@ mod tests {
 
     use async_trait::async_trait;
     use parking_lot::Mutex;
-    use serde_json::json;
-    use switchyard_protocol::{
-        ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult, WireFormat,
-    };
 
     use super::*;
     use crate::algorithms::util::stage::{DECISION_SOURCE_KEY, clear_fall_open, set_fall_open};
+    use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
     use crate::core::processor::{Event, Processor};
     use crate::core::state::StateValue;
-    use crate::core::testing::{Serve, reply, test_drive};
-    use switchyard_protocol::{Metadata, Response};
+    use crate::core::testing::test_drive;
+    use switchyard_protocol::Response;
 
     /// A classifier that always picks `target`, standing in for a cascade member.
     struct Fixed(&'static str);
@@ -359,62 +357,6 @@ mod tests {
     // ── routing integration tests ────────────────────────────────────────────
 
     const ESCALATION: &str = "the previous model was stalling; pick up the diagnosis";
-    const JUDGE: &str = "judge";
-
-    #[derive(Clone, Debug)]
-    struct Call {
-        target: String,
-        messages: Vec<String>,
-    }
-
-    /// Records what each target receives.
-    #[derive(Default)]
-    struct Recorder {
-        calls: Mutex<Vec<Call>>,
-        judge_p_solve: Mutex<f64>,
-    }
-
-    impl Recorder {
-        fn routed(&self) -> Vec<Call> {
-            self.calls
-                .lock()
-                .iter()
-                .filter(|call| call.target != JUDGE)
-                .cloned()
-                .collect()
-        }
-
-        /// Serves every call, recording it. The judge target gets a structured verdict
-        /// back so the fallback classifier has an answer without a real model.
-        fn serve(self: &Arc<Self>) -> impl Serve {
-            let recorder = Arc::clone(self);
-            move |target: ModelId, request: Request| {
-                let recorder = Arc::clone(&recorder);
-                async move {
-                    let target = target.to_string();
-                    recorder.calls.lock().push(Call {
-                        target: target.clone(),
-                        messages: request
-                            .llm_request
-                            .messages
-                            .iter()
-                            .filter_map(|message| message.text_content("|"))
-                            .collect(),
-                    });
-                    let completion = if target == JUDGE {
-                        let p_solve = *recorder.judge_p_solve.lock();
-                        format!(
-                            r#"{{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":{p_solve}}}"#
-                        )
-                    } else {
-                        target
-                    };
-                    Ok(reply(completion))
-                }
-            }
-        }
-    }
-
     fn recording_router(config: StageRouterConfig) -> Result<Arc<StageRouter>> {
         Ok(Arc::new(StageRouter::new(
             ModelId::from("strong"),
@@ -443,55 +385,6 @@ mod tests {
         c
     }
 
-    fn turn_request(failed: bool) -> Request {
-        let content = if failed {
-            "fatal runtime error: out of memory"
-        } else {
-            "ok"
-        };
-        Request {
-            llm_request: LlmRequest {
-                model: Some("auto".to_string()),
-                messages: vec![
-                    Message::text(Role::User, "fix the build"),
-                    Message {
-                        role: Role::Assistant,
-                        content: vec![ContentBlock::ToolCall(ToolCall {
-                            id: "call_1".to_string(),
-                            name: "Bash".to_string(),
-                            arguments: json!({"command": "cargo test"}),
-                        })],
-                    },
-                    Message {
-                        role: Role::Tool,
-                        content: vec![ContentBlock::ToolResult(ToolResult {
-                            tool_call_id: "call_1".to_string(),
-                            content: vec![ContentBlock::Text {
-                                text: content.to_string(),
-                            }],
-                            is_error: Some(failed),
-                        })],
-                    },
-                ],
-                ..LlmRequest::default()
-            },
-            raw_request: Some(json!({
-                "model": "auto",
-                "messages": [
-                    {"role": "user", "content": "fix the build"},
-                    {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function",
-                        "function": {"name": "Bash", "arguments": "{\"command\": \"cargo test\"}"}}]},
-                    {"role": "tool", "tool_call_id": "call_1", "content": content},
-                ],
-            })),
-            metadata: Some(Metadata {
-                wire_format: Some(WireFormat::OpenAiChat),
-                session_id: Some("session-1".to_string()),
-                ..Default::default()
-            }),
-        }
-    }
-
     /// Stands in for a decider ahead of stage: sets the override once, clears it
     /// once, and leaves the turns between alone.
     #[derive(Default)]
@@ -502,7 +395,7 @@ mod tests {
     #[async_trait]
     impl Processor<State> for TierDecider {
         async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
-            if matches!(event, Event::Request(_)) {
+            if matches!(event, Event::Request { .. }) {
                 let mut requests = self.requests.lock();
                 *requests += 1;
                 match *requests {
@@ -521,7 +414,7 @@ mod tests {
         // The picker would fall open to "strong"; the override says "weak".
         let config = StageRouterConfig::new(PickerMode::CapableFirst, 0.5);
         let route: Arc<dyn Algorithm> = Arc::new(
-            build_route(ModelId::from("strong"), ModelId::from("weak"), config)?
+            build_stage_route(ModelId::from("strong"), ModelId::from("weak"), config)?
                 .with_processor(Arc::new(TierDecider::default())),
         );
 

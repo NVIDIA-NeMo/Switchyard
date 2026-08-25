@@ -11,9 +11,10 @@ use std::sync::Arc;
 use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
     ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig,
-    GateTrigger, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
-    Passthrough, PickerMode, Random, StageRouter, StageRouterConfig, SubagentRouter,
-    SubagentRouterConfig, TargetPrompts, TaskClassifierConfig,
+    GateTrigger, HandoffNoteConfig, HierarchicalRouter, HierarchicalRouterConfig,
+    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
+    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TargetPrompts,
+    TaskClassifierConfig,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -246,29 +247,23 @@ pub enum AlgorithmSpec {
     },
     /// Picks a tier per turn by scoring signals from recent tool results.
     StageRouter {
-        /// The capable tier.
-        capable_target: String,
-        /// The efficient tier.
-        efficient_target: String,
+        #[serde(flatten)]
+        tiers: StageTierConfig,
         /// Tier to use when the signals are not confident.
         picker: PickerMode,
-        /// How much agreement a decisive pick needs, from 0 to 1.
-        confidence_threshold: f64,
-        /// How many trailing tool results the signals are scored over.
-        #[serde(default)]
-        recent_turn_window: Option<usize>,
-        /// Notes handed to a tier when the router switches to it.
-        #[serde(default)]
-        handoff_notes: Option<HandoffNoteConfig>,
-        /// System prompt handed to the capable tier.
-        #[serde(default)]
-        capable_system_prompt: Option<String>,
-        /// System prompt handed to the efficient tier.
-        #[serde(default)]
-        efficient_system_prompt: Option<String>,
         /// Judge consulted for turns the tool signals cannot decide.
         #[serde(default)]
         classifier: Option<StageClassifierConfig>,
+        /// Separate policy for delegated sub-agent work.
+        #[serde(default)]
+        subagents: Option<SubagentRouteConfig>,
+    },
+    /// A judge picks the tier at each user turn; a stage router runs the turns within it.
+    Hierarchical {
+        /// Judge that picks the tier. Called through its own target.
+        classifier: StageClassifierConfig,
+        /// The stage router the judge hands off to.
+        stage: StageTierConfig,
         /// Separate policy for delegated sub-agent work.
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
@@ -364,6 +359,33 @@ pub struct StageClassifierConfig {
     pub max_output_tokens: u64,
 }
 
+/// The tier pair and scoring settings shared by every stage-router-backed route.
+///
+/// `deny_unknown_fields` here is what rejects a typo on a flattened `stage_router`
+/// route, since the enum's own `deny_unknown_fields` does not apply through a flatten.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageTierConfig {
+    /// The capable tier.
+    pub capable_target: String,
+    /// The efficient tier.
+    pub efficient_target: String,
+    /// How much agreement a decisive pick needs, from 0 to 1.
+    pub confidence_threshold: f64,
+    /// How many trailing tool results the signals are scored over.
+    #[serde(default)]
+    pub recent_turn_window: Option<usize>,
+    /// Notes handed to a tier when the router switches to it.
+    #[serde(default)]
+    pub handoff_notes: Option<HandoffNoteConfig>,
+    /// System prompt handed to the capable tier.
+    #[serde(default)]
+    pub capable_system_prompt: Option<String>,
+    /// System prompt handed to the efficient tier.
+    #[serde(default)]
+    pub efficient_system_prompt: Option<String>,
+}
+
 impl StageClassifierConfig {
     fn task_classifier_config(&self) -> TaskClassifierConfig {
         TaskClassifierConfig {
@@ -421,12 +443,24 @@ impl AlgorithmSpec {
                 }
             }
             Self::StageRouter {
-                capable_target,
-                efficient_target,
-                subagents,
-                ..
+                tiers, subagents, ..
             } => {
-                let mut names = vec![capable_target.as_str(), efficient_target.as_str()];
+                let mut names = vec![
+                    tiers.capable_target.as_str(),
+                    tiers.efficient_target.as_str(),
+                ];
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.routing_target_names());
+                }
+                names
+            }
+            Self::Hierarchical {
+                stage, subagents, ..
+            } => {
+                let mut names = vec![
+                    stage.capable_target.as_str(),
+                    stage.efficient_target.as_str(),
+                ];
                 if let Some(subagents) = subagents {
                     names.extend(subagents.routing_target_names());
                 }
@@ -460,6 +494,16 @@ impl AlgorithmSpec {
                 if let Some(classifier) = classifier {
                     names.push(&classifier.target);
                 }
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.classifier_target_name());
+                }
+            }
+            Self::Hierarchical {
+                classifier,
+                subagents,
+                ..
+            } => {
+                names.push(&classifier.target);
                 if let Some(subagents) = subagents {
                     names.extend(subagents.classifier_target_name());
                 }
@@ -889,18 +933,21 @@ fn build_algorithm(
             Ok(Arc::new(algorithm))
         }
         AlgorithmSpec::StageRouter {
-            capable_target,
-            efficient_target,
+            tiers,
             picker,
-            confidence_threshold,
-            recent_turn_window,
-            handoff_notes,
-            capable_system_prompt,
-            efficient_system_prompt,
             classifier,
             subagents,
             ..
         } => {
+            let StageTierConfig {
+                capable_target,
+                efficient_target,
+                confidence_threshold,
+                recent_turn_window,
+                handoff_notes,
+                capable_system_prompt,
+                efficient_system_prompt,
+            } = tiers;
             if matches!(picker, PickerMode::CapableFirst) {
                 tracing::warn!(
                     "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
@@ -936,6 +983,39 @@ fn build_algorithm(
                     error,
                 )
             })?;
+            let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
+            attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
+        }
+        AlgorithmSpec::Hierarchical {
+            classifier,
+            stage,
+            subagents,
+        } => {
+            let capable = resolve_target_model_id(route_name, &stage.capable_target, targets)?;
+            let efficient = resolve_target_model_id(route_name, &stage.efficient_target, targets)?;
+            let judge_target = resolve_target_model_id(route_name, &classifier.target, targets)?;
+            let mut stage_config =
+                StageRouterConfig::new(PickerMode::EfficientFirst, stage.confidence_threshold);
+            stage_config.recent_window = stage.recent_turn_window;
+            stage_config.handoff_notes = stage.handoff_notes.clone();
+            stage_config.tier_prompts = tier_prompts(
+                &capable,
+                stage.capable_system_prompt.as_deref(),
+                &efficient,
+                stage.efficient_system_prompt.as_deref(),
+            );
+            let config = HierarchicalRouterConfig {
+                judge_target,
+                judge: classifier.task_classifier_config(),
+                stage: stage_config,
+            };
+            let algorithm =
+                HierarchicalRouter::new(capable, efficient, config).map_err(|error| {
+                    AlgorithmConfigError::with_source(
+                        format!("hierarchical route {route_name}: {error}"),
+                        error,
+                    )
+                })?;
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }

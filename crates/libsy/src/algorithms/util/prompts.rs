@@ -355,7 +355,13 @@ mod tests {
         let processor = SystemPromptProcessor::new(prompts());
         let mut request = Request::default();
         processor
-            .process(&mut (), Event::Request(&mut request))
+            .process(
+                &mut (),
+                Event::Request {
+                    request: &mut request,
+                    driver: None,
+                },
+            )
             .await?;
         assert!(instructions(&request).is_empty());
         Ok(())
