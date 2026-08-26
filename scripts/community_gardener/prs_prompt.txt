@@ -1,0 +1,8 @@
+I am the maintainer / "community gardener" for Switchyard this week. Repo is https://github.com/NVIDIA-NeMo/Switchyard . It is checked out in the current folder.
+
+1. Look at all the pull requests on GitHub. Do categories emerge? Write all the pull requests by category into `BY_CATEGORY.md` in the current directory. If natural categories do not emerge invent ones that would be useful to an open source
+maintainer.
+2. Identify the five to ten PRs I should look at today. Those should be as ready to merge as possible. Write those to `BEST_PRS.md`.
+3. Review each one of those PRs, using sub-agents if appropriate. Do you recommend it be merged? Write your review and assessment to one file per PR identified by the PR number, e.g. `600.md`. Include a clear explanation of what the PR does and why it matters.
+
+At all times write at a high-school reading level in short, simple sentences. Avoid jargon and metaphors
