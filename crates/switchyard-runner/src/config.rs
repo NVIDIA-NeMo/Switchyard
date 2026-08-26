@@ -644,23 +644,23 @@ base_threshold = 0.5
         )
     }
 
-    fn hierarchical_config() -> String {
+    fn composite_config() -> String {
         format!(
             r#"{VALID_CONFIG}
 [targets.tier_judge]
 id = "tier-judge/model"
 llm_client = "primary"
 
-[routes.hier]
+[routes.composed]
 id = "switchyard/hier"
-type = "hierarchical"
+type = "composite"
 
-[routes.hier.classifier]
+[routes.composed.classifier]
 target = "tier_judge"
 base_threshold = 0.5
 classify_trigger = "user_turn"
 
-[routes.hier.stage]
+[routes.composed.stage]
 capable_target = "strong"
 efficient_target = "weak"
 confidence_threshold = 0.5
@@ -669,8 +669,8 @@ confidence_threshold = 0.5
     }
 
     #[test]
-    fn hierarchical_route_builds_and_claims_both_tiers_and_its_judge() -> RunnerResult<()> {
-        let runner = runner_from_toml(&hierarchical_config())?;
+    fn composite_route_builds_and_claims_both_tiers_and_its_judge() -> RunnerResult<()> {
+        let runner = runner_from_toml(&composite_config())?;
         assert!(
             runner
                 .models()
@@ -830,8 +830,8 @@ confidence_threshold = 0.5
     }
 
     #[test]
-    fn hierarchical_stage_block_rejects_an_unknown_field() {
-        let config = hierarchical_config().replace(
+    fn composite_stage_block_rejects_an_unknown_field() {
+        let config = composite_config().replace(
             "confidence_threshold = 0.5",
             "confidence_threshold = 0.5\nmagic = true",
         );

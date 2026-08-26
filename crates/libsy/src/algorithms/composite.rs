@@ -24,7 +24,7 @@ use crate::core::state::State;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{ModelId, Request};
 
-const HIERARCHICAL: &str = "hierarchical";
+const COMPOSITE: &str = "composite";
 
 /// Sets the stage router's fall-open tier from a judge verdict.
 ///
@@ -96,7 +96,7 @@ impl Processor<State> for TierSetter {
 }
 
 /// A judge stacked over a stage router.
-pub struct HierarchicalRouterConfig {
+pub struct CompositeRouterConfig {
     /// Target the judge is called through. Not a routing destination.
     pub judge_target: ModelId,
     /// Judge settings, including how often `classify_trigger` runs it.
@@ -106,11 +106,11 @@ pub struct HierarchicalRouterConfig {
 }
 
 /// Runs a stage router with a tier the judge picks.
-pub struct HierarchicalRouter {
+pub struct CompositeRouter {
     route: FallThrough<State>,
 }
 
-impl HierarchicalRouter {
+impl CompositeRouter {
     /// Stacks the judge over a stage router across the same tier pair.
     ///
     /// Errors on a configuration either algorithm rejects and on `every_request`.
@@ -120,12 +120,11 @@ impl HierarchicalRouter {
     pub fn new(
         capable: ModelId,
         efficient: ModelId,
-        config: HierarchicalRouterConfig,
+        config: CompositeRouterConfig,
     ) -> Result<Self> {
         if config.judge.classify_trigger == ClassifyTrigger::EveryRequest {
             return Err(LibsyError::AlgorithmError {
-                message: "hierarchical: classify_trigger must be user_turn or new_session"
-                    .to_string(),
+                message: "composite: classify_trigger must be user_turn or new_session".to_string(),
             });
         }
         let trigger = config.judge.classify_trigger;
@@ -152,16 +151,16 @@ impl HierarchicalRouter {
             tiers: Mutex::new(HashMap::new()),
         };
         let route = build_stage_route(capable, efficient, config.stage)?
-            .with_name(HIERARCHICAL)
+            .with_name(COMPOSITE)
             .with_processor(Arc::new(setter));
         Ok(Self { route })
     }
 }
 
 #[async_trait]
-impl Algorithm for HierarchicalRouter {
+impl Algorithm for CompositeRouter {
     fn name(&self) -> &str {
-        HIERARCHICAL
+        COMPOSITE
     }
 
     async fn route(
@@ -201,11 +200,11 @@ mod tests {
         request
     }
 
-    fn hash_keyed_router() -> Result<Arc<HierarchicalRouter>> {
-        Ok(Arc::new(HierarchicalRouter::new(
+    fn hash_keyed_router() -> Result<Arc<CompositeRouter>> {
+        Ok(Arc::new(CompositeRouter::new(
             ModelId::from("strong"),
             ModelId::from("weak"),
-            HierarchicalRouterConfig {
+            CompositeRouterConfig {
                 judge_target: ModelId::from(JUDGE),
                 judge: TaskClassifierConfig {
                     base_threshold: 0.5,
@@ -218,11 +217,11 @@ mod tests {
         )?))
     }
 
-    fn router() -> Result<Arc<HierarchicalRouter>> {
-        Ok(Arc::new(HierarchicalRouter::new(
+    fn router() -> Result<Arc<CompositeRouter>> {
+        Ok(Arc::new(CompositeRouter::new(
             ModelId::from("strong"),
             ModelId::from("weak"),
-            HierarchicalRouterConfig {
+            CompositeRouterConfig {
                 judge_target: ModelId::from(JUDGE),
                 judge: TaskClassifierConfig {
                     base_threshold: 0.5,
@@ -236,13 +235,13 @@ mod tests {
 
     #[test]
     fn rejects_every_request_as_a_trigger() {
-        let config = HierarchicalRouterConfig {
+        let config = CompositeRouterConfig {
             judge_target: ModelId::from(JUDGE),
             judge: TaskClassifierConfig::default(),
             stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
         };
         assert!(matches!(
-            HierarchicalRouter::new(ModelId::from("strong"), ModelId::from("weak"), config),
+            CompositeRouter::new(ModelId::from("strong"), ModelId::from("weak"), config),
             Err(LibsyError::AlgorithmError { .. })
         ));
     }
