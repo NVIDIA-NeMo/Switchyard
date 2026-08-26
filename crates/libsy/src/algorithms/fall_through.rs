@@ -256,11 +256,11 @@ where
             if let Some(score) = scores.argmax(false)? {
                 // Only the deciding classifier's response answers the turn; an abstaining
                 // classifier selected nothing for it to be the answer to.
-                routed = Some((score, Arc::clone(classifier), response));
+                routed = Some((score, response));
                 break;
             }
         }
-        let Some((score, deciding, served)) = routed else {
+        let Some((score, served)) = routed else {
             return Err(LibsyError::AlgorithmError {
                 message: "every classifier abstained".to_string(),
             });
@@ -269,14 +269,7 @@ where
         // 3. Resolve the target and log the choice.
         algorithm::ensure_model_is_target(&self.targets, &score.target)?;
         let target = score.target.clone();
-        // A fallback or affinity-reuse decider carries no tier of its own, so
-        // resolve it across the cascade rather than logging it as None.
-        let tier = deciding.routing_tier(&target).or_else(|| {
-            self.classifiers
-                .iter()
-                .find_map(|c| c.routing_tier(&target))
-        });
-        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, tier = ?tier, "Model selected");
+        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
 
         // 4. Post-decision replay: every processor sees the selection so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).

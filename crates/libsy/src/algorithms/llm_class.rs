@@ -462,7 +462,6 @@ impl JudgePolicy for CustomPolicyRuntime {
 
 struct TaskClassifier {
     classifier: JudgeClassifier<CapabilityJudge, TaskClassifierPolicy>,
-    efficient_target: ModelId,
     capable_target: ModelId,
 }
 
@@ -607,7 +606,6 @@ impl LlmTaskClassifier {
                     &config,
                 ),
             ),
-            efficient_target: efficient_target.clone(),
             capable_target: capable_target.clone(),
         });
         let inner: Arc<dyn Classifier<State>> = classifier.clone();
@@ -773,18 +771,6 @@ impl LlmTaskClassifier {
 
 #[async_trait]
 impl Classifier<State> for TaskClassifier {
-    fn routing_tier(&self, selected_model_id: &ModelId) -> Option<&'static str> {
-        if self.efficient_target == self.capable_target {
-            None
-        } else if *selected_model_id == self.efficient_target {
-            Some("weak")
-        } else if *selected_model_id == self.capable_target {
-            Some("strong")
-        } else {
-            None
-        }
-    }
-
     async fn score(
         &self,
         state: &mut State,
@@ -797,10 +783,6 @@ impl Classifier<State> for TaskClassifier {
 
 #[async_trait]
 impl Classifier<State> for LlmTaskClassifier {
-    fn routing_tier(&self, selected_model_id: &ModelId) -> Option<&'static str> {
-        self.inner.routing_tier(selected_model_id)
-    }
-
     async fn score(
         &self,
         state: &mut State,

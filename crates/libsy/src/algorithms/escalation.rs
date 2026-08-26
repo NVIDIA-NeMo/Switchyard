@@ -78,18 +78,6 @@ pub(super) fn build_classifier(
 
 #[async_trait]
 impl Classifier<State> for EscalationClassifier {
-    fn routing_tier(&self, selected_model_id: &ModelId) -> Option<&'static str> {
-        if self.capable == self.efficient {
-            None
-        } else if *selected_model_id == self.capable {
-            Some("strong")
-        } else if *selected_model_id == self.efficient {
-            Some("weak")
-        } else {
-            None
-        }
-    }
-
     async fn score(
         &self,
         state: &mut State,
