@@ -100,6 +100,7 @@ static EDIT_TOOL_NAMES: &[&str] = &[
     "notebookedit",
     "str_replace",
     "str_replace_based_edit_tool",
+    "apply_patch", // codex's edit tool
     "text_editor",
     "patch", // hermes's str_replace-style edit tool
 ];
@@ -794,6 +795,14 @@ mod tests {
         assert_eq!(sig.write_count, 5);
         assert_eq!(sig.edit_count, 1);
         assert_eq!(sig.recent_write_count, 2);
+        assert_eq!(sig.recent_edit_count, 1);
+    }
+
+    #[test]
+    fn codex_apply_patch_counts_as_an_edit() {
+        let request = with_messages(vec![tc("apply_patch"), tr("Success. Updated the file")]);
+        let sig = ToolSignals::from_request(&request, None);
+        assert_eq!(sig.edit_count, 1);
         assert_eq!(sig.recent_edit_count, 1);
     }
 
