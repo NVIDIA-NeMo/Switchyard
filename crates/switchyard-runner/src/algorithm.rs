@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
-    ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig,
-    GateTrigger, HandoffNoteConfig, HierarchicalRouter, HierarchicalRouterConfig,
+    ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
+    CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
     StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TargetPrompts,
     TaskClassifierConfig,
@@ -259,7 +259,7 @@ pub enum AlgorithmSpec {
         subagents: Option<SubagentRouteConfig>,
     },
     /// A judge picks the tier at each user turn; a stage router runs the turns within it.
-    Hierarchical {
+    Composite {
         /// Judge that picks the tier. Called through its own target.
         classifier: StageClassifierConfig,
         /// The stage router the judge hands off to.
@@ -454,7 +454,7 @@ impl AlgorithmSpec {
                 }
                 names
             }
-            Self::Hierarchical {
+            Self::Composite {
                 stage, subagents, ..
             } => {
                 let mut names = vec![
@@ -498,7 +498,7 @@ impl AlgorithmSpec {
                     names.extend(subagents.classifier_target_name());
                 }
             }
-            Self::Hierarchical {
+            Self::Composite {
                 classifier,
                 subagents,
                 ..
@@ -986,7 +986,7 @@ fn build_algorithm(
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
-        AlgorithmSpec::Hierarchical {
+        AlgorithmSpec::Composite {
             classifier,
             stage,
             subagents,
@@ -1004,18 +1004,17 @@ fn build_algorithm(
                 &efficient,
                 stage.efficient_system_prompt.as_deref(),
             );
-            let config = HierarchicalRouterConfig {
+            let config = CompositeRouterConfig {
                 judge_target,
                 judge: classifier.task_classifier_config(),
                 stage: stage_config,
             };
-            let algorithm =
-                HierarchicalRouter::new(capable, efficient, config).map_err(|error| {
-                    AlgorithmConfigError::with_source(
-                        format!("hierarchical route {route_name}: {error}"),
-                        error,
-                    )
-                })?;
+            let algorithm = CompositeRouter::new(capable, efficient, config).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("composite route {route_name}: {error}"),
+                    error,
+                )
+            })?;
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }

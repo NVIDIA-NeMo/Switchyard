@@ -211,11 +211,11 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
-### `hierarchical`
+### `composite`
 
-Stacks other algorithms in a hierarchy, where one can set another's
+Composes other algorithms, letting one set another's
 configuration. Today a classifier sets the tier a stage router falls open to when its own signals are not confident, leaving its scoring and escalation logic untouched. See
-[Hierarchical Routing](../routing_algorithms/hierarchical_routing.md).
+[Composite Routing](../routing_algorithms/composite_routing.md).
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|

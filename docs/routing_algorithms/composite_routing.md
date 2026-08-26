@@ -1,8 +1,9 @@
-# Hierarchical Routing
+# Composite Routing
 
-Routing algorithms composed in a hierarchy. An algorithm higher in the hierarchy
-sets the configuration of the one below it before handing off, so each algorithm
-runs where its evidence is strongest.
+Routing algorithms composed together. One sets the configuration of another and
+hands off, so each algorithm runs where its evidence is strongest. The composition
+is not restricted to a tree: sequential, conditional, and turn-boundary shapes all
+fit the same route type.
 
 ## What exists today
 
@@ -21,7 +22,7 @@ route's configuration to change as more pairings are added.
 ```toml
 [routes.switchyard]
 id = "switchyard"
-type = "hierarchical"
+type = "composite"
 
 [routes.switchyard.classifier]
 target = "judge"

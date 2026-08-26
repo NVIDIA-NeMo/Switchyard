@@ -258,7 +258,7 @@ JSON Object mode; Switchyard then adds the schema to the judge prompt and valida
 the returned object locally. The verdict schema and routing thresholds remain unchanged.
 
 Leave the block out under
-[Hierarchical Routing](hierarchical_routing.md). There the tier is already picked
+[Composite Routing](composite_routing.md). There the tier is already picked
 at the user turn, so a fallthrough judge would sit between the signals and that
 decision and overrule it.
 
