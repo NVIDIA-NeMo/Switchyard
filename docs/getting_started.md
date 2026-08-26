@@ -165,30 +165,12 @@ references, and route construction without starting the server.
 
 Check health: `curl http://localhost:4000/health`
 
-**Telemetry**
+**Telemetry header**
 
-Switchyard does not phone home. No attribution header is added to outbound LLM
-calls, and no request content, response content, or version information is sent
-to NVIDIA or any third party. There is no vendor telemetry to opt out of.
-
-Switchyard does emit OpenTelemetry data, but only where you point it. The
-server always maintains a Prometheus registry and serves it at `/metrics`, and
-it additionally exports OTLP traces and metrics when
-`OTEL_EXPORTER_OTLP_ENDPOINT` is set. Set `OTEL_SDK_DISABLED=true` to disable
-OTLP export.
-
-Spans and metrics carry request parameters, model ids, token usage, and the
-running version. Two paths can also surface model text in your own logs and
-traces: a failed upstream call records the upstream error body verbatim, which
-some providers fill with the request, and an `advisor` route logs the first 160
-characters of the advisor model's reply at `info`. Both stay on infrastructure
-you control.
-
-Earlier documentation described an `X-Switchyard-Version` header. That header
-is not sent, and it is not planned: Switchyard is a library, so identifying the
-caller to an upstream provider belongs to the integration that embeds it. An
-integration that wants to report itself (Relay, LiteLLM, or your own
-application) should add its own header to the calls it makes.
+Switchyard documents an `X-Switchyard-Version` header for release attribution
+on outbound LLM calls. No request or response content is included. The 0.2.0
+native server does not currently send this header upstream (see
+[Known Issues](known_issues.md)), so no opt-out is required at the moment.
 
 ---
 
