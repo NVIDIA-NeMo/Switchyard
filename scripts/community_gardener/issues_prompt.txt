@@ -1,0 +1,7 @@
+I am the maintainer / "community gardener" for Switchyard this week. Repo is https://github.com/NVIDIA-NeMo/Switchyard . It is checked out in the current folder.
+
+1. Look at all the Issues on GitHub. Do categories emerge? Write all of the issues by category into `ISSUES_BY_CATEGORY.md` in the current directory. If natural categories do not emerge invent ones that would be useful to an open source maintainer.
+2. Identify any Issues that can be closed right now: Noise, Spam, overly AI generated slop, or outdated ones. Write those to `ISSUES_TO_CLOSE.md`.
+3. Identify the 5 - 10 key Issues I should look at today. Write those to `ISSUES_TODAY.md`
+
+At all times write at a high-school reading level in short, simple sentences. Avoid jargon and metaphors.
