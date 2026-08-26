@@ -30,7 +30,7 @@ Switchyard is pre-alpha software that is evolving rapidly. The API and algorithm
 > Switchyard is a very young project showcasing active research. Component maturity levels:
 >
 > - libsy: Beta. Ready for trial integration.
-> - libsy-llm-client: Alpha. May change significantly.
+> - switchyard-llm-client: Alpha. May change significantly.
 > - switchyard-runner: Alpha. Evolving rapidly.
 > - switchyard-server: Demo server, not for production use.
 
