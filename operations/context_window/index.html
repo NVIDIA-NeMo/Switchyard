@@ -1233,6 +1233,12 @@ of <code>context_length_exceeded</code>, or a message containing a phrase such a
 way — HTTP 413 or 422, for example — is not recognized as one. The request
 fails on the spot with the upstream's status code, and the upstream's body is
 returned inside Switchyard's error message.</p>
+<p>Streaming requests are covered as well. Some engines reject an over-limit
+streaming request with HTTP 200 and deliver the error as the first stream
+event; when that first event carries a message matching the phrases above, the
+call fails as an overflow and falls through before anything reaches the client.
+An error event arriving after content has streamed is not retried — delivered
+output cannot be taken back — and surfaces to the client as before.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <p>There is no eviction key. A route falls through whenever it has more than one
 target, so the route below needs nothing beyond its two tiers:</p>
