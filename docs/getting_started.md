@@ -167,10 +167,13 @@ Check health: `curl http://localhost:4000/health`
 
 **Telemetry header**
 
-Switchyard documents an `X-Switchyard-Version` header for release attribution
-on outbound LLM calls. No request or response content is included. The 0.2.0
-native server does not currently send this header upstream (see
-[Known Issues](known_issues.md)), so no opt-out is required at the moment.
+Switchyard sends an `X-Switchyard-Version` header on outbound LLM calls for
+release attribution. No request or response content is included.
+
+Set `SWITCHYARD_TELEMETRY_OPT_OUT` to any value other than `0`, `false`, or
+`no` to suppress the header entirely (`NEMO_SWITCHYARD_TELEMETRY_OPT_OUT` is
+accepted as a legacy alias). Set `SWITCHYARD_VERSION` to report a specific
+version instead of the running release.
 
 ---
 

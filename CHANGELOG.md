@@ -24,6 +24,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   work; span fields only, no new metric labels. (#249)
 - **Unified LLM-classifier bindings** — LLM-classifier routing is available
   through the native PyO3 bindings, unifying the Python-side surface. (#465)
+- **`X-Switchyard-Version` on upstream calls** — outbound LLM requests once
+  again carry the release-attribution header. No request or response content is
+  included. Set `SWITCHYARD_TELEMETRY_OPT_OUT` (legacy alias
+  `NEMO_SWITCHYARD_TELEMETRY_OPT_OUT`) to suppress it, or `SWITCHYARD_VERSION`
+  to override the reported version.
 
 ### Changed
 

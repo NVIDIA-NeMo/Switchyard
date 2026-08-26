@@ -26,6 +26,7 @@ use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
 use crate::metrics;
 use crate::raw::RawResponse;
+use crate::telemetry::{SWITCHYARD_VERSION_HEADER, telemetry_header_value};
 
 // Headers this client owns or that are hop-by-hop. Backends apply an explicitly
 // enabled caller credential after generic metadata forwarding skips these.
@@ -49,6 +50,7 @@ const RESERVED_HEADERS: &[&str] = &[
     "anthropic-version",
     "content-type",
     "accept-encoding",
+    "x-switchyard-version",
 ];
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
@@ -305,7 +307,11 @@ impl TranslatingLlmClient {
         };
         let builder = client.post(url).json(body);
         let builder = forward_metadata_headers(builder, metadata);
-        let builder = backend.apply_forwarded_auth(builder, metadata);
+        let mut builder = backend.apply_forwarded_auth(builder, metadata);
+        // Attribute the call to this Switchyard release unless telemetry is opted out.
+        if let Some(version) = telemetry_header_value() {
+            builder = builder.header(SWITCHYARD_VERSION_HEADER, version);
+        }
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
@@ -1953,6 +1959,81 @@ mod tests {
         assert!(!received.headers.contains_key("api-key"));
         assert!(!received.headers.contains_key("openai-organization"));
         assert!(!received.headers.contains_key("openai-project"));
+        Ok(())
+    }
+
+    // The release-attribution header is applied to every upstream call.
+    #[tokio::test]
+    async fn sends_the_switchyard_version_header()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::header(
+                "x-switchyard-version",
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1", "model": "gpt",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        // The matcher above fails the call if the header is absent or wrong.
+        client.call(request_for(Some("gpt"), false)).await?;
+        Ok(())
+    }
+
+    // A caller-supplied version header is reserved, so it cannot spoof attribution.
+    #[tokio::test]
+    async fn client_supplied_switchyard_version_header_is_not_forwarded()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::header(
+                "x-switchyard-version",
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1", "model": "gpt",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "x-switchyard-version",
+            http::HeaderValue::from_static("9.9.9-spoofed"),
+        );
+        let request = Request {
+            llm_request: LlmRequest {
+                model: Some("gpt".to_string()),
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: Some(Metadata {
+                http_headers: Some(headers),
+                ..Default::default()
+            }),
+        };
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        client.call_rewrite_model(request, None).await?;
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let received = received.first().ok_or("expected one upstream request")?;
+        let values: Vec<_> = received
+            .headers
+            .get_all("x-switchyard-version")
+            .into_iter()
+            .collect();
+        assert_eq!(values, [env!("CARGO_PKG_VERSION")]);
         Ok(())
     }
 
