@@ -124,6 +124,9 @@ static BASH_WRITE_PATTERNS: &[&str] = &[
     "<<eof",
     "<<'eof'",
     "<< eof",
+    "write_text(",
+    "writelines(",
+    ".write(",
 ];
 
 static BASH_EDIT_PATTERNS: &[&str] = &[
@@ -161,6 +164,7 @@ static BASH_TOOL_NAMES: &[&str] = &[
     "shell",
     "local_shell_call",
     "terminal",
+    "exec_command", // codex
 ];
 
 // Prefer false negatives: tests_passed routes the picker to EFFICIENT, so a false
@@ -389,10 +393,34 @@ const COMPACTION_MARKER: &str = "session is being continued";
 /// The shell command a tool call carries, when it has one. Harnesses name the
 /// field `command`; anything else is a tool whose category comes from its name.
 fn command_of(arguments: &Value) -> Option<String> {
-    arguments
-        .get("command")
-        .and_then(Value::as_str)
-        .map(str::to_lowercase)
+    // The Responses wire format carries tool arguments as a JSON-encoded string
+    // rather than an object, so decode that before looking for the command.
+    let decoded = arguments
+        .as_str()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+    let object = decoded.as_ref().unwrap_or(arguments);
+
+    ["command", "cmd", "input"]
+        .iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(command_text)
+}
+
+/// One command field as lowercase text, whether the harness sent a string or an
+/// argv array.
+fn command_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.to_lowercase()),
+        Value::Array(parts) => {
+            let joined = parts
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!joined.is_empty()).then(|| joined.to_lowercase())
+        }
+        _ => None,
+    }
 }
 
 /// Text carried by a content block, ignoring the non-textual kinds.
@@ -796,6 +824,58 @@ mod tests {
         assert_eq!(sig.edit_count, 1);
         assert_eq!(sig.recent_write_count, 2);
         assert_eq!(sig.recent_edit_count, 1);
+    }
+
+    // codex issues every shell action as `exec_command`, and the Responses wire
+    // format hands the arguments over as a JSON-encoded string.
+    fn exec_command(arguments: Value) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: String::new(),
+                name: "exec_command".to_string(),
+                arguments,
+            })],
+        }
+    }
+
+    #[test]
+    fn codex_exec_command_carries_its_command_under_cmd() {
+        for arguments in [
+            json!({"command": "sed -i s/a/b/ src/lib.rs"}),
+            json!({"cmd": "sed -i s/a/b/ src/lib.rs"}),
+            json!({"cmd": ["bash", "-lc", "sed -i s/a/b/ src/lib.rs"]}),
+        ] {
+            let request = with_messages(vec![exec_command(arguments.clone()), tr("ok")]);
+            let signal = ToolSignals::from_request(&request, None);
+            assert_eq!(signal.recent_edit_count, 1, "edit count for {arguments}");
+        }
+    }
+
+    #[test]
+    fn responses_format_json_string_arguments_are_decoded() {
+        let request = with_messages(vec![
+            exec_command(json!(
+                r#"{"cmd":"sed -i s/a/b/ src/lib.rs","workdir":"/x"}"#
+            )),
+            tr("ok"),
+        ]);
+        assert_eq!(
+            ToolSignals::from_request(&request, None).recent_edit_count,
+            1
+        );
+    }
+
+    #[test]
+    fn interpreter_heredoc_that_writes_a_file_counts_as_a_write() {
+        let request = with_messages(vec![
+            exec_command(json!({"cmd": "python3 - <<'PY'\np.write_text(s)\nPY"})),
+            tr("ok"),
+        ]);
+        assert_eq!(
+            ToolSignals::from_request(&request, None).recent_write_count,
+            1
+        );
     }
 
     #[test]
