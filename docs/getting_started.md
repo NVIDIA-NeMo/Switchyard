@@ -174,9 +174,15 @@ to NVIDIA or any third party. There is no vendor telemetry to opt out of.
 Switchyard does emit OpenTelemetry data, but only where you point it. The
 server always maintains a Prometheus registry and serves it at `/metrics`, and
 it additionally exports OTLP traces and metrics when
-`OTEL_EXPORTER_OTLP_ENDPOINT` is set. Spans carry request parameters, model
-ids, and token usage, never prompt or completion content. Set
-`OTEL_SDK_DISABLED=true` to disable OTLP export.
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set. Set `OTEL_SDK_DISABLED=true` to disable
+OTLP export.
+
+Spans and metrics carry request parameters, model ids, token usage, and the
+running version. Two paths can also surface model text in your own logs and
+traces: a failed upstream call records the upstream error body verbatim, which
+some providers fill with the request, and an `advisor` route logs the first 160
+characters of the advisor model's reply at `info`. Both stay on infrastructure
+you control.
 
 Earlier documentation described an `X-Switchyard-Version` header. That header
 is not sent, and it is not planned: Switchyard is a library, so identifying the
