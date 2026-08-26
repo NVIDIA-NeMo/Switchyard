@@ -5,16 +5,18 @@
 //! request, call the configured backend over HTTP, decode the neutral response.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::ready;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
 use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value};
 use switchyard_protocol::{
-    LlmRequest, LlmResponse, Metadata, ModelId, Request, Response, RoutedLlmClient,
+    LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Metadata, ModelId, Request,
+    Response, RoutedLlmClient,
 };
 use switchyard_translation::{
     WireFormat, decode_aggregated_response, decode_request, decode_stream,
@@ -445,8 +447,23 @@ impl TranslatingLlmClient {
                         }
                     })
                 });
-                let chunks = decode_stream(bytes, wire_format)?;
-                LlmResponse::Stream(chunks)
+                let mut chunks = decode_stream(bytes, wire_format)?;
+                // Providers reject an over-ceiling streaming request with an in-band
+                // error event on an HTTP 200. Classify the first event before returning
+                // the stream: nothing has reached the caller yet, so an overflow can
+                // still fail the call and let routing try the next candidate.
+                match chunks.next().await {
+                    None => LlmResponse::Stream(stream::empty().boxed()),
+                    Some(first) => {
+                        if let Some(message) = first_event_overflow(&first, backend) {
+                            return Err(LlmClientError::ContextWindowExceeded {
+                                model: model_id.clone(),
+                                message,
+                            });
+                        }
+                        LlmResponse::Stream(stream::once(ready(first)).chain(chunks).boxed())
+                    }
+                }
             }
             EncodedResponse::Buffered { body, .. } => {
                 let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
@@ -593,6 +610,25 @@ impl AttemptFailure {
             _ => false,
         }
     }
+}
+
+// The overflow message when a stream's first event is an in-band provider rejection
+// of the whole request, rather than the start of a response.
+fn first_event_overflow(
+    first: &Result<LlmResponseStreamEvent>,
+    backend: &Backend,
+) -> Option<String> {
+    first
+        .as_ref()
+        .ok()?
+        .normalized()
+        .iter()
+        .find_map(|chunk| match chunk {
+            LlmResponseChunk::StreamError { message } if backend.is_context_overflow(message) => {
+                Some(message.clone())
+            }
+            _ => None,
+        })
 }
 
 // Uses Retry-After when supplied, capped so an upstream cannot stall a request indefinitely.
