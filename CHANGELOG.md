@@ -24,12 +24,55 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   work; span fields only, no new metric labels. (#249)
 - **Unified LLM-classifier bindings** — LLM-classifier routing is available
   through the native PyO3 bindings, unifying the Python-side surface. (#465)
+- **Python `run_stream` aligned with Rust streaming contracts** — the surface
+  mirrors `Step::CallModel` / `Step::Done(RoutingOutcome)`, adds matchable
+  `LlmResponse.Agg` and `LlmResponse.Stream` variants while keeping normalized
+  payloads as dictionaries, and preserves Rust response streams as Python
+  async iterators without buffering. (#479)
+- **Decision endpoint** — the server exposes a decision-only endpoint that
+  resolves decisions from the deployment config, returns answers produced
+  while routing, and rejects invalid routing outcomes with 500. (#456)
+- **Release soak and routing benchmarks** — operations workflows add a release
+  soak test plus routing performance reports with workload scenarios and
+  realistic routing-overhead measurement. (#176)
+- **Sub-agent routing decision gate** — a classifier decision gate routes
+  sub-agent traffic via passthrough. (#492)
+- **Subagent awareness across routing algorithms** — subagent awareness
+  generalizes to all routing algorithms, with subagent UX improvements. (#505)
+- **`switchyard-runner` crate** — pieces of `switchyard-server` are extracted
+  into `switchyard-runner` for reuse by integrations, particularly the
+  NeMo-Relay plugin. (#517)
+- **Runtime-configurable fall-open tier** — a stage's fall-open tier can be
+  set at runtime. (#518)
+- **Transformers feature extraction for the prefill router** — the prefill
+  router can extract features with Transformers models, with Qwen extraction
+  parity validated. (#506)
+- **Request preparation for routed targets** — a translation-layer helper
+  prepares a normalized request for a routed target. (#455)
+- **Safe route failure summaries** — `switchyard-runner` exposes a public,
+  redaction-safe terminal-failure summary API covering route-execution
+  failures before response delivery and typed failures yielded by active
+  response streams. (#537)
+- **Runner deployment from TOML source** — `Runner::from_toml(&str)` builds a
+  configured runner from in-memory deployment text through the same
+  version-1 parser and validation path as `Runner::load(path)`. (#545)
+- **Hierarchical routing** — libsy adds hierarchical routing, with stages
+  delegating to their own sub-router; a hierarchical stage router that
+  carries its own judge is rejected. (#533)
 
 ### Changed
 
 - **`Algorithm::route` returns `Result<RoutingOutcome>`** — instead of the
   bare final `Result`, so callers observe the full routing outcome (see #458
   for the design). (#459)
+- **`session_affinity` replaced by `classify_trigger`** — the routing config
+  gains `classify_trigger = user_turn | new_session | every_request`, which
+  re-runs the LLM classifier on the chosen trigger and otherwise reuses the
+  previously routed model; `session_affinity` is removed from the config
+  options (`classify_trigger = new_session` covers it). (#487)
+- **LiteLLM integration replaced by a routing plugin** — the client
+  integration becomes a routing plugin, and its example moves out of
+  `experimental`. (#532)
 
 ### Removed
 
@@ -64,6 +107,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Default log level** — logging defaults to `info` for all crates instead of
   discarding logs from crates without an explicit level; an unnecessary `rand`
   callback was removed on the way. (#471)
+- **`router_retry_recovered` metric populated** — the counter now increments
+  when a remote model call failed and needed retrying. (#474)
+- **Data URI images translate to Anthropic base64 sources** — OpenAI-style
+  inline images sent as `data:` URIs in `image_url.url` are encoded as
+  Anthropic base64 image sources instead of being forwarded verbatim and
+  rejected with "Only HTTPS URLs are supported." (#470)
+- **JSON object key order preserved in proxied payloads** — `serde_json`'s
+  `preserve_order` feature keeps keys in the order the client sent them;
+  order is semantic for `response_format.json_schema` on order-enforcing
+  structured-output backends (vLLM/xgrammar). (#439)
+- **No fifth `cache_control` block** — `enable_anthropic_prompt_caching`
+  counts existing breakpoints and abstains once the four-block Anthropic and
+  Bedrock budget is spent, instead of failing upstream with HTTP 400. (#489)
+- **Upstream error content redacted from judge warning logs** — judge warning
+  logs no longer leak upstream error content. (#497)
+- **Configured base URLs validated at load** — `base_url` parses into a
+  validated type during `Deserialize`, so an invalid endpoint fails when the
+  config loads. (#405)
+- **Codex MCP namespaces preserved through translation** — Codex tool
+  namespaces are carried in request extensions and survive translation,
+  staying off the public API. (#384)
+- **Provider extensions re-emitted in Responses encoding** — the Responses
+  encoder mirrors the chat allowlist, so captured extensions such as
+  `prompt_cache_key` survive any-source-to-Responses translation. (#509)
+- **Routing instruction restated after windowed conversation** — libsy
+  restates the routing instruction after a windowed conversation. (#520)
+- **Responses instruction roles classified in the decoder** — inline system
+  and developer input items route to `request.instructions` inside
+  `decode_responses_input`, before reasoning and tool-call state-machine
+  transitions, so an instruction item cannot flush pending reasoning or break
+  tool-call grouping. (#523)
+- **Incomplete upstream streams rejected** — upstream SSE that reaches EOF
+  without a source-format terminal event is rejected: Anthropic requires
+  `message_stop` (optional `[DONE]` stays compatible for OpenAI Chat and
+  Responses), and a duplicate EOF error is no longer appended after a decoded
+  in-band provider error. (#425)
 
 ## [0.2.0]
 
