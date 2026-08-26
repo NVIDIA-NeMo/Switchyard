@@ -165,12 +165,17 @@ references, and route construction without starting the server.
 
 Check health: `curl http://localhost:4000/health`
 
-**Telemetry header**
+**Telemetry**
 
-Switchyard documents an `X-Switchyard-Version` header for release attribution
-on outbound LLM calls. No request or response content is included. The 0.2.0
-native server does not currently send this header upstream (see
-[Known Issues](known_issues.md)), so no opt-out is required at the moment.
+Switchyard sends no telemetry. It adds no attribution header to outbound LLM
+calls, and no request or response content is reported anywhere. There is
+nothing to opt out of.
+
+Earlier documentation described an `X-Switchyard-Version` header. That header
+is not sent, and it is not planned: Switchyard is a library, so identifying the
+caller to an upstream provider belongs to the integration that embeds it. An
+integration that wants to report itself (Relay, LiteLLM, or your own
+application) should add its own header to the calls it makes.
 
 ---
 
