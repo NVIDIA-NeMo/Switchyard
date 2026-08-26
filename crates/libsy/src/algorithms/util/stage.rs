@@ -78,10 +78,9 @@ pub enum Tier {
 }
 
 impl Tier {
-    /// Stable label for stats and the [`routing_tier`](Classifier::routing_tier)
-    /// hook, independent of what the tiers' targets are called. These are the
-    /// strings the capability route reports too, so a deployment running both
-    /// sees one tier vocabulary. Also the encoding a default-tier override is
+    /// Stable label for stats, independent of what the tiers' targets are called.
+    /// These are the strings the capability route reports too, so a deployment running
+    /// both sees one tier vocabulary. Also the encoding a default-tier override is
     /// stored under, so changing these strings invalidates one.
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -601,10 +600,6 @@ impl StageClassifier {
 
 #[async_trait]
 impl Classifier<State> for StageClassifier {
-    fn routing_tier(&self, selected_model_id: &ModelId) -> Option<&'static str> {
-        self.targets.label_for(selected_model_id)
-    }
-
     async fn score(
         &self,
         state: &mut State,

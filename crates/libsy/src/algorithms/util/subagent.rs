@@ -74,10 +74,6 @@ impl<S> Classifier<S> for SubagentGate<S>
 where
     S: Send + 'static,
 {
-    fn routing_tier(&self, selected_model_id: &ModelId) -> Option<&'static str> {
-        self.inner.routing_tier(selected_model_id)
-    }
-
     async fn score(
         &self,
         state: &mut S,
