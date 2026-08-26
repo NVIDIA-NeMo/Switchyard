@@ -170,9 +170,11 @@ Check health: `curl http://localhost:4000/health`
 Switchyard sends an `X-Switchyard-Version` header on outbound LLM calls for
 release attribution. No request or response content is included.
 
-Set `SWITCHYARD_TELEMETRY_OPT_OUT` to any value other than `0`, `false`, or
-`no` to suppress the header entirely (`NEMO_SWITCHYARD_TELEMETRY_OPT_OUT` is
-accepted as a legacy alias). Set `SWITCHYARD_VERSION` to report a specific
+Set `SWITCHYARD_TELEMETRY_OPT_OUT` to suppress the header entirely. Any
+non-empty value other than `0`, `false`, or `no` opts out; the comparison
+ignores case and surrounding whitespace, so an empty or whitespace-only value
+does not opt out. `NEMO_SWITCHYARD_TELEMETRY_OPT_OUT` is accepted as a legacy
+alias with the same meaning. Set `SWITCHYARD_VERSION` to report a specific
 version instead of the running release.
 
 ---

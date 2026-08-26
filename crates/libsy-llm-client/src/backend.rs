@@ -11,6 +11,7 @@ use serde_json::Value;
 use switchyard_protocol::{Metadata, WireFormat};
 
 use crate::error::{LlmClientError, Result, is_overflow_body};
+use crate::telemetry::SWITCHYARD_VERSION_HEADER;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -88,19 +89,27 @@ pub enum Backend {
 impl Backend {
     // Checks custom headers before the client can send a request.
     pub(crate) fn validate_extra_headers(&self, model_name: &str) -> Result<()> {
-        let invalid_name = self.config().extra_headers.keys().find(|name| match self {
-            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
-                name.eq_ignore_ascii_case("authorization")
-                    || (self.is_forwarding_auth()
-                        && (name.eq_ignore_ascii_case("chatgpt-account-id")
-                            || name.eq_ignore_ascii_case("x-openai-fedramp")))
+        let invalid_name = self.config().extra_headers.keys().find(|name| {
+            // The client owns the telemetry header on every backend, and
+            // `RequestBuilder::header` appends, so a configured value would be sent
+            // alongside the generated one and would survive a telemetry opt-out.
+            if name.eq_ignore_ascii_case(SWITCHYARD_VERSION_HEADER) {
+                return true;
             }
-            Backend::Anthropic(_) => {
-                name.eq_ignore_ascii_case("x-api-key")
-                    || name.eq_ignore_ascii_case("anthropic-version")
-                    || (self.is_forwarding_auth()
-                        && (name.eq_ignore_ascii_case("authorization")
-                            || name.eq_ignore_ascii_case("anthropic-beta")))
+            match self {
+                Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
+                    name.eq_ignore_ascii_case("authorization")
+                        || (self.is_forwarding_auth()
+                            && (name.eq_ignore_ascii_case("chatgpt-account-id")
+                                || name.eq_ignore_ascii_case("x-openai-fedramp")))
+                }
+                Backend::Anthropic(_) => {
+                    name.eq_ignore_ascii_case("x-api-key")
+                        || name.eq_ignore_ascii_case("anthropic-version")
+                        || (self.is_forwarding_auth()
+                            && (name.eq_ignore_ascii_case("authorization")
+                                || name.eq_ignore_ascii_case("anthropic-beta")))
+                }
             }
         });
         if let Some(name) = invalid_name {
@@ -346,6 +355,35 @@ mod tests {
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             max_retries: 0,
+        }
+    }
+
+    // The client owns the telemetry header, so config cannot also set it on any backend.
+    #[test]
+    fn extra_headers_cannot_set_the_telemetry_header() {
+        for backend in [
+            Backend::OpenAiChat(config("https://api.openai.com/v1")),
+            Backend::OpenAiResponses(config("https://api.openai.com/v1")),
+            Backend::Anthropic(config("https://api.anthropic.com")),
+        ] {
+            let mut config = match &backend {
+                Backend::OpenAiChat(config)
+                | Backend::OpenAiResponses(config)
+                | Backend::Anthropic(config) => config.clone(),
+            };
+            // Mixed case proves the check is case-insensitive.
+            config
+                .extra_headers
+                .insert("X-Switchyard-Version".to_string(), "9.9.9".to_string());
+            let backend = match backend {
+                Backend::OpenAiChat(_) => Backend::OpenAiChat(config),
+                Backend::OpenAiResponses(_) => Backend::OpenAiResponses(config),
+                Backend::Anthropic(_) => Backend::Anthropic(config),
+            };
+            let error = backend
+                .validate_extra_headers("gpt")
+                .expect_err("telemetry header must be rejected");
+            assert!(error.to_string().contains("X-Switchyard-Version"));
         }
     }
 
