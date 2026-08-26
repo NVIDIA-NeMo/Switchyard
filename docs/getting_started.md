@@ -167,9 +167,16 @@ Check health: `curl http://localhost:4000/health`
 
 **Telemetry**
 
-Switchyard sends no telemetry. It adds no attribution header to outbound LLM
-calls, and no request or response content is reported anywhere. There is
-nothing to opt out of.
+Switchyard does not phone home. No attribution header is added to outbound LLM
+calls, and no request content, response content, or version information is sent
+to NVIDIA or any third party. There is no vendor telemetry to opt out of.
+
+Switchyard does emit OpenTelemetry data, but only where you point it. The
+server always maintains a Prometheus registry and serves it at `/metrics`, and
+it additionally exports OTLP traces and metrics when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set. Spans carry request parameters, model
+ids, and token usage, never prompt or completion content. Set
+`OTEL_SDK_DISABLED=true` to disable OTLP export.
 
 Earlier documentation described an `X-Switchyard-Version` header. That header
 is not sent, and it is not planned: Switchyard is a library, so identifying the
