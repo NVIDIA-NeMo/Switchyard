@@ -9,7 +9,7 @@ use prometheus::proto::{Metric, MetricFamily};
 use serde::Serialize;
 
 const ROUTING_DECISIONS_METRIC: &str = "switchyard_stage_router_routing_decisions_total";
-const SCORE_METRIC: &str = "switchyard_stage_router_score";
+const PROBABILITY_METRIC: &str = "switchyard_stage_router_probability";
 const CONFIDENCE_METRIC: &str = "switchyard_stage_router_confidence";
 const SEVERITY_METRIC: &str = "switchyard_stage_router_severity";
 const SPINNING_METRIC: &str = "switchyard_stage_router_spinning";
@@ -19,7 +19,7 @@ const PRODUCTION_INTENSITY_METRIC: &str = "switchyard_stage_router_production_in
 #[derive(Clone, Debug, Default)]
 pub(super) struct StageRouterCumulative {
     decisions: BTreeMap<DecisionKey, u64>,
-    score: HistogramTotal,
+    probability: HistogramTotal,
     confidence: HistogramTotal,
     severity: HistogramTotal,
     spinning: HistogramTotal,
@@ -56,7 +56,7 @@ pub(crate) struct DecisionStatsSnapshot {
 /// Stage scorer output and input-dimension summaries.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub(crate) struct ScoringStatsSnapshot {
-    pub score: MetricSummary,
+    pub probability: MetricSummary,
     pub confidence: MetricSummary,
     pub dimensions: DimensionStatsSnapshot,
 }
@@ -81,7 +81,7 @@ impl StageRouterCumulative {
     pub(super) fn collect(families: &[MetricFamily]) -> Self {
         Self {
             decisions: collect_decisions(families),
-            score: collect_histogram(families, SCORE_METRIC),
+            probability: collect_histogram(families, PROBABILITY_METRIC),
             confidence: collect_histogram(families, CONFIDENCE_METRIC),
             severity: collect_histogram(families, SEVERITY_METRIC),
             spinning: collect_histogram(families, SPINNING_METRIC),
@@ -104,7 +104,7 @@ impl StageRouterCumulative {
         StageRouterStatsSnapshot {
             routing_decisions,
             scoring: ScoringStatsSnapshot {
-                score: self.score.delta(baseline.score),
+                probability: self.probability.delta(baseline.probability),
                 confidence: self.confidence.delta(baseline.confidence),
                 dimensions: DimensionStatsSnapshot {
                     severity: self.severity.delta(baseline.severity),
@@ -231,9 +231,9 @@ mod tests {
                     KeyValue::new("target_name", "model/capable"),
                 ],
             );
-        for value in [0.5, -0.25] {
+        for value in [0.5, 0.25] {
             meter
-                .f64_histogram("switchyard.stage_router.score")
+                .f64_histogram("switchyard.stage_router.probability")
                 .build()
                 .record(value, &[]);
         }
@@ -251,8 +251,8 @@ mod tests {
         assert_eq!(dimensions.total, 3);
         assert_eq!(dimensions.targets["model/efficient"], 2);
         assert_eq!(dimensions.targets["model/capable"], 1);
-        assert_eq!(stage.scoring.score.count, 2);
-        assert_eq!(stage.scoring.score.mean, 0.125);
+        assert_eq!(stage.scoring.probability.count, 2);
+        assert_eq!(stage.scoring.probability.mean, 0.375);
         assert_eq!(stage.scoring.confidence.mean, 0.75);
 
         stats.reset();

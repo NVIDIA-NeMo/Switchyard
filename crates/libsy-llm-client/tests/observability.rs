@@ -994,7 +994,7 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
         Some(1)
     );
     for name in [
-        "switchyard.stage_router.score",
+        "switchyard.stage_router.probability",
         "switchyard.stage_router.confidence",
         "switchyard.stage_router.severity",
         "switchyard.stage_router.spinning",
