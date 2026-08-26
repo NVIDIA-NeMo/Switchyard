@@ -393,8 +393,6 @@ const COMPACTION_MARKER: &str = "session is being continued";
 /// The shell command a tool call carries, when it has one. Harnesses name the
 /// field `command`; anything else is a tool whose category comes from its name.
 fn command_of(arguments: &Value) -> Option<String> {
-    // The Responses wire format carries tool arguments as a JSON-encoded string
-    // rather than an object, so decode that before looking for the command.
     let decoded = arguments
         .as_str()
         .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
@@ -406,8 +404,7 @@ fn command_of(arguments: &Value) -> Option<String> {
         .find_map(command_text)
 }
 
-/// One command field as lowercase text, whether the harness sent a string or an
-/// argv array.
+/// A command field as lowercase text, from a string or an argv array.
 fn command_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => Some(text.to_lowercase()),
@@ -431,12 +428,8 @@ fn text_of(block: &ContentBlock) -> Option<&str> {
     }
 }
 
-/// Whether a tool result explicitly reports that every command in it exited zero.
-///
-/// Harnesses that report an exit status make pattern matching unnecessary and
-/// actively misleading: a successful `grep` or `sed` prints whatever the file
-/// contains, including words like "connection refused", and that is not an error
-/// the agent hit. Only trust this when no non-zero status appears in the same text.
+/// Whether every command in a tool result exited zero. A successful `grep`
+/// prints whatever the file holds, error words included.
 fn reports_success_exit(text: &str) -> bool {
     let lower = text.to_lowercase();
     let mut saw_zero = false;
@@ -606,10 +599,8 @@ fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
     streak
 }
 
-/// Whether a tool result carries a literal failure marker.
-///
-/// A marker ending in `:` must not match a Rust path such as `error::tests::…`,
-/// which every passing test in a module named `error` prints.
+/// Whether a tool result carries a failure marker. `error:` must not match the
+/// path `error::`, which passing tests print.
 fn contains_failure_literal(lower: &str) -> bool {
     TEST_FAILURE_LITERAL.iter().any(|literal| {
         let mut cursor = 0usize;
@@ -869,8 +860,6 @@ mod tests {
         assert_eq!(sig.recent_edit_count, 1);
     }
 
-    // codex issues every shell action as `exec_command`, and the Responses wire
-    // format hands the arguments over as a JSON-encoded string.
     fn exec_command(arguments: Value) -> Message {
         Message {
             role: Role::Assistant,
@@ -884,8 +873,6 @@ mod tests {
 
     #[test]
     fn a_command_that_exited_zero_is_not_an_error() {
-        // reading a source file prints whatever it contains, including the words
-        // this module matches on. a zero exit status says nothing went wrong.
         let source = "static CRITICAL: &[&str] = &[\"out of memory\", \"connection refused\"];";
         let request = with_messages(vec![
             exec_command(json!({"cmd": "sed -n 1,40p tool_signals.rs"})),
@@ -896,7 +883,6 @@ mod tests {
 
     #[test]
     fn a_rust_module_path_is_not_a_failure_marker() {
-        // every passing test in a module named `error` prints `error::…`
         let passing = "test error::tests::preserves_source ... ok\n\
                        test result: ok. 268 passed; 0 failed; 0 ignored";
         let request = with_messages(vec![
@@ -912,25 +898,12 @@ mod tests {
             json!({"command": "sed -i s/a/b/ src/lib.rs"}),
             json!({"cmd": "sed -i s/a/b/ src/lib.rs"}),
             json!({"cmd": ["bash", "-lc", "sed -i s/a/b/ src/lib.rs"]}),
+            json!(r#"{"cmd":"sed -i s/a/b/ src/lib.rs","workdir":"/x"}"#),
         ] {
             let request = with_messages(vec![exec_command(arguments.clone()), tr("ok")]);
             let signal = ToolSignals::from_request(&request, None);
             assert_eq!(signal.recent_edit_count, 1, "edit count for {arguments}");
         }
-    }
-
-    #[test]
-    fn responses_format_json_string_arguments_are_decoded() {
-        let request = with_messages(vec![
-            exec_command(json!(
-                r#"{"cmd":"sed -i s/a/b/ src/lib.rs","workdir":"/x"}"#
-            )),
-            tr("ok"),
-        ]);
-        assert_eq!(
-            ToolSignals::from_request(&request, None).recent_edit_count,
-            1
-        );
     }
 
     #[test]
