@@ -431,6 +431,28 @@ fn text_of(block: &ContentBlock) -> Option<&str> {
     }
 }
 
+/// Whether a tool result explicitly reports that every command in it exited zero.
+///
+/// Harnesses that report an exit status make pattern matching unnecessary and
+/// actively misleading: a successful `grep` or `sed` prints whatever the file
+/// contains, including words like "connection refused", and that is not an error
+/// the agent hit. Only trust this when no non-zero status appears in the same text.
+fn reports_success_exit(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let mut saw_zero = false;
+    for marker in ["exited with code ", "exit code: "] {
+        for tail in lower.split(marker).skip(1) {
+            let code: String = tail.chars().take_while(char::is_ascii_digit).collect();
+            match code.as_str() {
+                "" => {}
+                "0" => saw_zero = true,
+                _ => return false,
+            }
+        }
+    }
+    saw_zero
+}
+
 fn build_signal(
     tool_texts: Vec<String>,
     tool_calls: Vec<ObservedToolCall>,
@@ -445,6 +467,9 @@ fn build_signal(
     let sev_start = tool_texts.len().saturating_sub(recent_window.max(1));
     let mut severity = 0.0f32;
     for text in &tool_texts[sev_start..] {
+        if reports_success_exit(text) {
+            continue;
+        }
         let (sev, _patterns) = classify_text(text);
         if sev > severity {
             severity = sev;
@@ -581,12 +606,30 @@ fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
     streak
 }
 
+/// Whether a tool result carries a literal failure marker.
+///
+/// A marker ending in `:` must not match a Rust path such as `error::tests::…`,
+/// which every passing test in a module named `error` prints.
+fn contains_failure_literal(lower: &str) -> bool {
+    TEST_FAILURE_LITERAL.iter().any(|literal| {
+        let mut cursor = 0usize;
+        while let Some(rel) = lower[cursor..].find(literal) {
+            let end = cursor + rel + literal.len();
+            if !lower[end..].starts_with(':') {
+                return true;
+            }
+            cursor = end;
+        }
+        false
+    })
+}
+
 fn detect_tests_passed(tool_texts: &[String], recent_window: usize) -> bool {
     let start = tool_texts.len().saturating_sub(recent_window.max(1));
     tool_texts[start..].iter().any(|text| {
         let lower = text.to_lowercase();
         TEST_PASS_PHRASES.iter().any(|p| lower.contains(p))
-            && !TEST_FAILURE_LITERAL.iter().any(|p| lower.contains(p))
+            && !contains_failure_literal(&lower)
             && !has_nonzero_failure_count(&lower)
     })
 }
@@ -837,6 +880,30 @@ mod tests {
                 arguments,
             })],
         }
+    }
+
+    #[test]
+    fn a_command_that_exited_zero_is_not_an_error() {
+        // reading a source file prints whatever it contains, including the words
+        // this module matches on. a zero exit status says nothing went wrong.
+        let source = "static CRITICAL: &[&str] = &[\"out of memory\", \"connection refused\"];";
+        let request = with_messages(vec![
+            exec_command(json!({"cmd": "sed -n 1,40p tool_signals.rs"})),
+            tr(&format!("Process exited with code 0\nOutput: {source}")),
+        ]);
+        assert_eq!(ToolSignals::from_request(&request, None).severity, 0.0);
+    }
+
+    #[test]
+    fn a_rust_module_path_is_not_a_failure_marker() {
+        // every passing test in a module named `error` prints `error::…`
+        let passing = "test error::tests::preserves_source ... ok\n\
+                       test result: ok. 268 passed; 0 failed; 0 ignored";
+        let request = with_messages(vec![
+            exec_command(json!({"cmd": "cargo test"})),
+            tr(passing),
+        ]);
+        assert!(ToolSignals::from_request(&request, None).tests_passed);
     }
 
     #[test]
