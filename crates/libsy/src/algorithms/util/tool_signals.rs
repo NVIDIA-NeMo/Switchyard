@@ -124,9 +124,11 @@ static BASH_WRITE_PATTERNS: &[&str] = &[
     "<<eof",
     "<<'eof'",
     "<< eof",
-    "write_text(",
-    ".write(",
 ];
+
+/// Python file-write expressions, which only indicate a write when an
+/// interpreter is running them rather than a search looking for them.
+static PYTHON_WRITE_PATTERNS: &[&str] = &["write_text(", "writelines(", ".write("];
 
 static BASH_EDIT_PATTERNS: &[&str] = &[
     "sed -i",
@@ -322,6 +324,9 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
     {
         // Write/edit redirection trumps read-like operands.
         if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
+            return ToolCategory::Write;
+        }
+        if cmd.contains("python") && PYTHON_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
             return ToolCategory::Write;
         }
         if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p)) {
@@ -853,6 +858,16 @@ mod tests {
             let request = with_messages(vec![exec_command(arguments.clone()), tr("ok")]);
             let signal = ToolSignals::from_request(&request, None);
             assert_eq!(signal.recent_edit_count, 1, "edit count for {arguments}");
+        }
+    }
+
+    #[test]
+    fn searching_for_a_write_expression_is_a_read() {
+        for cmd in ["grep -R '.write(' src", "grep -R 'write_text(' src"] {
+            let request = with_messages(vec![exec_command(json!({"cmd": cmd})), tr("ok")]);
+            let signal = ToolSignals::from_request(&request, None);
+            assert_eq!(signal.recent_write_count, 0, "write count for {cmd}");
+            assert_eq!(signal.recent_read_count, 1, "read count for {cmd}");
         }
     }
 
