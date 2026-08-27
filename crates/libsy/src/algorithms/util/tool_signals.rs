@@ -862,25 +862,18 @@ mod tests {
     }
 
     #[test]
-    fn searching_for_a_write_expression_is_a_read() {
-        for cmd in ["grep -R '.write(' src", "grep -R 'write_text(' src"] {
+    fn python_write_expressions_need_a_python_command() {
+        // (command, expected writes, expected reads)
+        for (cmd, writes, reads) in [
+            ("python3 - <<'PY'\np.write_text(s)\nPY", 1, 0),
+            ("grep -R '.write(' src", 0, 1),
+            ("grep -R 'write_text(' src", 0, 1),
+        ] {
             let request = with_messages(vec![exec_command(json!({"cmd": cmd})), tr("ok")]);
             let signal = ToolSignals::from_request(&request, None);
-            assert_eq!(signal.recent_write_count, 0, "write count for {cmd}");
-            assert_eq!(signal.recent_read_count, 1, "read count for {cmd}");
+            assert_eq!(signal.recent_write_count, writes, "writes for {cmd}");
+            assert_eq!(signal.recent_read_count, reads, "reads for {cmd}");
         }
-    }
-
-    #[test]
-    fn heredoc_script_is_a_write() {
-        let request = with_messages(vec![
-            exec_command(json!({"cmd": "python3 - <<'PY'\np.write_text(s)\nPY"})),
-            tr("ok"),
-        ]);
-        assert_eq!(
-            ToolSignals::from_request(&request, None).recent_write_count,
-            1
-        );
     }
 
     #[test]
