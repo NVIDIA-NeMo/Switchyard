@@ -403,12 +403,14 @@ fn text_of(block: &ContentBlock) -> Option<&str> {
     }
 }
 
-/// Whether a tool result reports a status that rules out failure: a zero exit, or
-/// a command still running. A successful `grep` prints whatever the file holds,
-/// error words included, and a command that has not finished has not failed yet.
+/// How a harness reports a still-running command, which has not failed yet.
+const PENDING_MARKER: &str = "process running with session id";
+
+/// Whether a tool result reports a status that rules out failure. A reported
+/// status beats the text, which says whatever the file or diff happened to hold.
 fn reports_no_failure(text: &str) -> bool {
     let lower = text.to_lowercase();
-    if lower.contains("process running with session id") {
+    if lower.contains(PENDING_MARKER) {
         return true;
     }
     let mut saw_zero = false;
@@ -868,6 +870,7 @@ mod tests {
         assert_eq!(ToolSignals::from_request(&request, None).severity, 0.0);
     }
 
+    // no reported status, so the literal check is what has to get this right
     #[test]
     fn rust_path_is_not_a_failure() {
         let passing = "test error::tests::preserves_source ... ok\n\
