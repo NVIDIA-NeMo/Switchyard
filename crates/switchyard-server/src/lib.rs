@@ -63,6 +63,9 @@ pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
 const MAX_ROUTING_HEADER_VALUE_LEN: usize = 512;
+/// Non-standard status used only in logs and metrics for a request whose
+/// downstream client disconnected before any response was written.
+const CLIENT_CLOSED_REQUEST: u16 = 499;
 const STARTUP_BANNER_ART: &str = include_str!("../assets/startup_banner.txt");
 
 /// Error returned while configuring or running the server.
@@ -693,6 +696,12 @@ async fn handle_endpoint_inner(
         correlation_id: metadata.correlation_id.clone(),
     };
 
+    // Axum drops this future when the downstream client disconnects before the
+    // response is written, which cancels the run and its upstream calls. The guard
+    // keeps that terminal state observable: the `emit` path below never runs for an
+    // abandoned buffered request.
+    let mut request_log = RequestLogGuard(Some(request_log));
+
     let response = match llm_json_body(body) {
         Ok(body) => {
             handle_llm_request(
@@ -847,6 +856,29 @@ async fn handle_llm_request(
     response
 }
 
+/// Holds the request log context until the request reaches a terminal state.
+/// Dropping the guard with the context still in place means the handler future was
+/// cancelled — the client left before a response existed — so the run is reported
+/// as abandoned rather than silently disappearing.
+struct RequestLogGuard(Option<RequestLogContext>);
+
+impl RequestLogGuard {
+    // Emits the normal terminal event and disarms the cancellation path.
+    fn emit(&mut self, response: &Response) {
+        if let Some(context) = self.0.take() {
+            context.emit(response);
+        }
+    }
+}
+
+impl Drop for RequestLogGuard {
+    fn drop(&mut self) {
+        if let Some(context) = self.0.take() {
+            context.emit_cancelled();
+        }
+    }
+}
+
 // Request metadata held until the terminal response determines the event level.
 struct RequestLogContext {
     started: Instant,
@@ -899,6 +931,26 @@ impl RequestLogContext {
             Level::WARN => emit!(Level::WARN, "LLM request failed"),
             _ => emit!(Level::INFO, "LLM request handled"),
         }
+    }
+
+    // Terminal event for a request whose client left before a response was written.
+    // No model served it, so there is no selected model and no response status.
+    fn emit_cancelled(self) {
+        metrics::record_client_disconnect();
+        tracing::event!(
+            target: "switchyard_server::request",
+            Level::WARN,
+            wire_format = %self.wire_format,
+            status = CLIENT_CLOSED_REQUEST,
+            requested_model = self.requested_model.as_deref().unwrap_or(""),
+            selected_model = "",
+            streaming = self.streaming,
+            session_id = self.session_id.as_deref().unwrap_or(""),
+            correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+            handling_duration_ms = self.started.elapsed().as_secs_f64() * 1_000.0,
+            error = "client disconnected before a response was written",
+            "LLM request cancelled"
+        );
     }
 }
 
@@ -1561,6 +1613,146 @@ mod tests {
             .expect("server exits cleanly");
         state.release.notify_one();
         request.abort();
+    }
+
+    #[derive(Clone)]
+    struct CancelTestState {
+        started: Arc<Notify>,
+        cancelled: Arc<Notify>,
+    }
+
+    // Signals when the handler future is dropped, standing in for the in-flight
+    // upstream call that a cancelled run releases.
+    struct CancelSentinel(Arc<Notify>);
+
+    impl Drop for CancelSentinel {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    async fn never_responds(State(state): State<CancelTestState>) -> &'static str {
+        let _sentinel = CancelSentinel(state.cancelled.clone());
+        state.started.notify_one();
+        std::future::pending::<()>().await;
+        "unreachable"
+    }
+
+    // A buffered request produces no response until the run finishes, so nothing is
+    // written to the socket to reveal that the client left. The server must still drop
+    // the handler future on disconnect, otherwise upstream work outlives its client.
+    #[tokio::test]
+    async fn client_disconnect_cancels_a_buffered_handler() {
+        let state = CancelTestState {
+            started: Arc::new(Notify::new()),
+            cancelled: Arc::new(Notify::new()),
+        };
+        let router = Router::new()
+            .route("/", post(never_responds))
+            .with_state(state.clone());
+        let listener = bind_tcp_listener("127.0.0.1:0".parse().expect("valid address"), 16)
+            .expect("listener binds");
+        let addr = listener.local_addr().expect("listener has an address");
+        let (shutdown, shutdown_receiver) = oneshot::channel();
+        let server = tokio::spawn(serve(
+            listener,
+            router,
+            Duration::from_millis(25),
+            async move {
+                let _ = shutdown_receiver.await;
+            },
+        ));
+
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("client connects");
+        stream
+            .write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}")
+            .await
+            .expect("client sends a complete request");
+        state.started.notified().await;
+
+        // The client goes away mid-run, before any response byte exists.
+        drop(stream);
+
+        tokio::time::timeout(Duration::from_secs(5), state.cancelled.notified())
+            .await
+            .expect("handler future is dropped when the client disconnects");
+
+        let _ = shutdown.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    }
+
+    // Collects the terminal request events emitted while it is the active subscriber.
+    #[derive(Clone, Default)]
+    struct CapturedEvents(Arc<Mutex<Vec<(Level, String)>>>);
+
+    impl tracing_subscriber::Layer<tracing_subscriber::Registry> for CapturedEvents {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, tracing_subscriber::Registry>,
+        ) {
+            if event.metadata().target() != "switchyard_server::request" {
+                return;
+            }
+            let mut message = String::new();
+            event.record(
+                &mut |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
+                    if field.name() == "message" {
+                        message = format!("{value:?}");
+                    }
+                },
+            );
+            self.0.lock().push((*event.metadata().level(), message));
+        }
+    }
+
+    fn request_log_context() -> RequestLogContext {
+        RequestLogContext {
+            started: Instant::now(),
+            wire_format: WireFormat::OpenAiChat,
+            requested_model: Some("switchyard/route".to_string()),
+            streaming: false,
+            session_id: Some("session".to_string()),
+            correlation_id: None,
+        }
+    }
+
+    fn captured_events(run: impl FnOnce()) -> Vec<(Level, String)> {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let captured = CapturedEvents::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+        tracing::subscriber::with_default(subscriber, run);
+        captured.0.lock().clone()
+    }
+
+    // A dropped handler future is the only trace an abandoned buffered request leaves,
+    // so the guard has to turn it into a terminal event rather than logging nothing.
+    #[test]
+    fn dropping_the_request_log_guard_reports_a_cancelled_request() {
+        let events = captured_events(|| {
+            drop(RequestLogGuard(Some(request_log_context())));
+        });
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, Level::WARN);
+        assert!(events[0].1.contains("cancelled"), "{:?}", events[0].1);
+    }
+
+    // A request that reached a response is not a cancellation, even though the guard
+    // is still dropped afterwards.
+    #[test]
+    fn an_answered_request_reports_only_its_response() {
+        let events = captured_events(|| {
+            let mut guard = RequestLogGuard(Some(request_log_context()));
+            guard.emit(&StatusCode::OK.into_response());
+        });
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, Level::INFO);
+        assert!(events[0].1.contains("handled"), "{:?}", events[0].1);
     }
 
     // Terminal request severity follows HTTP status instead of error-path bookkeeping.

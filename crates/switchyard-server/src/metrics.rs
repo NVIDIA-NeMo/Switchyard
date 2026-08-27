@@ -12,6 +12,10 @@ use switchyard_llm_client::metrics::{http_outcome_label, http_status_code_label}
 
 pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
+/// Outcome label for a request the client abandoned. Kept separate from the
+/// status-derived outcomes so cancelled work is never counted as a served response.
+const CLIENT_DISCONNECTED_OUTCOME: &str = "client_disconnected";
+
 /// Bucket boundaries for `switchyard.routing_overhead_ms`.
 /// Need a broad range because some algos call an LLM (classifier), and some
 /// do very little (passthrough).
@@ -124,13 +128,27 @@ fn seed_outcome_metrics() {
     }
 
     let client_responses = meter.u64_counter("switchyard.client_responses").build();
-    for outcome in ["success", "retryable_error", "other_error"] {
+    for outcome in [
+        "success",
+        "retryable_error",
+        "other_error",
+        CLIENT_DISCONNECTED_OUTCOME,
+    ] {
         client_responses.add(0, &[KeyValue::new("outcome", outcome)]);
     }
     meter
         .u64_counter("switchyard.router_retry_recovered")
         .build()
         .add(0, &[]);
+}
+
+/// Records a request whose downstream client disconnected before a response was
+/// written. The run and its upstream calls were cancelled, so no status exists.
+pub(crate) fn record_client_disconnect() {
+    global::meter("switchyard")
+        .u64_counter("switchyard.client_responses")
+        .build()
+        .add(1, &[KeyValue::new("outcome", CLIENT_DISCONNECTED_OUTCOME)]);
 }
 
 /// Records the final status returned by an LLM-serving route.
