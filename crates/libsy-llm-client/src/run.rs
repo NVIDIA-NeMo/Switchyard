@@ -729,4 +729,136 @@ mod tests {
         assert_eq!(&*client.calls.lock(), &[ModelId::from("weak")]);
         Ok(())
     }
+
+    // Verbatim shape of an SGLang admission rejection on a streaming session:
+    // HTTP 200, and the overflow arrives as the first SSE event.
+    const OVERFLOW_SSE: &str = "data: {\"error\":{\"code\":400,\"message\":\"Input length (600013 tokens) exceeds the maximum allowed length (536826 tokens). Use a shorter input or enable --allow-auto-truncate.\",\"object\":\"error\",\"param\":null,\"type\":\"BAD_REQUEST\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n";
+
+    // A normal one-turn streamed answer, as the second candidate serves it.
+    const STRONG_SSE: &str = "data: {\"id\":\"answer\",\"model\":\"strong\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"answer\",\"model\":\"strong\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+
+    /// Runs a streaming request through the weak→strong candidate loop, serving
+    /// `weak_sse` from the first candidate and [`STRONG_SSE`] from the second.
+    /// The server is returned so response streams stay readable after the call.
+    async fn run_streaming_candidates(
+        weak_sse: &'static str,
+    ) -> (
+        MockServer,
+        Arc<Mutex<Vec<String>>>,
+        Result<(ModelId, Response)>,
+    ) {
+        let server = MockServer::start().await;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&request.body).unwrap_or(serde_json::Value::Null);
+                let model = body["model"].as_str().unwrap_or_default().to_string();
+                observed_calls.lock().push(model.clone());
+                let sse = if model == "weak" {
+                    weak_sse
+                } else {
+                    STRONG_SSE
+                };
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse)
+            })
+            .mount(&server)
+            .await;
+
+        let backend = || {
+            Backend::OpenAiChat(HttpBackendConfig {
+                base_url: format!("{}/v1", server.uri()),
+                api_key: None,
+                forward_auth: false,
+                extra_headers: BTreeMap::new(),
+                extra_body: BTreeMap::new(),
+                max_retries: 0,
+            })
+        };
+        let client = Arc::new(
+            TranslatingLlmClient::new(&[
+                ModelConfig::new("weak", backend(), None),
+                ModelConfig::new("strong", backend(), None),
+            ])
+            .expect("building test client"),
+        );
+        let algorithm = Arc::new(CandidateAlgorithm {
+            models: vec!["weak".into(), "strong".into()],
+        });
+        let mut llm_request = text_request(Some("auto".to_string()), "hello".to_string());
+        llm_request.stream = true;
+        let request = Request {
+            llm_request,
+            raw_request: None,
+            metadata: None,
+        };
+        let result = run(algorithm, ClientRouter::single(client), request, None).await;
+        (server, calls, result)
+    }
+
+    #[tokio::test]
+    async fn first_stream_event_overflow_falls_back_to_the_next_candidate() -> Result<()> {
+        // Nothing has reached the caller when the first event arrives, so an overflow
+        // there falls through to the next candidate exactly as its buffered twin does.
+        let (_server, calls, result) = run_streaming_candidates(OVERFLOW_SSE).await;
+        let (_, response) = result?;
+        assert_eq!(&*calls.lock(), &["weak", "strong"]);
+        assert_eq!(response.served_model().map(ModelId::as_str), Some("strong"));
+        let aggregate = response
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|source| LibsyError::client_call("strong", source))?;
+        assert_eq!(completion_text(&aggregate), "ok");
+
+        // Only a classified overflow re-routes; any other in-band error event still
+        // streams through to the consumer without trying another candidate.
+        let (_server, calls, result) = run_streaming_candidates(
+            "data: {\"error\":{\"code\":500,\"message\":\"engine exploded\",\"object\":\"error\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n",
+        )
+        .await;
+        let (_, response) = result?;
+        assert_eq!(&*calls.lock(), &["weak"]);
+        let error = response
+            .llm_response
+            .into_agg()
+            .await
+            .expect_err("the in-band error should surface to the consumer");
+        assert!(error.to_string().contains("engine exploded"));
+
+        // Once content has streamed, a retry would repeat delivered output, so a later
+        // overflow event keeps today's semantics and surfaces during aggregation.
+        let (_server, calls, result) = run_streaming_candidates(
+            "data: {\"id\":\"turn\",\"model\":\"weak\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"},\"finish_reason\":null}]}\n\ndata: {\"error\":{\"code\":400,\"message\":\"Input length (600013 tokens) exceeds the maximum allowed length (536826 tokens).\",\"object\":\"error\",\"type\":\"BAD_REQUEST\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n",
+        )
+        .await;
+        let (_, response) = result?;
+        assert_eq!(&*calls.lock(), &["weak"]);
+        let error = response
+            .llm_response
+            .into_agg()
+            .await
+            .expect_err("the mid-stream overflow should surface to the consumer");
+        assert!(
+            error
+                .to_string()
+                .contains("exceeds the maximum allowed length")
+        );
+
+        // A stream that ends before any event is not a classified failure; it still
+        // aggregates to an empty response.
+        let (_server, calls, result) = run_streaming_candidates("data: [DONE]\n\n").await;
+        let (_, response) = result?;
+        assert_eq!(&*calls.lock(), &["weak"]);
+        let aggregate = response
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|source| LibsyError::client_call("weak", source))?;
+        assert_eq!(completion_text(&aggregate), "");
+        Ok(())
+    }
 }

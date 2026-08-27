@@ -26,11 +26,11 @@ target only when the upstream supports it and would otherwise return the verdict
 outside normal assistant `content`.
 
 To support another wire format, add its `ClientFormat` variant and explicit construction match in
-`src/config.rs`. Add a client type only when a second implementation exists.
+`../switchyard-runner/src/config.rs`. Add a client type only when a second implementation exists.
 
 ## Add an algorithm
 
 1. Implement and export the algorithm from `libsy`.
-2. Add its TOML fields as an `AlgorithmConfig` variant in `src/config.rs`.
-3. Construct it in the `build_algorithm` match, resolving target names with `resolve_targets`.
+2. Add its fields as an `AlgorithmSpec` variant in `../switchyard-runner/src/algorithm.rs`.
+3. Construct it in that module's builder, resolving names through the caller-supplied target map.
 4. Add a parsing test and an end-to-end server test when the algorithm makes LLM calls.

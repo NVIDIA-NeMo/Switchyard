@@ -3,51 +3,37 @@ schema_version = 1
 # Everything is on Inference Hub
 
 [llm_clients.inference_hub]
-format = "openai_chat"
+format = "openai_responses"
 base_url = "https://inference-api.nvidia.com/v1"
 api_key_env = "NVIDIA_API_KEY"
 
-# The simple ones first
+# The two models our algos use
 
-[targets.oss20b]
-id = "nvidia/openai/gpt-oss-20b"
+[targets.capable]
+id = "openai/openai/gpt-5.6-sol"
 llm_client = "inference_hub"
+extra_body = { reasoning = { effort = "medium" } }
 
-[targets.dsflash]
-id = "nvidia_dynamo/deepseek-ai/deepseek-v4-flash-nvfp4-elb"
+[targets.efficient]
+id = "openai/openai/gpt-5.6-luna"
 llm_client = "inference_hub"
+extra_body = { reasoning = { effort = "medium" } }
+
+# Basic routes
 
 [routes.random]
 id = "switchyard/random"
 type = "random"
-targets = ["oss20b", "dsflash"]
+targets = ["capable", "efficient"]
 
 [routes.passthrough]
 id = "switchyard/passthrough"
 type = "passthrough"
-target = "oss20b"
+target = "efficient"
 
 [routes.noop]
 id = "switchyard/noop"
 type = "noop"
-
-# The two models are main algos use
-
-[llm_clients.nvidia_anthropic]
-format = "anthropic_messages"
-base_url = "https://inference-api.nvidia.com"
-api_key_env = "NVIDIA_API_KEY"
-
-[targets.capable]
-id = "aws/anthropic/bedrock-claude-opus-4-8"
-llm_client = "nvidia_anthropic"
-
-[targets.capable.extra_body.output_config]
-effort = "medium"
-
-[targets.efficient]
-id = "nvidia/zai-org/glm-5.2"
-llm_client = "inference_hub"
 
 # Stage
 
@@ -74,6 +60,17 @@ classifier_target = "capable"
 strong_target = "capable"
 weak_target = "efficient"
 base_threshold = 0.5
-session_affinity = true
+classify_trigger = "new_session"
 message_hash_fallback = true
+
+# Advisor
+
+[routes.advisor]
+id = "switchyard/advisor"
+type = "advisor"
+executor_target = "efficient"
+advisor_target = "capable"
+max_reviews = 3
+gate_stall_turns = 30
+gate_min_tool_results = 3
 

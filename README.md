@@ -27,43 +27,17 @@ algorithm you write yourself.
 Switchyard is pre-alpha software that is evolving rapidly. The API and algorithms are expected to change significantly before we reach v1.0.
 
 > [!WARNING]
-> Experimental software. Not for production use.
+> Switchyard is a very young project showcasing active research. Component maturity levels:
+>
+> - libsy: Beta. Ready for trial integration.
+> - switchyard-llm-client: Alpha. May change significantly.
+> - switchyard-runner: Alpha. Evolving rapidly.
+> - switchyard-server: Demo server, not for production use.
 
 ## Quick Start
 
-Choose the launcher path to run Claude Code, Codex CLI, or OpenClaw through
-Switchyard. Choose the server path to run Switchyard as a standalone proxy.
-Choose the library path to embed routing in your own Rust application.
-
-### Launcher Path
-
-Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) if it is
-not already available, then install the published Switchyard tool:
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source "$HOME/.local/bin/env"
-uv tool install --python 3.10 "nemo-switchyard[cli]"
-```
-
-The coding agent you launch must also be installed and on your `PATH`. This does
-not install the standalone `switchyard-server` binary; use the Server Path for
-that.
-
-Set an OpenRouter key and launch against the packaged deployment:
-
-```bash
-export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-switchyard launch claude --model switchyard
-switchyard launch codex --model switchyard
-switchyard launch openclaw --model switchyard
-```
-
-To use your own native TOML deployment, pass its route ID and configuration:
-
-```bash
-switchyard launch claude --model my-route --config routes.toml
-```
+Choose the server path to run Switchyard as a standalone proxy. Choose the library path to embed
+routing in your own Rust application.
 
 ### Server Path
 
@@ -121,6 +95,7 @@ algorithm list, or the [`switchyard-libsy`](crates/libsy/README.md) crate docs.
 | [LLM Classifier](docs/routing_algorithms/llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
 | [Stage Router](docs/routing_algorithms/stage_router_routing.md) | Signals already in the conversation, such as tool results and errors, should route most turns without an extra model call. | `stage_router` |
 | [Escalation Router](docs/routing_algorithms/escalation_router_routing.md) | Every turn runs on the weak tier first, and a judge reads that answer to decide whether to send the same request to the strong tier. | `llm_classifier` with `mode = "escalation"` |
+| [Composite](docs/routing_algorithms/composite_routing.md) | Routing algorithms are composed, one setting the configuration of another before handing off. Today an LLM classifier sets the tier a stage router falls open to. | `composite` |
 | [Random](docs/routing_algorithms/random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
 
 A `passthrough` route registers one target under one model ID with no routing
@@ -147,7 +122,7 @@ configured LLM client selects one upstream format.
 
 ## Documentation
 
-- **[Getting Started](docs/getting_started.md)**: complete launcher and standalone server walkthroughs
+- **[Getting Started](docs/getting_started.md)**: complete standalone server walkthrough
 - **[Core Concepts](docs/core_concepts.md)**: LLM clients, targets, routes, model IDs, and routing algorithms
 - **[Routing Overview](docs/routing_algorithms/overview.md)**: choose and configure a routing algorithm
 - **[`switchyard-server`](crates/switchyard-server/README.md)**: server configuration, routing algorithms, and metrics

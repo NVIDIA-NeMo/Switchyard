@@ -239,8 +239,13 @@ where
         request: &mut Request,
     ) -> Result<(ModelId, Option<Response>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
+        //    The driver is offered here so a processor may consult a model first.
         for processor in &self.processors {
-            processor.process(state, Event::Request(request)).await?;
+            let event = Event::Request {
+                request,
+                driver: Some(driver),
+            };
+            processor.process(state, event).await?;
         }
 
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
@@ -251,11 +256,11 @@ where
             if let Some(score) = scores.argmax(false)? {
                 // Only the deciding classifier's response answers the turn; an abstaining
                 // classifier selected nothing for it to be the answer to.
-                routed = Some((score, Arc::clone(classifier), response));
+                routed = Some((score, response));
                 break;
             }
         }
-        let Some((score, deciding, served)) = routed else {
+        let Some((score, served)) = routed else {
             return Err(LibsyError::AlgorithmError {
                 message: "every classifier abstained".to_string(),
             });
@@ -264,8 +269,7 @@ where
         // 3. Resolve the target and log the choice.
         algorithm::ensure_model_is_target(&self.targets, &score.target)?;
         let target = score.target.clone();
-        let tier = deciding.routing_tier(&target);
-        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, tier = ?tier, "Model selected");
+        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
 
         // 4. Post-decision replay: every processor sees the selection so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
@@ -734,7 +738,7 @@ mod tests {
         impl Processor for RecordingProcessor {
             async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
                 let kind = match event {
-                    Event::Request(_) => "request",
+                    Event::Request { .. } => "request",
                     Event::Decision { .. } => "decision",
                     _ => "other",
                 };
@@ -763,7 +767,7 @@ mod tests {
         #[async_trait]
         impl Processor for Appender {
             async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
-                if let Event::Request(request) = event {
+                if let Event::Request { request, .. } = event {
                     request
                         .llm_request
                         .messages
@@ -840,7 +844,7 @@ mod tests {
         #[async_trait]
         impl Processor<TurnState> for CountingProcessor {
             async fn process(&self, state: &mut TurnState, event: Event<'_>) -> Result<()> {
-                if let Event::Request(_) = event {
+                if let Event::Request { .. } = event {
                     state.count += 1;
                 }
                 Ok(())

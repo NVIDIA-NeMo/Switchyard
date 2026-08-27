@@ -32,17 +32,20 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, LibsyError};
+use libsy::{Algorithm, LibsyError, RoutingOutcome};
 use parking_lot::Mutex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver, TranslatingLlmClient};
+use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
+use switchyard_runner::{
+    CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RunOutput, Runner, RunnerError,
+};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
 
-use switchyard_translation::{WireFormat, decode_request};
+use switchyard_translation::{WireFormat, decode_request, encode_aggregated_response};
 
 use crate::response::into_http_response;
 use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
@@ -85,79 +88,51 @@ impl Display for ServerError {
 
 impl Error for ServerError {}
 
+impl From<RunnerError> for ServerError {
+    fn from(error: RunnerError) -> Self {
+        let mut message = error.to_string();
+        let mut source = error.source();
+        while let Some(error) = source {
+            message.push_str(": ");
+            message.push_str(&error.to_string());
+            source = error.source();
+        }
+        Self::new(message)
+    }
+}
+
 /// Result returned by server setup and lifecycle operations.
 pub type ServerResult<T> = std::result::Result<T, ServerError>;
 
-/// Capabilities that one route advertises on `GET /v1/models`.
-///
-/// An unset capability is undeclared: it serializes as `null` in the OpenAI
-/// `data` entry, and the Codex entry falls back to a safe default for it.
-#[derive(Clone, Copy, Default)]
-struct ModelCapabilities {
-    context_window: Option<u32>,
-    tool_calling: Option<bool>,
-    // Whether the routed model takes reasoning controls. The server cannot probe
-    // this, so a route opts in via config; undeclared routes advertise as
-    // non-reasoning to Codex (fail closed).
-    reasoning: Option<bool>,
+/// Decision result using the same selected/fallback order as libsy.
+#[derive(Serialize)]
+struct DecisionResponse {
+    selected: DecisionTargetResponse,
+    fallbacks: Vec<DecisionTargetResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<Value>,
 }
 
-/// A registered algorithm route and its server-owned endpoint metadata.
-struct RouteEntry {
-    algorithm: Arc<dyn Algorithm>,
-    /// Resolves each offloaded call to the client configured for the target the algorithm
-    /// selected. A route is a synthetic model with no upstream of its own, so this is a
-    /// per-target lookup, never one client serving the whole route.
-    target_clients: ClientRouter,
-    caller_auth: Option<CallerAuthKind>,
-    capabilities: ModelCapabilities,
-    count_tokens_target: Option<CountTokensTarget>,
-}
-
-/// Caller credential family required by forwarded-auth backends.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CallerAuthKind {
-    Anthropic,
-    OpenAi,
-}
-
-impl CallerAuthKind {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Anthropic => "anthropic",
-            Self::OpenAi => "openai",
-        }
-    }
-
-    const fn accepts(self, wire_format: WireFormat) -> bool {
-        matches!(
-            (self, wire_format),
-            (Self::Anthropic, WireFormat::AnthropicMessages)
-                | (
-                    Self::OpenAi,
-                    WireFormat::OpenAiChat | WireFormat::OpenAiResponses
-                )
-        )
-    }
-}
-
-/// Exact upstream model used by the server's Anthropic token-count endpoint.
-#[derive(Clone)]
-struct CountTokensTarget {
+/// Response view over one target's existing configuration.
+#[derive(Serialize)]
+struct DecisionTargetResponse {
+    target: String,
     model: ModelId,
-    client: Arc<TranslatingLlmClient>,
+    llm_client: DecisionLlmClientResponse,
+    extra_body: BTreeMap<String, Value>,
 }
 
-impl CountTokensTarget {
-    async fn count_tokens(&self, request: Request) -> Result<Value, LlmClientError> {
-        self.client.count_tokens(&self.model, request).await
-    }
+/// Non-secret client settings needed to call a selected model.
+#[derive(Serialize)]
+struct DecisionLlmClientResponse {
+    format: WireFormat,
+    base_url: String,
 }
 
 /// Shared server state used by all endpoint handlers.
 #[derive(Clone)]
 pub struct ServerState {
-    routes: Arc<BTreeMap<ModelId, RouteEntry>>,
+    runner: Arc<Runner>,
     metrics: prometheus::Registry,
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
@@ -199,64 +174,37 @@ impl SharedRoutingLog {
 }
 
 impl ServerState {
-    /// Creates server state from route model IDs, their libsy algorithms, and the
-    /// per-target client routing each route's calls are resolved through.
-    pub fn new(
-        routes: impl IntoIterator<Item = (ModelId, Arc<dyn Algorithm>, ClientRouter)>,
-    ) -> ServerResult<Self> {
-        Self::new_with_capabilities(routes.into_iter().map(|(model, algorithm, clients)| {
-            (
-                model,
-                algorithm,
-                clients,
-                None,
-                ModelCapabilities::default(),
-                None,
-            )
-        }))
+    /// Creates server state from route model IDs, algorithms, and per-target clients.
+    pub fn new(routes: Vec<(ModelId, Arc<dyn Algorithm>, ClientRouter)>) -> ServerResult<Self> {
+        let routes = routes
+            .into_iter()
+            .map(|(model, algorithm, clients)| {
+                (
+                    model,
+                    Route::new(
+                        algorithm,
+                        clients,
+                        None,
+                        ModelCapabilities::default(),
+                        None,
+                        Vec::new(),
+                    ),
+                )
+            })
+            .collect();
+        let runner = Runner::new(routes);
+        Self::from_runner(runner)
     }
 
-    fn new_with_capabilities(
-        routes: impl IntoIterator<
-            Item = (
-                ModelId,
-                Arc<dyn Algorithm>,
-                ClientRouter,
-                Option<CallerAuthKind>,
-                ModelCapabilities,
-                Option<CountTokensTarget>,
-            ),
-        >,
-    ) -> ServerResult<Self> {
-        let mut entries = BTreeMap::new();
-        for (model, algorithm, target_clients, caller_auth, capabilities, count_tokens_target) in
-            routes
-        {
-            let model = ModelId::from(model.trim());
-            if model.is_empty() {
-                return Err(ServerError::new("route model must not be empty"));
-            }
-            let entry = RouteEntry {
-                algorithm,
-                target_clients,
-                caller_auth,
-                capabilities,
-                count_tokens_target,
-            };
-            if entries.insert(model.clone(), entry).is_some() {
-                return Err(ServerError::new(format!("duplicate route model {model}")));
-            }
-        }
-        if entries.is_empty() {
-            return Err(ServerError::new("at least one algorithm route is required"));
-        }
+    /// Creates HTTP-server state around an already configured runner.
+    pub fn from_runner(runner: Runner) -> ServerResult<Self> {
         let metrics = metrics::registry().map_err(ServerError::new)?;
         let stats = StatsAccumulator::new(
             metrics.clone(),
-            entries.values().map(|entry| entry.algorithm.name()),
+            runner.models().map(|model| model.algorithm),
         );
         Ok(Self {
-            routes: Arc::new(entries),
+            runner: Arc::new(runner),
             metrics,
             stats,
             routing_log: None,
@@ -272,21 +220,44 @@ impl ServerState {
 
     /// Returns the route model IDs served by the configured algorithms.
     pub fn models(&self) -> impl Iterator<Item = &str> {
-        self.routes.keys().map(ModelId::as_str)
+        self.runner.models().map(|model| model.id.as_str())
     }
 
     /// Returns the caller credential family used by `model`, if any.
-    pub fn caller_auth_kind(&self, model: &str) -> ServerResult<Option<&'static str>> {
-        self.route_for_model(model)
-            .map(|entry| entry.caller_auth.map(CallerAuthKind::as_str))
-            .ok_or_else(|| ServerError::new(format!("unknown route model {model:?}")))
+    pub fn caller_auth_kind(&self, model: &str) -> Option<&'static str> {
+        self.runner
+            .route(model)
+            .and_then(|route| route.caller_auth())
+            .map(|kind| kind.as_str())
     }
 
-    fn route_for_model(&self, model: &str) -> Option<&RouteEntry> {
-        self.routes.get(model)
+    fn route_for_model(&self, model: &str) -> Option<&Route> {
+        self.runner.route(model)
+    }
+
+    fn decision_response(
+        &self,
+        route_model: &ModelId,
+        outcome: &RoutingOutcome,
+        response: Option<Value>,
+    ) -> Option<DecisionResponse> {
+        let description = self.runner.describe_decision(route_model, outcome)?;
+        let convert = |target: DecisionTarget| DecisionTargetResponse {
+            target: target.target,
+            model: target.model,
+            llm_client: DecisionLlmClientResponse {
+                format: target.format,
+                base_url: target.base_url,
+            },
+            extra_body: target.extra_body,
+        };
+        Some(DecisionResponse {
+            selected: convert(description.selected),
+            fallbacks: description.fallbacks.into_iter().map(convert).collect(),
+            response,
+        })
     }
 }
-
 /// Runtime options shared by server entry points.
 #[derive(Clone, Debug)]
 pub struct ServerRunOptions {
@@ -503,6 +474,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
+        .route("/v1/decision", post(decision))
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/models", get(models))
         .route("/v1/stats", get(get_stats))
@@ -564,6 +536,80 @@ async fn openai_responses(
     handle_endpoint(state, started, headers, body, WireFormat::OpenAiResponses).await
 }
 
+/// One provider request submitted for a routing decision without an answer-model call.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionEndpointRequest {
+    input_format: WireFormat,
+    request: Value,
+}
+
+/// Selects a target while still allowing the algorithm's classifier and judge calls.
+async fn decision(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<DecisionEndpointRequest>, JsonRejection>,
+) -> Response {
+    let body = match body {
+        Ok(Json(body)) if body.request.is_object() => body,
+        Ok(_) => {
+            return invalid_body_error(StatusCode::BAD_REQUEST, "request must be a JSON object");
+        }
+        Err(error) => {
+            return invalid_body_error(
+                error.status(),
+                format!("Request body must be valid JSON: {error}"),
+            );
+        }
+    };
+    let input_format = body.input_format;
+    let (route, request) = match resolve_route(
+        &state,
+        metadata_from_headers(headers),
+        body.request,
+        input_format,
+    ) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+    let route_model = request
+        .llm_request
+        .model
+        .as_deref()
+        .map(ModelId::from)
+        .unwrap_or_default();
+    let mut outcome = match route.decide(request).await {
+        Ok(outcome) => outcome,
+        Err(error) => return runner_error(error),
+    };
+    let response = match outcome.response.take() {
+        Some(response) => {
+            let aggregate = match response.llm_response.into_agg().await {
+                Ok(aggregate) => aggregate,
+                Err(error) => return client_error(&error),
+            };
+            // The request moved into the decision run, so its namespace mapping
+            // is gone by here. A Codex tool call in this preview keeps its
+            // qualified name.
+            match encode_aggregated_response(
+                &aggregate,
+                input_format,
+                Some(outcome.selected_model_id.as_str()),
+            ) {
+                Ok(response) => Some(response),
+                Err(error) => return server_error(error.to_string()),
+            }
+        }
+        None => None,
+    };
+    match state.decision_response(&route_model, &outcome, response) {
+        Some(response) => Json(response).into_response(),
+        None => {
+            server_error("routing outcome contains a model with no callable target configuration")
+        }
+    }
+}
+
 /// Anthropic token counting against the route's explicitly configured target.
 async fn anthropic_count_tokens(
     State(state): State<ServerState>,
@@ -585,17 +631,16 @@ async fn anthropic_count_tokens(
         Ok(resolved) => resolved,
         Err(response) => return anthropic_error_response(response),
     };
-    let Some(target) = route.count_tokens_target.as_ref() else {
-        return anthropic_error_response(error_response(
+    anthropic_error_response(match route.count_tokens(request).await {
+        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+        Err(RunnerError::CountTokensUnsupported) => error_response(
             StatusCode::BAD_REQUEST,
             "route has no Anthropic target for token counting",
             "invalid_request_error",
             "count_tokens_unsupported",
-        ));
-    };
-    anthropic_error_response(match target.count_tokens(request).await {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(error) => count_tokens_error(error),
+        ),
+        Err(RunnerError::Client(error)) => count_tokens_error(error),
+        Err(error) => server_error(error.to_string()),
     })
 }
 
@@ -696,7 +741,7 @@ fn resolve_route(
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
-) -> std::result::Result<(&RouteEntry, Request), Response> {
+) -> std::result::Result<(&Route, Request), Response> {
     let llm_request = decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
     let requested_model = llm_request
@@ -719,8 +764,8 @@ fn resolve_route(
             "model_not_found",
         )
     })?;
-    if let Some(caller_auth) = route.caller_auth
-        && !caller_auth.accepts(wire_format)
+    if let Err(RunnerError::IncompatibleCallerFormat(caller_auth)) =
+        route.check_caller_format(wire_format)
     {
         let (provider, expected_endpoint) = match caller_auth {
             CallerAuthKind::Anthropic => ("Anthropic", "/v1/messages"),
@@ -756,17 +801,20 @@ async fn handle_llm_request(
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
-    let algorithm = Arc::clone(&route.algorithm);
-    let client_router = route.target_clients.clone();
+    // Only the Codex namespace mapping is needed downstream, not the whole request.
+    let request_extensions = request.llm_request.extensions.clone();
     let observer = stats_observer(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
     );
-    let (selected_model, response) =
-        match switchyard_llm_client::run(algorithm, client_router, request, Some(observer)).await {
-            Ok(result) => result,
-            Err(error) => return algorithm_error(error),
-        };
+    let output = match route.execute(request, Some(observer)).await {
+        Ok(output) => output,
+        Err(error) => return runner_error(error),
+    };
+    let RunOutput {
+        selected_model,
+        response,
+    } = output;
     // The response carries the candidate that actually served it. Fall back to the routing
     // selection for algorithms that return a response without an offloaded model call.
     let served_model = response.served_model().cloned().or(Some(selected_model));
@@ -788,10 +836,11 @@ async fn handle_llm_request(
     };
 
     let response_model = served_model.as_ref().map(ToString::to_string);
-    let mut response = match into_http_response(response, wire_format, response_model) {
-        Ok(response) => response,
-        Err(error) => return server_error(error.to_string()),
-    };
+    let mut response =
+        match into_http_response(response, wire_format, response_model, request_extensions) {
+            Ok(response) => response,
+            Err(error) => return server_error(error.to_string()),
+        };
     if let Some(served_model) = served_model.as_ref() {
         attach_routing_headers(&mut response, served_model.as_str());
     }
@@ -895,6 +944,14 @@ fn algorithm_error(error: LibsyError) -> Response {
         return server_error(error.to_string());
     };
     client_error(source)
+}
+
+fn runner_error(error: RunnerError) -> Response {
+    match error {
+        RunnerError::Algorithm(error) => algorithm_error(error),
+        RunnerError::Client(error) => client_error(&error),
+        error => server_error(error.to_string()),
+    }
 }
 
 fn client_error(error: &LlmClientError) -> Response {
@@ -1061,9 +1118,9 @@ fn error_response(
 async fn models(State(state): State<ServerState>) -> Json<Value> {
     Json(model_list_payload(
         state
-            .routes
-            .iter()
-            .map(|(model, entry)| (model.as_str(), entry.capabilities)),
+            .runner
+            .models()
+            .map(|model| (model.id.as_str(), model.capabilities)),
     ))
 }
 
@@ -1147,7 +1204,8 @@ async fn not_found() -> Response {
 fn model_list_payload<'a>(
     entries: impl IntoIterator<Item = (&'a str, ModelCapabilities)>,
 ) -> Value {
-    let entries = entries.into_iter().collect::<Vec<_>>();
+    let mut entries = entries.into_iter().collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|(model_id, _)| *model_id);
     let model_ids = entries.iter().map(|(model, _)| *model).collect::<Vec<_>>();
     let first_id = model_ids.first().copied();
     let last_id = model_ids.last().copied();
@@ -1190,10 +1248,10 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 
 // Builds the metadata Codex requires when it discovers models from a direct provider.
 //
-// This mirrors Codex's `ModelInfo` card. The launcher path builds the same card in
-// `switchyard/cli/launchers/codex_model_catalog.py`; keep the two in sync when Codex
-// changes the shape. Every field below is either derived from the route's declared
-// capabilities or a required `ModelInfo` field the server has no better value for.
+// This mirrors Codex's `ModelInfo` card. The benchmark harness builds the same card in
+// `benchmark/codex_model_catalog_lib.py`; keep the two in sync when Codex changes
+// the shape. Every field below is either derived from the route's declared capabilities or a
+// required `ModelInfo` field the server has no better value for.
 //
 // Two kinds of fields live here. context_window, tool_calling, and reasoning are model
 // facts a backend can publish; the route declares them in config today. The rest
@@ -1249,7 +1307,7 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
 }
 
 // The reasoning-effort presets Codex offers for a reasoning-capable route. Kept in
-// step with the launcher template in `codex_model_catalog.py`.
+// step with the benchmark template in `codex_model_catalog_lib.py`.
 fn reasoning_levels() -> Value {
     json!([
         {"effort": "low", "description": "Fast responses with lighter reasoning"},

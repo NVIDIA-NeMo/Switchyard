@@ -107,8 +107,8 @@ routes to `weak_target` or `strong_target`. Beyond the three targets it accepts 
 |---|---|---|
 | `base_threshold` | *required* | Lowest solve probability that routes a task to `weak_target`. Raise it to send less traffic to the weak model. |
 | `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
-| `session_affinity` | `false` | Reuses a session's first routing decision on later turns, so the judge is called once per session rather than once per turn. |
-| `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `session_affinity = true`. |
+| `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request including tool continuations, `user_turn` judges each new user message and holds that target across the tool calls between, `new_session` judges once and reuses that target for the session. |
+| `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `classify_trigger = "new_session"`. |
 
 Session affinity retains a decision for the process lifetime, including a `strong_target`
 fallback produced while the judge was unreachable. `message_hash_fallback` keys on request
@@ -128,6 +128,7 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions |
 | `POST` | `/v1/messages` | Anthropic Messages |
 | `POST` | `/v1/responses` | OpenAI Responses |
+| `POST` | `/v1/decision` | Resolve selected and fallback targets without a post-routing answer call |
 | `POST` | `/v1/messages/count_tokens` | Token count from a route's Anthropic target |
 | `GET` | `/v1/models` | Routes served by this deployment |
 | `GET` | `/v1/stats` | Per-model usage plus curated algorithm stats |
@@ -138,6 +139,14 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 Requests name a route by its `id`, so `POST /v1/chat/completions` with `"model": "switchyard/general"`
 routes through the `[routes.general]` entry above. Any of the three request formats can address any
 route, and the server translates between them.
+
+`POST /v1/decision` accepts `{"input_format": "openai_chat", "request": {...}}`, where the
+nested request names the route in `model`. It executes required classifier or judge calls, then
+returns the selected target and ordered fallbacks with their model, format, base URL, and
+`extra_body`. It does not make a post-routing answer call. Routing-time calls still execute, and
+response-dependent algorithms such as escalation and advisor routing may produce an answer while
+deciding. When they do, the endpoint includes the buffered answer as `response`, encoded in
+`input_format`; otherwise the field is omitted.
 
 For `stage_router`, `algorithm_stats.stage_router` groups routing decisions by source and semantic
 target and summarizes its score, confidence, and input-dimension histograms. These values reset

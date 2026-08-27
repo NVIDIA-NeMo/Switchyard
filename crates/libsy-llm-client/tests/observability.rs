@@ -34,9 +34,9 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    AffinityRouter, Algorithm, Classifier, Driver, LibsyError, LlmClassifierConfig,
-    LlmTaskClassifier, PickerMode, RoutingOutcome, StageRouter, StageRouterConfig, Step,
-    TaskClassifierConfig,
+    AffinityRouter, Algorithm, Classifier, ClassifyTrigger, Driver, LibsyError,
+    LlmClassifierConfig, LlmTaskClassifier, PickerMode, RoutingOutcome, StageRouter,
+    StageRouterConfig, Step, TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::ModelId;
@@ -676,7 +676,7 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
         capable_target: "affinity-fallback-strong".into(),
         config: TaskClassifierConfig {
             base_threshold: 0.5,
-            session_affinity: true,
+            classify_trigger: ClassifyTrigger::NewSession,
             ..TaskClassifierConfig::default()
         },
     })?) as Arc<dyn Algorithm>;
@@ -994,7 +994,7 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
         Some(1)
     );
     for name in [
-        "switchyard.stage_router.score",
+        "switchyard.stage_router.probability",
         "switchyard.stage_router.confidence",
         "switchyard.stage_router.severity",
         "switchyard.stage_router.spinning",

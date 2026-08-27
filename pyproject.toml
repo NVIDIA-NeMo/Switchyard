@@ -27,18 +27,11 @@ classifiers = [
 
 dependencies = []
 
-[project.optional-dependencies]
-# CLI dependencies — prompt-toolkit for Claude Code launcher and ShellTUI.
-# Only needed for users running the switchyard CLI.
-cli = [
-    "prompt-toolkit>=3.0.52,<4.0",
-]
-
 # Dev tooling lives in a PEP 735 dependency group rather than an optional
 # extra so it is not advertised in the published wheel's METADATA. This
 # keeps pytest / ruff / mypy / pygments-via-pytest out of downstream
 # vulnerability scans, since they're never installed by `pip install
-# nemo-switchyard` or any of the user-facing extras above.
+# nemo-switchyard`.
 #
 # Install dev tooling with `uv sync` (the `dev` group is uv's default and
 # is installed automatically) or `uv sync --group dev` to be explicit.
@@ -56,7 +49,6 @@ dev = [
     # Harbor is needed only for local evaluation runs and currently requires Python 3.12.
     # Package users and Python 3.10/3.11 contributors do not install it.
     "harbor @ git+https://github.com/harbor-framework/harbor.git@v0.6.4 ; python_version >= '3.12'",
-    "nemo-switchyard[cli]",
     "pytest-markdown-docs>=0.9.2",
 ]
 docs = [
@@ -67,9 +59,6 @@ docs = [
 
 [tool.uv]
 managed = true
-
-[project.scripts]
-switchyard = "switchyard.cli.switchyard_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
@@ -83,7 +72,6 @@ include = ["switchyard*"]
 [tool.setuptools.package-data]
 switchyard = [
     "py.typed",
-    "cli/defaults/*.toml",
 ]
 switchyard_rust = ["py.typed", "*.pyi"]
 

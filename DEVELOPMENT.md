@@ -27,21 +27,10 @@ installs pytest, ruff, mypy, and friends. Use `uv sync --group dev` if you want
 to be explicit. Dev tooling is **not** part of the published wheel's METADATA,
 so it never appears in downstream vulnerability scans.
 
-To pull in optional user-facing features as well:
-
-```bash
-uv sync --extra cli      # add prompt-toolkit
-uv sync --all-extras     # everything (dev group is still included by default)
-```
-
-(`server` is already pulled in by the dev group, so you don't need
-`--extra server` for local development.)
-
 ## Project Structure
 
 ```
 switchyard/                       # Python package
-├── cli/                          # CLI and coding-agent launchers
 └── libsy/                        # Typed wrappers for libsy algorithms
 switchyard_rust/                  # Python facades over the PyO3 extension
 crates/

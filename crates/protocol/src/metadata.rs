@@ -16,6 +16,7 @@ const CODEX_SESSION_ID_PATH: &str = "x-codex-turn-metadata.session_id";
 const CODEX_THREAD_ID_PATH: &str = "x-codex-turn-metadata.thread_id";
 const CODEX_PARENT_THREAD_ID_PATH: &str = "x-codex-turn-metadata.parent_thread_id";
 const CODEX_TURN_ID_PATH: &str = "x-codex-turn-metadata.turn_id";
+const CODEX_THREAD_SOURCE_PATH: &str = "x-codex-turn-metadata.thread_source";
 const CODEX_SUBAGENT_KIND_PATH: &str = "x-codex-turn-metadata.subagent_kind";
 const CODEX_AGENT_ROLE_PATH: &str = "x-codex-turn-metadata.agent_role";
 const CODEX_TASK_ID_PATH: &str = "x-codex-turn-metadata.task_id";
@@ -232,9 +233,10 @@ impl Metadata {
 /// Returns `(parent_agent_id, is_subagent, is_delegated_work)` from the headers.
 ///
 /// Recognized sub-agent signals include `x-claude-code-agent-id`,
-/// `x-openai-subagent`, `x-codex-turn-metadata.subagent_kind`, and explicit
-/// `x-switchyard-is-subagent`. Other host correlation and parent-session headers
-/// may populate metadata but do not drive sub-agent classification.
+/// `x-openai-subagent`, Codex's `subagent_kind`, Codex's current child lineage
+/// (`thread_source = subagent` plus `parent_thread_id`), and explicit
+/// `x-switchyard-is-subagent`. Other host correlation and parent-session headers may
+/// populate metadata but do not drive sub-agent classification.
 ///
 /// `is_delegated_work` is computed from raw harness signals, not from `agent_kind`,
 /// which may be set by an unrelated operator label (`x-switchyard-agent-kind`).
@@ -253,7 +255,13 @@ fn parse_sub_agent(headers: &http::HeaderMap) -> (Option<String>, bool, bool) {
     let parent = sy_header(headers, SWITCHYARD_PARENT_AGENT_ID_HEADER)
         .or_else(|| claude_parent.map(str::to_string));
 
-    let is_subagent = explicit.unwrap_or(claude_subagent || harness_kind.is_some());
+    // Current Codex releases identify spawned children through lineage rather than
+    // `subagent_kind`. Require both fields so a parent id used only for correlation
+    // cannot accidentally route an ordinary turn as delegated work.
+    let codex_child = parent.is_some()
+        && resolve_path(headers, CODEX_THREAD_SOURCE_PATH).as_deref() == Some("subagent");
+
+    let is_subagent = explicit.unwrap_or(claude_subagent || codex_child || harness_kind.is_some());
 
     let is_delegated_work = match explicit {
         Some(false) => false,
@@ -263,6 +271,7 @@ fn parse_sub_agent(headers: &http::HeaderMap) -> (Option<String>, bool, bool) {
             .unwrap_or(true),
         None => {
             claude_subagent
+                || codex_child
                 || harness_kind
                     .as_deref()
                     .is_some_and(|k| SUBAGENT_WORK_KINDS.contains(&k))
@@ -412,6 +421,21 @@ mod tests {
         assert_eq!(correlated.parent_agent_id.as_deref(), Some("root-thread"));
         assert!(!correlated.is_subagent);
         assert!(!correlated.is_subagent_work());
+
+        // Current Codex children add `thread_source = subagent` to the same
+        // lineage. Together the two fields are a delegated-work signal.
+        let child_body = serde_json::json!({
+            "session_id": "root-session",
+            "thread_id": "child-thread",
+            "parent_thread_id": "root-thread",
+            "thread_source": "subagent",
+            "turn_id": "turn-4",
+        })
+        .to_string();
+        let child = metadata(&[(CODEX_TURN_METADATA_HEADER, child_body.as_str())]);
+        assert_eq!(child.parent_agent_id.as_deref(), Some("root-thread"));
+        assert!(child.is_subagent);
+        assert!(child.is_subagent_work());
     }
 
     #[test]

@@ -1,0 +1,18 @@
+model_list:
+  # Stage roles follow declaration order: capable first, efficient second.
+  - model_name: switchyard
+    litellm_params:
+      model: openrouter/openai/gpt-5.6-sol
+      api_key: os.environ/OPENROUTER_API_KEY
+  - model_name: switchyard
+    litellm_params:
+      model: openrouter/openai/gpt-5.6-terra
+      api_key: os.environ/OPENROUTER_API_KEY
+
+router_settings:
+  plugins:
+    - switchyard_litellm.configuration.configured_plugin.ROUTING_PLUGIN
+
+litellm_settings:
+  callbacks:
+    - switchyard_litellm.configuration.configured_plugin.ROUTING_PLUGIN
