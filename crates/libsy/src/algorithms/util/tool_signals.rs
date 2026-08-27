@@ -125,7 +125,6 @@ static BASH_WRITE_PATTERNS: &[&str] = &[
     "<<'eof'",
     "<< eof",
     "write_text(",
-    "writelines(",
     ".write(",
 ];
 
