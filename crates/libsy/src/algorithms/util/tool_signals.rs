@@ -872,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_that_exited_zero_is_not_an_error() {
+    fn exit_zero_is_not_an_error() {
         let source = "static CRITICAL: &[&str] = &[\"out of memory\", \"connection refused\"];";
         let request = with_messages(vec![
             exec_command(json!({"cmd": "sed -n 1,40p tool_signals.rs"})),
@@ -882,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rust_module_path_is_not_a_failure_marker() {
+    fn rust_path_is_not_a_failure() {
         let passing = "test error::tests::preserves_source ... ok\n\
                        test result: ok. 268 passed; 0 failed; 0 ignored";
         let request = with_messages(vec![
@@ -893,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_exec_command_carries_its_command_under_cmd() {
+    fn exec_command_arg_shapes() {
         for arguments in [
             json!({"command": "sed -i s/a/b/ src/lib.rs"}),
             json!({"cmd": "sed -i s/a/b/ src/lib.rs"}),
@@ -907,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn interpreter_heredoc_that_writes_a_file_counts_as_a_write() {
+    fn heredoc_script_is_a_write() {
         let request = with_messages(vec![
             exec_command(json!({"cmd": "python3 - <<'PY'\np.write_text(s)\nPY"})),
             tr("ok"),
