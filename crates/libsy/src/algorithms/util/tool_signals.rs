@@ -599,7 +599,7 @@ fn detect_tests_passed(tool_texts: &[String], recent_window: usize) -> bool {
     tool_texts[start..].iter().any(|text| {
         let lower = text.to_lowercase();
         TEST_PASS_PHRASES.iter().any(|p| lower.contains(p))
-            && !contains_failure_literal(&lower)
+            && (reports_no_failure(text) || !contains_failure_literal(&lower))
             && !has_nonzero_failure_count(&lower)
     })
 }
