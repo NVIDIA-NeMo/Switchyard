@@ -2441,6 +2441,7 @@ name = "switchyard-translation"
 version = "0.2.0"
 dependencies = [
  "async-stream",
+ "base64",
  "futures",
  "pretty_assertions",
  "serde",

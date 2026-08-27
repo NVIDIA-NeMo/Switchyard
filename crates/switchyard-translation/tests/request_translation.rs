@@ -9,7 +9,7 @@ use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
     FormatId, LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
-    prepare_request_for_target,
+    prepare_request_for_target, sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -359,12 +359,17 @@ fn anthropic_unknown_content_does_not_leak_into_responses_request_blocks() -> Te
 #[test]
 fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult {
     let engine = TranslationEngine::default();
+    let raw_id = "functions.list_skills:0";
     let body = json!({
         "model": "claude-sonnet-4-20250514",
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "72F"},
+                {
+                    "type": "tool_result",
+                    "tool_use_id": sanitize_anthropic_tool_use_id(raw_id),
+                    "content": "72F"
+                },
                 {"type": "text", "text": "Now summarize it."}
             ]
         }],
@@ -383,7 +388,7 @@ fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult
     assert_eq!(
         output["messages"],
         json!([
-            {"role": "tool", "tool_call_id": "toolu_1", "content": "72F"},
+            {"role": "tool", "tool_call_id": raw_id, "content": "72F"},
             {"role": "user", "content": "Now summarize it."}
         ])
     );
@@ -1933,12 +1938,16 @@ fn openai_tool_results_are_merged_when_translating_to_anthropic() -> TestResult 
 
     assert_eq!(
         output["messages"][1]["content"][0]["id"],
-        "call_bad_id_with_space"
+        sanitize_anthropic_tool_use_id("call.bad:id/with space")
     );
     assert_eq!(
         output["messages"][2]["content"],
         json!([
-            {"type": "tool_result", "tool_use_id": "call_bad_id_with_space", "content": "one"},
+            {
+                "type": "tool_result",
+                "tool_use_id": sanitize_anthropic_tool_use_id("call.bad:id/with space"),
+                "content": "one"
+            },
             {"type": "tool_result", "tool_use_id": "call_2", "content": "two"}
         ])
     );
@@ -2206,6 +2215,7 @@ fn responses_to_chat_preserves_tool_choice_when_tools_survive() -> TestResult {
 #[test]
 fn anthropic_tool_use_encodes_responses_arguments_as_json_string() -> TestResult {
     let engine = TranslationEngine::default();
+    let raw_id = "functions.list_skills:0";
     let body = json!({
         "model": "claude-sonnet",
         "messages": [
@@ -2214,7 +2224,7 @@ fn anthropic_tool_use_encodes_responses_arguments_as_json_string() -> TestResult
                 "role": "assistant",
                 "content": [{
                     "type": "tool_use",
-                    "id": "toolu_1",
+                    "id": sanitize_anthropic_tool_use_id(raw_id),
                     "name": "get_weather",
                     "input": {"city": "SF"}
                 }]
@@ -2240,6 +2250,7 @@ fn anthropic_tool_use_encodes_responses_arguments_as_json_string() -> TestResult
     let arguments = call["arguments"]
         .as_str()
         .ok_or("function_call arguments must be a JSON string")?;
+    assert_eq!(call["call_id"], raw_id);
     assert_eq!(
         serde_json::from_str::<Value>(arguments)?,
         json!({"city": "SF"})

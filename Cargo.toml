@@ -27,6 +27,7 @@ rust-version = "1.96.1"
 [workspace.dependencies]
 async-stream = "0.3"
 async-trait = "0.1"
+base64 = "0.22"
 futures = "0.3"
 futures-util = "0.3"
 http = "1"
