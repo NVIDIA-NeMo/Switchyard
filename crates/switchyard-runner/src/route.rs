@@ -26,6 +26,16 @@ pub struct ModelCapabilities {
     /// probe this, so a route opts in via config; undeclared routes advertise as
     /// non-reasoning to Codex (fail closed).
     pub reasoning: Option<bool>,
+    /// Whether the routed model accepts image input. Declared per route for the same
+    /// reason as `reasoning`, and failing closed matters more here: a route may
+    /// resolve to a target with no vision at all.
+    ///
+    /// This is not cosmetic metadata. Codex reads `input_modalities` from the model
+    /// card and, when it reads text-only, replaces an attached image with the literal
+    /// text `image content omitted because you do not support image input` *before
+    /// sending*. An undeclared vision-capable route therefore loses the image in the
+    /// client, and the proxy never receives one to forward.
+    pub vision: Option<bool>,
 }
 
 /// Caller credential family required by a forwarded-auth route.

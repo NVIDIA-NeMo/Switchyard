@@ -1478,6 +1478,7 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
         "capabilities": {
             "streaming": true,
             "tool_calling": capabilities.tool_calling,
+            "vision": capabilities.vision,
             "context_window": capabilities.context_window,
             "supported_inbound_formats": [
                 "openai-chat-completions",
@@ -1543,7 +1544,13 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         "max_context_window": capabilities.context_window,
         "effective_context_window_percent": 95,
         "experimental_supported_tools": [],
-        "input_modalities": ["text"],
+        // Codex omits an attached image client-side when this says text-only, so a
+        // route whose target can see must declare `vision = true`. Fails closed.
+        "input_modalities": if capabilities.vision.unwrap_or(false) {
+            json!(["text", "image"])
+        } else {
+            json!(["text"])
+        },
         "supports_search_tool": false,
     })
 }
