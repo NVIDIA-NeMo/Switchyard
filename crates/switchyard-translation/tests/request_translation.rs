@@ -2437,10 +2437,11 @@ fn openai_chat_image_and_file_parts_translate_to_valid_responses_input() -> Test
                 "detail": "high"
             },
             {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
-            {"type": "input_file", "file": {"file_id": "file_123"}},
+            {"type": "input_file", "file_id": "file_123"},
             {
                 "type": "input_file",
-                "file": {"file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+                "file_data": "ZG9jdW1lbnQ=",
+                "filename": "report.pdf"
             }
         ])
     );

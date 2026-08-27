@@ -22,8 +22,8 @@ use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput,
-    Role, SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
+    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -1242,8 +1242,12 @@ fn responses_image_part(source: &ImageSource) -> Option<Value> {
 
 // Maps IR file sources to Responses input_file parts when possible.
 fn responses_file_part(source: &FileSource) -> Option<Value> {
-    let mut part = openai_file_part(source)?;
-    part["type"] = Value::String("input_file".to_string());
+    let chat_part = openai_file_part(source)?;
+    let file = chat_part.get("file")?.as_object()?;
+    let mut part = json!({"type": "input_file"});
+    for (key, value) in file {
+        part[key] = value.clone();
+    }
     Some(part)
 }
 
