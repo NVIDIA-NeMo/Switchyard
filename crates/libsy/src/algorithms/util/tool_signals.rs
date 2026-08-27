@@ -403,6 +403,28 @@ fn text_of(block: &ContentBlock) -> Option<&str> {
     }
 }
 
+/// Whether a tool result reports a status that rules out failure: a zero exit, or
+/// a command still running. A successful `grep` prints whatever the file holds,
+/// error words included, and a command that has not finished has not failed yet.
+fn reports_no_failure(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    if lower.contains("process running with session id") {
+        return true;
+    }
+    let mut saw_zero = false;
+    for marker in ["exited with code ", "exit code: "] {
+        for tail in lower.split(marker).skip(1) {
+            let code: String = tail.chars().take_while(char::is_ascii_digit).collect();
+            match code.as_str() {
+                "" => {}
+                "0" => saw_zero = true,
+                _ => return false,
+            }
+        }
+    }
+    saw_zero
+}
+
 fn build_signal(
     tool_texts: Vec<String>,
     tool_calls: Vec<ObservedToolCall>,
@@ -417,6 +439,9 @@ fn build_signal(
     let sev_start = tool_texts.len().saturating_sub(recent_window.max(1));
     let mut severity = 0.0f32;
     for text in &tool_texts[sev_start..] {
+        if reports_no_failure(text) {
+            continue;
+        }
         let (sev, _patterns) = classify_text(text);
         if sev > severity {
             severity = sev;
@@ -553,12 +578,28 @@ fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
     streak
 }
 
+/// Whether a tool result carries a failure marker. `error:` must not match the
+/// path `error::`, which passing tests print.
+fn contains_failure_literal(lower: &str) -> bool {
+    TEST_FAILURE_LITERAL.iter().any(|literal| {
+        let mut cursor = 0usize;
+        while let Some(rel) = lower[cursor..].find(literal) {
+            let end = cursor + rel + literal.len();
+            if !lower[end..].starts_with(':') {
+                return true;
+            }
+            cursor = end;
+        }
+        false
+    })
+}
+
 fn detect_tests_passed(tool_texts: &[String], recent_window: usize) -> bool {
     let start = tool_texts.len().saturating_sub(recent_window.max(1));
     tool_texts[start..].iter().any(|text| {
         let lower = text.to_lowercase();
         TEST_PASS_PHRASES.iter().any(|p| lower.contains(p))
-            && !TEST_FAILURE_LITERAL.iter().any(|p| lower.contains(p))
+            && !contains_failure_literal(&lower)
             && !has_nonzero_failure_count(&lower)
     })
 }
@@ -804,6 +845,35 @@ mod tests {
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.edit_count, 1);
         assert_eq!(sig.recent_edit_count, 1);
+    }
+
+    #[test]
+    fn exit_zero_is_not_an_error() {
+        let source = "static CRITICAL: &[&str] = &[\"out of memory\", \"connection refused\"];";
+        let request = with_messages(vec![
+            tc("Bash"),
+            tr(&format!("Process exited with code 0\nOutput: {source}")),
+        ]);
+        assert_eq!(ToolSignals::from_request(&request, None).severity, 0.0);
+    }
+
+    #[test]
+    fn streaming_chunk_is_not_a_failure() {
+        let request = with_messages(vec![
+            tc("Bash"),
+            tr(
+                "Process running with session ID 14028\nOutput:\n+ tr(\"Traceback (most recent call last)\"),",
+            ),
+        ]);
+        assert_eq!(ToolSignals::from_request(&request, None).severity, 0.0);
+    }
+
+    #[test]
+    fn rust_path_is_not_a_failure() {
+        let passing = "test error::tests::preserves_source ... ok\n\
+                       test result: ok. 268 passed; 0 failed; 0 ignored";
+        let request = with_messages(vec![tc("Bash"), tr(passing)]);
+        assert!(ToolSignals::from_request(&request, None).tests_passed);
     }
 
     #[test]
