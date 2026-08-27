@@ -56,9 +56,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Runner deployment from TOML source** — `Runner::from_toml(&str)` builds a
   configured runner from in-memory deployment text through the same
   version-1 parser and validation path as `Runner::load(path)`. (#545)
-- **Hierarchical routing** — libsy adds hierarchical routing, with stages
-  delegating to their own sub-router; a hierarchical stage router that
-  carries its own judge is rejected. (#533)
+- **Composite routing** — libsy adds composite routing (introduced as
+  "hierarchical" and renamed before release), with stages delegating to their
+  own sub-router; a composite stage router that carries its own judge is
+  rejected. (#533, #548)
 
 ### Changed
 
@@ -73,6 +74,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **LiteLLM integration replaced by a routing plugin** — the client
   integration becomes a routing plugin, and its example moves out of
   `experimental`. (#532)
+- **Stage-router picker decides on score-as-probability** — the picker
+  interprets the scorer's signed score remapped onto a `(0, 1)` capable-tier
+  probability and resolves a tier when it falls outside a threshold-derived
+  ambiguous band around `0.5`, instead of gating on the scorer's separate
+  confidence value (an exact-threshold score now defers to the classifier);
+  hard-rule overrides report the picker's confidence instead of
+  `score.abs()`, and the metric `switchyard.stage_router.score` is renamed
+  to `switchyard.stage_router.probability` with probability-space histogram
+  buckets. (#546)
+- **Hierarchical routing renamed to composite** — the route type string,
+  Rust types (`HierarchicalRouter`/`HierarchicalRouterConfig` and their
+  re-exports), docs, and TOML schema all move to the `composite` name; TOML
+  routes using `type = "hierarchical"` must switch to
+  `type = "composite"`. (#548)
 
 ### Removed
 
@@ -86,6 +101,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Packaging extras `[server]`, `[gpu]`, `[all]`, and `[cli]`** — dropped
   together with the deprecated Python server stack and launcher CLI. Install
   server functionality via the standalone `switchyard-server` binary instead.
+- **`routing_tier` classifier hook** — the `Classifier::routing_tier` method
+  and the `tier` field on the "Model selected" log event are removed, as
+  routing moves away from the binary weak/strong tier model toward a
+  probability distribution over a vector of models. (#554)
 
 ### Fixed
 
@@ -143,6 +162,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `message_stop` (optional `[DONE]` stays compatible for OpenAI Chat and
   Responses), and a duplicate EOF error is no longer appended after a decoded
   in-band provider error. (#425)
+- **Streaming context-overflow fallback** — a streaming request whose first
+  SSE event is an in-band context-overflow error (as SGLang delivers with
+  HTTP 200) now fails the call before anything reaches the client and falls
+  through to the next candidate in the ordered loop; an overflow that
+  arrives mid-stream after delivered content still surfaces without retry.
+  (#542)
+- **Codex `apply_patch` counted as an edit signal** — the stage router's
+  tool-signal classifier recognizes Codex's `apply_patch` edit tool, so its
+  calls count toward edit and recent-edit signals. (#558)
 
 ## [0.2.0]
 
