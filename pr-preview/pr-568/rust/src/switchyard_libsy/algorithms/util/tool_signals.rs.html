@@ -599,7 +599,7 @@
 <a href=#599 id=599 data-nosnippet>599</a>    tool_texts[start..].iter().any(|text| {
 <a href=#600 id=600 data-nosnippet>600</a>        <span class="kw">let </span>lower = text.to_lowercase();
 <a href=#601 id=601 data-nosnippet>601</a>        TEST_PASS_PHRASES.iter().any(|p| lower.contains(p))
-<a href=#602 id=602 data-nosnippet>602</a>            &amp;&amp; !contains_failure_literal(<span class="kw-2">&amp;</span>lower)
+<a href=#602 id=602 data-nosnippet>602</a>            &amp;&amp; (reports_no_failure(text) || !contains_failure_literal(<span class="kw-2">&amp;</span>lower))
 <a href=#603 id=603 data-nosnippet>603</a>            &amp;&amp; !has_nonzero_failure_count(<span class="kw-2">&amp;</span>lower)
 <a href=#604 id=604 data-nosnippet>604</a>    })
 <a href=#605 id=605 data-nosnippet>605</a>}
