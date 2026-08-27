@@ -428,10 +428,14 @@ fn text_of(block: &ContentBlock) -> Option<&str> {
     }
 }
 
-/// Whether every command in a tool result exited zero. A successful `grep`
-/// prints whatever the file holds, error words included.
-fn reports_success_exit(text: &str) -> bool {
+/// Whether a tool result reports a status that rules out failure: a zero exit, or
+/// a command still running. A successful `grep` prints whatever the file holds,
+/// error words included, and a command that has not finished has not failed yet.
+fn reports_no_failure(text: &str) -> bool {
     let lower = text.to_lowercase();
+    if lower.contains("process running with session id") {
+        return true;
+    }
     let mut saw_zero = false;
     for marker in ["exited with code ", "exit code: "] {
         for tail in lower.split(marker).skip(1) {
@@ -460,7 +464,7 @@ fn build_signal(
     let sev_start = tool_texts.len().saturating_sub(recent_window.max(1));
     let mut severity = 0.0f32;
     for text in &tool_texts[sev_start..] {
-        if reports_success_exit(text) {
+        if reports_no_failure(text) {
             continue;
         }
         let (sev, _patterns) = classify_text(text);
@@ -877,6 +881,18 @@ mod tests {
         let request = with_messages(vec![
             exec_command(json!({"cmd": "sed -n 1,40p tool_signals.rs"})),
             tr(&format!("Process exited with code 0\nOutput: {source}")),
+        ]);
+        assert_eq!(ToolSignals::from_request(&request, None).severity, 0.0);
+    }
+
+    #[test]
+    fn streaming_chunk_is_not_a_failure() {
+        // a chunk from a command still running echoes the diff being written
+        let request = with_messages(vec![
+            exec_command(json!({"cmd": "python3 - <<'PY'"})),
+            tr(
+                "Process running with session ID 14028\nOutput:\n+ tr(\"Traceback (most recent call last)\"),",
+            ),
         ]);
         assert_eq!(ToolSignals::from_request(&request, None).severity, 0.0);
     }
