@@ -1212,9 +1212,7 @@ fn responses_reasoning_items_attach_to_tool_call_turn_for_openai_chat() -> TestR
     Ok(())
 }
 
-// Reasoning-required upstreams look for `reasoning_content` and treat it as
-// present-or-absent, so replaying only `reasoning` fails the next turn. Both
-// spellings carry the same text, and tool calls stay alongside them.
+// Both spellings carry replayed reasoning, and a turn without reasoning gains neither.
 #[test]
 fn openai_chat_replays_reasoning_under_both_spellings() -> TestResult {
     let engine = TranslationEngine::default();
@@ -1232,7 +1230,8 @@ fn openai_chat_replays_reasoning_under_both_spellings() -> TestResult {
                     "function": {"name": "calculator", "arguments": "{\"a\": 2, \"b\": 2}"}
                 }]
             },
-            {"role": "tool", "tool_call_id": "call_abc123", "content": "4"}
+            {"role": "tool", "tool_call_id": "call_abc123", "content": "4"},
+            {"role": "assistant", "content": "It is 4."}
         ]
     });
 
@@ -1248,46 +1247,20 @@ fn openai_chat_replays_reasoning_under_both_spellings() -> TestResult {
         )?
         .body;
 
-    let assistant = &output["messages"][1];
+    let reasoned = &output["messages"][1];
     assert_eq!(
-        assistant["reasoning_content"],
+        reasoned["reasoning_content"],
         "The user wants 2+2. Call the calculator."
     );
-    assert_eq!(assistant["reasoning"], assistant["reasoning_content"]);
-    assert_eq!(assistant["content"], "I'll call the tool.");
-    assert_eq!(assistant["tool_calls"][0]["id"], "call_abc123");
+    assert_eq!(reasoned["reasoning"], reasoned["reasoning_content"]);
+    assert_eq!(reasoned["content"], "I'll call the tool.");
+    assert_eq!(reasoned["tool_calls"][0]["id"], "call_abc123");
     assert_eq!(output["messages"][2]["role"], "tool");
     assert_eq!(output["messages"][2]["tool_call_id"], "call_abc123");
-    Ok(())
-}
 
-// A turn carrying no reasoning must not gain either spelling.
-#[test]
-fn openai_chat_without_reasoning_sends_neither_spelling() -> TestResult {
-    let engine = TranslationEngine::default();
-    let body = json!({
-        "model": "deepseek-reasoner",
-        "messages": [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hello"},
-            {"role": "user", "content": "continue"}
-        ]
-    });
-
-    let output = engine
-        .translate_request(
-            WireFormat::OpenAiChat,
-            WireFormat::OpenAiChat,
-            &body,
-            &TranslationPolicy {
-                preservation: PreservationPolicy::Disabled,
-                ..TranslationPolicy::default()
-            },
-        )?
-        .body;
-
-    assert!(output["messages"][1].get("reasoning").is_none());
-    assert!(output["messages"][1].get("reasoning_content").is_none());
+    let without_reasoning = &output["messages"][3];
+    assert!(without_reasoning.get("reasoning").is_none());
+    assert!(without_reasoning.get("reasoning_content").is_none());
     Ok(())
 }
 

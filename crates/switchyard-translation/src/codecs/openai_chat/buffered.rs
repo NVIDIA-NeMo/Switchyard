@@ -914,13 +914,7 @@ fn encode_openai_message_structured_reasoning(
     set_openai_reasoning_text(message, fallback);
 }
 
-// Writes replayed reasoning under both OpenAI-compatible spellings.
-//
-// `reasoning` is what most OpenAI-compatible providers read. Reasoning-required
-// upstreams look for `reasoning_content` specifically and reject a follow-up turn
-// whose assistant history lacks it, treating the field as present-or-absent rather
-// than reading the alias, so both are written. The decode side already accepts
-// either spelling.
+// Reasoning-required upstreams reject a replayed turn without `reasoning_content`, so both spellings are written.
 fn set_openai_reasoning_text(message: &mut Value, reasoning: String) {
     if reasoning.is_empty() {
         return;
