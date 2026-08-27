@@ -604,8 +604,20 @@ pub(crate) fn decode_file_source(block: &Map<String, Value>) -> FileSource {
         }
         return FileSource::Raw(Value::Object(file.clone()));
     }
+    // A Responses `input_file` carries the payload directly on the block instead
+    // of nesting it under `file`, so read that shape too. Chat blocks never reach
+    // here with these keys, having matched the nested branch above.
     if let Some(file_id) = block.get("file_id").and_then(Value::as_str) {
         return FileSource::FileId(file_id.to_string());
+    }
+    if let Some(file_data) = block.get("file_data").and_then(Value::as_str) {
+        return FileSource::FileData {
+            data: file_data.to_string(),
+            filename: block
+                .get("filename")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        };
     }
     FileSource::Raw(Value::Object(block.clone()))
 }

@@ -2301,3 +2301,277 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
     );
     Ok(())
 }
+
+// Verifies a Responses `input_image` keeps `image_url` as a bare string.
+//
+// Codex sends `{"type": "input_image", "image_url": "data:image/png;base64,.."}`.
+// `ImageSource` is adjacently tagged, so encoding it inline produced
+// `image_url: {"type": "url", "data": {..}}`, which upstream cannot read -- the
+// image was accepted, silently unreadable, and the model saw no image at all.
+#[test]
+fn responses_input_image_keeps_image_url_as_string() -> TestResult {
+    let engine = TranslationEngine::default();
+    let data_uri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+    let body = json!({
+        "model": "gpt-5.4-mini",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "What is in this image?"},
+                {"type": "input_image", "image_url": data_uri}
+            ]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let content = output["input"][0]["content"]
+        .as_array()
+        .ok_or("Responses content should be an array")?;
+    let image = content
+        .iter()
+        .find(|block| block["type"] == "input_image")
+        .ok_or("input_image block should survive translation")?;
+    assert_eq!(
+        image["image_url"],
+        Value::String(data_uri.to_string()),
+        "image_url must be a bare string, not a tagged ImageSource"
+    );
+    Ok(())
+}
+
+// Verifies `detail` survives as a sibling key of `image_url`.
+#[test]
+fn responses_input_image_preserves_detail() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5.4-mini",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "look"},
+                {
+                    "type": "input_image",
+                    "image_url": "https://example.test/image.png",
+                    "detail": "high"
+                }
+            ]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let content = output["input"][0]["content"]
+        .as_array()
+        .ok_or("Responses content should be an array")?;
+    let image = content
+        .iter()
+        .find(|block| block["type"] == "input_image")
+        .ok_or("input_image block should survive translation")?;
+    assert_eq!(image["image_url"], "https://example.test/image.png");
+    assert_eq!(image["detail"], "high");
+    Ok(())
+}
+
+// Verifies an Anthropic base64 image encodes to a Responses data-URI string.
+#[test]
+fn anthropic_image_encodes_as_responses_input_image_string() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgoAAAANSUhEUg=="
+                    }
+                }
+            ]
+        }],
+        "max_tokens": 1024
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let content = output["input"][0]["content"]
+        .as_array()
+        .ok_or("Responses content should be an array")?;
+    let image = content
+        .iter()
+        .find(|block| block["type"] == "input_image")
+        .ok_or("input_image block should survive translation")?;
+    let url = image["image_url"]
+        .as_str()
+        .ok_or("image_url must be a bare string, not a tagged ImageSource")?;
+    assert_eq!(url, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==");
+    Ok(())
+}
+
+// Verifies a file crossing INTO Responses carries its payload on the part itself.
+//
+// OpenAI Chat nests `file_id`/`file_data`/`filename` under a `file` object; the
+// Responses wire carries them as siblings of `type`. Emitting the Chat shape onto
+// a Responses request reproduced the image failure exactly -- accepted, unreadable,
+// ignored.
+//
+// ⚠ This must be a CROSS-format translation. A same-format Responses request
+// replays its preserved body verbatim via `exact_preserved_request`, so the
+// encoder never runs and a Responses->Responses test passes against the nested
+// shape too -- it asserts the input, not the encoder.
+#[test]
+fn chat_file_id_encodes_onto_the_responses_part() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5.4-mini",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "summarize"},
+                {"type": "file", "file": {"file_id": "file-abc123"}}
+            ]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let content = output["input"][0]["content"]
+        .as_array()
+        .ok_or("Responses content should be an array")?;
+    let file = content
+        .iter()
+        .find(|block| block["type"] == "input_file")
+        .ok_or("input_file block should survive translation")?;
+    assert_eq!(
+        file["file_id"], "file-abc123",
+        "file_id must sit directly on the part, not under `file`"
+    );
+    assert!(
+        file.get("file").is_none(),
+        "the Chat-style nested `file` object must not reach a Responses request"
+    );
+    Ok(())
+}
+
+// Verifies base64 file content and its filename cross into Responses as direct fields.
+#[test]
+fn chat_file_data_encodes_onto_the_responses_part() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5.4-mini",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "read this"},
+                {
+                    "type": "file",
+                    "file": {"file_data": "JVBERi0xLjQK", "filename": "report.pdf"}
+                }
+            ]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let content = output["input"][0]["content"]
+        .as_array()
+        .ok_or("Responses content should be an array")?;
+    let file = content
+        .iter()
+        .find(|block| block["type"] == "input_file")
+        .ok_or("input_file block should survive translation")?;
+    assert_eq!(file["file_data"], "JVBERi0xLjQK");
+    assert_eq!(file["filename"], "report.pdf");
+    assert!(
+        file.get("file").is_none(),
+        "the Chat-style nested `file` object must not reach a Responses request"
+    );
+    Ok(())
+}
+
+// Verifies a flat Responses `input_file` decodes instead of being dropped.
+//
+// `decode_file_source` read a direct `file_id` but not a direct `file_data`, so a
+// Responses file fell through to `FileSource::Raw`. Chat's raw encoder maps only
+// Anthropic `document` blocks and returns `None` for anything else -- so the file
+// did not merely lose its filename, it vanished from the request entirely.
+#[test]
+fn responses_flat_file_data_survives_into_chat() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5.4-mini",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "read this"},
+                {
+                    "type": "input_file",
+                    "file_data": "JVBERi0xLjQK",
+                    "filename": "report.pdf"
+                }
+            ]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let content = output["messages"][0]["content"]
+        .as_array()
+        .ok_or("Chat content should be an array")?;
+    let file = content
+        .iter()
+        .find(|block| block["type"] == "file")
+        .ok_or("the file must survive into Chat, not be dropped as unmappable raw")?;
+    assert_eq!(file["file"]["file_data"], "JVBERi0xLjQK");
+    assert_eq!(file["file"]["filename"], "report.pdf");
+    Ok(())
+}
