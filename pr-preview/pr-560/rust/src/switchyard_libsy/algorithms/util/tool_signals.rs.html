@@ -872,7 +872,7 @@
 <a href=#872 id=872 data-nosnippet>872</a>    }
 <a href=#873 id=873 data-nosnippet>873</a>
 <a href=#874 id=874 data-nosnippet>874</a>    <span class="attr">#[test]
-<a href=#875 id=875 data-nosnippet>875</a>    </span><span class="kw">fn </span>a_command_that_exited_zero_is_not_an_error() {
+<a href=#875 id=875 data-nosnippet>875</a>    </span><span class="kw">fn </span>exit_zero_is_not_an_error() {
 <a href=#876 id=876 data-nosnippet>876</a>        <span class="kw">let </span>source = <span class="string">"static CRITICAL: &amp;[&amp;str] = &amp;[\"out of memory\", \"connection refused\"];"</span>;
 <a href=#877 id=877 data-nosnippet>877</a>        <span class="kw">let </span>request = with_messages(<span class="macro">vec!</span>[
 <a href=#878 id=878 data-nosnippet>878</a>            exec_command(<span class="macro">json!</span>({<span class="string">"cmd"</span>: <span class="string">"sed -n 1,40p tool_signals.rs"</span>})),
@@ -882,7 +882,7 @@
 <a href=#882 id=882 data-nosnippet>882</a>    }
 <a href=#883 id=883 data-nosnippet>883</a>
 <a href=#884 id=884 data-nosnippet>884</a>    <span class="attr">#[test]
-<a href=#885 id=885 data-nosnippet>885</a>    </span><span class="kw">fn </span>a_rust_module_path_is_not_a_failure_marker() {
+<a href=#885 id=885 data-nosnippet>885</a>    </span><span class="kw">fn </span>rust_path_is_not_a_failure() {
 <a href=#886 id=886 data-nosnippet>886</a>        <span class="kw">let </span>passing = <span class="string">"test error::tests::preserves_source ... ok\n\
 <a href=#887 id=887 data-nosnippet>887</a>                       test result: ok. 268 passed; 0 failed; 0 ignored"</span>;
 <a href=#888 id=888 data-nosnippet>888</a>        <span class="kw">let </span>request = with_messages(<span class="macro">vec!</span>[
@@ -893,7 +893,7 @@
 <a href=#893 id=893 data-nosnippet>893</a>    }
 <a href=#894 id=894 data-nosnippet>894</a>
 <a href=#895 id=895 data-nosnippet>895</a>    <span class="attr">#[test]
-<a href=#896 id=896 data-nosnippet>896</a>    </span><span class="kw">fn </span>codex_exec_command_carries_its_command_under_cmd() {
+<a href=#896 id=896 data-nosnippet>896</a>    </span><span class="kw">fn </span>exec_command_arg_shapes() {
 <a href=#897 id=897 data-nosnippet>897</a>        <span class="kw">for </span>arguments <span class="kw">in </span>[
 <a href=#898 id=898 data-nosnippet>898</a>            <span class="macro">json!</span>({<span class="string">"command"</span>: <span class="string">"sed -i s/a/b/ src/lib.rs"</span>}),
 <a href=#899 id=899 data-nosnippet>899</a>            <span class="macro">json!</span>({<span class="string">"cmd"</span>: <span class="string">"sed -i s/a/b/ src/lib.rs"</span>}),
@@ -907,7 +907,7 @@
 <a href=#907 id=907 data-nosnippet>907</a>    }
 <a href=#908 id=908 data-nosnippet>908</a>
 <a href=#909 id=909 data-nosnippet>909</a>    <span class="attr">#[test]
-<a href=#910 id=910 data-nosnippet>910</a>    </span><span class="kw">fn </span>interpreter_heredoc_that_writes_a_file_counts_as_a_write() {
+<a href=#910 id=910 data-nosnippet>910</a>    </span><span class="kw">fn </span>heredoc_script_is_a_write() {
 <a href=#911 id=911 data-nosnippet>911</a>        <span class="kw">let </span>request = with_messages(<span class="macro">vec!</span>[
 <a href=#912 id=912 data-nosnippet>912</a>            exec_command(<span class="macro">json!</span>({<span class="string">"cmd"</span>: <span class="string">"python3 - &lt;&lt;'PY'\np.write_text(s)\nPY"</span>})),
 <a href=#913 id=913 data-nosnippet>913</a>            tr(<span class="string">"ok"</span>),
