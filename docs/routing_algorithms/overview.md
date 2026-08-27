@@ -12,10 +12,13 @@ configuration and tuning. For the vocabulary these pages use, see
 
 | Strategy | Use it when | Route `type` |
 |---|---|---|
+| [Sub-Agent-Aware Routing](subagent_routing.md) | Delegated sub-agents should use a separate routing policy from the parent agent. | `passthrough` or `stage_router` with `subagents` |
 | [Random Routing](random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
 | [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
 | [Stage-Router Routing](stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
+| [Composite Routing](composite_routing.md) | Routing algorithms are composed, one setting the configuration of another before handing off. Today an LLM classifier sets a stage router's default tier. | `composite` |
 | [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `llm_classifier` with `escalation` |
+| [Advisor-Gate Routing](advisor_gate_routing.md) | One model should serve every turn, with a stronger reviewer approving its "done" claims or sending back a redo plan. | `advisor` |
 
 ## Common route shape
 

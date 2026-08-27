@@ -5,21 +5,20 @@
 
 use std::sync::Arc;
 
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{ModelId, Request};
 
-use crate::Result;
 use crate::core::algorithm::{Algorithm, Driver};
-use switchyard_protocol::Decision;
+use crate::{Result, RoutingOutcome};
 
-/// Routing algorithm that always calls one configured target.
+/// Routing algorithm that always selects one configured target.
 pub struct Passthrough {
     target: ModelId,
 }
 
 impl Passthrough {
-    /// Creates an algorithm that always calls `target`.
+    /// Creates an algorithm that always selects `target`.
     pub fn new(target: impl Into<ModelId>) -> Self {
-        Passthrough {
+        Self {
             target: target.into(),
         }
     }
@@ -31,13 +30,13 @@ impl Algorithm for Passthrough {
         "passthrough"
     }
 
-    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
+    async fn route(self: Arc<Self>, _driver: Driver, request: Request) -> Result<RoutingOutcome> {
         tracing::info!(target = %self.target, "passthrough selected target");
-        let decision: Decision = Decision::new(self.target.clone(), true);
-        driver.decide(decision.clone()).await?;
-        driver
-            .call_model(request, vec![self.target.clone()], true)
-            .await
+        Ok(RoutingOutcome::route_to(
+            self.target.clone(),
+            Vec::new(),
+            request,
+        ))
     }
 }
 
@@ -59,7 +58,7 @@ mod tests {
             metadata: None,
         };
         let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(MODEL_ID));
-        let (trace, response) = test_drive(algorithm, request, echo()).await?;
+        let (selected_model, response) = test_drive(algorithm, request, echo()).await?;
 
         assert_eq!(
             response
@@ -69,9 +68,7 @@ mod tests {
                 .unwrap_or_default(),
             MODEL_ID
         );
-        assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].selected_model_id(), MODEL_ID);
-        assert!(trace[0].is_answer_call());
+        assert_eq!(selected_model, MODEL_ID);
         Ok(())
     }
 }

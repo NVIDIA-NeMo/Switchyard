@@ -12,8 +12,9 @@ headers, makes the call with a shared `reqwest::Client`, and decodes the reply
 back into a [`switchyard_protocol::Response`] — buffered or streamed.
 
 It also pairs the client with a libsy algorithm: [`run`] drives
-[`Algorithm::run_stream`] and serves every model call the algorithm offloads, so a
-host that just wants the answer never has to drive the step stream itself.
+[`Algorithm::run_stream`], serves routing-time calls, and consumes the terminal routing outcome.
+When routing has not already produced the answer, `run` makes the terminal call and owns backend
+retries plus ordered candidate fallback.
 
 It depends on `switchyard-libsy`, `switchyard-protocol`, and
 `switchyard-translation`; no server, no provider SDK.
@@ -143,10 +144,10 @@ async fn stream(
 
 ### Routing an algorithm
 
-[`run`] takes a libsy algorithm and a [`ClientRouter`], and returns the final response plus
-the trace of decisions the algorithm published. Each offloaded `CallModel` carries an ordered
-`models` list. The router resolves and tries those candidates in order; `ClientRouter::single`
-is the single-provider case:
+[`run`] takes a libsy algorithm and a [`ClientRouter`], and returns the algorithm-selected
+[`ModelId`] plus the final response. Routing-time `CallModel`s are served while the algorithm
+runs. The terminal outcome either already contains the answer or supplies the selected model and
+ordered fallbacks for the client to try. `ClientRouter::single` is the single-provider case:
 
 ```rust
 use std::sync::Arc;
@@ -160,12 +161,9 @@ async fn route(
     request: Request,
 ) -> switchyard_libsy::Result<String> {
     let clients = ClientRouter::single(client);
-    let (trace, _response) =
+    let (selected_model, _response) =
         switchyard_llm_client::run(algorithm, clients, request, None).await?;
-    Ok(trace
-        .last()
-        .map(|decision| decision.selected_model_id().to_string())
-        .unwrap_or_default())
+    Ok(selected_model.to_string())
 }
 ```
 

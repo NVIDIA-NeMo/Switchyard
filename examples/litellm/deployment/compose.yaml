@@ -1,0 +1,30 @@
+services:
+  litellm:
+    build:
+      context: ../../..
+      dockerfile: examples/litellm/deployment/Dockerfile
+    image: switchyard-litellm:1.97.0
+    command:
+      - --config
+      - /app/deployment/litellm.yaml
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY}
+      SWITCHYARD_LITELLM_CONFIG: /app/deployment/switchyard.toml
+    ports:
+      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
+    volumes:
+      - ./profiles/${SWITCHYARD_LITELLM_PROFILE:-stage}:/app/deployment:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness')"
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+
+networks:
+  default:
+    name: ${LITELLM_NETWORK:-switchyard-litellm}

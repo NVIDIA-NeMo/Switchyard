@@ -61,7 +61,7 @@ fn initialize() -> Result<Metrics, String> {
     }
     let provider = builder.build();
     global::set_meter_provider(provider.clone());
-    libsy::initialize_metrics();
+    switchyard_llm_client::initialize_metrics();
     global::meter("switchyard")
         .u64_gauge("switchyard.build_info")
         .build()

@@ -203,7 +203,6 @@ Before making a change, identify the surface that owns it:
   `crates/switchyard-skill-distillation/tests/contracts.rs`.
 - Put native Python bindings in `crates/switchyard-py`; keep Python wrappers in
   `switchyard/libsy` or `switchyard_rust`.
-- Put launcher behavior in `switchyard/cli`.
 
 Add Rust tests in the owning crate and Python tests in `tests/`. Export new
 public symbols from the owning crate or package rather than the top-level

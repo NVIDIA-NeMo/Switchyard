@@ -10,23 +10,23 @@
 //!
 //! Signals do not decide every turn. An under-threshold turn abstains and falls
 //! through to the optional [`LlmTaskClassifier`] — the capability route's judge,
-//! joined in unchanged — and then to the picker's default tier. The judge is
-//! asked per turn and its verdict is never pinned to the session.
+//! joined in unchanged — and then to the picker's default tier, or to an
+//! override a decider ahead of stage set in its place.
 //!
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::fall_through::{DefaultTarget, FallThrough};
+use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
-    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
-    record_decision_source, record_routing_decision,
+    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets, Tier,
+    fall_open_tier, record_decision_source, record_routing_decision,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
-use crate::core::classifier::{Classification, Classifier};
+use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{ModelId, Request, Response};
@@ -45,10 +45,6 @@ struct SourceStamp {
 
 #[async_trait]
 impl Classifier<State> for SourceStamp {
-    fn routing_tier(&self, selected_model_id: &ModelId) -> Option<&'static str> {
-        self.inner.routing_tier(selected_model_id)
-    }
-
     async fn score(
         &self,
         state: &mut State,
@@ -65,6 +61,32 @@ impl Classifier<State> for SourceStamp {
     }
 }
 
+/// Closes the cascade at zero confidence: a fallback, not a judgement.
+struct FallOpen {
+    targets: StageTargets,
+    default_tier: Tier,
+}
+
+#[async_trait]
+impl Classifier<State> for FallOpen {
+    async fn score(
+        &self,
+        state: &mut State,
+        _request: &mut Request,
+        _driver: Option<&Driver>,
+    ) -> Result<(Classification, Option<Response>)> {
+        let tier = fall_open_tier(state).unwrap_or(self.default_tier);
+        let target = self.targets.name(tier).clone();
+        Ok((
+            Classification::Scores(vec![Score {
+                target,
+                confidence: 0.0,
+            }]),
+            None,
+        ))
+    }
+}
+
 /// The capability judge a stage router falls through to.
 pub struct LlmFallback {
     /// Target the judge model is called through. It is not a routing
@@ -72,7 +94,7 @@ pub struct LlmFallback {
     pub judge_target: ModelId,
     /// Judge configuration. `recent_turn_window` is worth setting to this router's
     /// `recent_window` so the judge reads the same span the signal scorer scored.
-    /// Note: `session_affinity` and `message_hash_fallback` have no effect here —
+    /// Note: `classify_trigger = new_session` and `message_hash_fallback` have no effect here —
     /// the judge runs as a cascade classifier, not a standalone algorithm.
     pub config: TaskClassifierConfig,
 }
@@ -128,7 +150,7 @@ impl StageRouter {
     /// Errors if either threshold in `config` is outside `[0.0, 1.0]`.
     pub fn new(capable: ModelId, efficient: ModelId, config: StageRouterConfig) -> Result<Self> {
         Ok(Self {
-            route: build_route(capable, efficient, config)?,
+            route: build_stage_route(capable, efficient, config)?,
         })
     }
 }
@@ -139,13 +161,18 @@ impl Algorithm for StageRouter {
         STAGE_ROUTER
     }
 
-    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
+    async fn route(
+        self: Arc<Self>,
+        driver: Driver,
+        request: Request,
+    ) -> Result<crate::RoutingOutcome> {
         self.route.execute(driver, request).await
     }
 }
 
-/// Wires the cascade the wrapper drives.
-fn build_route(
+/// Wires the cascade the wrapper drives. Exposed so a composition above can
+/// stack a prelude onto it.
+pub(crate) fn build_stage_route(
     capable: ModelId,
     efficient: ModelId,
     config: StageRouterConfig,
@@ -161,9 +188,11 @@ fn build_route(
     // The tiers are a fixed pair; their targets are whatever the deployment calls
     // them, and the classifier scores onto those names.
     let targets = StageTargets::new(capable.clone(), efficient.clone());
-    // The picker's mode fixes the fallback tier up front, so the terminal
-    // classifier is a constant rather than a per-turn lookup.
-    let fall_open = targets.name(config.mode.default_tier()).to_string();
+    let default_tier = config.mode.default_tier();
+    let fall_open = FallOpen {
+        targets: targets.clone(),
+        default_tier,
+    };
 
     let mut classifier = StageClassifier::new(targets, config.mode, config.confidence_threshold);
     if let Some(notes) = config.handoff_notes {
@@ -190,10 +219,9 @@ fn build_route(
             source: DecisionSource::LlmClassifier,
         }));
     }
-    // Nothing behind this, so the turn lands on the picker's default tier —
-    // including when the judge could not tell.
+    // Nothing behind this, so no turn is left unrouted.
     router = router.with_classifier(Arc::new(SourceStamp {
-        inner: Arc::new(DefaultTarget::new(fall_open)),
+        inner: Arc::new(fall_open),
         source: DecisionSource::FallOpen,
     }));
     // Runs on the post-decision hook, so it applies to the target the cascade
@@ -209,17 +237,14 @@ mod tests {
 
     use async_trait::async_trait;
     use parking_lot::Mutex;
-    use serde_json::json;
-    use switchyard_protocol::{
-        ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult, WireFormat,
-    };
 
     use super::*;
-    use crate::algorithms::util::stage::DECISION_SOURCE_KEY;
-    use crate::core::classifier::Score;
+    use crate::algorithms::util::stage::{DECISION_SOURCE_KEY, clear_fall_open, set_fall_open};
+    use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
+    use crate::core::processor::{Event, Processor};
     use crate::core::state::StateValue;
-    use crate::core::testing::{Serve, reply, test_drive};
-    use switchyard_protocol::{Metadata, Response};
+    use crate::core::testing::test_drive;
+    use switchyard_protocol::Response;
 
     /// A classifier that always picks `target`, standing in for a cascade member.
     struct Fixed(&'static str);
@@ -328,64 +353,6 @@ mod tests {
     // ── routing integration tests ────────────────────────────────────────────
 
     const ESCALATION: &str = "the previous model was stalling; pick up the diagnosis";
-    const JUDGE: &str = "judge";
-
-    #[derive(Clone, Debug)]
-    struct Call {
-        target: String,
-        messages: Vec<String>,
-        is_answer_call: bool,
-    }
-
-    /// Records what each target receives.
-    #[derive(Default)]
-    struct Recorder {
-        calls: Mutex<Vec<Call>>,
-        judge_p_solve: Mutex<f64>,
-    }
-
-    impl Recorder {
-        fn routed(&self) -> Vec<Call> {
-            self.calls
-                .lock()
-                .iter()
-                .filter(|call| call.is_answer_call)
-                .cloned()
-                .collect()
-        }
-
-        /// Serves every call, recording it. The judge target gets a structured verdict
-        /// back so the fallback classifier has an answer without a real model.
-        fn serve(self: &Arc<Self>) -> impl Serve {
-            let recorder = Arc::clone(self);
-            move |target: ModelId, request: Request| {
-                let recorder = Arc::clone(&recorder);
-                async move {
-                    let target = target.to_string();
-                    recorder.calls.lock().push(Call {
-                        target: target.clone(),
-                        messages: request
-                            .llm_request
-                            .messages
-                            .iter()
-                            .filter_map(|message| message.text_content("|"))
-                            .collect(),
-                        is_answer_call: target != JUDGE,
-                    });
-                    let completion = if target == JUDGE {
-                        let p_solve = *recorder.judge_p_solve.lock();
-                        format!(
-                            r#"{{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":{p_solve}}}"#
-                        )
-                    } else {
-                        target
-                    };
-                    Ok(reply(completion))
-                }
-            }
-        }
-    }
-
     fn recording_router(config: StageRouterConfig) -> Result<Arc<StageRouter>> {
         Ok(Arc::new(StageRouter::new(
             ModelId::from("strong"),
@@ -414,53 +381,62 @@ mod tests {
         c
     }
 
-    fn turn_request(failed: bool) -> Request {
-        let content = if failed {
-            "fatal runtime error: out of memory"
-        } else {
-            "ok"
-        };
-        Request {
-            llm_request: LlmRequest {
-                model: Some("auto".to_string()),
-                messages: vec![
-                    Message::text(Role::User, "fix the build"),
-                    Message {
-                        role: Role::Assistant,
-                        content: vec![ContentBlock::ToolCall(ToolCall {
-                            id: "call_1".to_string(),
-                            name: "Bash".to_string(),
-                            arguments: json!({"command": "cargo test"}),
-                        })],
-                    },
-                    Message {
-                        role: Role::Tool,
-                        content: vec![ContentBlock::ToolResult(ToolResult {
-                            tool_call_id: "call_1".to_string(),
-                            content: vec![ContentBlock::Text {
-                                text: content.to_string(),
-                            }],
-                            is_error: Some(failed),
-                        })],
-                    },
-                ],
-                ..LlmRequest::default()
-            },
-            raw_request: Some(json!({
-                "model": "auto",
-                "messages": [
-                    {"role": "user", "content": "fix the build"},
-                    {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function",
-                        "function": {"name": "Bash", "arguments": "{\"command\": \"cargo test\"}"}}]},
-                    {"role": "tool", "tool_call_id": "call_1", "content": content},
-                ],
-            })),
-            metadata: Some(Metadata {
-                wire_format: Some(WireFormat::OpenAiChat),
-                session_id: Some("session-1".to_string()),
-                ..Default::default()
-            }),
+    /// Stands in for a decider ahead of stage: sets the override once, clears it
+    /// once, and leaves the turns between alone.
+    #[derive(Default)]
+    struct TierDecider {
+        requests: Mutex<u32>,
+    }
+
+    #[async_trait]
+    impl Processor<State> for TierDecider {
+        async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
+            if matches!(event, Event::Request { .. }) {
+                let mut requests = self.requests.lock();
+                *requests += 1;
+                match *requests {
+                    1 => set_fall_open(state, Tier::Efficient),
+                    4 => clear_fall_open(state),
+                    _ => {}
+                }
+            }
+            Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn an_override_replaces_the_picker_default_and_leaves_the_signals_alone() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        // The picker would fall open to "strong"; the override says "weak".
+        let config = StageRouterConfig::new(PickerMode::CapableFirst, 0.5);
+        let route: Arc<dyn Algorithm> = Arc::new(
+            build_stage_route(ModelId::from("strong"), ModelId::from("weak"), config)?
+                .with_processor(Arc::new(TierDecider::default())),
+        );
+
+        test_drive(route.clone(), turn_request(false), recorder.serve()).await?;
+        test_drive(route.clone(), turn_request(false), recorder.serve()).await?;
+        test_drive(route.clone(), turn_request(true), recorder.serve()).await?;
+        test_drive(route.clone(), turn_request(false), recorder.serve()).await?;
+
+        let routed = recorder.routed();
+        assert_eq!(
+            routed[0].target, "weak",
+            "an undecided turn takes the override"
+        );
+        assert_eq!(
+            routed[1].target, "weak",
+            "which outlives the turn that set it"
+        );
+        assert_eq!(
+            routed[2].target, "strong",
+            "a critical failure still reaches the signals"
+        );
+        assert_eq!(
+            routed[3].target, "strong",
+            "clearing restores the picker default"
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -495,28 +471,20 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let router = recording_router(config_with_judge(&recorder, 0.1))?;
 
-        let (trace, _) = test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
+        let (selected_model, _) =
+            test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
 
         let calls = recorder.calls.lock();
         assert!(
-            calls
-                .iter()
-                .any(|call| call.target == JUDGE && !call.is_answer_call),
+            calls.iter().any(|call| call.target == JUDGE),
             "the judge should be recorded as a routing side call"
         );
         assert!(
-            calls
-                .iter()
-                .any(|call| call.target == "strong" && call.is_answer_call),
+            calls.iter().any(|call| call.target == "strong"),
             "the selected target should be recorded as an answer call"
         );
         drop(calls);
-        assert_eq!(
-            trace
-                .last()
-                .map(|decision| decision.selected_model_id().as_str()),
-            Some("strong")
-        );
+        assert_eq!(selected_model, "strong");
         Ok(())
     }
 

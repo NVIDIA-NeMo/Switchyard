@@ -62,4 +62,4 @@ keep their native wire format regardless of the upstream a route selects.
 
 - [Getting Started](getting_started.md): install Switchyard and run a first request
 - [Routing Overview](routing_algorithms/overview.md): choose and configure a routing strategy
-- [CLI Reference](cli_reference.md): configure and operate Switchyard from the command line
+- [Server CLI Reference](cli_reference.md): configure and operate the standalone server

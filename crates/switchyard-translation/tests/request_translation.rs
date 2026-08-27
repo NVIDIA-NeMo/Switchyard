@@ -8,12 +8,86 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    LossyConversionPolicy, PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    FormatId, LossyConversionPolicy, PreservationPolicy, TranslationEngine, TranslationPolicy,
+    WireFormat, prepare_request_for_target,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
-type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+// A target prompt makes every preserved provider body stale.
+#[test]
+fn preparing_a_target_prompt_invalidates_exact_replay() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "route",
+        "messages": [
+            {"role": "system", "name": "caller", "content": "client prompt"},
+            {"role": "user", "content": "hi"}
+        ]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(
+        &mut request,
+        &"selected/model".into(),
+        Some("target prompt"),
+    );
+
+    assert!(request.preservation.requests.is_empty());
+    let encoded = engine
+        .encode_request(WireFormat::OpenAiChat, &request, &policy)?
+        .body;
+    assert_eq!(encoded["model"], "selected/model");
+    assert_eq!(encoded["messages"][0]["content"], "target prompt");
+    assert_eq!(encoded["messages"][1]["content"], "client prompt");
+    assert!(encoded["messages"][1].get("name").is_none());
+    Ok(())
+}
+
+// Model-only preparation retains provider fields while aligning exact replay with the target.
+#[test]
+fn preparing_without_a_prompt_preserves_exact_replay() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "route",
+        "messages": [{"role": "user", "content": "hi"}],
+        "provider_field": true
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(&mut request, &"selected/model".into(), None);
+
+    assert_eq!(request.model.as_deref(), Some("selected/model"));
+    let preserved = &request.preservation.requests[&WireFormat::OpenAiChat.into()];
+    assert_eq!(preserved["model"], "selected/model");
+    assert_eq!(preserved["provider_field"], true);
+    let encoded = engine
+        .encode_request(WireFormat::OpenAiChat, &request, &policy)?
+        .body;
+    assert_eq!(encoded["model"], "selected/model");
+    assert_eq!(encoded["provider_field"], true);
+
+    let custom_format = FormatId::new("custom");
+    request
+        .preservation
+        .requests
+        .insert(custom_format.clone(), json!({"vendor_model": "route"}));
+    prepare_request_for_target(&mut request, &"fallback/model".into(), None);
+    assert_eq!(
+        request.preservation.requests[&WireFormat::OpenAiChat.into()]["model"],
+        "fallback/model"
+    );
+    assert!(!request.preservation.requests.contains_key(&custom_format));
+    Ok(())
+}
 
 // Verifies Anthropic-only request fields are dropped or mapped for OpenAI Chat.
 #[test]
@@ -732,6 +806,92 @@ fn responses_unknown_input_item_is_preserved_for_openai_chat() -> TestResult {
     Ok(())
 }
 
+// Responses accepts message-shaped input items without an explicit discriminator, and inline
+// system and developer items keep their roles instead of being demoted to user.
+#[test]
+fn responses_input_messages_translate_with_instruction_roles_intact() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": [
+            {"type": "message", "role": "system", "content": "Be terse."},
+            {"type": "message", "role": "developer", "content": "Return JSON only."},
+            {"role": "user", "content": "hello"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["messages"],
+        json!([
+            {"role": "system", "content": "Be terse."},
+            {"role": "developer", "content": "Return JSON only."},
+            {"role": "user", "content": "hello"}
+        ])
+    );
+    Ok(())
+}
+
+// Inline instruction items must not detach pending reasoning from the assistant
+// turn that produced it.
+#[test]
+fn responses_inline_instruction_does_not_detach_reasoning() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": [
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "thinking..."}], "summary": []},
+            {"type": "message", "role": "system", "content": "Be terse."},
+            {"type": "message", "role": "assistant", "content": "hello"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["messages"].as_array().map(Vec::len), Some(2));
+    assert_eq!(output["messages"][0]["role"], "system");
+    assert_eq!(output["messages"][1]["role"], "assistant");
+    assert_eq!(output["messages"][1]["content"], "hello");
+    assert_eq!(output["messages"][1]["reasoning"], "thinking...");
+    Ok(())
+}
+
+// A discriminator-less object that is not message-shaped must not silently become prompt text.
+#[test]
+fn responses_input_without_type_or_message_shape_is_rejected() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": [{"payload": "ambiguous"}]
+    });
+
+    let error = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .expect_err("ambiguous input item should be rejected");
+
+    assert!(error.to_string().contains("$.input[0].type"));
+}
+
 // Verifies orphan Responses tool outputs degrade to readable user text.
 #[test]
 fn responses_orphan_function_call_output_degrades_to_user_text_for_openai_chat() -> TestResult {
@@ -914,7 +1074,49 @@ fn responses_deferred_message_stays_after_matching_tool_result_for_openai_chat()
     Ok(())
 }
 
-// Verifies Chat-compatible Responses extension fields survive translation.
+// Verifies Responses-compatible extension fields survive a Chat-to-Responses
+// hop, and that Chat-only fields are excluded rather than passed through.
+#[test]
+fn chat_compatible_extensions_survive_to_responses() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"trace": "abc"},
+        "parallel_tool_calls": false,
+        "prompt_cache_key": "session-1",
+        "prompt_cache_retention": "24h",
+        "safety_identifier": "safe-1",
+        "service_tier": "flex",
+        "store": false,
+        "stream_options": {"include_usage": true},
+        "top_logprobs": 2,
+        "user": "u-123"
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["metadata"], json!({"trace": "abc"}));
+    assert_eq!(output["parallel_tool_calls"], false);
+    assert_eq!(output["prompt_cache_key"], "session-1");
+    assert_eq!(output["prompt_cache_retention"], "24h");
+    assert_eq!(output["safety_identifier"], "safe-1");
+    assert_eq!(output["service_tier"], "flex");
+    assert_eq!(output["store"], false);
+    assert_eq!(output["user"], "u-123");
+    // Chat-only fields are not in the Responses allowlist, so they stay dropped.
+    assert!(output.get("stream_options").is_none());
+    assert!(output.get("top_logprobs").is_none());
+    Ok(())
+}
+
 #[test]
 fn responses_chat_compatible_extensions_survive_to_openai_chat() -> TestResult {
     let engine = TranslationEngine::default();
@@ -1484,6 +1686,192 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
     Ok(())
 }
 
+// Builds an Anthropic request whose structured output uses the given field shape.
+fn anthropic_structured_output_request(output: Value) -> Value {
+    let mut body = json!({
+        "model": "captured-model",
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "ping"}]
+    });
+    let object = body.as_object_mut().expect("request object");
+    for (key, value) in output.as_object().expect("output object") {
+        object.insert(key.clone(), value.clone());
+    }
+    body
+}
+
+fn city_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+        "additionalProperties": false
+    })
+}
+
+// Anthropic carries structured output in `output_config.format`, with the top-level
+// `output_format` as the earlier beta spelling it still accepts. The neutral contract
+// is OpenAI-shaped, so an ingress schema has to survive into `response_format` or the
+// upstream is never asked for structured output. A shape that cannot be mapped is
+// reported rather than forwarded unconstrained, and reasoning effort shares
+// `output_config`, so reading the schema must leave it alone.
+#[test]
+fn anthropic_structured_output_maps_to_openai_response_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = json!({"type": "json_schema", "schema": city_schema()});
+    let stale = json!({"type": "json_schema", "schema": {"type": "object"}});
+    let cases: Vec<(&str, Value, Option<Value>, Option<&str>)> = vec![
+        (
+            "current field, alongside effort",
+            json!({"output_config": {"effort": "high", "format": format}}),
+            Some(city_schema()),
+            Some("high"),
+        ),
+        (
+            "legacy beta field",
+            json!({"output_format": format}),
+            Some(city_schema()),
+            None,
+        ),
+        (
+            "current field wins over legacy",
+            json!({"output_config": {"format": format}, "output_format": stale}),
+            Some(city_schema()),
+            None,
+        ),
+        ("no structured output", json!({}), None, None),
+        (
+            "unsupported format type",
+            json!({"output_config": {"format": {"type": "json_object"}}}),
+            None,
+            None,
+        ),
+        (
+            "schema is not an object",
+            json!({"output_config": {"format": {"type": "json_schema", "schema": "nope"}}}),
+            None,
+            None,
+        ),
+    ];
+
+    for (label, output, expected_schema, expected_effort) in cases {
+        let translated = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &anthropic_structured_output_request(output.clone()),
+            &TranslationPolicy::default(),
+        )?;
+        let response_format = translated.body.get("response_format");
+
+        match &expected_schema {
+            Some(schema) => {
+                let response_format = response_format.ok_or(label)?;
+                assert_eq!(response_format["json_schema"]["schema"], *schema, "{label}");
+                assert!(
+                    response_format["json_schema"]["name"]
+                        .as_str()
+                        .is_some_and(|name| !name.is_empty()),
+                    "{label}"
+                );
+            }
+            None => assert!(response_format.is_none(), "{label}"),
+        }
+        if let Some(effort) = expected_effort {
+            assert_eq!(translated.body["reasoning_effort"], effort, "{label}");
+        }
+
+        // A format that was present but unmapped is the only case that must report.
+        let unmapped = expected_schema.is_none() && output.get("output_config").is_some();
+        assert_eq!(
+            translated
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("Anthropic structured output")),
+            unmapped,
+            "{label}"
+        );
+    }
+    Ok(())
+}
+
+// Strict callers get an error instead of an unconstrained upstream request.
+#[test]
+fn anthropic_unmappable_output_format_is_rejected_under_strict_policy() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+    let body = anthropic_structured_output_request(json!({
+        "output_config": {"format": {"type": "json_object"}}
+    }));
+
+    match engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &body,
+        &policy,
+    ) {
+        Ok(_) => panic!("an unmappable output format should be rejected by strict policy"),
+        Err(error) => assert_eq!(error.kind(), "LossyConversion"),
+    }
+    Ok(())
+}
+
+// Verifies inline `data:` images become Anthropic base64 sources, since Anthropic's URL
+// source rejects anything that is not an http(s) link. A percent-encoded payload is not raw
+// base64, so it keeps the URL source it had before rather than reaching Anthropic mislabelled.
+#[test]
+fn openai_data_uri_images_translate_to_anthropic_sources() -> TestResult {
+    let engine = TranslationEngine::default();
+    let cases = [
+        (
+            "base64 data URI",
+            json!({"url": "data:image/png;base64,aW1hZ2U=", "detail": "high"}),
+            json!({"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}),
+        ),
+        (
+            "data URI carrying extra parameters",
+            json!({"url": "data:image/jpeg;charset=binary;base64,aW1hZ2U="}),
+            json!({"type": "base64", "media_type": "image/jpeg", "data": "aW1hZ2U="}),
+        ),
+        (
+            "percent-encoded data URI",
+            json!({"url": "data:image/png;base64,YQ%3D%3D"}),
+            json!({"type": "url", "url": "data:image/png;base64,YQ%3D%3D"}),
+        ),
+    ];
+
+    for (case, image_url, expected_source) in cases {
+        let body = json!({
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What color is this?"},
+                    {"type": "image_url", "image_url": image_url}
+                ]
+            }]
+        });
+
+        let output = engine
+            .translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+
+        assert_eq!(
+            output["messages"][0]["content"][1],
+            json!({"type": "image", "source": expected_source}),
+            "{case}"
+        );
+    }
+    Ok(())
+}
+
 // Verifies Anthropic receives its supported schema subset without mutating the neutral contract.
 #[test]
 fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestResult {
@@ -1684,6 +2072,18 @@ fn malformed_request_fields_are_rejected() {
             WireFormat::AnthropicMessages,
             json!({"model": "claude", "max_tokens": "8", "messages": []}),
             "invalid value at $.max_tokens: expected a non-negative integer",
+        ),
+        (
+            "OpenAI Chat string messages",
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": "invalid"}),
+            "expected array at $.messages",
+        ),
+        (
+            "Anthropic string messages",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "messages": "invalid"}),
+            "expected array at $.messages",
         ),
         (
             "Responses boolean input",

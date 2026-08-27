@@ -1,68 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""CLI reference drift tests."""
+"""Server CLI reference drift tests."""
 
-import argparse
 import subprocess
 from pathlib import Path
 
-from switchyard.cli.switchyard_cli import _build_parser
-
 CLI_REFERENCE = Path(__file__).resolve().parents[1] / "docs" / "cli_reference.md"
-
-
-def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
-    action = next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-    return action.choices  # type: ignore[return-value]
-
-
-def _long_options(parser: argparse.ArgumentParser) -> set[str]:
-    return {
-        option
-        for action in parser._actions
-        for option in action.option_strings
-        if option.startswith("--") and option != "--help"
-    }
-
-
-def test_reference_documents_launcher_before_server() -> None:
-    text = CLI_REFERENCE.read_text()
-    launcher = text.index("## Launcher Path: `switchyard launch`")
-    server = text.index("## Server Path: `switchyard-server`")
-    removed = text.index("## Removed Setup Commands")
-    related = text.index("## Related Documentation")
-
-    assert launcher < server < removed < related
-
-
-def test_reference_marks_removed_setup_commands() -> None:
-    text = CLI_REFERENCE.read_text()
-    removed_start = text.index("## Removed Setup Commands")
-    related_start = text.index("## Related Documentation", removed_start)
-    removed = text[removed_start:related_start]
-    commands = _subparsers(_build_parser())
-
-    assert (
-        "`switchyard configure`, `switchyard serve`, and `switchyard verify` are not"
-        in removed
-    )
-    assert "api_key_env" in removed
-    assert "The CLI does not save provider credentials, deployment paths" in removed
-    assert {"configure", "serve", "verify"}.isdisjoint(commands)
-
-
-def test_reference_lists_launcher_contract() -> None:
-    launch = _subparsers(_build_parser())["launch"]
-    text = CLI_REFERENCE.read_text()
-    for parser in _subparsers(launch).values():
-        assert _long_options(parser) == {"--model", "--config"}
-    assert "--model" in text
-    assert "--config" in text
 
 
 def test_reference_lists_server_contract() -> None:

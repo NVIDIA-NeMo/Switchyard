@@ -18,7 +18,7 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    AggLlmResponse, ContentBlock, LlmRequest, MediaSource, Message, OutputParams,
+    AggLlmResponse, ContentBlock, InstructionBlock, LlmRequest, MediaSource, Message, OutputParams,
     ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
     ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
@@ -82,12 +82,15 @@ impl FormatCodec for OpenAiResponsesCodec {
                 }],
             });
         }
-        request.messages = decode_responses_input(
+        let (messages, instructions) = decode_responses_input(
             body.get("input").unwrap_or(&Value::String(String::new())),
             &mut diagnostics,
             policy,
         )?;
-        request.tools = decode_responses_tools(body.get("tools"));
+        request.messages = messages;
+        request.instructions.extend(instructions);
+        let mut tool_namespaces = Map::new();
+        request.tools = decode_responses_tools(body.get("tools"), &mut tool_namespaces);
         request.tool_choice = body
             .get("tool_choice")
             .and_then(decode_responses_tool_choice);
@@ -107,6 +110,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 "stream",
             ],
         );
+        crate::codex_namespaces::attach_tool_namespaces(&mut request.extensions, tool_namespaces);
         Ok(DecodedRequest {
             request,
             diagnostics,
@@ -147,13 +151,27 @@ impl FormatCodec for OpenAiResponsesCodec {
         }
         body.insert(
             "input".to_string(),
-            encode_responses_input(&request.messages, &mut diagnostics, _policy)?,
+            encode_responses_input(
+                &request.messages,
+                &mut diagnostics,
+                _policy,
+                crate::codex_namespaces::tool_namespaces(&request.extensions),
+            )?,
         );
         if !request.tools.is_empty() {
-            body.insert("tools".to_string(), encode_responses_tools(&request.tools));
+            body.insert(
+                "tools".to_string(),
+                encode_responses_tools(
+                    &request.tools,
+                    crate::codex_namespaces::tool_namespaces(&request.extensions),
+                ),
+            );
         }
         if let Some(choice) = &request.tool_choice
-            && let Some(choice) = encode_responses_tool_choice(choice)
+            && let Some(choice) = encode_responses_tool_choice(
+                choice,
+                crate::codex_namespaces::tool_namespaces(&request.extensions),
+            )
         {
             body.insert("tool_choice".to_string(), choice);
         }
@@ -178,6 +196,8 @@ impl FormatCodec for OpenAiResponsesCodec {
         if request.stream {
             body.insert("stream".to_string(), Value::Bool(true));
         }
+        copy_responses_request_extensions(&mut body, &request.extensions.fields);
+
         let body = embed_preservation(Value::Object(body), &request.preservation, _policy);
         Ok(EncodedRequest { body, diagnostics })
     }
@@ -304,16 +324,23 @@ impl FormatCodec for OpenAiResponsesCodec {
     }
 }
 
-// Decodes Responses `input` into ordered normalized messages.
+/// Decodes Responses `input` into ordered normalized messages and inline
+/// instruction blocks.
+///
+/// Inline `system` and `developer` message items are returned as instruction
+/// blocks rather than conversation turns. Classifying them here, before any
+/// reasoning or tool-call state-machine transitions, prevents an instruction
+/// item from flushing pending reasoning or disturbing tool-call grouping.
 fn decode_responses_input(
     value: &Value,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
-) -> Result<Vec<Message>> {
+) -> Result<(Vec<Message>, Vec<InstructionBlock>)> {
     match value {
-        Value::String(text) => Ok(vec![Message::text(Role::User, text)]),
+        Value::String(text) => Ok((vec![Message::text(Role::User, text)], Vec::new())),
         Value::Array(items) => {
             let mut messages = Vec::new();
+            let mut instructions = Vec::new();
             let mut pending_tool_calls = Vec::new();
             let mut pending_tool_outputs = Vec::new();
             let mut deferred_messages = Vec::new();
@@ -327,14 +354,37 @@ fn decode_responses_input(
                     )?;
                     continue;
                 };
-                match item.get("type").and_then(Value::as_str) {
-                    Some("message") => {
+                let item_type = match item.get("type") {
+                    Some(Value::String(item_type)) => Some(item_type.as_str()),
+                    Some(_) => {
+                        return Err(TranslationError::InvalidType {
+                            path: format!("$.input[{index}].type"),
+                            expected: "a string",
+                        });
+                    }
+                    None => None,
+                };
+                let is_message = item_type == Some("message")
+                    || (item_type.is_none()
+                        && item.contains_key("role")
+                        && item.contains_key("content"));
+                match item_type {
+                    _ if is_message => {
                         let role = request_role_from_responses(
                             item.get("role").and_then(Value::as_str),
                             &format!("$.input[{index}].role"),
                         )?;
-                        let mut content =
+                        let content =
                             decode_responses_content(item.get("content").unwrap_or(&Value::Null));
+                        // Inline system and developer input items are instructions, not
+                        // conversation turns. Classify them before any state-machine
+                        // transitions so they do not flush pending reasoning or disturb
+                        // tool-call grouping.
+                        if matches!(role, Role::System | Role::Developer) {
+                            instructions.push(InstructionBlock { role, content });
+                            continue;
+                        }
+                        let mut content = content;
                         // Reasoning that precedes an assistant message belongs to
                         // that turn; fold it in so it never surfaces as its own
                         // (empty-looking) assistant message downstream.
@@ -400,13 +450,27 @@ fn decode_responses_input(
                                 }
                                 DeterministicIdPolicy::Preserve => String::new(),
                             });
+                        // History has to spell a tool the way its definition
+                        // does, or the transcript teaches the model a name the
+                        // upstream was never offered.
+                        let name = item
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let name = match item
+                            .get("namespace")
+                            .and_then(Value::as_str)
+                            .filter(|namespace| !namespace.is_empty())
+                        {
+                            Some(namespace) => {
+                                crate::codex_namespaces::qualified_tool_name(namespace, &name)
+                            }
+                            None => name,
+                        };
                         pending_tool_calls.push(ToolCall {
                             id,
-                            name: item
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
+                            name,
                             arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
                         });
                     }
@@ -421,6 +485,13 @@ fn decode_responses_input(
                             tool_call_id,
                             content: vec![ContentBlock::Text { text: output_text }],
                             is_error: None,
+                        });
+                    }
+                    None => {
+                        return Err(TranslationError::InvalidValue {
+                            path: format!("$.input[{index}].type"),
+                            message: "missing type discriminator on a non-message input item"
+                                .to_string(),
                         });
                     }
                     _ => {
@@ -466,7 +537,7 @@ fn decode_responses_input(
                     content: pending_reasoning,
                 });
             }
-            Ok(messages)
+            Ok((messages, instructions))
         }
         _ => Err(TranslationError::InvalidType {
             path: "$.input".to_string(),
@@ -475,7 +546,7 @@ fn decode_responses_input(
     }
 }
 
-// Places non-tool input items without breaking Responses tool-call adjacency.
+/// Places non-tool input items without breaking Responses tool-call adjacency.
 fn push_responses_non_tool_message(
     messages: &mut Vec<Message>,
     pending_tool_calls: &mut Vec<ToolCall>,
@@ -500,9 +571,9 @@ fn push_responses_non_tool_message(
     messages.push(message);
 }
 
-// Emits reasoning that cannot join an assistant turn as a standalone assistant
-// message at its original position. While tool calls are pending, the
-// reasoning belongs to the in-flight turn and stays pending for the flush.
+/// Emits reasoning that cannot join an assistant turn as a standalone assistant
+/// message at its original position. While tool calls are pending, the
+/// reasoning belongs to the in-flight turn and stays pending for the flush.
 fn flush_unattached_responses_reasoning(
     messages: &mut Vec<Message>,
     pending_tool_calls: &mut Vec<ToolCall>,
@@ -527,9 +598,9 @@ fn flush_unattached_responses_reasoning(
     );
 }
 
-// Flushes pending function calls and matching outputs while preserving adjacency.
-// Pending reasoning rides in the same assistant message as the tool calls so a
-// Codex reasoning + function_call turn stays one assistant turn downstream.
+/// Flushes pending function calls and matching outputs while preserving adjacency.
+/// Pending reasoning rides in the same assistant message as the tool calls so a
+/// Codex reasoning + function_call turn stays one assistant turn downstream.
 fn flush_responses_tool_block(
     messages: &mut Vec<Message>,
     pending_tool_calls: &mut Vec<ToolCall>,
@@ -714,7 +785,16 @@ fn request_role_from_responses(role: Option<&str>, path: &str) -> Result<Role> {
 }
 
 // Decodes Responses tool shapes, including Codex-style tool entries.
-fn decode_responses_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
+// Decodes Responses tool shapes, including Codex-style tool entries.
+//
+// Codex groups tools into non-standard ``namespace`` containers that
+// OpenAI-compatible upstreams do not accept. Each child is exposed under a
+// `<namespace>__<tool>` name, and `namespaces` records the mapping so the
+// response can split it back apart.
+fn decode_responses_tools(
+    value: Option<&Value>,
+    namespaces: &mut Map<String, Value>,
+) -> Vec<ToolDefinition> {
     let Some(tools) = value.and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -723,7 +803,30 @@ fn decode_responses_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
         let Some(tool) = tool.as_object() else {
             continue;
         };
-        if tool.get("type").and_then(Value::as_str) == Some("function") {
+        if tool.get("type").and_then(Value::as_str) == Some("namespace") {
+            // An unnamed container carries nothing to dispatch on, so its
+            // children stay bare rather than gaining an empty prefix.
+            let container = tool
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty());
+            for mut child in decode_responses_tools(tool.get("tools"), namespaces) {
+                // A nested container already qualified its own children, and the
+                // innermost name is the one that identifies the tool.
+                let already_qualified = namespaces.contains_key(&child.name);
+                if let Some(container) = container
+                    && !already_qualified
+                {
+                    let qualified =
+                        crate::codex_namespaces::qualified_tool_name(container, &child.name);
+                    crate::codex_namespaces::record_tool_namespace(
+                        namespaces, &qualified, container,
+                    );
+                    child.name = qualified;
+                }
+                out.push(child);
+            }
+        } else if tool.get("type").and_then(Value::as_str) == Some("function") {
             if let Some(function) = tool.get("function").and_then(Value::as_object) {
                 if let Some(name) = function.get("name").and_then(Value::as_str)
                     && !name.is_empty()
@@ -815,12 +918,22 @@ fn decode_responses_tool_choice(value: &Value) -> Option<ToolChoice> {
         Value::String(text) if text == "required" => Some(ToolChoice::Required),
         Value::String(text) if text == "none" => Some(ToolChoice::None),
         Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("function") => {
-            object
-                .get("name")
-                .and_then(Value::as_str)
-                .map(|name| ToolChoice::Tool {
-                    name: name.to_string(),
-                })
+            // A forced tool has to name the same thing its definition does, or
+            // the upstream rejects a choice naming a tool it was never offered.
+            object.get("name").and_then(Value::as_str).map(|name| {
+                match object
+                    .get("namespace")
+                    .and_then(Value::as_str)
+                    .filter(|namespace| !namespace.is_empty())
+                {
+                    Some(namespace) => ToolChoice::Tool {
+                        name: crate::codex_namespaces::qualified_tool_name(namespace, name),
+                    },
+                    None => ToolChoice::Tool {
+                        name: name.to_string(),
+                    },
+                }
+            })
         }
         Value::Object(_) => None,
         _ => Some(ToolChoice::Raw(value.clone())),
@@ -902,6 +1015,7 @@ fn encode_responses_input(
     messages: &[Message],
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
+    namespaces: Option<&Map<String, Value>>,
 ) -> Result<Value> {
     if messages.len() == 1
         && matches!(messages[0].role, Role::User)
@@ -937,13 +1051,17 @@ fn encode_responses_input(
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
-            encoded.extend(content.iter().filter_map(encode_responses_special_input));
+            encoded.extend(
+                content
+                    .iter()
+                    .filter_map(|block| encode_responses_special_input(block, namespaces)),
+            );
             continue;
         }
         let mut visible_content = Vec::new();
         let mut emitted_special = false;
         for block in &content {
-            if let Some(item) = encode_responses_special_input(block) {
+            if let Some(item) = encode_responses_special_input(block, namespaces) {
                 encoded.push(item);
                 emitted_special = true;
             } else {
@@ -963,7 +1081,10 @@ fn encode_responses_input(
 }
 
 // Encodes IR blocks that Responses represents as top-level input items.
-fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
+fn encode_responses_special_input(
+    block: &ContentBlock,
+    namespaces: Option<&Map<String, Value>>,
+) -> Option<Value> {
     match block {
         ContentBlock::Reasoning {
             text,
@@ -974,12 +1095,27 @@ fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
             "content": [{"type": "reasoning_text", "text": text}],
             "summary": [],
         })),
-        ContentBlock::ToolCall(call) => Some(json!({
-            "type": "function_call",
-            "call_id": call.id,
-            "name": call.name,
-            "arguments": json_string(&call.arguments),
-        })),
+        ContentBlock::ToolCall(call) => {
+            // A Responses client dispatches on name plus namespace, so undo the
+            // qualification this request applied for a flat upstream.
+            let (name, namespace) = namespaces
+                .and_then(|namespaces| {
+                    crate::codex_namespaces::split_qualified_name(namespaces, &call.name)
+                })
+                .map_or((call.name.clone(), None), |(name, namespace)| {
+                    (name, Some(namespace))
+                });
+            let mut item = json!({
+                "type": "function_call",
+                "call_id": call.id,
+                "name": name,
+                "arguments": json_string(&call.arguments),
+            });
+            if let Some(namespace) = namespace {
+                item["namespace"] = Value::String(namespace);
+            }
+            Some(item)
+        }
         ContentBlock::ToolResult(result) => Some(json!({
             "type": "function_call_output",
             "call_id": result.tool_call_id,
@@ -1070,33 +1206,73 @@ fn encode_responses_content(
 }
 
 // Encodes normalized tool definitions into Responses tool JSON.
-fn encode_responses_tools(tools: &[ToolDefinition]) -> Value {
-    Value::Array(
-        tools
-            .iter()
-            .map(|tool| {
-                let mut item = json!({
-                    "type": "function",
-                    "name": tool.name,
-                    "description": tool.description.clone().unwrap_or_default(),
-                    "parameters": tool.parameters,
-                });
-                if let Some(strict) = tool.strict {
-                    item["strict"] = Value::Bool(strict);
+// Encodes normalized tools as Responses entries.
+//
+// A Responses client understands Codex containers, so a tool whose name this
+// request qualified is regrouped under the container it came from.
+fn encode_responses_tools(
+    tools: &[ToolDefinition],
+    namespaces: Option<&Map<String, Value>>,
+) -> Value {
+    let mut out: Vec<Value> = Vec::new();
+    let mut containers: Vec<(String, Vec<Value>)> = Vec::new();
+    for tool in tools {
+        let mut item = json!({
+            "type": "function",
+            "name": tool.name,
+            "description": tool.description.clone().unwrap_or_default(),
+            "parameters": tool.parameters,
+        });
+        if let Some(strict) = tool.strict {
+            item["strict"] = Value::Bool(strict);
+        }
+        let split = namespaces.and_then(|namespaces| {
+            crate::codex_namespaces::split_qualified_name(namespaces, &tool.name)
+        });
+        match split {
+            None => out.push(item),
+            Some((name, namespace)) => {
+                item["name"] = Value::String(name);
+                match containers
+                    .iter_mut()
+                    .find(|(existing, _)| *existing == namespace)
+                {
+                    Some((_, children)) => children.push(item),
+                    None => containers.push((namespace, vec![item])),
                 }
-                item
-            })
-            .collect(),
-    )
+            }
+        }
+    }
+    for (namespace, children) in containers {
+        out.push(json!({
+            "type": "namespace",
+            "name": namespace,
+            "tools": children,
+        }));
+    }
+    Value::Array(out)
 }
 
 // Encodes normalized tool choice into Responses JSON.
-fn encode_responses_tool_choice(choice: &ToolChoice) -> Option<Value> {
+fn encode_responses_tool_choice(
+    choice: &ToolChoice,
+    namespaces: Option<&Map<String, Value>>,
+) -> Option<Value> {
     match choice {
         ToolChoice::Auto => Some(Value::String("auto".to_string())),
         ToolChoice::Required => Some(Value::String("required".to_string())),
         ToolChoice::None => Some(Value::String("none".to_string())),
-        ToolChoice::Tool { name } => Some(json!({"type": "function", "name": name})),
+        ToolChoice::Tool { name } => {
+            let split = namespaces.and_then(|namespaces| {
+                crate::codex_namespaces::split_qualified_name(namespaces, name)
+            });
+            Some(match split {
+                Some((tool, namespace)) => {
+                    json!({"type": "function", "name": tool, "namespace": namespace})
+                }
+                None => json!({"type": "function", "name": name}),
+            })
+        }
         ToolChoice::Raw(value) => Some(value.clone()),
     }
 }
@@ -1306,4 +1482,32 @@ fn encode_responses_usage(usage: &Usage) -> Value {
         "input_tokens_details": {"cached_tokens": usage.cached_input_tokens().unwrap_or(0)},
         "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
     })
+}
+
+/// Re-emits captured request extensions that the Responses format accepts.
+///
+/// The allowlist is Responses-specific: Chat-only fields such as
+/// `stream_options` and `top_logprobs` are deliberately absent, so they stay
+/// dropped on a Chat-to-Responses hop. Fields already present in `body` are
+/// left untouched — anything the encoder generated is authoritative over a
+/// captured extension of the same name.
+fn copy_responses_request_extensions(
+    body: &mut Map<String, Value>,
+    extensions: &Map<String, Value>,
+) {
+    for field in [
+        "metadata",
+        "parallel_tool_calls",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "safety_identifier",
+        "service_tier",
+        "store",
+        "user",
+    ] {
+        if let Some(value) = extensions.get(field) {
+            body.entry(field.to_string())
+                .or_insert_with(|| value.clone());
+        }
+    }
 }

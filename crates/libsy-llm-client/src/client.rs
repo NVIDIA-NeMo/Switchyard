@@ -5,19 +5,22 @@
 //! request, call the configured backend over HTTP, decode the neutral response.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::ready;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
+use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value};
 use switchyard_protocol::{
-    LlmRequest, LlmResponse, Metadata, ModelId, Request, Response, RoutedLlmClient,
+    LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Metadata, ModelId, Request,
+    Response, RoutedLlmClient,
 };
 use switchyard_translation::{
     WireFormat, decode_aggregated_response, decode_request, decode_stream,
-    encode_aggregated_response, encode_request, encode_stream,
+    encode_aggregated_response_with_extensions, encode_request, encode_stream_with_extensions,
 };
 use tracing::Instrument;
 
@@ -28,6 +31,7 @@ use crate::raw::RawResponse;
 
 // Headers this client owns or that are hop-by-hop. Backends apply an explicitly
 // enabled caller credential after generic metadata forwarding skips these.
+// Azure/OpenAI credentials and tenant selectors are also backend-owned.
 const RESERVED_HEADERS: &[&str] = &[
     "host",
     "content-length",
@@ -40,6 +44,9 @@ const RESERVED_HEADERS: &[&str] = &[
     "x-api-key",
     "chatgpt-account-id",
     "x-openai-fedramp",
+    "api-key",
+    "openai-organization",
+    "openai-project",
     "anthropic-beta",
     "anthropic-version",
     "content-type",
@@ -256,13 +263,16 @@ impl TranslatingLlmClient {
                     span.record("outcome", "success");
                     span.record("status_code", response.status());
                     span.record("will_retry", false);
+                    if attempt > 0 {
+                        metrics::record_retry_recovered();
+                    }
                     return Ok(response);
                 }
                 Err(failure) => {
                     let will_retry = attempt < max_retries && failure.is_retryable();
                     span.record("outcome", "error");
                     if let Some(status) = failure.status {
-                        span.record("status_code", status);
+                        span.record("status_code", status.as_u16());
                     }
                     span.record("will_retry", will_retry);
                     if !will_retry {
@@ -325,7 +335,7 @@ impl TranslatingLlmClient {
                     metrics::record_upstream_attempt(None);
                     return Err(AttemptFailure {
                         error: convert_reqwest_error(error),
-                        status: Some(status.as_u16()),
+                        status: Some(status),
                         retry_after: None,
                     });
                 }
@@ -344,7 +354,7 @@ impl TranslatingLlmClient {
                 metrics::record_upstream_attempt(None);
                 return Err(AttemptFailure {
                     error: convert_reqwest_error(error),
-                    status: Some(status.as_u16()),
+                    status: Some(status),
                     retry_after,
                 });
             }
@@ -358,14 +368,11 @@ impl TranslatingLlmClient {
                     message: body,
                 }
             } else {
-                LlmClientError::UpstreamHttp {
-                    status: status.as_u16(),
-                    body,
-                }
+                LlmClientError::UpstreamHttp { status, body }
             };
         Err(AttemptFailure {
             error,
-            status: Some(status.as_u16()),
+            status: Some(status),
             retry_after,
         })
     }
@@ -440,8 +447,23 @@ impl TranslatingLlmClient {
                         }
                     })
                 });
-                let chunks = decode_stream(bytes, wire_format)?;
-                LlmResponse::Stream(chunks)
+                let mut chunks = decode_stream(bytes, wire_format)?;
+                // Providers reject an over-ceiling streaming request with an in-band
+                // error event on an HTTP 200. Classify the first event before returning
+                // the stream: nothing has reached the caller yet, so an overflow can
+                // still fail the call and let routing try the next candidate.
+                match chunks.next().await {
+                    None => LlmResponse::Stream(stream::empty().boxed()),
+                    Some(first) => {
+                        if let Some(message) = first_event_overflow(&first, backend) {
+                            return Err(LlmClientError::ContextWindowExceeded {
+                                model: model_id.clone(),
+                                message,
+                            });
+                        }
+                        LlmResponse::Stream(stream::once(ready(first)).chain(chunks).boxed())
+                    }
+                }
             }
             EncodedResponse::Buffered { body, .. } => {
                 let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
@@ -482,6 +504,7 @@ impl TranslatingLlmClient {
     ) -> Result<RawResponse> {
         let llm_request = decode_request(wire_format, &raw_http_request)
             .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
+        let request_extensions = llm_request.extensions.clone();
         // The model that serves the call — the rewrite target when the caller pinned
         // one, else the request's own model. Mirrors `call_rewrite_model`'s own
         // resolution so the response names whoever answered.
@@ -507,13 +530,22 @@ impl TranslatingLlmClient {
 
         match response.llm_response {
             LlmResponse::Agg(agg) => {
-                let body =
-                    encode_aggregated_response(&agg, wire_format, served_model.as_deref())
-                        .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
+                let body = encode_aggregated_response_with_extensions(
+                    &agg,
+                    wire_format,
+                    served_model.as_deref(),
+                    &request_extensions,
+                )
+                .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
                 Ok(RawResponse::Buffered(body))
             }
             LlmResponse::Stream(chunks) => {
-                let events = encode_stream(chunks, wire_format, served_model)?;
+                let events = encode_stream_with_extensions(
+                    chunks,
+                    wire_format,
+                    served_model,
+                    &request_extensions,
+                )?;
                 Ok(RawResponse::Stream(events))
             }
         }
@@ -564,7 +596,7 @@ impl EncodedResponse {
 // attempt telemetry and delay selection.
 struct AttemptFailure {
     error: LlmClientError,
-    status: Option<u16>,
+    status: Option<StatusCode>,
     retry_after: Option<Duration>,
 }
 
@@ -573,11 +605,30 @@ impl AttemptFailure {
         match &self.error {
             LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
             LlmClientError::UpstreamHttp { status, .. } => {
-                metrics::is_retryable_http_status(*status)
+                metrics::is_retryable_http_status(status.as_u16())
             }
             _ => false,
         }
     }
+}
+
+// The overflow message when a stream's first event is an in-band provider rejection
+// of the whole request, rather than the start of a response.
+fn first_event_overflow(
+    first: &Result<LlmResponseStreamEvent>,
+    backend: &Backend,
+) -> Option<String> {
+    first
+        .as_ref()
+        .ok()?
+        .normalized()
+        .iter()
+        .find_map(|chunk| match chunk {
+            LlmResponseChunk::StreamError { message } if backend.is_context_overflow(message) => {
+                Some(message.clone())
+            }
+            _ => None,
+        })
 }
 
 // Uses Retry-After when supplied, capped so an upstream cannot stall a request indefinitely.
@@ -749,8 +800,33 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     }
 }
 
+// Anthropic and Bedrock both cap a request at four blocks carrying
+// `cache_control`, counting tools, system blocks and message blocks together.
+const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
+
+// Counts the blocks upstream will see carrying a `cache_control` marker. The
+// marker's own value holds no such key, so it is never counted twice.
+fn count_cache_control_blocks(value: &Value) -> usize {
+    match value {
+        Value::Object(map) => {
+            usize::from(map.contains_key("cache_control"))
+                + map.values().map(count_cache_control_blocks).sum::<usize>()
+        }
+        Value::Array(items) => items.iter().map(count_cache_control_blocks).sum(),
+        _ => 0,
+    }
+}
+
 // Marks the final message content block as the Anthropic prompt-cache breakpoint.
 fn enable_anthropic_prompt_caching(body: &mut Value) {
+    // Abstain once the caller has spent the budget itself. Adding a fifth marker
+    // turns a request that was valid on arrival into an upstream HTTP 400, and a
+    // caller that placed four breakpoints deliberately needs them more than we
+    // need a fifth. When the final block is already marked this returns early
+    // and changes nothing, which is what the insert below would have done.
+    if count_cache_control_blocks(body) >= MAX_CACHE_CONTROL_BLOCKS {
+        return;
+    }
     let Some(content) = body
         .get_mut("messages")
         .and_then(Value::as_array_mut)
@@ -952,6 +1028,66 @@ mod tests {
 
         assert_eq!(
             body["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    // Counts the blocks upstream will see carrying a `cache_control` marker.
+    fn cache_control_blocks(value: &Value) -> usize {
+        count_cache_control_blocks(value)
+    }
+
+    // A body whose four breakpoints are all spent elsewhere: the caller manages
+    // its own caching and left the final block unmarked on purpose.
+    fn body_at_the_cache_control_limit() -> Value {
+        json!({
+            "system": [
+                {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": "b", "cache_control": {"type": "ephemeral"}}
+            ],
+            "tools": [
+                {"name": "t", "input_schema": {"type": "object"},
+                 "cache_control": {"type": "ephemeral"}}
+            ],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "old", "cache_control": {"type": "ephemeral"}}
+                ]},
+                {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+                {"role": "user", "content": [{"type": "text", "text": "new"}]}
+            ]
+        })
+    }
+
+    #[test]
+    fn anthropic_prompt_caching_abstains_at_the_cache_control_limit() {
+        let mut body = body_at_the_cache_control_limit();
+        assert_eq!(cache_control_blocks(&body), 4);
+
+        enable_anthropic_prompt_caching(&mut body);
+
+        // Anthropic and Bedrock both reject a fifth marker with HTTP 400, which
+        // would fail a request that was valid before it reached us.
+        assert_eq!(cache_control_blocks(&body), 4);
+        assert!(
+            body["messages"][2]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn anthropic_prompt_caching_still_marks_one_below_the_limit() {
+        let mut body = body_at_the_cache_control_limit();
+        // Free one breakpoint, so there is room for ours.
+        body["system"].as_array_mut().unwrap().pop();
+        assert_eq!(cache_control_blocks(&body), 3);
+
+        enable_anthropic_prompt_caching(&mut body);
+
+        assert_eq!(cache_control_blocks(&body), 4);
+        assert_eq!(
+            body["messages"][2]["content"][0]["cache_control"],
             json!({"type": "ephemeral"})
         );
     }
@@ -1500,7 +1636,10 @@ mod tests {
         };
         assert!(matches!(
             error,
-            LlmClientError::UpstreamHttp { status: 500, .. }
+            LlmClientError::UpstreamHttp {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                ..
+            }
         ));
         Ok(())
     }
@@ -1562,7 +1701,7 @@ mod tests {
         assert!(matches!(
             error,
             LlmClientError::UpstreamHttp {
-                status: 401,
+                status: StatusCode::UNAUTHORIZED,
                 body
             } if body == "invalid key"
         ));
@@ -1598,7 +1737,7 @@ mod tests {
         assert!(matches!(
             error,
             LlmClientError::UpstreamHttp {
-                status: 500,
+                status: StatusCode::INTERNAL_SERVER_ERROR,
                 body
             } if body == "attempt 3"
         ));
@@ -1651,7 +1790,14 @@ mod tests {
         };
         assert!(transport.is_retryable());
 
-        for status in [408, 429, 500, 503, 599] {
+        for status in [
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::from_u16(599)
+                .expect("599 is a syntactically valid HTTP code in the http crate"),
+        ] {
             let failure = AttemptFailure {
                 error: LlmClientError::UpstreamHttp {
                     status,
@@ -1662,7 +1808,13 @@ mod tests {
             };
             assert!(failure.is_retryable(), "HTTP {status} should retry");
         }
-        for status in [400, 401, 409, 600] {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::CONFLICT,
+            StatusCode::from_u16(600)
+                .expect("600 is a syntactically valid HTTP code in the http crate"),
+        ] {
             let failure = AttemptFailure {
                 error: LlmClientError::UpstreamHttp {
                     status,
@@ -1688,7 +1840,7 @@ mod tests {
                 model: ModelId::from("gpt"),
                 message: "too long".to_string(),
             },
-            status: Some(400),
+            status: Some(StatusCode::BAD_REQUEST),
             retry_after: None,
         };
         assert!(!context_window.is_retryable());
@@ -1793,6 +1945,18 @@ mod tests {
             "accept-encoding",
             http::HeaderValue::from_static("gzip, br"),
         );
+        headers.insert(
+            "api-key",
+            http::HeaderValue::from_static("client-azure-key"),
+        );
+        headers.insert(
+            "openai-organization",
+            http::HeaderValue::from_static("org-client"),
+        );
+        headers.insert(
+            "openai-project",
+            http::HeaderValue::from_static("proj-client"),
+        );
         let request = Request {
             llm_request: LlmRequest {
                 model: Some("gpt".to_string()),
@@ -1822,6 +1986,9 @@ mod tests {
             .ok_or("request recording should be enabled")?;
         let received = received.first().ok_or("expected one upstream request")?;
         assert!(!received.headers.contains_key("accept-encoding"));
+        assert!(!received.headers.contains_key("api-key"));
+        assert!(!received.headers.contains_key("openai-organization"));
+        assert!(!received.headers.contains_key("openai-project"));
         Ok(())
     }
 
@@ -1917,6 +2084,80 @@ mod tests {
         assert_eq!(body["choices"][0]["message"]["content"], "Hi there");
         // The client sees the model that answered, not the "client-facing" route id.
         assert_eq!(body["model"], "gpt");
+        Ok(())
+    }
+
+    // A Codex namespace is folded into the upstream tool name, then split back
+    // into name and namespace on the Responses call that returns to Codex.
+    #[tokio::test]
+    async fn call_rewrite_model_raw_restores_codex_mcp_namespace()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "tools": [{
+                    "type": "function",
+                    "function": {"name": "mcp__open_websearch__search"}
+                }]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__open_websearch__search",
+                                "arguments": "{\"q\":\"rust\"}"
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "input": "Search for Rust.",
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__open_websearch",
+                "tools": [{
+                    "type": "function",
+                    "name": "search",
+                    "description": "Search the web",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+                }]
+            }]
+        });
+
+        let RawResponse::Buffered(body) = client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?
+        else {
+            panic!("expected a buffered response");
+        };
+
+        assert_eq!(body["output"][0]["type"], "function_call");
+        assert_eq!(body["output"][0]["name"], "search");
+        assert_eq!(body["output"][0]["namespace"], "mcp__open_websearch");
+        // Arguments are parsed and re-serialized, so the spacing is normalized.
+        assert_eq!(body["output"][0]["arguments"], "{\"q\": \"rust\"}");
         Ok(())
     }
 

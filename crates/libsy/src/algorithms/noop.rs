@@ -10,9 +10,8 @@ use switchyard_protocol::{
     StopReason,
 };
 
-use crate::Result;
 use crate::core::algorithm::{Algorithm, Driver};
-use switchyard_protocol::Decision;
+use crate::{Result, RoutingOutcome};
 
 /// Test helper that returns a hard-coded response without routing or model I/O.
 pub struct Noop {}
@@ -23,15 +22,13 @@ impl Algorithm for Noop {
         "noop"
     }
 
-    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
+    async fn route(self: Arc<Self>, _driver: Driver, request: Request) -> Result<RoutingOutcome> {
+        let streaming = request.llm_request.stream;
         let model_id = request
             .model_id()
             .unwrap_or_else(|| ModelId::from("switchyard/noop"));
         tracing::info!(target = %model_id, "noop returned its synthetic response");
-        let decision: Decision = Decision::new(model_id.clone(), true);
-        driver.decide(decision.clone()).await?;
-
-        let llm_response = LlmResponse::Agg(AggLlmResponse {
+        let aggregate = AggLlmResponse {
             id: Some("switchyard-noop".to_string()),
             model: Some(model_id.to_string()),
             outputs: vec![ResponseOutput {
@@ -42,12 +39,17 @@ impl Algorithm for Noop {
                 stop_reason: Some(StopReason::EndTurn),
             }],
             ..Default::default()
-        });
+        };
+        let llm_response = if streaming {
+            LlmResponse::Stream(aggregate.into_stream())
+        } else {
+            LlmResponse::Agg(aggregate)
+        };
         let response = Response {
             llm_response,
             metadata: request.metadata.clone(),
         };
-        Ok(response)
+        Ok(RoutingOutcome::answered(model_id, request, response))
     }
 }
 
@@ -74,13 +76,29 @@ mod tests {
         // `Noop` synthesizes its own response and never offloads a call, so `echo` is
         // never reached.
         let a: Arc<dyn Algorithm> = Arc::new(Noop {});
-        let (decisions, response) = test_drive(a, request, echo()).await?;
-        let Some(decision) = decisions.first() else {
-            panic!("Expected exactly one Decision");
-        };
-        assert_eq!(decision.selected_model_id(), TEST_MODEL);
-        assert!(decision.is_answer_call());
+        let (selected_model, response) = test_drive(a, request, echo()).await?;
+        assert_eq!(selected_model, TEST_MODEL);
         assert_eq!(response.selected_model(), Some(TEST_MODEL));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_noop_algo_streams_when_requested() -> Result<()> {
+        let request = Request {
+            llm_request: LlmRequest {
+                model: Some("streaming-noop".to_string()),
+                messages: vec![Message::text(Role::User, "hi")],
+                stream: true,
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+
+        let algorithm: Arc<dyn Algorithm> = Arc::new(Noop {});
+        let (_, response) = test_drive(algorithm, request, echo()).await?;
+
+        assert!(matches!(response.llm_response, LlmResponse::Stream(_)));
         Ok(())
     }
 }

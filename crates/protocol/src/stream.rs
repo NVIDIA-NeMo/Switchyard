@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::pin::Pin;
 
 use futures::{Stream, StreamExt};
+use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -21,7 +22,7 @@ use crate::{
 /// Status reported for an upstream error delivered inside a streaming body. The
 /// upstream already sent a success status line before failing, so there is no real
 /// code to propagate; 502 matches how a failed upstream call surfaces elsewhere.
-const MID_STREAM_UPSTREAM_STATUS: u16 = 502;
+const MID_STREAM_UPSTREAM_STATUS: StatusCode = StatusCode::BAD_GATEWAY;
 
 /// A boxed, `Send` stream of response events. Each item may fail independently mid-stream.
 pub type LlmResponseStream =
@@ -118,6 +119,7 @@ impl From<LlmResponseChunk> for LlmResponseStreamEvent {
 /// Not `Clone` — the `Stream` variant owns a single-consumption stream. A buffered
 /// backend returns `Agg` directly; a streaming one returns `Stream` and the consumer
 /// drives it, folding to an [`AggLlmResponse`] when it needs the whole response.
+#[allow(clippy::large_enum_variant)]
 pub enum LlmResponse {
     /// Live, single-consumption response stream.
     Stream(LlmResponseStream),

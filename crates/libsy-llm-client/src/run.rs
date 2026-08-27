@@ -5,8 +5,8 @@
 //!
 //! [`switchyard_libsy::Algorithm::run_stream`] is the whole libsy API: it yields a stream of
 //! steps and expects its consumer to serve every offloaded model call. [`run()`] is that
-//! consumer — it drives the stream with [`switchyard_libsy::drive`], hands each call to a
-//! [`RoutedLlmClient`], and returns the final response with the trace of decisions.
+//! consumer — it drives the stream with [`switchyard_libsy::drive`], hands routing-time calls to
+//! a [`RoutedLlmClient`], and serves the terminal routing outcome.
 //!
 //! libsy owns the stream mechanics; what this module adds is ordered candidate fallback and the
 //! `libsy.client_call` span around each candidate. Each candidate exhausts its backend retry
@@ -15,12 +15,13 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+use http::StatusCode;
 use parking_lot::Mutex;
 use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, drive};
 use switchyard_protocol::{
-    Decision, LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
+    LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
 };
 
 use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
@@ -28,77 +29,99 @@ use crate::{metrics, observability};
 
 /// Run one request to completion, serving every offloaded model call with `client`.
 ///
-/// Returns the final [`Response`] and the trace of [`Decision`]s the algorithm published along
-/// the way. `observer`, when present, receives each completed model call and, after a
-/// successful routed run, its routing overhead.
+/// Returns the model selected by the algorithm and the final [`Response`]. `observer`, when
+/// present, receives each completed routing or answer call and the routing overhead.
 ///
 /// `clients` resolves each offloaded call to the client for the target the algorithm
 /// selected — an algorithm may route among targets served by different providers, so this is
 /// a per-call lookup, not one client for the whole run. Use
 /// [`ClientRouter::single`](ClientRouter::single) when one client serves every target.
 ///
-/// A failed *model* call is forwarded back into the algorithm, which may route around it;
-/// this returns `Err` only when the run itself cannot complete.
+/// Routing-time model failures are forwarded back into the algorithm. Once routing completes,
+/// this client exhausts backend retries and then the outcome's ordered candidate fallbacks.
 pub async fn run(
     algorithm: Arc<dyn Algorithm>,
     clients: ClientRouter,
     request: Request,
     observer: Option<RunObserver>,
-) -> Result<(Vec<Decision>, Response)> {
+) -> Result<(ModelId, Response)> {
     let algorithm_name = algorithm.name().to_string();
-    // The output from `serve` goes in here: when each successful routed call was in
-    // flight. Everything else the run spent time on is routing overhead.
-    let routed_calls = Arc::new(Mutex::new(RoutedCallWindows::default()));
     let run_started = Instant::now();
-    let result = drive(algorithm, request, {
-        let observer = observer.clone();
-        let routed_calls = Arc::clone(&routed_calls);
-        move |call| {
-            serve(
-                clients.clone(),
-                call,
-                observer.clone(),
-                Arc::clone(&routed_calls),
-            )
-        }
+    let routing_clients = clients.clone();
+    // This says if we have an observer, put Some(..) in routing_observations.
+    // No observer means we don't want any routing_observations.
+    let routing_observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
+    let outcome = drive(algorithm, request, {
+        let routing_observations = routing_observations.clone();
+        move |call| serve(routing_clients.clone(), call, routing_observations.clone())
     })
-    .await?;
-    if let Some(served) = routed_calls.lock().served() {
-        let overhead =
-            metrics::record_routing_overhead(&algorithm_name, run_started.elapsed(), served);
-        if let Some(observer) = observer {
-            observer(RunObservation::RoutingOverhead(overhead));
-        }
+    .await;
+    let answered_model = outcome
+        .as_ref()
+        .ok()
+        .and_then(|outcome| outcome.response.as_ref())
+        .and_then(Response::served_model);
+    emit_routing_observations(&observer, &routing_observations, answered_model);
+    let outcome = outcome?;
+    let overhead = run_started.elapsed();
+    metrics::record_routing_overhead(&algorithm_name, overhead);
+
+    let selected_model_id = outcome.selected_model_id;
+    let (result, answer_duration) = if let Some(response) = outcome.response {
+        (Ok(response), None)
+    } else {
+        let mut models = Vec::with_capacity(1 + outcome.fallback_models.len());
+        models.push(selected_model_id.clone());
+        models.extend(outcome.fallback_models);
+        let answer_started = Instant::now();
+        let observe = |observation| {
+            if let Some(observer) = &observer {
+                observer(RunObservation::AnswerCall(observation));
+            }
+        };
+        let result = call_first_available(
+            &clients,
+            &algorithm_name,
+            &outcome.request,
+            &models,
+            &observe,
+        )
+        .await;
+        let answer_duration = answer_started.elapsed();
+        metrics::record_answer_call(
+            &algorithm_name,
+            &selected_model_id,
+            answer_duration,
+            &result,
+        );
+        (result, Some(answer_duration))
+    };
+    metrics::record_routed_request(&selected_model_id, answer_duration, &result);
+    if let Some(observer) = &observer {
+        observer(RunObservation::RoutingOverhead(overhead));
     }
-    Ok(result)
+    result.map(|response| (selected_model_id, response))
 }
 
-/// The wall-clock windows during which a successful routed call was in flight.
-/// An algorithm can make multiple overlapping calls. This is the union of all of them.
-#[derive(Default)]
-struct RoutedCallWindows(Vec<(Instant, Instant)>);
-
-impl RoutedCallWindows {
-    /// Record one completed routed call.
-    fn record(&mut self, started: Instant, ended: Instant) {
-        self.0.push((started, ended));
-    }
-
-    /// Total time at least one routed call was in flight, merging overlapping windows.
-    fn served(&mut self) -> Option<Duration> {
-        self.0.sort_unstable_by_key(|(started, _)| *started);
-        // Sweep the windows in start order, advancing a cursor along the timeline and
-        // counting only the time each window covers that the cursor has not reached.
-        let mut covered = self.0.first()?.0;
-        let mut total = Duration::ZERO;
-        for &(started, ended) in &self.0 {
-            covered = covered.max(started);
-            if ended > covered {
-                total += ended - covered;
-                covered = ended;
-            }
+/// Emits completed routing calls after the outcome reveals whether one response became the answer.
+fn emit_routing_observations(
+    observer: &Option<RunObserver>,
+    observations: &Option<Arc<Mutex<Vec<LlmCallObservation>>>>,
+    answered_model: Option<&ModelId>,
+) {
+    let (Some(observer), Some(observations)) = (observer, observations) else {
+        return;
+    };
+    let mut answer_observation = None;
+    for observation in observations.lock().drain(..) {
+        if answer_observation.is_none() && answered_model == Some(&observation.selected_model) {
+            answer_observation = Some(observation);
+        } else {
+            observer(RunObservation::LlmCall(observation));
         }
-        Some(total)
+    }
+    if let Some(observation) = answer_observation {
+        observer(RunObservation::AnswerCall(observation));
     }
 }
 
@@ -109,41 +132,51 @@ impl RoutedCallWindows {
 async fn serve(
     clients: ClientRouter,
     call: CallModel,
-    observer: Option<RunObserver>,
-    // Output parameter because `drive` takes a function that returns a plain `Result<()>`.
-    routed_calls: Arc<Mutex<RoutedCallWindows>>,
+    observations: Option<Arc<Mutex<Vec<LlmCallObservation>>>>,
 ) -> Result<()> {
-    let result = call_first_available(&clients, &call, &observer, &routed_calls).await;
+    let observe = |observation| {
+        if let Some(observations) = &observations {
+            observations.lock().push(observation);
+        }
+    };
+    let result = call_first_available(
+        &clients,
+        &call.algorithm,
+        &call.request,
+        &call.models,
+        &observe,
+    )
+    .await;
     call.respond(result)
 }
 
 /// Try candidates in order until one succeeds or a failure stops fallback.
 async fn call_first_available(
     clients: &ClientRouter,
-    call: &CallModel,
-    observer: &Option<RunObserver>,
-    routed_calls: &Arc<Mutex<RoutedCallWindows>>,
+    algorithm: &str,
+    request: &Request,
+    models: &[ModelId],
+    observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
 ) -> Result<Response> {
-    for (index, target) in call.models.iter().enumerate() {
-        let request = request_for(&call.request, target);
+    for (index, target) in models.iter().enumerate() {
+        let request = request_for(request, target);
         match call_one(
             clients,
             target,
             request,
-            call,
-            observer,
-            routed_calls,
+            algorithm,
+            observe,
             index,
-            call.models.len(),
+            models.len(),
         )
         .await
         {
             Ok(response) => return Ok(response),
-            Err(error) if index + 1 == call.models.len() => return Err(error),
+            Err(error) if index + 1 == models.len() => return Err(error),
             Err(error) => match fallback_reason(&error) {
                 Some(reason) => tracing::info!(
                     from = %target,
-                    to = %call.models[index + 1],
+                    to = %models[index + 1],
                     reason = reason.as_str(),
                     "model call failed; trying next candidate"
                 ),
@@ -161,8 +194,8 @@ async fn call_first_available(
     name = "libsy.client_call",
     skip_all,
     fields(
-        algorithm = call.algorithm,
-        switchyard.algorithm = call.algorithm,
+        algorithm = algorithm,
+        switchyard.algorithm = algorithm,
         switchyard.candidate = index + 1,
         switchyard.candidate_count = count,
         selected_model = %model_id,
@@ -198,9 +231,8 @@ async fn call_one(
     clients: &ClientRouter,
     model_id: &ModelId,
     request: Request,
-    call: &CallModel,
-    observer: &Option<RunObserver>,
-    routed_calls: &Arc<Mutex<RoutedCallWindows>>,
+    algorithm: &str,
+    observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
     // index is for span log
     index: usize,
     // count is for span log
@@ -208,15 +240,13 @@ async fn call_one(
 ) -> Result<Response> {
     let span = tracing::Span::current();
     observability::record_gen_ai_request(&span, &request.llm_request);
-    if let Some(session_id) = call
-        .request
+    if let Some(session_id) = request
         .metadata
         .as_ref()
         .and_then(|metadata| metadata.session_id.as_deref())
     {
         span.record("gen_ai.conversation.id", session_id);
     }
-    let is_answer_call = call.is_answer_call;
     // Resolved before the clock starts: picking the client is Switchyard's work, not
     // the provider's, so it belongs in the routing overhead.
     let client = clients.route(model_id);
@@ -226,31 +256,23 @@ async fn call_one(
         Err(error) => Err(error),
     }
     .map_err(|source| LibsyError::client_call(model_id.clone(), source));
-    let ended = Instant::now();
-    let duration = ended - started;
+    let duration = started.elapsed();
 
     let result = result.map(|mut response| {
         response.set_served_model(model_id);
         response
     });
     let result = observability::observe_client_call(result);
-    if let Some(observer) = observer {
-        observer(RunObservation::LlmCall(LlmCallObservation {
-            selected_model: model_id.clone(),
-            is_answer_call,
-            is_success: result.is_ok(),
-            duration,
-            usage: result
-                .as_ref()
-                .ok()
-                .and_then(|response| response.llm_response.as_agg())
-                .map(|response| response.usage.clone()),
-        }));
-    }
-    if is_answer_call && result.is_ok() {
-        routed_calls.lock().record(started, ended);
-    }
-
+    observe(LlmCallObservation {
+        selected_model: model_id.clone(),
+        is_success: result.is_ok(),
+        duration,
+        usage: result
+            .as_ref()
+            .ok()
+            .and_then(|response| response.llm_response.as_agg())
+            .map(|response| response.usage.clone()),
+    });
     result
 }
 
@@ -265,7 +287,10 @@ fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
             Some(RoutingFallbackReason::Unavailable)
         }
         LlmClientError::UpstreamHttp { status, .. }
-            if matches!(*status, 403 | 408 | 429) || (500..=599).contains(status) =>
+            if matches!(
+                *status,
+                StatusCode::FORBIDDEN | StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+            ) || status.is_server_error() =>
         {
             Some(RoutingFallbackReason::Unavailable)
         }
@@ -353,7 +378,8 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures::StreamExt;
-    use switchyard_libsy::Driver;
+    use http::StatusCode;
+    use switchyard_libsy::{Driver, RoutingOutcome};
     use switchyard_protocol::{
         LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, completion_text, text_request,
         text_response,
@@ -367,14 +393,49 @@ mod tests {
         models: Vec<ModelId>,
     }
 
+    struct AnsweredAlgorithm {
+        model: ModelId,
+    }
+
     #[async_trait]
     impl Algorithm for CandidateAlgorithm {
         fn name(&self) -> &str {
             "candidate_test"
         }
 
-        async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
-            driver.call_model(request, self.models.clone(), true).await
+        async fn route(
+            self: Arc<Self>,
+            _driver: Driver,
+            request: Request,
+        ) -> Result<RoutingOutcome> {
+            let selected_model = self.models.first().cloned().ok_or(LibsyError::NoTargets)?;
+            Ok(RoutingOutcome::route_to(
+                selected_model,
+                self.models.iter().skip(1).cloned().collect(),
+                request,
+            ))
+        }
+    }
+
+    #[async_trait]
+    impl Algorithm for AnsweredAlgorithm {
+        fn name(&self) -> &str {
+            "answered_test"
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            driver: Driver,
+            request: Request,
+        ) -> Result<RoutingOutcome> {
+            let response = driver
+                .call_model(request.clone(), vec![self.model.clone()])
+                .await?;
+            Ok(RoutingOutcome::answered(
+                self.model.clone(),
+                request,
+                response,
+            ))
         }
     }
 
@@ -403,7 +464,7 @@ mod tests {
                         message: "too long".to_string(),
                     }),
                     FirstOutcome::Unauthorized => Err(LlmClientError::UpstreamHttp {
-                        status: 401,
+                        status: StatusCode::UNAUTHORIZED,
                         body: "unauthorized".to_string(),
                     }),
                     FirstOutcome::StreamSuccess => Ok(stream_response(vec![
@@ -457,7 +518,7 @@ mod tests {
 
     async fn run_candidates(
         first: FirstOutcome,
-    ) -> (Arc<CandidateClient>, Result<(Vec<Decision>, Response)>) {
+    ) -> (Arc<CandidateClient>, Result<(ModelId, Response)>) {
         let client = Arc::new(CandidateClient {
             calls: Mutex::new(Vec::new()),
             first,
@@ -475,6 +536,39 @@ mod tests {
         (client, result)
     }
 
+    #[tokio::test]
+    async fn answered_outcome_does_not_make_a_second_model_call() -> Result<()> {
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            first: FirstOutcome::StreamSuccess,
+        });
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&observations);
+        let observer: RunObserver = Arc::new(move |event| observed.lock().push(event));
+
+        let (selected, response) = run(
+            Arc::new(AnsweredAlgorithm {
+                model: "weak".into(),
+            }),
+            ClientRouter::single(client.clone()),
+            request(),
+            Some(observer),
+        )
+        .await?;
+
+        assert_eq!(selected, "weak");
+        assert_eq!(response.served_model().map(ModelId::as_str), Some("weak"));
+        assert_eq!(&*client.calls.lock(), &[ModelId::from("weak")]);
+        let observations = observations.lock();
+        assert!(matches!(observations[0], RunObservation::AnswerCall(_)));
+        assert!(matches!(
+            observations[1],
+            RunObservation::RoutingOverhead(_)
+        ));
+        assert_eq!(observations.len(), 2);
+        Ok(())
+    }
+
     #[test]
     fn fallback_only_accepts_context_and_unavailable_failures() {
         let error = |source| LibsyError::client_call("target", source);
@@ -485,7 +579,13 @@ mod tests {
             })),
             Some(RoutingFallbackReason::ContextWindow)
         );
-        for status in [403, 408, 429, 500, 599] {
+        for status in [
+            StatusCode::FORBIDDEN,
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::from_u16(599).expect("599 is a valid status"),
+        ] {
             assert_eq!(
                 fallback_reason(&error(LlmClientError::UpstreamHttp {
                     status,
@@ -494,7 +594,14 @@ mod tests {
                 Some(RoutingFallbackReason::Unavailable)
             );
         }
-        for status in [400, 401, 404, 409, 499, 600] {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::NOT_FOUND,
+            StatusCode::CONFLICT,
+            StatusCode::from_u16(499).expect("499 is a valid status"),
+            StatusCode::from_u16(600).expect("600 is a valid status"),
+        ] {
             assert_eq!(
                 fallback_reason(&error(LlmClientError::UpstreamHttp {
                     status,
@@ -528,7 +635,10 @@ mod tests {
         assert!(matches!(
             result,
             Err(LibsyError::ClientCall {
-                source: LlmClientError::UpstreamHttp { status: 401, .. },
+                source: LlmClientError::UpstreamHttp {
+                    status: StatusCode::UNAUTHORIZED,
+                    ..
+                },
                 ..
             })
         ));
@@ -617,6 +727,138 @@ mod tests {
             .expect_err("the stream should fail during aggregation");
         assert!(error.to_string().contains("stream failed"));
         assert_eq!(&*client.calls.lock(), &[ModelId::from("weak")]);
+        Ok(())
+    }
+
+    // Verbatim shape of an SGLang admission rejection on a streaming session:
+    // HTTP 200, and the overflow arrives as the first SSE event.
+    const OVERFLOW_SSE: &str = "data: {\"error\":{\"code\":400,\"message\":\"Input length (600013 tokens) exceeds the maximum allowed length (536826 tokens). Use a shorter input or enable --allow-auto-truncate.\",\"object\":\"error\",\"param\":null,\"type\":\"BAD_REQUEST\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n";
+
+    // A normal one-turn streamed answer, as the second candidate serves it.
+    const STRONG_SSE: &str = "data: {\"id\":\"answer\",\"model\":\"strong\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"answer\",\"model\":\"strong\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+
+    /// Runs a streaming request through the weak→strong candidate loop, serving
+    /// `weak_sse` from the first candidate and [`STRONG_SSE`] from the second.
+    /// The server is returned so response streams stay readable after the call.
+    async fn run_streaming_candidates(
+        weak_sse: &'static str,
+    ) -> (
+        MockServer,
+        Arc<Mutex<Vec<String>>>,
+        Result<(ModelId, Response)>,
+    ) {
+        let server = MockServer::start().await;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&request.body).unwrap_or(serde_json::Value::Null);
+                let model = body["model"].as_str().unwrap_or_default().to_string();
+                observed_calls.lock().push(model.clone());
+                let sse = if model == "weak" {
+                    weak_sse
+                } else {
+                    STRONG_SSE
+                };
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse)
+            })
+            .mount(&server)
+            .await;
+
+        let backend = || {
+            Backend::OpenAiChat(HttpBackendConfig {
+                base_url: format!("{}/v1", server.uri()),
+                api_key: None,
+                forward_auth: false,
+                extra_headers: BTreeMap::new(),
+                extra_body: BTreeMap::new(),
+                max_retries: 0,
+            })
+        };
+        let client = Arc::new(
+            TranslatingLlmClient::new(&[
+                ModelConfig::new("weak", backend(), None),
+                ModelConfig::new("strong", backend(), None),
+            ])
+            .expect("building test client"),
+        );
+        let algorithm = Arc::new(CandidateAlgorithm {
+            models: vec!["weak".into(), "strong".into()],
+        });
+        let mut llm_request = text_request(Some("auto".to_string()), "hello".to_string());
+        llm_request.stream = true;
+        let request = Request {
+            llm_request,
+            raw_request: None,
+            metadata: None,
+        };
+        let result = run(algorithm, ClientRouter::single(client), request, None).await;
+        (server, calls, result)
+    }
+
+    #[tokio::test]
+    async fn first_stream_event_overflow_falls_back_to_the_next_candidate() -> Result<()> {
+        // Nothing has reached the caller when the first event arrives, so an overflow
+        // there falls through to the next candidate exactly as its buffered twin does.
+        let (_server, calls, result) = run_streaming_candidates(OVERFLOW_SSE).await;
+        let (_, response) = result?;
+        assert_eq!(&*calls.lock(), &["weak", "strong"]);
+        assert_eq!(response.served_model().map(ModelId::as_str), Some("strong"));
+        let aggregate = response
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|source| LibsyError::client_call("strong", source))?;
+        assert_eq!(completion_text(&aggregate), "ok");
+
+        // Only a classified overflow re-routes; any other in-band error event still
+        // streams through to the consumer without trying another candidate.
+        let (_server, calls, result) = run_streaming_candidates(
+            "data: {\"error\":{\"code\":500,\"message\":\"engine exploded\",\"object\":\"error\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n",
+        )
+        .await;
+        let (_, response) = result?;
+        assert_eq!(&*calls.lock(), &["weak"]);
+        let error = response
+            .llm_response
+            .into_agg()
+            .await
+            .expect_err("the in-band error should surface to the consumer");
+        assert!(error.to_string().contains("engine exploded"));
+
+        // Once content has streamed, a retry would repeat delivered output, so a later
+        // overflow event keeps today's semantics and surfaces during aggregation.
+        let (_server, calls, result) = run_streaming_candidates(
+            "data: {\"id\":\"turn\",\"model\":\"weak\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"},\"finish_reason\":null}]}\n\ndata: {\"error\":{\"code\":400,\"message\":\"Input length (600013 tokens) exceeds the maximum allowed length (536826 tokens).\",\"object\":\"error\",\"type\":\"BAD_REQUEST\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n",
+        )
+        .await;
+        let (_, response) = result?;
+        assert_eq!(&*calls.lock(), &["weak"]);
+        let error = response
+            .llm_response
+            .into_agg()
+            .await
+            .expect_err("the mid-stream overflow should surface to the consumer");
+        assert!(
+            error
+                .to_string()
+                .contains("exceeds the maximum allowed length")
+        );
+
+        // A stream that ends before any event is not a classified failure; it still
+        // aggregates to an empty response.
+        let (_server, calls, result) = run_streaming_candidates("data: [DONE]\n\n").await;
+        let (_, response) = result?;
+        assert_eq!(&*calls.lock(), &["weak"]);
+        let aggregate = response
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|source| LibsyError::client_call("weak", source))?;
+        assert_eq!(completion_text(&aggregate), "");
         Ok(())
     }
 }

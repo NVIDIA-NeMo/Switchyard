@@ -42,6 +42,9 @@ pub struct StreamTranslationState {
     pub(crate) output_tokens_seen: u64,
     pub(crate) saw_backend_usage: bool,
     pub(crate) stop_reason: Option<String>,
+    /// Refusal metadata carried by the source, replayed instead of a synthesized
+    /// object so a named policy category and its explanation are not flattened away.
+    pub(crate) stop_details: Option<Value>,
     pub(crate) emitted_message_delta: bool,
 
     pub(crate) next_content_index: usize,
@@ -58,6 +61,7 @@ pub struct StreamTranslationState {
     pub(crate) response_reasoning_output_index: Option<usize>,
     pub(crate) response_reasoning_text: String,
     pub(crate) next_response_output_index: usize,
+    pub(crate) response_sequence_number: u64,
 
     pub(crate) reasoning_block_index: Option<usize>,
     pub(crate) reasoning_block_started: bool,
@@ -69,6 +73,14 @@ pub(crate) struct StreamToolState {
     pub(crate) id: Option<String>,
     pub(crate) name: Option<String>,
     pub(crate) arguments: String,
+    /// Arguments observed while DECODING the source stream.
+    ///
+    /// Separate from `arguments`, which encoders accumulate. A decoder that
+    /// deduplicates against `arguments` only works when one state performs
+    /// both halves of the translation; when a caller buffers a stream with its
+    /// own state and encodes later, the field is empty and the duplicate is
+    /// emitted.
+    pub(crate) decoded_arguments: String,
     pub(crate) pending_arguments: String,
     pub(crate) started: bool,
     pub(crate) content_index: Option<usize>,

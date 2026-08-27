@@ -98,14 +98,6 @@ fn decode_openai_chat_stream(
             continue;
         };
         if let Some(delta) = choice.get("delta").and_then(Value::as_object) {
-            if let Some(text) = delta.get("content").and_then(Value::as_str)
-                && !text.is_empty()
-            {
-                out.push(LlmResponseChunk::TextDelta {
-                    index: 0,
-                    text: text.to_string(),
-                });
-            }
             if let Some(details) = delta
                 .get("reasoning_details")
                 .and_then(Value::as_array)
@@ -133,6 +125,14 @@ fn decode_openai_chat_stream(
                         });
                     }
                 }
+            }
+            if let Some(text) = delta.get("content").and_then(Value::as_str)
+                && !text.is_empty()
+            {
+                out.push(LlmResponseChunk::TextDelta {
+                    index: 0,
+                    text: text.to_string(),
+                });
             }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tool_call in tool_calls {
@@ -424,6 +424,7 @@ fn openai_finish_reason(reason: Option<&str>) -> String {
         Some("end_turn") | Some("stop_sequence") | None => "stop".to_string(),
         Some("max_tokens") => "length".to_string(),
         Some("tool_use") => "tool_calls".to_string(),
+        Some("refusal") => "content_filter".to_string(),
         Some(other) => other.to_string(),
     }
 }

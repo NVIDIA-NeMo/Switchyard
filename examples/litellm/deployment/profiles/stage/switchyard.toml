@@ -1,0 +1,9 @@
+algorithm = "stage"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_window = 3
+only_on_wrong_signal_escalation = true
+escalation_note = "The efficient tier failed; continue from its work."
+deescalation_note = "The capable tier completed the recovery."
+capable_system_prompt = "Handle this request as the capable tier."
+efficient_system_prompt = "Handle this request as the efficient tier."

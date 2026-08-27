@@ -233,8 +233,11 @@ efficient_system_prompt = "follow the settled plan"
 
 ### Optional: LLM classifier fallback
 
-By default the router uses tool signals only. To break ties on low-confidence
-turns with a model call, add a `[routes.stage.classifier]` block and set
+The block is optional, and omitting it is the default. With no
+`[routes.stage.classifier]` block there is no judge and no fallthrough to one:
+a turn the signals leave undecided goes straight to the `picker` tier.
+
+To break ties on low-confidence turns with a model call, add the block and set
 `confidence_threshold` above `0.0`. The classifier is consulted only for turns
 that fall below the threshold:
 
@@ -254,6 +257,11 @@ request. Set `response_format_type = "json_object"` for providers that only supp
 JSON Object mode; Switchyard then adds the schema to the judge prompt and validates
 the returned object locally. The verdict schema and routing thresholds remain unchanged.
 
+Leave the block out under
+[Composite Routing](composite_routing.md). There the tier is already picked
+at the user turn, so a fallthrough judge would sit between the signals and that
+decision and overrule it.
+
 Give the classifier its own LLM client or quota bucket where possible. Sharing
 one provider bucket with the efficient tier adds a request per classified turn
 and can cause sustained 429s at scale.
@@ -265,7 +273,6 @@ Each response carries two routing headers:
 | Header | Content |
 |---|---|
 | `x-model-router-selected-model` | The model ID the turn was routed to. |
-| `x-model-router-rationale` | Human-readable routing reason (e.g. `stage_router selected weak (confidence 0.612)`). |
 
 ### Decision sources
 

@@ -72,7 +72,13 @@ impl FormatCodec for OpenAiChatCodec {
             ..LlmRequest::default()
         };
 
-        if let Some(messages) = body.get("messages").and_then(Value::as_array) {
+        if let Some(messages) = body.get("messages") {
+            let messages = messages
+                .as_array()
+                .ok_or_else(|| TranslationError::InvalidType {
+                    path: "$.messages".to_string(),
+                    expected: "array",
+                })?;
             let mut generated_id = 0;
             for (index, message) in messages.iter().enumerate() {
                 let Some(message) = message.as_object() else {

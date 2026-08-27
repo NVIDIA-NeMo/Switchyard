@@ -29,6 +29,43 @@ pub(crate) fn done_marker(_format: WireFormat) -> Option<&'static str> {
     Some("[DONE]")
 }
 
+/// Value of a `data` field line; the space after the colon is optional framing.
+fn data_field_value(line: &str) -> Option<String> {
+    let value = match line.split_once(':') {
+        Some(("data", value)) => value,
+        None if line == "data" => "",
+        _ => return None,
+    };
+    Some(value.strip_prefix(' ').unwrap_or(value).to_string())
+}
+
+/// Returns whether a provider event explicitly completes its wire-format stream.
+pub(crate) fn is_terminal_event(format: WireFormat, event: &Value) -> bool {
+    match format {
+        WireFormat::OpenAiChat => event
+            .get("choices")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|choice| {
+                choice
+                    .get("finish_reason")
+                    .and_then(Value::as_str)
+                    .is_some()
+            }),
+        WireFormat::AnthropicMessages => {
+            event.get("type").and_then(Value::as_str) == Some("message_stop")
+        }
+        WireFormat::OpenAiResponses => matches!(
+            event
+                .get("type")
+                .or_else(|| event.get("event"))
+                .and_then(Value::as_str),
+            Some("response.completed" | "response.incomplete" | "response.failed")
+        ),
+    }
+}
+
 pub(crate) fn parse_json_sse_frame(
     frame: &str,
     done_marker: Option<&str>,
@@ -36,7 +73,7 @@ pub(crate) fn parse_json_sse_frame(
     let data = frame
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with(':'))
-        .filter_map(|line| line.strip_prefix("data: ").map(|l| l.to_string()))
+        .filter_map(data_field_value)
         .fold(String::new(), |mut a, b| {
             a.reserve(b.len() + 1);
             a.push_str(&b);
@@ -84,6 +121,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_a_data_line_without_a_space_after_the_colon() -> Result<(), BoxError> {
+        // The space after `data:` is optional framing, not part of the value.
+        let SseFrame::Data(value) = parse_json_sse_frame("data:{\"text\":\"hi\"}\n", DONE)? else {
+            return Err("expected a payload".into());
+        };
+        assert_eq!(value, json!({"text": "hi"}));
+        Ok(())
+    }
+
+    #[test]
+    fn done_marker_is_recognised_without_a_space() -> Result<(), BoxError> {
+        assert!(matches!(
+            parse_json_sse_frame("data:[DONE]\n", DONE)?,
+            SseFrame::Done
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn field_names_are_matched_exactly() -> Result<(), BoxError> {
+        // `database:` must not be read as a `data` field.
+        assert!(matches!(
+            parse_json_sse_frame("database: {\"n\":1}\n", DONE)?,
+            SseFrame::Empty
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn done_marker_yields_no_payload() -> Result<(), BoxError> {
         assert!(matches!(
             parse_json_sse_frame("data: [DONE]\n", DONE)?,
@@ -124,5 +190,34 @@ mod tests {
     #[test]
     fn anthropic_accepts_optional_done_marker() {
         assert_eq!(done_marker(WireFormat::AnthropicMessages), Some("[DONE]"));
+    }
+
+    #[test]
+    fn recognizes_provider_terminal_events() {
+        // Each source format requires its own protocol-specific terminal event.
+        assert!(is_terminal_event(
+            WireFormat::OpenAiChat,
+            &json!({"choices": [{"finish_reason": "stop"}]})
+        ));
+        assert!(is_terminal_event(
+            WireFormat::AnthropicMessages,
+            &json!({"type": "message_stop"})
+        ));
+        assert!(is_terminal_event(
+            WireFormat::OpenAiResponses,
+            &json!({"type": "response.completed"})
+        ));
+        assert!(is_terminal_event(
+            WireFormat::OpenAiResponses,
+            &json!({"type": "response.incomplete"})
+        ));
+        assert!(is_terminal_event(
+            WireFormat::OpenAiResponses,
+            &json!({"type": "response.failed"})
+        ));
+        assert!(!is_terminal_event(
+            WireFormat::OpenAiChat,
+            &json!({"choices": [{"finish_reason": null}]})
+        ));
     }
 }

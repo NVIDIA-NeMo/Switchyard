@@ -6,7 +6,7 @@
 //!
 //! Each turn: request-side [`Processor`]s fold facts into the composition's state; the
 //! [`Classifier`] cascade is consulted in order and the first to score decides the target
-//! (its `argmax`); the [`Decision`] is published and then replayed to the processors so
+//! (its `argmax`); the selected model is replayed to the processors so
 //! stateful ones (latch, affinity) can bind it.
 //!
 //! The default `FallThrough<()>` carries no composition state. Stateful compositions share one
@@ -29,8 +29,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
-use crate::{LibsyError, Result};
-use switchyard_protocol::{Decision, ModelId, Request, Response};
+use crate::{LibsyError, Result, RoutingOutcome};
+use switchyard_protocol::{ModelId, Request, Response};
 
 struct SessionState<S> {
     state: Arc<AsyncMutex<S>>,
@@ -91,7 +91,6 @@ impl<S: Send> Classifier<S> for DefaultTarget {
 /// The generic state type is shared by every processor and classifier in the composition.
 pub struct FallThrough<S = ()> {
     name: String,
-    decision_reason: fn(&str, &Score) -> String,
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: Vec<ModelId>,
@@ -104,7 +103,6 @@ impl FallThrough<()> {
     pub fn new(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
-            decision_reason: default_decision_reason,
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -122,7 +120,6 @@ where
     pub fn new_with_state(targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
-            decision_reason: default_decision_reason,
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -137,12 +134,6 @@ where
         self
     }
 
-    /// Sets the decision log message for an algorithm assembled from this cascade.
-    pub(crate) fn with_decision_reason(mut self, reason: fn(&str, &Score) -> String) -> Self {
-        self.decision_reason = reason;
-        self
-    }
-
     /// Appends a processor to the head-of-request chain.
     pub fn with_processor(mut self, processor: Arc<dyn Processor<S>>) -> Self {
         self.processors.push(processor);
@@ -154,8 +145,8 @@ where
         self.classifiers.push(classifier);
         self
     }
-    /// Executes the processor/classifier/target-call sequence for wrappers and the trait entrypoint.
-    pub(crate) async fn execute(&self, driver: Driver, request: Request) -> Result<Response> {
+    /// Executes the processor and classifier sequence for wrappers and the trait entrypoint.
+    pub(crate) async fn execute(&self, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         self.start_cleanup_task();
         let session = session_id(&request);
         let session_final = request
@@ -181,7 +172,7 @@ where
         });
     }
 
-    async fn execute_session(&self, driver: Driver, request: Request) -> Result<Response> {
+    async fn execute_session(&self, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
@@ -203,11 +194,10 @@ where
         // Nothing reads it on the way out: streamed or buffered, it reaches the caller
         // untouched.
         match served {
-            Some(response) => Ok(response),
+            Some(response) => Ok(RoutingOutcome::answered(target, request, response)),
             None => {
-                driver
-                    .call_model(request, self.candidates(&target), true)
-                    .await
+                let fallback_models = self.fallbacks(&target);
+                Ok(RoutingOutcome::route_to(target, fallback_models, request))
             }
         }
     }
@@ -219,15 +209,12 @@ where
         }
     }
 
-    /// The selected target first, then every other configured target as a fallback candidate.
-    fn candidates(&self, target: &ModelId) -> Vec<ModelId> {
-        std::iter::once(target.clone())
-            .chain(
-                self.targets
-                    .iter()
-                    .filter(|candidate| *candidate != target)
-                    .cloned(),
-            )
+    /// Every configured target other than the selection, in fallback order.
+    fn fallbacks(&self, target: &ModelId) -> Vec<ModelId> {
+        self.targets
+            .iter()
+            .filter(|candidate| *candidate != target)
+            .cloned()
             .collect()
     }
 
@@ -252,8 +239,13 @@ where
         request: &mut Request,
     ) -> Result<(ModelId, Option<Response>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
+        //    The driver is offered here so a processor may consult a model first.
         for processor in &self.processors {
-            processor.process(state, Event::Request(request)).await?;
+            let event = Event::Request {
+                request,
+                driver: Some(driver),
+            };
+            processor.process(state, event).await?;
         }
 
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
@@ -264,31 +256,27 @@ where
             if let Some(score) = scores.argmax(false)? {
                 // Only the deciding classifier's response answers the turn; an abstaining
                 // classifier selected nothing for it to be the answer to.
-                routed = Some((score, Arc::clone(classifier), response));
+                routed = Some((score, response));
                 break;
             }
         }
-        let Some((score, deciding, served)) = routed else {
+        let Some((score, served)) = routed else {
             return Err(LibsyError::AlgorithmError {
                 message: "every classifier abstained".to_string(),
             });
         };
 
-        // 3. Resolve the target, log the choice, and publish the decision.
+        // 3. Resolve the target and log the choice.
         algorithm::ensure_model_is_target(&self.targets, &score.target)?;
         let target = score.target.clone();
-        let message = (self.decision_reason)(&self.name, &score);
-        let message = with_routing_tier(message, deciding.routing_tier(&target));
-        tracing::info!("{message}");
-        let decision: Decision = Decision::new(target.clone(), true);
-        driver.decide(decision.clone()).await?;
+        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
 
-        // 4. Post-decision replay: every processor sees the decision so stateful ones
+        // 4. Post-decision replay: every processor sees the selection so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
         for processor in &self.processors {
             let event = Event::Decision {
                 request,
-                decision: &decision,
+                selected_model_id: &target,
             };
             processor.process(state, event).await?;
         }
@@ -332,21 +320,6 @@ fn session_id(request: &Request) -> Option<String> {
         .map(str::to_string)
 }
 
-fn default_decision_reason(_name: &str, winner: &Score) -> String {
-    format!(
-        "fall-through selected {} (confidence {:.3})",
-        winner.target, winner.confidence
-    )
-}
-
-/// Appends the routing tier to a decision log message when the classifier supplies one.
-fn with_routing_tier(message: String, tier: Option<&str>) -> String {
-    match tier {
-        Some(tier) => format!("{message}; routing tier: {tier}"),
-        None => message,
-    }
-}
-
 #[async_trait]
 impl<S> Algorithm for FallThrough<S>
 where
@@ -356,7 +329,7 @@ where
         &self.name
     }
 
-    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<Response> {
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         self.execute(driver, request).await
     }
 }
@@ -533,30 +506,30 @@ mod tests {
         }
     }
 
-    /// Drives a shared router with one request, returning the completion text + trace.
+    /// Drives a shared router with one request, returning the completion text and selection.
     async fn run_request<S>(
         router: &Arc<FallThrough<S>>,
         request: Request,
         serve: impl Serve,
-    ) -> Result<(String, Vec<Decision>)>
+    ) -> Result<(String, ModelId)>
     where
         S: Default + Send + 'static,
     {
-        let (trace, response) = test_drive(router.clone(), request, serve).await?;
+        let (selected_model, response) = test_drive(router.clone(), request, serve).await?;
         let text = response
             .llm_response
             .into_agg()
             .await
             .map(|agg| completion_text(&agg))
             .map_err(|error| LibsyError::external("aggregating fall-through response", error))?;
-        Ok((text, trace))
+        Ok((text, selected_model))
     }
 
     /// Drives a shared router through one turn in the default test session.
     async fn run_turn<S>(
         router: &Arc<FallThrough<S>>,
         serve: impl Serve,
-    ) -> Result<(String, Vec<Decision>)>
+    ) -> Result<(String, ModelId)>
     where
         S: Default + Send + 'static,
     {
@@ -564,7 +537,7 @@ mod tests {
     }
 
     /// Drives a fresh router through one turn with a specific `serve`.
-    async fn run_with(router: FallThrough, serve: impl Serve) -> Result<(String, Vec<Decision>)> {
+    async fn run_with(router: FallThrough, serve: impl Serve) -> Result<(String, ModelId)> {
         run_turn(&Arc::new(router), serve).await
     }
 
@@ -667,23 +640,24 @@ mod tests {
         let stream = router.run_stream(request());
         tokio::pin!(stream);
         while let Some(step) = stream.next().await {
-            if let crate::Step::CallModel(call) = step? {
-                assert_eq!(call.models, target_set(&["mid", "weak", "strong"]));
-                assert_eq!(call.request.llm_request.model.as_deref(), Some("mid"));
+            if let crate::Step::Done(outcome) = step? {
+                assert_eq!(outcome.selected_model_id, ModelId::from("mid"));
+                assert_eq!(outcome.fallback_models, target_set(&["weak", "strong"]));
+                assert_eq!(outcome.request.llm_request.model.as_deref(), Some("mid"));
+                assert!(outcome.response.is_none());
                 return Ok(());
             }
         }
-        Err(test_error("expected a CallModel step"))
+        Err(test_error("expected a Done step"))
     }
 
     #[tokio::test]
     async fn argmax_picks_the_highest_confidence_target() -> Result<()> {
         let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_classifier(fixed(vec![score("weak", 0.2), score("strong", 0.9)]));
-        let (model, trace) = run_with(router, echo()).await?;
+        let (model, selected_model) = run_with(router, echo()).await?;
         assert_eq!(model, "strong");
-        assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].selected_model_id(), "strong");
+        assert_eq!(selected_model, "strong");
         Ok(())
     }
 
@@ -764,7 +738,7 @@ mod tests {
         impl Processor for RecordingProcessor {
             async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
                 let kind = match event {
-                    Event::Request(_) => "request",
+                    Event::Request { .. } => "request",
                     Event::Decision { .. } => "decision",
                     _ => "other",
                 };
@@ -793,7 +767,7 @@ mod tests {
         #[async_trait]
         impl Processor for Appender {
             async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
-                if let Event::Request(request) = event {
+                if let Event::Request { request, .. } = event {
                     request
                         .llm_request
                         .messages
@@ -870,7 +844,7 @@ mod tests {
         #[async_trait]
         impl Processor<TurnState> for CountingProcessor {
             async fn process(&self, state: &mut TurnState, event: Event<'_>) -> Result<()> {
-                if let Event::Request(_) = event {
+                if let Event::Request { .. } = event {
                     state.count += 1;
                 }
                 Ok(())

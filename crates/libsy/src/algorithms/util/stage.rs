@@ -50,8 +50,8 @@ const SEVERITY_CRITICAL: f32 = 1.0;
 /// Counts final stage-router choices by decision source and semantic target.
 const ROUTING_DECISIONS_METRIC: &str = "switchyard.stage_router.routing_decisions";
 
-/// Distribution of the stage scorer's signed routing score.
-const SCORE_METRIC: &str = "switchyard.stage_router.score";
+/// Distribution of the picker's capable-tier probability.
+const PROBABILITY_METRIC: &str = "switchyard.stage_router.probability";
 /// Distribution of the confidence used to resolve or defer a turn.
 const CONFIDENCE_METRIC: &str = "switchyard.stage_router.confidence";
 /// Distribution of detected tool-failure severity.
@@ -65,7 +65,7 @@ const PRODUCTION_INTENSITY_METRIC: &str = "switchyard.stage_router.production_in
 
 // Histogram boundaries live with the instruments so every host exports the
 // same stage-router distributions without duplicating algorithm knowledge.
-const SCORE_BUCKETS: &[f64] = &[-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0];
+const PROBABILITY_BUCKETS: &[f64] = &[0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
 const UNIT_BUCKETS: &[f64] = &[0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
 
 /// The two tiers a turn can route to.
@@ -78,14 +78,22 @@ pub enum Tier {
 }
 
 impl Tier {
-    /// Stable label for stats and the [`routing_tier`](Classifier::routing_tier)
-    /// hook, independent of what the tiers' targets are called. These are the
-    /// strings the capability route reports too, so a deployment running both
-    /// sees one tier vocabulary.
-    fn label(self) -> &'static str {
+    /// Stable label for stats, independent of what the tiers' targets are called.
+    /// These are the strings the capability route reports too, so a deployment running
+    /// both sees one tier vocabulary. Also the encoding a default-tier override is
+    /// stored under, so changing these strings invalidates one.
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Capable => "strong",
             Self::Efficient => "weak",
+        }
+    }
+
+    fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "strong" => Some(Self::Capable),
+            "weak" => Some(Self::Efficient),
+            _ => None,
         }
     }
 }
@@ -118,15 +126,20 @@ impl StageTargets {
         }
     }
 
-    /// The tier label for a routed target, or `None` for one outside the pair.
-    pub fn label_for(&self, target: &ModelId) -> Option<&'static str> {
+    /// The tier a routed target belongs to, or `None` for one outside the pair.
+    pub fn tier_for(&self, target: &ModelId) -> Option<Tier> {
         if *target == self.capable {
-            Some(Tier::Capable.label())
+            Some(Tier::Capable)
         } else if *target == self.efficient {
-            Some(Tier::Efficient.label())
+            Some(Tier::Efficient)
         } else {
             None
         }
+    }
+
+    /// The tier label for a routed target, or `None` for one outside the pair.
+    pub fn label_for(&self, target: &ModelId) -> Option<&'static str> {
+        self.tier_for(target).map(Tier::label)
     }
 }
 
@@ -152,6 +165,32 @@ impl PickerMode {
 
 /// `State.extra` key under which the turn's [`DecisionSource`] is recorded.
 pub const DECISION_SOURCE_KEY: &str = "decision_source";
+
+/// `State.extra` key under which a default-tier override is recorded.
+const FALL_OPEN_KEY: &str = "fall_open";
+
+/// Overrides the default tier undecided turns fall open to, until
+/// [`clear_fall_open`] restores the picker's. Held in session state, so it
+/// survives later requests only when they carry a session id.
+pub fn set_fall_open(state: &mut State, tier: Tier) {
+    state.extra.insert(
+        FALL_OPEN_KEY.to_string(),
+        StateValue::String(tier.label().to_string()),
+    );
+}
+
+/// Restores the picker's default tier.
+pub fn clear_fall_open(state: &mut State) {
+    state.extra.remove(FALL_OPEN_KEY);
+}
+
+/// The default-tier override for this session, if any.
+pub(crate) fn fall_open_tier(state: &State) -> Option<Tier> {
+    match state.extra.get(FALL_OPEN_KEY) {
+        Some(StateValue::String(label)) => Tier::from_label(label),
+        _ => None,
+    }
+}
 
 /// Record which component decided the turn.
 pub(crate) fn record_decision_source(state: &mut State, source: DecisionSource) {
@@ -206,6 +245,13 @@ pub struct ScoreResult {
     pub confidence: f64,
 }
 
+impl ScoreResult {
+    /// `score` remapped from `(-1, +1)` onto a `(0, 1)` capable-tier probability.
+    fn probability(self) -> f64 {
+        (self.score + 1.0) / 2.0
+    }
+}
+
 /// The two-axis feature view of a single [`ToolSignals`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CodingAgentDimensions {
@@ -229,16 +275,17 @@ pub enum PickOutcome {
         tier: Tier,
         /// What produced it.
         source: DecisionSource,
-        /// Signed scorer value (`0.0` for override / tests-passed).
-        score: f64,
+        /// Capable-tier probability in `(0, 1)`; `0.5` (neutral) for the
+        /// hard-rule paths, which bypass the scorer.
+        probability: f64,
         /// Scorer confidence (`None` where the scorer did not run).
         confidence: Option<f64>,
     },
     /// The scorer was below threshold. The caller runs its classifier; if it
     /// has none (or it fails), fall open to `default_tier`.
     ConsultClassifier {
-        /// Signed scorer value, for logging.
-        score: f64,
+        /// Capable-tier probability, for logging.
+        probability: f64,
         /// Scorer confidence, for logging.
         confidence: f64,
         /// Tier to fall open to when no classifier resolves it.
@@ -284,18 +331,26 @@ pub(crate) fn record_routing_decision(source: DecisionSource, target_name: &str)
 
 /// Records the scorer's bounded inputs and output as six explicit histograms.
 fn record_score_metrics(signal: &ToolSignals, outcome: &PickOutcome) {
-    let (score, confidence) = match outcome {
+    let (probability, confidence) = match outcome {
         PickOutcome::Resolved {
-            score, confidence, ..
-        } => (*score, confidence.unwrap_or(score.abs())),
+            probability,
+            confidence,
+            ..
+        } => (
+            *probability,
+            // Distance from 0.5, doubled onto [0, 1] — probability's `score.abs()`.
+            confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs()),
+        ),
         PickOutcome::ConsultClassifier {
-            score, confidence, ..
-        } => (*score, *confidence),
+            probability,
+            confidence,
+            ..
+        } => (*probability, *confidence),
     };
     let dimensions = dimensions_from_signal(signal);
     let meter = meter();
     for (name, value, boundaries) in [
-        (SCORE_METRIC, score, SCORE_BUCKETS),
+        (PROBABILITY_METRIC, probability, PROBABILITY_BUCKETS),
         (CONFIDENCE_METRIC, confidence, UNIT_BUCKETS),
         (SEVERITY_METRIC, dimensions.severity, UNIT_BUCKETS),
         (SPINNING_METRIC, dimensions.spinning, UNIT_BUCKETS),
@@ -373,19 +428,21 @@ fn should_deescalate(signal: &ToolSignals) -> bool {
 pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f64) -> PickOutcome {
     // 1. Escalate — a hard reason to go capable, ahead of everything else.
     if should_escalate(signal) {
-        return resolved(Tier::Capable, DecisionSource::Override, 0.0, Some(1.0));
+        return resolved(Tier::Capable, DecisionSource::Override, 0.5, Some(1.0));
     }
 
     // 2. De-escalate — a hard reason to go cheap (the turn is winding down).
     if should_deescalate(signal) {
-        return resolved(Tier::Efficient, DecisionSource::TestsPassed, 0.0, None);
+        return resolved(Tier::Efficient, DecisionSource::TestsPassed, 0.5, None);
     }
 
-    // 3. Scorer — no hard reason either way, so weigh error vs production. If
-    //    confident enough, follow the sign: positive → capable, negative → efficient.
+    // 3. Scorer — no hard reason either way, so weigh error vs production.
+    //    Resolve outside the closed ambiguous band [0.5 - t/2, 0.5 + t/2].
     let scored = score_signal(signal);
-    if scored.confidence >= confidence_threshold {
-        let tier = if scored.score > 0.0 {
+    let probability = scored.probability();
+    let half_threshold = confidence_threshold / 2.0;
+    if probability > 0.5 + half_threshold || probability < 0.5 - half_threshold {
+        let tier = if probability > 0.5 {
             Tier::Capable
         } else {
             Tier::Efficient
@@ -393,7 +450,7 @@ pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f
         return resolved(
             tier,
             DecisionSource::Dimensions,
-            scored.score,
+            probability,
             Some(scored.confidence),
         );
     }
@@ -401,7 +458,7 @@ pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f
     // 4. Fall open — the signals didn't corroborate enough to be sure. Hand off
     //    to the caller's classifier; with none, land on the picker's default.
     PickOutcome::ConsultClassifier {
-        score: scored.score,
+        probability,
         confidence: scored.confidence,
         default_tier: mode.default_tier(),
     }
@@ -411,13 +468,13 @@ pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f
 fn resolved(
     tier: Tier,
     source: DecisionSource,
-    score: f64,
+    probability: f64,
     confidence: Option<f64>,
 ) -> PickOutcome {
     PickOutcome::Resolved {
         tier,
         source,
-        score,
+        probability,
         confidence,
     }
 }
@@ -543,10 +600,6 @@ impl StageClassifier {
 
 #[async_trait]
 impl Classifier<State> for StageClassifier {
-    fn routing_tier(&self, selected_model_id: &ModelId) -> Option<&'static str> {
-        self.targets.label_for(selected_model_id)
-    }
-
     async fn score(
         &self,
         state: &mut State,
@@ -566,8 +619,8 @@ impl Classifier<State> for StageClassifier {
             PickOutcome::Resolved {
                 tier,
                 source,
-                score,
-                ..
+                probability,
+                confidence,
             } => {
                 let target = self.targets.name(tier);
                 record_decision_source(state, source);
@@ -576,7 +629,9 @@ impl Classifier<State> for StageClassifier {
                 // is the only branch whose tier the signals actually chose — an
                 // ambiguous turn is decided further down the cascade.
                 self.apply_handoff_note(request, tier, source);
-                let conf = score.abs();
+                // Prefer pick_tier's own confidence (e.g. 1.0 for an Override)
+                // over re-deriving it from the neutral 0.5 placeholder.
+                let conf = confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs());
                 Ok((
                     Classification::Scores(vec![Score {
                         target: target.clone(),
@@ -650,6 +705,20 @@ mod tests {
     }
 
     #[test]
+    fn pick_tier_treats_the_exact_threshold_score_as_ambiguous() {
+        // score == threshold maps to p == 0.5 + t/2 exactly, the closed
+        // ambiguous-band endpoint — a deliberate boundary reclassification
+        // from the old `confidence >= threshold` framing.
+        let mut signal = signal_from(json!([{"role": "user", "content": "hi"}]));
+        signal.severity = HARD_SEVERITY as f32;
+        let threshold = score_signal(&signal).confidence;
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::EfficientFirst, threshold),
+            PickOutcome::ConsultClassifier { .. }
+        ));
+    }
+
+    #[test]
     fn the_picker_mode_names_the_tier_an_undecided_turn_falls_back_to() {
         assert_eq!(PickerMode::CapableFirst.default_tier(), Tier::Capable);
         assert_eq!(PickerMode::EfficientFirst.default_tier(), Tier::Efficient);
@@ -712,6 +781,8 @@ mod tests {
             Classification::Scores(scores) => {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].target, "strong");
+                // An override is maximally certain, not `score.abs() == 0.0`.
+                assert_eq!(scores[0].confidence, 1.0);
             }
             _ => panic!("expected a definite classification"),
         }

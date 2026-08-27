@@ -5,9 +5,9 @@
 """Drive a libsy algorithm stream from Python."""
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 
-from switchyard.libsy import Step, algorithms
+from switchyard.libsy import LlmResponse, Step, algorithms
 
 
 class EchoClient:
@@ -17,19 +17,43 @@ class EchoClient:
         self,
         request: Mapping[str, object],
         model: str,
-    ) -> Mapping[str, object]:
-        return {
-            "model": model,
-            "outputs": [
-                {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]}
-            ],
-        }
+    ) -> LlmResponse.Agg | LlmResponse.Stream:
+        if request.get("stream") is True:
+
+            async def events() -> AsyncIterator[Mapping[str, object]]:
+                yield {
+                    "preservation": None,
+                    "normalized": [{"MessageStart": {"id": "echo", "model": model}}],
+                }
+                yield {
+                    "preservation": None,
+                    "normalized": [{"TextDelta": {"index": 0, "text": "Hello"}}],
+                }
+                yield {
+                    "preservation": None,
+                    "normalized": [{"MessageStop": {"reason": "end_turn"}}],
+                }
+
+            return LlmResponse.Stream(events())
+
+        return LlmResponse.Agg(
+            {
+                "model": model,
+                "outputs": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Hello"}],
+                    }
+                ],
+            }
+        )
 
 
 async def main() -> None:
     """Run random routing and serve its selected target."""
     request = {
         "model": "auto",
+        "stream": True,
         "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
     }
     client = EchoClient()
@@ -41,13 +65,20 @@ async def main() -> None:
 
     async for step in algorithm.run_stream(request):
         match step:
-            case Step.Decision(decision):
-                print("Decision:", decision.selected_model_id, decision.reasoning)
             case Step.CallModel(call):
-                model = call.decision.selected_model_id
-                call.respond(await client.call(call.request, model))
-            case Step.Done(response):
-                print("Response:", response)
+                call.respond(await client.call(call.request, call.models[0]))
+            case Step.Done(outcome):
+                print("Decision:", outcome.selected_model_id)
+                response = outcome.response or await client.call(
+                    outcome.request,
+                    outcome.selected_model_id,
+                )
+                match response:
+                    case LlmResponse.Agg(aggregate_response):
+                        print("Response:", aggregate_response)
+                    case LlmResponse.Stream(response_stream):
+                        async for event in response_stream:
+                            print("Response event:", event)
 
 
 if __name__ == "__main__":

@@ -1,71 +1,11 @@
 # Getting Started with Switchyard
 
-Switchyard has three native Rust execution paths:
+Switchyard has two native Rust execution paths:
 
-- **Launcher path:** install the Python-distributed CLI and launch Claude Code,
-  Codex, or OpenClaw through the packaged Rust server binding.
 - **Server path:** build and run the standalone Rust server for API clients and
   custom deployments.
 - **Library path:** embed the routing algorithms directly in your own Rust
   application with `switchyard-libsy`.
-
-## Launcher Path
-
-Use this path when you want Switchyard to start and configure a supported coding
-agent for you.
-
-### Install the CLI
-
-Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) if it is
-not already available:
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source "$HOME/.local/bin/env"
-```
-
-Then install the published Switchyard tool:
-
-```bash
-uv tool install --python 3.10 "nemo-switchyard[cli]"
-```
-
-This creates an isolated Python tool environment containing the `switchyard`
-CLI, its launcher dependency, and the packaged PyO3 Rust extension.
-`switchyard launch` starts the native Rust server through that extension; this
-path does not install or run the standalone `switchyard-server` binary.
-
-Install the coding agent you want to launch, then verify both commands are on
-your `PATH`.
-
-### Launch with the packaged OpenRouter deployment
-
-The packaged deployment exposes the route ID `switchyard`. Export an OpenRouter
-key and choose an agent:
-
-```bash
-export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-switchyard launch claude --model switchyard
-```
-
-Codex and OpenClaw use the same deployment:
-
-```bash
-switchyard launch codex --model switchyard
-switchyard launch openclaw --model switchyard
-```
-
-### Launch with a custom deployment
-
-Pass a native TOML deployment and select one of its route IDs:
-
-```bash
-switchyard launch codex --model my-route --config routes.toml
-```
-
-The launcher manages the native server lifecycle and points the selected coding
-agent at it. The server configuration format is the same TOML schema used by the
-standalone server below.
 
 ## Server Path
 
@@ -225,14 +165,12 @@ references, and route construction without starting the server.
 
 Check health: `curl http://localhost:4000/health`
 
-**Telemetry header opt-out**
+**Telemetry header**
 
-Switchyard adds an `X-Switchyard-Version` header to outbound LLM calls for
-release attribution. No request or response content is included. To disable:
-
-```bash
-export SWITCHYARD_TELEMETRY_OPT_OUT=1
-```
+Switchyard documents an `X-Switchyard-Version` header for release attribution
+on outbound LLM calls. No request or response content is included. The 0.2.0
+native server does not currently send this header upstream (see
+[Known Issues](known_issues.md)), so no opt-out is required at the moment.
 
 ---
 
@@ -248,8 +186,8 @@ picks a target and hands the model call back to you.
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
@@ -268,11 +206,12 @@ behaviour.
 
 ### Drive the algorithm
 
-An algorithm yields a stream of steps. Each `Step::CallModel` is a model call your
-host performs over its own transport, and the run ends with
-`Step::Done` carrying the final response. Serving those calls yourself
-is what lets libsy embed in a host that already owns its HTTP stack, retries,
-and credentials.
+An algorithm yields a stream of steps. Each `Step::CallModel` is a routing-time classifier or
+judge call your host performs over its own transport. The run ends with `Step::Done` carrying a
+`RoutingOutcome`: the selected model, ordered fallbacks, rewritten request, and an optional
+response when routing already produced the answer. Otherwise the host makes the terminal answer
+call from that outcome. Serving these calls yourself is what lets libsy embed in a host that
+already owns its HTTP stack, retries, and credentials.
 
 For the request, response, and streaming types the steps carry, see
 [`switchyard-protocol`](../crates/protocol/README.md).

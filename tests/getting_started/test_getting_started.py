@@ -11,9 +11,9 @@ def test_getting_started_documents_current_paths() -> None:
         Path(__file__).resolve().parents[2] / "docs" / "getting_started.md"
     ).read_text()
 
-    assert guide.index("## Launcher Path") < guide.index("## Server Path")
-    assert 'uv tool install --python 3.10 "nemo-switchyard[cli]"' in guide
-    assert "switchyard launch claude --model switchyard" in guide
+    assert guide.index("## Server Path") < guide.index("## Library Path")
+    assert "switchyard launch" not in guide
+    assert "nemo-switchyard[cli]" not in guide
     assert "cargo install --locked switchyard-server" in guide
     assert "switchyard-server --config routes.toml --dry-run" in guide
 
@@ -21,6 +21,7 @@ def test_getting_started_documents_current_paths() -> None:
         "switchyard configure",
         "switchyard serve",
         "switchyard verify",
+        "switchyard launch",
         "--routing-profiles",
         "routes.yaml",
     ):

@@ -648,3 +648,79 @@ fn incomplete_responses_source_survives_translation() -> TestResult {
     assert_eq!(output["choices"][0]["finish_reason"], "length");
     Ok(())
 }
+
+// Verifies a moderation stop stays distinguishable from a normal turn in both
+// directions, and that a named refusal category survives re-encoding.
+#[test]
+fn content_filter_and_refusal_translate_across_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+
+    // An OpenAI moderation stop reaches Anthropic clients as `refusal`, not `end_turn`.
+    // OpenAI reports no policy category, so the refusal carries the null form that
+    // Anthropic documents for a refusal mapping to no named category.
+    let openai = json!({
+        "id": "chatcmpl-test",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Partial answer"},
+            "finish_reason": "content_filter"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    });
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &openai,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(output["stop_reason"], "refusal");
+    assert_eq!(
+        output["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
+    );
+
+    // The distinction survives the other direction rather than being flattened.
+    let anthropic = json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4-5",
+        "content": [{"type": "text", "text": "Partial answer"}],
+        "stop_reason": "refusal",
+        "stop_details": {
+            "type": "refusal",
+            "category": "cyber",
+            "explanation": "This request was declined because it could enable cyber harm."
+        },
+        "usage": {"input_tokens": 10, "output_tokens": 5}
+    });
+    let output = engine
+        .translate_response(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &anthropic,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(output["choices"][0]["finish_reason"], "content_filter");
+
+    // Re-encoding a refusal keeps the category the source named instead of
+    // replacing it with the null form used for an unnamed refusal.
+    let output = engine
+        .translate_response(
+            WireFormat::AnthropicMessages,
+            WireFormat::AnthropicMessages,
+            &anthropic,
+            &TranslationPolicy {
+                preservation: switchyard_translation::PreservationPolicy::Disabled,
+                ..TranslationPolicy::default()
+            },
+        )?
+        .body;
+    assert_eq!(output["stop_reason"], "refusal");
+    assert_eq!(output["stop_details"]["category"], "cyber");
+    Ok(())
+}

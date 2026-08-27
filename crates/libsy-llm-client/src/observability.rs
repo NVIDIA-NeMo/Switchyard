@@ -191,7 +191,7 @@ fn llm_client_error_type(error: &LlmClientError) -> Cow<'static, str> {
         LlmClientError::Transport { .. } => Cow::Borrowed("transport"),
         LlmClientError::Timeout { .. } => Cow::Borrowed("timeout"),
         LlmClientError::ContextWindowExceeded { .. } => Cow::Borrowed("context_window_exceeded"),
-        LlmClientError::UpstreamHttp { status, .. } => Cow::Owned(status.to_string()),
+        LlmClientError::UpstreamHttp { status, .. } => Cow::Owned(status.as_str().to_owned()),
         LlmClientError::InvalidResponse { .. } => Cow::Borrowed("invalid_response"),
         LlmClientError::Ffi { .. } => Cow::Borrowed("ffi"),
         _ => Cow::Borrowed("_OTHER"),
