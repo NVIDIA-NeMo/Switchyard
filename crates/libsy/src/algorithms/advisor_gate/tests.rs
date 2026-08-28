@@ -77,6 +77,7 @@ fn tool_call_turn() -> Response {
             ..AggLlmResponse::default()
         }),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }
 
@@ -93,6 +94,7 @@ fn tool_use_stop_turn() -> Response {
             ..AggLlmResponse::default()
         }),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }
 
@@ -111,6 +113,7 @@ fn reasoning_only_turn() -> Response {
             ..AggLlmResponse::default()
         }),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }
 
@@ -125,6 +128,7 @@ fn empty_turn() -> Response {
             ..AggLlmResponse::default()
         }),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }
 
@@ -134,6 +138,7 @@ fn streamed(events: Vec<LlmResponseStreamEvent>) -> Response {
             events.into_iter().map(Ok),
         ))),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }
 
@@ -269,13 +274,27 @@ async fn tool_call_turn_replays_without_review() {
 async fn approved_terminal_turn_returns_buffered_body() {
     let script = Script::new();
     let gate = gate(AdvisorGateConfig::default());
-    let serve = script.serve("APPROVE", |_| reply("all done"));
+    let serve = script.serve("APPROVE", |_| {
+        let mut response = reply("all done");
+        response.upstream_headers.insert(
+            "x-upstream-trace",
+            "trace-123".parse().expect("valid test header"),
+        );
+        response
+    });
     let (selected_model, response) = test_drive(gate, task_request(), serve)
         .await
         .expect("routes");
     assert_eq!(
         script.models(),
         vec![EXECUTOR.to_string(), ADVISOR.to_string()]
+    );
+    assert_eq!(
+        response
+            .upstream_headers
+            .get("x-upstream-trace")
+            .and_then(|value| value.to_str().ok()),
+        Some("trace-123")
     );
     assert_eq!(completion_text(&agg_of(response).await), "all done");
     assert_eq!(selected_model, EXECUTOR);
@@ -752,6 +771,7 @@ async fn pattern_trigger_matches_on_tool_call_turns() {
             ..AggLlmResponse::default()
         }),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     };
     let serve = script.serve("APPROVE", {
         let turn = parking_lot::Mutex::new(Some(turn));

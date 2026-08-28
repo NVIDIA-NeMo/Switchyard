@@ -1189,6 +1189,7 @@ mod tests {
                 served_model: Some(ModelId::from("selected-target")),
                 ..Default::default()
             }),
+            upstream_headers: http::HeaderMap::new(),
         };
         let captured = Arc::new(Mutex::new(Vec::new()));
         let emitted = Arc::clone(&captured);
@@ -1241,6 +1242,7 @@ mod tests {
                 served_model: Some(ModelId::from("selected-target")),
                 ..Default::default()
             }),
+            upstream_headers: http::HeaderMap::new(),
         };
         let captured = Arc::new(Mutex::new(Vec::new()));
         let emitted = Arc::clone(&captured);
@@ -1275,6 +1277,7 @@ mod tests {
                 served_model: Some(ModelId::from("strong")),
                 ..Default::default()
             }),
+            upstream_headers: http::HeaderMap::new(),
         };
         let captured = Arc::new(Mutex::new(Vec::new()));
         let emitted = Arc::clone(&captured);
@@ -1333,6 +1336,7 @@ mod tests {
                 served_model: Some(ModelId::from("selected-target")),
                 ..Default::default()
             }),
+            upstream_headers: http::HeaderMap::new(),
         };
         let captured = Arc::new(Mutex::new(Vec::new()));
         let emitted = Arc::clone(&captured);
