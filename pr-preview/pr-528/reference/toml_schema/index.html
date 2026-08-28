@@ -711,14 +711,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../routing_algorithms/hierarchical_routing/" class="md-nav__link">
+      <a href="../../routing_algorithms/composite_routing/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Hierarchical Routing
+    Composite Routing
   
 
     
@@ -1161,10 +1161,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#hierarchical" class="md-nav__link">
+  <a href="#composite" class="md-nav__link">
     <span class="md-ellipsis">
       
-        hierarchical
+        composite
       
     </span>
   </a>
@@ -1371,10 +1371,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#hierarchical" class="md-nav__link">
+  <a href="#composite" class="md-nav__link">
     <span class="md-ellipsis">
       
-        hierarchical
+        composite
       
     </span>
   </a>
@@ -1751,7 +1751,7 @@ see <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing
 <td><code>classify_trigger</code></td>
 <td style="text-align: center;">No</td>
 <td><code>every_request</code></td>
-<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and holds that target across the tool calls between. <code>new_session</code> judges once and reuses that target for the session.</td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like <code>every_request</code>. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
@@ -1870,7 +1870,7 @@ policy selector, and routes to any configured target label.</p>
 <td><code>classify_trigger</code></td>
 <td style="text-align: center;">No</td>
 <td><code>every_request</code></td>
-<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and holds that target across the tool calls between. <code>new_session</code> judges once and reuses that target for the session.</td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like <code>every_request</code>. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
@@ -1965,10 +1965,10 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 </tr>
 </tbody>
 </table>
-<h3 id="hierarchical"><code>hierarchical</code><a class="headerlink" href="#hierarchical" title="Permanent link">&para;</a></h3>
-<p>Stacks other algorithms in a hierarchy, where one can set another's
+<h3 id="composite"><code>composite</code><a class="headerlink" href="#composite" title="Permanent link">&para;</a></h3>
+<p>Composes other algorithms, letting one set another's
 configuration. Today a classifier sets the tier a stage router falls open to when its own signals are not confident, leaving its scoring and escalation logic untouched. See
-<a href="../../routing_algorithms/hierarchical_routing/">Hierarchical Routing</a>.</p>
+<a href="../../routing_algorithms/composite_routing/">Composite Routing</a>.</p>
 <table>
 <thead>
 <tr>

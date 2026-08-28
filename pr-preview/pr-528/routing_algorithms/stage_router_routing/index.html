@@ -14,7 +14,7 @@
         <link rel="prev" href="../llm_classifier_routing/">
       
       
-        <link rel="next" href="../hierarchical_routing/">
+        <link rel="next" href="../composite_routing/">
       
       
         
@@ -912,14 +912,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../hierarchical_routing/" class="md-nav__link">
+      <a href="../composite_routing/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Hierarchical Routing
+    Composite Routing
   
 
     
@@ -1731,7 +1731,7 @@ request. Set <code>response_format_type = "json_object"</code> for providers tha
 JSON Object mode; Switchyard then adds the schema to the judge prompt and validates
 the returned object locally. The verdict schema and routing thresholds remain unchanged.</p>
 <p>Leave the block out under
-<a href="../hierarchical_routing/">Hierarchical Routing</a>. There the tier is already picked
+<a href="../composite_routing/">Composite Routing</a>. There the tier is already picked
 at the user turn, so a fallthrough judge would sit between the signals and that
 decision and overrule it.</p>
 <p>Give the classifier its own LLM client or quota bucket where possible. Sharing
