@@ -1751,7 +1751,7 @@ see <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing
 <td><code>classify_trigger</code></td>
 <td style="text-align: center;">No</td>
 <td><code>every_request</code></td>
-<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and holds that target across the tool calls between. <code>new_session</code> judges once and reuses that target for the session.</td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like <code>every_request</code>. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
@@ -1870,7 +1870,7 @@ policy selector, and routes to any configured target label.</p>
 <td><code>classify_trigger</code></td>
 <td style="text-align: center;">No</td>
 <td><code>every_request</code></td>
-<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and holds that target across the tool calls between. <code>new_session</code> judges once and reuses that target for the session.</td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like <code>every_request</code>. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
