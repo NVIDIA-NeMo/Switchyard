@@ -146,6 +146,106 @@ impl TranslatingLlmClient {
         })
     }
 
+    /// Whether `model` has an Anthropic backend that supports token counting.
+    pub fn supports_count_tokens(&self, model: &ModelId) -> bool {
+        self.backend_for(model, WireFormat::AnthropicMessages)
+            .is_some()
+    }
+
+    /// Whether `model` has an OpenAI Responses backend for auxiliary operations.
+    pub fn supports_responses_auxiliary(&self, model: &ModelId) -> bool {
+        self.backend_for(model, WireFormat::OpenAiResponses)
+            .is_some()
+    }
+
+    /// Counts input tokens with `model`'s Anthropic backend.
+    ///
+    /// Returns an error when the model has no Anthropic backend or the upstream
+    /// request fails or returns invalid JSON.
+    pub async fn count_tokens(&self, model: &ModelId, request: Request) -> Result<Value> {
+        let backend = self
+            .backend_for(model, WireFormat::AnthropicMessages)
+            .ok_or_else(|| LlmClientError::Configuration {
+                message: format!("model {model} has no Anthropic backend for count_tokens"),
+            })?;
+        let Request {
+            mut llm_request,
+            metadata,
+            ..
+        } = request;
+        llm_request.model = Some(model.to_string());
+        let http_response = self
+            .send_encoded(
+                backend,
+                WireFormat::AnthropicMessages,
+                llm_request,
+                metadata.as_ref(),
+                model,
+                UpstreamEndpoint::CountTokens,
+            )
+            .await?;
+        let body = match http_response {
+            EncodedResponse::Buffered { body, .. } => body,
+            EncodedResponse::Streaming(_) => {
+                return Err(LlmClientError::InvalidRequest {
+                    message: "count_tokens does not support streaming requests".to_string(),
+                });
+            }
+        };
+        serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
+            source: Box::new(error),
+        })
+    }
+
+    /// Counts input tokens with `model`'s OpenAI Responses backend.
+    pub async fn responses_input_tokens(&self, model: &ModelId, request: Request) -> Result<Value> {
+        self.responses_auxiliary(model, request, UpstreamEndpoint::ResponsesInputTokens)
+            .await
+    }
+
+    /// Compacts a request with `model`'s OpenAI Responses backend.
+    pub async fn responses_compact(&self, model: &ModelId, request: Request) -> Result<Value> {
+        self.responses_auxiliary(model, request, UpstreamEndpoint::ResponsesCompact)
+            .await
+    }
+
+    async fn responses_auxiliary(
+        &self,
+        model: &ModelId,
+        request: Request,
+        endpoint: UpstreamEndpoint,
+    ) -> Result<Value> {
+        let backend = self
+            .backend_for(model, WireFormat::OpenAiResponses)
+            .ok_or_else(|| LlmClientError::Configuration {
+                message: format!("model {model} has no OpenAI Responses backend"),
+            })?;
+        let Request {
+            mut llm_request,
+            metadata,
+            ..
+        } = request;
+        llm_request.model = Some(model.to_string());
+        let http_response = self
+            .send_encoded(
+                backend,
+                WireFormat::OpenAiResponses,
+                llm_request,
+                metadata.as_ref(),
+                model,
+                endpoint,
+            )
+            .await?;
+        let EncodedResponse::Buffered { body, .. } = http_response else {
+            return Err(LlmClientError::InvalidRequest {
+                message: "Responses auxiliary endpoints do not support streaming".to_string(),
+            });
+        };
+        serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
+            source: Box::new(error),
+        })
+    }
+
     /// Encode `llm_request` for `wire_format`, POST it to `url` with the request's
     /// forwarded headers plus the backend's static headers and auth, and return the
     /// successful upstream response. A
@@ -153,8 +253,9 @@ impl TranslatingLlmClient {
     /// response is returned as soon as its successful headers arrive. A non-success
     /// status maps to a typed error — a 400 is classified as a context-window
     /// overflow via the backend's provider rules. Shared by
-    /// [`call_rewrite_model`](Self::call_rewrite_model), which POSTs to the
-    /// backend's completion URL and decodes a response.
+    /// [`call_rewrite_model`](Self::call_rewrite_model) (which POSTs to the
+    /// backend's completion URL and decodes a response) and
+    /// the model-bearing auxiliary operations, which return raw JSON.
     async fn send_encoded(
         &self,
         backend: &Backend,
@@ -162,6 +263,7 @@ impl TranslatingLlmClient {
         llm_request: LlmRequest,
         metadata: Option<&Metadata>,
         model: &ModelId,
+        endpoint: UpstreamEndpoint,
     ) -> Result<EncodedResponse> {
         let mut body = encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
@@ -182,8 +284,9 @@ impl TranslatingLlmClient {
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
         }
-        let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-        let url = backend.url();
+        let streaming = endpoint.allows_streaming()
+            && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+        let url = endpoint.url(backend);
         record_gen_ai_request(&url, model, streaming);
 
         let max_retries = u64::from(backend.max_retries());
@@ -377,6 +480,7 @@ impl TranslatingLlmClient {
                 llm_request,
                 metadata.as_ref(),
                 &model_id,
+                UpstreamEndpoint::Completion,
             )
             .await?;
 
@@ -506,6 +610,29 @@ impl TranslatingLlmClient {
 impl RoutedLlmClient for TranslatingLlmClient {
     async fn call(&self, request: Request) -> Result<Response> {
         self.call_rewrite_model(request, None).await
+    }
+}
+
+#[derive(Clone, Copy)]
+enum UpstreamEndpoint {
+    Completion,
+    CountTokens,
+    ResponsesInputTokens,
+    ResponsesCompact,
+}
+
+impl UpstreamEndpoint {
+    fn url(self, backend: &Backend) -> String {
+        match self {
+            UpstreamEndpoint::Completion => backend.url(),
+            UpstreamEndpoint::CountTokens => backend.count_tokens_url(),
+            UpstreamEndpoint::ResponsesInputTokens => format!("{}/input_tokens", backend.url()),
+            UpstreamEndpoint::ResponsesCompact => format!("{}/compact", backend.url()),
+        }
+    }
+
+    fn allows_streaming(self) -> bool {
+        matches!(self, UpstreamEndpoint::Completion)
     }
 }
 

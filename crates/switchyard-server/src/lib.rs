@@ -191,6 +191,8 @@ impl ServerState {
                         clients,
                         None,
                         ModelCapabilities::default(),
+                        None,
+                        None,
                         Vec::new(),
                     ),
                 )
@@ -484,6 +486,12 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
         .route("/v1/decision", post(decision))
+        .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
+        .route(
+            "/v1/responses/input_tokens",
+            post(openai_responses_input_tokens),
+        )
+        .route("/v1/responses/compact", post(openai_responses_compact))
         .route("/v1/models", get(models))
         .route("/v1/stats", get(get_stats))
         .route("/v1/stats/reset", post(reset_stats))
@@ -694,6 +702,118 @@ async fn decision(
     }
 }
 
+/// Anthropic token counting against the route's explicitly configured target.
+async fn anthropic_count_tokens(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<Value>, JsonRejection>,
+) -> Response {
+    let body = match llm_json_body(body) {
+        Ok(body) => body,
+        Err((status, message)) => {
+            return anthropic_error_response(invalid_body_error(status, message));
+        }
+    };
+    let (route, request) = match resolve_route(
+        &state,
+        metadata_from_headers(headers),
+        body,
+        WireFormat::AnthropicMessages,
+    ) {
+        Ok(resolved) => resolved,
+        Err(response) => return anthropic_error_response(response),
+    };
+    anthropic_error_response(match route.count_tokens(request).await {
+        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+        Err(RunnerError::CountTokensUnsupported) => error_response(
+            StatusCode::BAD_REQUEST,
+            "route has no Anthropic target for token counting",
+            "invalid_request_error",
+            "count_tokens_unsupported",
+        ),
+        Err(RunnerError::Client(error)) => count_tokens_error(error),
+        Err(error) => server_error(error.to_string()),
+    })
+}
+
+/// Maps a token-count client failure with the same policy as a routed client call.
+fn count_tokens_error(error: LlmClientError) -> Response {
+    client_error(&error)
+}
+
+#[derive(Clone, Copy)]
+enum ResponsesAuxiliaryEndpoint {
+    InputTokens,
+    Compact,
+}
+
+async fn openai_responses_input_tokens(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<Value>, JsonRejection>,
+) -> Response {
+    openai_responses_auxiliary(
+        state,
+        headers,
+        body,
+        ResponsesAuxiliaryEndpoint::InputTokens,
+    )
+    .await
+}
+
+async fn openai_responses_compact(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<Value>, JsonRejection>,
+) -> Response {
+    openai_responses_auxiliary(state, headers, body, ResponsesAuxiliaryEndpoint::Compact).await
+}
+
+// Resolves route aliases and configured credentials before calling a model-bearing Responses API.
+async fn openai_responses_auxiliary(
+    state: ServerState,
+    headers: HeaderMap,
+    body: std::result::Result<Json<Value>, JsonRejection>,
+    endpoint: ResponsesAuxiliaryEndpoint,
+) -> Response {
+    let body = match llm_json_body(body) {
+        Ok(body) => body,
+        Err((status, message)) => {
+            return render_error_response(
+                invalid_body_error(status, message),
+                WireFormat::OpenAiResponses,
+            );
+        }
+    };
+    let (route, request) = match resolve_route(
+        &state,
+        metadata_from_headers(headers),
+        body,
+        WireFormat::OpenAiResponses,
+    ) {
+        Ok(resolved) => resolved,
+        Err(response) => return render_error_response(response, WireFormat::OpenAiResponses),
+    };
+    let result = match endpoint {
+        ResponsesAuxiliaryEndpoint::InputTokens => route.responses_input_tokens(request).await,
+        ResponsesAuxiliaryEndpoint::Compact => route.responses_compact(request).await,
+    };
+    render_error_response(
+        match result {
+            Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+            Err(RunnerError::ResponsesAuxiliaryUnsupported) => error_response(
+                StatusCode::BAD_REQUEST,
+                "route has no OpenAI Responses target",
+                "invalid_request_error",
+                "responses_auxiliary_unsupported",
+            ),
+            Err(RunnerError::Client(error)) => client_error(&error),
+            Err(error) => server_error(error.to_string()),
+        },
+        WireFormat::OpenAiResponses,
+    )
+}
+
 async fn handle_endpoint(
     state: ServerState,
     started: RequestStart,
@@ -781,8 +901,8 @@ fn llm_json_body(
 }
 
 /// Decode `body`, resolve the route named by its `model`, and build the
-/// [`Request`]. Shared by the completion handlers. Returns the resolved route
-/// and the built request — or an error [`Response`]
+/// [`Request`]. Shared by the completion and `count_tokens` handlers. Returns
+/// the resolved route and the built request — or an error [`Response`]
 /// (invalid body, empty `model` → 400, unknown route → 404).
 // Both callers immediately return the `Err(Response)` as the HTTP response, so
 // the large error type is intentional, not propagated up a call stack.
@@ -1170,6 +1290,10 @@ fn render_error_response(response: Response, wire_format: WireFormat) -> Respons
     error.into_response(wire_format)
 }
 
+fn anthropic_error_response(response: Response) -> Response {
+    render_error_response(response, WireFormat::AnthropicMessages)
+}
+
 fn anthropic_error_type(status: StatusCode) -> &'static str {
     match status {
         StatusCode::BAD_REQUEST => "invalid_request_error",
@@ -1487,6 +1611,9 @@ fn endpoint_listing(has_routing_log: bool) -> String {
         "  POST /v1/chat/completions    OpenAI Chat Completions",
         "  POST /v1/messages            Anthropic Messages",
         "  POST /v1/responses           OpenAI Responses",
+        "  POST /v1/messages/count_tokens",
+        "  POST /v1/responses/input_tokens",
+        "  POST /v1/responses/compact",
         "  ANY  unmatched paths          optional fallback client",
         "  GET  /v1/models              configured routes",
         "  GET  /v1/stats               routing stats",

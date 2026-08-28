@@ -255,6 +255,19 @@ impl Backend {
         self.config().max_retries
     }
 
+    /// Whether this backend speaks the Anthropic Messages wire format — the only
+    /// one with a `count_tokens` endpoint.
+    pub fn is_anthropic(&self) -> bool {
+        matches!(self, Backend::Anthropic(_))
+    }
+
+    /// The upstream `/v1/messages/count_tokens` URL, derived from the same base
+    /// URL join as [`url`](Self::url).
+    pub fn count_tokens_url(&self) -> String {
+        let base_url = self.config().base_url.trim_end_matches('/');
+        format!("{}/count_tokens", anthropic_url(base_url))
+    }
+
     /// Whether an upstream 400 `body` looks like a context-window overflow for
     /// this backend's provider.
     pub(crate) fn is_context_overflow(&self, body: &str) -> bool {

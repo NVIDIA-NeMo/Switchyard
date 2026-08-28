@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
@@ -57,6 +57,12 @@ impl MockUpstream {
                 post(upstream_responses_requires_forwarded_auth),
             )
             .route("/capture", post(upstream_redirect_capture))
+            .route("/v1/messages/count_tokens", post(upstream_count_tokens))
+            .route(
+                "/v1/responses/input_tokens",
+                post(upstream_responses_auxiliary),
+            )
+            .route("/v1/responses/compact", post(upstream_responses_auxiliary))
             .route("/future/provider/endpoint", post(upstream_fallback))
             .layer(DefaultBodyLimit::disable())
             .with_state(Arc::clone(&calls));
@@ -420,6 +426,32 @@ async fn upstream_redirect_capture(
         "has_authorization": headers.contains_key("authorization")
     }));
     StatusCode::OK.into_response()
+}
+
+async fn upstream_count_tokens(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(body.clone());
+    Json(json!({"input_tokens": 7})).into_response()
+}
+
+async fn upstream_responses_auxiliary(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    uri: Uri,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(json!({
+        "path": uri.path(),
+        "body": body,
+        "configured_header": headers.get("x-configured-client").and_then(|value| value.to_str().ok())
+    }));
+    if uri.path().ends_with("/input_tokens") {
+        Json(json!({"input_tokens": 11})).into_response()
+    } else {
+        Json(json!({"id": "resp_compacted", "object": "response", "output": []})).into_response()
+    }
 }
 
 async fn upstream_fallback(
@@ -1728,6 +1760,119 @@ response_format_type = "json_object"
             .and_then(|value| value.to_str().ok()),
         Some("model/weak")
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_bearing_auxiliary_endpoints_use_configured_route_targets() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.claude]
+format = "anthropic_messages"
+base_url = "{base_url}"
+
+[llm_clients.responses]
+format = "openai_responses"
+base_url = "{base_url}"
+extra_headers = {{ "x-configured-client" = "responses" }}
+
+[targets.responses]
+id = "real/responses-model"
+llm_client = "responses"
+
+[targets.strong]
+id = "real/opus"
+llm_client = "claude"
+
+[targets.other]
+id = "real/sonnet"
+llm_client = "claude"
+
+[routes.random]
+id = "switchyard/random"
+type = "random"
+targets = ["responses", "other", "strong"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let count_tokens = send(
+        &app,
+        "POST",
+        "/v1/messages/count_tokens",
+        Some(json!({
+            "model": "switchyard/random",
+            "messages": [{"role": "user", "content": "hi"}]
+        })),
+    )
+    .await?;
+    assert_eq!(count_tokens.status, StatusCode::OK);
+    assert_eq!(count_tokens.json()?["input_tokens"], 7);
+
+    let input_tokens = send(
+        &app,
+        "POST",
+        "/v1/responses/input_tokens",
+        Some(json!({"model": "switchyard/random", "input": "count me"})),
+    )
+    .await?;
+    assert_eq!(input_tokens.status, StatusCode::OK);
+    assert_eq!(input_tokens.json()?["input_tokens"], 11);
+
+    let compact = send(
+        &app,
+        "POST",
+        "/v1/responses/compact",
+        Some(json!({"model": "switchyard/random", "input": "compact me"})),
+    )
+    .await?;
+    assert_eq!(compact.status, StatusCode::OK);
+    assert_eq!(compact.json()?["id"], "resp_compacted");
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0]["model"], "real/opus");
+    assert_eq!(
+        calls[1],
+        json!({
+            "path": "/v1/responses/input_tokens",
+            "body": {"model": "real/responses-model", "input": "count me"},
+            "configured_header": "responses"
+        })
+    );
+    assert_eq!(
+        calls[2],
+        json!({
+            "path": "/v1/responses/compact",
+            "body": {"model": "real/responses-model", "input": "compact me"},
+            "configured_header": "responses"
+        })
+    );
+    drop(calls);
+
+    let unsupported = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/weak"])])?;
+    let unsupported = build_switchyard_router(unsupported);
+    for (path, body) in [
+        (
+            "/v1/messages/count_tokens",
+            json!({"model": ROUTE_MODEL, "messages": [{"role": "user", "content": "hi"}]}),
+        ),
+        (
+            "/v1/responses/input_tokens",
+            json!({"model": ROUTE_MODEL, "input": "count me"}),
+        ),
+        (
+            "/v1/responses/compact",
+            json!({"model": ROUTE_MODEL, "input": "compact me"}),
+        ),
+    ] {
+        let response = send(&unsupported, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{path}");
+    }
     Ok(())
 }
 

@@ -129,6 +129,9 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 | `POST` | `/v1/messages` | Anthropic Messages |
 | `POST` | `/v1/responses` | OpenAI Responses |
 | `POST` | `/v1/decision` | Resolve selected and fallback targets without a post-routing answer call |
+| `POST` | `/v1/messages/count_tokens` | Token count from a route's Anthropic target |
+| `POST` | `/v1/responses/input_tokens` | Token count from a route's OpenAI Responses target |
+| `POST` | `/v1/responses/compact` | Compaction through a route's OpenAI Responses target |
 | `ANY` | Any unmatched path | Raw forward through the optional `fallback_client` |
 | `GET` | `/v1/models` | Routes served by this deployment |
 | `GET` | `/v1/stats` | Per-model usage plus curated algorithm stats |
@@ -146,6 +149,9 @@ and responses are forwarded without translation, including paths, query strings,
 identifiers. The caller's end-to-end headers, including authorization, are forwarded; hop-by-hop
 headers are removed, and the client's configured API key, extra headers, format, and retry policy
 are not applied. Without `fallback_client`, unmatched paths return `404`.
+
+The three model-bearing auxiliary endpoints above remain routed operations: they resolve the route
+name to a compatible target, rewrite the upstream model ID, and use that target's configured client.
 
 `POST /v1/decision` accepts `{"input_format": "openai_chat", "request": {...}}`, where the
 nested request names the route in `model`. It executes required classifier or judge calls, then

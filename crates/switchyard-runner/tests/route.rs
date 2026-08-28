@@ -51,6 +51,8 @@ fn plugin_route(client: Arc<dyn RoutedLlmClient>) -> Route {
         clients,
         None,
         ModelCapabilities::default(),
+        None,
+        None,
         Vec::new(),
     )
 }

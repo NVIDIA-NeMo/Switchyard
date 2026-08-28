@@ -18,7 +18,8 @@ use switchyard_llm_client::{
 use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
 use crate::{
-    AlgorithmSpec, CallerAuthKind, DecisionTarget, ModelCapabilities, Route, Runner, RunnerError,
+    AlgorithmSpec, CallerAuthKind, CountTokensTarget, DecisionTarget, ModelCapabilities,
+    ResponsesTarget, Route, Runner, RunnerError,
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -189,6 +190,8 @@ impl DeploymentConfig {
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients)?;
+            let count_tokens_target = self.build_count_tokens_target(config, &clients);
+            let responses_target = self.build_responses_target(config, &clients);
             let decision_targets = config
                 .routing_target_names()
                 .into_iter()
@@ -199,6 +202,8 @@ impl DeploymentConfig {
                 route_clients,
                 caller_auth,
                 capabilities,
+                count_tokens_target,
+                responses_target,
                 decision_targets,
             );
             routes.push((config.id.clone(), route));
@@ -302,6 +307,58 @@ impl DeploymentConfig {
         })?;
         Ok(Some(config.base_url.as_str().to_string()))
     }
+
+    fn build_count_tokens_target(
+        &self,
+        route: &RouteConfig,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> Option<CountTokensTarget> {
+        route
+            .routing_target_names()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, name)| {
+                let target = self.targets.get(name)?;
+                let client = clients.get(&target.llm_client)?;
+                client.supports_count_tokens(&target.id).then_some((
+                    count_tokens_priority(name, &target.id),
+                    index,
+                    target,
+                    client,
+                ))
+            })
+            .min_by_key(|(priority, index, _, _)| (*priority, *index))
+            .map(|(_, _, target, client)| CountTokensTarget {
+                model: target.id.clone(),
+                client: client.clone(),
+            })
+    }
+
+    fn build_responses_target(
+        &self,
+        route: &RouteConfig,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> Option<ResponsesTarget> {
+        route.routing_target_names().into_iter().find_map(|name| {
+            let target = self.targets.get(name)?;
+            let client = clients.get(&target.llm_client)?;
+            client
+                .supports_responses_auxiliary(&target.id)
+                .then(|| ResponsesTarget {
+                    model: target.id.clone(),
+                    client: client.clone(),
+                })
+        })
+    }
+}
+
+fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
+    let target_name = target_name.to_ascii_lowercase();
+    let model_id = model_id.to_ascii_lowercase();
+    ["opus", "sonnet", "haiku"]
+        .iter()
+        .position(|hint| target_name.contains(hint) || model_id.contains(hint))
+        .unwrap_or(3)
 }
 
 /// A client endpoint, parsed when the config loads rather than checked afterwards.
