@@ -17,7 +17,6 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
-use crate::runner::FallbackClient;
 use crate::{
     AlgorithmSpec, CallerAuthKind, DecisionTarget, ModelCapabilities, Route, Runner, RunnerError,
 };
@@ -166,7 +165,7 @@ impl DeploymentConfig {
 
         let clients = self.build_clients()?;
         let targets = self.build_targets();
-        let fallback_client = self.build_fallback_client(&clients)?;
+        let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
             validate_value("route name", route_name)?;
@@ -204,7 +203,8 @@ impl DeploymentConfig {
             );
             routes.push((config.id.clone(), route));
         }
-        Ok(Runner::new(routes).with_fallback_client(fallback_client))
+        let runner = Runner::new(routes).with_fallback_url(fallback_base_url);
+        Ok(runner)
     }
 
     fn build_clients(&self) -> RunnerResult<BTreeMap<String, Arc<TranslatingLlmClient>>> {
@@ -291,10 +291,7 @@ impl DeploymentConfig {
         Ok((ClientRouter::new(by_model), caller_auth))
     }
 
-    fn build_fallback_client(
-        &self,
-        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
-    ) -> RunnerResult<Option<FallbackClient>> {
+    fn fallback_base_url(&self) -> RunnerResult<Option<String>> {
         let Some(name) = &self.fallback_client else {
             return Ok(None);
         };
@@ -303,13 +300,7 @@ impl DeploymentConfig {
                 "fallback_client references unknown llm client {name}"
             ))
         })?;
-        let client = clients.get(name).ok_or_else(|| {
-            RunnerError::configuration("validated fallback client was not initialized")
-        })?;
-        Ok(Some(FallbackClient {
-            backend: build_backend(name, config, &BTreeMap::new())?,
-            client: client.clone(),
-        }))
+        Ok(Some(config.base_url.as_str().to_string()))
     }
 }
 

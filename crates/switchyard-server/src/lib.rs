@@ -137,6 +137,7 @@ struct DecisionLlmClientResponse {
 #[derive(Clone)]
 pub struct ServerState {
     runner: Arc<Runner>,
+    fallback_http: reqwest::Client,
     metrics: prometheus::Registry,
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
@@ -202,12 +203,17 @@ impl ServerState {
     /// Creates HTTP-server state around an already configured runner.
     pub fn from_runner(runner: Runner) -> ServerResult<Self> {
         let metrics = metrics::registry().map_err(ServerError::new)?;
+        let fallback_http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| ServerError::new(error.to_string()))?;
         let stats = StatsAccumulator::new(
             metrics.clone(),
             runner.models().map(|model| model.algorithm),
         );
         Ok(Self {
             runner: Arc::new(runner),
+            fallback_http,
             metrics,
             stats,
             routing_log: None,
@@ -538,26 +544,79 @@ async fn openai_responses(
     handle_endpoint(state, started, headers, body, WireFormat::OpenAiResponses).await
 }
 
-// Forwards unmatched requests through the deployment's optional fallback client.
+// Forwards unmatched requests unchanged to the configured API root.
 async fn proxy_unmatched(State(state): State<ServerState>, request: HttpRequest) -> Response {
-    let (parts, body) = request.into_parts();
+    let Some(base_url) = state.runner.fallback_base_url() else {
+        return not_found().await;
+    };
+    let (mut parts, body) = request.into_parts();
     let path_and_query = parts
         .uri
         .path_and_query()
         .map_or_else(|| parts.uri.path().to_string(), ToString::to_string);
-    let metadata = metadata_from_headers(parts.headers);
+    strip_hop_by_hop_headers(&mut parts.headers);
+    parts.headers.remove(axum::http::header::HOST);
     let body = reqwest::Body::wrap_stream(body.into_data_stream());
     match state
-        .runner
-        .forward_fallback(parts.method, &path_and_query, body, metadata)
+        .fallback_http
+        .request(parts.method, fallback_url(base_url, &path_and_query))
+        .headers(parts.headers)
+        .body(body)
+        .send()
         .await
     {
-        Ok(Some(response)) => {
+        Ok(response) => {
             let response: http::Response<reqwest::Body> = response.into();
-            response.map(Body::new)
+            let (mut parts, body) = response.into_parts();
+            strip_hop_by_hop_headers(&mut parts.headers);
+            Response::from_parts(parts, Body::new(body))
         }
-        Ok(None) => not_found().await,
-        Err(error) => runner_error(error),
+        Err(error) => error_response(
+            StatusCode::BAD_GATEWAY,
+            error.to_string(),
+            "upstream_error",
+            "upstream_error",
+        ),
+    }
+}
+
+fn fallback_url(base_url: &str, path_and_query: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
+    let root = [
+        "/v1/chat/completions",
+        "/v1/responses",
+        "/v1/messages",
+        "/v1",
+    ]
+    .iter()
+    .find_map(|suffix| base_url.strip_suffix(suffix))
+    .unwrap_or(base_url);
+    format!("{root}{path_and_query}")
+}
+
+fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
+    let connection_headers = headers
+        .get_all(axum::http::header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
+        .collect::<Vec<_>>();
+    for name in connection_headers {
+        headers.remove(name);
+    }
+    for name in [
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    ] {
+        headers.remove(name);
     }
 }
 

@@ -255,21 +255,6 @@ impl Backend {
         self.config().max_retries
     }
 
-    /// Resolves an unmatched provider path against this backend's API root.
-    pub(crate) fn forwarding_url(&self, path_and_query: &str) -> String {
-        let base_url = self.config().base_url.trim_end_matches('/');
-        let root = [
-            "/v1/chat/completions",
-            "/v1/responses",
-            "/v1/messages",
-            "/v1",
-        ]
-        .iter()
-        .find_map(|suffix| base_url.strip_suffix(suffix))
-        .unwrap_or(base_url);
-        format!("{root}{path_and_query}")
-    }
-
     /// Whether an upstream 400 `body` looks like a context-window overflow for
     /// this backend's provider.
     pub(crate) fn is_context_overflow(&self, body: &str) -> bool {

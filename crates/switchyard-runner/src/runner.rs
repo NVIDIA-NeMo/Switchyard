@@ -5,13 +5,10 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 
 use libsy::RoutingOutcome;
-use reqwest::{Body, Method, Response};
 use serde_json::Value;
-use switchyard_llm_client::{Backend, TranslatingLlmClient};
-use switchyard_protocol::{Metadata, ModelId, WireFormat};
+use switchyard_protocol::{ModelId, WireFormat};
 
 use crate::config;
 use crate::{ModelCapabilities, Route, RunnerError};
@@ -19,12 +16,7 @@ use crate::{ModelCapabilities, Route, RunnerError};
 /// Immutable named route table.
 pub struct Runner {
     routes: Vec<(ModelId, Route)>,
-    fallback_client: Option<FallbackClient>,
-}
-
-pub(crate) struct FallbackClient {
-    pub backend: Backend,
-    pub client: Arc<TranslatingLlmClient>,
+    fallback_base_url: Option<String>,
 }
 
 /// Borrowed model metadata returned while listing routes.
@@ -68,12 +60,12 @@ impl Runner {
     pub fn new(routes: Vec<(ModelId, Route)>) -> Self {
         Self {
             routes,
-            fallback_client: None,
+            fallback_base_url: None,
         }
     }
 
-    pub(crate) fn with_fallback_client(mut self, fallback_client: Option<FallbackClient>) -> Self {
-        self.fallback_client = fallback_client;
+    pub(crate) fn with_fallback_url(mut self, fallback_base_url: Option<String>) -> Self {
+        self.fallback_base_url = fallback_base_url;
         self
     }
 
@@ -94,29 +86,9 @@ impl Runner {
         })
     }
 
-    /// Forwards an unmatched request through the configured fallback client.
-    pub async fn forward_fallback(
-        &self,
-        method: Method,
-        path_and_query: &str,
-        body: Body,
-        metadata: Metadata,
-    ) -> Result<Option<Response>, RunnerError> {
-        let Some(fallback) = &self.fallback_client else {
-            return Ok(None);
-        };
-        fallback
-            .client
-            .forward(
-                &fallback.backend,
-                method,
-                path_and_query,
-                body,
-                Some(&metadata),
-            )
-            .await
-            .map(Some)
-            .map_err(Into::into)
+    /// Returns the validated API root used for unmatched HTTP requests.
+    pub fn fallback_base_url(&self) -> Option<&str> {
+        self.fallback_base_url.as_deref()
     }
 
     /// Resolves an outcome to configured target names and non-secret client settings.

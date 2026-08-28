@@ -35,7 +35,9 @@ target = "strong"
 The optional top-level `fallback_client` names an entry under `[llm_clients]`. When set, any HTTP
 method and path not implemented by Switchyard is forwarded through that client without translating
 the path, query string, body, response, or model identifier. The fallback client does not need a
-target. When omitted, unmatched paths return `404`.
+target. Only its `base_url` is used: caller end-to-end headers are forwarded, hop-by-hop headers are
+removed, and configured API keys, extra headers, format, and retries are not applied. When omitted,
+unmatched paths return `404`.
 
 `schema_version`, `[targets]`, and `[routes]` must all be present, even when a
 route reaches no upstream. A file without a `[targets]` table is rejected with

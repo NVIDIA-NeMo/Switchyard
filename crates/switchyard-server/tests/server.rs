@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, Request as HttpRequest, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
@@ -424,10 +424,29 @@ async fn upstream_redirect_capture(
 
 async fn upstream_fallback(
     State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> HttpResponse {
-    calls.lock().await.push(body.clone());
-    Json(json!({"input_tokens": 7})).into_response()
+    calls.lock().await.push(json!({
+        "body": body,
+        "authorization": headers.get("authorization").and_then(|value| value.to_str().ok()),
+        "end_to_end": headers.get("x-end-to-end").and_then(|value| value.to_str().ok()),
+        "configured_secret": headers.contains_key("x-configured-secret"),
+        "connection": headers.contains_key("connection"),
+        "connection_nominated": headers.contains_key("x-remove-me")
+    }));
+    let mut response = Json(json!({"input_tokens": 7})).into_response();
+    response
+        .headers_mut()
+        .insert("connection", HeaderValue::from_static("x-upstream-hop"));
+    response
+        .headers_mut()
+        .insert("x-upstream-hop", HeaderValue::from_static("remove"));
+    response.headers_mut().insert(
+        "x-end-to-end-response",
+        HeaderValue::from_static("preserve"),
+    );
+    response
 }
 
 fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<ServerState> {
@@ -1723,6 +1742,7 @@ fallback_client = "fallback"
 [llm_clients.fallback]
 format = "openai_responses"
 base_url = "{base_url}"
+extra_headers = {{ "x-configured-secret" = "must-not-forward" }}
 
 [llm_clients.routed]
 format = "openai_chat"
@@ -1741,7 +1761,7 @@ target = "weak"
     ))?;
     let app = build_switchyard_router(state);
 
-    let response = send(
+    let response = send_with_headers(
         &app,
         "POST",
         "/future/provider/endpoint?mode=raw",
@@ -1749,16 +1769,39 @@ target = "weak"
             "model": "provider/model",
             "provider_field": {"nested": true}
         })),
+        &[
+            ("authorization", "Bearer caller-key"),
+            ("connection", "keep-alive, x-remove-me"),
+            ("keep-alive", "timeout=5"),
+            ("x-remove-me", "remove"),
+            ("x-end-to-end", "preserve"),
+        ],
     )
     .await?;
     assert_eq!(response.status, StatusCode::OK);
     assert_eq!(response.json()?["input_tokens"], 7);
+    assert!(!response.headers.contains_key("connection"));
+    assert!(!response.headers.contains_key("x-upstream-hop"));
+    assert_eq!(
+        response
+            .headers
+            .get("x-end-to-end-response")
+            .and_then(|value| value.to_str().ok()),
+        Some("preserve")
+    );
     let calls = upstream.calls.lock().await;
     assert_eq!(
         calls.as_slice(),
         &[json!({
-            "model": "provider/model",
-            "provider_field": {"nested": true}
+            "body": {
+                "model": "provider/model",
+                "provider_field": {"nested": true}
+            },
+            "authorization": "Bearer caller-key",
+            "end_to_end": "preserve",
+            "configured_secret": false,
+            "connection": false,
+            "connection_nominated": false
         })]
     );
     drop(calls);

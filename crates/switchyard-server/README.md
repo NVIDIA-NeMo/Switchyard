@@ -143,7 +143,9 @@ route, and the server translates between them.
 Set the top-level `fallback_client` to an entry under `[llm_clients]` to proxy any otherwise
 unmatched method and path through that client. The fallback client does not need a target. Requests
 and responses are forwarded without translation, including paths, query strings, bodies, and model
-identifiers. Without `fallback_client`, unmatched paths return `404`.
+identifiers. The caller's end-to-end headers, including authorization, are forwarded; hop-by-hop
+headers are removed, and the client's configured API key, extra headers, format, and retry policy
+are not applied. Without `fallback_client`, unmatched paths return `404`.
 
 `POST /v1/decision` accepts `{"input_format": "openai_chat", "request": {...}}`, where the
 nested request names the route in `model`. It executes required classifier or judge calls, then

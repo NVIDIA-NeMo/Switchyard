@@ -10,9 +10,9 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
-use http::{Method, StatusCode};
+use http::StatusCode;
 use reqwest::RequestBuilder;
-use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, RETRY_AFTER};
+use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Metadata, ModelId, Request,
@@ -144,37 +144,6 @@ impl TranslatingLlmClient {
                     .and_then(|backends| backends.iter().find(|b| b.wire_format() == format))
             }
         })
-    }
-
-    /// Forwards a provider-native request through `backend` without translation.
-    pub async fn forward(
-        &self,
-        backend: &Backend,
-        method: Method,
-        path_and_query: &str,
-        body: reqwest::Body,
-        metadata: Option<&Metadata>,
-    ) -> Result<reqwest::Response> {
-        let client = if backend.is_forwarding_auth() {
-            &self.forward_auth_client
-        } else {
-            &self.client
-        };
-        let mut builder = client
-            .request(method, backend.forwarding_url(path_and_query))
-            .body(body);
-        builder = forward_metadata_headers(builder, metadata);
-        if let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) {
-            for name in [CONTENT_TYPE, CONTENT_LENGTH] {
-                if let Some(value) = headers.get(&name) {
-                    builder = builder.header(name, value);
-                }
-            }
-        }
-        builder = backend.apply_forwarded_auth(builder, metadata);
-        builder = apply_extra_headers(builder, backend);
-        builder = backend.apply_auth(builder);
-        builder.send().await.map_err(convert_reqwest_error)
     }
 
     /// Encode `llm_request` for `wire_format`, POST it to `url` with the request's
