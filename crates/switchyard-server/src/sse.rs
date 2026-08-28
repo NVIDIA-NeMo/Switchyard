@@ -8,7 +8,7 @@ use std::convert::Infallible;
 use axum::response::sse::{Event, Sse};
 use futures_util::Stream;
 use serde_json::{Value, json};
-use switchyard_translation::{RawEventStream, WireFormat};
+use switchyard_translation::{LlmStreamError, RawEventStream, WireFormat};
 
 /// Boxed stream type accepted by Axum's SSE response wrapper.
 pub(crate) type SseFrameStream =
@@ -31,7 +31,16 @@ pub(crate) fn frame_stream(
                         error_event(target_format, error.to_string())
                     }
                 },
-                Err(error) => {
+                // The upstream's own error event, already in the target format: forward it
+                // verbatim so its code and type survive, rather than synthesizing one.
+                Err(LlmStreamError::Stream(value)) => {
+                    failed = true;
+                    frame_event(target_format, value.clone()).unwrap_or_else(|error| {
+                        tracing::warn!(error = %error, "in-band error event could not be framed");
+                        error_event(target_format, value.to_string())
+                    })
+                }
+                Err(LlmStreamError::Client(error)) => {
                     tracing::warn!(error = %error, "stream iteration failed");
                     failed = true;
                     error_event(target_format, error.to_string())
@@ -43,6 +52,8 @@ pub(crate) fn frame_stream(
             }
         }
 
+        // `[DONE]` is the OpenAI Chat success sentinel: clients stop reading there and
+        // keep what they have as a finished answer, so it must not follow a failed turn.
         if !failed && target_format == WireFormat::OpenAiChat {
             yield Ok(Event::default().data("[DONE]"));
         }
@@ -93,30 +104,61 @@ fn error_event(target_format: WireFormat, message: String) -> Event {
 
 #[cfg(test)]
 mod tests {
-    use std::{error::Error, io};
+    use std::error::Error;
 
     use axum::{body::to_bytes, response::IntoResponse};
     use futures_util::stream;
+    use switchyard_protocol::LlmClientError;
 
     use super::*;
 
-    type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
+    type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
+
+    // Renders a framed body for one Chat stream.
+    async fn chat_body(items: Vec<Result<Value, LlmStreamError>>) -> TestResult<String> {
+        let stream: RawEventStream = Box::pin(stream::iter(items));
+        let response = frame_stream(stream, WireFormat::OpenAiChat).into_response();
+        Ok(String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX).await?.to_vec(),
+        )?)
+    }
 
     #[tokio::test]
     async fn stream_error_terminates_without_done_marker() -> TestResult {
-        let failure: Box<dyn Error + Send + Sync> = Box::new(io::Error::other("boom"));
-        let stream: RawEventStream = Box::pin(stream::iter(vec![
+        let failure = LlmClientError::General("boom".to_string());
+        let body = chat_body(vec![
             Ok(json!({"id": "before"})),
-            Err(failure),
+            Err(LlmStreamError::Client(failure)),
             Ok(json!({"id": "after"})),
-        ]));
-
-        let response = frame_stream(stream, WireFormat::OpenAiChat).into_response();
-        let body = String::from_utf8(to_bytes(response.into_body(), usize::MAX).await?.to_vec())?;
+        ])
+        .await?;
 
         // A stream error is terminal: later chunks and success markers must not be emitted.
         assert!(body.contains("before"));
         assert!(body.contains("boom"));
+        assert!(!body.contains("after"));
+        assert!(!body.contains("[DONE]"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn in_band_error_is_forwarded_verbatim_without_done_marker() -> TestResult {
+        let upstream_error = json!({
+            "error": {"code": "stream_failed", "message": "boom", "type": "upstream_stream_error"}
+        });
+        let body = chat_body(vec![
+            Ok(json!({"id": "before"})),
+            Err(LlmStreamError::Stream(upstream_error)),
+            Ok(json!({"id": "after"})),
+        ])
+        .await?;
+
+        // The upstream owns this error, so its code and type reach the client unchanged
+        // rather than being flattened into a synthesized SwitchyardError frame.
+        assert!(body.contains("before"));
+        assert!(body.contains("stream_failed"));
+        assert!(body.contains("upstream_stream_error"));
+        assert!(!body.contains("SwitchyardError"));
         assert!(!body.contains("after"));
         assert!(!body.contains("[DONE]"));
         Ok(())

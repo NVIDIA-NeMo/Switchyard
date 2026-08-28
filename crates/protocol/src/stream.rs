@@ -12,6 +12,7 @@ use futures::{Stream, StreamExt};
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 
 use crate::{
     LlmClientError,
@@ -23,6 +24,18 @@ use crate::{
 /// upstream already sent a success status line before failing, so there is no real
 /// code to propagate; 502 matches how a failed upstream call surfaces elsewhere.
 const MID_STREAM_UPSTREAM_STATUS: StatusCode = StatusCode::BAD_GATEWAY;
+
+/// Why a translated event stream stopped early.
+#[derive(Debug, Error)]
+pub enum LlmStreamError {
+    /// An error the upstream sse error
+    #[error("upstream stream error: {0}")]
+    Stream(Value),
+
+    /// The stream itself failed
+    #[error(transparent)]
+    Client(#[from] LlmClientError),
+}
 
 /// A boxed, `Send` stream of response events. Each item may fail independently mid-stream.
 pub type LlmResponseStream =
