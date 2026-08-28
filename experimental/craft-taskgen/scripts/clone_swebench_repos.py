@@ -16,7 +16,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from craft_taskgen.importers.common import load_records, normalize_repo_slug
+from craft_taskgen.importers.common import load_records, normalize_repo_slug  # noqa: E402
 
 
 def collect_unique_repos(input_path: Path) -> list[str]:

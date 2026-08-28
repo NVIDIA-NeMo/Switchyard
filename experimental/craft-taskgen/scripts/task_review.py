@@ -458,7 +458,8 @@ def render_review_markdown(analysis: dict, harbor_meta: dict, task_id: str) -> s
             out.append("")
             for test, info in sorted(sometimes, key=lambda x: x[0]):
                 models_disp = "|".join(sorted(info["passed_models"]))
-                out.append(f"- `{test}` — passed by {info['passed_count']}/{info['total_complete_trials']} trials "
+                out.append(f"- `{test}` — passed by "
+                           f"{info['passed_count']}/{info['total_complete_trials']} trials "
                            f"(models: {models_disp})")
             out.append("")
 
@@ -521,7 +522,8 @@ def render_review_markdown(analysis: dict, harbor_meta: dict, task_id: str) -> s
     if p2p_regressed:
         out.append(f"- **P2P regressions observed**: {len(p2p_regressed)} test(s)")
     if a["skip_constraint_violations"]:
-        out.append(f"- **Universal-fail skip-rescue**: blocked — {'; '.join(a['skip_constraint_violations'])}")
+        violations = "; ".join(a["skip_constraint_violations"])
+        out.append(f"- **Universal-fail skip-rescue**: blocked — {violations}")
     elif a["universally_failing"]:
         if a["n_trials_passing_after_skip"] > 0:
             out.append(f"- **Universal-fail skip-rescue**: feasible — skipping {a['n_universal_fails']} "
@@ -662,7 +664,11 @@ def main() -> int:
     print("=" * 78, file=sys.stderr)
     sample_md = next(iter(sorted(md_dir.glob("*.md"))), None)
     sample_md_path = str(sample_md) if sample_md else f"{md_dir}/<task_id>.md"
-    harbor_root_disp = str(args.harbor_tasks_root) if args.harbor_tasks_root else "<path-to-craft-bench>/harbor-tasks/<cohort>"
+    harbor_root_disp = (
+        str(args.harbor_tasks_root)
+        if args.harbor_tasks_root
+        else "<path-to-craft-bench>/harbor-tasks/<cohort>"
+    )
     print(f"""
 You're helping me audit a CRAFT benchmark task. Goal: decide whether the task is
 a genuine capability test or whether the instruction/tests are unfair (test scope

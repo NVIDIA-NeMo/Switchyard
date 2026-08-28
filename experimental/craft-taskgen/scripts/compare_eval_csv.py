@@ -34,7 +34,9 @@ def _clean_text(value: object, max_len: int) -> str:
     return text
 
 
-def _build_indexes(tasks: dict[str, dict], *, max_text: int) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
+def _build_indexes(
+    tasks: dict[str, dict], *, max_text: int
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
     by_instance_id: dict[str, dict] = {}
     by_task_id: dict[str, dict] = {}
     by_commit_sha: dict[str, dict] = {}

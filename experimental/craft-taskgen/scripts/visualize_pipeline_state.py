@@ -132,7 +132,7 @@ def plot_repo_verdicts(tasks: dict[str, dict], repos: list[str], out_path: Path)
             color=VERDICT_COLORS[verdict],
             edgecolor="white",
         )
-        left = [l + v for l, v in zip(left, values)]
+        left = [base + v for base, v in zip(left, values)]
 
     ax.set_yticks(list(y))
     ax.set_yticklabels(pivot.index)
@@ -187,7 +187,7 @@ def plot_repo_stage_breakdown(tasks: dict[str, dict], repos: list[str], out_path
             color=stage_colors[stage],
             edgecolor="white",
         )
-        left = [l + v for l, v in zip(left, values)]
+        left = [base + v for base, v in zip(left, values)]
 
     ax.set_yticks(list(y))
     ax.set_yticklabels(pivot.index)
@@ -261,7 +261,11 @@ def write_summary_csv(tasks: dict[str, dict], repos: list[str], out_path: Path) 
     rows = []
     for repo in repos:
         repo_tasks = [task for task in tasks.values() if task_repo(task) == repo]
-        verdicts = Counter((task.get("eval_verdict") or "").strip() for task in repo_tasks if task.get("eval_verdict"))
+        verdicts = Counter(
+            (task.get("eval_verdict") or "").strip()
+            for task in repo_tasks
+            if task.get("eval_verdict")
+        )
         stages = Counter(task.get("stage", "?") for task in repo_tasks)
         attempted = sum(verdicts.values())
         rows.append(
@@ -276,7 +280,9 @@ def write_summary_csv(tasks: dict[str, dict], repos: list[str], out_path: Path) 
                 "stage_promising": stages.get("promising", 0),
                 "stage_rejected": stages.get("rejected", 0),
                 "stage_evaluated": stages.get("evaluated", 0),
-                "promising_rate_pct": round((100.0 * stages.get("promising", 0) / attempted), 1) if attempted else 0.0,
+                "promising_rate_pct": (
+                    round((100.0 * stages.get("promising", 0) / attempted), 1) if attempted else 0.0
+                ),
             }
         )
 
@@ -290,7 +296,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Create charts from a craft-taskgen state.json file.")
     parser.add_argument("state_file", type=Path, help="Path to pipeline state.json")
     parser.add_argument("--out-dir", type=Path, default=Path("state-viz"), help="Output directory for charts")
-    parser.add_argument("--top-repos", type=int, default=20, help="Limit charts to the top N repos by task count")
+    parser.add_argument(
+        "--top-repos", type=int, default=20, help="Limit charts to the top N repos by task count"
+    )
     args = parser.parse_args()
 
     configure_plot_style()

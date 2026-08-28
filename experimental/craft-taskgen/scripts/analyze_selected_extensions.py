@@ -169,7 +169,13 @@ def plot_top_extensions(df: pd.DataFrame, out_path: Path, *, by: str, title: str
     ax.set_ylabel("")
     ax.set_title(title, pad=18)
     for patch, value in zip(ax.patches, values[::-1]):
-        ax.text(value + max(values) * 0.01, patch.get_y() + patch.get_height() / 2, str(value), va="center", fontsize=10)
+        ax.text(
+            value + max(values) * 0.01,
+            patch.get_y() + patch.get_height() / 2,
+            str(value),
+            va="center",
+            fontsize=10,
+        )
     sns.despine(ax=ax, left=False, bottom=False)
     fig.tight_layout()
     fig.savefig(out_path, dpi=160)
@@ -200,7 +206,13 @@ def plot_python_presence(df: pd.DataFrame, out_path: Path) -> None:
     ax.set_title(f"Python presence in selected tasks (n={total})", pad=18)
     ax.set_ylim(0, max(counts.values()) * 1.12)
     for patch, value in zip(ax.patches, counts.values()):
-        ax.text(patch.get_x() + patch.get_width() / 2, value + max(total * 0.01, 1), f"{int(value)}", ha="center", fontsize=11)
+        ax.text(
+            patch.get_x() + patch.get_width() / 2,
+            value + max(total * 0.01, 1),
+            f"{int(value)}",
+            ha="center",
+            fontsize=11,
+        )
     sns.despine(ax=ax, left=False, bottom=False)
     fig.tight_layout()
     fig.savefig(out_path, dpi=160)
@@ -268,7 +280,9 @@ def build_report(df: pd.DataFrame, out_path: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Analyze selected-task source file extensions from a state.json.")
+    parser = argparse.ArgumentParser(
+        description="Analyze selected-task source file extensions from a state.json."
+    )
     parser.add_argument("--state", type=Path, required=True, help="Path to run state.json.")
     parser.add_argument("--out-dir", type=Path, required=True, help="Directory for reports and plots.")
     args = parser.parse_args()
@@ -309,8 +323,18 @@ def main() -> None:
     write_csv(args.out_dir / "extension_stats.csv", ["extension", "tasks", "files"], ext_rows)
 
     plot_repo_breakdown(df, args.out_dir / "repo_breakdown.png")
-    plot_top_extensions(df, args.out_dir / "top_extensions_by_task.png", by="task", title="Top source-file extensions by task coverage")
-    plot_top_extensions(df, args.out_dir / "top_extensions_by_file.png", by="file", title="Top source-file extensions by file count")
+    plot_top_extensions(
+        df,
+        args.out_dir / "top_extensions_by_task.png",
+        by="task",
+        title="Top source-file extensions by task coverage",
+    )
+    plot_top_extensions(
+        df,
+        args.out_dir / "top_extensions_by_file.png",
+        by="file",
+        title="Top source-file extensions by file count",
+    )
     plot_python_presence(df, args.out_dir / "python_presence.png")
     build_report(df, args.out_dir / "report.md")
 
