@@ -1,0 +1,31 @@
+# CRAFT Search (Track 1) task generation profile
+# Derives codebase navigation tasks from Track 2 implementation problems.
+
+[models]
+opus_model = "azure/anthropic/claude-opus-4-6"
+haiku_model = "azure/anthropic/claude-haiku-4-5"
+llm_step_model = "azure/anthropic/claude-opus-4-6"  # gateway model for claude -p pipeline steps
+
+[pipeline]
+default_concurrency = 4
+task_suite_dir = "harbor-tasks/craft-search-from-t2"
+
+[search]
+# 3-model synthesis: each seed sent to 3 frontier models, cross-judged
+synthesis_models = [
+    "openai/aws/anthropic/bedrock-claude-sonnet-4-6",
+    "openai/gcp/google/gemini-3.1-pro-preview",
+    "openai/us/azure/openai/gpt-5.4",
+]
+judge_model = "openai/aws/anthropic/bedrock-claude-sonnet-4-6"
+codex_model = "openai/openai/gpt-5.3-codex"
+
+# Embedding-based dedup
+dedup_threshold = 0.65
+dedup_embedding_model = "openai/azure/openai/text-embedding-3-small"
+
+# Filter thresholds
+reject_threshold = 0.3   # both Opus + Codex <= this -> reject
+
+[runner]
+skip_smoke = false

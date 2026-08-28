@@ -1,0 +1,17 @@
+# Harbor compose override: map host.docker.internal -> host-gateway on the
+# main service so a trial container can reach a vLLM running on the Docker
+# host (used by `scripts/run-baselines.sh --backend vllm`, which rewrites
+# localhost/127.0.0.1 in VLLM_BASE_URL to host.docker.internal).
+#
+# Works on macOS Docker Desktop (where host.docker.internal is auto-mapped)
+# and on Linux (where this mapping is required to resolve it at all).
+#
+# Fed to harbor via `--extra-docker-compose patches/compose-overrides/host-gateway.yaml`.
+# This replaces the old in-tree edit to harbor's docker-compose-base.yaml: as of
+# harbor a56546f (post-v0.13.1) that file no longer exists and harbor exposes the
+# native `--extra-docker-compose` flag (cli/jobs.py:672, cli/trials.py:354) instead.
+# See docs/analyses/jun08-harbor-patch-redundancy-audit.md.
+services:
+  main:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

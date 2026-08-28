@@ -1,0 +1,53 @@
+stages:
+  - quality
+  - deploy
+
+variables:
+  UV_CACHE_DIR: .uv-cache
+  PIP_CACHE_DIR: .pip-cache
+
+.quality-base:
+  stage: quality
+  image: python:3.12
+  tags:
+    - nemollm-common
+  before_script:
+    - pip install uv
+    # Honor uv.lock so CI matches local `uv sync` resolution (per CLAUDE.md
+    # convention). Previously `uv pip install -e ".[dev]"` resolved fresh each
+    # run and flaked on 2026-04-23 when a new tree-sitter-language-pack
+    # resolution broke grep_ast imports in the CI container.
+    - uv sync
+    - source .venv/bin/activate
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == "main"
+
+lint:
+  extends: .quality-base
+  script:
+    - ruff check src/ tests/
+    - ruff format --check src/ tests/
+
+test:
+  extends: .quality-base
+  script:
+    - pytest tests/ -v
+
+# GitLab Pages — publish the static results site at site/.
+# The job MUST be named `pages` and publish a `public/` directory; see
+# https://docs.gitlab.com/ee/user/project/pages/.
+pages:
+  stage: deploy
+  image: alpine:3.20
+  tags:
+    - nemollm-common
+  script:
+    - rm -rf public
+    - cp -r site public
+  artifacts:
+    paths:
+      - public
+  rules:
+    # Deploy from main on every push.
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

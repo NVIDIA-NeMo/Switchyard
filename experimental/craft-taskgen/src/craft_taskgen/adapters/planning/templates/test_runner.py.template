@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+
+reward_dir = "/logs/verifier"
+os.makedirs(reward_dir, exist_ok=True)
+
+verify_script = "/tests/verify_{abbrev}.sh"
+result = subprocess.run(
+    ["bash", verify_script, "/repo"],
+    cwd="/repo",
+    capture_output=True,
+    text=True,
+    timeout=600,
+)
+verify_output = result.stdout + result.stderr
+
+with open(os.path.join(reward_dir, "verify_full_output.txt"), "w") as f:
+    f.write(verify_output)
+
+reward = 1.0 if result.returncode == 0 else 0.0
+with open(os.path.join(reward_dir, "reward.txt"), "w") as f:
+    f.write(str(reward))

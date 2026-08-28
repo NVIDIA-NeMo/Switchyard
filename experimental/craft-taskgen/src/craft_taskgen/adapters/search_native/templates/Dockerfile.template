@@ -1,0 +1,32 @@
+FROM ubuntu:22.04@sha256:14be402d3f1eeeb5e7da73d3260322c68e7b51c88388f53e88eb21d6450bd520
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git python3 ca-certificates curl && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    npm install -g @anthropic-ai/claude-code@{claude_code_version} && \
+    npm install -g @openai/codex@{codex_version} && \
+    npm install -g opencode-ai@{opencode_version} && \
+    apt-get remove -y curl && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/root/.local/bin:/root/.opencode/bin:$PATH"
+
+RUN mkdir -p /etc/codex && cat > /etc/codex/config.toml << 'EOF'
+model_provider = "nvidia_gateway"
+
+[model_providers.nvidia_gateway]
+name = "NVIDIA LiteLLM Gateway"
+base_url = "{gateway_base_url}"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+EOF
+
+RUN git clone --filter=blob:none --no-checkout {repo_url} /repo \
+    && git -C /repo checkout {repo_commit} \
+    && rm -rf /repo/.git
+
+RUN mkdir -p /app
+WORKDIR /repo

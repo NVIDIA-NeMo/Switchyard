@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[project]
+name = "craft-taskgen"
+version = "0.1.0"
+description = "Automated CRAFT benchmark task generation pipeline"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv>=1.0",
+    "litellm>=1.0",
+    "jsonschema>=4.0",
+    "harbor @ git+https://github.com/harbor-framework/harbor.git@a56546feb7d2da0b3196bbd7b05adacb72449391",
+    "unidiff>=0.7",
+    "tree-sitter>=0.23",
+    "tree-sitter-language-pack>=0.7",
+    "tree-sitter-python>=0.23",
+    "pydantic>=2.0",
+    "grep-ast>=0.3",
+    "diskcache>=5.0",
+    "networkx>=3.0",
+    "scipy>=1.10",
+    "tqdm>=4.0",
+]
+
+[project.optional-dependencies]
+llm = [
+    "openai>=1.0",
+]
+
+[project.scripts]
+craft-taskgen = "craft_taskgen.pipeline:main"
+craft-taskgen-mine = "craft_taskgen.miner:main"
+craft-taskgen-validate = "craft_taskgen.task_format:main"
+craft-taskgen-convert = "craft_taskgen.adapters.cli:main"
+craft-taskgen-preflight = "craft_taskgen.preflight:main"
+craft-taskgen-status = "craft_taskgen.status:main"
+craft-taskgen-split = "craft_taskgen.split:main"
+craft-taskgen-dashboard = "craft_taskgen.dashboard:main"
+craft-taskgen-planning-score = "craft_taskgen.planning.cli:main"
+craft-taskgen-import = "craft_taskgen.importers.cli:main"
+craft-taskgen-swebench-align = "craft_taskgen.swebench_alignment:main"
+
+# Dev tooling lives in a PEP 735 group, not an extra, so plain `uv sync` /
+# `uv run pytest` install it and it stays out of the published wheel metadata.
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "datasets>=4.8.4",
+    "markdown>=3.10.2",
+    "matplotlib>=3.10.8",
+    "pandas>=3.0.2",
+    "seaborn>=0.13.2",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/craft_taskgen/dashboard.py" = ["E501"]  # HTML template strings
+"src/craft_taskgen/prompts.py" = ["E501"]  # long lines inside prompt strings
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "docker: tests that require a real docker daemon (skip with -m 'not docker')",
+]

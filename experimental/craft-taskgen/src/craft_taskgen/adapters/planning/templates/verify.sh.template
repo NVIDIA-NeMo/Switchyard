@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+PASS=0
+FAIL=0
+
+run_check() {{
+    local desc="$1"; shift
+    local tmpfile
+    tmpfile=$(mktemp)
+    timeout 300 "$@" > "$tmpfile" 2>&1
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        PASS=$((PASS+1))
+        echo "  PASS: $desc"
+    else
+        FAIL=$((FAIL+1))
+        echo "  FAIL: $desc"
+    fi
+    cat "$tmpfile" | sed 's/^/    /'
+    rm -f "$tmpfile"
+}}
+
+echo "Injecting post-merge test files..."
+cd /tests/postmerge && find . -type f | while read f; do
+    mkdir -p "/repo/$(dirname "$f")"
+    cp "$f" "/repo/$f"
+done
+cd /repo
+
+echo "Running reference test suite ({n_f2p} F2P tests)..."
+run_check "F2P reference tests pass" {f2p_command}
+
+{p2p_block}
+echo ""
+if [ "$FAIL" -gt 0 ]; then
+    echo "FAIL: $FAIL check(s) failed, $PASS passed"
+    exit 1
+fi
+echo "PASS: all $PASS checks passed"

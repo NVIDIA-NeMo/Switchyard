@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# Environment
+.env
+
+# Pipeline output (generated at runtime)
+harbor-tasks/*
+# Allow the integrity-test toy task fixture (used by scripts/rerun-tainted.sh).
+!harbor-tasks/integrity-test
+# Allow the openhands smoke fixture (fast iteration for openhands wiring).
+!harbor-tasks/openhands-smoke
+jobs/
+candidates/
+repos/
+runs/
+/baselines/
+
+# Generated shard CSVs (see craft-taskgen-split / scripts/run-pipeline.sh)
+references/repo_list_*_half.csv
+
+# Local scratch
+tmp.sh
+tmp/
+notes/
+swebench_pro.jsonl
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# pytest
+.pytest_cache/
+dashboard.html
+repos
+
+# superpowers visual-companion session dirs
+.superpowers/
+
+# triage-replay analysis outputs (ephemeral; data is large/external)
+triage-analysis/
+triage-replay-*.csv

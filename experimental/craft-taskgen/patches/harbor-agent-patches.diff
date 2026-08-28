@@ -1,0 +1,510 @@
+--- a/harbor/agents/installed/base.py
++++ b/harbor/agents/installed/base.py
+@@ -265,7 +265,7 @@
+         Override in subclasses if the command output needs parsing."""
+         return stdout.strip()
+ 
+-    def _truncate_output(self, text: str | None, max_len: int = 1000) -> str:
++    def _truncate_output(self, text: str | None, max_len: int = 8000) -> str:
+         if not text:
+             return "None"
+         if len(text) > max_len:
+--- a/harbor/agents/installed/claude_code.py
++++ b/harbor/agents/installed/claude_code.py
+@@ -130,10 +130,16 @@
+         await self.exec_as_root(
+             environment,
+             command=(
++                # Skip if claude is already installed (e.g. from agent-bake layer).
++                f"if command -v claude >/dev/null 2>&1 && {{ [ -z '{self._version or ''}' ] || [ \"$(claude --version 2>/dev/null | grep -oE '[0-9]+(\\.[0-9]+)+' | head -1)\" = '{self._version or ''}' ]; }}; then"
++                "  echo 'claude already installed, skipping system pkg install';"
++                "  exit 0;"
++                "fi;"
+                 "if command -v apk &> /dev/null; then"
+                 "  apk add --no-cache curl bash nodejs npm;"
+                 " elif command -v apt-get &> /dev/null; then"
+-                "  apt-get update && apt-get install -y curl;"
++                # Tolerate dead xenial repos / unsigned PPAs on EOL cybergym base images.
++                "  (apt-get update 2>/dev/null || true) && apt-get install -y curl;"
+                 " elif command -v yum &> /dev/null; then"
+                 "  yum install -y curl;"
+                 " else"
+@@ -148,6 +154,11 @@
+             environment,
+             command=(
+                 "set -euo pipefail; "
++                # Skip if claude is already installed (e.g. from agent-bake layer).
++                f"if command -v claude >/dev/null 2>&1 && {{ [ -z '{self._version or ''}' ] || [ \"$(claude --version 2>/dev/null | grep -oE '[0-9]+(\\.[0-9]+)+' | head -1)\" = '{self._version or ''}' ]; }}; then"
++                "  echo 'claude already installed, skipping';"
++                "  exit 0;"
++                "fi;"
+                 "if command -v apk &> /dev/null; then"
+                 f"  npm install -g @anthropic-ai/claude-code{'@' + self._version if self._version else ''};"
+                 " else"
+--- a/harbor/agents/installed/codex.py
++++ b/harbor/agents/installed/codex.py
+@@ -77,10 +77,19 @@
+         await self.exec_as_root(
+             environment,
+             command=(
++                # Skip if codex is already installed (e.g. from agent-bake layer).
++                f"if command -v codex >/dev/null 2>&1 && {{ [ -z '{self._version or ''}' ] || [ \"$(codex --version 2>/dev/null | grep -oE '[0-9]+(\\.[0-9]+)+' | head -1)\" = '{self._version or ''}' ]; }}; then"
++                "  echo 'codex already installed, skipping system pkg install';"
++                "  exit 0;"
++                "fi;"
+                 "if ldd --version 2>&1 | grep -qi musl || [ -f /etc/alpine-release ]; then"
+                 "  apk add --no-cache curl bash nodejs npm ripgrep;"
+                 " elif command -v apt-get &>/dev/null; then"
+-                "  apt-get update && apt-get install -y curl ripgrep;"
++                "  (apt-get update 2>/dev/null || true) && apt-get install -y curl"
++                " && (apt-get install -y ripgrep"
++                " || (curl -fsSL https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz"
++                " | tar -xz -C /tmp"
++                " && install -m755 /tmp/ripgrep-15.1.0-x86_64-unknown-linux-musl/rg /usr/local/bin/rg));"
+                 " elif command -v yum &>/dev/null; then"
+                 "  yum install -y curl ripgrep;"
+                 " else"
+@@ -95,14 +104,24 @@
+             environment,
+             command=(
+                 "set -euo pipefail; "
++                # Skip if codex is already installed (e.g. from agent-bake layer).
++                f"if command -v codex >/dev/null 2>&1 && {{ [ -z '{self._version or ''}' ] || [ \"$(codex --version 2>/dev/null | grep -oE '[0-9]+(\\.[0-9]+)+' | head -1)\" = '{self._version or ''}' ]; }}; then"
++                "  echo 'codex already installed, skipping';"
++                "  exit 0;"
++                "fi;"
+                 "if ldd --version 2>&1 | grep -qi musl || [ -f /etc/alpine-release ]; then"
+                 f"  npm install -g @openai/codex{version_spec};"
+                 " else"
+-                "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash &&"
++                "  for _nvm_i in 1 2 3; do"
++                " curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh -o /tmp/nvm-install.sh"
++                " && bash /tmp/nvm-install.sh && break"
++                ' || { [ "$_nvm_i" -lt 3 ] && sleep 5 || exit 1; }; done &&'
+                 '  export NVM_DIR="$HOME/.nvm" &&'
+                 '  \\. "$NVM_DIR/nvm.sh" || true &&'
+                 "  command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } &&"
+-                "  nvm install 22 && nvm alias default 22 && npm -v &&"
++                "  nvm install 22;"
++                " if ! node --version >/dev/null 2>&1; then nvm install 16 && nvm use 16; fi;"
++                " nvm alias default $(nvm current) && npm -v &&"
+                 f"  npm install -g @openai/codex{version_spec};"
+                 " fi && "
+                 "codex --version"
+@@ -706,7 +725,22 @@
+         if not self.model_name:
+             raise ValueError("Model name is required")
+ 
+-        model = self.model_name.split("/")[-1]
++        model = self.model_name
++
++        # Load the custom model catalog so gateway-routed models (azure/openai/...)
++        # are recognized by codex as reasoning-capable. Without this, codex drops
++        # reasoning.effort from the Responses API payload on unknown slugs.
++        # Path is taken from CODEX_MODEL_CATALOG_JSON env var; if unset or the
++        # file does not exist, no catalog is injected (reasoning may be absent).
++        # The catalog (~150KB) is uploaded as a file via environment.upload_file
++        # AFTER setup rather than echo'd into the setup command: a single bash -c
++        # argv element is capped at MAX_ARG_STRLEN (128KB), and the shlex-quoted
++        # catalog exceeds that, which made the whole setup command fail (exit 255).
++        _catalog_host_path = ""
++        _catalog_path = self._get_env("CODEX_MODEL_CATALOG_JSON")
++        if _catalog_path and Path(_catalog_path).is_file():
++            _catalog_host_path = _catalog_path
++        _has_catalog = bool(_catalog_host_path)
+ 
+         # Build command with optional CLI config flags from descriptors.
+         cli_flags = self.build_cli_flags()
+@@ -761,12 +795,33 @@
+             env["OPENAI_BASE_URL"] = openai_base_url
+ 
+         # codex 0.118.0 only honors openai_base_url from config.toml, not the env var.
++        # Full nvidia_gateway provider block so wire_api=responses is set; required
++        # for NVIDIA/vLLM gateway routing (bare openai_base_url drops reasoning.effort).
++        # Closed-book toggle: prepend `web_search = "disabled"` BEFORE the
++        # [model_providers.nvidia_gateway] section. TOML scope rules mean any
++        # bare key after a [section] header belongs to that section, so writing
++        # web_search after the provider block makes it a (silently ignored)
++        # provider field instead of the top-level codex config the
++        # resolve_web_search_mode() reader expects.
+         config_toml_block = ""
+         if openai_base_url:
++            web_search_prefix = ""
++            if self._get_env("CODEX_DISABLE_WEB_SEARCH"):
++                web_search_prefix = 'web_search = "disabled"\n'
+             config_toml_block = (
+-                '\ncat >>"$CODEX_HOME/config.toml" <<TOML\n'
+-                'openai_base_url = "${OPENAI_BASE_URL}"\n'
+-                "TOML"
++                '\ncat >>"$CODEX_HOME/config.toml" <<EOF2\n'
++                f"{web_search_prefix}"
++                'model_provider = "nvidia_gateway"\n'
++                "[model_providers.nvidia_gateway]\n"
++                'name = "NVIDIA Gateway"\n'
++                'base_url = "${OPENAI_BASE_URL}"\n'
++                'env_key = "OPENAI_API_KEY"\n'
++                'wire_api = "responses"\n'
++                "[tools]\n"
++                "view_image = false\n"
++                "[features]\n"
++                "unified_exec = false\n"
++                "EOF2"
+             )
+ 
+         setup_command += config_toml_block
+@@ -785,6 +840,23 @@
+                 command=setup_command,
+                 env=env,
+             )
++
++        # Upload the custom model catalog (~150KB) as a file so codex recognizes
++        # gateway-routed model slugs and includes reasoning.effort in the
++        # Responses API payload. Uploaded (not echo'd into setup_command) to stay
++        # under the 128KB MAX_ARG_STRLEN cap on a single bash -c argument; the
++        # setup command above already created $CODEX_HOME (= _REMOTE_CODEX_HOME).
++        if _has_catalog:
++            remote_catalog_path = (
++                self._REMOTE_CODEX_HOME / "custom-model-catalog.json"
++            ).as_posix()
++            await environment.upload_file(_catalog_host_path, remote_catalog_path)
++            # upload_file copies as root; fix ownership so the agent user can read it
++            if environment.default_user is not None:
++                await self.exec_as_root(
++                    environment,
++                    command=f"chown {environment.default_user} {remote_catalog_path}",
++                )
+         try:
+             await self.exec_as_agent(
+                 environment,
+@@ -795,11 +867,15 @@
+                     "--skip-git-repo-check "
+                     f"--model {model} "
+                     "--json "
+-                    "--enable unified_exec "
+-                    f"{cli_flags_arg}"
+-                    "-- "  # end of flags
+-                    f"{escaped_instruction} "
+-                    f"2>&1 </dev/null | tee {
++                    "--disable unified_exec "
++                    + (
++                        '-c "model_catalog_json=\\"${CODEX_HOME}/custom-model-catalog.json\\"" '
++                        if _has_catalog else ""
++                    )
++                    + f"{cli_flags_arg}"
++                    + "-- "  # end of flags
++                    + f"{escaped_instruction} "
++                    + f"2>&1 </dev/null | tee {
+                         EnvironmentPaths.agent_dir / self._OUTPUT_FILENAME
+                     }"
+                 ),
+--- a/harbor/agents/installed/opencode.py
++++ b/harbor/agents/installed/opencode.py
+@@ -80,27 +80,36 @@
+         return AgentName.OPENCODE.value
+ 
+     def get_version_command(self) -> str | None:
+-        return ". ~/.nvm/nvm.sh; opencode --version"
++        return "opencode --version"
+ 
+     async def install(self, environment: BaseEnvironment) -> None:
+-        await self.exec_as_root(
+-            environment,
+-            command="apt-get update && apt-get install -y curl",
+-            env={"DEBIAN_FRONTEND": "noninteractive"},
+-        )
+         version_spec = f"@{self._version}" if self._version else "@latest"
+-        await self.exec_as_agent(
++        await self.exec_as_root(
+             environment,
++            # Install Node 16 LTS directly from nodejs.org (whitelisted in
++            # restrict-network.sh). Bypasses NVM entirely -- NVM requires a
++            # git clone from github.com whose IPs rotate past the iptables
++            # snapshot taken at container startup, causing intermittent
++            # "Network is unreachable" errors. Node 16 is the last LTS that
++            # requires only glibc 2.17; Ubuntu 16.04 Xenial ships glibc 2.23.
++            # Node 18+ requires glibc 2.28 and will not run on Xenial.
++            # apt-get update is best-effort: dead Xenial PPAs fail silently.
+             command=(
+                 "set -euo pipefail; "
+-                "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash && "
+-                'export NVM_DIR="$HOME/.nvm" && '
+-                '\\. "$NVM_DIR/nvm.sh" || true && '
+-                "command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } && "
+-                "nvm install 22 && npm -v && "
++                # Skip if opencode is already installed (e.g. from agent-bake layer).
++                f"if command -v opencode >/dev/null 2>&1 && {{ [ -z '{self._version or ''}' ] || [ \"$(opencode --version 2>/dev/null | grep -oE '[0-9]+(\\.[0-9]+)+' | head -1)\" = '{self._version or ''}' ]; }}; then"
++                "  echo 'opencode already installed, skipping';"
++                "  exit 0;"
++                "fi;"
++                "(apt-get update 2>/dev/null || true) && apt-get install -y --no-install-recommends curl; "
++                "curl -fsSL https://nodejs.org/dist/v16.20.2/node-v16.20.2-linux-x64.tar.gz "
++                "-o /tmp/node.tar.gz && "
++                "tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 && "
++                "rm /tmp/node.tar.gz && "
+                 f"npm i -g opencode-ai{version_spec} && "
+                 "opencode --version"
+             ),
++            env={"DEBIAN_FRONTEND": "noninteractive"},
+         )
+ 
+     @staticmethod
+@@ -440,14 +449,82 @@
+ 
+         if self.model_name and "/" in self.model_name:
+             provider, model_id = self.model_name.split("/", 1)
+-            provider_config: dict[str, Any] = {"models": {model_id: {}}}
++            # Set temperature: true to unlock the capability gate in opencode.
++            # Without this, agent-level temperature/top_p values are silently
++            # dropped (see session/llm.ts: capabilities.temperature check).
++            provider_config: dict[str, Any] = {"models": {model_id: {"temperature": True}}}
+             base_url = os.environ.get("OPENAI_BASE_URL")
+             if base_url and provider == "openai":
+                 # opencode reads baseURL from provider.options, not the provider root.
+                 # See: https://github.com/anomalyco/opencode config.ts ProviderConfig schema.
+                 provider_config.setdefault("options", {})["baseURL"] = base_url
++            # Custom "nvidia" (gateway) and "vllm" (local) providers both
++            # use @ai-sdk/openai-compatible to call /v1/chat/completions
++            # instead of /v1/responses. Required for endpoints that don't
++            # support the OpenAI Responses API.
++            if provider in ("nvidia", "vllm"):
++                provider_config["npm"] = "@ai-sdk/openai-compatible"
++                # Literal ${VAR} placeholders expanded inside the container at
++                # write-time via heredoc so the container's env wins.
++                provider_config["options"] = {
++                    "baseURL": "${OPENAI_BASE_URL}",
++                    "apiKey": "${OPENAI_API_KEY}",
++                }
++                _effort = os.environ.get("OPENCODE_REASONING_EFFORT", "")
++                if _effort:
++                    provider_config["models"][model_id].setdefault(
++                        "options", {}
++                    )["reasoningEffort"] = _effort
+             config["provider"] = {provider: provider_config}
+ 
++        # Inject per-mode agent sampling params from env vars.
++        # OPENCODE_BUILD_* controls the "build" mode (code generation).
++        # OPENCODE_PLAN_* controls the "plan" mode (planning/reasoning).
++        _AGENT_PARAMS = [
++            ("temperature", float),
++            ("top_p", float),
++            ("top_k", int),
++            ("max_tokens", int),
++            ("presence_penalty", float),
++        ]
++        agent_cfg: dict[str, Any] = {}
++        for mode in ("build", "plan"):
++            mode_params: dict[str, Any] = {}
++            for param, cast in _AGENT_PARAMS:
++                val = os.environ.get(f"OPENCODE_{mode.upper()}_{param.upper()}", "")
++                if val:
++                    mode_params[param] = cast(val)
++            if mode_params:
++                agent_cfg[mode] = mode_params
++        if agent_cfg:
++            config["agent"] = agent_cfg
++
++        # Override small_model so opencode doesn't fall back to gpt-5-nano
++        # for title generation (fails on self-hosted vLLM with one model).
++        small_model = os.environ.get("OPENCODE_SMALL_MODEL", "")
++        if small_model:
++            config["small_model"] = small_model
++
++        # Auto-approve all tool operations so non-interactive container
++        # execution (stdin from /dev/null) doesn't silently reject prompts.
++        # Closed-book mode: deny webfetch and websearch via the permission
++        # ruleset, the canonical opencode mechanism (see
++        # opencode/packages/opencode/src/permission/index.ts:fromConfig +
++        # disabled). The earlier `tools.<name>=false` field is not honored
++        # by opencode 1.14.31; permission.<name>="deny" is.
++        if os.environ.get("OPENCODE_DISABLE_WEBFETCH"):
++            config["permission"] = {
++                "*": "allow",
++                "webfetch": "deny",
++                "websearch": "deny",
++            }
++        else:
++            config["permission"] = "allow"
++
++        # Disable auto-compaction for baseline reproducibility.
++        if os.environ.get("OPENCODE_DISABLE_AUTO_COMPACT", "1") == "1":
++            config["compaction"] = {"auto": False}
++
+         # Layer: defaults → auto-generated → job-level overrides.
+         # Deep-merge preserves sibling keys within nested dicts (e.g. provider, experimental).
+         config = self._deep_merge(copy.deepcopy(self._DEFAULT_CONFIG), config)
+@@ -457,8 +534,12 @@
+             return None
+ 
+         config_json = json.dumps(config, indent=2)
+-        escaped = shlex.quote(config_json)
+-        return f"mkdir -p ~/.config/opencode && echo {escaped} > ~/.config/opencode/opencode.json"
++        # Unquoted heredoc so ${OPENAI_BASE_URL} / ${OPENAI_API_KEY} (and any
++        # other ${VAR}) are expanded inside the container at write-time.
++        return (
++            "mkdir -p ~/.config/opencode && "
++            f"cat > ~/.config/opencode/opencode.json <<EOF\n{config_json}\nEOF"
++        )
+ 
+     @with_prompt_template
+     async def run(
+@@ -515,6 +596,8 @@
+         elif provider == "openai":
+             keys.append("OPENAI_API_KEY")
+             keys.append("OPENAI_BASE_URL")
++        elif provider in ("nvidia", "vllm"):
++            keys.extend(["OPENAI_API_KEY", "OPENAI_BASE_URL"])
+         elif provider == "opencode":
+             keys.append("OPENCODE_API_KEY")
+         elif provider == "xai":
+@@ -529,6 +612,11 @@
+         # Enable fake VCS for OpenCode
+         env["OPENCODE_FAKE_VCS"] = "git"
+ 
++        # Cap output tokens for vLLM endpoints that reject requests exceeding context.
++        max_output = os.environ.get("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "")
++        if max_output:
++            env["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] = max_output
++
+         skills_command = self._build_register_skills_command()
+         if skills_command:
+             await self.exec_as_agent(environment, command=skills_command, env=env)
+@@ -544,7 +632,6 @@
+             environment,
+             # Note that the --thinking flag just means thinking blocks will be included in the json formatted output
+             command=(
+-                ". ~/.nvm/nvm.sh; "
+                 f"opencode --model={self.model_name} run --format=json {cli_flags_arg}--thinking --dangerously-skip-permissions -- {escaped_instruction} "
+                 f"2>&1 </dev/null | stdbuf -oL tee /logs/agent/opencode.txt"
+             ),
+--- a/harbor/agents/installed/openhands_sdk.py
++++ b/harbor/agents/installed/openhands_sdk.py
+@@ -113,13 +113,22 @@
+                 environment,
+                 command=f"mkdir -p /opt/openhands-sdk-venv && chown {agent_user}:{agent_user} /opt/openhands-sdk-venv",
+             )
+-            # Install SDK (as default user)
++            # Install SDK (as default user). openhands-sdk requires Python >=3.12;
++            # when the container's system python3 is older (e.g. v2b tasks pinning
++            # 3.10/3.11 for upstream compatibility), bootstrap uv to install a
++            # parallel Python 3.12 under $HOME/.local without touching system tools.
+             version_spec = f"=={self._version}" if self._version else ""
+             await self.exec_as_agent(
+                 environment,
+                 command=(
+                     "set -euo pipefail; "
+-                    "python3 -m venv /opt/openhands-sdk-venv && "
++                    'if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)" 2>/dev/null; then '
++                    "  python3 -m venv /opt/openhands-sdk-venv; "
++                    "else "
++                    "  python3 -m pip install --quiet 'uv==0.7.12'; "
++                    '  export PATH="$HOME/.local/bin:$PATH"; '
++                    "  uv venv --python 3.12 --seed /opt/openhands-sdk-venv; "
++                    "fi; "
+                     "source /opt/openhands-sdk-venv/bin/activate && "
+                     "export PIP_DEFAULT_TIMEOUT=120 && "
+                     "pip install --upgrade pip || true && "
+--- a/harbor/agents/installed/pi.py
++++ b/harbor/agents/installed/pi.py
+@@ -50,7 +50,7 @@
+                 '\\. "$NVM_DIR/nvm.sh" || true && '
+                 "command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } && "
+                 "nvm install 22 && npm -v && "
+-                f"npm install -g @mariozechner/pi-coding-agent{version_spec} && "
++                f"npm install -g @earendil-works/pi-coding-agent{version_spec} && "
+                 "pi --version"
+             ),
+         )
+@@ -106,6 +106,15 @@
+             keys.append("HF_TOKEN")
+         elif provider == "mistral":
+             keys.append("MISTRAL_API_KEY")
++        elif provider == "nvidia":
++            # Custom OpenAI-compatible provider for the NVIDIA inference
++            # gateway. Pi has no built-in `nvidia` provider and no
++            # --base-url CLI flag, so we plant a per-model models.json at
++            # `~/.pi/agent/models.json` declaring `nvidia` as an
++            # `openai-completions` provider pointing at OPENAI_BASE_URL.
++            # Pi reads it on startup and treats `--provider nvidia
++            # --model <slug>` as a routed call.
++            keys.append("OPENAI_API_KEY")
+         elif provider == "openai":
+             keys.append("OPENAI_API_KEY")
+         elif provider == "openrouter":
+@@ -118,14 +127,74 @@
+             if val:
+                 env[key] = val
+ 
+-        model_args = (
+-            f"--provider {provider} --model {self.model_name.split('/', 1)[1]} "
+-        )
++        # Strip exactly one leading provider segment. For `provider=nvidia`
++        # the launcher prepends `nvidia/` as a dispatch token; what remains
++        # IS the gateway wire name (e.g. `nvidia/qwen/qwen3.6-35b-a3b` for
++        # qwen, `aws/anthropic/claude-haiku-4-5-v1` for haiku). Same shape
++        # as all other providers — just one strip.
++        model_for_cli = self.model_name.split("/", 1)[1]
++        model_args = f"--provider {provider} --model {model_for_cli} "
+ 
+         cli_flags = self.build_cli_flags()
+         if cli_flags:
+             cli_flags += " "
+ 
++        if provider == "nvidia":
++            # Write per-model models.json into the container so pi
++            # recognizes `--provider nvidia --model <slug>`. baseUrl is
++            # captured at host time from OPENAI_BASE_URL; apiKey is the
++            # ENV-VAR NAME (pi resolves it at request time from the
++            # container env we forward above).
++            base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get(
++                "OPENAI_API_BASE", ""
++            )
++            if not base_url:
++                raise ValueError(
++                    "provider=nvidia requires OPENAI_BASE_URL or OPENAI_API_BASE "
++                    "in the host env so pi.py can plant models.json with a baseUrl."
++                )
++            models_json = json.dumps(
++                {
++                    "providers": {
++                        "nvidia": {
++                            "baseUrl": base_url,
++                            "api": "openai-completions",
++                            "apiKey": "OPENAI_API_KEY",
++                            "authHeader": True,
++                            "models": [
++                                {
++                                    "id": model_for_cli,
++                                    "reasoning": True,
++                                    "thinkingLevelMap": {
++                                        "off": None,
++                                        "minimal": "minimal",
++                                        "low": "low",
++                                        "medium": "medium",
++                                        "high": "high",
++                                        "xhigh": "high",
++                                    },
++                                    "compat": {
++                                        "supportsDeveloperRole": False,
++                                        "supportsReasoningEffort": True,
++                                        "maxTokensField": "max_tokens",
++                                        "supportsUsageInStreaming": True,
++                                    },
++                                }
++                            ],
++                        }
++                    }
++                },
++                indent=2,
++            )
++            await self.exec_as_agent(
++                environment,
++                command=(
++                    "mkdir -p ~/.pi/agent && "
++                    f"printf %s {shlex.quote(models_json)} > ~/.pi/agent/models.json"
++                ),
++                env=env,
++            )
++
+         skills_command = self._build_register_skills_command()
+         if skills_command:
+             await self.exec_as_agent(environment, command=skills_command)
