@@ -1453,6 +1453,10 @@ Switchyard server serves. It is read by <code>switchyard-server --config</code>.
 </span></code></pre></div>
 <p><code>schema_version</code> must be <code>1</code>. Table names under <code>llm_clients</code>, <code>targets</code>, and
 <code>routes</code> are local references; clients send the route's <code>id</code> as the model name.</p>
+<p>The optional top-level <code>fallback_client</code> names an entry under <code>[llm_clients]</code>. When set, any HTTP
+method and path not implemented by Switchyard is forwarded through that client without translating
+the path, query string, body, response, or model identifier. The fallback client does not need a
+target. When omitted, unmatched paths return <code>404</code>.</p>
 <p><code>schema_version</code>, <code>[targets]</code>, and <code>[routes]</code> must all be present, even when a
 route reaches no upstream. A file without a <code>[targets]</code> table is rejected with
 <code>missing field targets</code>; an empty <code>[targets]</code> table satisfies it.
