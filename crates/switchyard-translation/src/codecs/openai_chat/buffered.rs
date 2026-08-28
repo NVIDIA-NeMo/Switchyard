@@ -1066,7 +1066,11 @@ fn openai_text_part(text: &str) -> Value {
     json!({"type": "text", "text": text})
 }
 
-// Maps IR image sources to OpenAI Chat image content parts when possible.
+/// Maps an IR image source to an OpenAI Chat `image_url` content part.
+///
+/// Returns `None` when the source cannot be mapped, such as a `Base64` image
+/// with no `media_type` or a `Raw` value that does not match a recognized
+/// shape; callers fall back to [`image_source_text`] in that case.
 pub(crate) fn openai_image_part(source: &ImageSource) -> Option<Value> {
     match source {
         ImageSource::Url { url, detail } => {
@@ -1118,7 +1122,10 @@ fn openai_raw_image_part(raw: &Value) -> Option<Value> {
     }))
 }
 
-// Converts image sources to deterministic text fallback content.
+/// Converts an image source to a deterministic JSON text fallback.
+///
+/// Used when [`openai_image_part`] cannot map the source to a native
+/// content part, so the image data is still preserved as readable text.
 pub(crate) fn image_source_text(source: &ImageSource) -> String {
     match source {
         ImageSource::Url { url, detail } => json_string(&json!({
@@ -1133,7 +1140,11 @@ pub(crate) fn image_source_text(source: &ImageSource) -> String {
     }
 }
 
-// Maps IR file sources to OpenAI Chat file content parts when possible.
+/// Maps an IR file source to an OpenAI Chat `file` content part.
+///
+/// Returns `None` when the source cannot be mapped, such as a `Raw` value
+/// that is not a base64 Anthropic document; callers fall back to
+/// [`file_source_text`] in that case.
 pub(crate) fn openai_file_part(source: &FileSource) -> Option<Value> {
     match source {
         FileSource::FileId(file_id) => Some(json!({"type": "file", "file": {"file_id": file_id}})),
@@ -1166,7 +1177,10 @@ fn openai_raw_file_part(raw: &Value) -> Option<Value> {
     Some(json!({"type": "file", "file": file}))
 }
 
-// Converts file sources to deterministic text fallback content.
+/// Converts a file source to a deterministic JSON text fallback.
+///
+/// Used when [`openai_file_part`] cannot map the source to a native
+/// content part, so the file data is still preserved as readable text.
 pub(crate) fn file_source_text(source: &FileSource) -> String {
     match source {
         FileSource::FileId(file_id) => json_string(&json!({"file_id": file_id})),
