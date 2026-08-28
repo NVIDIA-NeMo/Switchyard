@@ -129,7 +129,7 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 | `POST` | `/v1/messages` | Anthropic Messages |
 | `POST` | `/v1/responses` | OpenAI Responses |
 | `POST` | `/v1/decision` | Resolve selected and fallback targets without a post-routing answer call |
-| `POST` | `/v1/messages/count_tokens` | Token count from a route's Anthropic target |
+| `ANY` | Any unmatched path | Raw forward through the optional `fallback_client` |
 | `GET` | `/v1/models` | Routes served by this deployment |
 | `GET` | `/v1/stats` | Per-model usage plus curated algorithm stats |
 | `POST` | `/v1/stats/reset` | Clear accumulated stats |
@@ -139,6 +139,11 @@ documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_
 Requests name a route by its `id`, so `POST /v1/chat/completions` with `"model": "switchyard/general"`
 routes through the `[routes.general]` entry above. Any of the three request formats can address any
 route, and the server translates between them.
+
+Set the top-level `fallback_client` to an entry under `[llm_clients]` to proxy any otherwise
+unmatched method and path through that client. The fallback client does not need a target. Requests
+and responses are forwarded without translation, including paths, query strings, bodies, and model
+identifiers. Without `fallback_client`, unmatched paths return `404`.
 
 `POST /v1/decision` accepts `{"input_format": "openai_chat", "request": {...}}`, where the
 nested request names the route in `model`. It executes required classifier or judge calls, then

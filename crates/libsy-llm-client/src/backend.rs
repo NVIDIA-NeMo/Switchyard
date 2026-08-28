@@ -255,17 +255,19 @@ impl Backend {
         self.config().max_retries
     }
 
-    /// Whether this backend speaks the Anthropic Messages wire format — the only
-    /// one with a `count_tokens` endpoint.
-    pub fn is_anthropic(&self) -> bool {
-        matches!(self, Backend::Anthropic(_))
-    }
-
-    /// The upstream `/v1/messages/count_tokens` URL, derived from the same base
-    /// URL join as [`url`](Self::url).
-    pub fn count_tokens_url(&self) -> String {
+    /// Resolves an unmatched provider path against this backend's API root.
+    pub(crate) fn forwarding_url(&self, path_and_query: &str) -> String {
         let base_url = self.config().base_url.trim_end_matches('/');
-        format!("{}/count_tokens", anthropic_url(base_url))
+        let root = [
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/v1/messages",
+            "/v1",
+        ]
+        .iter()
+        .find_map(|suffix| base_url.strip_suffix(suffix))
+        .unwrap_or(base_url);
+        format!("{root}{path_and_query}")
     }
 
     /// Whether an upstream 400 `body` looks like a context-window overflow for
@@ -389,34 +391,6 @@ mod tests {
             Backend::Anthropic(config("https://api.anthropic.com/v1/messages")).url(),
             "https://api.anthropic.com/v1/messages"
         );
-    }
-
-    #[test]
-    fn count_tokens_url_joins_every_base_url_shape() {
-        assert_eq!(
-            Backend::Anthropic(config("https://host")).count_tokens_url(),
-            "https://host/v1/messages/count_tokens"
-        );
-        assert_eq!(
-            Backend::Anthropic(config("https://host/v1")).count_tokens_url(),
-            "https://host/v1/messages/count_tokens"
-        );
-        assert_eq!(
-            Backend::Anthropic(config("https://host/v1/messages")).count_tokens_url(),
-            "https://host/v1/messages/count_tokens"
-        );
-        // Trailing slash is trimmed before the join.
-        assert_eq!(
-            Backend::Anthropic(config("https://host/v1/")).count_tokens_url(),
-            "https://host/v1/messages/count_tokens"
-        );
-    }
-
-    #[test]
-    fn only_anthropic_backend_is_anthropic() {
-        assert!(Backend::Anthropic(config("x")).is_anthropic());
-        assert!(!Backend::OpenAiChat(config("x")).is_anthropic());
-        assert!(!Backend::OpenAiResponses(config("x")).is_anthropic());
     }
 
     #[test]

@@ -17,9 +17,9 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
+use crate::runner::FallbackClient;
 use crate::{
-    AlgorithmSpec, CallerAuthKind, CountTokensTarget, DecisionTarget, ModelCapabilities, Route,
-    Runner, RunnerError,
+    AlgorithmSpec, CallerAuthKind, DecisionTarget, ModelCapabilities, Route, Runner, RunnerError,
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -54,6 +54,7 @@ pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeploymentConfig {
     schema_version: u32,
+    fallback_client: Option<String>,
     #[serde(default)]
     llm_clients: BTreeMap<String, LlmClientConfig>,
     targets: BTreeMap<String, TargetConfig>,
@@ -165,6 +166,7 @@ impl DeploymentConfig {
 
         let clients = self.build_clients()?;
         let targets = self.build_targets();
+        let fallback_client = self.build_fallback_client(&clients)?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
             validate_value("route name", route_name)?;
@@ -188,7 +190,6 @@ impl DeploymentConfig {
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients)?;
-            let count_tokens_target = self.build_count_tokens_target(config, &clients);
             let decision_targets = config
                 .routing_target_names()
                 .into_iter()
@@ -199,12 +200,11 @@ impl DeploymentConfig {
                 route_clients,
                 caller_auth,
                 capabilities,
-                count_tokens_target,
                 decision_targets,
             );
             routes.push((config.id.clone(), route));
         }
-        Ok(Runner::new(routes))
+        Ok(Runner::new(routes).with_fallback_client(fallback_client))
     }
 
     fn build_clients(&self) -> RunnerResult<BTreeMap<String, Arc<TranslatingLlmClient>>> {
@@ -291,40 +291,26 @@ impl DeploymentConfig {
         Ok((ClientRouter::new(by_model), caller_auth))
     }
 
-    fn build_count_tokens_target(
+    fn build_fallback_client(
         &self,
-        route: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
-    ) -> Option<CountTokensTarget> {
-        route
-            .routing_target_names()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, name)| {
-                let target = self.targets.get(name)?;
-                let client = clients.get(&target.llm_client)?;
-                client.supports_count_tokens(&target.id).then_some((
-                    count_tokens_priority(name, &target.id),
-                    index,
-                    target,
-                    client,
-                ))
-            })
-            .min_by_key(|(priority, index, _, _)| (*priority, *index))
-            .map(|(_, _, target, client)| CountTokensTarget {
-                model: target.id.clone(),
-                client: client.clone(),
-            })
+    ) -> RunnerResult<Option<FallbackClient>> {
+        let Some(name) = &self.fallback_client else {
+            return Ok(None);
+        };
+        let config = self.llm_clients.get(name).ok_or_else(|| {
+            RunnerError::configuration(format!(
+                "fallback_client references unknown llm client {name}"
+            ))
+        })?;
+        let client = clients.get(name).ok_or_else(|| {
+            RunnerError::configuration("validated fallback client was not initialized")
+        })?;
+        Ok(Some(FallbackClient {
+            backend: build_backend(name, config, &BTreeMap::new())?,
+            client: client.clone(),
+        }))
     }
-}
-
-fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
-    let target_name = target_name.to_ascii_lowercase();
-    let model_id = model_id.to_ascii_lowercase();
-    ["opus", "sonnet", "haiku"]
-        .iter()
-        .position(|hint| target_name.contains(hint) || model_id.contains(hint))
-        .unwrap_or(3)
 }
 
 /// A client endpoint, parsed when the config loads rather than checked afterwards.

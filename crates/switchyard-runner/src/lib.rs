@@ -14,7 +14,5 @@ pub use algorithm::{
     ClassifierPolicyConfig, LlmClassifierRouteConfig, StageClassifierConfig, SubagentRouteConfig,
 };
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
-pub use route::{
-    CallerAuthKind, CountTokensTarget, ModelCapabilities, Route, RunOutput, RunnerError,
-};
+pub use route::{CallerAuthKind, ModelCapabilities, Route, RunOutput, RunnerError};
 pub use runner::{DecisionDescription, DecisionTarget, ModelInfo, Runner};

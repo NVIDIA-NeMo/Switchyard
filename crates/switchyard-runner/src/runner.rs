@@ -5,10 +5,13 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use libsy::RoutingOutcome;
+use reqwest::{Body, Method, Response};
 use serde_json::Value;
-use switchyard_protocol::{ModelId, WireFormat};
+use switchyard_llm_client::{Backend, TranslatingLlmClient};
+use switchyard_protocol::{Metadata, ModelId, WireFormat};
 
 use crate::config;
 use crate::{ModelCapabilities, Route, RunnerError};
@@ -16,6 +19,12 @@ use crate::{ModelCapabilities, Route, RunnerError};
 /// Immutable named route table.
 pub struct Runner {
     routes: Vec<(ModelId, Route)>,
+    fallback_client: Option<FallbackClient>,
+}
+
+pub(crate) struct FallbackClient {
+    pub backend: Backend,
+    pub client: Arc<TranslatingLlmClient>,
 }
 
 /// Borrowed model metadata returned while listing routes.
@@ -57,7 +66,15 @@ impl Runner {
     /// Builds a runner from named routes in caller-provided order.
     /// Pre-condition: There must be at least one route.
     pub fn new(routes: Vec<(ModelId, Route)>) -> Self {
-        Self { routes }
+        Self {
+            routes,
+            fallback_client: None,
+        }
+    }
+
+    pub(crate) fn with_fallback_client(mut self, fallback_client: Option<FallbackClient>) -> Self {
+        self.fallback_client = fallback_client;
+        self
     }
 
     /// Returns the route registered for a model.
@@ -75,6 +92,31 @@ impl Runner {
             algorithm: route.algorithm_name(),
             capabilities: route.capabilities(),
         })
+    }
+
+    /// Forwards an unmatched request through the configured fallback client.
+    pub async fn forward_fallback(
+        &self,
+        method: Method,
+        path_and_query: &str,
+        body: Body,
+        metadata: Metadata,
+    ) -> Result<Option<Response>, RunnerError> {
+        let Some(fallback) = &self.fallback_client else {
+            return Ok(None);
+        };
+        fallback
+            .client
+            .forward(
+                &fallback.backend,
+                method,
+                path_and_query,
+                body,
+                Some(&metadata),
+            )
+            .await
+            .map(Some)
+            .map_err(Into::into)
     }
 
     /// Resolves an outcome to configured target names and non-secret client settings.

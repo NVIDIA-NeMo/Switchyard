@@ -467,7 +467,7 @@ impl AlgorithmSpec {
                 names
             }
             // The advisor is judge-only: reviews go through its own client,
-            // so it is not a completion (or count_tokens) destination.
+            // so it is not a completion destination.
             Self::Advisor {
                 executor_target, ..
             } => vec![executor_target],

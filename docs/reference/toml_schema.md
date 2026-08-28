@@ -32,6 +32,11 @@ target = "strong"
 `schema_version` must be `1`. Table names under `llm_clients`, `targets`, and
 `routes` are local references; clients send the route's `id` as the model name.
 
+The optional top-level `fallback_client` names an entry under `[llm_clients]`. When set, any HTTP
+method and path not implemented by Switchyard is forwarded through that client without translating
+the path, query string, body, response, or model identifier. The fallback client does not need a
+target. When omitted, unmatched paths return `404`.
+
 `schema_version`, `[targets]`, and `[routes]` must all be present, even when a
 route reaches no upstream. A file without a `[targets]` table is rejected with
 `missing field targets`; an empty `[targets]` table satisfies it.

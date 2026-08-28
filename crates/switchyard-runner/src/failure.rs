@@ -98,9 +98,7 @@ impl RunnerError {
                 None,
                 None,
             ),
-            Self::UnknownRouteModel(_)
-            | Self::IncompatibleCallerFormat(_)
-            | Self::CountTokensUnsupported => summary(
+            Self::UnknownRouteModel(_) | Self::IncompatibleCallerFormat(_) => summary(
                 RouteErrorKind::InvalidRequest,
                 RouteErrorPhase::BeforeResponse,
                 None,
@@ -327,12 +325,6 @@ mod tests {
         assert!(matches!(
             configuration.execution_error_summary().kind,
             RouteErrorKind::Configuration
-        ));
-
-        let unsupported = RunnerError::CountTokensUnsupported;
-        assert!(matches!(
-            unsupported.execution_error_summary().kind,
-            RouteErrorKind::InvalidRequest
         ));
     }
 }

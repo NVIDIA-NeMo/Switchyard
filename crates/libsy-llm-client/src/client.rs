@@ -10,9 +10,9 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
-use http::StatusCode;
+use http::{Method, StatusCode};
 use reqwest::RequestBuilder;
-use reqwest::header::{HeaderMap, RETRY_AFTER};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Metadata, ModelId, Request,
@@ -146,49 +146,35 @@ impl TranslatingLlmClient {
         })
     }
 
-    /// Whether `model` has an Anthropic backend that supports token counting.
-    pub fn supports_count_tokens(&self, model: &ModelId) -> bool {
-        self.backend_for(model, WireFormat::AnthropicMessages)
-            .is_some()
-    }
-
-    /// Counts input tokens with `model`'s Anthropic backend.
-    ///
-    /// Returns an error when the model has no Anthropic backend or the upstream
-    /// request fails or returns invalid JSON.
-    pub async fn count_tokens(&self, model: &ModelId, request: Request) -> Result<Value> {
-        let backend = self
-            .backend_for(model, WireFormat::AnthropicMessages)
-            .ok_or_else(|| LlmClientError::Configuration {
-                message: format!("model {model} has no Anthropic backend for count_tokens"),
-            })?;
-        let Request {
-            mut llm_request,
-            metadata,
-            ..
-        } = request;
-        llm_request.model = Some(model.to_string());
-        let http_response = self
-            .send_encoded(
-                backend,
-                WireFormat::AnthropicMessages,
-                llm_request,
-                metadata.as_ref(),
-                model,
-                UpstreamEndpoint::CountTokens,
-            )
-            .await?;
-        let body = match http_response {
-            EncodedResponse::Buffered { body, .. } => body,
-            EncodedResponse::Streaming(_) => {
-                return Err(LlmClientError::InvalidRequest {
-                    message: "count_tokens does not support streaming requests".to_string(),
-                });
-            }
+    /// Forwards a provider-native request through `backend` without translation.
+    pub async fn forward(
+        &self,
+        backend: &Backend,
+        method: Method,
+        path_and_query: &str,
+        body: reqwest::Body,
+        metadata: Option<&Metadata>,
+    ) -> Result<reqwest::Response> {
+        let client = if backend.is_forwarding_auth() {
+            &self.forward_auth_client
+        } else {
+            &self.client
         };
-        serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
-            source: Box::new(error),
-        })
+        let mut builder = client
+            .request(method, backend.forwarding_url(path_and_query))
+            .body(body);
+        builder = forward_metadata_headers(builder, metadata);
+        if let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) {
+            for name in [CONTENT_TYPE, CONTENT_LENGTH] {
+                if let Some(value) = headers.get(&name) {
+                    builder = builder.header(name, value);
+                }
+            }
+        }
+        builder = backend.apply_forwarded_auth(builder, metadata);
+        builder = apply_extra_headers(builder, backend);
+        builder = backend.apply_auth(builder);
+        builder.send().await.map_err(convert_reqwest_error)
     }
 
     /// Encode `llm_request` for `wire_format`, POST it to `url` with the request's
@@ -198,10 +184,8 @@ impl TranslatingLlmClient {
     /// response is returned as soon as its successful headers arrive. A non-success
     /// status maps to a typed error — a 400 is classified as a context-window
     /// overflow via the backend's provider rules. Shared by
-    /// [`call_rewrite_model`](Self::call_rewrite_model) (which POSTs to the
-    /// backend's completion URL and decodes a response) and
-    /// [`count_tokens`](Self::count_tokens) (which POSTs to the `count_tokens`
-    /// URL and returns the raw JSON).
+    /// [`call_rewrite_model`](Self::call_rewrite_model), which POSTs to the
+    /// backend's completion URL and decodes a response.
     async fn send_encoded(
         &self,
         backend: &Backend,
@@ -209,7 +193,6 @@ impl TranslatingLlmClient {
         llm_request: LlmRequest,
         metadata: Option<&Metadata>,
         model: &ModelId,
-        endpoint: UpstreamEndpoint,
     ) -> Result<EncodedResponse> {
         let mut body = encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
@@ -230,9 +213,8 @@ impl TranslatingLlmClient {
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
         }
-        let streaming = endpoint.allows_streaming()
-            && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-        let url = endpoint.url(backend);
+        let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+        let url = backend.url();
         record_gen_ai_request(&url, model, streaming);
 
         let max_retries = u64::from(backend.max_retries());
@@ -426,7 +408,6 @@ impl TranslatingLlmClient {
                 llm_request,
                 metadata.as_ref(),
                 &model_id,
-                UpstreamEndpoint::Completion,
             )
             .await?;
 
@@ -556,25 +537,6 @@ impl TranslatingLlmClient {
 impl RoutedLlmClient for TranslatingLlmClient {
     async fn call(&self, request: Request) -> Result<Response> {
         self.call_rewrite_model(request, None).await
-    }
-}
-
-#[derive(Clone, Copy)]
-enum UpstreamEndpoint {
-    Completion,
-    CountTokens,
-}
-
-impl UpstreamEndpoint {
-    fn url(self, backend: &Backend) -> String {
-        match self {
-            UpstreamEndpoint::Completion => backend.url(),
-            UpstreamEndpoint::CountTokens => backend.count_tokens_url(),
-        }
-    }
-
-    fn allows_streaming(self) -> bool {
-        matches!(self, UpstreamEndpoint::Completion)
     }
 }
 

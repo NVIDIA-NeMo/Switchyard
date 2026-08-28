@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::body::Body;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Query, Request as HttpRequest, State};
 use axum::http::header::CONTENT_TYPE;
@@ -189,7 +190,6 @@ impl ServerState {
                         clients,
                         None,
                         ModelCapabilities::default(),
-                        None,
                         Vec::new(),
                     ),
                 )
@@ -478,7 +478,6 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
         .route("/v1/decision", post(decision))
-        .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/models", get(models))
         .route("/v1/stats", get(get_stats))
         .route("/v1/stats/reset", post(reset_stats))
@@ -488,7 +487,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         router = router.route("/v1/routing/session-stats", get(get_session_stats));
     }
     router
-        .fallback(not_found)
+        .fallback(proxy_unmatched)
         .layer(DefaultBodyLimit::max(DEFAULT_MAX_REQUEST_BODY_BYTES))
         // `layer` only wraps routes registered before it, so this stays last.
         .layer(axum::middleware::from_fn(stamp_request_start))
@@ -537,6 +536,29 @@ async fn openai_responses(
     body: std::result::Result<Json<Value>, JsonRejection>,
 ) -> Response {
     handle_endpoint(state, started, headers, body, WireFormat::OpenAiResponses).await
+}
+
+// Forwards unmatched requests through the deployment's optional fallback client.
+async fn proxy_unmatched(State(state): State<ServerState>, request: HttpRequest) -> Response {
+    let (parts, body) = request.into_parts();
+    let path_and_query = parts
+        .uri
+        .path_and_query()
+        .map_or_else(|| parts.uri.path().to_string(), ToString::to_string);
+    let metadata = metadata_from_headers(parts.headers);
+    let body = reqwest::Body::wrap_stream(body.into_data_stream());
+    match state
+        .runner
+        .forward_fallback(parts.method, &path_and_query, body, metadata)
+        .await
+    {
+        Ok(Some(response)) => {
+            let response: http::Response<reqwest::Body> = response.into();
+            response.map(Body::new)
+        }
+        Ok(None) => not_found().await,
+        Err(error) => runner_error(error),
+    }
 }
 
 /// One provider request submitted for a routing decision without an answer-model call.
@@ -611,45 +633,6 @@ async fn decision(
             server_error("routing outcome contains a model with no callable target configuration")
         }
     }
-}
-
-/// Anthropic token counting against the route's explicitly configured target.
-async fn anthropic_count_tokens(
-    State(state): State<ServerState>,
-    headers: HeaderMap,
-    body: std::result::Result<Json<Value>, JsonRejection>,
-) -> Response {
-    let body = match llm_json_body(body) {
-        Ok(body) => body,
-        Err((status, message)) => {
-            return anthropic_error_response(invalid_body_error(status, message));
-        }
-    };
-    let (route, request) = match resolve_route(
-        &state,
-        metadata_from_headers(headers),
-        body,
-        WireFormat::AnthropicMessages,
-    ) {
-        Ok(resolved) => resolved,
-        Err(response) => return anthropic_error_response(response),
-    };
-    anthropic_error_response(match route.count_tokens(request).await {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(RunnerError::CountTokensUnsupported) => error_response(
-            StatusCode::BAD_REQUEST,
-            "route has no Anthropic target for token counting",
-            "invalid_request_error",
-            "count_tokens_unsupported",
-        ),
-        Err(RunnerError::Client(error)) => count_tokens_error(error),
-        Err(error) => server_error(error.to_string()),
-    })
-}
-
-/// Maps a token-count client failure with the same policy as a routed client call.
-fn count_tokens_error(error: LlmClientError) -> Response {
-    client_error(&error)
 }
 
 async fn handle_endpoint(
@@ -739,8 +722,8 @@ fn llm_json_body(
 }
 
 /// Decode `body`, resolve the route named by its `model`, and build the
-/// [`Request`]. Shared by the completion and `count_tokens` handlers. Returns
-/// the resolved route and the built request — or an error [`Response`]
+/// [`Request`]. Shared by the completion handlers. Returns the resolved route
+/// and the built request — or an error [`Response`]
 /// (invalid body, empty `model` → 400, unknown route → 404).
 // Both callers immediately return the `Err(Response)` as the HTTP response, so
 // the large error type is intentional, not propagated up a call stack.
@@ -1128,10 +1111,6 @@ fn render_error_response(response: Response, wire_format: WireFormat) -> Respons
     error.into_response(wire_format)
 }
 
-fn anthropic_error_response(response: Response) -> Response {
-    render_error_response(response, WireFormat::AnthropicMessages)
-}
-
 fn anthropic_error_type(status: StatusCode) -> &'static str {
     match status {
         StatusCode::BAD_REQUEST => "invalid_request_error",
@@ -1449,7 +1428,7 @@ fn endpoint_listing(has_routing_log: bool) -> String {
         "  POST /v1/chat/completions    OpenAI Chat Completions",
         "  POST /v1/messages            Anthropic Messages",
         "  POST /v1/responses           OpenAI Responses",
-        "  POST /v1/messages/count_tokens",
+        "  ANY  unmatched paths          optional fallback client",
         "  GET  /v1/models              configured routes",
         "  GET  /v1/stats               routing stats",
         "  POST /v1/stats/reset",
