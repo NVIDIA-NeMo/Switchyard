@@ -14,7 +14,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
-CRATE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+CRATE_ROOT = REPOSITORY_ROOT / "crates" / "switchyard-nemo-relay-plugin"
 PACKAGER = CRATE_ROOT / "scripts" / "package_bundle.py"
 PACKAGE_NAME = "switchyard-nemo-relay-plugin"
 
