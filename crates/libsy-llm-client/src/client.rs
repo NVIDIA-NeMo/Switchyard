@@ -82,6 +82,34 @@ impl ModelConfig {
     }
 }
 
+/// A model-bearing provider operation outside the normal completion endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuxiliaryOperation {
+    /// Anthropic Messages input-token counting.
+    AnthropicCountTokens,
+    /// OpenAI Responses input-token counting.
+    ResponsesInputTokens,
+    /// OpenAI Responses compaction.
+    ResponsesCompact,
+}
+
+impl AuxiliaryOperation {
+    const fn wire_format(self) -> WireFormat {
+        match self {
+            Self::AnthropicCountTokens => WireFormat::AnthropicMessages,
+            Self::ResponsesInputTokens | Self::ResponsesCompact => WireFormat::OpenAiResponses,
+        }
+    }
+
+    fn url(self, backend: &Backend) -> String {
+        match self {
+            Self::AnthropicCountTokens => backend.count_tokens_url(),
+            Self::ResponsesInputTokens => format!("{}/input_tokens", backend.url()),
+            Self::ResponsesCompact => format!("{}/compact", backend.url()),
+        }
+    }
+}
+
 /// A client that dispatches neutral-IR requests to per-model HTTP backends.
 ///
 /// Construct it with a list of [`ModelConfig`]s — one per model, each naming a
@@ -146,80 +174,27 @@ impl TranslatingLlmClient {
         })
     }
 
-    /// Whether `model` has an Anthropic backend that supports token counting.
-    pub fn supports_count_tokens(&self, model: &ModelId) -> bool {
-        self.backend_for(model, WireFormat::AnthropicMessages)
-            .is_some()
+    /// Whether `model` has a backend for `operation`.
+    pub fn supports_auxiliary(&self, model: &ModelId, operation: AuxiliaryOperation) -> bool {
+        self.backend_for(model, operation.wire_format()).is_some()
     }
 
-    /// Whether `model` has an OpenAI Responses backend for auxiliary operations.
-    pub fn supports_responses_auxiliary(&self, model: &ModelId) -> bool {
-        self.backend_for(model, WireFormat::OpenAiResponses)
-            .is_some()
-    }
-
-    /// Counts input tokens with `model`'s Anthropic backend.
+    /// Calls a model-bearing auxiliary provider operation.
     ///
-    /// Returns an error when the model has no Anthropic backend or the upstream
+    /// Returns an error when the model has no compatible backend or the upstream
     /// request fails or returns invalid JSON.
-    pub async fn count_tokens(&self, model: &ModelId, request: Request) -> Result<Value> {
-        let backend = self
-            .backend_for(model, WireFormat::AnthropicMessages)
-            .ok_or_else(|| LlmClientError::Configuration {
-                message: format!("model {model} has no Anthropic backend for count_tokens"),
-            })?;
-        let Request {
-            mut llm_request,
-            metadata,
-            ..
-        } = request;
-        llm_request.model = Some(model.to_string());
-        let http_response = self
-            .send_encoded(
-                backend,
-                WireFormat::AnthropicMessages,
-                llm_request,
-                metadata.as_ref(),
-                model,
-                UpstreamEndpoint::CountTokens,
-            )
-            .await?;
-        let body = match http_response {
-            EncodedResponse::Buffered { body, .. } => body,
-            EncodedResponse::Streaming(_) => {
-                return Err(LlmClientError::InvalidRequest {
-                    message: "count_tokens does not support streaming requests".to_string(),
-                });
-            }
-        };
-        serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
-            source: Box::new(error),
-        })
-    }
-
-    /// Counts input tokens with `model`'s OpenAI Responses backend.
-    pub async fn responses_input_tokens(&self, model: &ModelId, request: Request) -> Result<Value> {
-        self.responses_auxiliary(model, request, UpstreamEndpoint::ResponsesInputTokens)
-            .await
-    }
-
-    /// Compacts a request with `model`'s OpenAI Responses backend.
-    pub async fn responses_compact(&self, model: &ModelId, request: Request) -> Result<Value> {
-        self.responses_auxiliary(model, request, UpstreamEndpoint::ResponsesCompact)
-            .await
-    }
-
-    async fn responses_auxiliary(
+    pub async fn call_auxiliary(
         &self,
         model: &ModelId,
         request: Request,
-        endpoint: UpstreamEndpoint,
+        operation: AuxiliaryOperation,
     ) -> Result<Value> {
-        let backend = self
-            .backend_for(model, WireFormat::OpenAiResponses)
-            .ok_or_else(|| LlmClientError::Configuration {
-                message: format!("model {model} has no OpenAI Responses backend"),
-            })?;
+        let wire_format = operation.wire_format();
+        let backend =
+            self.backend_for(model, wire_format)
+                .ok_or_else(|| LlmClientError::Configuration {
+                    message: format!("model {model} has no backend for {operation:?}"),
+                })?;
         let Request {
             mut llm_request,
             metadata,
@@ -229,16 +204,16 @@ impl TranslatingLlmClient {
         let http_response = self
             .send_encoded(
                 backend,
-                WireFormat::OpenAiResponses,
+                wire_format,
                 llm_request,
                 metadata.as_ref(),
                 model,
-                endpoint,
+                UpstreamEndpoint::Auxiliary(operation),
             )
             .await?;
         let EncodedResponse::Buffered { body, .. } = http_response else {
             return Err(LlmClientError::InvalidRequest {
-                message: "Responses auxiliary endpoints do not support streaming".to_string(),
+                message: "auxiliary endpoints do not support streaming".to_string(),
             });
         };
         serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
@@ -616,18 +591,14 @@ impl RoutedLlmClient for TranslatingLlmClient {
 #[derive(Clone, Copy)]
 enum UpstreamEndpoint {
     Completion,
-    CountTokens,
-    ResponsesInputTokens,
-    ResponsesCompact,
+    Auxiliary(AuxiliaryOperation),
 }
 
 impl UpstreamEndpoint {
     fn url(self, backend: &Backend) -> String {
         match self {
             UpstreamEndpoint::Completion => backend.url(),
-            UpstreamEndpoint::CountTokens => backend.count_tokens_url(),
-            UpstreamEndpoint::ResponsesInputTokens => format!("{}/input_tokens", backend.url()),
-            UpstreamEndpoint::ResponsesCompact => format!("{}/compact", backend.url()),
+            UpstreamEndpoint::Auxiliary(operation) => operation.url(backend),
         }
     }
 

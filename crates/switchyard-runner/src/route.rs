@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use libsy::{Algorithm, CallModel, LibsyError, RoutingOutcome, drive};
 use serde_json::Value;
-use switchyard_llm_client::{ClientRouter, RunObserver, TranslatingLlmClient};
+use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{LlmClientError, ModelId, Request, Response, WireFormat};
 use thiserror::Error;
 
@@ -56,16 +56,9 @@ impl CallerAuthKind {
     }
 }
 
-/// Exact upstream model used for Anthropic token counting.
+/// Exact upstream model and client used for an auxiliary provider operation.
 #[derive(Clone)]
-pub struct CountTokensTarget {
-    pub model: ModelId,
-    pub client: Arc<TranslatingLlmClient>,
-}
-
-/// Exact upstream model used for OpenAI Responses auxiliary operations.
-#[derive(Clone)]
-pub struct ResponsesTarget {
+pub struct AuxiliaryTarget {
     pub model: ModelId,
     pub client: Arc<TranslatingLlmClient>,
 }
@@ -83,10 +76,8 @@ pub enum RunnerError {
     UnknownRouteModel(String),
     #[error("caller format is incompatible with {} credentials", .0.as_str())]
     IncompatibleCallerFormat(CallerAuthKind),
-    #[error("route has no Anthropic target for token counting")]
-    CountTokensUnsupported,
-    #[error("route has no OpenAI Responses target")]
-    ResponsesAuxiliaryUnsupported,
+    #[error("route has no compatible target for the auxiliary operation")]
+    AuxiliaryUnsupported,
     #[error(transparent)]
     Algorithm(#[from] LibsyError),
     #[error(transparent)]
@@ -121,8 +112,8 @@ pub struct Route {
     clients: ClientRouter,
     caller_auth: Option<CallerAuthKind>,
     capabilities: ModelCapabilities,
-    count_tokens_target: Option<CountTokensTarget>,
-    responses_target: Option<ResponsesTarget>,
+    anthropic_auxiliary_target: Option<AuxiliaryTarget>,
+    responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
 }
 
@@ -139,8 +130,8 @@ impl Route {
         clients: ClientRouter,
         caller_auth: Option<CallerAuthKind>,
         capabilities: ModelCapabilities,
-        count_tokens_target: Option<CountTokensTarget>,
-        responses_target: Option<ResponsesTarget>,
+        anthropic_auxiliary_target: Option<AuxiliaryTarget>,
+        responses_auxiliary_target: Option<AuxiliaryTarget>,
         decision_targets: Vec<DecisionTarget>,
     ) -> Self {
         Self {
@@ -148,8 +139,8 @@ impl Route {
             clients,
             caller_auth,
             capabilities,
-            count_tokens_target,
-            responses_target,
+            anthropic_auxiliary_target,
+            responses_auxiliary_target,
             decision_targets,
         }
     }
@@ -215,41 +206,23 @@ impl Route {
         .map_err(Into::into)
     }
 
-    /// Counts tokens using the configured Anthropic-capable target.
-    pub async fn count_tokens(&self, request: Request) -> Result<Value, RunnerError> {
-        let target = self
-            .count_tokens_target
-            .as_ref()
-            .ok_or(RunnerError::CountTokensUnsupported)?;
+    /// Executes a model-bearing provider operation through a compatible target.
+    pub async fn call_auxiliary(
+        &self,
+        request: Request,
+        operation: AuxiliaryOperation,
+    ) -> Result<Value, RunnerError> {
+        let target = match operation {
+            AuxiliaryOperation::AnthropicCountTokens => &self.anthropic_auxiliary_target,
+            AuxiliaryOperation::ResponsesInputTokens | AuxiliaryOperation::ResponsesCompact => {
+                &self.responses_auxiliary_target
+            }
+        }
+        .as_ref()
+        .ok_or(RunnerError::AuxiliaryUnsupported)?;
         target
             .client
-            .count_tokens(&target.model, request)
-            .await
-            .map_err(Into::into)
-    }
-
-    /// Counts tokens using the configured OpenAI Responses-capable target.
-    pub async fn responses_input_tokens(&self, request: Request) -> Result<Value, RunnerError> {
-        let target = self
-            .responses_target
-            .as_ref()
-            .ok_or(RunnerError::ResponsesAuxiliaryUnsupported)?;
-        target
-            .client
-            .responses_input_tokens(&target.model, request)
-            .await
-            .map_err(Into::into)
-    }
-
-    /// Compacts a request using the configured OpenAI Responses-capable target.
-    pub async fn responses_compact(&self, request: Request) -> Result<Value, RunnerError> {
-        let target = self
-            .responses_target
-            .as_ref()
-            .ok_or(RunnerError::ResponsesAuxiliaryUnsupported)?;
-        target
-            .client
-            .responses_compact(&target.model, request)
+            .call_auxiliary(&target.model, request, operation)
             .await
             .map_err(Into::into)
     }

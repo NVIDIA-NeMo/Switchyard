@@ -12,14 +12,14 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     TranslatingLlmClient,
 };
 use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
 use crate::{
-    AlgorithmSpec, CallerAuthKind, CountTokensTarget, DecisionTarget, ModelCapabilities,
-    ResponsesTarget, Route, Runner, RunnerError,
+    AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
+    Runner, RunnerError,
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -190,8 +190,10 @@ impl DeploymentConfig {
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients)?;
-            let count_tokens_target = self.build_count_tokens_target(config, &clients);
-            let responses_target = self.build_responses_target(config, &clients);
+            let anthropic_auxiliary_target =
+                self.build_anthropic_auxiliary_target(config, &clients);
+            let responses_auxiliary_target =
+                self.build_responses_auxiliary_target(config, &clients);
             let decision_targets = config
                 .routing_target_names()
                 .into_iter()
@@ -202,8 +204,8 @@ impl DeploymentConfig {
                 route_clients,
                 caller_auth,
                 capabilities,
-                count_tokens_target,
-                responses_target,
+                anthropic_auxiliary_target,
+                responses_auxiliary_target,
                 decision_targets,
             );
             routes.push((config.id.clone(), route));
@@ -308,47 +310,51 @@ impl DeploymentConfig {
         Ok(Some(config.base_url.as_str().to_string()))
     }
 
-    fn build_count_tokens_target(
+    fn build_anthropic_auxiliary_target(
         &self,
         route: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
-    ) -> Option<CountTokensTarget> {
+    ) -> Option<AuxiliaryTarget> {
         route
             .routing_target_names()
             .into_iter()
             .enumerate()
             .filter_map(|(index, name)| {
-                let target = self.targets.get(name)?;
-                let client = clients.get(&target.llm_client)?;
-                client.supports_count_tokens(&target.id).then_some((
-                    count_tokens_priority(name, &target.id),
-                    index,
-                    target,
-                    client,
-                ))
+                let target = self.build_auxiliary_target(
+                    name,
+                    clients,
+                    AuxiliaryOperation::AnthropicCountTokens,
+                )?;
+                Some((count_tokens_priority(name, &target.model), index, target))
             })
-            .min_by_key(|(priority, index, _, _)| (*priority, *index))
-            .map(|(_, _, target, client)| CountTokensTarget {
-                model: target.id.clone(),
-                client: client.clone(),
-            })
+            .min_by_key(|(priority, index, _)| (*priority, *index))
+            .map(|(_, _, target)| target)
     }
 
-    fn build_responses_target(
+    fn build_responses_auxiliary_target(
         &self,
         route: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
-    ) -> Option<ResponsesTarget> {
+    ) -> Option<AuxiliaryTarget> {
         route.routing_target_names().into_iter().find_map(|name| {
-            let target = self.targets.get(name)?;
-            let client = clients.get(&target.llm_client)?;
-            client
-                .supports_responses_auxiliary(&target.id)
-                .then(|| ResponsesTarget {
-                    model: target.id.clone(),
-                    client: client.clone(),
-                })
+            self.build_auxiliary_target(name, clients, AuxiliaryOperation::ResponsesInputTokens)
         })
+    }
+
+    fn build_auxiliary_target(
+        &self,
+        name: &str,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        operation: AuxiliaryOperation,
+    ) -> Option<AuxiliaryTarget> {
+        let target = self.targets.get(name)?;
+        let client = clients.get(&target.llm_client)?;
+        client
+            .supports_auxiliary(&target.id, operation)
+            .then(|| AuxiliaryTarget {
+                model: target.id.clone(),
+                client: client.clone(),
+            })
     }
 }
 

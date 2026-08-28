@@ -37,7 +37,7 @@ use libsy::{Algorithm, LibsyError, RoutingOutcome};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
+use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
 use switchyard_runner::{
     CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RunOutput, Runner, RunnerError,
@@ -723,28 +723,22 @@ async fn anthropic_count_tokens(
         Ok(resolved) => resolved,
         Err(response) => return anthropic_error_response(response),
     };
-    anthropic_error_response(match route.count_tokens(request).await {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(RunnerError::CountTokensUnsupported) => error_response(
-            StatusCode::BAD_REQUEST,
-            "route has no Anthropic target for token counting",
-            "invalid_request_error",
-            "count_tokens_unsupported",
-        ),
-        Err(RunnerError::Client(error)) => count_tokens_error(error),
-        Err(error) => server_error(error.to_string()),
-    })
-}
-
-/// Maps a token-count client failure with the same policy as a routed client call.
-fn count_tokens_error(error: LlmClientError) -> Response {
-    client_error(&error)
-}
-
-#[derive(Clone, Copy)]
-enum ResponsesAuxiliaryEndpoint {
-    InputTokens,
-    Compact,
+    anthropic_error_response(
+        match route
+            .call_auxiliary(request, AuxiliaryOperation::AnthropicCountTokens)
+            .await
+        {
+            Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+            Err(RunnerError::AuxiliaryUnsupported) => error_response(
+                StatusCode::BAD_REQUEST,
+                "route has no Anthropic target for token counting",
+                "invalid_request_error",
+                "count_tokens_unsupported",
+            ),
+            Err(RunnerError::Client(error)) => client_error(&error),
+            Err(error) => server_error(error.to_string()),
+        },
+    )
 }
 
 async fn openai_responses_input_tokens(
@@ -756,7 +750,7 @@ async fn openai_responses_input_tokens(
         state,
         headers,
         body,
-        ResponsesAuxiliaryEndpoint::InputTokens,
+        AuxiliaryOperation::ResponsesInputTokens,
     )
     .await
 }
@@ -766,7 +760,7 @@ async fn openai_responses_compact(
     headers: HeaderMap,
     body: std::result::Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    openai_responses_auxiliary(state, headers, body, ResponsesAuxiliaryEndpoint::Compact).await
+    openai_responses_auxiliary(state, headers, body, AuxiliaryOperation::ResponsesCompact).await
 }
 
 // Resolves route aliases and configured credentials before calling a model-bearing Responses API.
@@ -774,7 +768,7 @@ async fn openai_responses_auxiliary(
     state: ServerState,
     headers: HeaderMap,
     body: std::result::Result<Json<Value>, JsonRejection>,
-    endpoint: ResponsesAuxiliaryEndpoint,
+    operation: AuxiliaryOperation,
 ) -> Response {
     let body = match llm_json_body(body) {
         Ok(body) => body,
@@ -794,14 +788,11 @@ async fn openai_responses_auxiliary(
         Ok(resolved) => resolved,
         Err(response) => return render_error_response(response, WireFormat::OpenAiResponses),
     };
-    let result = match endpoint {
-        ResponsesAuxiliaryEndpoint::InputTokens => route.responses_input_tokens(request).await,
-        ResponsesAuxiliaryEndpoint::Compact => route.responses_compact(request).await,
-    };
+    let result = route.call_auxiliary(request, operation).await;
     render_error_response(
         match result {
             Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-            Err(RunnerError::ResponsesAuxiliaryUnsupported) => error_response(
+            Err(RunnerError::AuxiliaryUnsupported) => error_response(
                 StatusCode::BAD_REQUEST,
                 "route has no OpenAI Responses target",
                 "invalid_request_error",
