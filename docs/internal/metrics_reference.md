@@ -59,6 +59,32 @@ Each histogram emits `_bucket`, `_sum`, and `_count` series. Use
 |---|---|---|
 | `switchyard_routing_overhead_ms{algorithm}` | histogram | Total run time minus the time spent in successful routed model calls, with overlapping hedged calls counted once. Includes classifier calls, failed routed attempts, target resolution, and decision publication; runs with no successful routed call are not recorded. Measured across the whole run, so it does not reconcile with `switchyard_run_duration_ms`, which times only the algorithm task. |
 
+## In-flight runs
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `switchyard_algorithms_in_flight{algorithm}` | gauge | Algorithm runs that have started and not yet finished. |
+
+Every other run metric is recorded when a run *resolves*, so none of them says
+anything while a request is still being worked on. This gauge is the exception:
+it rises when a run starts and falls when it ends, including when the run ends
+because the client disconnected or the host cancelled it. A run parked on an
+internal routing call — a classifier or escalation-judge request that has not
+come back — holds the gauge up for as long as it waits, which is what separates
+a stalled routing decision from client-side latency.
+
+Read it alongside the resolution metrics: a gauge that is high while
+`switchyard_runs_total` is flat means work is going in and not coming out.
+
+```promql
+# Runs currently in flight, by algorithm
+sum by (algorithm) (switchyard_algorithms_in_flight)
+
+# In-flight work that is not being retired: runs are open but none are completing
+sum by (algorithm) (switchyard_algorithms_in_flight) > 0
+  and sum by (algorithm) (rate(switchyard_runs_total[5m])) == 0
+```
+
 ## Classifier fail-open counter
 
 | Metric | Type | Meaning |
@@ -149,7 +175,7 @@ into label space.
 | `outcome` | Exactly 3: `success`, `retryable_error`, `other_error`. | Outcome counters |
 | `code` | Bounded: the known-code allowlist (`200`, `400`, `401`, `403`, `404`, `408`, `409`, `422`, `429`, `500`, `502`, `503`, `504`), plus `none` and the per-class buckets `1xx`/`2xx`/`3xx`/`4xx`/`5xx`/`other`. About 20 values max. | `switchyard_upstream_attempts_total` |
 | `le` | The configured histogram bucket boundaries. | Histogram buckets |
-| `algorithm` | One stable value per configured algorithm. | Routing-overhead histogram |
+| `algorithm` | One stable value per configured algorithm. | Routing-overhead histogram, in-flight gauge |
 | `tier` | Small enumerated set, optional. | Per-endpoint counters and histograms on algorithms that supply it |
 | `judge_model` | One per configured judge target. | Classifier fail-open counter |
 | `reason` | Exactly 8 fixed error categories. | Classifier fail-open counter |
@@ -161,5 +187,6 @@ into label space.
 | `model="<unknown>"` rows appear | A routed-call observation did not include a selected model. |
 | All counters at 0 after warm-up | Server just started with no traffic, or the scraper is hitting the wrong port. |
 | `switchyard_routing_overhead_ms_count` stuck at `0` | No successful algorithm run has recorded a successful routed model call. |
+| `switchyard_algorithms_in_flight` stuck above zero with no traffic | Runs are parked on an internal routing call that never returns. Check the classifier or judge target's upstream. |
 | `switchyard_classifier_fail_open_total` rising | The judge target is failing or returning a response the classifier cannot parse. Check `judge_model` and `reason`. |
 | `switchyard_client_responses_total{outcome="retryable_error"}` rising | Either the upstream is genuinely flaky, or retries are exhausting; compare client responses with retryable upstream attempts. |

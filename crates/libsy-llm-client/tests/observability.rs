@@ -311,6 +311,34 @@ fn f64_histogram_sum_ms(
     })
 }
 
+/// Most recent value of an `i64` up-down counter for the given attribute set.
+///
+/// Unlike the counter and histogram helpers, this takes the value from the last
+/// snapshot that carries the metric rather than the max across snapshots: an
+/// up-down counter falls as well as rises, so a max would report a past peak and
+/// never observe the return to zero.
+fn i64_up_down_counter_value(
+    snapshots: &[ResourceMetrics],
+    name: &str,
+    wanted: &[(&str, &str)],
+) -> Option<i64> {
+    snapshots
+        .iter()
+        .flat_map(|snapshot| snapshot.scope_metrics())
+        .filter(|scope| scope.scope().name() == "switchyard")
+        .flat_map(|scope| scope.metrics())
+        .filter(|metric| metric.name() == name)
+        .filter_map(|metric| match metric.data() {
+            AggregatedMetrics::I64(MetricData::Sum(sum)) => sum
+                .data_points()
+                .filter(|point| attributes_match(point.attributes(), wanted))
+                .map(|point| point.value())
+                .last(),
+            _ => None,
+        })
+        .last()
+}
+
 /// Latest value of a `u64` observable gauge.
 fn u64_gauge_value(snapshots: &[ResourceMetrics], name: &str) -> Option<u64> {
     latest_metric_value(snapshots, name, |data| match data {
@@ -1434,5 +1462,103 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
             ),
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn in_flight_gauge_reads_a_run_parked_on_an_unanswered_routing_call()
+-> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_, exporter, provider, _, _) = telemetry();
+    const ALGO: &str = "obs-in-flight-algo";
+    const MODEL: &str = "obs-in-flight-model";
+    let algorithm = Arc::new(RoutingCallAlgo {
+        name: ALGO.to_string(),
+        target: MODEL.into(),
+    });
+    let stream = algorithm.run_stream(request_with_metadata("obs-session-if", "obs-corr-if"));
+    tokio::pin!(stream);
+    let attributes = [("algorithm", ALGO)];
+
+    // Take the offloaded call and hold it without responding. This is the shape of a
+    // stalled classifier: the run has started and cannot proceed until the call returns.
+    let Some(Ok(Step::CallModel(call))) = stream.next().await else {
+        return Err(test_error("expected an offloaded routing call"));
+    };
+
+    let snapshots = flushed_metrics(exporter, provider);
+    assert_eq!(
+        i64_up_down_counter_value(&snapshots, "switchyard.algorithms_in_flight", &attributes),
+        Some(1),
+        "a run waiting on an unanswered routing call must read as in flight"
+    );
+    // The gap this gauge fills: every other run metric is recorded on resolution, so
+    // while the call is outstanding they say nothing at all.
+    assert_eq!(
+        u64_counter_value(&snapshots, "switchyard.runs", &attributes),
+        None,
+        "the run counter must not report a run that has not resolved"
+    );
+
+    call.respond(Ok(Response {
+        llm_response: LlmResponse::Agg(text_response(Some(MODEL.to_string()), "answer")),
+        metadata: None,
+    }))?;
+    while stream.next().await.is_some() {}
+
+    let snapshots = flushed_metrics(exporter, provider);
+    assert_eq!(
+        i64_up_down_counter_value(&snapshots, "switchyard.algorithms_in_flight", &attributes),
+        Some(0),
+        "the gauge must fall back to zero once the run resolves"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_, exporter, provider, _, _) = telemetry();
+    const ALGO: &str = "obs-abandoned-algo";
+    const MODEL: &str = "obs-abandoned-model";
+    let algorithm = Arc::new(RoutingCallAlgo {
+        name: ALGO.to_string(),
+        target: MODEL.into(),
+    });
+    let attributes = [("algorithm", ALGO)];
+
+    // Drop the step stream while the routing call is still outstanding, the way a
+    // disconnected client abandons a run. The run task is aborted mid-await and never
+    // reaches the code that follows it, so only a drop can return the count.
+    {
+        let stream = algorithm.run_stream(request_with_metadata("obs-session-ab", "obs-corr-ab"));
+        tokio::pin!(stream);
+        let Some(Ok(Step::CallModel(_call))) = stream.next().await else {
+            return Err(test_error("expected an offloaded routing call"));
+        };
+        assert_eq!(
+            i64_up_down_counter_value(
+                &flushed_metrics(exporter, provider),
+                "switchyard.algorithms_in_flight",
+                &attributes,
+            ),
+            Some(1),
+        );
+    }
+
+    // Let the runtime finish aborting the task it was told to drop.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(
+        i64_up_down_counter_value(
+            &flushed_metrics(exporter, provider),
+            "switchyard.algorithms_in_flight",
+            &attributes,
+        ),
+        Some(0),
+        "an abandoned run must not strand the gauge above zero"
+    );
     Ok(())
 }

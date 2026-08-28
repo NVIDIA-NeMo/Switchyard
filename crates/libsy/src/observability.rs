@@ -110,13 +110,53 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
     span
 }
 
+/// Holds `switchyard.algorithms_in_flight` up by one for as long as it lives.
+///
+/// The decrement is a `Drop` rather than a statement after the run's `.await`
+/// because a run task is aborted when its step stream is dropped (a disconnected
+/// client, a host timeout). A cancelled task never reaches code past the await,
+/// so an explicit decrement would strand the gauge above zero for the life of
+/// the process.
+struct InFlightRun {
+    algorithm: String,
+}
+
+impl InFlightRun {
+    fn enter(algorithm: &str) -> Self {
+        record_algorithms_in_flight(algorithm, 1);
+        Self {
+            algorithm: algorithm.to_string(),
+        }
+    }
+}
+
+impl Drop for InFlightRun {
+    fn drop(&mut self) {
+        record_algorithms_in_flight(&self.algorithm, -1);
+    }
+}
+
+/// Adds `delta` to the count of algorithm runs that have started and not yet
+/// finished. Unlike the run counter and duration histogram, which are recorded
+/// once a run resolves, this reads non-zero *during* a run — including one
+/// parked on a classifier or judge call that has not come back.
+fn record_algorithms_in_flight(algorithm: &str, delta: i64) {
+    meter()
+        .i64_up_down_counter("switchyard.algorithms_in_flight")
+        .build()
+        .add(delta, &[KeyValue::new("algorithm", algorithm.to_string())]);
+}
+
 /// Runs one algorithm task to completion, recording the run counter, duration
-/// histogram, span outcome, and failure log when it resolves.
+/// histogram, span outcome, and failure log when it resolves. Counts the run as
+/// in flight for its whole duration.
 /// Executes inside the `libsy.run` span its caller instruments the task with.
 pub(crate) async fn observe_run<T>(
     algorithm: &str,
     run: impl Future<Output = Result<T>>,
 ) -> Result<T> {
+    // Binding, not `let _ =`: the guard must live until the run resolves.
+    let _in_flight = InFlightRun::enter(algorithm);
     let started = Instant::now();
     let result = run.await;
     let duration = started.elapsed();
