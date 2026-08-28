@@ -90,7 +90,32 @@ impl FormatCodec for OpenAiResponsesCodec {
         request.messages = messages;
         request.instructions.extend(instructions);
         let mut tool_namespaces = Map::new();
-        request.tools = decode_responses_tools(body.get("tools"), &mut tool_namespaces);
+        let mut custom_tools = Map::new();
+        let mut additional_tools = Map::new();
+        request.tools =
+            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools);
+        // Codex 0.146 declares its tools in an `additional_tools` input item rather
+        // than in `tools`, so a request that offers a full toolset arrives with no
+        // `tools` key at all. Decoding the item here is what lets those tools reach
+        // an upstream; left in the input they become opaque user content and the
+        // model is offered nothing to call.
+        let specs = crate::codex_tools::additional_tool_specs(body.get("input"));
+        if !specs.is_empty() {
+            let decoded = decode_responses_tools(
+                Some(&Value::Array(specs)),
+                &mut tool_namespaces,
+                &mut custom_tools,
+            );
+            for tool in decoded {
+                // A name already declared in `tools` wins: it is the more specific
+                // declaration, and two entries would be an invalid toolset.
+                if request.tools.iter().any(|known| known.name == tool.name) {
+                    continue;
+                }
+                crate::codex_tools::record_additional_tool(&mut additional_tools, &tool.name);
+                request.tools.push(tool);
+            }
+        }
         request.tool_choice = body
             .get("tool_choice")
             .and_then(decode_responses_tool_choice);
@@ -111,6 +136,8 @@ impl FormatCodec for OpenAiResponsesCodec {
             ],
         );
         crate::codex_namespaces::attach_tool_namespaces(&mut request.extensions, tool_namespaces);
+        crate::codex_tools::attach_custom_tools(&mut request.extensions, custom_tools);
+        crate::codex_tools::attach_additional_tools(&mut request.extensions, additional_tools);
         Ok(DecodedRequest {
             request,
             diagnostics,
@@ -149,21 +176,53 @@ impl FormatCodec for OpenAiResponsesCodec {
         if !instructions.is_empty() {
             body.insert("instructions".to_string(), Value::String(instructions));
         }
-        body.insert(
-            "input".to_string(),
+        // Tools the client declared through an `additional_tools` item go back
+        // there, so a Responses-to-Responses hop hands the upstream the same
+        // request shape it was given.
+        let additional_names = crate::codex_tools::additional_tool_names(&request.extensions);
+        let (additional, plain): (Vec<ToolDefinition>, Vec<ToolDefinition>) = request
+            .tools
+            .iter()
+            .cloned()
+            .partition(|tool| additional_names.contains(&tool.name));
+        let input = if additional.is_empty() {
             encode_responses_input(
                 &request.messages,
                 &mut diagnostics,
                 _policy,
                 crate::codex_namespaces::tool_namespaces(&request.extensions),
-            )?,
-        );
-        if !request.tools.is_empty() {
+            )?
+        } else {
+            // The single-user-message shorthand is a bare string, which has no room
+            // for a declaration item, so the list form is required here.
+            let mut items = encode_responses_input_items(
+                &request.messages,
+                &mut diagnostics,
+                _policy,
+                crate::codex_namespaces::tool_namespaces(&request.extensions),
+            )?;
+            items.insert(
+                0,
+                json!({
+                    "type": "additional_tools",
+                    "role": "developer",
+                    "tools": encode_responses_tools(
+                        &additional,
+                        crate::codex_namespaces::tool_namespaces(&request.extensions),
+                        &crate::codex_tools::custom_tool_names(&request.extensions),
+                    ),
+                }),
+            );
+            Value::Array(items)
+        };
+        body.insert("input".to_string(), input);
+        if !plain.is_empty() {
             body.insert(
                 "tools".to_string(),
                 encode_responses_tools(
-                    &request.tools,
+                    &plain,
                     crate::codex_namespaces::tool_namespaces(&request.extensions),
+                    &crate::codex_tools::custom_tool_names(&request.extensions),
                 ),
             );
         }
@@ -474,6 +533,63 @@ fn decode_responses_input(
                             arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
                         });
                     }
+                    Some("custom_tool_call") => {
+                        // Codex replays its freeform calls as `custom_tool_call`.
+                        // Left unhandled these reach the catch-all below and become
+                        // opaque user content, which teaches the model to write its
+                        // next call as prose instead of calling the tool.
+                        if !pending_tool_outputs.is_empty() {
+                            flush_responses_tool_block(
+                                &mut messages,
+                                &mut pending_tool_calls,
+                                &mut pending_tool_outputs,
+                                &mut deferred_messages,
+                                &mut pending_reasoning,
+                            );
+                        }
+                        let id = item
+                            .get("call_id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| match &policy.deterministic_ids {
+                                DeterministicIdPolicy::GenerateStable { prefix } => {
+                                    stable_id(prefix, index + 1)
+                                }
+                                DeterministicIdPolicy::Preserve => String::new(),
+                            });
+                        let input = item
+                            .get("input")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        pending_tool_calls.push(ToolCall {
+                            id,
+                            name: item
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            // Spelled the way the tool is advertised on this wire,
+                            // so the transcript matches the offered schema.
+                            arguments: json!({
+                                crate::codex_tools::CUSTOM_INPUT_PROPERTY: input
+                            }),
+                        });
+                    }
+                    Some("custom_tool_call_output") => {
+                        pending_tool_outputs.push(ToolResult {
+                            tool_call_id: item
+                                .get("call_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            content: vec![ContentBlock::Text {
+                                text: item.get("output").map(json_string).unwrap_or_default(),
+                            }],
+                            is_error: None,
+                        });
+                    }
                     Some("function_call_output") => {
                         let tool_call_id = item
                             .get("call_id")
@@ -486,6 +602,12 @@ fn decode_responses_input(
                             content: vec![ContentBlock::Text { text: output_text }],
                             is_error: None,
                         });
+                    }
+                    Some("additional_tools") => {
+                        // A tool declaration, not conversation. `decode_request`
+                        // has already lifted it into the request's tool list, so
+                        // emitting it as content here would send the same 24 KB of
+                        // schemas twice and, on a chat upstream, as prose.
                     }
                     None => {
                         return Err(TranslationError::InvalidValue {
@@ -794,6 +916,7 @@ fn request_role_from_responses(role: Option<&str>, path: &str) -> Result<Role> {
 fn decode_responses_tools(
     value: Option<&Value>,
     namespaces: &mut Map<String, Value>,
+    customs: &mut Map<String, Value>,
 ) -> Vec<ToolDefinition> {
     let Some(tools) = value.and_then(Value::as_array) else {
         return Vec::new();
@@ -810,7 +933,7 @@ fn decode_responses_tools(
                 .get("name")
                 .and_then(Value::as_str)
                 .filter(|name| !name.is_empty());
-            for mut child in decode_responses_tools(tool.get("tools"), namespaces) {
+            for mut child in decode_responses_tools(tool.get("tools"), namespaces, customs) {
                 // A nested container already qualified its own children, and the
                 // innermost name is the one that identifies the tool.
                 let already_qualified = namespaces.contains_key(&child.name);
@@ -825,6 +948,28 @@ fn decode_responses_tools(
                     child.name = qualified;
                 }
                 out.push(child);
+            }
+        } else if tool.get("type").and_then(Value::as_str) == Some("custom") {
+            // A Codex freeform tool. A chat upstream has no `custom` type, so it is
+            // advertised as a function taking one string and recorded here, letting
+            // the response codec turn the call back into a `custom_tool_call`.
+            // Without this arm it falls through to the id-keyed fallback, which
+            // finds no `id` and drops the tool outright.
+            if let Some(name) = tool
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+            {
+                crate::codex_tools::record_custom_tool(customs, name);
+                out.push(ToolDefinition {
+                    name: name.to_string(),
+                    description: tool
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                    parameters: crate::codex_tools::custom_tool_schema(),
+                    strict: None,
+                });
             }
         } else if tool.get("type").and_then(Value::as_str) == Some("function") {
             if let Some(function) = tool.get("function").and_then(Value::as_object) {
@@ -1025,6 +1170,17 @@ fn encode_responses_input(
     {
         return Ok(Value::String(text.clone()));
     }
+    encode_responses_input_items(messages, diagnostics, policy, namespaces).map(Value::Array)
+}
+
+// Encodes messages as Responses input items, without the single-user-message
+// shorthand. A caller that has to prepend an item needs the list form.
+fn encode_responses_input_items(
+    messages: &[Message],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+    namespaces: Option<&Map<String, Value>>,
+) -> Result<Vec<Value>> {
     let mut encoded = Vec::new();
     for message in messages {
         // Anthropic-signed thinking cannot be sent as Responses input.
@@ -1077,7 +1233,7 @@ fn encode_responses_input(
             }));
         }
     }
-    Ok(Value::Array(encoded))
+    Ok(encoded)
 }
 
 // Encodes IR blocks that Responses represents as top-level input items.
@@ -1213,10 +1369,21 @@ fn encode_responses_content(
 fn encode_responses_tools(
     tools: &[ToolDefinition],
     namespaces: Option<&Map<String, Value>>,
+    customs: &std::collections::HashSet<String>,
 ) -> Value {
     let mut out: Vec<Value> = Vec::new();
     let mut containers: Vec<(String, Vec<Value>)> = Vec::new();
     for tool in tools {
+        // A tool the request declared as `custom` goes back out as `custom`, so a
+        // Responses-to-Responses hop is lossless and the freeform contract holds.
+        if customs.contains(&tool.name) {
+            out.push(json!({
+                "type": "custom",
+                "name": tool.name,
+                "description": tool.description.clone().unwrap_or_default(),
+            }));
+            continue;
+        }
         let mut item = json!({
             "type": "function",
             "name": tool.name,

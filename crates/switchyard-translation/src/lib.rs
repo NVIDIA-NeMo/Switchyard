@@ -9,6 +9,7 @@
 
 pub mod codecs;
 pub(crate) mod codex_namespaces;
+pub(crate) mod codex_tools;
 pub mod diagnostic;
 pub mod engine;
 pub mod error;

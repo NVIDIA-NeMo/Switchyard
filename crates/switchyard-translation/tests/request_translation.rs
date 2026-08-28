@@ -2301,3 +2301,257 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
     );
     Ok(())
 }
+
+// A Codex freeform (`custom`) tool must reach a chat upstream as a callable
+// function. Before this it fell through to the id-keyed fallback, which finds no
+// `id` and dropped the tool, so the model was told about a tool it had not been
+// given and wrote the call as prose instead — the turn then executed nothing
+// while reporting success.
+#[test]
+fn responses_custom_tool_reaches_openai_chat_as_a_callable_function() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "deepseek-chat",
+        "input": [{"role": "user", "content": "list the files"}],
+        "tools": [
+            {"type": "custom", "name": "exec", "description": "Run a shell command."},
+            {
+                "type": "function",
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+            }
+        ]
+    });
+
+    let translated = engine.translate_request(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &body,
+        &normalized_policy(),
+    )?;
+
+    let tools = translated.body["tools"]
+        .as_array()
+        .expect("tools survive translation");
+    assert_eq!(tools.len(), 2, "no tool may be dropped: {tools:?}");
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&"exec"), "custom tool missing: {tools:?}");
+    assert!(
+        names.contains(&"lookup"),
+        "function tool missing: {tools:?}"
+    );
+
+    // The freeform contract becomes one required string, the only shape a chat
+    // upstream can express.
+    let exec = tools
+        .iter()
+        .find(|tool| tool["function"]["name"] == "exec")
+        .expect("exec tool present");
+    assert_eq!(
+        exec["function"]["parameters"]["properties"]["input"]["type"],
+        "string"
+    );
+    assert_eq!(exec["function"]["parameters"]["required"][0], "input");
+    Ok(())
+}
+
+// Codex replays its freeform calls as `custom_tool_call` items. Unhandled they
+// reached the catch-all and became opaque *user* content, which is what taught the
+// model to imitate the markup in prose rather than call the tool.
+#[test]
+fn responses_custom_tool_call_history_becomes_a_chat_tool_call() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "deepseek-chat",
+        "input": [
+            {"role": "user", "content": "list the files"},
+            {"type": "custom_tool_call", "call_id": "call_1", "name": "exec", "input": "ls -l"},
+            {"type": "custom_tool_call_output", "call_id": "call_1", "output": "a.txt"},
+            {"role": "user", "content": "and now?"}
+        ],
+        "tools": [{"type": "custom", "name": "exec"}]
+    });
+
+    let translated = engine.translate_request(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &body,
+        &normalized_policy(),
+    )?;
+
+    let messages = translated.body["messages"]
+        .as_array()
+        .expect("messages present");
+    let assistant = messages
+        .iter()
+        .find(|message| message["role"] == "assistant")
+        .expect("the replayed call is an assistant tool call, not user content");
+    let call = &assistant["tool_calls"][0];
+    assert_eq!(call["function"]["name"], "exec");
+    assert_eq!(call["id"], "call_1");
+    // Spelled the way the tool is advertised on this wire.
+    let arguments: Value = serde_json::from_str(
+        call["function"]["arguments"]
+            .as_str()
+            .expect("arguments are a JSON string on the chat wire"),
+    )?;
+    assert_eq!(arguments["input"], "ls -l");
+
+    let result = messages
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .expect("the output becomes a tool result");
+    assert_eq!(result["tool_call_id"], "call_1");
+    assert!(
+        !messages.iter().any(|message| message["role"] == "user"
+            && message["content"].to_string().contains("custom_tool_call")),
+        "a replayed call must never reappear as user content: {messages:?}"
+    );
+    Ok(())
+}
+
+// A Responses-to-Responses hop must not rewrite the tool into a function, or a
+// passthrough would silently change the contract Codex declared.
+#[test]
+fn responses_custom_tool_survives_a_same_format_hop_unchanged() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5.6",
+        "input": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "custom", "name": "exec", "description": "Run a shell command."}]
+    });
+
+    let translated = engine.translate_request(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiResponses,
+        &body,
+        &normalized_policy(),
+    )?;
+
+    assert_eq!(translated.body["tools"][0]["type"], "custom");
+    assert_eq!(translated.body["tools"][0]["name"], "exec");
+    Ok(())
+}
+
+// Codex 0.146 declares its whole toolset in an `additional_tools` INPUT item and
+// sends no top-level `tools` key at all. Undecoded that item reached the input
+// catch-all and became opaque user content, so the upstream was offered zero tools
+// while Codex's prompt still described them — the model wrote its calls as prose and
+// the turn completed having executed nothing.
+#[test]
+fn responses_additional_tools_item_becomes_the_upstream_toolset() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "deepseek-chat",
+        "tool_choice": "auto",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    {
+                        "type": "custom",
+                        "name": "exec",
+                        "description": "Run a shell command.",
+                        "format": {"type": "text"}
+                    },
+                    {
+                        "type": "function",
+                        "name": "wait",
+                        "description": "Wait for a background task.",
+                        "parameters": {"type": "object", "properties": {}},
+                        "strict": false
+                    },
+                    {
+                        "type": "namespace",
+                        "name": "collaboration",
+                        "tools": [{
+                            "type": "function",
+                            "name": "request_user_input",
+                            "parameters": {"type": "object", "properties": {}}
+                        }]
+                    }
+                ]
+            },
+            {"type": "message", "role": "user", "content": "list the files"}
+        ]
+    });
+
+    let translated = engine.translate_request(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &body,
+        &normalized_policy(),
+    )?;
+
+    let tools = translated.body["tools"]
+        .as_array()
+        .expect("the additional_tools item must produce a toolset");
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&"exec"), "custom tool missing: {names:?}");
+    assert!(names.contains(&"wait"), "function tool missing: {names:?}");
+    assert!(
+        names.iter().any(|name| name.contains("request_user_input")),
+        "namespaced tool missing: {names:?}"
+    );
+
+    // The declaration is not conversation: resending it as a message would repeat
+    // every schema as prose and invite the model to answer in kind.
+    let messages = translated.body["messages"]
+        .as_array()
+        .expect("messages present");
+    for message in messages {
+        let text = message.to_string();
+        assert!(
+            !text.contains("additional_tools"),
+            "the declaration leaked into the conversation: {message}"
+        );
+    }
+    Ok(())
+}
+
+// A same-format hop must hand the upstream the shape the client sent, so the
+// declaration goes back where it came from rather than moving to `tools`.
+#[test]
+fn responses_additional_tools_item_survives_a_same_format_hop() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5.6-sol",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [{"type": "custom", "name": "exec", "description": "Run it."}]
+            },
+            {"type": "message", "role": "user", "content": "hi"}
+        ]
+    });
+
+    let translated = engine.translate_request(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiResponses,
+        &body,
+        &normalized_policy(),
+    )?;
+
+    let item = &translated.body["input"][0];
+    assert_eq!(
+        item["type"], "additional_tools",
+        "shape changed: {}",
+        translated.body
+    );
+    assert_eq!(item["tools"][0]["type"], "custom");
+    assert_eq!(item["tools"][0]["name"], "exec");
+    assert!(
+        translated.body.get("tools").is_none(),
+        "a declaration that arrived in the input must not move to `tools`: {}",
+        translated.body
+    );
+    Ok(())
+}
