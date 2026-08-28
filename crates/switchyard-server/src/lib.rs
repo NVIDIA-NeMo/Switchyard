@@ -62,7 +62,25 @@ pub const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
+const FORWARDED_UPSTREAM_HEADERS: &[&str] = &[
+    "baggage",
+    "openai-processing-ms",
+    "traceparent",
+    "tracestate",
+    "x-request-id",
+];
+const FORWARDED_UPSTREAM_HEADER_PREFIXES: &[&str] =
+    &["anthropic-ratelimit-", "x-ratelimit-", "x-upstream-"];
 const MAX_ROUTING_HEADER_VALUE_LEN: usize = 512;
+
+/// Whether an upstream header is safe and useful to expose downstream.
+fn should_forward_upstream_header(name: &HeaderName) -> bool {
+    let name = name.as_str();
+    FORWARDED_UPSTREAM_HEADERS.contains(&name)
+        || FORWARDED_UPSTREAM_HEADER_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+}
 /// Non-standard status used only in logs and metrics for a request whose
 /// downstream client disconnected before any response was written.
 const CLIENT_CLOSED_REQUEST: u16 = 499;
@@ -827,7 +845,7 @@ async fn handle_llm_request(
     // The response carries the candidate that actually served it. Fall back to the routing
     // selection for algorithms that return a response without an offloaded model call.
     let served_model = response.served_model().cloned().or(Some(selected_model));
-    let response = if let Some(served_model) = served_model.as_ref() {
+    let mut response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()
             .map(|probe| state.stats.prefix_eligibility(served_model, probe))
@@ -844,12 +862,22 @@ async fn handle_llm_request(
         response
     };
 
+    let upstream_headers = std::mem::take(&mut response.upstream_headers);
     let response_model = served_model.as_ref().map(ToString::to_string);
     let mut response =
         match into_http_response(response, wire_format, response_model, request_extensions) {
             Ok(response) => response,
             Err(error) => return server_error(error.to_string()),
         };
+    // Forward upstream headers before Switchyard writes its own so any header
+    // this server emits always overrides an upstream echo of the same name.
+    let response_headers = response.headers_mut();
+    for (name, value) in upstream_headers.iter() {
+        if !should_forward_upstream_header(name) {
+            continue;
+        }
+        response_headers.append(name.clone(), value.clone());
+    }
     if let Some(served_model) = served_model.as_ref() {
         attach_routing_headers(&mut response, served_model.as_str());
     }

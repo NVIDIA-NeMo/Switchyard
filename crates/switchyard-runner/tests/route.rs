@@ -25,6 +25,7 @@ impl RoutedLlmClient for StubClient {
                 "plugin response",
             )),
             metadata: None,
+            upstream_headers: Default::default(),
         })
     }
 }
@@ -117,6 +118,7 @@ impl RoutedLlmClient for LazyStreamClient {
         Ok(Response {
             llm_response: LlmResponse::Stream(stream),
             metadata: None,
+            upstream_headers: Default::default(),
         })
     }
 }

@@ -352,6 +352,7 @@ impl RoutedLlmClient for AffinityFallbackClient {
                     r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#,
                 )),
                 metadata: None,
+                upstream_headers: http::HeaderMap::new(),
             });
         }
         if model == "affinity-fallback-weak" && !self.efficient_available.load(Ordering::Relaxed) {
@@ -363,6 +364,7 @@ impl RoutedLlmClient for AffinityFallbackClient {
         Ok(Response {
             llm_response: LlmResponse::Agg(text_response(Some(model.to_string()), "answer")),
             metadata: None,
+            upstream_headers: http::HeaderMap::new(),
         })
     }
 }
@@ -381,6 +383,7 @@ impl RoutedLlmClient for ClassifierClient {
         Ok(Response {
             llm_response: LlmResponse::Agg(text_response(Some(model_id.to_string()), completion)),
             metadata: None,
+            upstream_headers: http::HeaderMap::new(),
         })
     }
 }
@@ -407,6 +410,7 @@ impl RoutedLlmClient for JudgeClient {
                     "routed response",
                 )),
                 metadata: None,
+                upstream_headers: http::HeaderMap::new(),
             });
         }
         match &self.outcome {
@@ -417,6 +421,7 @@ impl RoutedLlmClient for JudgeClient {
             JudgeOutcome::Reply(text) => Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, *text)),
                 metadata: None,
+                upstream_headers: http::HeaderMap::new(),
             }),
             JudgeOutcome::StreamDecodeFailure => Ok(Response {
                 llm_response: LlmResponse::Stream(
@@ -428,6 +433,7 @@ impl RoutedLlmClient for JudgeClient {
                     .boxed(),
                 ),
                 metadata: None,
+                upstream_headers: http::HeaderMap::new(),
             }),
         }
     }
@@ -449,6 +455,7 @@ impl RoutedLlmClient for UsageClient {
         Ok(Response {
             llm_response: LlmResponse::Agg(response),
             metadata: None,
+            upstream_headers: http::HeaderMap::new(),
         })
     }
 }
@@ -1073,6 +1080,7 @@ impl RoutedLlmClient for StreamingUsageClient {
         Ok(Response {
             llm_response: LlmResponse::Stream(Box::pin(futures::stream::iter(chunks))),
             metadata: None,
+            upstream_headers: http::HeaderMap::new(),
         })
     }
 }

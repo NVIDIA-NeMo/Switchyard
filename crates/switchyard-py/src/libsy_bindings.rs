@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::StreamExt;
+use http::HeaderMap;
 use http::header::{HeaderName, HeaderValue};
 use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -488,6 +489,7 @@ impl PyModelCall {
         call.respond(Ok(Response {
             llm_response,
             metadata,
+            upstream_headers: HeaderMap::new(),
         }))
         .map_err(py_libsy_error)
     }
