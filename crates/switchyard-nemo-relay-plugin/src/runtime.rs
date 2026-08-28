@@ -68,12 +68,8 @@ impl SwitchyardRuntime {
         })
     }
 
-    pub(crate) fn manages(&self, request: &Request) -> bool {
-        request
-            .llm_request
-            .model
-            .as_deref()
-            .is_some_and(|model| self.runner.route(model).is_some())
+    pub(crate) fn manages_model(&self, model: &str) -> bool {
+        self.runner.route(model).is_some()
     }
 
     pub(crate) fn decode_request(
@@ -621,9 +617,7 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use switchyard_llm_client::ClientRouter;
-    use switchyard_protocol::{
-        LlmClientError, LlmResponseStreamEvent, ModelId, Usage, text_request,
-    };
+    use switchyard_protocol::{LlmClientError, LlmResponseStreamEvent, ModelId, Usage};
     use switchyard_runner::{AlgorithmSpec, ModelCapabilities, RunnerError};
 
     use super::*;
@@ -649,17 +643,8 @@ mod tests {
     #[test]
     fn only_configured_route_models_are_managed() {
         let runtime = runtime_for("switchyard");
-        let configured = Request {
-            llm_request: text_request(Some("switchyard".into()), "hello"),
-            ..Request::default()
-        };
-        let other = Request {
-            llm_request: text_request(Some("other".into()), "hello"),
-            ..Request::default()
-        };
-
-        assert!(runtime.manages(&configured));
-        assert!(!runtime.manages(&other));
+        assert!(runtime.manages_model("switchyard"));
+        assert!(!runtime.manages_model("other"));
     }
 
     #[test]

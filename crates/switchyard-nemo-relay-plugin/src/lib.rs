@@ -72,10 +72,10 @@ fn register_buffered(
                 let Some(inbound) = protocol_from_call(&name) else {
                     return next.call(request).await;
                 };
-                let decoded = runtime.decode_request(inbound, &request, false)?;
-                if !runtime.manages(&decoded) {
+                if !request_model(&request).is_some_and(|model| runtime.manages_model(model)) {
                     return next.call(request).await;
                 }
+                let decoded = runtime.decode_request(inbound, &request, false)?;
                 let execution = runtime.execute_buffered(inbound, decoded).await;
                 emit_events(&plugin_runtime, execution.events);
                 execution.result
@@ -100,10 +100,10 @@ fn register_stream(
                 let Some(inbound) = protocol_from_call(&name) else {
                     return next.call(request).await;
                 };
-                let decoded = runtime.decode_request(inbound, &request, true)?;
-                if !runtime.manages(&decoded) {
+                if !request_model(&request).is_some_and(|model| runtime.manages_model(model)) {
                     return next.call(request).await;
                 }
+                let decoded = runtime.decode_request(inbound, &request, true)?;
                 let stream_plugin_runtime = plugin_runtime.clone();
                 let execution = runtime
                     .execute_stream(
@@ -126,6 +126,10 @@ fn parse_config(plugin_config: &Map<String, Json>) -> Result<SwitchyardConfig, S
     config.remove("executor");
     serde_json::from_value(Json::Object(config))
         .map_err(|error| format!("invalid Switchyard configuration: {error}"))
+}
+
+fn request_model(request: &nemo_relay_plugin::LlmRequest) -> Option<&str> {
+    request.content.get("model").and_then(Json::as_str)
 }
 
 nemo_relay_plugin::nemo_relay_plugin!(nemo_relay_register_plugin, SwitchyardPlugin::default);
@@ -152,5 +156,20 @@ mod tests {
             "switchyard_config_path": "routes.toml"
         });
         assert!(parse_config(config.as_object().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn request_model_reads_only_a_top_level_string() {
+        let request = nemo_relay_plugin::LlmRequest {
+            headers: Map::new(),
+            content: json!({"model": "switchyard/default", "messages": []}),
+        };
+        assert_eq!(request_model(&request), Some("switchyard/default"));
+
+        let request = nemo_relay_plugin::LlmRequest {
+            headers: Map::new(),
+            content: json!({"model": {"name": "switchyard/default"}}),
+        };
+        assert_eq!(request_model(&request), None);
     }
 }
