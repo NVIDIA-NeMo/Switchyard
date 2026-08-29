@@ -8,6 +8,7 @@ use std::convert::Infallible;
 use axum::response::sse::{Event, Sse};
 use futures_util::Stream;
 use serde_json::{Value, json};
+use switchyard_protocol::LlmClientError;
 use switchyard_translation::{RawEventStream, WireFormat};
 
 /// Boxed stream type accepted by Axum's SSE response wrapper.
@@ -32,9 +33,10 @@ pub(crate) fn frame_stream(
                     }
                 },
                 Err(error) => {
+                    // The full text stays in the log; only the client-facing copy is redacted.
                     tracing::warn!(error = %error, "stream iteration failed");
                     failed = true;
-                    error_event(target_format, error.to_string())
+                    error_event(target_format, client_visible_stream_error(error.as_ref()))
                 }
             };
             yield Ok(event);
@@ -62,6 +64,18 @@ fn frame_event(target_format: WireFormat, value: Value) -> Result<Event, axum::E
                 .to_string();
             Event::default().event(event_type).json_data(value)
         }
+    }
+}
+
+// A stream can fail after its response has begun, which is past the buffered `client_error`
+// boundary. Transport and timeout sources are reqwest's, and they render the full request URL,
+// including any credentials configured in its query string, so they get the same fixed messages
+// the buffered path uses.
+fn client_visible_stream_error(error: &(dyn std::error::Error + 'static)) -> String {
+    match error.downcast_ref::<LlmClientError>() {
+        Some(LlmClientError::Transport { .. }) => "upstream transport error".to_string(),
+        Some(LlmClientError::Timeout { .. }) => "upstream request timed out".to_string(),
+        _ => error.to_string(),
     }
 }
 
@@ -119,6 +133,51 @@ mod tests {
         assert!(body.contains("boom"));
         assert!(!body.contains("after"));
         assert!(!body.contains("[DONE]"));
+        Ok(())
+    }
+
+    // A stream that fails after its response has begun is past the buffered `client_error`
+    // boundary, so the redaction has to be repeated here.
+    #[tokio::test]
+    async fn stream_transport_error_hides_credential_bearing_upstream_url() -> TestResult {
+        const UPSTREAM_URL: &str = "http://upstream.invalid/v1?key=CANARY_ADMIN_QUERY_KEY";
+        let failure: Box<dyn Error + Send + Sync> = Box::new(LlmClientError::Transport {
+            source: Box::new(io::Error::other(format!(
+                "error sending request for url ({UPSTREAM_URL})"
+            ))),
+        });
+        let stream: RawEventStream = Box::pin(stream::iter(vec![
+            Ok(json!({"id": "before"})),
+            Err(failure),
+        ]));
+
+        let response = frame_stream(stream, WireFormat::OpenAiChat).into_response();
+        let body = String::from_utf8(to_bytes(response.into_body(), usize::MAX).await?.to_vec())?;
+
+        assert!(body.contains("upstream transport error"));
+        assert!(
+            !body.contains("CANARY_ADMIN_QUERY_KEY"),
+            "credential leaked in {body:?}"
+        );
+        assert!(
+            !body.contains(UPSTREAM_URL),
+            "upstream URL leaked in {body:?}"
+        );
+        Ok(())
+    }
+
+    // Errors that do not describe the request target keep their text.
+    #[tokio::test]
+    async fn stream_translation_error_keeps_its_message() -> TestResult {
+        let failure: Box<dyn Error + Send + Sync> = Box::new(LlmClientError::ResponseTranslation(
+            "unrecognized event type".to_string(),
+        ));
+        let stream: RawEventStream = Box::pin(stream::iter(vec![Err(failure)]));
+
+        let response = frame_stream(stream, WireFormat::OpenAiChat).into_response();
+        let body = String::from_utf8(to_bytes(response.into_body(), usize::MAX).await?.to_vec())?;
+
+        assert!(body.contains("unrecognized event type"));
         Ok(())
     }
 }

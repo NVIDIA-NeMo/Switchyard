@@ -864,3 +864,41 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod stream_error_boxing {
+    use futures::executor::block_on;
+    use futures::{StreamExt, stream};
+
+    use super::*;
+    use crate::{LlmResponseStream, WireFormat};
+
+    // `switchyard-server` redacts credential-bearing stream failures by downcasting the
+    // boxed error back to `LlmClientError`. That only works while `?` boxes the concrete
+    // type instead of wrapping it, so pin the behaviour the redaction depends on.
+    #[test]
+    fn encoded_stream_error_downcasts_to_llm_client_error() {
+        block_on(async {
+            let chunks: LlmResponseStream =
+                Box::pin(stream::iter(vec![Err(LlmClientError::Transport {
+                    source: Box::new(std::io::Error::other("upstream is unreachable")),
+                })]));
+
+            let mut stream = encode_stream(chunks, WireFormat::OpenAiChat, None)
+                .expect("the built-in codec resolves");
+            let error = stream
+                .next()
+                .await
+                .expect("the stream yields the failed chunk")
+                .expect_err("the chunk was an error");
+
+            assert!(
+                matches!(
+                    error.downcast_ref::<LlmClientError>(),
+                    Some(LlmClientError::Transport { .. })
+                ),
+                "boxed stream error no longer downcasts to LlmClientError: {error}"
+            );
+        })
+    }
+}
