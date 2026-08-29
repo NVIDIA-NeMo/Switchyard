@@ -1033,22 +1033,32 @@ fn client_error(error: &LlmClientError) -> Response {
             "upstream_error",
             "upstream_error",
         ),
-        LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
-            error_response(
-                StatusCode::BAD_GATEWAY,
-                source.to_string(),
-                "upstream_error",
-                "upstream_error",
-            )
-        }
+        // A transport source is reqwest's, and it renders the full request URL, including any
+        // credentials configured in its query string.
+        LlmClientError::Transport { source } => redacted_error_response(
+            StatusCode::BAD_GATEWAY,
+            "upstream transport error",
+            source.to_string(),
+            "upstream_error",
+            "upstream_error",
+        ),
+        // Decoding failures describe the response body, not the request target.
+        LlmClientError::InvalidResponse { source } => error_response(
+            StatusCode::BAD_GATEWAY,
+            source.to_string(),
+            "upstream_error",
+            "upstream_error",
+        ),
         LlmClientError::ResponseTranslation(message) => error_response(
             StatusCode::BAD_GATEWAY,
             message,
             "upstream_error",
             "upstream_error",
         ),
-        LlmClientError::Timeout { source } => error_response(
+        // A timeout carries the same request context as a transport error.
+        LlmClientError::Timeout { source } => redacted_error_response(
             StatusCode::GATEWAY_TIMEOUT,
+            "upstream request timed out",
             source.to_string(),
             "upstream_error",
             "upstream_timeout",
@@ -1078,6 +1088,9 @@ struct ApiError {
     message: String,
     error_type: &'static str,
     code: &'static str,
+    // Detail for the request log only. Errors whose source can carry the configured upstream
+    // URL keep the full text here and send a fixed message on the wire.
+    log_detail: Option<String>,
 }
 
 impl ApiError {
@@ -1092,7 +1105,13 @@ impl ApiError {
             message: message.into(),
             error_type,
             code,
+            log_detail: None,
         }
+    }
+
+    fn with_log_detail(mut self, detail: impl Into<String>) -> Self {
+        self.log_detail = Some(detail.into());
+        self
     }
 
     fn into_response(self, wire_format: WireFormat) -> Response {
@@ -1113,9 +1132,11 @@ impl ApiError {
             }),
         };
         let mut response = (self.status, Json(body)).into_response();
-        response
-            .extensions_mut()
-            .insert(RequestLogError(self.message.clone()));
+        response.extensions_mut().insert(RequestLogError(
+            self.log_detail
+                .clone()
+                .unwrap_or_else(|| self.message.clone()),
+        ));
         response.extensions_mut().insert(self);
         response
     }
@@ -1165,6 +1186,20 @@ fn error_response(
     code: &'static str,
 ) -> Response {
     ApiError::new(status, message, error_type, code).into_response(WireFormat::OpenAiChat)
+}
+
+// For errors whose source text can contain the configured upstream URL: the client sees a fixed
+// message, the request log keeps the source.
+fn redacted_error_response(
+    status: StatusCode,
+    message: &'static str,
+    log_detail: impl Into<String>,
+    error_type: &'static str,
+    code: &'static str,
+) -> Response {
+    ApiError::new(status, message, error_type, code)
+        .with_log_detail(log_detail)
+        .into_response(WireFormat::OpenAiChat)
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
@@ -1764,6 +1799,80 @@ mod tests {
             request_log_level(StatusCode::INTERNAL_SERVER_ERROR),
             Level::ERROR
         );
+    }
+
+    // Redaction is limited to the wire: the request log keeps the full transport source so
+    // operators can still diagnose the failure.
+    #[test]
+    fn transport_error_keeps_source_in_request_log() {
+        const UPSTREAM_URL: &str = "https://upstream.invalid/v1?key=CANARY_ADMIN_QUERY_KEY";
+        let error = LlmClientError::Transport {
+            source: Box::new(std::io::Error::other(format!(
+                "error sending request for url ({UPSTREAM_URL})"
+            ))),
+        };
+
+        let response = client_error(&error);
+        let api_error = response
+            .extensions()
+            .get::<ApiError>()
+            .expect("client error metadata");
+        assert_eq!(api_error.message, "upstream transport error");
+
+        let logged = response
+            .extensions()
+            .get::<RequestLogError>()
+            .map(|error| error.0.as_str())
+            .expect("request log error");
+        assert!(
+            logged.contains(UPSTREAM_URL),
+            "transport source dropped from the request log: {logged:?}"
+        );
+    }
+
+    // A timeout redacts the wire message and keeps its source for the log on the same terms.
+    #[test]
+    fn client_timeout_error_hides_source_details() {
+        const UPSTREAM_URL: &str = "https://upstream.invalid/v1?key=CANARY_ADMIN_QUERY_KEY";
+        let error = LlmClientError::Timeout {
+            source: Box::new(std::io::Error::other(format!(
+                "request timed out for {UPSTREAM_URL}"
+            ))),
+        };
+
+        let response = client_error(&error);
+        let api_error = response
+            .extensions()
+            .get::<ApiError>()
+            .expect("client error metadata");
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(api_error.message, "upstream request timed out");
+        assert_eq!(api_error.code, "upstream_timeout");
+        assert!(!api_error.message.contains(UPSTREAM_URL));
+
+        let logged = response
+            .extensions()
+            .get::<RequestLogError>()
+            .map(|error| error.0.as_str())
+            .expect("request log error");
+        assert!(logged.contains(UPSTREAM_URL));
+    }
+
+    // Response-decoding detail describes the body, not the request target, and stays visible.
+    #[test]
+    fn client_invalid_response_error_preserves_source_detail() {
+        let error = LlmClientError::InvalidResponse {
+            source: Box::new(std::io::Error::other("response body was truncated")),
+        };
+
+        let response = client_error(&error);
+        let api_error = response
+            .extensions()
+            .get::<ApiError>()
+            .expect("client error metadata");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(api_error.message, "response body was truncated");
+        assert_eq!(api_error.code, "upstream_error");
     }
 
     // Canonical error text remains available without consuming the response body.
