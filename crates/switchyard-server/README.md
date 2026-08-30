@@ -70,6 +70,14 @@ host can authenticate or reject without buffering an untrusted body. `resolve_mo
 wire-format decoding and can map a public model to an internal route. `present_response` can adapt
 the final error envelope. All methods have defaults that preserve the standalone server behavior.
 
+The embedding crate must declare `async-trait` as a direct dependency before implementing the
+hook trait:
+
+```toml
+[dependencies]
+async-trait = "0.1"
+```
+
 ```rust
 use std::sync::Arc;
 

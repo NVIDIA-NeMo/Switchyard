@@ -511,6 +511,7 @@ impl IngressHooks for TestIngressHooks {
     }
 }
 
+// A prepare rejection must occur before malformed JSON is read and decoded.
 #[tokio::test]
 async fn ingress_hook_can_reject_before_json_body_extraction() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -536,6 +537,7 @@ async fn ingress_hook_can_reject_before_json_body_extraction() -> TestResult {
     Ok(())
 }
 
+// Public models map to internal routes while the restricted router omits operational endpoints.
 #[tokio::test]
 async fn ingress_hook_maps_public_model_and_llm_router_excludes_internal_endpoints() -> TestResult {
     let upstream = MockUpstream::start().await?;

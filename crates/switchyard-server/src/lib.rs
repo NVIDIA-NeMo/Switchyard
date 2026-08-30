@@ -156,6 +156,8 @@ pub trait IngressHooks: Send + Sync {
     /// Resolves the route model after wire-format decoding and before route lookup.
     ///
     /// The returned model replaces `request.llm_request.model` for route execution.
+    /// Returning `Err(response)` stops route lookup and uses that response as the
+    /// endpoint response, allowing a host to reject an already decoded request.
     #[allow(clippy::result_large_err)]
     fn resolve_model(
         &self,
