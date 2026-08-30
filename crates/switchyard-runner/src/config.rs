@@ -295,7 +295,60 @@ impl DeploymentConfig {
             let client: Arc<dyn RoutedLlmClient> = client.clone();
             by_model.insert(target.id.clone(), client);
         }
-        Ok((ClientRouter::new(by_model), caller_auth))
+        let (target_prompts, routing_answer_target) =
+            self.build_route_target_prompts(route_name, route)?;
+        let router =
+            ClientRouter::new_with_target_prompts(by_model, target_prompts, routing_answer_target);
+        Ok((router, caller_auth))
+    }
+
+    /// Builds the effective prompt policy for this route's completion targets.
+    fn build_route_target_prompts(
+        &self,
+        route_name: &str,
+        route: &RouteConfig,
+    ) -> RunnerResult<(HashMap<ModelId, String>, Option<ModelId>)> {
+        let mut prompts = HashMap::new();
+        let mut aliases = HashMap::<&ModelId, Option<&str>>::new();
+        for name in route.algorithm.routing_target_names() {
+            let target = self.targets.get(name).ok_or_else(|| {
+                RunnerError::configuration(format!("route references unknown target {name}"))
+            })?;
+            let prompt = target.system_prompt.as_deref();
+            if aliases
+                .insert(&target.id, prompt)
+                .is_some_and(|configured| configured != prompt)
+            {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} maps completion target aliases to model {} with different system_prompt values",
+                    target.id
+                )));
+            }
+            if let Some(prompt) = prompt {
+                prompts.insert(target.id.clone(), prompt.to_string());
+            }
+        }
+        let Some((response_name, dependency_name)) =
+            route.algorithm.routing_response_and_dependency()
+        else {
+            return Ok((prompts, None));
+        };
+        let response = self.targets.get(response_name).ok_or_else(|| {
+            RunnerError::configuration(format!("route references unknown target {response_name}"))
+        })?;
+        if !prompts.contains_key(&response.id) {
+            return Ok((prompts, None));
+        }
+        let dependency = self.targets.get(dependency_name).ok_or_else(|| {
+            RunnerError::configuration(format!("route references unknown target {dependency_name}"))
+        })?;
+        if response.id == dependency.id {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} cannot apply system_prompt to target {response_name}: model {} is also used by routing-only target {dependency_name}",
+                response.id,
+            )));
+        }
+        Ok((prompts, Some(response.id.clone())))
     }
 
     fn fallback_base_url(&self) -> RunnerResult<Option<String>> {
@@ -419,6 +472,7 @@ struct TargetConfig {
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
+    system_prompt: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -762,6 +816,49 @@ confidence_threshold = 0.5
             runner_from_toml(&configured)?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn aliased_completion_targets_reject_prompt_conflicts() {
+        let configured = stage_config()
+            .replace(
+                "id = \"strong/model\"\nllm_client = \"responses\"",
+                "id = \"strong/model\"\nllm_client = \"responses\"\nsystem_prompt = \"capable\"",
+            )
+            .replace(
+                "[routes.stage]",
+                "[targets.strong_alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n\n[routes.stage]",
+            )
+            .replace("efficient_target = \"weak\"", "efficient_target = \"strong_alias\"");
+        let message = error_message(&configured);
+        assert!(
+            message.contains("completion target aliases to model strong/model with different system_prompt values"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn prompted_routing_response_cannot_share_a_model_with_a_dependency() {
+        let configured = VALID_CONFIG
+            .replace(
+                "id = \"classifier/model\"\nllm_client = \"primary\"",
+                "id = \"weak/model\"\nllm_client = \"primary\"",
+            )
+            .replace(
+                "id = \"weak/model\"\nllm_client = \"anthropic\"",
+                "id = \"weak/model\"\nllm_client = \"anthropic\"\nsystem_prompt = \"answer prompt\"",
+            )
+            .replace(
+                "base_threshold = 0.5",
+                "base_threshold = 0.5\nescalation = { confirmations = 1 }",
+            );
+
+        let message = error_message(&configured);
+
+        assert!(
+            message.contains("cannot apply system_prompt to target weak: model weak/model is also used by routing-only target classifier"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]
