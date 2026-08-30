@@ -6,7 +6,7 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use libsy::{Algorithm, CallModel, LibsyError, RoutingOutcome, drive};
+use libsy::{Algorithm, LibsyError, RoutingOutcome};
 use serde_json::Value;
 use switchyard_llm_client::{ClientRouter, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{LlmClientError, ModelId, Request, Response, WireFormat};
@@ -194,13 +194,11 @@ impl Route {
         })
     }
 
-    /// Completes routing-time calls without serving the answer target.
+    /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        drive(Arc::clone(&self.algorithm), request, |call| {
-            serve_decision_dependency(self.clients.clone(), call)
-        })
-        .await
-        .map_err(Into::into)
+        switchyard_llm_client::decide(Arc::clone(&self.algorithm), self.clients.clone(), request)
+            .await
+            .map_err(Into::into)
     }
 
     /// Counts tokens using the configured Anthropic-capable target.
@@ -214,50 +212,5 @@ impl Route {
             .count_tokens(&target.model, request)
             .await
             .map_err(Into::into)
-    }
-}
-
-async fn serve_decision_dependency(clients: ClientRouter, call: CallModel) -> libsy::Result<()> {
-    let mut result = Err(LibsyError::NoTargets);
-    for (index, model) in call.models.iter().enumerate() {
-        // The driver stamps only the first candidate, so every fallback must replace it.
-        let mut request = call.request.clone();
-        request.llm_request.model = Some(model.to_string());
-        let response = match clients.route(model) {
-            Ok(client) => client.call(request).await,
-            Err(source) => Err(source),
-        };
-        match response {
-            Ok(response) => {
-                result = Ok(response);
-                break;
-            }
-            Err(source) => {
-                let try_next = index + 1 < call.models.len() && eligible_routing_fallback(&source);
-                result = Err(LibsyError::client_call(model.clone(), source));
-                if !try_next {
-                    break;
-                }
-            }
-        }
-    }
-    call.respond(result)
-}
-
-/// Whether a routing-time candidate failure may fall through to the next model.
-fn eligible_routing_fallback(error: &LlmClientError) -> bool {
-    match error {
-        LlmClientError::ContextWindowExceeded { .. }
-        | LlmClientError::Transport { .. }
-        | LlmClientError::Timeout { .. } => true,
-        LlmClientError::UpstreamHttp { status, .. } => {
-            matches!(
-                *status,
-                reqwest::StatusCode::FORBIDDEN
-                    | reqwest::StatusCode::REQUEST_TIMEOUT
-                    | reqwest::StatusCode::TOO_MANY_REQUESTS
-            ) || status.is_server_error()
-        }
-        _ => false,
     }
 }
