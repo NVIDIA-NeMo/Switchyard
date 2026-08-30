@@ -8,7 +8,9 @@ use std::convert::Infallible;
 use std::error::Error;
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use async_trait::async_trait;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, Request as HttpRequest, StatusCode};
@@ -22,10 +24,12 @@ use serde_json::{Value, json};
 use switchyard_llm_client::{
     Backend, ClientRouter, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
-use switchyard_protocol::ModelId;
-use switchyard_protocol::RoutedLlmClient;
+use switchyard_protocol::{Metadata, ModelId, Request as AlgorithmRequest, RoutedLlmClient};
 use switchyard_server::config::load_server_state;
-use switchyard_server::{DEFAULT_MAX_REQUEST_BODY_BYTES, ServerState, build_switchyard_router};
+use switchyard_server::{
+    DEFAULT_MAX_REQUEST_BODY_BYTES, IngressHooks, ServerState, build_llm_router,
+    build_switchyard_router,
+};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -475,6 +479,91 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
     let upstream = MockUpstream::start().await?;
     let app = build_switchyard_router(random_state(&upstream.base_url, routes)?);
     Ok((upstream, app))
+}
+
+struct TestIngressHooks {
+    prepared: Arc<AtomicUsize>,
+    reject: bool,
+}
+
+#[async_trait]
+impl IngressHooks for TestIngressHooks {
+    async fn prepare(
+        &self,
+        _request: &mut axum::extract::Request,
+        _metadata: &mut Metadata,
+        _wire_format: switchyard_protocol::WireFormat,
+    ) -> Result<(), HttpResponse> {
+        self.prepared.fetch_add(1, Ordering::SeqCst);
+        if self.reject {
+            return Err(StatusCode::UNAUTHORIZED.into_response());
+        }
+        Ok(())
+    }
+
+    fn resolve_model(
+        &self,
+        request: &mut AlgorithmRequest,
+        _wire_format: switchyard_protocol::WireFormat,
+    ) -> Result<ModelId, HttpResponse> {
+        request.llm_request.model = Some(ROUTE_MODEL.to_string());
+        Ok(ModelId::from(ROUTE_MODEL))
+    }
+}
+
+#[tokio::test]
+async fn ingress_hook_can_reject_before_json_body_extraction() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let prepared = Arc::new(AtomicUsize::new(0));
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
+        .with_ingress_hooks(Arc::new(TestIngressHooks {
+            prepared: Arc::clone(&prepared),
+            reject: true,
+        }));
+    let app = build_llm_router(state);
+
+    let response = send_raw_json(
+        &app,
+        "/v1/chat/completions",
+        b"not-json".to_vec(),
+        Some("application/json"),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(prepared.load(Ordering::SeqCst), 1);
+    assert!(upstream.models().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn ingress_hook_maps_public_model_and_llm_router_excludes_internal_endpoints() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
+        .with_ingress_hooks(Arc::new(TestIngressHooks {
+            prepared: Arc::new(AtomicUsize::new(0)),
+            reject: false,
+        }));
+    let app = build_llm_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "public-model",
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(upstream.models().await, vec!["model/a"]);
+    assert_eq!(
+        send(&app, "GET", "/metrics", None).await?.status,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
 }
 
 fn empty_token_totals() -> Value {

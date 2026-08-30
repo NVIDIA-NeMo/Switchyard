@@ -62,6 +62,56 @@ switchyard-server --config routes.toml
 Ctrl+C and Unix `SIGTERM` stop new connections and allow active requests to drain for up to
 `--shutdown-timeout` (30 seconds by default) before they are terminated.
 
+## Embedding the LLM routes
+
+Rust hosts can install [`IngressHooks`] on [`ServerState`] and use [`build_llm_router`] to expose
+only Chat Completions, Responses, and Messages. `prepare` runs before JSON body extraction, so a
+host can authenticate or reject without buffering an untrusted body. `resolve_model` runs after
+wire-format decoding and can map a public model to an internal route. `present_response` can adapt
+the final error envelope. All methods have defaults that preserve the standalone server behavior.
+
+```rust
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use axum::extract::Request as HttpRequest;
+use axum::response::Response;
+use switchyard_protocol::{Metadata, ModelId, Request, WireFormat};
+use switchyard_server::{IngressHooks, ServerState, build_llm_router};
+
+struct HostHooks;
+
+#[async_trait]
+impl IngressHooks for HostHooks {
+    async fn prepare(
+        &self,
+        request: &mut HttpRequest,
+        metadata: &mut Metadata,
+        _wire_format: WireFormat,
+    ) -> Result<(), Response> {
+        // Authenticate from request.headers()/extensions(), then attach trusted metadata.
+        let _ = (request, metadata);
+        Ok(())
+    }
+
+    fn resolve_model(
+        &self,
+        _request: &mut Request,
+        _wire_format: WireFormat,
+    ) -> Result<ModelId, Response> {
+        Ok(ModelId::from("internal/route"))
+    }
+}
+
+fn public_router(state: ServerState) -> axum::Router {
+    build_llm_router(state.with_ingress_hooks(Arc::new(HostHooks)))
+}
+```
+
+The reduced router intentionally omits health, metrics, stats, decision, token-counting, and
+routing-log endpoints. A host can mount its own protected operational surface separately. The
+full [`build_switchyard_router`] remains unchanged for standalone deployments.
+
 The server logs exactly one structured terminal event per LLM request: successful responses at
 `INFO`, 4xx responses at `WARN`, and 5xx responses at `ERROR`. Set
 `RUST_LOG=switchyard_server=debug,libsy=debug` to include routing decisions and nested failure

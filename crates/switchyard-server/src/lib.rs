@@ -23,8 +23,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
-use axum::extract::{DefaultBodyLimit, Query, Request as HttpRequest, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, Query, Request as HttpRequest, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
@@ -132,6 +133,52 @@ struct DecisionLlmClientResponse {
     base_url: String,
 }
 
+/// Host hooks around the public LLM HTTP endpoints.
+///
+/// The default implementation preserves the standalone server's behavior. A host may
+/// authenticate before body extraction, attach trusted metadata, map an external model
+/// to a route model, and present responses without copying Switchyard's handlers.
+#[async_trait]
+pub trait IngressHooks: Send + Sync {
+    /// Inspects or rejects a request before its body is read and decoded.
+    ///
+    /// `metadata` has already been normalized from request headers. Implementations may
+    /// add trusted host context; returning a response skips body extraction and routing.
+    async fn prepare(
+        &self,
+        _request: &mut HttpRequest,
+        _metadata: &mut Metadata,
+        _wire_format: WireFormat,
+    ) -> std::result::Result<(), Response> {
+        Ok(())
+    }
+
+    /// Resolves the route model after wire-format decoding and before route lookup.
+    ///
+    /// The returned model replaces `request.llm_request.model` for route execution.
+    #[allow(clippy::result_large_err)]
+    fn resolve_model(
+        &self,
+        request: &mut Request,
+        _wire_format: WireFormat,
+    ) -> std::result::Result<ModelId, Response> {
+        request_model(request)
+    }
+
+    /// Presents the final HTTP response after routing or rejection.
+    ///
+    /// The default converts Switchyard's error envelope to the caller's wire format
+    /// and leaves successful responses unchanged.
+    fn present_response(&self, response: Response, wire_format: WireFormat) -> Response {
+        render_error_response(response, wire_format)
+    }
+}
+
+struct DefaultIngressHooks;
+
+#[async_trait]
+impl IngressHooks for DefaultIngressHooks {}
+
 /// Shared server state used by all endpoint handlers.
 #[derive(Clone)]
 pub struct ServerState {
@@ -140,6 +187,7 @@ pub struct ServerState {
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
+    ingress_hooks: Arc<dyn IngressHooks>,
 }
 
 #[derive(Clone)]
@@ -212,7 +260,14 @@ impl ServerState {
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
+            ingress_hooks: Arc::new(DefaultIngressHooks),
         })
+    }
+
+    /// Installs host hooks for authentication, route-model resolution, and presentation.
+    pub fn with_ingress_hooks(mut self, hooks: Arc<dyn IngressHooks>) -> Self {
+        self.ingress_hooks = hooks;
+        self
     }
 
     /// Enables durable per-request routing records at `path`.
@@ -473,10 +528,7 @@ async fn stamp_request_start(mut request: HttpRequest, next: Next) -> Response {
 
 /// Builds an Axum router for the supported LLM wire formats.
 pub fn build_switchyard_router(state: ServerState) -> Router {
-    let mut router = Router::new()
-        .route("/v1/chat/completions", post(openai_chat_completions))
-        .route("/v1/messages", post(anthropic_messages))
-        .route("/v1/responses", post(openai_responses))
+    let mut router = llm_routes()
         .route("/v1/decision", post(decision))
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/models", get(models))
@@ -487,6 +539,25 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
     if state.routing_log.is_some() {
         router = router.route("/v1/routing/session-stats", get(get_session_stats));
     }
+    finish_router(router, state)
+}
+
+/// Builds only the public Chat Completions, Responses, and Messages routes.
+///
+/// Hosts can layer their own internal endpoints and middleware without exposing the
+/// standalone server's metrics, stats, decision, token-counting, or health routes.
+pub fn build_llm_router(state: ServerState) -> Router {
+    finish_router(llm_routes(), state)
+}
+
+fn llm_routes() -> Router<ServerState> {
+    Router::new()
+        .route("/v1/chat/completions", post(openai_chat_completions))
+        .route("/v1/messages", post(anthropic_messages))
+        .route("/v1/responses", post(openai_responses))
+}
+
+fn finish_router(router: Router<ServerState>, state: ServerState) -> Router {
     router
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(DEFAULT_MAX_REQUEST_BODY_BYTES))
@@ -515,28 +586,25 @@ fn server_io_error(error: std::io::Error) -> ServerError {
 async fn openai_chat_completions(
     State(state): State<ServerState>,
     Extension(started): Extension<RequestStart>,
-    headers: HeaderMap,
-    body: std::result::Result<Json<Value>, JsonRejection>,
+    request: HttpRequest,
 ) -> Response {
-    handle_endpoint(state, started, headers, body, WireFormat::OpenAiChat).await
+    handle_endpoint(state, started, request, WireFormat::OpenAiChat).await
 }
 
 async fn anthropic_messages(
     State(state): State<ServerState>,
     Extension(started): Extension<RequestStart>,
-    headers: HeaderMap,
-    body: std::result::Result<Json<Value>, JsonRejection>,
+    request: HttpRequest,
 ) -> Response {
-    handle_endpoint(state, started, headers, body, WireFormat::AnthropicMessages).await
+    handle_endpoint(state, started, request, WireFormat::AnthropicMessages).await
 }
 
 async fn openai_responses(
     State(state): State<ServerState>,
     Extension(started): Extension<RequestStart>,
-    headers: HeaderMap,
-    body: std::result::Result<Json<Value>, JsonRejection>,
+    request: HttpRequest,
 ) -> Response {
-    handle_endpoint(state, started, headers, body, WireFormat::OpenAiResponses).await
+    handle_endpoint(state, started, request, WireFormat::OpenAiResponses).await
 }
 
 /// One provider request submitted for a routing decision without an answer-model call.
@@ -655,12 +723,11 @@ fn count_tokens_error(error: LlmClientError) -> Response {
 async fn handle_endpoint(
     state: ServerState,
     started: RequestStart,
-    headers: HeaderMap,
-    body: std::result::Result<Json<Value>, JsonRejection>,
+    request: HttpRequest,
     wire_format: WireFormat,
 ) -> Response {
-    let span = observability::request_span(&headers);
-    handle_endpoint_inner(state, started, headers, body, wire_format)
+    let span = observability::request_span(request.headers());
+    handle_endpoint_inner(state, started, request, wire_format)
         .instrument(span)
         .await
 }
@@ -668,11 +735,29 @@ async fn handle_endpoint(
 async fn handle_endpoint_inner(
     state: ServerState,
     started: RequestStart,
-    headers: HeaderMap,
-    body: std::result::Result<Json<Value>, JsonRejection>,
+    mut request: HttpRequest,
     wire_format: WireFormat,
 ) -> Response {
-    let metadata = metadata_from_headers(headers);
+    let ingress_hooks = Arc::clone(&state.ingress_hooks);
+    let mut metadata = metadata_from_headers(request.headers().clone());
+    if let Err(response) = ingress_hooks
+        .prepare(&mut request, &mut metadata, wire_format)
+        .await
+    {
+        let mut request_log = RequestLogGuard(Some(RequestLogContext {
+            started: started.0,
+            wire_format,
+            requested_model: None,
+            streaming: false,
+            session_id: metadata.session_id.clone(),
+            correlation_id: metadata.correlation_id.clone(),
+        }));
+        let response = ingress_hooks.present_response(response, wire_format);
+        metrics::record_client_response(response.status().as_u16());
+        request_log.emit(&response);
+        return response;
+    }
+    let body = Json::<Value>::from_request(request, &state).await;
     let routing_log_context = state
         .routing_log
         .as_ref()
@@ -716,7 +801,7 @@ async fn handle_endpoint_inner(
         }
         Err((status, message)) => invalid_body_error(status, message),
     };
-    let response = render_error_response(response, wire_format);
+    let response = ingress_hooks.present_response(response, wire_format);
     metrics::record_client_response(response.status().as_u16());
     request_log.emit(&response);
     response
@@ -751,24 +836,49 @@ fn resolve_route(
     body: Value,
     wire_format: WireFormat,
 ) -> std::result::Result<(&Route, Request), Response> {
+    resolve_route_inner(state, metadata, body, wire_format, None)
+}
+
+#[allow(clippy::type_complexity, clippy::result_large_err)]
+fn resolve_route_with_hooks(
+    state: &ServerState,
+    metadata: Metadata,
+    body: Value,
+    wire_format: WireFormat,
+) -> std::result::Result<(&Route, Request), Response> {
+    resolve_route_inner(
+        state,
+        metadata,
+        body,
+        wire_format,
+        Some(state.ingress_hooks.as_ref()),
+    )
+}
+
+#[allow(clippy::type_complexity, clippy::result_large_err)]
+fn resolve_route_inner<'state>(
+    state: &'state ServerState,
+    metadata: Metadata,
+    body: Value,
+    wire_format: WireFormat,
+    hooks: Option<&dyn IngressHooks>,
+) -> std::result::Result<(&'state Route, Request), Response> {
     let llm_request = decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
-    let requested_model = llm_request
-        .model
-        .clone()
-        .filter(|model| !model.trim().is_empty())
-        .ok_or_else(|| {
-            error_response(
-                StatusCode::BAD_REQUEST,
-                "request body must include a non-empty string `model`",
-                "invalid_request_error",
-                "invalid_request_error",
-            )
-        })?;
-    let route = state.route_for_model(&requested_model).ok_or_else(|| {
+    let mut request = Request {
+        llm_request,
+        raw_request: Some(body),
+        metadata: Some(metadata),
+    };
+    let route_model = match hooks {
+        Some(hooks) => hooks.resolve_model(&mut request, wire_format)?,
+        None => request_model(&request)?,
+    };
+    request.llm_request.model = Some(route_model.to_string());
+    let route = state.route_for_model(route_model.as_str()).ok_or_else(|| {
         error_response(
             StatusCode::NOT_FOUND,
-            format!("No route registered for model {requested_model}"),
+            format!("No route registered for model {route_model}"),
             "model_not_found",
             "model_not_found",
         )
@@ -784,17 +894,33 @@ fn resolve_route(
             StatusCode::BAD_REQUEST,
             format!(
                 "route {requested_model} forwards an {provider} login; call it through {expected_endpoint}",
+                requested_model = route_model,
             ),
             "invalid_request_error",
             "invalid_request_error",
         ));
     }
-    let request = Request {
-        llm_request,
-        raw_request: Some(body),
-        metadata: Some(metadata),
-    };
     Ok((route, request))
+}
+
+// Callers immediately return the error as the HTTP response; boxing it would
+// add allocation and make the host hook API less natural.
+#[allow(clippy::result_large_err)]
+fn request_model(request: &Request) -> std::result::Result<ModelId, Response> {
+    request
+        .llm_request
+        .model
+        .as_deref()
+        .filter(|model| !model.trim().is_empty())
+        .map(ModelId::from)
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "request body must include a non-empty string `model`",
+                "invalid_request_error",
+                "invalid_request_error",
+            )
+        })
 }
 
 async fn handle_llm_request(
@@ -806,7 +932,7 @@ async fn handle_llm_request(
     routing_log_context: Option<routing_log::RoutingLogContext>,
 ) -> Response {
     let cache_probe = state.track_cache_eligibility.then(|| prefix_probe(&body));
-    let (route, request) = match resolve_route(&state, metadata, body, wire_format) {
+    let (route, request) = match resolve_route_with_hooks(&state, metadata, body, wire_format) {
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
