@@ -99,6 +99,35 @@ let request = Request {
 assert_eq!(request.llm_request.tools[0].name, "lookup_metric");
 ```
 
+## Trusted in-process context
+
+Hosts can attach cloneable, typed values to [`Metadata::typed_context`] without
+encoding trusted state into client-controlled headers or serialized protocol
+payloads:
+
+```rust
+use switchyard_protocol::Metadata;
+
+#[derive(Clone, Debug, PartialEq)]
+struct TenantId(String);
+
+let mut metadata = Metadata::default();
+metadata
+    .typed_context
+    .insert(TenantId("tenant-42".to_string()));
+
+let cloned = metadata.clone();
+assert_eq!(
+    cloned.typed_context.get::<TenantId>(),
+    Some(&TenantId("tenant-42".to_string()))
+);
+```
+
+Values in `typed_context` are host-owned and remain in process: Switchyard does
+not populate them from HTTP headers, serialize them, log them, or forward them
+to providers. Applications remain responsible for inserting only safe,
+cloneable types and for enforcing their own authorization boundaries.
+
 ## Response forms
 
 [`LlmResponse`] contains either a completed [`AggLlmResponse`] or a

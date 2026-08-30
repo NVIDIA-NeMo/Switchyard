@@ -155,7 +155,8 @@ const HEADER_CONFIG: &HeaderConfig = &[
 /// are present (e.g. to key per-session state or emit correlated telemetry). The
 /// agent-lineage fields (`parent_agent_id`, `is_subagent`, `agent_kind`, `agent_role`,
 /// `task_kind`, `turn_id`, `session_final`) are populated for requests from a coding
-/// agent. `extra_metadata` is a free-form escape hatch for host-specific keys.
+/// agent. `extra_metadata` is a free-form escape hatch for observable host-specific
+/// keys; `typed_context` carries host-owned values that must stay in process.
 #[derive(Clone, Default)]
 pub struct Metadata {
     /// Stable id for a multi-request session/conversation.
@@ -188,6 +189,12 @@ pub struct Metadata {
     pub correlation_id: Option<String>,
     /// Switchyard target that successfully served a response.
     pub served_model: Option<ModelId>,
+    /// Cloneable host-owned context carried in process with the request.
+    ///
+    /// Values are never populated from HTTP headers, serialized, logged, or forwarded
+    /// by the protocol crate. Hosts may use this for trusted typed data that algorithms
+    /// or clients need without reducing it to string metadata.
+    pub typed_context: http::Extensions,
     /// Arbitrary host-defined key/value metadata.
     pub extra_metadata: Option<BTreeMap<String, String>>,
     /// HTTP headers to attach when forwarding the request/response, if any.
@@ -375,11 +382,38 @@ pub fn slice_to_header_map(sl: &[(&str, &str)]) -> http::HeaderMap {
 mod tests {
     use super::*;
 
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct HostAuthorization {
+        tenant: &'static str,
+    }
+
     /// Header carrying Codex's structured turn metadata as a JSON object.
     const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 
     fn metadata(headers: &[(&str, &str)]) -> Metadata {
         Metadata::from_headers(&slice_to_header_map(headers))
+    }
+
+    #[test]
+    fn typed_context_survives_metadata_clone() {
+        let mut metadata = Metadata::default();
+        metadata
+            .typed_context
+            .insert(HostAuthorization { tenant: "tenant-a" });
+
+        let cloned = metadata.clone();
+
+        assert_eq!(
+            cloned.typed_context.get::<HostAuthorization>(),
+            Some(&HostAuthorization { tenant: "tenant-a" })
+        );
+    }
+
+    #[test]
+    fn headers_cannot_populate_typed_context() {
+        let metadata = metadata(&[("x-switchyard-typed-context", "untrusted")]);
+
+        assert!(metadata.typed_context.is_empty());
     }
 
     #[test]
