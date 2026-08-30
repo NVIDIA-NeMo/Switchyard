@@ -394,6 +394,7 @@ mod tests {
         Metadata::from_headers(&slice_to_header_map(headers))
     }
 
+    // Cloning metadata must preserve cloneable, host-owned typed context.
     #[test]
     fn typed_context_survives_metadata_clone() {
         let mut metadata = Metadata::default();
@@ -409,10 +410,12 @@ mod tests {
         );
     }
 
+    // Even recognized HTTP metadata headers must never populate trusted typed context.
     #[test]
     fn headers_cannot_populate_typed_context() {
-        let metadata = metadata(&[("x-switchyard-typed-context", "untrusted")]);
+        let metadata = metadata(&[(SWITCHYARD_SESSION_ID_HEADER, "untrusted")]);
 
+        assert_eq!(metadata.session_id.as_deref(), Some("untrusted"));
         assert!(metadata.typed_context.is_empty());
     }
 

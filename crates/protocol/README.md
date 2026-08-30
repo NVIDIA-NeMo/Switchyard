@@ -101,6 +101,11 @@ assert_eq!(request.llm_request.tools[0].name, "lookup_metric");
 
 ## Trusted in-process context
 
+This API is unreleased and must ship in the next breaking `switchyard-protocol` release. Adding a
+field to public `Metadata` is source-incompatible for downstream exhaustive struct literals. Such
+callers must add `..Metadata::default()` (or set `typed_context`) before upgrading. The `v0.2.0`
+setup dependency above does not contain this API.
+
 Hosts can attach cloneable, typed values to [`Metadata::typed_context`] without
 encoding trusted state into client-controlled headers or serialized protocol
 payloads:
