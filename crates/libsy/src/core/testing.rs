@@ -87,5 +87,6 @@ pub(crate) fn reply(completion: impl Into<String>) -> Response {
     Response {
         llm_response: LlmResponse::Agg(text_response(None, completion.into())),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }

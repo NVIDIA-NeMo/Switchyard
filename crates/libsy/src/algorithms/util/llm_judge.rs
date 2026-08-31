@@ -492,6 +492,7 @@ mod tests {
         Response {
             llm_response: LlmResponse::Agg(text_response(None, completion)),
             metadata: None,
+            upstream_headers: http::HeaderMap::new(),
         }
     }
 
@@ -501,6 +502,7 @@ mod tests {
                 futures::stream::iter(chunks.into_iter().map(|chunk| Ok(chunk.into()))).boxed(),
             ),
             metadata: None,
+            upstream_headers: http::HeaderMap::new(),
         }
     }
 
@@ -514,6 +516,7 @@ mod tests {
         Response {
             llm_response: LlmResponse::Stream(items.boxed()),
             metadata: None,
+            upstream_headers: http::HeaderMap::new(),
         }
     }
 

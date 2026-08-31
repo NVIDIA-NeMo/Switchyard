@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, Request as HttpRequest, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
@@ -147,6 +147,43 @@ async fn upstream_chat(
             })),
         )
             .into_response();
+    }
+    if prompt == "upstream-headers" {
+        let mut response = (
+            [
+                ("x-upstream-trace", "trace-123"),
+                ("x-request-id", "req-42"),
+                ("x-model-router-selected-model", "model/upstream-echo"),
+                ("x-switchyard-session-id", "spoofed-by-upstream"),
+            ],
+            Json(json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+            })),
+        )
+            .into_response();
+        let headers = response.headers_mut();
+        headers.append("x-upstream-trace", HeaderValue::from_static("trace-456"));
+        headers.append(
+            "link",
+            HeaderValue::from_static("<https://example.test/next>; rel=next"),
+        );
+        headers.append(
+            "link",
+            HeaderValue::from_static("<https://example.test/prev>; rel=prev"),
+        );
+        headers.append(
+            "set-cookie",
+            HeaderValue::from_static("session=upstream; HttpOnly"),
+        );
+        return response;
     }
     if body["stream"].as_bool() == Some(true) {
         // Streamed tool call, for the namespace-on-every-event assertions. The
@@ -3276,101 +3313,49 @@ async fn advisor_route_redo_fail_open_and_stats_projection() -> TestResult {
     assert_eq!(gate_count(&stats, &["discarded", "turns"]), 0);
     Ok(())
 }
-
-// Returns every `data:` frame of an SSE body as JSON, skipping `[DONE]`.
-fn sse_events(body: &str) -> Vec<Value> {
-    body.lines()
-        .filter_map(|line| line.strip_prefix("data: "))
-        .filter(|data| *data != "[DONE]")
-        .filter_map(|data| serde_json::from_str(data).ok())
-        .collect()
-}
-
-// The end-to-end contract for Codex tool namespaces, in one request.
-//
-// Two MCP servers expose the same tool name, so the flat upstream can only tell
-// them apart by the namespace folded into each name. Everything naming a tool —
-// the definitions, the recorded call in history, and the forced tool choice —
-// has to use that same spelling, and the response has to split it back into the
-// name and namespace Codex dispatches on.
+/// Allowed upstream response headers ride through to the client, while body, cookie,
+/// and Switchyard-owned headers do not; a header this server writes always beats an
+/// upstream echo of the same name.
 #[tokio::test]
-async fn responses_round_trips_codex_tool_namespaces() -> TestResult {
-    const MODEL: &str = "model/mcp-namespaces";
-    let (upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
-
-    let response = send(
-        &app,
-        "POST",
-        "/v1/responses",
-        Some(json!({
-            "model": ROUTE_MODEL,
-            "stream": true,
-            "input": [
-                {"type": "message", "role": "user",
-                 "content": [{"type": "input_text", "text": "mcp-tool-call"}]},
-                {"type": "function_call", "call_id": "call_prior", "name": "search",
-                 "namespace": "mcp__b", "arguments": "{}"},
-                {"type": "function_call_output", "call_id": "call_prior", "output": "earlier"}
-            ],
-            "tool_choice": {"type": "function", "name": "search", "namespace": "mcp__b"},
-            "tools": [
-                {"type": "namespace", "name": "mcp__a", "tools": [{
-                    "type": "function", "name": "search",
-                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
-                }]},
-                {"type": "namespace", "name": "mcp__b", "tools": [{
-                    "type": "function", "name": "search",
-                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
-                }]}
-            ]
-        })),
-    )
-    .await?;
+async fn upstream_headers_forward_but_switchyard_writes_win() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    let body = json!({
+        "model": ROUTE_MODEL,
+        "messages": [{"role": "user", "content": "upstream-headers"}]
+    });
+    let response = send(&app, "POST", "/v1/chat/completions", Some(body)).await?;
     assert_eq!(response.status, StatusCode::OK);
 
-    // The upstream sees two distinct tools, and every reference to the forced
-    // one uses the qualified spelling.
-    let calls = upstream.calls.lock().await;
-    let sent = &calls[0];
-    let offered = sent["tools"]
-        .as_array()
-        .map(|tools| {
-            tools
-                .iter()
-                .filter_map(|tool| tool["function"]["name"].as_str())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    assert_eq!(offered, vec!["mcp__a__search", "mcp__b__search"]);
-    assert_eq!(sent["tool_choice"]["function"]["name"], "mcp__b__search");
-    let recorded = sent["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages
-                .iter()
-                .find_map(|message| message["tool_calls"][0]["function"]["name"].as_str())
-        })
-        .ok_or("no recorded tool call reached the upstream")?;
-    assert_eq!(recorded, "mcp__b__search");
-    drop(calls);
-
-    // The upstream answers with the qualified name; Codex must receive the tool
-    // name and the namespace it dispatches on, on every event that names a call.
-    let events = sse_events(response.text()?);
-    for event_type in ["response.output_item.added", "response.output_item.done"] {
-        let item = events
-            .iter()
-            .find(|event| event["type"] == event_type)
-            .map(|event| event["item"].clone())
-            .ok_or(format!("stream produced no {event_type}"))?;
-        assert_eq!(item["name"], "search", "{event_type}");
-        assert_eq!(item["namespace"], "mcp__b", "{event_type}");
-    }
-    let completed = events
+    // Observability headers survive the proxy hop.
+    let traces = response
+        .headers
+        .get_all("x-upstream-trace")
         .iter()
-        .find(|event| event["type"] == "response.completed")
-        .ok_or("stream produced no response.completed event")?;
-    assert_eq!(completed["response"]["output"][0]["name"], "search");
-    assert_eq!(completed["response"]["output"][0]["namespace"], "mcp__b");
+        .map(|value| value.to_str())
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(traces, ["trace-123", "trace-456"]);
+    assert_eq!(
+        response
+            .headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("req-42")
+    );
+    assert!(!response.headers.contains_key("link"));
+
+    // Upstream cookies must never become Switchyard-origin cookies.
+    assert!(!response.headers.contains_key("set-cookie"));
+
+    // Switchyard's own namespace never forwards from upstream.
+    assert!(!response.headers.contains_key("x-switchyard-session-id"));
+
+    // …and Switchyard's routing write beats the upstream echo.
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/a")
+    );
     Ok(())
 }

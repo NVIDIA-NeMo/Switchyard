@@ -329,6 +329,7 @@ impl TranslatingLlmClient {
                 metrics::record_upstream_attempt(Some(status.as_u16()));
                 return Ok(EncodedResponse::Streaming(response));
             }
+            let upstream_headers = response.headers().clone();
             let body = match response.bytes().await {
                 Ok(body) => body,
                 Err(error) => {
@@ -344,6 +345,7 @@ impl TranslatingLlmClient {
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
                 body: body.to_vec(),
+                upstream_headers,
             });
         }
 
@@ -430,10 +432,11 @@ impl TranslatingLlmClient {
             )
             .await?;
 
-        let llm_response = match http_response {
+        let (llm_response, upstream_headers) = match http_response {
             EncodedResponse::Streaming(http_response) => {
                 // Adapt the reqwest body stream to plain bytes; the SSE-decode itself is
                 // transport-agnostic and lives in `switchyard-translation`.
+                let upstream_headers = http_response.headers().clone();
                 let bytes = http_response.bytes_stream().map(|chunk| {
                     chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
                         if error.is_timeout() {
@@ -452,7 +455,7 @@ impl TranslatingLlmClient {
                 // error event on an HTTP 200. Classify the first event before returning
                 // the stream: nothing has reached the caller yet, so an overflow can
                 // still fail the call and let routing try the next candidate.
-                match chunks.next().await {
+                let llm_response = match chunks.next().await {
                     None => LlmResponse::Stream(stream::empty().boxed()),
                     Some(first) => {
                         if let Some(message) = first_event_overflow(&first, backend) {
@@ -463,21 +466,27 @@ impl TranslatingLlmClient {
                         }
                         LlmResponse::Stream(stream::once(ready(first)).chain(chunks).boxed())
                     }
-                }
+                };
+                (llm_response, upstream_headers)
             }
-            EncodedResponse::Buffered { body, .. } => {
+            EncodedResponse::Buffered {
+                body,
+                upstream_headers,
+                ..
+            } => {
                 let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
                     LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
                 })?;
                 let agg = decode_aggregated_response(&body, wire_format)
                     .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
-                LlmResponse::Agg(agg)
+                (LlmResponse::Agg(agg), upstream_headers)
             }
         };
 
         Ok(Response {
             llm_response,
             metadata,
+            upstream_headers,
         })
     }
 
@@ -579,7 +588,11 @@ impl UpstreamEndpoint {
 }
 
 enum EncodedResponse {
-    Buffered { status: u16, body: Vec<u8> },
+    Buffered {
+        status: u16,
+        body: Vec<u8>,
+        upstream_headers: HeaderMap,
+    },
     Streaming(reqwest::Response),
 }
 
