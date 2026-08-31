@@ -28,6 +28,7 @@ impl NativePlugin for SwitchyardPlugin {
     }
 
     fn validate(&self, plugin_config: &Map<String, Json>) -> Vec<ConfigDiagnostic> {
+        // Allow `SwitchyardRuntime::new` to run for accurate validation diagnostics.
         match parse_config(plugin_config).and_then(SwitchyardRuntime::new) {
             Ok(_) => Vec::new(),
             Err(message) => vec![ConfigDiagnostic {
