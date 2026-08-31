@@ -525,6 +525,18 @@ impl IngressHooks for TestIngressHooks {
         Ok(ModelId::from(ROUTE_MODEL))
     }
 
+    fn presented_response_model(
+        &self,
+        served_model: Option<&ModelId>,
+        request_metadata: &Metadata,
+    ) -> Option<String> {
+        assert_eq!(served_model.map(ModelId::as_str), Some("model/a"));
+        request_metadata
+            .typed_context
+            .get::<ResolvedPresentationMarker>()
+            .map(|_| "public-model".to_string())
+    }
+
     fn present_response(
         &self,
         mut response: HttpResponse,
@@ -605,6 +617,7 @@ async fn ingress_hook_maps_public_model_and_llm_router_excludes_internal_endpoin
     .await?;
 
     assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["model"], "public-model");
     assert_eq!(
         response.headers.get("x-test-resolved-context"),
         Some(&HeaderValue::from_static("present"))

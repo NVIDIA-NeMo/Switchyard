@@ -72,6 +72,11 @@ internal route. `present_response` receives the resolved request metadata and ca
 error envelope or add request-scoped headers. All methods have defaults that preserve the
 standalone server behavior.
 
+`presented_response_model` runs before response encoding. It receives the selected provider
+model and resolved request metadata, allowing a host to restore a public model name without
+buffering or parsing JSON/SSE response bodies. Metrics and routing records remain keyed by the
+actual served model.
+
 Server-generated failures retain public [`ApiError`] metadata in response extensions. A host
 presenter can inspect its status, message, type, and stable code without buffering or parsing the
 response body.
@@ -114,6 +119,14 @@ impl IngressHooks for HostHooks {
         _wire_format: WireFormat,
     ) -> Result<ModelId, Response> {
         Ok(ModelId::from("internal/route"))
+    }
+
+    fn presented_response_model(
+        &self,
+        _served_model: Option<&ModelId>,
+        _request_metadata: &Metadata,
+    ) -> Option<String> {
+        Some("public-model".to_string())
     }
 
     fn present_response(

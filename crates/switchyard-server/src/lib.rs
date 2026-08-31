@@ -167,6 +167,20 @@ pub trait IngressHooks: Send + Sync {
         request_model(request)
     }
 
+    /// Selects the model identifier encoded in a successful response.
+    ///
+    /// `served_model` is the selected provider model used by the standalone server.
+    /// Hosts that map public models to private routes can instead return the public
+    /// model retained in trusted `request_metadata`. This affects response encoding
+    /// only; metrics and routing records continue to use the actual served model.
+    fn presented_response_model(
+        &self,
+        served_model: Option<&ModelId>,
+        _request_metadata: &Metadata,
+    ) -> Option<String> {
+        served_model.map(ToString::to_string)
+    }
+
     /// Presents the final HTTP response after routing or rejection.
     ///
     /// `request_metadata` includes trusted changes made by `prepare` and
@@ -971,6 +985,9 @@ async fn handle_llm_request(
     // The response carries the candidate that actually served it. Fall back to the routing
     // selection for algorithms that return a response without an offloaded model call.
     let served_model = response.served_model().cloned().or(Some(selected_model));
+    let response_model = state
+        .ingress_hooks
+        .presented_response_model(served_model.as_ref(), metadata);
     let response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()
@@ -988,7 +1005,6 @@ async fn handle_llm_request(
         response
     };
 
-    let response_model = served_model.as_ref().map(ToString::to_string);
     let mut response =
         match into_http_response(response, wire_format, response_model, request_extensions) {
             Ok(response) => response,
