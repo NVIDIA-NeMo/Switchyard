@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["LlmResponse","LlmResponseChunk"],"struct":["LlmResponseStreamEvent","ProviderStreamEvent","ResponseAccumulator"],"type":["LlmResponseStream"]};
+window.SIDEBAR_ITEMS = {"enum":["LlmResponse","LlmResponseChunk","LlmStreamError"],"struct":["LlmResponseStreamEvent","ProviderStreamEvent","ResponseAccumulator"],"type":["LlmResponseStream"]};
