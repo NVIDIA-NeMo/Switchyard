@@ -15,31 +15,32 @@
 <a href=#15 id=15 data-nosnippet>15</a>
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">mod </span>algorithms;
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">pub use </span>algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
-<a href=#18 id=18 data-nosnippet>18</a><span class="kw">pub use </span>algorithms::llm_class::{
-<a href=#19 id=19 data-nosnippet>19</a>    CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
-<a href=#20 id=20 data-nosnippet>20</a>    TaskClassifierConfig,
-<a href=#21 id=21 data-nosnippet>21</a>};
-<a href=#22 id=22 data-nosnippet>22</a><span class="kw">pub use </span>algorithms::noop::Noop;
-<a href=#23 id=23 data-nosnippet>23</a><span class="kw">pub use </span>algorithms::passthrough::Passthrough;
-<a href=#24 id=24 data-nosnippet>24</a><span class="kw">pub use </span>algorithms::rand::{Random, RandomClassifier};
-<a href=#25 id=25 data-nosnippet>25</a><span class="kw">pub use </span>algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
-<a href=#26 id=26 data-nosnippet>26</a><span class="kw">pub use </span>algorithms::subagent::{SubagentRouter, SubagentRouterConfig};
-<a href=#27 id=27 data-nosnippet>27</a><span class="kw">pub use </span>algorithms::util::affinity::{AffinityRouter, ClassifyTrigger};
-<a href=#28 id=28 data-nosnippet>28</a><span class="kw">pub use </span>algorithms::util::classifier_contract::{
-<a href=#29 id=29 data-nosnippet>29</a>    ClassifierContractConfig, ClassifierResponseFormat,
-<a href=#30 id=30 data-nosnippet>30</a>};
-<a href=#31 id=31 data-nosnippet>31</a><span class="kw">pub use </span>algorithms::util::escalation::EscalationJudgeConfig;
-<a href=#32 id=32 data-nosnippet>32</a><span class="kw">pub use </span>algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
-<a href=#33 id=33 data-nosnippet>33</a><span class="kw">pub use </span>algorithms::util::subagent::{SubagentGate, SubagentOverride};
-<a href=#34 id=34 data-nosnippet>34</a><span class="kw">pub use </span>algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
-<a href=#35 id=35 data-nosnippet>35</a>
-<a href=#36 id=36 data-nosnippet>36</a><span class="comment">// Stage-router scoring and tier selection — the shared signal-driven routing
-<a href=#37 id=37 data-nosnippet>37</a>// core (scorer, picker, and the `StageClassifier`).
-<a href=#38 id=38 data-nosnippet>38</a></span><span class="kw">pub use </span>algorithms::util::stage::{
-<a href=#39 id=39 data-nosnippet>39</a>    CodingAgentDimensions, DECISION_SOURCE_KEY, DecisionSource, HandoffNoteConfig, PickOutcome,
-<a href=#40 id=40 data-nosnippet>40</a>    PickerMode, ScoreResult, StageClassifier, StageTargets, Tier, clear_fall_open,
-<a href=#41 id=41 data-nosnippet>41</a>    dimensions_from_signal, pick_tier, score_signal, set_fall_open,
-<a href=#42 id=42 data-nosnippet>42</a>};
-<a href=#43 id=43 data-nosnippet>43</a>
-<a href=#44 id=44 data-nosnippet>44</a><span class="kw">mod </span>observability;
+<a href=#18 id=18 data-nosnippet>18</a><span class="kw">pub use </span>algorithms::composite::{CompositeRouter, CompositeRouterConfig};
+<a href=#19 id=19 data-nosnippet>19</a><span class="kw">pub use </span>algorithms::llm_class::{
+<a href=#20 id=20 data-nosnippet>20</a>    CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
+<a href=#21 id=21 data-nosnippet>21</a>    TaskClassifierConfig,
+<a href=#22 id=22 data-nosnippet>22</a>};
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">pub use </span>algorithms::noop::Noop;
+<a href=#24 id=24 data-nosnippet>24</a><span class="kw">pub use </span>algorithms::passthrough::Passthrough;
+<a href=#25 id=25 data-nosnippet>25</a><span class="kw">pub use </span>algorithms::rand::{Random, RandomClassifier};
+<a href=#26 id=26 data-nosnippet>26</a><span class="kw">pub use </span>algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
+<a href=#27 id=27 data-nosnippet>27</a><span class="kw">pub use </span>algorithms::subagent::{SubagentRouter, SubagentRouterConfig};
+<a href=#28 id=28 data-nosnippet>28</a><span class="kw">pub use </span>algorithms::util::affinity::{AffinityRouter, ClassifyTrigger};
+<a href=#29 id=29 data-nosnippet>29</a><span class="kw">pub use </span>algorithms::util::classifier_contract::{
+<a href=#30 id=30 data-nosnippet>30</a>    ClassifierContractConfig, ClassifierResponseFormat,
+<a href=#31 id=31 data-nosnippet>31</a>};
+<a href=#32 id=32 data-nosnippet>32</a><span class="kw">pub use </span>algorithms::util::escalation::EscalationJudgeConfig;
+<a href=#33 id=33 data-nosnippet>33</a><span class="kw">pub use </span>algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
+<a href=#34 id=34 data-nosnippet>34</a><span class="kw">pub use </span>algorithms::util::subagent::{SubagentGate, SubagentOverride};
+<a href=#35 id=35 data-nosnippet>35</a><span class="kw">pub use </span>algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
+<a href=#36 id=36 data-nosnippet>36</a>
+<a href=#37 id=37 data-nosnippet>37</a><span class="comment">// Stage-router scoring and tier selection — the shared signal-driven routing
+<a href=#38 id=38 data-nosnippet>38</a>// core (scorer, picker, and the `StageClassifier`).
+<a href=#39 id=39 data-nosnippet>39</a></span><span class="kw">pub use </span>algorithms::util::stage::{
+<a href=#40 id=40 data-nosnippet>40</a>    CodingAgentDimensions, DECISION_SOURCE_KEY, DecisionSource, HandoffNoteConfig, PickOutcome,
+<a href=#41 id=41 data-nosnippet>41</a>    PickerMode, ScoreResult, StageClassifier, StageTargets, Tier, clear_fall_open,
+<a href=#42 id=42 data-nosnippet>42</a>    dimensions_from_signal, pick_tier, score_signal, set_fall_open,
+<a href=#43 id=43 data-nosnippet>43</a>};
+<a href=#44 id=44 data-nosnippet>44</a>
+<a href=#45 id=45 data-nosnippet>45</a><span class="kw">mod </span>observability;
 </code></pre></div></section></main></body></html>

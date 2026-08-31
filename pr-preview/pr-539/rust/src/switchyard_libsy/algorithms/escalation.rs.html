@@ -78,391 +78,379 @@
 <a href=#78 id=78 data-nosnippet>78</a>
 <a href=#79 id=79 data-nosnippet>79</a><span class="attr">#[async_trait]
 <a href=#80 id=80 data-nosnippet>80</a></span><span class="kw">impl </span>Classifier&lt;State&gt; <span class="kw">for </span>EscalationClassifier {
-<a href=#81 id=81 data-nosnippet>81</a>    <span class="kw">fn </span>routing_tier(<span class="kw-2">&amp;</span><span class="self">self</span>, selected_model_id: <span class="kw-2">&amp;</span>ModelId) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt; {
-<a href=#82 id=82 data-nosnippet>82</a>        <span class="kw">if </span><span class="self">self</span>.capable == <span class="self">self</span>.efficient {
-<a href=#83 id=83 data-nosnippet>83</a>            <span class="prelude-val">None
-<a href=#84 id=84 data-nosnippet>84</a>        </span>} <span class="kw">else if </span><span class="kw-2">*</span>selected_model_id == <span class="self">self</span>.capable {
-<a href=#85 id=85 data-nosnippet>85</a>            <span class="prelude-val">Some</span>(<span class="string">"strong"</span>)
-<a href=#86 id=86 data-nosnippet>86</a>        } <span class="kw">else if </span><span class="kw-2">*</span>selected_model_id == <span class="self">self</span>.efficient {
-<a href=#87 id=87 data-nosnippet>87</a>            <span class="prelude-val">Some</span>(<span class="string">"weak"</span>)
-<a href=#88 id=88 data-nosnippet>88</a>        } <span class="kw">else </span>{
-<a href=#89 id=89 data-nosnippet>89</a>            <span class="prelude-val">None
-<a href=#90 id=90 data-nosnippet>90</a>        </span>}
-<a href=#91 id=91 data-nosnippet>91</a>    }
+<a href=#81 id=81 data-nosnippet>81</a>    <span class="kw">async fn </span>score(
+<a href=#82 id=82 data-nosnippet>82</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#83 id=83 data-nosnippet>83</a>        state: <span class="kw-2">&amp;mut </span>State,
+<a href=#84 id=84 data-nosnippet>84</a>        request: <span class="kw-2">&amp;mut </span>Request,
+<a href=#85 id=85 data-nosnippet>85</a>        driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
+<a href=#86 id=86 data-nosnippet>86</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
+<a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(driver) = driver <span class="kw">else </span>{
+<a href=#88 id=88 data-nosnippet>88</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::AlgorithmError {
+<a href=#89 id=89 data-nosnippet>89</a>                message: <span class="string">"escalation classifier requires a driver"</span>.into(),
+<a href=#90 id=90 data-nosnippet>90</a>            });
+<a href=#91 id=91 data-nosnippet>91</a>        };
 <a href=#92 id=92 data-nosnippet>92</a>
-<a href=#93 id=93 data-nosnippet>93</a>    <span class="kw">async fn </span>score(
-<a href=#94 id=94 data-nosnippet>94</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#95 id=95 data-nosnippet>95</a>        state: <span class="kw-2">&amp;mut </span>State,
-<a href=#96 id=96 data-nosnippet>96</a>        request: <span class="kw-2">&amp;mut </span>Request,
-<a href=#97 id=97 data-nosnippet>97</a>        driver: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Driver&gt;,
-<a href=#98 id=98 data-nosnippet>98</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
-<a href=#99 id=99 data-nosnippet>99</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(driver) = driver <span class="kw">else </span>{
-<a href=#100 id=100 data-nosnippet>100</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::AlgorithmError {
-<a href=#101 id=101 data-nosnippet>101</a>                message: <span class="string">"escalation classifier requires a driver"</span>.into(),
-<a href=#102 id=102 data-nosnippet>102</a>            });
-<a href=#103 id=103 data-nosnippet>103</a>        };
-<a href=#104 id=104 data-nosnippet>104</a>
-<a href=#105 id=105 data-nosnippet>105</a>        <span class="comment">// A confirmed session stays capable without a judge call.
-<a href=#106 id=106 data-nosnippet>106</a>        </span><span class="kw">if </span>streak(state) &gt;= <span class="self">self</span>.confirmations {
-<a href=#107 id=107 data-nosnippet>107</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>((decisive(<span class="kw-2">&amp;</span><span class="self">self</span>.capable), <span class="prelude-val">None</span>));
-<a href=#108 id=108 data-nosnippet>108</a>        }
-<a href=#109 id=109 data-nosnippet>109</a>
-<a href=#110 id=110 data-nosnippet>110</a>        <span class="comment">// Call efficient model and buffer the response so the judge can read it.
-<a href=#111 id=111 data-nosnippet>111</a>        //
-<a href=#112 id=112 data-nosnippet>112</a>        // If the efficient model exceeds its context window, fall through to capable. This call
-<a href=#113 id=113 data-nosnippet>113</a>        // deliberately has one candidate so the classifier sees the efficient model's error.
-<a href=#114 id=114 data-nosnippet>114</a>        </span><span class="macro">tracing::info!</span>(
-<a href=#115 id=115 data-nosnippet>115</a>            target = %<span class="self">self</span>.efficient,
-<a href=#116 id=116 data-nosnippet>116</a>            <span class="string">"escalation classifier selected efficient tier"
-<a href=#117 id=117 data-nosnippet>117</a>        </span>);
-<a href=#118 id=118 data-nosnippet>118</a>        <span class="kw">let </span>efficient_response = <span class="kw">match </span>driver
-<a href=#119 id=119 data-nosnippet>119</a>            .call_model(request.clone(), <span class="macro">vec!</span>[<span class="self">self</span>.efficient.clone()])
-<a href=#120 id=120 data-nosnippet>120</a>            .<span class="kw">await
-<a href=#121 id=121 data-nosnippet>121</a>        </span>{
-<a href=#122 id=122 data-nosnippet>122</a>            <span class="prelude-val">Ok</span>(r) =&gt; r,
-<a href=#123 id=123 data-nosnippet>123</a>            <span class="prelude-val">Err</span>(LibsyError::ClientCall {
-<a href=#124 id=124 data-nosnippet>124</a>                source: LlmClientError::ContextWindowExceeded { .. },
-<a href=#125 id=125 data-nosnippet>125</a>                ..
-<a href=#126 id=126 data-nosnippet>126</a>            }) =&gt; <span class="kw">return </span><span class="prelude-val">Ok</span>((decisive(<span class="kw-2">&amp;</span><span class="self">self</span>.capable), <span class="prelude-val">None</span>)),
-<a href=#127 id=127 data-nosnippet>127</a>            <span class="prelude-val">Err</span>(e) =&gt; <span class="kw">return </span><span class="prelude-val">Err</span>(e),
-<a href=#128 id=128 data-nosnippet>128</a>        };
-<a href=#129 id=129 data-nosnippet>129</a>        <span class="comment">// The call resolves when its stream handle arrives; transport can still fail while
-<a href=#130 id=130 data-nosnippet>130</a>        // buffering. Fall back only for that availability failure and keep other errors typed.
-<a href=#131 id=131 data-nosnippet>131</a>        </span><span class="kw">let </span>agg = <span class="kw">match </span>efficient_response.llm_response.into_agg().<span class="kw">await </span>{
-<a href=#132 id=132 data-nosnippet>132</a>            <span class="prelude-val">Ok</span>(agg) =&gt; agg,
-<a href=#133 id=133 data-nosnippet>133</a>            <span class="prelude-val">Err</span>(LlmClientError::Transport { .. }) =&gt; {
-<a href=#134 id=134 data-nosnippet>134</a>                <span class="kw">return </span><span class="prelude-val">Ok</span>((decisive(<span class="kw-2">&amp;</span><span class="self">self</span>.capable), <span class="prelude-val">None</span>));
-<a href=#135 id=135 data-nosnippet>135</a>            }
-<a href=#136 id=136 data-nosnippet>136</a>            <span class="prelude-val">Err</span>(source) =&gt; {
-<a href=#137 id=137 data-nosnippet>137</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::client_call(<span class="self">self</span>.efficient.clone(), source));
-<a href=#138 id=138 data-nosnippet>138</a>            }
-<a href=#139 id=139 data-nosnippet>139</a>        };
-<a href=#140 id=140 data-nosnippet>140</a>        <span class="comment">// Append the efficient reply so the judge reads this turn's completed trajectory.
-<a href=#141 id=141 data-nosnippet>141</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>judge_request = request.clone();
-<a href=#142 id=142 data-nosnippet>142</a>        judge_request
-<a href=#143 id=143 data-nosnippet>143</a>            .llm_request
-<a href=#144 id=144 data-nosnippet>144</a>            .messages
-<a href=#145 id=145 data-nosnippet>145</a>            .push(assistant_message(<span class="kw-2">&amp;</span>agg));
-<a href=#146 id=146 data-nosnippet>146</a>        <span class="kw">let </span>efficient_response = Response {
-<a href=#147 id=147 data-nosnippet>147</a>            llm_response: <span class="kw">if </span>request.llm_request.stream {
-<a href=#148 id=148 data-nosnippet>148</a>                LlmResponse::Stream(agg.into_stream())
-<a href=#149 id=149 data-nosnippet>149</a>            } <span class="kw">else </span>{
-<a href=#150 id=150 data-nosnippet>150</a>                LlmResponse::Agg(agg)
-<a href=#151 id=151 data-nosnippet>151</a>            },
-<a href=#152 id=152 data-nosnippet>152</a>            metadata: efficient_response.metadata,
-<a href=#153 id=153 data-nosnippet>153</a>        };
-<a href=#154 id=154 data-nosnippet>154</a>
-<a href=#155 id=155 data-nosnippet>155</a>        <span class="kw">let </span>(classification, <span class="kw">_</span>) = <span class="self">self
-<a href=#156 id=156 data-nosnippet>156</a>            </span>.judge
-<a href=#157 id=157 data-nosnippet>157</a>            .score(state, <span class="kw-2">&amp;mut </span>judge_request, <span class="prelude-val">Some</span>(driver))
-<a href=#158 id=158 data-nosnippet>158</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#159 id=159 data-nosnippet>159</a>
-<a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">let </span>held = streak(state);
-<a href=#161 id=161 data-nosnippet>161</a>        <span class="kw">let </span>best = classification.argmax(<span class="bool-val">false</span>)<span class="question-mark">?</span>;
-<a href=#162 id=162 data-nosnippet>162</a>        <span class="kw">let </span>(escalate, pending) = <span class="kw">match </span><span class="kw-2">&amp;</span>best {
-<a href=#163 id=163 data-nosnippet>163</a>            <span class="prelude-val">Some</span>(score) <span class="kw">if </span>score.target == <span class="self">self</span>.capable =&gt; (<span class="bool-val">true</span>, held + <span class="number">1</span>),
-<a href=#164 id=164 data-nosnippet>164</a>            <span class="prelude-val">Some</span>(<span class="kw">_</span>) =&gt; (<span class="bool-val">false</span>, <span class="number">0</span>),
-<a href=#165 id=165 data-nosnippet>165</a>            <span class="prelude-val">None </span>=&gt; (<span class="bool-val">false</span>, held),
-<a href=#166 id=166 data-nosnippet>166</a>        };
-<a href=#167 id=167 data-nosnippet>167</a>        state
-<a href=#168 id=168 data-nosnippet>168</a>            .extra
-<a href=#169 id=169 data-nosnippet>169</a>            .insert(STREAK_KEY.to_string(), StateValue::Count(pending));
-<a href=#170 id=170 data-nosnippet>170</a>
-<a href=#171 id=171 data-nosnippet>171</a>        <span class="kw">if </span>escalate &amp;&amp; pending &gt;= <span class="self">self</span>.confirmations {
-<a href=#172 id=172 data-nosnippet>172</a>            <span class="comment">// Streak confirmed: drop the efficient response, caller will serve capable.
-<a href=#173 id=173 data-nosnippet>173</a>            </span><span class="kw">return </span><span class="prelude-val">Ok</span>((decisive(<span class="kw-2">&amp;</span><span class="self">self</span>.capable), <span class="prelude-val">None</span>));
-<a href=#174 id=174 data-nosnippet>174</a>        }
-<a href=#175 id=175 data-nosnippet>175</a>
-<a href=#176 id=176 data-nosnippet>176</a>        <span class="prelude-val">Ok</span>((decisive(<span class="kw-2">&amp;</span><span class="self">self</span>.efficient), <span class="prelude-val">Some</span>(efficient_response)))
-<a href=#177 id=177 data-nosnippet>177</a>    }
-<a href=#178 id=178 data-nosnippet>178</a>}
-<a href=#179 id=179 data-nosnippet>179</a>
-<a href=#180 id=180 data-nosnippet>180</a><span class="attr">#[cfg(test)]
-<a href=#181 id=181 data-nosnippet>181</a></span><span class="kw">mod </span>tests {
-<a href=#182 id=182 data-nosnippet>182</a>    <span class="kw">use </span>std::collections::VecDeque;
-<a href=#183 id=183 data-nosnippet>183</a>    <span class="kw">use </span>std::sync::Arc;
-<a href=#184 id=184 data-nosnippet>184</a>
-<a href=#185 id=185 data-nosnippet>185</a>    <span class="kw">use </span>parking_lot::Mutex;
-<a href=#186 id=186 data-nosnippet>186</a>    <span class="kw">use </span>switchyard_protocol::{
-<a href=#187 id=187 data-nosnippet>187</a>        ContentBlock, LlmClientError, LlmResponse, LlmResponseChunk, Metadata, Request, Response,
-<a href=#188 id=188 data-nosnippet>188</a>        completion_text, text_request, text_response,
-<a href=#189 id=189 data-nosnippet>189</a>    };
-<a href=#190 id=190 data-nosnippet>190</a>
-<a href=#191 id=191 data-nosnippet>191</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#192 id=192 data-nosnippet>192</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::llm_class::{LlmClassifierConfig, LlmTaskClassifier};
-<a href=#193 id=193 data-nosnippet>193</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
-<a href=#194 id=194 data-nosnippet>194</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, reply, test_drive};
-<a href=#195 id=195 data-nosnippet>195</a>
-<a href=#196 id=196 data-nosnippet>196</a>    <span class="doccomment">/// A queue of replies, drained in order.
-<a href=#197 id=197 data-nosnippet>197</a>    </span><span class="kw">struct </span>Queue(Mutex&lt;VecDeque&lt;String&gt;&gt;);
-<a href=#198 id=198 data-nosnippet>198</a>
-<a href=#199 id=199 data-nosnippet>199</a>    <span class="kw">impl </span>Queue {
-<a href=#200 id=200 data-nosnippet>200</a>        <span class="kw">fn </span>new(replies: <span class="kw">impl </span>IntoIterator&lt;Item = <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt;) -&gt; Arc&lt;<span class="self">Self</span>&gt; {
-<a href=#201 id=201 data-nosnippet>201</a>            Arc::new(<span class="self">Self</span>(Mutex::new(
-<a href=#202 id=202 data-nosnippet>202</a>                replies.into_iter().map(String::from).collect(),
-<a href=#203 id=203 data-nosnippet>203</a>            )))
-<a href=#204 id=204 data-nosnippet>204</a>        }
-<a href=#205 id=205 data-nosnippet>205</a>
-<a href=#206 id=206 data-nosnippet>206</a>        <span class="kw">fn </span>take(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; String {
-<a href=#207 id=207 data-nosnippet>207</a>            <span class="self">self</span>.<span class="number">0
-<a href=#208 id=208 data-nosnippet>208</a>                </span>.lock()
-<a href=#209 id=209 data-nosnippet>209</a>                .pop_front()
-<a href=#210 id=210 data-nosnippet>210</a>                .unwrap_or_else(|| <span class="string">"unexpected call"</span>.to_string())
-<a href=#211 id=211 data-nosnippet>211</a>        }
-<a href=#212 id=212 data-nosnippet>212</a>    }
-<a href=#213 id=213 data-nosnippet>213</a>
-<a href=#214 id=214 data-nosnippet>214</a>    <span class="doccomment">/// Serves the judge and model targets from separate reply queues.
-<a href=#215 id=215 data-nosnippet>215</a>    </span><span class="kw">fn </span>queued(model: Arc&lt;Queue&gt;, judge: Arc&lt;Queue&gt;) -&gt; <span class="kw">impl </span>Serve {
-<a href=#216 id=216 data-nosnippet>216</a>        <span class="kw">move </span>|target: ModelId, request: Request| {
-<a href=#217 id=217 data-nosnippet>217</a>            <span class="kw">let </span>queue = <span class="kw">if </span>target == <span class="string">"judge" </span>{
-<a href=#218 id=218 data-nosnippet>218</a>                Arc::clone(<span class="kw-2">&amp;</span>judge)
-<a href=#219 id=219 data-nosnippet>219</a>            } <span class="kw">else </span>{
-<a href=#220 id=220 data-nosnippet>220</a>                Arc::clone(<span class="kw-2">&amp;</span>model)
-<a href=#221 id=221 data-nosnippet>221</a>            };
-<a href=#222 id=222 data-nosnippet>222</a>            <span class="kw">async move </span>{
-<a href=#223 id=223 data-nosnippet>223</a>                <span class="prelude-val">Ok</span>(Response {
-<a href=#224 id=224 data-nosnippet>224</a>                    llm_response: LlmResponse::Agg(text_response(<span class="prelude-val">None</span>, queue.take())),
-<a href=#225 id=225 data-nosnippet>225</a>                    metadata: request.metadata,
-<a href=#226 id=226 data-nosnippet>226</a>                })
-<a href=#227 id=227 data-nosnippet>227</a>            }
-<a href=#228 id=228 data-nosnippet>228</a>        }
-<a href=#229 id=229 data-nosnippet>229</a>    }
-<a href=#230 id=230 data-nosnippet>230</a>
-<a href=#231 id=231 data-nosnippet>231</a>    <span class="kw">fn </span>classify_request() -&gt; Request {
-<a href=#232 id=232 data-nosnippet>232</a>        Request {
-<a href=#233 id=233 data-nosnippet>233</a>            llm_request: text_request(<span class="prelude-val">Some</span>(<span class="string">"auto"</span>.to_string()), <span class="string">"classify this task"</span>),
-<a href=#234 id=234 data-nosnippet>234</a>            raw_request: <span class="prelude-val">None</span>,
-<a href=#235 id=235 data-nosnippet>235</a>            metadata: <span class="prelude-val">None</span>,
-<a href=#236 id=236 data-nosnippet>236</a>        }
-<a href=#237 id=237 data-nosnippet>237</a>    }
-<a href=#238 id=238 data-nosnippet>238</a>
-<a href=#239 id=239 data-nosnippet>239</a>    <span class="kw">fn </span>classify_session_request() -&gt; Request {
-<a href=#240 id=240 data-nosnippet>240</a>        Request {
-<a href=#241 id=241 data-nosnippet>241</a>            metadata: <span class="prelude-val">Some</span>(Metadata {
-<a href=#242 id=242 data-nosnippet>242</a>                session_id: <span class="prelude-val">Some</span>(<span class="string">"session-1"</span>.to_string()),
-<a href=#243 id=243 data-nosnippet>243</a>                ..Metadata::default()
-<a href=#244 id=244 data-nosnippet>244</a>            }),
-<a href=#245 id=245 data-nosnippet>245</a>            ..classify_request()
-<a href=#246 id=246 data-nosnippet>246</a>        }
-<a href=#247 id=247 data-nosnippet>247</a>    }
-<a href=#248 id=248 data-nosnippet>248</a>
-<a href=#249 id=249 data-nosnippet>249</a>    <span class="doccomment">/// Returns a stream that emits partial content before failing during aggregation.
-<a href=#250 id=250 data-nosnippet>250</a>    </span><span class="kw">fn </span>streamed_then_error(error: LlmClientError) -&gt; Response {
-<a href=#251 id=251 data-nosnippet>251</a>        Response {
-<a href=#252 id=252 data-nosnippet>252</a>            llm_response: LlmResponse::Stream(Box::pin(futures::stream::iter([
-<a href=#253 id=253 data-nosnippet>253</a>                <span class="prelude-val">Ok</span>(LlmResponseChunk::TextDelta {
-<a href=#254 id=254 data-nosnippet>254</a>                    index: <span class="number">0</span>,
-<a href=#255 id=255 data-nosnippet>255</a>                    text: <span class="string">"partial"</span>.to_string(),
-<a href=#256 id=256 data-nosnippet>256</a>                }
-<a href=#257 id=257 data-nosnippet>257</a>                .into()),
-<a href=#258 id=258 data-nosnippet>258</a>                <span class="prelude-val">Err</span>(error),
-<a href=#259 id=259 data-nosnippet>259</a>            ]))),
-<a href=#260 id=260 data-nosnippet>260</a>            metadata: <span class="prelude-val">None</span>,
-<a href=#261 id=261 data-nosnippet>261</a>        }
-<a href=#262 id=262 data-nosnippet>262</a>    }
-<a href=#263 id=263 data-nosnippet>263</a>
-<a href=#264 id=264 data-nosnippet>264</a>    <span class="doccomment">/// Builds a router with escalation enabled (`confirmations=1` latches immediately).
-<a href=#265 id=265 data-nosnippet>265</a>    </span><span class="kw">fn </span>escalation_router() -&gt; <span class="prelude-ty">Result</span>&lt;Arc&lt;LlmTaskClassifier&gt;&gt; {
-<a href=#266 id=266 data-nosnippet>266</a>        <span class="prelude-val">Ok</span>(Arc::new(LlmTaskClassifier::new(
-<a href=#267 id=267 data-nosnippet>267</a>            LlmClassifierConfig::Escalation {
-<a href=#268 id=268 data-nosnippet>268</a>                judge_target: ModelId::from(<span class="string">"judge"</span>),
-<a href=#269 id=269 data-nosnippet>269</a>                efficient_target: ModelId::from(<span class="string">"efficient"</span>),
-<a href=#270 id=270 data-nosnippet>270</a>                capable_target: ModelId::from(<span class="string">"capable"</span>),
-<a href=#271 id=271 data-nosnippet>271</a>                contract: ClassifierContractConfig::default(),
-<a href=#272 id=272 data-nosnippet>272</a>                config: EscalationJudgeConfig {
-<a href=#273 id=273 data-nosnippet>273</a>                    confirmations: <span class="number">1</span>,
-<a href=#274 id=274 data-nosnippet>274</a>                    ..EscalationJudgeConfig::default()
-<a href=#275 id=275 data-nosnippet>275</a>                },
-<a href=#276 id=276 data-nosnippet>276</a>                max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-<a href=#277 id=277 data-nosnippet>277</a>            },
-<a href=#278 id=278 data-nosnippet>278</a>        )<span class="question-mark">?</span>))
-<a href=#279 id=279 data-nosnippet>279</a>    }
+<a href=#93 id=93 data-nosnippet>93</a>        <span class="comment">// A confirmed session stays capable without a judge call.
+<a href=#94 id=94 data-nosnippet>94</a>        </span><span class="kw">if </span>streak(state) &gt;= <span class="self">self</span>.confirmations {
+<a href=#95 id=95 data-nosnippet>95</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>((decisive(<span class="kw-2">&amp;</span><span class="self">self</span>.capable), <span class="prelude-val">None</span>));
+<a href=#96 id=96 data-nosnippet>96</a>        }
+<a href=#97 id=97 data-nosnippet>97</a>
+<a href=#98 id=98 data-nosnippet>98</a>        <span class="comment">// Call efficient model and buffer the response so the judge can read it.
+<a href=#99 id=99 data-nosnippet>99</a>        //
+<a href=#100 id=100 data-nosnippet>100</a>        // If the efficient model exceeds its context window, fall through to capable. This call
+<a href=#101 id=101 data-nosnippet>101</a>        // deliberately has one candidate so the classifier sees the efficient model's error.
+<a href=#102 id=102 data-nosnippet>102</a>        </span><span class="macro">tracing::info!</span>(
+<a href=#103 id=103 data-nosnippet>103</a>            target = %<span class="self">self</span>.efficient,
+<a href=#104 id=104 data-nosnippet>104</a>            <span class="string">"escalation classifier selected efficient tier"
+<a href=#105 id=105 data-nosnippet>105</a>        </span>);
+<a href=#106 id=106 data-nosnippet>106</a>        <span class="kw">let </span>efficient_response = <span class="kw">match </span>driver
+<a href=#107 id=107 data-nosnippet>107</a>            .call_model(request.clone(), <span class="macro">vec!</span>[<span class="self">self</span>.efficient.clone()])
+<a href=#108 id=108 data-nosnippet>108</a>            .<span class="kw">await
+<a href=#109 id=109 data-nosnippet>109</a>        </span>{
+<a href=#110 id=110 data-nosnippet>110</a>            <span class="prelude-val">Ok</span>(r) =&gt; r,
+<a href=#111 id=111 data-nosnippet>111</a>            <span class="prelude-val">Err</span>(LibsyError::ClientCall {
+<a href=#112 id=112 data-nosnippet>112</a>                source: LlmClientError::ContextWindowExceeded { .. },
+<a href=#113 id=113 data-nosnippet>113</a>                ..
+<a href=#114 id=114 data-nosnippet>114</a>            }) =&gt; <span class="kw">return </span><span class="prelude-val">Ok</span>((decisive(<span class="kw-2">&amp;</span><span class="self">self</span>.capable), <span class="prelude-val">None</span>)),
+<a href=#115 id=115 data-nosnippet>115</a>            <span class="prelude-val">Err</span>(e) =&gt; <span class="kw">return </span><span class="prelude-val">Err</span>(e),
+<a href=#116 id=116 data-nosnippet>116</a>        };
+<a href=#117 id=117 data-nosnippet>117</a>        <span class="comment">// The call resolves when its stream handle arrives; transport can still fail while
+<a href=#118 id=118 data-nosnippet>118</a>        // buffering. Fall back only for that availability failure and keep other errors typed.
+<a href=#119 id=119 data-nosnippet>119</a>        </span><span class="kw">let </span>agg = <span class="kw">match </span>efficient_response.llm_response.into_agg().<span class="kw">await </span>{
+<a href=#120 id=120 data-nosnippet>120</a>            <span class="prelude-val">Ok</span>(agg) =&gt; agg,
+<a href=#121 id=121 data-nosnippet>121</a>            <span class="prelude-val">Err</span>(LlmClientError::Transport { .. }) =&gt; {
+<a href=#122 id=122 data-nosnippet>122</a>                <span class="kw">return </span><span class="prelude-val">Ok</span>((decisive(<span class="kw-2">&amp;</span><span class="self">self</span>.capable), <span class="prelude-val">None</span>));
+<a href=#123 id=123 data-nosnippet>123</a>            }
+<a href=#124 id=124 data-nosnippet>124</a>            <span class="prelude-val">Err</span>(source) =&gt; {
+<a href=#125 id=125 data-nosnippet>125</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::client_call(<span class="self">self</span>.efficient.clone(), source));
+<a href=#126 id=126 data-nosnippet>126</a>            }
+<a href=#127 id=127 data-nosnippet>127</a>        };
+<a href=#128 id=128 data-nosnippet>128</a>        <span class="comment">// Append the efficient reply so the judge reads this turn's completed trajectory.
+<a href=#129 id=129 data-nosnippet>129</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>judge_request = request.clone();
+<a href=#130 id=130 data-nosnippet>130</a>        judge_request
+<a href=#131 id=131 data-nosnippet>131</a>            .llm_request
+<a href=#132 id=132 data-nosnippet>132</a>            .messages
+<a href=#133 id=133 data-nosnippet>133</a>            .push(assistant_message(<span class="kw-2">&amp;</span>agg));
+<a href=#134 id=134 data-nosnippet>134</a>        <span class="kw">let </span>efficient_response = Response {
+<a href=#135 id=135 data-nosnippet>135</a>            llm_response: <span class="kw">if </span>request.llm_request.stream {
+<a href=#136 id=136 data-nosnippet>136</a>                LlmResponse::Stream(agg.into_stream())
+<a href=#137 id=137 data-nosnippet>137</a>            } <span class="kw">else </span>{
+<a href=#138 id=138 data-nosnippet>138</a>                LlmResponse::Agg(agg)
+<a href=#139 id=139 data-nosnippet>139</a>            },
+<a href=#140 id=140 data-nosnippet>140</a>            metadata: efficient_response.metadata,
+<a href=#141 id=141 data-nosnippet>141</a>        };
+<a href=#142 id=142 data-nosnippet>142</a>
+<a href=#143 id=143 data-nosnippet>143</a>        <span class="kw">let </span>(classification, <span class="kw">_</span>) = <span class="self">self
+<a href=#144 id=144 data-nosnippet>144</a>            </span>.judge
+<a href=#145 id=145 data-nosnippet>145</a>            .score(state, <span class="kw-2">&amp;mut </span>judge_request, <span class="prelude-val">Some</span>(driver))
+<a href=#146 id=146 data-nosnippet>146</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#147 id=147 data-nosnippet>147</a>
+<a href=#148 id=148 data-nosnippet>148</a>        <span class="kw">let </span>held = streak(state);
+<a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">let </span>best = classification.argmax(<span class="bool-val">false</span>)<span class="question-mark">?</span>;
+<a href=#150 id=150 data-nosnippet>150</a>        <span class="kw">let </span>(escalate, pending) = <span class="kw">match </span><span class="kw-2">&amp;</span>best {
+<a href=#151 id=151 data-nosnippet>151</a>            <span class="prelude-val">Some</span>(score) <span class="kw">if </span>score.target == <span class="self">self</span>.capable =&gt; (<span class="bool-val">true</span>, held + <span class="number">1</span>),
+<a href=#152 id=152 data-nosnippet>152</a>            <span class="prelude-val">Some</span>(<span class="kw">_</span>) =&gt; (<span class="bool-val">false</span>, <span class="number">0</span>),
+<a href=#153 id=153 data-nosnippet>153</a>            <span class="prelude-val">None </span>=&gt; (<span class="bool-val">false</span>, held),
+<a href=#154 id=154 data-nosnippet>154</a>        };
+<a href=#155 id=155 data-nosnippet>155</a>        state
+<a href=#156 id=156 data-nosnippet>156</a>            .extra
+<a href=#157 id=157 data-nosnippet>157</a>            .insert(STREAK_KEY.to_string(), StateValue::Count(pending));
+<a href=#158 id=158 data-nosnippet>158</a>
+<a href=#159 id=159 data-nosnippet>159</a>        <span class="kw">if </span>escalate &amp;&amp; pending &gt;= <span class="self">self</span>.confirmations {
+<a href=#160 id=160 data-nosnippet>160</a>            <span class="comment">// Streak confirmed: drop the efficient response, caller will serve capable.
+<a href=#161 id=161 data-nosnippet>161</a>            </span><span class="kw">return </span><span class="prelude-val">Ok</span>((decisive(<span class="kw-2">&amp;</span><span class="self">self</span>.capable), <span class="prelude-val">None</span>));
+<a href=#162 id=162 data-nosnippet>162</a>        }
+<a href=#163 id=163 data-nosnippet>163</a>
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="prelude-val">Ok</span>((decisive(<span class="kw-2">&amp;</span><span class="self">self</span>.efficient), <span class="prelude-val">Some</span>(efficient_response)))
+<a href=#165 id=165 data-nosnippet>165</a>    }
+<a href=#166 id=166 data-nosnippet>166</a>}
+<a href=#167 id=167 data-nosnippet>167</a>
+<a href=#168 id=168 data-nosnippet>168</a><span class="attr">#[cfg(test)]
+<a href=#169 id=169 data-nosnippet>169</a></span><span class="kw">mod </span>tests {
+<a href=#170 id=170 data-nosnippet>170</a>    <span class="kw">use </span>std::collections::VecDeque;
+<a href=#171 id=171 data-nosnippet>171</a>    <span class="kw">use </span>std::sync::Arc;
+<a href=#172 id=172 data-nosnippet>172</a>
+<a href=#173 id=173 data-nosnippet>173</a>    <span class="kw">use </span>parking_lot::Mutex;
+<a href=#174 id=174 data-nosnippet>174</a>    <span class="kw">use </span>switchyard_protocol::{
+<a href=#175 id=175 data-nosnippet>175</a>        ContentBlock, LlmClientError, LlmResponse, LlmResponseChunk, Metadata, Request, Response,
+<a href=#176 id=176 data-nosnippet>176</a>        completion_text, text_request, text_response,
+<a href=#177 id=177 data-nosnippet>177</a>    };
+<a href=#178 id=178 data-nosnippet>178</a>
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#180 id=180 data-nosnippet>180</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::llm_class::{LlmClassifierConfig, LlmTaskClassifier};
+<a href=#181 id=181 data-nosnippet>181</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
+<a href=#182 id=182 data-nosnippet>182</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, reply, test_drive};
+<a href=#183 id=183 data-nosnippet>183</a>
+<a href=#184 id=184 data-nosnippet>184</a>    <span class="doccomment">/// A queue of replies, drained in order.
+<a href=#185 id=185 data-nosnippet>185</a>    </span><span class="kw">struct </span>Queue(Mutex&lt;VecDeque&lt;String&gt;&gt;);
+<a href=#186 id=186 data-nosnippet>186</a>
+<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">impl </span>Queue {
+<a href=#188 id=188 data-nosnippet>188</a>        <span class="kw">fn </span>new(replies: <span class="kw">impl </span>IntoIterator&lt;Item = <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt;) -&gt; Arc&lt;<span class="self">Self</span>&gt; {
+<a href=#189 id=189 data-nosnippet>189</a>            Arc::new(<span class="self">Self</span>(Mutex::new(
+<a href=#190 id=190 data-nosnippet>190</a>                replies.into_iter().map(String::from).collect(),
+<a href=#191 id=191 data-nosnippet>191</a>            )))
+<a href=#192 id=192 data-nosnippet>192</a>        }
+<a href=#193 id=193 data-nosnippet>193</a>
+<a href=#194 id=194 data-nosnippet>194</a>        <span class="kw">fn </span>take(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; String {
+<a href=#195 id=195 data-nosnippet>195</a>            <span class="self">self</span>.<span class="number">0
+<a href=#196 id=196 data-nosnippet>196</a>                </span>.lock()
+<a href=#197 id=197 data-nosnippet>197</a>                .pop_front()
+<a href=#198 id=198 data-nosnippet>198</a>                .unwrap_or_else(|| <span class="string">"unexpected call"</span>.to_string())
+<a href=#199 id=199 data-nosnippet>199</a>        }
+<a href=#200 id=200 data-nosnippet>200</a>    }
+<a href=#201 id=201 data-nosnippet>201</a>
+<a href=#202 id=202 data-nosnippet>202</a>    <span class="doccomment">/// Serves the judge and model targets from separate reply queues.
+<a href=#203 id=203 data-nosnippet>203</a>    </span><span class="kw">fn </span>queued(model: Arc&lt;Queue&gt;, judge: Arc&lt;Queue&gt;) -&gt; <span class="kw">impl </span>Serve {
+<a href=#204 id=204 data-nosnippet>204</a>        <span class="kw">move </span>|target: ModelId, request: Request| {
+<a href=#205 id=205 data-nosnippet>205</a>            <span class="kw">let </span>queue = <span class="kw">if </span>target == <span class="string">"judge" </span>{
+<a href=#206 id=206 data-nosnippet>206</a>                Arc::clone(<span class="kw-2">&amp;</span>judge)
+<a href=#207 id=207 data-nosnippet>207</a>            } <span class="kw">else </span>{
+<a href=#208 id=208 data-nosnippet>208</a>                Arc::clone(<span class="kw-2">&amp;</span>model)
+<a href=#209 id=209 data-nosnippet>209</a>            };
+<a href=#210 id=210 data-nosnippet>210</a>            <span class="kw">async move </span>{
+<a href=#211 id=211 data-nosnippet>211</a>                <span class="prelude-val">Ok</span>(Response {
+<a href=#212 id=212 data-nosnippet>212</a>                    llm_response: LlmResponse::Agg(text_response(<span class="prelude-val">None</span>, queue.take())),
+<a href=#213 id=213 data-nosnippet>213</a>                    metadata: request.metadata,
+<a href=#214 id=214 data-nosnippet>214</a>                })
+<a href=#215 id=215 data-nosnippet>215</a>            }
+<a href=#216 id=216 data-nosnippet>216</a>        }
+<a href=#217 id=217 data-nosnippet>217</a>    }
+<a href=#218 id=218 data-nosnippet>218</a>
+<a href=#219 id=219 data-nosnippet>219</a>    <span class="kw">fn </span>classify_request() -&gt; Request {
+<a href=#220 id=220 data-nosnippet>220</a>        Request {
+<a href=#221 id=221 data-nosnippet>221</a>            llm_request: text_request(<span class="prelude-val">Some</span>(<span class="string">"auto"</span>.to_string()), <span class="string">"classify this task"</span>),
+<a href=#222 id=222 data-nosnippet>222</a>            raw_request: <span class="prelude-val">None</span>,
+<a href=#223 id=223 data-nosnippet>223</a>            metadata: <span class="prelude-val">None</span>,
+<a href=#224 id=224 data-nosnippet>224</a>        }
+<a href=#225 id=225 data-nosnippet>225</a>    }
+<a href=#226 id=226 data-nosnippet>226</a>
+<a href=#227 id=227 data-nosnippet>227</a>    <span class="kw">fn </span>classify_session_request() -&gt; Request {
+<a href=#228 id=228 data-nosnippet>228</a>        Request {
+<a href=#229 id=229 data-nosnippet>229</a>            metadata: <span class="prelude-val">Some</span>(Metadata {
+<a href=#230 id=230 data-nosnippet>230</a>                session_id: <span class="prelude-val">Some</span>(<span class="string">"session-1"</span>.to_string()),
+<a href=#231 id=231 data-nosnippet>231</a>                ..Metadata::default()
+<a href=#232 id=232 data-nosnippet>232</a>            }),
+<a href=#233 id=233 data-nosnippet>233</a>            ..classify_request()
+<a href=#234 id=234 data-nosnippet>234</a>        }
+<a href=#235 id=235 data-nosnippet>235</a>    }
+<a href=#236 id=236 data-nosnippet>236</a>
+<a href=#237 id=237 data-nosnippet>237</a>    <span class="doccomment">/// Returns a stream that emits partial content before failing during aggregation.
+<a href=#238 id=238 data-nosnippet>238</a>    </span><span class="kw">fn </span>streamed_then_error(error: LlmClientError) -&gt; Response {
+<a href=#239 id=239 data-nosnippet>239</a>        Response {
+<a href=#240 id=240 data-nosnippet>240</a>            llm_response: LlmResponse::Stream(Box::pin(futures::stream::iter([
+<a href=#241 id=241 data-nosnippet>241</a>                <span class="prelude-val">Ok</span>(LlmResponseChunk::TextDelta {
+<a href=#242 id=242 data-nosnippet>242</a>                    index: <span class="number">0</span>,
+<a href=#243 id=243 data-nosnippet>243</a>                    text: <span class="string">"partial"</span>.to_string(),
+<a href=#244 id=244 data-nosnippet>244</a>                }
+<a href=#245 id=245 data-nosnippet>245</a>                .into()),
+<a href=#246 id=246 data-nosnippet>246</a>                <span class="prelude-val">Err</span>(error),
+<a href=#247 id=247 data-nosnippet>247</a>            ]))),
+<a href=#248 id=248 data-nosnippet>248</a>            metadata: <span class="prelude-val">None</span>,
+<a href=#249 id=249 data-nosnippet>249</a>        }
+<a href=#250 id=250 data-nosnippet>250</a>    }
+<a href=#251 id=251 data-nosnippet>251</a>
+<a href=#252 id=252 data-nosnippet>252</a>    <span class="doccomment">/// Builds a router with escalation enabled (`confirmations=1` latches immediately).
+<a href=#253 id=253 data-nosnippet>253</a>    </span><span class="kw">fn </span>escalation_router() -&gt; <span class="prelude-ty">Result</span>&lt;Arc&lt;LlmTaskClassifier&gt;&gt; {
+<a href=#254 id=254 data-nosnippet>254</a>        <span class="prelude-val">Ok</span>(Arc::new(LlmTaskClassifier::new(
+<a href=#255 id=255 data-nosnippet>255</a>            LlmClassifierConfig::Escalation {
+<a href=#256 id=256 data-nosnippet>256</a>                judge_target: ModelId::from(<span class="string">"judge"</span>),
+<a href=#257 id=257 data-nosnippet>257</a>                efficient_target: ModelId::from(<span class="string">"efficient"</span>),
+<a href=#258 id=258 data-nosnippet>258</a>                capable_target: ModelId::from(<span class="string">"capable"</span>),
+<a href=#259 id=259 data-nosnippet>259</a>                contract: ClassifierContractConfig::default(),
+<a href=#260 id=260 data-nosnippet>260</a>                config: EscalationJudgeConfig {
+<a href=#261 id=261 data-nosnippet>261</a>                    confirmations: <span class="number">1</span>,
+<a href=#262 id=262 data-nosnippet>262</a>                    ..EscalationJudgeConfig::default()
+<a href=#263 id=263 data-nosnippet>263</a>                },
+<a href=#264 id=264 data-nosnippet>264</a>                max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+<a href=#265 id=265 data-nosnippet>265</a>            },
+<a href=#266 id=266 data-nosnippet>266</a>        )<span class="question-mark">?</span>))
+<a href=#267 id=267 data-nosnippet>267</a>    }
+<a href=#268 id=268 data-nosnippet>268</a>
+<a href=#269 id=269 data-nosnippet>269</a>    <span class="attr">#[tokio::test]
+<a href=#270 id=270 data-nosnippet>270</a>    </span><span class="kw">async fn </span>serves_efficient_when_judge_declines() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#271 id=271 data-nosnippet>271</a>        <span class="kw">let </span>judge = Queue::new([<span class="string">r#"{"escalate":false,"reason":"progressing"}"#</span>]);
+<a href=#272 id=272 data-nosnippet>272</a>        <span class="kw">let </span>model = Queue::new([<span class="string">"efficient answer"</span>]);
+<a href=#273 id=273 data-nosnippet>273</a>
+<a href=#274 id=274 data-nosnippet>274</a>        <span class="kw">let </span>(selected_model, response) = test_drive(
+<a href=#275 id=275 data-nosnippet>275</a>            escalation_router()<span class="question-mark">?</span>,
+<a href=#276 id=276 data-nosnippet>276</a>            classify_request(),
+<a href=#277 id=277 data-nosnippet>277</a>            queued(model, judge),
+<a href=#278 id=278 data-nosnippet>278</a>        )
+<a href=#279 id=279 data-nosnippet>279</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#280 id=280 data-nosnippet>280</a>
-<a href=#281 id=281 data-nosnippet>281</a>    <span class="attr">#[tokio::test]
-<a href=#282 id=282 data-nosnippet>282</a>    </span><span class="kw">async fn </span>serves_efficient_when_judge_declines() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#283 id=283 data-nosnippet>283</a>        <span class="kw">let </span>judge = Queue::new([<span class="string">r#"{"escalate":false,"reason":"progressing"}"#</span>]);
-<a href=#284 id=284 data-nosnippet>284</a>        <span class="kw">let </span>model = Queue::new([<span class="string">"efficient answer"</span>]);
-<a href=#285 id=285 data-nosnippet>285</a>
-<a href=#286 id=286 data-nosnippet>286</a>        <span class="kw">let </span>(selected_model, response) = test_drive(
-<a href=#287 id=287 data-nosnippet>287</a>            escalation_router()<span class="question-mark">?</span>,
-<a href=#288 id=288 data-nosnippet>288</a>            classify_request(),
-<a href=#289 id=289 data-nosnippet>289</a>            queued(model, judge),
-<a href=#290 id=290 data-nosnippet>290</a>        )
-<a href=#291 id=291 data-nosnippet>291</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#292 id=292 data-nosnippet>292</a>
-<a href=#293 id=293 data-nosnippet>293</a>        <span class="macro">assert_eq!</span>(selected_model, <span class="string">"efficient"</span>);
-<a href=#294 id=294 data-nosnippet>294</a>        <span class="macro">assert_eq!</span>(
-<a href=#295 id=295 data-nosnippet>295</a>            response.llm_response.as_agg().map(completion_text),
-<a href=#296 id=296 data-nosnippet>296</a>            <span class="prelude-val">Some</span>(<span class="string">"efficient answer"</span>.to_string())
-<a href=#297 id=297 data-nosnippet>297</a>        );
-<a href=#298 id=298 data-nosnippet>298</a>        <span class="prelude-val">Ok</span>(())
-<a href=#299 id=299 data-nosnippet>299</a>    }
-<a href=#300 id=300 data-nosnippet>300</a>
-<a href=#301 id=301 data-nosnippet>301</a>    <span class="attr">#[tokio::test]
-<a href=#302 id=302 data-nosnippet>302</a>    </span><span class="kw">async fn </span>config_overrides_the_packaged_prompt() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#303 id=303 data-nosnippet>303</a>        <span class="kw">let </span>prompts = Arc::new(Mutex::new(Vec::new()));
-<a href=#304 id=304 data-nosnippet>304</a>        <span class="kw">let </span>recorded = Arc::clone(<span class="kw-2">&amp;</span>prompts);
-<a href=#305 id=305 data-nosnippet>305</a>        <span class="kw">let </span>serve = <span class="kw">move </span>|target: ModelId, request: Request| {
-<a href=#306 id=306 data-nosnippet>306</a>            <span class="kw">if </span>target == <span class="string">"judge" </span>{
-<a href=#307 id=307 data-nosnippet>307</a>                <span class="kw">let </span>prompt = request
-<a href=#308 id=308 data-nosnippet>308</a>                    .llm_request
-<a href=#309 id=309 data-nosnippet>309</a>                    .instructions
-<a href=#310 id=310 data-nosnippet>310</a>                    .first()
-<a href=#311 id=311 data-nosnippet>311</a>                    .and_then(|instruction| {
-<a href=#312 id=312 data-nosnippet>312</a>                        instruction.content.iter().find_map(|block| <span class="kw">match </span>block {
-<a href=#313 id=313 data-nosnippet>313</a>                            ContentBlock::Text { text } =&gt; <span class="prelude-val">Some</span>(text.clone()),
-<a href=#314 id=314 data-nosnippet>314</a>                            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#315 id=315 data-nosnippet>315</a>                        })
-<a href=#316 id=316 data-nosnippet>316</a>                    });
-<a href=#317 id=317 data-nosnippet>317</a>                recorded.lock().extend(prompt);
-<a href=#318 id=318 data-nosnippet>318</a>                std::future::ready(<span class="prelude-val">Ok</span>(reply(<span class="string">r#"{"escalate":false,"reason":"progressing"}"#</span>)))
-<a href=#319 id=319 data-nosnippet>319</a>            } <span class="kw">else </span>{
-<a href=#320 id=320 data-nosnippet>320</a>                std::future::ready(<span class="prelude-val">Ok</span>(reply(<span class="string">"efficient answer"</span>)))
-<a href=#321 id=321 data-nosnippet>321</a>            }
-<a href=#322 id=322 data-nosnippet>322</a>        };
-<a href=#323 id=323 data-nosnippet>323</a>        <span class="kw">let </span>router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
-<a href=#324 id=324 data-nosnippet>324</a>            judge_target: ModelId::from(<span class="string">"judge"</span>),
-<a href=#325 id=325 data-nosnippet>325</a>            efficient_target: ModelId::from(<span class="string">"efficient"</span>),
-<a href=#326 id=326 data-nosnippet>326</a>            capable_target: ModelId::from(<span class="string">"capable"</span>),
-<a href=#327 id=327 data-nosnippet>327</a>            contract: ClassifierContractConfig::default().with_prompt(<span class="string">"Custom trajectory rubric."</span>),
-<a href=#328 id=328 data-nosnippet>328</a>            config: EscalationJudgeConfig {
-<a href=#329 id=329 data-nosnippet>329</a>                confirmations: <span class="number">1</span>,
-<a href=#330 id=330 data-nosnippet>330</a>                ..EscalationJudgeConfig::default()
-<a href=#331 id=331 data-nosnippet>331</a>            },
-<a href=#332 id=332 data-nosnippet>332</a>            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-<a href=#333 id=333 data-nosnippet>333</a>        })<span class="question-mark">?</span>);
-<a href=#334 id=334 data-nosnippet>334</a>
-<a href=#335 id=335 data-nosnippet>335</a>        test_drive(router, classify_request(), serve).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#336 id=336 data-nosnippet>336</a>
-<a href=#337 id=337 data-nosnippet>337</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>prompts.lock(), <span class="kw-2">&amp;</span>[<span class="string">"Custom trajectory rubric."</span>]);
-<a href=#338 id=338 data-nosnippet>338</a>        <span class="prelude-val">Ok</span>(())
-<a href=#339 id=339 data-nosnippet>339</a>    }
+<a href=#281 id=281 data-nosnippet>281</a>        <span class="macro">assert_eq!</span>(selected_model, <span class="string">"efficient"</span>);
+<a href=#282 id=282 data-nosnippet>282</a>        <span class="macro">assert_eq!</span>(
+<a href=#283 id=283 data-nosnippet>283</a>            response.llm_response.as_agg().map(completion_text),
+<a href=#284 id=284 data-nosnippet>284</a>            <span class="prelude-val">Some</span>(<span class="string">"efficient answer"</span>.to_string())
+<a href=#285 id=285 data-nosnippet>285</a>        );
+<a href=#286 id=286 data-nosnippet>286</a>        <span class="prelude-val">Ok</span>(())
+<a href=#287 id=287 data-nosnippet>287</a>    }
+<a href=#288 id=288 data-nosnippet>288</a>
+<a href=#289 id=289 data-nosnippet>289</a>    <span class="attr">#[tokio::test]
+<a href=#290 id=290 data-nosnippet>290</a>    </span><span class="kw">async fn </span>config_overrides_the_packaged_prompt() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#291 id=291 data-nosnippet>291</a>        <span class="kw">let </span>prompts = Arc::new(Mutex::new(Vec::new()));
+<a href=#292 id=292 data-nosnippet>292</a>        <span class="kw">let </span>recorded = Arc::clone(<span class="kw-2">&amp;</span>prompts);
+<a href=#293 id=293 data-nosnippet>293</a>        <span class="kw">let </span>serve = <span class="kw">move </span>|target: ModelId, request: Request| {
+<a href=#294 id=294 data-nosnippet>294</a>            <span class="kw">if </span>target == <span class="string">"judge" </span>{
+<a href=#295 id=295 data-nosnippet>295</a>                <span class="kw">let </span>prompt = request
+<a href=#296 id=296 data-nosnippet>296</a>                    .llm_request
+<a href=#297 id=297 data-nosnippet>297</a>                    .instructions
+<a href=#298 id=298 data-nosnippet>298</a>                    .first()
+<a href=#299 id=299 data-nosnippet>299</a>                    .and_then(|instruction| {
+<a href=#300 id=300 data-nosnippet>300</a>                        instruction.content.iter().find_map(|block| <span class="kw">match </span>block {
+<a href=#301 id=301 data-nosnippet>301</a>                            ContentBlock::Text { text } =&gt; <span class="prelude-val">Some</span>(text.clone()),
+<a href=#302 id=302 data-nosnippet>302</a>                            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#303 id=303 data-nosnippet>303</a>                        })
+<a href=#304 id=304 data-nosnippet>304</a>                    });
+<a href=#305 id=305 data-nosnippet>305</a>                recorded.lock().extend(prompt);
+<a href=#306 id=306 data-nosnippet>306</a>                std::future::ready(<span class="prelude-val">Ok</span>(reply(<span class="string">r#"{"escalate":false,"reason":"progressing"}"#</span>)))
+<a href=#307 id=307 data-nosnippet>307</a>            } <span class="kw">else </span>{
+<a href=#308 id=308 data-nosnippet>308</a>                std::future::ready(<span class="prelude-val">Ok</span>(reply(<span class="string">"efficient answer"</span>)))
+<a href=#309 id=309 data-nosnippet>309</a>            }
+<a href=#310 id=310 data-nosnippet>310</a>        };
+<a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span>router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+<a href=#312 id=312 data-nosnippet>312</a>            judge_target: ModelId::from(<span class="string">"judge"</span>),
+<a href=#313 id=313 data-nosnippet>313</a>            efficient_target: ModelId::from(<span class="string">"efficient"</span>),
+<a href=#314 id=314 data-nosnippet>314</a>            capable_target: ModelId::from(<span class="string">"capable"</span>),
+<a href=#315 id=315 data-nosnippet>315</a>            contract: ClassifierContractConfig::default().with_prompt(<span class="string">"Custom trajectory rubric."</span>),
+<a href=#316 id=316 data-nosnippet>316</a>            config: EscalationJudgeConfig {
+<a href=#317 id=317 data-nosnippet>317</a>                confirmations: <span class="number">1</span>,
+<a href=#318 id=318 data-nosnippet>318</a>                ..EscalationJudgeConfig::default()
+<a href=#319 id=319 data-nosnippet>319</a>            },
+<a href=#320 id=320 data-nosnippet>320</a>            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+<a href=#321 id=321 data-nosnippet>321</a>        })<span class="question-mark">?</span>);
+<a href=#322 id=322 data-nosnippet>322</a>
+<a href=#323 id=323 data-nosnippet>323</a>        test_drive(router, classify_request(), serve).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#324 id=324 data-nosnippet>324</a>
+<a href=#325 id=325 data-nosnippet>325</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>prompts.lock(), <span class="kw-2">&amp;</span>[<span class="string">"Custom trajectory rubric."</span>]);
+<a href=#326 id=326 data-nosnippet>326</a>        <span class="prelude-val">Ok</span>(())
+<a href=#327 id=327 data-nosnippet>327</a>    }
+<a href=#328 id=328 data-nosnippet>328</a>
+<a href=#329 id=329 data-nosnippet>329</a>    <span class="attr">#[tokio::test]
+<a href=#330 id=330 data-nosnippet>330</a>    </span><span class="kw">async fn </span>upgrades_to_capable_when_judge_escalates() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#331 id=331 data-nosnippet>331</a>        <span class="kw">let </span>judge = Queue::new([<span class="string">r#"{"escalate":true,"reason":"stuck in a loop"}"#</span>]);
+<a href=#332 id=332 data-nosnippet>332</a>        <span class="kw">let </span>model = Queue::new([<span class="string">"efficient draft"</span>, <span class="string">"capable answer"</span>]);
+<a href=#333 id=333 data-nosnippet>333</a>
+<a href=#334 id=334 data-nosnippet>334</a>        <span class="kw">let </span>(selected_model, response) = test_drive(
+<a href=#335 id=335 data-nosnippet>335</a>            escalation_router()<span class="question-mark">?</span>,
+<a href=#336 id=336 data-nosnippet>336</a>            classify_request(),
+<a href=#337 id=337 data-nosnippet>337</a>            queued(model, judge),
+<a href=#338 id=338 data-nosnippet>338</a>        )
+<a href=#339 id=339 data-nosnippet>339</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#340 id=340 data-nosnippet>340</a>
-<a href=#341 id=341 data-nosnippet>341</a>    <span class="attr">#[tokio::test]
-<a href=#342 id=342 data-nosnippet>342</a>    </span><span class="kw">async fn </span>upgrades_to_capable_when_judge_escalates() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#343 id=343 data-nosnippet>343</a>        <span class="kw">let </span>judge = Queue::new([<span class="string">r#"{"escalate":true,"reason":"stuck in a loop"}"#</span>]);
-<a href=#344 id=344 data-nosnippet>344</a>        <span class="kw">let </span>model = Queue::new([<span class="string">"efficient draft"</span>, <span class="string">"capable answer"</span>]);
-<a href=#345 id=345 data-nosnippet>345</a>
-<a href=#346 id=346 data-nosnippet>346</a>        <span class="kw">let </span>(selected_model, response) = test_drive(
-<a href=#347 id=347 data-nosnippet>347</a>            escalation_router()<span class="question-mark">?</span>,
-<a href=#348 id=348 data-nosnippet>348</a>            classify_request(),
-<a href=#349 id=349 data-nosnippet>349</a>            queued(model, judge),
-<a href=#350 id=350 data-nosnippet>350</a>        )
-<a href=#351 id=351 data-nosnippet>351</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#352 id=352 data-nosnippet>352</a>
-<a href=#353 id=353 data-nosnippet>353</a>        <span class="macro">assert_eq!</span>(selected_model, <span class="string">"capable"</span>);
-<a href=#354 id=354 data-nosnippet>354</a>        <span class="macro">assert_eq!</span>(
-<a href=#355 id=355 data-nosnippet>355</a>            response.llm_response.as_agg().map(completion_text),
-<a href=#356 id=356 data-nosnippet>356</a>            <span class="prelude-val">Some</span>(<span class="string">"capable answer"</span>.to_string())
-<a href=#357 id=357 data-nosnippet>357</a>        );
-<a href=#358 id=358 data-nosnippet>358</a>        <span class="prelude-val">Ok</span>(())
-<a href=#359 id=359 data-nosnippet>359</a>    }
-<a href=#360 id=360 data-nosnippet>360</a>
-<a href=#361 id=361 data-nosnippet>361</a>    <span class="attr">#[tokio::test]
-<a href=#362 id=362 data-nosnippet>362</a>    </span><span class="kw">async fn </span>stays_capable_after_latch() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#363 id=363 data-nosnippet>363</a>        <span class="kw">let </span>judge = Queue::new([<span class="string">r#"{"escalate":true,"reason":"stuck"}"#</span>]);
-<a href=#364 id=364 data-nosnippet>364</a>        <span class="kw">let </span>model = Queue::new([<span class="string">"efficient draft"</span>, <span class="string">"capable t1"</span>, <span class="string">"capable t2"</span>]);
-<a href=#365 id=365 data-nosnippet>365</a>        <span class="kw">let </span>router = escalation_router()<span class="question-mark">?</span>;
-<a href=#366 id=366 data-nosnippet>366</a>        <span class="kw">let </span>request = classify_session_request();
+<a href=#341 id=341 data-nosnippet>341</a>        <span class="macro">assert_eq!</span>(selected_model, <span class="string">"capable"</span>);
+<a href=#342 id=342 data-nosnippet>342</a>        <span class="macro">assert_eq!</span>(
+<a href=#343 id=343 data-nosnippet>343</a>            response.llm_response.as_agg().map(completion_text),
+<a href=#344 id=344 data-nosnippet>344</a>            <span class="prelude-val">Some</span>(<span class="string">"capable answer"</span>.to_string())
+<a href=#345 id=345 data-nosnippet>345</a>        );
+<a href=#346 id=346 data-nosnippet>346</a>        <span class="prelude-val">Ok</span>(())
+<a href=#347 id=347 data-nosnippet>347</a>    }
+<a href=#348 id=348 data-nosnippet>348</a>
+<a href=#349 id=349 data-nosnippet>349</a>    <span class="attr">#[tokio::test]
+<a href=#350 id=350 data-nosnippet>350</a>    </span><span class="kw">async fn </span>stays_capable_after_latch() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#351 id=351 data-nosnippet>351</a>        <span class="kw">let </span>judge = Queue::new([<span class="string">r#"{"escalate":true,"reason":"stuck"}"#</span>]);
+<a href=#352 id=352 data-nosnippet>352</a>        <span class="kw">let </span>model = Queue::new([<span class="string">"efficient draft"</span>, <span class="string">"capable t1"</span>, <span class="string">"capable t2"</span>]);
+<a href=#353 id=353 data-nosnippet>353</a>        <span class="kw">let </span>router = escalation_router()<span class="question-mark">?</span>;
+<a href=#354 id=354 data-nosnippet>354</a>        <span class="kw">let </span>request = classify_session_request();
+<a href=#355 id=355 data-nosnippet>355</a>
+<a href=#356 id=356 data-nosnippet>356</a>        test_drive(
+<a href=#357 id=357 data-nosnippet>357</a>            router.clone(),
+<a href=#358 id=358 data-nosnippet>358</a>            request.clone(),
+<a href=#359 id=359 data-nosnippet>359</a>            queued(Arc::clone(<span class="kw-2">&amp;</span>model), Arc::clone(<span class="kw-2">&amp;</span>judge)),
+<a href=#360 id=360 data-nosnippet>360</a>        )
+<a href=#361 id=361 data-nosnippet>361</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#362 id=362 data-nosnippet>362</a>        <span class="kw">let </span>(selected_model, <span class="kw">_</span>) = test_drive(router, request, queued(model, judge)).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#363 id=363 data-nosnippet>363</a>
+<a href=#364 id=364 data-nosnippet>364</a>        <span class="macro">assert_eq!</span>(selected_model, <span class="string">"capable"</span>);
+<a href=#365 id=365 data-nosnippet>365</a>        <span class="prelude-val">Ok</span>(())
+<a href=#366 id=366 data-nosnippet>366</a>    }
 <a href=#367 id=367 data-nosnippet>367</a>
-<a href=#368 id=368 data-nosnippet>368</a>        test_drive(
-<a href=#369 id=369 data-nosnippet>369</a>            router.clone(),
-<a href=#370 id=370 data-nosnippet>370</a>            request.clone(),
-<a href=#371 id=371 data-nosnippet>371</a>            queued(Arc::clone(<span class="kw-2">&amp;</span>model), Arc::clone(<span class="kw-2">&amp;</span>judge)),
-<a href=#372 id=372 data-nosnippet>372</a>        )
-<a href=#373 id=373 data-nosnippet>373</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#374 id=374 data-nosnippet>374</a>        <span class="kw">let </span>(selected_model, <span class="kw">_</span>) = test_drive(router, request, queued(model, judge)).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#375 id=375 data-nosnippet>375</a>
-<a href=#376 id=376 data-nosnippet>376</a>        <span class="macro">assert_eq!</span>(selected_model, <span class="string">"capable"</span>);
-<a href=#377 id=377 data-nosnippet>377</a>        <span class="prelude-val">Ok</span>(())
-<a href=#378 id=378 data-nosnippet>378</a>    }
-<a href=#379 id=379 data-nosnippet>379</a>
-<a href=#380 id=380 data-nosnippet>380</a>    <span class="attr">#[tokio::test]
-<a href=#381 id=381 data-nosnippet>381</a>    </span><span class="kw">async fn </span>falls_back_to_capable_when_efficient_overflows() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#382 id=382 data-nosnippet>382</a>        <span class="kw">let </span>serve = |target: ModelId, _request: Request| <span class="kw">async move </span>{
-<a href=#383 id=383 data-nosnippet>383</a>            <span class="kw">match </span>target.as_str() {
-<a href=#384 id=384 data-nosnippet>384</a>                <span class="string">"efficient" </span>=&gt; <span class="prelude-val">Err</span>(LlmClientError::ContextWindowExceeded {
-<a href=#385 id=385 data-nosnippet>385</a>                    model: target,
-<a href=#386 id=386 data-nosnippet>386</a>                    message: <span class="string">"prompt is too long"</span>.to_string(),
-<a href=#387 id=387 data-nosnippet>387</a>                }),
-<a href=#388 id=388 data-nosnippet>388</a>                <span class="string">"judge" </span>=&gt; <span class="macro">panic!</span>(<span class="string">"the judge must not be consulted when efficient overflows"</span>),
-<a href=#389 id=389 data-nosnippet>389</a>                <span class="kw">_ </span>=&gt; <span class="prelude-val">Ok</span>(reply(<span class="string">"capable answer"</span>)),
-<a href=#390 id=390 data-nosnippet>390</a>            }
-<a href=#391 id=391 data-nosnippet>391</a>        };
-<a href=#392 id=392 data-nosnippet>392</a>
-<a href=#393 id=393 data-nosnippet>393</a>        <span class="kw">let </span>(selected_model, response) =
-<a href=#394 id=394 data-nosnippet>394</a>            test_drive(escalation_router()<span class="question-mark">?</span>, classify_request(), serve).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#395 id=395 data-nosnippet>395</a>
-<a href=#396 id=396 data-nosnippet>396</a>        <span class="macro">assert_eq!</span>(selected_model, <span class="string">"capable"</span>);
-<a href=#397 id=397 data-nosnippet>397</a>        <span class="macro">assert_eq!</span>(
-<a href=#398 id=398 data-nosnippet>398</a>            response.llm_response.as_agg().map(completion_text),
-<a href=#399 id=399 data-nosnippet>399</a>            <span class="prelude-val">Some</span>(<span class="string">"capable answer"</span>.to_string())
-<a href=#400 id=400 data-nosnippet>400</a>        );
-<a href=#401 id=401 data-nosnippet>401</a>        <span class="prelude-val">Ok</span>(())
-<a href=#402 id=402 data-nosnippet>402</a>    }
-<a href=#403 id=403 data-nosnippet>403</a>
-<a href=#404 id=404 data-nosnippet>404</a>    <span class="doccomment">/// A transport failure while buffering efficient must bypass the judge and serve capable.
-<a href=#405 id=405 data-nosnippet>405</a>    </span><span class="attr">#[tokio::test]
-<a href=#406 id=406 data-nosnippet>406</a>    </span><span class="kw">async fn </span>falls_back_when_efficient_stream_transport_fails() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#407 id=407 data-nosnippet>407</a>        <span class="kw">let </span>calls = Arc::new(Mutex::new(Vec::new()));
-<a href=#408 id=408 data-nosnippet>408</a>        <span class="kw">let </span>serve = {
-<a href=#409 id=409 data-nosnippet>409</a>            <span class="kw">let </span>calls = Arc::clone(<span class="kw-2">&amp;</span>calls);
-<a href=#410 id=410 data-nosnippet>410</a>            <span class="kw">move </span>|model: ModelId, _request: Request| {
-<a href=#411 id=411 data-nosnippet>411</a>                <span class="kw">let </span>calls = Arc::clone(<span class="kw-2">&amp;</span>calls);
-<a href=#412 id=412 data-nosnippet>412</a>                <span class="kw">async move </span>{
-<a href=#413 id=413 data-nosnippet>413</a>                    <span class="kw">let </span>model = model.to_string();
-<a href=#414 id=414 data-nosnippet>414</a>                    calls.lock().push(model.clone());
-<a href=#415 id=415 data-nosnippet>415</a>                    <span class="kw">match </span>model.as_str() {
-<a href=#416 id=416 data-nosnippet>416</a>                        <span class="string">"efficient" </span>=&gt; <span class="prelude-val">Ok</span>(streamed_then_error(LlmClientError::Transport {
-<a href=#417 id=417 data-nosnippet>417</a>                            source: Box::new(std::io::Error::other(<span class="string">"stream disconnected"</span>)),
-<a href=#418 id=418 data-nosnippet>418</a>                        })),
-<a href=#419 id=419 data-nosnippet>419</a>                        <span class="string">"judge" </span>=&gt; {
-<a href=#420 id=420 data-nosnippet>420</a>                            <span class="macro">panic!</span>(<span class="string">"the judge must not be consulted after a transport failure"</span>)
-<a href=#421 id=421 data-nosnippet>421</a>                        }
-<a href=#422 id=422 data-nosnippet>422</a>                        <span class="kw">_ </span>=&gt; <span class="prelude-val">Ok</span>(reply(<span class="string">"capable answer"</span>)),
-<a href=#423 id=423 data-nosnippet>423</a>                    }
-<a href=#424 id=424 data-nosnippet>424</a>                }
-<a href=#425 id=425 data-nosnippet>425</a>            }
-<a href=#426 id=426 data-nosnippet>426</a>        };
-<a href=#427 id=427 data-nosnippet>427</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = classify_request();
-<a href=#428 id=428 data-nosnippet>428</a>        request.llm_request.stream = <span class="bool-val">true</span>;
-<a href=#429 id=429 data-nosnippet>429</a>
-<a href=#430 id=430 data-nosnippet>430</a>        <span class="kw">let </span>result = test_drive(escalation_router()<span class="question-mark">?</span>, request, serve).<span class="kw">await</span>;
-<a href=#431 id=431 data-nosnippet>431</a>
-<a href=#432 id=432 data-nosnippet>432</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>calls.lock(), <span class="kw-2">&amp;</span>[<span class="string">"efficient"</span>, <span class="string">"capable"</span>]);
-<a href=#433 id=433 data-nosnippet>433</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
-<a href=#434 id=434 data-nosnippet>434</a>        <span class="macro">assert_eq!</span>(
-<a href=#435 id=435 data-nosnippet>435</a>            response.llm_response.as_agg().map(completion_text),
-<a href=#436 id=436 data-nosnippet>436</a>            <span class="prelude-val">Some</span>(<span class="string">"capable answer"</span>.to_string())
-<a href=#437 id=437 data-nosnippet>437</a>        );
-<a href=#438 id=438 data-nosnippet>438</a>        <span class="prelude-val">Ok</span>(())
-<a href=#439 id=439 data-nosnippet>439</a>    }
-<a href=#440 id=440 data-nosnippet>440</a>
-<a href=#441 id=441 data-nosnippet>441</a>    <span class="doccomment">/// Non-transport aggregation failures remain typed and do not silently change targets.
-<a href=#442 id=442 data-nosnippet>442</a>    </span><span class="attr">#[tokio::test]
-<a href=#443 id=443 data-nosnippet>443</a>    </span><span class="kw">async fn </span>preserves_non_transport_stream_errors() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#444 id=444 data-nosnippet>444</a>        <span class="kw">let </span>serve = |target: ModelId, _request: Request| <span class="kw">async move </span>{
-<a href=#445 id=445 data-nosnippet>445</a>            <span class="kw">match </span>target.as_str() {
-<a href=#446 id=446 data-nosnippet>446</a>                <span class="string">"efficient" </span>=&gt; <span class="prelude-val">Ok</span>(streamed_then_error(LlmClientError::InvalidResponse {
-<a href=#447 id=447 data-nosnippet>447</a>                    source: Box::new(std::io::Error::other(<span class="string">"invalid stream event"</span>)),
-<a href=#448 id=448 data-nosnippet>448</a>                })),
-<a href=#449 id=449 data-nosnippet>449</a>                other =&gt; <span class="macro">panic!</span>(<span class="string">"unexpected call to {other}"</span>),
+<a href=#368 id=368 data-nosnippet>368</a>    <span class="attr">#[tokio::test]
+<a href=#369 id=369 data-nosnippet>369</a>    </span><span class="kw">async fn </span>falls_back_to_capable_when_efficient_overflows() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#370 id=370 data-nosnippet>370</a>        <span class="kw">let </span>serve = |target: ModelId, _request: Request| <span class="kw">async move </span>{
+<a href=#371 id=371 data-nosnippet>371</a>            <span class="kw">match </span>target.as_str() {
+<a href=#372 id=372 data-nosnippet>372</a>                <span class="string">"efficient" </span>=&gt; <span class="prelude-val">Err</span>(LlmClientError::ContextWindowExceeded {
+<a href=#373 id=373 data-nosnippet>373</a>                    model: target,
+<a href=#374 id=374 data-nosnippet>374</a>                    message: <span class="string">"prompt is too long"</span>.to_string(),
+<a href=#375 id=375 data-nosnippet>375</a>                }),
+<a href=#376 id=376 data-nosnippet>376</a>                <span class="string">"judge" </span>=&gt; <span class="macro">panic!</span>(<span class="string">"the judge must not be consulted when efficient overflows"</span>),
+<a href=#377 id=377 data-nosnippet>377</a>                <span class="kw">_ </span>=&gt; <span class="prelude-val">Ok</span>(reply(<span class="string">"capable answer"</span>)),
+<a href=#378 id=378 data-nosnippet>378</a>            }
+<a href=#379 id=379 data-nosnippet>379</a>        };
+<a href=#380 id=380 data-nosnippet>380</a>
+<a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">let </span>(selected_model, response) =
+<a href=#382 id=382 data-nosnippet>382</a>            test_drive(escalation_router()<span class="question-mark">?</span>, classify_request(), serve).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#383 id=383 data-nosnippet>383</a>
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="macro">assert_eq!</span>(selected_model, <span class="string">"capable"</span>);
+<a href=#385 id=385 data-nosnippet>385</a>        <span class="macro">assert_eq!</span>(
+<a href=#386 id=386 data-nosnippet>386</a>            response.llm_response.as_agg().map(completion_text),
+<a href=#387 id=387 data-nosnippet>387</a>            <span class="prelude-val">Some</span>(<span class="string">"capable answer"</span>.to_string())
+<a href=#388 id=388 data-nosnippet>388</a>        );
+<a href=#389 id=389 data-nosnippet>389</a>        <span class="prelude-val">Ok</span>(())
+<a href=#390 id=390 data-nosnippet>390</a>    }
+<a href=#391 id=391 data-nosnippet>391</a>
+<a href=#392 id=392 data-nosnippet>392</a>    <span class="doccomment">/// A transport failure while buffering efficient must bypass the judge and serve capable.
+<a href=#393 id=393 data-nosnippet>393</a>    </span><span class="attr">#[tokio::test]
+<a href=#394 id=394 data-nosnippet>394</a>    </span><span class="kw">async fn </span>falls_back_when_efficient_stream_transport_fails() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#395 id=395 data-nosnippet>395</a>        <span class="kw">let </span>calls = Arc::new(Mutex::new(Vec::new()));
+<a href=#396 id=396 data-nosnippet>396</a>        <span class="kw">let </span>serve = {
+<a href=#397 id=397 data-nosnippet>397</a>            <span class="kw">let </span>calls = Arc::clone(<span class="kw-2">&amp;</span>calls);
+<a href=#398 id=398 data-nosnippet>398</a>            <span class="kw">move </span>|model: ModelId, _request: Request| {
+<a href=#399 id=399 data-nosnippet>399</a>                <span class="kw">let </span>calls = Arc::clone(<span class="kw-2">&amp;</span>calls);
+<a href=#400 id=400 data-nosnippet>400</a>                <span class="kw">async move </span>{
+<a href=#401 id=401 data-nosnippet>401</a>                    <span class="kw">let </span>model = model.to_string();
+<a href=#402 id=402 data-nosnippet>402</a>                    calls.lock().push(model.clone());
+<a href=#403 id=403 data-nosnippet>403</a>                    <span class="kw">match </span>model.as_str() {
+<a href=#404 id=404 data-nosnippet>404</a>                        <span class="string">"efficient" </span>=&gt; <span class="prelude-val">Ok</span>(streamed_then_error(LlmClientError::Transport {
+<a href=#405 id=405 data-nosnippet>405</a>                            source: Box::new(std::io::Error::other(<span class="string">"stream disconnected"</span>)),
+<a href=#406 id=406 data-nosnippet>406</a>                        })),
+<a href=#407 id=407 data-nosnippet>407</a>                        <span class="string">"judge" </span>=&gt; {
+<a href=#408 id=408 data-nosnippet>408</a>                            <span class="macro">panic!</span>(<span class="string">"the judge must not be consulted after a transport failure"</span>)
+<a href=#409 id=409 data-nosnippet>409</a>                        }
+<a href=#410 id=410 data-nosnippet>410</a>                        <span class="kw">_ </span>=&gt; <span class="prelude-val">Ok</span>(reply(<span class="string">"capable answer"</span>)),
+<a href=#411 id=411 data-nosnippet>411</a>                    }
+<a href=#412 id=412 data-nosnippet>412</a>                }
+<a href=#413 id=413 data-nosnippet>413</a>            }
+<a href=#414 id=414 data-nosnippet>414</a>        };
+<a href=#415 id=415 data-nosnippet>415</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = classify_request();
+<a href=#416 id=416 data-nosnippet>416</a>        request.llm_request.stream = <span class="bool-val">true</span>;
+<a href=#417 id=417 data-nosnippet>417</a>
+<a href=#418 id=418 data-nosnippet>418</a>        <span class="kw">let </span>result = test_drive(escalation_router()<span class="question-mark">?</span>, request, serve).<span class="kw">await</span>;
+<a href=#419 id=419 data-nosnippet>419</a>
+<a href=#420 id=420 data-nosnippet>420</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>calls.lock(), <span class="kw-2">&amp;</span>[<span class="string">"efficient"</span>, <span class="string">"capable"</span>]);
+<a href=#421 id=421 data-nosnippet>421</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
+<a href=#422 id=422 data-nosnippet>422</a>        <span class="macro">assert_eq!</span>(
+<a href=#423 id=423 data-nosnippet>423</a>            response.llm_response.as_agg().map(completion_text),
+<a href=#424 id=424 data-nosnippet>424</a>            <span class="prelude-val">Some</span>(<span class="string">"capable answer"</span>.to_string())
+<a href=#425 id=425 data-nosnippet>425</a>        );
+<a href=#426 id=426 data-nosnippet>426</a>        <span class="prelude-val">Ok</span>(())
+<a href=#427 id=427 data-nosnippet>427</a>    }
+<a href=#428 id=428 data-nosnippet>428</a>
+<a href=#429 id=429 data-nosnippet>429</a>    <span class="doccomment">/// Non-transport aggregation failures remain typed and do not silently change targets.
+<a href=#430 id=430 data-nosnippet>430</a>    </span><span class="attr">#[tokio::test]
+<a href=#431 id=431 data-nosnippet>431</a>    </span><span class="kw">async fn </span>preserves_non_transport_stream_errors() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#432 id=432 data-nosnippet>432</a>        <span class="kw">let </span>serve = |target: ModelId, _request: Request| <span class="kw">async move </span>{
+<a href=#433 id=433 data-nosnippet>433</a>            <span class="kw">match </span>target.as_str() {
+<a href=#434 id=434 data-nosnippet>434</a>                <span class="string">"efficient" </span>=&gt; <span class="prelude-val">Ok</span>(streamed_then_error(LlmClientError::InvalidResponse {
+<a href=#435 id=435 data-nosnippet>435</a>                    source: Box::new(std::io::Error::other(<span class="string">"invalid stream event"</span>)),
+<a href=#436 id=436 data-nosnippet>436</a>                })),
+<a href=#437 id=437 data-nosnippet>437</a>                other =&gt; <span class="macro">panic!</span>(<span class="string">"unexpected call to {other}"</span>),
+<a href=#438 id=438 data-nosnippet>438</a>            }
+<a href=#439 id=439 data-nosnippet>439</a>        };
+<a href=#440 id=440 data-nosnippet>440</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = classify_request();
+<a href=#441 id=441 data-nosnippet>441</a>        request.llm_request.stream = <span class="bool-val">true</span>;
+<a href=#442 id=442 data-nosnippet>442</a>
+<a href=#443 id=443 data-nosnippet>443</a>        <span class="kw">match </span>test_drive(escalation_router()<span class="question-mark">?</span>, request, serve).<span class="kw">await </span>{
+<a href=#444 id=444 data-nosnippet>444</a>            <span class="prelude-val">Err</span>(LibsyError::ClientCall {
+<a href=#445 id=445 data-nosnippet>445</a>                target,
+<a href=#446 id=446 data-nosnippet>446</a>                source: LlmClientError::InvalidResponse { .. },
+<a href=#447 id=447 data-nosnippet>447</a>            }) =&gt; {
+<a href=#448 id=448 data-nosnippet>448</a>                <span class="macro">assert_eq!</span>(target, <span class="string">"efficient"</span>);
+<a href=#449 id=449 data-nosnippet>449</a>                <span class="prelude-val">Ok</span>(())
 <a href=#450 id=450 data-nosnippet>450</a>            }
-<a href=#451 id=451 data-nosnippet>451</a>        };
-<a href=#452 id=452 data-nosnippet>452</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = classify_request();
-<a href=#453 id=453 data-nosnippet>453</a>        request.llm_request.stream = <span class="bool-val">true</span>;
-<a href=#454 id=454 data-nosnippet>454</a>
-<a href=#455 id=455 data-nosnippet>455</a>        <span class="kw">match </span>test_drive(escalation_router()<span class="question-mark">?</span>, request, serve).<span class="kw">await </span>{
-<a href=#456 id=456 data-nosnippet>456</a>            <span class="prelude-val">Err</span>(LibsyError::ClientCall {
-<a href=#457 id=457 data-nosnippet>457</a>                target,
-<a href=#458 id=458 data-nosnippet>458</a>                source: LlmClientError::InvalidResponse { .. },
-<a href=#459 id=459 data-nosnippet>459</a>            }) =&gt; {
-<a href=#460 id=460 data-nosnippet>460</a>                <span class="macro">assert_eq!</span>(target, <span class="string">"efficient"</span>);
-<a href=#461 id=461 data-nosnippet>461</a>                <span class="prelude-val">Ok</span>(())
-<a href=#462 id=462 data-nosnippet>462</a>            }
-<a href=#463 id=463 data-nosnippet>463</a>            <span class="prelude-val">Err</span>(other) =&gt; <span class="macro">panic!</span>(<span class="string">"expected InvalidResponse client error, got {other:?}"</span>),
-<a href=#464 id=464 data-nosnippet>464</a>            <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="macro">panic!</span>(<span class="string">"expected stream aggregation to fail"</span>),
-<a href=#465 id=465 data-nosnippet>465</a>        }
-<a href=#466 id=466 data-nosnippet>466</a>    }
-<a href=#467 id=467 data-nosnippet>467</a>}
+<a href=#451 id=451 data-nosnippet>451</a>            <span class="prelude-val">Err</span>(other) =&gt; <span class="macro">panic!</span>(<span class="string">"expected InvalidResponse client error, got {other:?}"</span>),
+<a href=#452 id=452 data-nosnippet>452</a>            <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="macro">panic!</span>(<span class="string">"expected stream aggregation to fail"</span>),
+<a href=#453 id=453 data-nosnippet>453</a>        }
+<a href=#454 id=454 data-nosnippet>454</a>    }
+<a href=#455 id=455 data-nosnippet>455</a>}
 </code></pre></div></section></main></body></html>
