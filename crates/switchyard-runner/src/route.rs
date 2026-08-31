@@ -6,9 +6,9 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use libsy::{Algorithm, CallModel, LibsyError, RoutingOutcome, drive};
+use libsy::{Algorithm, LibsyError, RoutingOutcome};
 use serde_json::Value;
-use switchyard_llm_client::{ClientRouter, RunObserver, TranslatingLlmClient};
+use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{LlmClientError, ModelId, Request, Response, WireFormat};
 use thiserror::Error;
 
@@ -56,9 +56,9 @@ impl CallerAuthKind {
     }
 }
 
-/// Exact upstream model used for Anthropic token counting.
+/// Exact upstream model and client used for an auxiliary provider operation.
 #[derive(Clone)]
-pub struct CountTokensTarget {
+pub struct AuxiliaryTarget {
     pub model: ModelId,
     pub client: Arc<TranslatingLlmClient>,
 }
@@ -76,8 +76,8 @@ pub enum RunnerError {
     UnknownRouteModel(String),
     #[error("caller format is incompatible with {} credentials", .0.as_str())]
     IncompatibleCallerFormat(CallerAuthKind),
-    #[error("route has no Anthropic target for token counting")]
-    CountTokensUnsupported,
+    #[error("route has no compatible target for the auxiliary operation")]
+    AuxiliaryUnsupported,
     #[error(transparent)]
     Algorithm(#[from] LibsyError),
     #[error(transparent)]
@@ -112,7 +112,8 @@ pub struct Route {
     clients: ClientRouter,
     caller_auth: Option<CallerAuthKind>,
     capabilities: ModelCapabilities,
-    count_tokens_target: Option<CountTokensTarget>,
+    anthropic_auxiliary_target: Option<AuxiliaryTarget>,
+    responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
 }
 
@@ -129,7 +130,8 @@ impl Route {
         clients: ClientRouter,
         caller_auth: Option<CallerAuthKind>,
         capabilities: ModelCapabilities,
-        count_tokens_target: Option<CountTokensTarget>,
+        anthropic_auxiliary_target: Option<AuxiliaryTarget>,
+        responses_auxiliary_target: Option<AuxiliaryTarget>,
         decision_targets: Vec<DecisionTarget>,
     ) -> Self {
         Self {
@@ -137,7 +139,8 @@ impl Route {
             clients,
             caller_auth,
             capabilities,
-            count_tokens_target,
+            anthropic_auxiliary_target,
+            responses_auxiliary_target,
             decision_targets,
         }
     }
@@ -194,70 +197,31 @@ impl Route {
         })
     }
 
-    /// Completes routing-time calls without serving the answer target.
+    /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        drive(Arc::clone(&self.algorithm), request, |call| {
-            serve_decision_dependency(self.clients.clone(), call)
-        })
-        .await
-        .map_err(Into::into)
-    }
-
-    /// Counts tokens using the configured Anthropic-capable target.
-    pub async fn count_tokens(&self, request: Request) -> Result<Value, RunnerError> {
-        let target = self
-            .count_tokens_target
-            .as_ref()
-            .ok_or(RunnerError::CountTokensUnsupported)?;
-        target
-            .client
-            .count_tokens(&target.model, request)
+        switchyard_llm_client::decide(Arc::clone(&self.algorithm), self.clients.clone(), request)
             .await
             .map_err(Into::into)
     }
-}
 
-async fn serve_decision_dependency(clients: ClientRouter, call: CallModel) -> libsy::Result<()> {
-    let mut result = Err(LibsyError::NoTargets);
-    for (index, model) in call.models.iter().enumerate() {
-        // The driver stamps only the first candidate, so every fallback must replace it.
-        let mut request = call.request.clone();
-        request.llm_request.model = Some(model.to_string());
-        let response = match clients.route(model) {
-            Ok(client) => client.call(request).await,
-            Err(source) => Err(source),
-        };
-        match response {
-            Ok(response) => {
-                result = Ok(response);
-                break;
-            }
-            Err(source) => {
-                let try_next = index + 1 < call.models.len() && eligible_routing_fallback(&source);
-                result = Err(LibsyError::client_call(model.clone(), source));
-                if !try_next {
-                    break;
-                }
+    /// Executes a model-bearing provider operation through a compatible target.
+    pub async fn call_auxiliary(
+        &self,
+        request: Request,
+        operation: AuxiliaryOperation,
+    ) -> Result<Value, RunnerError> {
+        let target = match operation {
+            AuxiliaryOperation::AnthropicCountTokens => &self.anthropic_auxiliary_target,
+            AuxiliaryOperation::ResponsesInputTokens | AuxiliaryOperation::ResponsesCompact => {
+                &self.responses_auxiliary_target
             }
         }
-    }
-    call.respond(result)
-}
-
-/// Whether a routing-time candidate failure may fall through to the next model.
-fn eligible_routing_fallback(error: &LlmClientError) -> bool {
-    match error {
-        LlmClientError::ContextWindowExceeded { .. }
-        | LlmClientError::Transport { .. }
-        | LlmClientError::Timeout { .. } => true,
-        LlmClientError::UpstreamHttp { status, .. } => {
-            matches!(
-                *status,
-                reqwest::StatusCode::FORBIDDEN
-                    | reqwest::StatusCode::REQUEST_TIMEOUT
-                    | reqwest::StatusCode::TOO_MANY_REQUESTS
-            ) || status.is_server_error()
-        }
-        _ => false,
+        .as_ref()
+        .ok_or(RunnerError::AuxiliaryUnsupported)?;
+        target
+            .client
+            .call_auxiliary(&target.model, request, operation)
+            .await
+            .map_err(Into::into)
     }
 }

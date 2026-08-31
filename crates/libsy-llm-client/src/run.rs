@@ -8,10 +8,10 @@
 //! consumer — it drives the stream with [`switchyard_libsy::drive`], hands routing-time calls to
 //! a [`RoutedLlmClient`], and serves the terminal routing outcome.
 //!
-//! libsy owns the stream mechanics; what this module adds is ordered candidate fallback and the
-//! `libsy.client_call` span around each candidate. Each candidate exhausts its backend retry
-//! budget before fallback advances, so the worst case is `candidates × (max_retries + 1)`
-//! upstream attempts plus every candidate's backoff.
+//! libsy owns the stream mechanics; what this module adds is per-target request preparation,
+//! ordered candidate fallback, and the `libsy.client_call` span around each candidate. Each
+//! candidate exhausts its backend retry budget before fallback advances, so the worst case is
+//! `candidates × (max_retries + 1)` upstream attempts plus every candidate's backoff.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,10 +19,11 @@ use std::time::Instant;
 
 use http::StatusCode;
 use parking_lot::Mutex;
-use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, drive};
+use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, RoutingOutcome, drive};
 use switchyard_protocol::{
     LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
 };
+use switchyard_translation::prepare_request_for_target;
 
 use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
 use crate::{metrics, observability};
@@ -84,6 +85,7 @@ pub async fn run(
             &algorithm_name,
             &outcome.request,
             &models,
+            CallPhase::Completion,
             &observe,
         )
         .await;
@@ -101,6 +103,25 @@ pub async fn run(
         observer(RunObservation::RoutingOverhead(overhead));
     }
     result.map(|response| (selected_model_id, response))
+}
+
+/// Run an algorithm to a routing decision without serving its terminal completion.
+///
+/// Routing-time calls are served normally. The returned request is prepared only for the selected
+/// target; use [`run`] to execute selected and fallback candidates.
+pub async fn decide(
+    algorithm: Arc<dyn Algorithm>,
+    clients: ClientRouter,
+    request: Request,
+) -> Result<RoutingOutcome> {
+    let routing_clients = clients.clone();
+    let mut outcome = drive(algorithm, request, move |call| {
+        serve(routing_clients.clone(), call, None)
+    })
+    .await?;
+    outcome.request =
+        clients.prepare_completion_request(outcome.request, &outcome.selected_model_id);
+    Ok(outcome)
 }
 
 /// Emits completed routing calls after the outcome reveals whether one response became the answer.
@@ -144,10 +165,16 @@ async fn serve(
         &call.algorithm,
         &call.request,
         &call.models,
+        CallPhase::Routing,
         &observe,
     )
     .await;
     call.respond(result)
+}
+
+enum CallPhase {
+    Routing,
+    Completion,
 }
 
 /// Try candidates in order until one succeeds or a failure stops fallback.
@@ -156,10 +183,14 @@ async fn call_first_available(
     algorithm: &str,
     request: &Request,
     models: &[ModelId],
+    phase: CallPhase,
     observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
 ) -> Result<Response> {
     for (index, target) in models.iter().enumerate() {
-        let request = request_for(request, target);
+        let request = match phase {
+            CallPhase::Routing => clients.prepare_routing_request(request.clone(), target),
+            CallPhase::Completion => clients.prepare_completion_request(request.clone(), target),
+        };
         match call_one(
             clients,
             target,
@@ -298,13 +329,6 @@ fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
     }
 }
 
-/// Clone a request and stamp the candidate model that should receive it.
-fn request_for(request: &Request, target: &ModelId) -> Request {
-    let mut request = request.clone();
-    request.llm_request.model = Some(target.to_string());
-    request
-}
-
 /// Resolves a routed call's selected model to the client that serves it.
 ///
 /// An algorithm routes among named targets; which provider each target lives on is the
@@ -315,7 +339,13 @@ fn request_for(request: &Request, target: &ModelId) -> Request {
 /// Cloning is cheap — the mapping is shared, so one router can serve every request.
 #[derive(Clone)]
 pub struct ClientRouter {
-    routing: Arc<Routing>,
+    inner: Arc<ClientRouting>,
+}
+
+struct ClientRouting {
+    routing: Routing,
+    target_prompts: HashMap<ModelId, String>,
+    routing_answer_target: Option<ModelId>,
 }
 
 enum Routing {
@@ -328,8 +358,25 @@ enum Routing {
 impl ClientRouter {
     /// Build a router over `model name -> client`, for targets spread across providers.
     pub fn new(by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>) -> Self {
+        Self::new_with_target_prompts(by_model, HashMap::new(), None)
+    }
+
+    /// Build a router with target prompts used by [`run`] and [`decide`].
+    ///
+    /// `routing_answer_target` identifies a routing-time call whose response may become the
+    /// answer. Pass `None` when routing only selects a later completion target. Prompt keys and
+    /// `routing_answer_target` use the resolved model IDs stored in `by_model`.
+    pub fn new_with_target_prompts(
+        by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>,
+        target_prompts: HashMap<ModelId, String>,
+        routing_answer_target: Option<ModelId>,
+    ) -> Self {
         Self {
-            routing: Arc::new(Routing::ByModel(by_model)),
+            inner: Arc::new(ClientRouting {
+                routing: Routing::ByModel(by_model),
+                target_prompts,
+                routing_answer_target,
+            }),
         }
     }
 
@@ -340,7 +387,11 @@ impl ClientRouter {
     /// only duplicate that.
     pub fn single(client: Arc<dyn RoutedLlmClient>) -> Self {
         Self {
-            routing: Arc::new(Routing::Single(client)),
+            inner: Arc::new(ClientRouting {
+                routing: Routing::Single(client),
+                target_prompts: HashMap::new(),
+                routing_answer_target: None,
+            }),
         }
     }
 
@@ -352,7 +403,7 @@ impl ClientRouter {
         &self,
         model: &ModelId,
     ) -> std::result::Result<&Arc<dyn RoutedLlmClient>, LlmClientError> {
-        match self.routing.as_ref() {
+        match &self.inner.routing {
             Routing::Single(client) => Ok(client),
             Routing::ByModel(by_model) => {
                 by_model
@@ -362,6 +413,24 @@ impl ClientRouter {
                     })
             }
         }
+    }
+
+    /// Prepare a completion candidate with its configured target prompt.
+    fn prepare_completion_request(&self, mut request: Request, target: &ModelId) -> Request {
+        let prompt = self.inner.target_prompts.get(target).map(String::as_str);
+        prepare_request_for_target(&mut request.llm_request, target, prompt);
+        request
+    }
+
+    /// Prepare a routing call, adding a target prompt only when it generates a candidate answer.
+    fn prepare_routing_request(&self, mut request: Request, target: &ModelId) -> Request {
+        let prompt = if self.inner.routing_answer_target.as_ref() == Some(target) {
+            self.inner.target_prompts.get(target).map(String::as_str)
+        } else {
+            None
+        };
+        prepare_request_for_target(&mut request.llm_request, target, prompt);
+        request
     }
 }
 
@@ -381,8 +450,8 @@ mod tests {
     use http::StatusCode;
     use switchyard_libsy::{Driver, RoutingOutcome};
     use switchyard_protocol::{
-        LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, completion_text, text_request,
-        text_response,
+        ContentBlock, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, completion_text,
+        text_request, text_response,
     };
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -449,6 +518,7 @@ mod tests {
 
     struct CandidateClient {
         calls: Mutex<Vec<ModelId>>,
+        requests: Mutex<Vec<Request>>,
         first: FirstOutcome,
     }
 
@@ -457,6 +527,7 @@ mod tests {
         async fn call(&self, request: Request) -> std::result::Result<Response, LlmClientError> {
             let model = request.model_id().unwrap_or_default();
             self.calls.lock().push(model.clone());
+            self.requests.lock().push(request);
             if model == "weak" {
                 return match self.first {
                     FirstOutcome::ContextWindow => Err(LlmClientError::ContextWindowExceeded {
@@ -516,11 +587,25 @@ mod tests {
         }
     }
 
+    fn instruction_text(request: &Request) -> Vec<&str> {
+        request
+            .llm_request
+            .instructions
+            .iter()
+            .flat_map(|instruction| &instruction.content)
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
     async fn run_candidates(
         first: FirstOutcome,
     ) -> (Arc<CandidateClient>, Result<(ModelId, Response)>) {
         let client = Arc::new(CandidateClient {
             calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
             first,
         });
         let algorithm = Arc::new(CandidateAlgorithm {
@@ -540,6 +625,7 @@ mod tests {
     async fn answered_outcome_does_not_make_a_second_model_call() -> Result<()> {
         let client = Arc::new(CandidateClient {
             calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
             first: FirstOutcome::StreamSuccess,
         });
         let observations = Arc::new(Mutex::new(Vec::new()));
@@ -566,6 +652,106 @@ mod tests {
             RunObservation::RoutingOverhead(_)
         ));
         assert_eq!(observations.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn each_fallback_candidate_receives_only_its_own_prompt() -> Result<()> {
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::ContextWindow,
+        });
+        let routed_client: Arc<dyn RoutedLlmClient> = client.clone();
+        let clients = ClientRouter::new_with_target_prompts(
+            HashMap::from([
+                (ModelId::from("weak"), Arc::clone(&routed_client)),
+                (ModelId::from("strong"), routed_client),
+            ]),
+            HashMap::from([
+                ("weak".into(), "weak prompt".to_string()),
+                ("strong".into(), "strong prompt".to_string()),
+            ]),
+            None,
+        );
+
+        run(
+            Arc::new(CandidateAlgorithm {
+                models: vec!["weak".into(), "strong".into()],
+            }),
+            clients,
+            request(),
+            None,
+        )
+        .await?;
+
+        let calls = client.requests.lock();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(instruction_text(&calls[0]), ["weak prompt"]);
+        assert_eq!(instruction_text(&calls[1]), ["strong prompt"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_prompts_a_routing_response_target() -> Result<()> {
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::StreamSuccess,
+        });
+        let routed_client: Arc<dyn RoutedLlmClient> = client.clone();
+        let clients = ClientRouter::new_with_target_prompts(
+            HashMap::from([(ModelId::from("answer"), routed_client)]),
+            HashMap::from([("answer".into(), "answer prompt".to_string())]),
+            Some("answer".into()),
+        );
+
+        decide(
+            Arc::new(AnsweredAlgorithm {
+                model: "answer".into(),
+            }),
+            clients,
+            request(),
+        )
+        .await?;
+
+        let calls = client.requests.lock();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(instruction_text(&calls[0]), ["answer prompt"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_prepares_only_the_selected_request() -> Result<()> {
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::StreamSuccess,
+        });
+        let routed_client: Arc<dyn RoutedLlmClient> = client;
+        let clients = ClientRouter::new_with_target_prompts(
+            HashMap::from([
+                (ModelId::from("weak"), Arc::clone(&routed_client)),
+                (ModelId::from("strong"), routed_client),
+            ]),
+            HashMap::from([
+                (ModelId::from("weak"), "weak prompt".to_string()),
+                (ModelId::from("strong"), "strong prompt".to_string()),
+            ]),
+            None,
+        );
+
+        let outcome = decide(
+            Arc::new(CandidateAlgorithm {
+                models: vec!["weak".into(), "strong".into()],
+            }),
+            clients,
+            request(),
+        )
+        .await?;
+
+        assert_eq!(outcome.fallback_models, [ModelId::from("strong")]);
+        assert_eq!(instruction_text(&outcome.request), ["weak prompt"]);
         Ok(())
     }
 

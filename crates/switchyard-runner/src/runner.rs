@@ -16,6 +16,7 @@ use crate::{ModelCapabilities, Route, RunnerError};
 /// Immutable named route table.
 pub struct Runner {
     routes: Vec<(ModelId, Route)>,
+    fallback_base_url: Option<String>,
 }
 
 /// Borrowed model metadata returned while listing routes.
@@ -57,7 +58,15 @@ impl Runner {
     /// Builds a runner from named routes in caller-provided order.
     /// Pre-condition: There must be at least one route.
     pub fn new(routes: Vec<(ModelId, Route)>) -> Self {
-        Self { routes }
+        Self {
+            routes,
+            fallback_base_url: None,
+        }
+    }
+
+    pub(crate) fn with_fallback_url(mut self, fallback_base_url: Option<String>) -> Self {
+        self.fallback_base_url = fallback_base_url;
+        self
     }
 
     /// Returns the route registered for a model.
@@ -75,6 +84,11 @@ impl Runner {
             algorithm: route.algorithm_name(),
             capabilities: route.capabilities(),
         })
+    }
+
+    /// Returns the validated API root used for unmatched HTTP requests.
+    pub fn fallback_base_url(&self) -> Option<&str> {
+        self.fallback_base_url.as_deref()
     }
 
     /// Resolves an outcome to configured target names and non-secret client settings.

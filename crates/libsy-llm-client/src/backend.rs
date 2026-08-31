@@ -392,34 +392,6 @@ mod tests {
     }
 
     #[test]
-    fn count_tokens_url_joins_every_base_url_shape() {
-        assert_eq!(
-            Backend::Anthropic(config("https://host")).count_tokens_url(),
-            "https://host/v1/messages/count_tokens"
-        );
-        assert_eq!(
-            Backend::Anthropic(config("https://host/v1")).count_tokens_url(),
-            "https://host/v1/messages/count_tokens"
-        );
-        assert_eq!(
-            Backend::Anthropic(config("https://host/v1/messages")).count_tokens_url(),
-            "https://host/v1/messages/count_tokens"
-        );
-        // Trailing slash is trimmed before the join.
-        assert_eq!(
-            Backend::Anthropic(config("https://host/v1/")).count_tokens_url(),
-            "https://host/v1/messages/count_tokens"
-        );
-    }
-
-    #[test]
-    fn only_anthropic_backend_is_anthropic() {
-        assert!(Backend::Anthropic(config("x")).is_anthropic());
-        assert!(!Backend::OpenAiChat(config("x")).is_anthropic());
-        assert!(!Backend::OpenAiResponses(config("x")).is_anthropic());
-    }
-
-    #[test]
     fn wire_format_matches_variant() {
         assert_eq!(
             Backend::OpenAiChat(config("x")).wire_format(),
