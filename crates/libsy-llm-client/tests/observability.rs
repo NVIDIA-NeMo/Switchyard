@@ -34,9 +34,10 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    AffinityRouter, Algorithm, Classifier, ClassifyTrigger, Driver, LibsyError,
-    LlmClassifierConfig, LlmTaskClassifier, PickerMode, RoutingOutcome, StageRouter,
-    StageRouterConfig, Step, TaskClassifierConfig,
+    AffinityRouter, Algorithm, Classifier, ClassifierContractConfig, ClassifyTrigger,
+    DeescalationConfig, Driver, EscalationJudgeConfig, LibsyError, LlmClassifierConfig,
+    LlmTaskClassifier, PickerMode, RoutingOutcome, StageRouter, StageRouterConfig, Step,
+    TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::ModelId;
@@ -704,6 +705,90 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
     assert!(warnings[0].fields.get("message").is_some_and(|message| {
         message.contains("message-hash fallback with usable first-user text")
     }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn stateful_escalation_warns_once_without_a_session_id() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    let event_count = store.events().len();
+    let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+        judge_target: "warning-judge".into(),
+        efficient_target: "warning-efficient".into(),
+        capable_target: "warning-capable".into(),
+        contract: ClassifierContractConfig::default(),
+        config: EscalationJudgeConfig::default(),
+        max_output_tokens: 64,
+    })?) as Arc<dyn Algorithm>;
+    let client = Arc::new(JudgeClient {
+        judge_model: "warning-judge".into(),
+        outcome: JudgeOutcome::Reply(r#"{"escalate":false,"reason":"progressing"}"#),
+    }) as Arc<dyn RoutedLlmClient>;
+
+    for _ in 0..2 {
+        run(router.clone(), client.clone(), classifier_request()).await?;
+    }
+
+    let warnings = store.events()[event_count..]
+        .iter()
+        .filter(|event| {
+            event.target == "libsy"
+                && event.level == "WARN"
+                && event.fields.get("message").is_some_and(|message| {
+                    message.contains("stateful escalation has no session ID")
+                })
+        })
+        .count();
+    assert_eq!(warnings, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn deescalation_evidence_stays_pending_until_confirmed() -> switchyard_libsy::Result<()> {
+    let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+        judge_target: "evidence-judge".into(),
+        efficient_target: "evidence-efficient".into(),
+        capable_target: "evidence-capable".into(),
+        contract: ClassifierContractConfig::default(),
+        config: EscalationJudgeConfig {
+            confirmations: 1,
+            deescalation: Some(DeescalationConfig {
+                strong_min_calls: 1,
+                strong_max_calls: None,
+                confirmations: 2,
+                weak_cooldown_calls: 0,
+            }),
+            ..EscalationJudgeConfig::default()
+        },
+        max_output_tokens: 64,
+    })?) as Arc<dyn Algorithm>;
+    let client = |verdict| {
+        Arc::new(JudgeClient {
+            judge_model: "evidence-judge".into(),
+            outcome: JudgeOutcome::Reply(verdict),
+        }) as Arc<dyn RoutedLlmClient>
+    };
+    let request = request_with_metadata("evidence-session", "evidence-correlation");
+
+    run(
+        router.clone(),
+        client(r#"{"escalate":true,"reason":"stuck"}"#),
+        request.clone(),
+    )
+    .await?;
+    let outcome = switchyard_llm_client::decide(
+        router,
+        ClientRouter::single(client(r#"{"escalate":false,"reason":"recovered"}"#)),
+        request,
+    )
+    .await?;
+
+    assert_eq!(outcome.selected_model_id()?.as_str(), "evidence-capable");
+    assert_eq!(
+        outcome.metadata.and_then(|metadata| metadata.evidence),
+        Some(json!({"source": "escalation", "verdict": "pending"}))
+    );
     Ok(())
 }
 

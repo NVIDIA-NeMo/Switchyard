@@ -211,9 +211,14 @@ Escalation mode serves the weak target first and judges the completed turn. See
 | `strong_target` | Yes | — | Target used after the session latches. |
 | `weak_target` | Yes | — | Target served before the latch. |
 | `prompt` | No | packaged prompt | Replaces the trajectory-judge prompt. |
-| `escalation.confirmations` | No | `2` | Consecutive escalate verdicts required to latch. Above `1` needs a session ID. |
+| `escalation.confirmations` | No | `2` | Consecutive escalate verdicts required to latch. Above `1` needs a stable session ID. |
 | `escalation.recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
 | `escalation.window_message_chars` | No | `500` | Per-message cap inside that window. |
+| `escalation.deescalation` | No | unset | Enables phase-aware de-escalation. Requires a stable session ID. |
+| `escalation.deescalation.strong_min_calls` | With de-escalation | — | Strong-tier turns before release is allowed. Must be at least `1`. |
+| `escalation.deescalation.confirmations` | With de-escalation | — | Consecutive judge declines required to return to weak. Must be at least `1`. |
+| `escalation.deescalation.strong_max_calls` | No | unset | Hard limit on strong-tier turns before forced de-escalation. Must be at least `strong_min_calls`. |
+| `escalation.deescalation.weak_cooldown_calls` | No | `0` | Weak calls served without judging after a hard-limit return. |
 
 Existing configurations that contain `escalation` but omit `mode` remain valid.
 

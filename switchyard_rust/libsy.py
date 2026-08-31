@@ -15,6 +15,7 @@ _EXPORTS = frozenset(
         "Algorithm",
         "ContextWindowExceededError",
         "CustomClassifierConfig",
+        "DeescalationConfig",
         "EscalationClassifierConfig",
         "LibsyError",
         "LlmClassifierConfig",
@@ -79,6 +80,19 @@ if TYPE_CHECKING:
         ) -> None: ...
 
     @final
+    class DeescalationConfig:
+        """Configure when an escalated session may return to the efficient tier."""
+
+        def __init__(
+            self,
+            *,
+            strong_min_calls: int,
+            confirmations: int,
+            strong_max_calls: int | None = None,
+            weak_cooldown_calls: int = 0,
+        ) -> None: ...
+
+    @final
     class EscalationClassifierConfig:
         """Configure response-based escalation between two targets.
 
@@ -92,6 +106,7 @@ if TYPE_CHECKING:
             confirmations: int = 2,
             recent_turn_window: int = 28,
             window_message_chars: int = 500,
+            deescalation: DeescalationConfig | None = None,
             max_output_tokens: int = 4096,
             prompt: str | None = None,
             response_format_type: Literal["json_schema", "json_object"] = "json_schema",

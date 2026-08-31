@@ -30,7 +30,7 @@ pub use algorithms::util::affinity::{AffinityRouter, ClassifyTrigger};
 pub use algorithms::util::classifier_contract::{
     ClassifierContractConfig, ClassifierResponseFormat,
 };
-pub use algorithms::util::escalation::EscalationJudgeConfig;
+pub use algorithms::util::escalation::{DeescalationConfig, EscalationJudgeConfig};
 pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};

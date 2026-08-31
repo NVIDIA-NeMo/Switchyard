@@ -903,6 +903,12 @@ confidence_threshold = 0.5
         );
         runner_from_toml(&escalating)?;
 
+        let reversible = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { confirmations = 2, deescalation = { strong_min_calls = 3, confirmations = 2, strong_max_calls = 6, weak_cooldown_calls = 8 } }",
+        );
+        runner_from_toml(&reversible)?;
+
         // A setting that would starve the judge is rejected here rather than on the first
         // request, the same as any other unusable route configuration.
         let starved = VALID_CONFIG.replace(
@@ -910,6 +916,7 @@ confidence_threshold = 0.5
             "base_threshold = 0.5\nescalation = { confirmations = 0 }",
         );
         assert!(error_message(&starved).contains("confirmations must be at least 1"));
+
         Ok(())
     }
 
