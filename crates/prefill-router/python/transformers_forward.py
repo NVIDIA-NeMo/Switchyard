@@ -8,6 +8,100 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
+EXPECTED_FORMAT_VERSION = 1
+EXPECTED_ENCODER_VIEW = "task_prompt_only"
+EXPECTED_POOLING = "mean of independently standardized selected layers"
+EXPECTED_ACTIVATION = "ReLU"
+EXPECTED_ENSEMBLE_REDUCTION = "mean(sigmoid(logits))"
+
+
+def _expect_equal(name: str, actual: Any, expected: Any) -> None:
+    if actual != expected:
+        raise ValueError(f"unsupported checkpoint {name}: expected {expected!r}, got {actual!r}")
+
+
+def _validate_checkpoint_contract(checkpoint: dict[str, Any]) -> None:
+    _expect_equal("format_version", checkpoint["format_version"], EXPECTED_FORMAT_VERSION)
+
+    encoder = checkpoint["encoder"]
+    architecture = checkpoint["architecture"]
+    pipeline = checkpoint["feature_pipeline"]
+    _expect_equal("encoder view", encoder["view"], EXPECTED_ENCODER_VIEW)
+    _expect_equal("feature pooling", pipeline["pooling"], EXPECTED_POOLING)
+    _expect_equal("activation", architecture["activation"], EXPECTED_ACTIVATION)
+    _expect_equal(
+        "ensemble reduction",
+        architecture["ensemble_reduction"],
+        EXPECTED_ENSEMBLE_REDUCTION,
+    )
+
+
+def _select_dtype(torch: Any, device: str) -> Any:
+    if device == "cpu":
+        return torch.float32
+    if device == "mps":
+        return torch.float16
+    if torch.cuda.get_device_capability(device)[0] >= 8:
+        return torch.bfloat16
+    return torch.float16
+
+
+def _state_value(state: dict[str, Any], key: str) -> Any:
+    try:
+        return state[key]
+    except KeyError as exc:
+        raise ValueError(f"checkpoint model state is missing {key!r}") from exc
+
+
+def _linear_from_state(torch: Any, state: dict[str, Any], prefix: str) -> Any:
+    weight = _state_value(state, f"{prefix}.weight")
+    bias = _state_value(state, f"{prefix}.bias")
+    if len(weight.shape) != 2:
+        raise ValueError(
+            f"checkpoint {prefix}.weight has invalid shape: expected 2 dimensions, "
+            f"got {tuple(weight.shape)!r}"
+        )
+    output_features, input_features = weight.shape
+    if tuple(bias.shape) != (output_features,):
+        raise ValueError(
+            f"checkpoint {prefix}.bias has invalid shape: expected {(output_features,)!r}, "
+            f"got {tuple(bias.shape)!r}"
+        )
+    return torch.nn.Linear(input_features, output_features)
+
+
+def _build_router_member(torch: Any, state: dict[str, Any], output_count: int) -> Any:
+    class RouterMember(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.adapters = torch.nn.ModuleList(
+                [_linear_from_state(torch, state, f"adapters.{index}") for index in range(output_count)]
+            )
+            self.trunk = torch.nn.Sequential(
+                _linear_from_state(torch, state, "trunk.0"),
+                torch.nn.ReLU(),
+            )
+            self.heads = torch.nn.ModuleList(
+                [_linear_from_state(torch, state, f"heads.{index}") for index in range(output_count)]
+            )
+
+        def forward(self, features: Any) -> Any:
+            logits = []
+            for adapter, head in zip(self.adapters, self.heads, strict=True):
+                adapter_output = torch.nn.functional.relu(adapter(features))
+                logits.append(head(self.trunk(adapter_output)))
+            return torch.cat(logits, dim=1)
+
+    member = RouterMember()
+    try:
+        member.load_state_dict(state, strict=True)
+    except RuntimeError as exc:
+        raise ValueError(f"checkpoint model state does not match router head: {exc}") from exc
+    member.eval()
+    return member
+
 
 def _detect_device(torch: Any) -> str:
     if torch.cuda.is_available():
@@ -47,26 +141,13 @@ class TransformersForward:
         device: str | None = None,
         cache_dir: str | None = None,
     ) -> None:
-        import numpy as np
         import torch
 
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        if checkpoint["format_version"] != 1:
-            raise ValueError("unsupported checkpoint format_version")
+        _validate_checkpoint_contract(checkpoint)
 
         encoder = checkpoint["encoder"]
-        architecture = checkpoint["architecture"]
         pipeline = checkpoint["feature_pipeline"]
-        if encoder["view"] != "task_prompt_only":
-            raise ValueError("checkpoint encoder view must be task_prompt_only")
-        if pipeline["pooling"] != "mean of independently standardized selected layers":
-            raise ValueError("unsupported checkpoint feature pooling")
-        if architecture["activation"] != "ReLU":
-            raise ValueError("checkpoint activation must be ReLU")
-        if architecture["ensemble_reduction"] != "mean(sigmoid(logits))":
-            raise ValueError("unsupported checkpoint ensemble reduction")
-
-        self._numpy = np
         self._torch = torch
         self._model_path = str(encoder["name"])
         self._expected_layers = int(encoder["n_layers"])
@@ -83,25 +164,45 @@ class TransformersForward:
         self._scaler_scale = pipeline["scaler_scale"].numpy()
         self._pca_mean = pipeline["pca_mean"].numpy()
         self._pca_components = pipeline["pca_components"].numpy()
-        self._states = checkpoint["model_state_dicts"]
+        self._ensemble = [
+            _build_router_member(torch, state, len(self._models))
+            for state in checkpoint["model_state_dicts"]
+        ]
         self._cache_dir = cache_dir
         self._device_override = device
         self._model = None
         self._tokenizer = None
 
-        if not self._selected_layers or len(set(self._selected_layers)) != len(
-            self._selected_layers
-        ):
-            raise ValueError("checkpoint selected layers must be non-empty and unique")
-        if not self._models or not self._states:
-            raise ValueError("checkpoint must contain models and ensemble members")
-        if self._layer_mean.shape != self._layer_std.shape or self._layer_mean.shape != (
-            len(self._selected_layers),
-            self._hidden_dim,
-        ):
-            raise ValueError("checkpoint layer normalization shape is inconsistent")
-        if not bool(np.all(self._layer_std > 0)) or not bool(np.all(self._scaler_scale > 0)):
-            raise ValueError("checkpoint normalization scales must be positive")
+        self._validate_checkpoint_arrays()
+
+    def _validate_checkpoint_arrays(self) -> None:
+        if not self._selected_layers:
+            raise ValueError("checkpoint selected layers are invalid: expected non-empty, got []")
+        if len(set(self._selected_layers)) != len(self._selected_layers):
+            raise ValueError(
+                "checkpoint selected layers are invalid: expected unique values, "
+                f"got {self._selected_layers!r}"
+            )
+        if not self._models:
+            raise ValueError("checkpoint models are invalid: expected non-empty, got []")
+        if not self._ensemble:
+            raise ValueError("checkpoint ensemble is invalid: expected non-empty, got []")
+        expected_shape = (len(self._selected_layers), self._hidden_dim)
+        if self._layer_mean.shape != self._layer_std.shape:
+            raise ValueError(
+                "checkpoint layer normalization shape is inconsistent: "
+                f"expected layer_mean shape to equal layer_std shape, got "
+                f"{self._layer_mean.shape!r} and {self._layer_std.shape!r}"
+            )
+        if self._layer_mean.shape != expected_shape:
+            raise ValueError(
+                "checkpoint layer normalization shape is inconsistent: "
+                f"expected {expected_shape!r}, got {self._layer_mean.shape!r}"
+            )
+        if not bool(np.all(self._layer_std > 0)):
+            raise ValueError("checkpoint layer_std is invalid: expected all positive values")
+        if not bool(np.all(self._scaler_scale > 0)):
+            raise ValueError("checkpoint scaler_scale is invalid: expected all positive values")
 
     def metadata(self) -> tuple[str, int]:
         """Return the encoder and ordered output count consumed by Rust."""
@@ -115,15 +216,7 @@ class TransformersForward:
 
         torch = self._torch
         device = _resolve_device(torch, self._device_override)
-        dtype = (
-            torch.float32
-            if device == "cpu"
-            else torch.float16
-            if device == "mps"
-            else torch.bfloat16
-            if torch.cuda.get_device_capability(device)[0] >= 8
-            else torch.float16
-        )
+        dtype = _select_dtype(torch, device)
         model_kwargs: dict[str, Any] = {}
         if device == "cuda":
             model_kwargs["device_map"] = "auto"
@@ -151,7 +244,12 @@ class TransformersForward:
             model_config.num_hidden_layers != self._expected_layers
             or model_config.hidden_size != self._hidden_dim
         ):
-            raise ValueError("loaded encoder dimensions do not match checkpoint metadata")
+            expected = (self._expected_layers, self._hidden_dim)
+            actual = (model_config.num_hidden_layers, model_config.hidden_size)
+            raise ValueError(
+                "loaded encoder dimensions do not match checkpoint metadata: "
+                f"expected {expected!r}, got {actual!r}"
+            )
 
     def forward(self, prompts: list[str], batch_size: int, max_length: int) -> bytes:
         """Return a row-major F32 probability matrix for ordered prompts."""
@@ -169,7 +267,7 @@ class TransformersForward:
             )
             for prompt in prompts
         ]
-        predictions = []
+        predictions: list[np.ndarray] = []
         for start in range(0, len(formatted), batch_size):
             inputs = self._tokenizer(
                 formatted[start : start + batch_size],
@@ -203,16 +301,17 @@ class TransformersForward:
                 layers.append(pooled.cpu().numpy())
             predictions.append(self._predict(layers))
 
-        return self._numpy.ascontiguousarray(
-            self._numpy.concatenate(predictions, axis=0), dtype=self._numpy.float32
-        ).tobytes()
+        return np.ascontiguousarray(np.concatenate(predictions, axis=0), dtype=np.float32).tobytes()
 
-    def _predict(self, layers: list[Any]) -> Any:
-        np = self._numpy
+    def _predict(self, layers: list[np.ndarray]) -> np.ndarray:
         torch = self._torch
         stacked = np.stack(layers)
         if stacked.ndim != 3 or stacked.shape[0] != len(self._selected_layers):
-            raise ValueError("encoder returned invalid selected-layer features")
+            expected = (len(self._selected_layers), "batch", self._hidden_dim)
+            raise ValueError(
+                "encoder returned invalid selected-layer features: "
+                f"expected {expected!r}, got {stacked.shape!r}"
+            )
         standardized = (stacked - self._layer_mean[:, None, :]) / self._layer_std[:, None, :]
         pooled = standardized.mean(axis=0)
         scaled = (pooled - self._scaler_mean) / self._scaler_scale
@@ -225,31 +324,8 @@ class TransformersForward:
 
         members = []
         with torch.inference_mode():
-            for state in self._states:
-                logits = []
-                for index in range(len(self._models)):
-                    adapter = torch.nn.functional.relu(
-                        torch.nn.functional.linear(
-                            features,
-                            state[f"adapters.{index}.weight"],
-                            state[f"adapters.{index}.bias"],
-                        )
-                    )
-                    trunk = torch.nn.functional.relu(
-                        torch.nn.functional.linear(
-                            adapter,
-                            state["trunk.0.weight"],
-                            state["trunk.0.bias"],
-                        )
-                    )
-                    logits.append(
-                        torch.nn.functional.linear(
-                            trunk,
-                            state[f"heads.{index}.weight"],
-                            state[f"heads.{index}.bias"],
-                        )
-                    )
-                members.append(torch.sigmoid(torch.cat(logits, dim=1)))
+            for member in self._ensemble:
+                members.append(torch.sigmoid(member(features)))
         return torch.stack(members).mean(dim=0).contiguous().numpy()
 
     def unload(self) -> None:
