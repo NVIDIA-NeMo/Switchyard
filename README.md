@@ -21,7 +21,7 @@ algorithm you write yourself.
 - **Protocol Translation**: convert between OpenAI Chat, Anthropic Messages, and OpenAI Responses formats
 - **Multi-Backend Routing**: random routing, LLM-as-classifier routing, signal-driven stage-router, or your own algorithm
 - **Operational Metrics**: Prometheus metrics cover requests, errors, latency, tokens, and routing overhead
-- **NeMo Relay Plugin**: run random, classifier, escalation, or stage routing in Relay while Switchyard owns provider HTTP dispatch
+- **NeMo Relay Plugin**: run Switchyard-configured routes in NeMo Relay—including any routing algorithm supported by `switchyard-runner`—while Switchyard owns provider HTTP dispatch
 
 ## Maturity
 

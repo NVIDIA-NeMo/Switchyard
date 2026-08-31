@@ -12,7 +12,7 @@ algorithm construction, retry policy, and route validation.
 
 Build the platform bundle with the package script, then configure Relay to load
 the generated `relay-plugin.toml` manifest. The plugin requires NeMo Relay
-`>=0.8.0,<1.0`.
+`>=0.8.1,<0.9.0`.
 
 ## Configure Relay
 
