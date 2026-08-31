@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 580" width="920" height="580" role="img" aria-label="Accuracy versus total cost on Terminal-Bench 2.1. Switchyard routes reach 71 to 76 percent accuracy for 13 to 30 percent less than the Opus 4.8 baseline, while single fixed models stay below 56 percent.">
+<style>
+svg {
+  --sy: #2a78d6; --base: #eb6834; --ref: #898781;
+  --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: #ffffff;
+  font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  svg {
+    --sy: #3987e5; --base: #d95926; --ref: #898781;
+    --ink: #ffffff; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: #0d1117;
+  }
+}
+.t-ink { fill: var(--ink); }
+.t-ink2 { fill: var(--ink2); }
+.t-muted { fill: var(--muted); }
+.t-sy { fill: var(--sy); }
+.t-base { fill: var(--base); }
+.t-ref { fill: var(--ref); }
+.m-sy { fill: var(--sy); }
+.m-base { fill: var(--base); }
+.m-ref { fill: var(--ref); }
+.marker { stroke: var(--ring); stroke-width: 2; }
+.grid { stroke: var(--grid); stroke-width: 1; }
+.axis { stroke: var(--axis); stroke-width: 1; }
+.frontier {
+  fill: none; stroke: var(--sy); stroke-width: 2; stroke-opacity: 0.32;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.num { font-variant-numeric: tabular-nums; }
+</style>
+<text x="48" y="34" class="t-ink" font-size="21" font-weight="700">Accuracy vs. total cost</text>
+<text x="48" y="55" class="t-muted" font-size="12.5">Terminal-Bench 2.1  ·  Claude Code harness  ·  k=3 runs</text>
+<text x="48" y="77" class="t-sy" font-size="13" font-weight="650">Staged routing holds 95.7% of Opus accuracy at 30.5% lower cost</text>
+<line x1="74" y1="440.9" x2="890" y2="440.9" class="grid"/>
+<text x="62" y="444.9" class="t-muted num" font-size="11.5" text-anchor="end">40%</text>
+<line x1="74" y1="354.7" x2="890" y2="354.7" class="grid"/>
+<text x="62" y="358.7" class="t-muted num" font-size="11.5" text-anchor="end">50%</text>
+<line x1="74" y1="268.4" x2="890" y2="268.4" class="grid"/>
+<text x="62" y="272.4" class="t-muted num" font-size="11.5" text-anchor="end">60%</text>
+<line x1="74" y1="182.2" x2="890" y2="182.2" class="grid"/>
+<text x="62" y="186.2" class="t-muted num" font-size="11.5" text-anchor="end">70%</text>
+<line x1="74" y1="96.0" x2="890" y2="96.0" class="grid"/>
+<text x="62" y="100.0" class="t-muted num" font-size="11.5" text-anchor="end">80%</text>
+<line x1="74.0" y1="96" x2="74.0" y2="484" class="grid"/>
+<text x="74.0" y="506" class="t-muted num" font-size="11.5" text-anchor="middle">$0</text>
+<line x1="210.0" y1="96" x2="210.0" y2="484" class="grid"/>
+<text x="210.0" y="506" class="t-muted num" font-size="11.5" text-anchor="middle">$20</text>
+<line x1="346.0" y1="96" x2="346.0" y2="484" class="grid"/>
+<text x="346.0" y="506" class="t-muted num" font-size="11.5" text-anchor="middle">$40</text>
+<line x1="482.0" y1="96" x2="482.0" y2="484" class="grid"/>
+<text x="482.0" y="506" class="t-muted num" font-size="11.5" text-anchor="middle">$60</text>
+<line x1="618.0" y1="96" x2="618.0" y2="484" class="grid"/>
+<text x="618.0" y="506" class="t-muted num" font-size="11.5" text-anchor="middle">$80</text>
+<line x1="754.0" y1="96" x2="754.0" y2="484" class="grid"/>
+<text x="754.0" y="506" class="t-muted num" font-size="11.5" text-anchor="middle">$100</text>
+<line x1="890.0" y1="96" x2="890.0" y2="484" class="grid"/>
+<text x="890.0" y="506" class="t-muted num" font-size="11.5" text-anchor="middle">$120</text>
+<line x1="74" y1="484" x2="890" y2="484" class="axis"/>
+<line x1="74" y1="96" x2="74" y2="484" class="axis"/>
+<text x="482.0" y="529" class="t-muted" font-size="11.5" text-anchor="middle">Total cost across benchmark runs  ·  cheaper &#8592;</text>
+<text transform="translate(20,290.0) rotate(-90)" class="t-muted" font-size="11.5" text-anchor="middle">Overall accuracy  ·  better &#8594;</text>
+<polyline points="186.0,334.0 537.7,158.9 652.0,133.1 740.8,130.5" class="frontier"/>
+<circle cx="186.0" cy="334.0" r="5.5" class="m-ref marker"/>
+<circle cx="275.7" cy="449.5" r="5.5" class="m-ref marker"/>
+<circle cx="537.7" cy="158.9" r="7.5" class="m-sy marker"/>
+<circle cx="592.7" cy="304.7" r="5.5" class="m-ref marker"/>
+<circle cx="613.4" cy="171.9" r="7.5" class="m-sy marker"/>
+<circle cx="652.0" cy="133.1" r="7.5" class="m-sy marker"/>
+<circle cx="733.1" cy="365.9" r="5.5" class="m-ref marker"/>
+<circle cx="740.8" cy="130.5" r="7.5" class="m-base marker"/>
+<text x="186.0" y="320.0" class="t-ink2" font-size="12.5" font-weight="600" text-anchor="middle">GLM 5.2</text>
+<text x="275.7" y="435.5" class="t-ink2" font-size="12.5" font-weight="600" text-anchor="middle">Ultra 3</text>
+<text x="525.7" y="146.9" class="t-sy" font-size="12.5" font-weight="700" text-anchor="end">SY: Staged</text>
+<text x="525.7" y="162.9" class="t-ink2 num" font-size="11.5" text-anchor="end">72.7%  ·  $68.19</text>
+<text x="592.7" y="290.7" class="t-ink2" font-size="12.5" font-weight="600" text-anchor="middle">Kimi K2.6</text>
+<text x="613.4" y="205.9" class="t-sy" font-size="12.5" font-weight="700" text-anchor="middle">SY: Classifier</text>
+<text x="613.4" y="221.9" class="t-ink2 num" font-size="11.5" text-anchor="middle">71.2%  ·  $79.32</text>
+<text x="652.0" y="113.1" class="t-sy" font-size="12.5" font-weight="700" text-anchor="middle">SY: Escalation</text>
+<text x="652.0" y="129.1" class="t-ink2 num" font-size="11.5" text-anchor="middle">75.7%  ·  $85.00</text>
+<text x="733.1" y="387.9" class="t-ink2" font-size="12.5" font-weight="600" text-anchor="middle">DeepSeek V4 Pro</text>
+<text x="754.8" y="136.5" class="t-base" font-size="12.5" font-weight="700" text-anchor="start">Opus 4.8 baseline</text>
+<text x="754.8" y="152.5" class="t-ink2 num" font-size="11.5" text-anchor="start">76.0%  ·  $98.06</text>
+<circle cx="54" cy="550" r="5.5" class="m-sy"/>
+<text x="66" y="554" class="t-ink2" font-size="12">Switchyard route</text>
+<circle cx="186.4" cy="550" r="5.5" class="m-base"/>
+<text x="198.4" y="554" class="t-ink2" font-size="12">Opus 4.8 baseline</text>
+<circle cx="325.70000000000005" cy="550" r="5.5" class="m-ref"/>
+<text x="337.70000000000005" y="554" class="t-ink2" font-size="12">Single fixed model</text>
+<line x1="466.90000000000003" y1="550" x2="486.90000000000003" y2="550" class="frontier"/>
+<text x="492.90000000000003" y="554" class="t-ink2" font-size="12">cost&#8211;quality frontier</text>
+</svg>
