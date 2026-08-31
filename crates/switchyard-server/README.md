@@ -71,6 +71,10 @@ runs after wire-format decoding and can enforce host policy before mapping a pub
 internal route. `present_response` can adapt the final error envelope. All methods have defaults
 that preserve the standalone server behavior.
 
+Server-generated failures retain public [`ApiError`] metadata in response extensions. A host
+presenter can inspect its status, message, type, and stable code without buffering or parsing the
+response body.
+
 The embedding crate must declare `async-trait` as a direct dependency before implementing the
 hook trait:
 

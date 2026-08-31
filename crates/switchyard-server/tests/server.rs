@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, Request as HttpRequest, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
@@ -27,7 +27,7 @@ use switchyard_llm_client::{
 use switchyard_protocol::{Metadata, ModelId, Request as AlgorithmRequest, RoutedLlmClient};
 use switchyard_server::config::load_server_state;
 use switchyard_server::{
-    DEFAULT_MAX_REQUEST_BODY_BYTES, IngressHooks, ServerState, build_llm_router,
+    ApiError, DEFAULT_MAX_REQUEST_BODY_BYTES, IngressHooks, ServerState, build_llm_router,
     build_switchyard_router,
 };
 use tokio::net::TcpListener;
@@ -516,6 +516,20 @@ impl IngressHooks for TestIngressHooks {
         request.llm_request.model = Some(ROUTE_MODEL.to_string());
         Ok(ModelId::from(ROUTE_MODEL))
     }
+
+    fn present_response(
+        &self,
+        mut response: HttpResponse,
+        _wire_format: switchyard_protocol::WireFormat,
+    ) -> HttpResponse {
+        let error_code = response.extensions().get::<ApiError>().map(ApiError::code);
+        if let Some(error_code) = error_code {
+            response
+                .headers_mut()
+                .insert("x-test-error-code", HeaderValue::from_static(error_code));
+        }
+        response
+    }
 }
 
 // A prepare rejection must occur before malformed JSON is read and decoded.
@@ -608,6 +622,36 @@ async fn ingress_hook_can_reject_after_decode_before_route_execution() -> TestRe
 
     assert_eq!(response.status, StatusCode::FORBIDDEN);
     assert_eq!(resolved.load(Ordering::SeqCst), 1);
+    assert!(upstream.models().await.is_empty());
+    Ok(())
+}
+
+// A host presenter can inspect structured errors without reading or replacing the body.
+#[tokio::test]
+async fn ingress_hook_can_present_structured_server_errors() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
+        .with_ingress_hooks(Arc::new(TestIngressHooks {
+            prepared: Arc::new(AtomicUsize::new(0)),
+            resolved: Arc::new(AtomicUsize::new(0)),
+            reject: false,
+            reject_resolve: false,
+        }));
+    let app = build_llm_router(state);
+
+    let response = send_raw_json(
+        &app,
+        "/v1/chat/completions",
+        b"not-json".to_vec(),
+        Some("application/json"),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response.headers.get("x-test-error-code"),
+        Some(&HeaderValue::from_static("invalid_body"))
+    );
     assert!(upstream.models().await.is_empty());
     Ok(())
 }

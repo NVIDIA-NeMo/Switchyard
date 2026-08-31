@@ -1204,9 +1204,9 @@ fn upstream_error_message(body: &str) -> String {
         .unwrap_or_else(|| body.to_string())
 }
 
-// Error metadata retained until the client-facing endpoint selects an envelope.
+/// Structured server error retained until an ingress presenter selects an envelope.
 #[derive(Clone)]
-struct ApiError {
+pub struct ApiError {
     status: StatusCode,
     message: String,
     error_type: &'static str,
@@ -1214,7 +1214,8 @@ struct ApiError {
 }
 
 impl ApiError {
-    fn new(
+    /// Creates error metadata that can be rendered for any supported wire format.
+    pub fn new(
         status: StatusCode,
         message: impl Into<String>,
         error_type: &'static str,
@@ -1228,7 +1229,28 @@ impl ApiError {
         }
     }
 
-    fn into_response(self, wire_format: WireFormat) -> Response {
+    /// Returns the HTTP status associated with this error.
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    /// Returns the client-facing error message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Returns the OpenAI-compatible error type.
+    pub fn error_type(&self) -> &'static str {
+        self.error_type
+    }
+
+    /// Returns the stable machine-readable error code.
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// Renders this error and preserves its metadata for a later presenter.
+    pub fn into_response(self, wire_format: WireFormat) -> Response {
         let body = match wire_format {
             WireFormat::AnthropicMessages => json!({
                 "type": "error",
