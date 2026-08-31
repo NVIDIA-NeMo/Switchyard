@@ -111,12 +111,6 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
 }
 
 /// Holds `switchyard.algorithms_in_flight` up by one for as long as it lives.
-///
-/// The decrement is a `Drop` rather than a statement after the run's `.await`
-/// because a run task is aborted when its step stream is dropped (a disconnected
-/// client, a host timeout). A cancelled task never reaches code past the await,
-/// so an explicit decrement would strand the gauge above zero for the life of
-/// the process.
 struct InFlightRun {
     algorithm: String,
 }
@@ -137,9 +131,7 @@ impl Drop for InFlightRun {
 }
 
 /// Adds `delta` to the count of algorithm runs that have started and not yet
-/// finished. Unlike the run counter and duration histogram, which are recorded
-/// once a run resolves, this reads non-zero *during* a run — including one
-/// parked on a classifier or judge call that has not come back.
+/// finished.
 fn record_algorithms_in_flight(algorithm: &str, delta: i64) {
     meter()
         .i64_up_down_counter("switchyard.algorithms_in_flight")

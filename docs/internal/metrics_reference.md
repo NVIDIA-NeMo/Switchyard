@@ -65,26 +65,6 @@ Each histogram emits `_bucket`, `_sum`, and `_count` series. Use
 |---|---|---|
 | `switchyard_algorithms_in_flight{algorithm}` | gauge | Algorithm runs that have started and not yet finished. |
 
-Every other run metric is recorded when a run *resolves*, so none of them says
-anything while a request is still being worked on. This gauge is the exception:
-it rises when a run starts and falls when it ends, including when the run ends
-because the client disconnected or the host cancelled it. A run parked on an
-internal routing call — a classifier or escalation-judge request that has not
-come back — holds the gauge up for as long as it waits, which is what separates
-a stalled routing decision from client-side latency.
-
-Read it alongside the resolution metrics: a gauge that is high while
-`switchyard_runs_total` is flat means work is going in and not coming out.
-
-```promql
-# Runs currently in flight, by algorithm
-sum by (algorithm) (switchyard_algorithms_in_flight)
-
-# In-flight work that is not being retired: runs are open but none are completing
-sum by (algorithm) (switchyard_algorithms_in_flight) > 0
-  and sum by (algorithm) (rate(switchyard_runs_total[5m])) == 0
-```
-
 ## Classifier fail-open counter
 
 | Metric | Type | Meaning |
