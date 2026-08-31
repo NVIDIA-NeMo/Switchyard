@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, Request as HttpRequest, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
@@ -58,6 +58,12 @@ impl MockUpstream {
             )
             .route("/capture", post(upstream_redirect_capture))
             .route("/v1/messages/count_tokens", post(upstream_count_tokens))
+            .route(
+                "/v1/responses/input_tokens",
+                post(upstream_responses_auxiliary),
+            )
+            .route("/v1/responses/compact", post(upstream_responses_auxiliary))
+            .route("/future/provider/endpoint", post(upstream_fallback))
             .layer(DefaultBodyLimit::disable())
             .with_state(Arc::clone(&calls));
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -428,6 +434,51 @@ async fn upstream_count_tokens(
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
     Json(json!({"input_tokens": 7})).into_response()
+}
+
+async fn upstream_responses_auxiliary(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    uri: Uri,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(json!({
+        "path": uri.path(),
+        "body": body,
+        "configured_header": headers.get("x-configured-client").and_then(|value| value.to_str().ok())
+    }));
+    if uri.path().ends_with("/input_tokens") {
+        Json(json!({"input_tokens": 11})).into_response()
+    } else {
+        Json(json!({"id": "resp_compacted", "object": "response", "output": []})).into_response()
+    }
+}
+
+async fn upstream_fallback(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(json!({
+        "body": body,
+        "authorization": headers.get("authorization").and_then(|value| value.to_str().ok()),
+        "end_to_end": headers.get("x-end-to-end").and_then(|value| value.to_str().ok()),
+        "configured_secret": headers.contains_key("x-configured-secret"),
+        "connection": headers.contains_key("connection"),
+        "connection_nominated": headers.contains_key("x-remove-me")
+    }));
+    let mut response = Json(json!({"input_tokens": 7})).into_response();
+    response
+        .headers_mut()
+        .insert("connection", HeaderValue::from_static("x-upstream-hop"));
+    response
+        .headers_mut()
+        .insert("x-upstream-hop", HeaderValue::from_static("remove"));
+    response.headers_mut().insert(
+        "x-end-to-end-response",
+        HeaderValue::from_static("preserve"),
+    );
+    response
 }
 
 fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<ServerState> {
@@ -1713,7 +1764,7 @@ response_format_type = "json_object"
 }
 
 #[tokio::test]
-async fn count_tokens_forwards_to_configured_anthropic_target() -> TestResult {
+async fn model_bearing_auxiliary_endpoints_use_configured_route_targets() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
         r#"
@@ -1722,6 +1773,15 @@ schema_version = 1
 [llm_clients.claude]
 format = "anthropic_messages"
 base_url = "{base_url}"
+
+[llm_clients.responses]
+format = "openai_responses"
+base_url = "{base_url}"
+extra_headers = {{ "x-configured-client" = "responses" }}
+
+[targets.responses]
+id = "real/responses-model"
+llm_client = "responses"
 
 [targets.strong]
 id = "real/opus"
@@ -1734,13 +1794,13 @@ llm_client = "claude"
 [routes.random]
 id = "switchyard/random"
 type = "random"
-targets = ["other", "strong"]
+targets = ["responses", "other", "strong"]
 "#,
         base_url = upstream.base_url
     ))?;
     let app = build_switchyard_router(state);
 
-    let response = send(
+    let count_tokens = send(
         &app,
         "POST",
         "/v1/messages/count_tokens",
@@ -1750,13 +1810,151 @@ targets = ["other", "strong"]
         })),
     )
     .await?;
-    assert_eq!(response.status, StatusCode::OK);
-    assert_eq!(response.json()?["input_tokens"], 7);
+    assert_eq!(count_tokens.status, StatusCode::OK);
+    assert_eq!(count_tokens.json()?["input_tokens"], 7);
+
+    let input_tokens = send(
+        &app,
+        "POST",
+        "/v1/responses/input_tokens",
+        Some(json!({"model": "switchyard/random", "input": "count me"})),
+    )
+    .await?;
+    assert_eq!(input_tokens.status, StatusCode::OK);
+    assert_eq!(input_tokens.json()?["input_tokens"], 11);
+
+    let compact = send(
+        &app,
+        "POST",
+        "/v1/responses/compact",
+        Some(json!({"model": "switchyard/random", "input": "compact me"})),
+    )
+    .await?;
+    assert_eq!(compact.status, StatusCode::OK);
+    assert_eq!(compact.json()?["id"], "resp_compacted");
 
     let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 1);
-    // The inbound route name is rewritten to the real upstream model.
+    assert_eq!(calls.len(), 3);
     assert_eq!(calls[0]["model"], "real/opus");
+    assert_eq!(
+        calls[1],
+        json!({
+            "path": "/v1/responses/input_tokens",
+            "body": {"model": "real/responses-model", "input": "count me"},
+            "configured_header": "responses"
+        })
+    );
+    assert_eq!(
+        calls[2],
+        json!({
+            "path": "/v1/responses/compact",
+            "body": {"model": "real/responses-model", "input": "compact me"},
+            "configured_header": "responses"
+        })
+    );
+    drop(calls);
+
+    let unsupported = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/weak"])])?;
+    let unsupported = build_switchyard_router(unsupported);
+    for (path, body) in [
+        (
+            "/v1/messages/count_tokens",
+            json!({"model": ROUTE_MODEL, "messages": [{"role": "user", "content": "hi"}]}),
+        ),
+        (
+            "/v1/responses/input_tokens",
+            json!({"model": ROUTE_MODEL, "input": "count me"}),
+        ),
+        (
+            "/v1/responses/compact",
+            json!({"model": ROUTE_MODEL, "input": "compact me"}),
+        ),
+    ] {
+        let response = send(&unsupported, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{path}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fallback_client_forwards_unmatched_requests_and_is_optional() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+fallback_client = "fallback"
+
+[llm_clients.fallback]
+format = "openai_responses"
+base_url = "{base_url}"
+extra_headers = {{ "x-configured-secret" = "must-not-forward" }}
+
+[llm_clients.routed]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "routed"
+
+[routes.random]
+id = "switchyard/random"
+type = "passthrough"
+target = "weak"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/future/provider/endpoint?mode=raw",
+        Some(json!({
+            "model": "provider/model",
+            "provider_field": {"nested": true}
+        })),
+        &[
+            ("authorization", "Bearer caller-key"),
+            ("connection", "keep-alive, x-remove-me"),
+            ("keep-alive", "timeout=5"),
+            ("x-remove-me", "remove"),
+            ("x-end-to-end", "preserve"),
+        ],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["input_tokens"], 7);
+    assert!(!response.headers.contains_key("connection"));
+    assert!(!response.headers.contains_key("x-upstream-hop"));
+    assert_eq!(
+        response
+            .headers
+            .get("x-end-to-end-response")
+            .and_then(|value| value.to_str().ok()),
+        Some("preserve")
+    );
+    let calls = upstream.calls.lock().await;
+    assert_eq!(
+        calls.as_slice(),
+        &[json!({
+            "body": {
+                "model": "provider/model",
+                "provider_field": {"nested": true}
+            },
+            "authorization": "Bearer caller-key",
+            "end_to_end": "preserve",
+            "configured_secret": false,
+            "connection": false,
+            "connection_nominated": false
+        })]
+    );
+    drop(calls);
+
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/weak"])])?;
+    let app = build_switchyard_router(state);
+    let response = send(&app, "POST", "/future/provider/endpoint", None).await?;
+    assert_eq!(response.status, StatusCode::NOT_FOUND);
     Ok(())
 }
 
@@ -1893,55 +2091,6 @@ target = "openai"
     assert!(error.contains("[REDACTED]"));
     assert!(!error.contains("codex-login-token"));
 
-    Ok(())
-}
-
-#[tokio::test]
-async fn count_tokens_without_anthropic_target_returns_bad_request() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let state = load_test_config(&format!(
-        r#"
-schema_version = 1
-
-[llm_clients.upstream]
-format = "openai_chat"
-base_url = "{base_url}"
-
-[targets.weak]
-id = "model/weak"
-llm_client = "upstream"
-
-[routes.random]
-id = "switchyard/random"
-type = "random"
-targets = ["weak"]
-"#,
-        base_url = upstream.base_url
-    ))?;
-    let app = build_switchyard_router(state);
-
-    let response = send(
-        &app,
-        "POST",
-        "/v1/messages/count_tokens",
-        Some(json!({
-            "model": "switchyard/random",
-            "messages": [{"role": "user", "content": "hi"}]
-        })),
-    )
-    .await?;
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
-    // This route has no Anthropic-format target.
-    assert_eq!(
-        response.json()?,
-        json!({
-            "type": "error",
-            "error": {
-                "type": "invalid_request_error",
-                "message": "route has no Anthropic target for token counting"
-            }
-        })
-    );
     Ok(())
 }
 
@@ -3072,55 +3221,6 @@ async fn advisor_route_routing_log_records_classifier_tier() -> TestResult {
     assert_eq!(consult["tier"], "classifier");
     assert_eq!(consult["session_id"], "session-1");
     assert_eq!(consult["prompt_tokens"], 40);
-    Ok(())
-}
-
-#[tokio::test]
-async fn advisor_route_count_tokens_uses_executor() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let state = load_test_config(&format!(
-        r#"
-schema_version = 1
-
-[llm_clients.claude]
-format = "anthropic_messages"
-base_url = "{base_url}"
-
-[targets.executor]
-id = "model/executor"
-llm_client = "claude"
-
-[targets.advisor]
-id = "model/advisor"
-llm_client = "claude"
-
-[routes.gated]
-id = "switchyard/advisor"
-type = "advisor"
-executor_target = "executor"
-advisor_target = "advisor"
-"#,
-        base_url = upstream.base_url
-    ))?;
-    let app = build_switchyard_router(state);
-
-    let response = send(
-        &app,
-        "POST",
-        "/v1/messages/count_tokens",
-        Some(json!({
-            "model": "switchyard/advisor",
-            "messages": [{"role": "user", "content": "hi"}]
-        })),
-    )
-    .await?;
-    assert_eq!(response.status, StatusCode::OK);
-    assert_eq!(response.json()?["input_tokens"], 7);
-    // The executor is the route's only completion target, so it backs
-    // count_tokens; the judge-only advisor never does.
-    let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["model"], "model/executor");
     Ok(())
 }
 

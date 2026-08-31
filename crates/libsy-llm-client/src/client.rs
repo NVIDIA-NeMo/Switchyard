@@ -82,6 +82,34 @@ impl ModelConfig {
     }
 }
 
+/// A model-bearing provider operation outside the normal completion endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuxiliaryOperation {
+    /// Anthropic Messages input-token counting.
+    AnthropicCountTokens,
+    /// OpenAI Responses input-token counting.
+    ResponsesInputTokens,
+    /// OpenAI Responses compaction.
+    ResponsesCompact,
+}
+
+impl AuxiliaryOperation {
+    const fn wire_format(self) -> WireFormat {
+        match self {
+            Self::AnthropicCountTokens => WireFormat::AnthropicMessages,
+            Self::ResponsesInputTokens | Self::ResponsesCompact => WireFormat::OpenAiResponses,
+        }
+    }
+
+    fn url(self, backend: &Backend) -> String {
+        match self {
+            Self::AnthropicCountTokens => backend.count_tokens_url(),
+            Self::ResponsesInputTokens => format!("{}/input_tokens", backend.url()),
+            Self::ResponsesCompact => format!("{}/compact", backend.url()),
+        }
+    }
+}
+
 /// A client that dispatches neutral-IR requests to per-model HTTP backends.
 ///
 /// Construct it with a list of [`ModelConfig`]s — one per model, each naming a
@@ -146,22 +174,27 @@ impl TranslatingLlmClient {
         })
     }
 
-    /// Whether `model` has an Anthropic backend that supports token counting.
-    pub fn supports_count_tokens(&self, model: &ModelId) -> bool {
-        self.backend_for(model, WireFormat::AnthropicMessages)
-            .is_some()
+    /// Whether `model` has a backend for `operation`.
+    pub fn supports_auxiliary(&self, model: &ModelId, operation: AuxiliaryOperation) -> bool {
+        self.backend_for(model, operation.wire_format()).is_some()
     }
 
-    /// Counts input tokens with `model`'s Anthropic backend.
+    /// Calls a model-bearing auxiliary provider operation.
     ///
-    /// Returns an error when the model has no Anthropic backend or the upstream
+    /// Returns an error when the model has no compatible backend or the upstream
     /// request fails or returns invalid JSON.
-    pub async fn count_tokens(&self, model: &ModelId, request: Request) -> Result<Value> {
-        let backend = self
-            .backend_for(model, WireFormat::AnthropicMessages)
-            .ok_or_else(|| LlmClientError::Configuration {
-                message: format!("model {model} has no Anthropic backend for count_tokens"),
-            })?;
+    pub async fn call_auxiliary(
+        &self,
+        model: &ModelId,
+        request: Request,
+        operation: AuxiliaryOperation,
+    ) -> Result<Value> {
+        let wire_format = operation.wire_format();
+        let backend =
+            self.backend_for(model, wire_format)
+                .ok_or_else(|| LlmClientError::Configuration {
+                    message: format!("model {model} has no backend for {operation:?}"),
+                })?;
         let Request {
             mut llm_request,
             metadata,
@@ -171,20 +204,17 @@ impl TranslatingLlmClient {
         let http_response = self
             .send_encoded(
                 backend,
-                WireFormat::AnthropicMessages,
+                wire_format,
                 llm_request,
                 metadata.as_ref(),
                 model,
-                UpstreamEndpoint::CountTokens,
+                UpstreamEndpoint::Auxiliary(operation),
             )
             .await?;
-        let body = match http_response {
-            EncodedResponse::Buffered { body, .. } => body,
-            EncodedResponse::Streaming(_) => {
-                return Err(LlmClientError::InvalidRequest {
-                    message: "count_tokens does not support streaming requests".to_string(),
-                });
-            }
+        let EncodedResponse::Buffered { body, .. } = http_response else {
+            return Err(LlmClientError::InvalidRequest {
+                message: "auxiliary endpoints do not support streaming".to_string(),
+            });
         };
         serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
             source: Box::new(error),
@@ -200,8 +230,7 @@ impl TranslatingLlmClient {
     /// overflow via the backend's provider rules. Shared by
     /// [`call_rewrite_model`](Self::call_rewrite_model) (which POSTs to the
     /// backend's completion URL and decodes a response) and
-    /// [`count_tokens`](Self::count_tokens) (which POSTs to the `count_tokens`
-    /// URL and returns the raw JSON).
+    /// the model-bearing auxiliary operations, which return raw JSON.
     async fn send_encoded(
         &self,
         backend: &Backend,
@@ -562,14 +591,14 @@ impl RoutedLlmClient for TranslatingLlmClient {
 #[derive(Clone, Copy)]
 enum UpstreamEndpoint {
     Completion,
-    CountTokens,
+    Auxiliary(AuxiliaryOperation),
 }
 
 impl UpstreamEndpoint {
     fn url(self, backend: &Backend) -> String {
         match self {
             UpstreamEndpoint::Completion => backend.url(),
-            UpstreamEndpoint::CountTokens => backend.count_tokens_url(),
+            UpstreamEndpoint::Auxiliary(operation) => operation.url(backend),
         }
     }
 

@@ -32,6 +32,7 @@ opentelemetry-prometheus = "0.32"
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 parking_lot.workspace = true
 prometheus = "0.14"
+reqwest.workspace = true
 serde.workspace = true
 switchyard-llm-client.workspace = true
 switchyard-protocol.workspace = true
