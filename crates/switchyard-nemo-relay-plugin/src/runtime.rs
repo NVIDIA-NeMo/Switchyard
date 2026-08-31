@@ -714,6 +714,7 @@ mod tests {
             None,
             ModelCapabilities::default(),
             None,
+            None,
             Vec::new(),
         );
         SwitchyardRuntime {
