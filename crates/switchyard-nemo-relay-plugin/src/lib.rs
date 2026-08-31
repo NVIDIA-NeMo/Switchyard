@@ -8,8 +8,7 @@ mod translation;
 use std::sync::Arc;
 
 use nemo_relay_plugin::{
-    ConfigDiagnostic, DiagnosticLevel, Json, LlmJsonAsyncStream, NativePlugin, PluginContext,
-    PluginRuntime,
+    ConfigDiagnostic, DiagnosticLevel, Json, NativePlugin, PluginContext, PluginRuntime,
 };
 use serde_json::Map;
 
@@ -113,9 +112,7 @@ fn register_stream(
                     )
                     .await;
                 emit_events(&plugin_runtime, execution.events);
-                execution
-                    .result
-                    .map(|stream| Box::pin(stream) as LlmJsonAsyncStream)
+                execution.result
             }
         },
     )
