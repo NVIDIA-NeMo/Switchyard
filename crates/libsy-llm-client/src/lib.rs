@@ -30,7 +30,7 @@ pub use client::{ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
 pub use observation::{LlmCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
-pub use run::{ClientRouter, run};
+pub use run::{ClientRouter, decide, run};
 pub use switchyard_translation::RawEventStream;
 
 /// Registers process-wide compatibility gauges with the global meter provider.
