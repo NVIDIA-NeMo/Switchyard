@@ -564,10 +564,21 @@ async fn proxy_unmatched(State(state): State<ServerState>, request: HttpRequest)
         .map_or_else(|| parts.uri.path().to_string(), ToString::to_string);
     strip_hop_by_hop_headers(&mut parts.headers);
     parts.headers.remove(axum::http::header::HOST);
+    let url = match fallback_url(base_url, &path_and_query) {
+        Ok(url) => url,
+        Err(error) => {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                error,
+                "upstream_error",
+                "upstream_error",
+            );
+        }
+    };
     let body = reqwest::Body::wrap_stream(body.into_data_stream());
     match state
         .fallback_http
-        .request(parts.method, fallback_url(base_url, &path_and_query))
+        .request(parts.method, url)
         .headers(parts.headers)
         .body(body)
         .send()
@@ -588,18 +599,44 @@ async fn proxy_unmatched(State(state): State<ServerState>, request: HttpRequest)
     }
 }
 
-fn fallback_url(base_url: &str, path_and_query: &str) -> String {
-    let base_url = base_url.trim_end_matches('/');
-    let root = [
+fn fallback_url(base_url: &str, path_and_query: &str) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(base_url.trim())
+        .map_err(|error| format!("invalid fallback base URL: {error}"))?;
+    let base_query = url.query().map(str::to_owned);
+    url.set_query(None);
+    url.set_fragment(None);
+
+    let base_path = url.path().trim_end_matches('/');
+    let root_path = [
         "/v1/chat/completions",
         "/v1/responses",
         "/v1/messages",
         "/v1",
     ]
     .iter()
-    .find_map(|suffix| base_url.strip_suffix(suffix))
-    .unwrap_or(base_url);
-    format!("{root}{path_and_query}")
+    .find_map(|suffix| base_path.strip_suffix(suffix))
+    .unwrap_or(base_path);
+    let (request_path, request_query) = path_and_query
+        .split_once('?')
+        .map_or((path_and_query, None), |(path, query)| (path, Some(query)));
+    let request_path = request_path.strip_prefix('/').unwrap_or(request_path);
+    let target_path = if root_path.is_empty() {
+        format!("/{request_path}")
+    } else if request_path.is_empty() {
+        format!("{root_path}/")
+    } else {
+        format!("{root_path}/{request_path}")
+    };
+    url.set_path(&target_path);
+
+    let query = match (base_query, request_query) {
+        (Some(base_query), Some(request_query)) => Some(format!("{base_query}&{request_query}")),
+        (Some(base_query), None) => Some(base_query),
+        (None, Some(request_query)) => Some(request_query.to_owned()),
+        (None, None) => None,
+    };
+    url.set_query(query.as_deref());
+    Ok(url)
 }
 
 fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
