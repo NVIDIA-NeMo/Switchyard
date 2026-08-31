@@ -169,9 +169,16 @@ pub trait IngressHooks: Send + Sync {
 
     /// Presents the final HTTP response after routing or rejection.
     ///
+    /// `request_metadata` includes trusted changes made by `prepare` and
+    /// `resolve_model`, allowing request-scoped headers without global state.
     /// The default converts Switchyard's error envelope to the caller's wire format
     /// and leaves successful responses unchanged.
-    fn present_response(&self, response: Response, wire_format: WireFormat) -> Response {
+    fn present_response(
+        &self,
+        response: Response,
+        wire_format: WireFormat,
+        _request_metadata: &Metadata,
+    ) -> Response {
         render_error_response(response, wire_format)
     }
 }
@@ -754,7 +761,7 @@ async fn handle_endpoint_inner(
             session_id: metadata.session_id.clone(),
             correlation_id: metadata.correlation_id.clone(),
         }));
-        let response = ingress_hooks.present_response(response, wire_format);
+        let response = ingress_hooks.present_response(response, wire_format, &metadata);
         metrics::record_client_response(response.status().as_u16());
         request_log.emit(&response);
         return response;
@@ -794,7 +801,7 @@ async fn handle_endpoint_inner(
             handle_llm_request(
                 state,
                 started,
-                metadata,
+                &mut metadata,
                 body,
                 wire_format,
                 routing_log_context,
@@ -803,7 +810,7 @@ async fn handle_endpoint_inner(
         }
         Err((status, message)) => invalid_body_error(status, message),
     };
-    let response = ingress_hooks.present_response(response, wire_format);
+    let response = ingress_hooks.present_response(response, wire_format, &metadata);
     metrics::record_client_response(response.status().as_u16());
     request_log.emit(&response);
     response
@@ -844,17 +851,21 @@ fn resolve_route(
 }
 
 #[allow(clippy::type_complexity, clippy::result_large_err)]
-async fn resolve_route_with_hooks(
-    state: &ServerState,
-    metadata: Metadata,
+async fn resolve_route_with_hooks<'state>(
+    state: &'state ServerState,
+    metadata: &mut Metadata,
     body: Value,
     wire_format: WireFormat,
-) -> std::result::Result<(&Route, Request), Response> {
-    let mut request = decode_route_request(metadata, body, wire_format)?;
+) -> std::result::Result<(&'state Route, Request), Response> {
+    let mut request = decode_route_request(metadata.clone(), body, wire_format)?;
     let route_model = state
         .ingress_hooks
         .resolve_model(&mut request, wire_format)
-        .await?;
+        .await;
+    if let Some(resolved_metadata) = request.metadata.as_ref() {
+        *metadata = resolved_metadata.clone();
+    }
+    let route_model = route_model?;
     resolve_decoded_route(state, request, route_model, wire_format)
 }
 
@@ -932,7 +943,7 @@ fn request_model(request: &Request) -> std::result::Result<ModelId, Response> {
 async fn handle_llm_request(
     state: ServerState,
     started: RequestStart,
-    metadata: Metadata,
+    metadata: &mut Metadata,
     body: Value,
     wire_format: WireFormat,
     routing_log_context: Option<routing_log::RoutingLogContext>,

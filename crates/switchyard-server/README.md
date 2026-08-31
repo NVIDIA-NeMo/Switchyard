@@ -68,8 +68,9 @@ Rust hosts can install [`IngressHooks`] on [`ServerState`] and use [`build_llm_r
 only Chat Completions, Responses, and Messages. `prepare` runs before JSON body extraction, so a
 host can authenticate or reject without buffering an untrusted body. The async `resolve_model`
 runs after wire-format decoding and can enforce host policy before mapping a public model to an
-internal route. `present_response` can adapt the final error envelope. All methods have defaults
-that preserve the standalone server behavior.
+internal route. `present_response` receives the resolved request metadata and can adapt the final
+error envelope or add request-scoped headers. All methods have defaults that preserve the
+standalone server behavior.
 
 Server-generated failures retain public [`ApiError`] metadata in response extensions. A host
 presenter can inspect its status, message, type, and stable code without buffering or parsing the
@@ -113,6 +114,15 @@ impl IngressHooks for HostHooks {
         _wire_format: WireFormat,
     ) -> Result<ModelId, Response> {
         Ok(ModelId::from("internal/route"))
+    }
+
+    fn present_response(
+        &self,
+        response: Response,
+        _wire_format: WireFormat,
+        _request_metadata: &Metadata,
+    ) -> Response {
+        response
     }
 }
 

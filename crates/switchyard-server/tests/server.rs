@@ -488,6 +488,9 @@ struct TestIngressHooks {
     reject_resolve: bool,
 }
 
+#[derive(Clone)]
+struct ResolvedPresentationMarker;
+
 #[async_trait]
 impl IngressHooks for TestIngressHooks {
     async fn prepare(
@@ -510,6 +513,11 @@ impl IngressHooks for TestIngressHooks {
     ) -> Result<ModelId, HttpResponse> {
         tokio::task::yield_now().await;
         self.resolved.fetch_add(1, Ordering::SeqCst);
+        request
+            .metadata
+            .get_or_insert_default()
+            .typed_context
+            .insert(ResolvedPresentationMarker);
         if self.reject_resolve {
             return Err(StatusCode::FORBIDDEN.into_response());
         }
@@ -521,12 +529,23 @@ impl IngressHooks for TestIngressHooks {
         &self,
         mut response: HttpResponse,
         _wire_format: switchyard_protocol::WireFormat,
+        request_metadata: &Metadata,
     ) -> HttpResponse {
         let error_code = response.extensions().get::<ApiError>().map(ApiError::code);
         if let Some(error_code) = error_code {
             response
                 .headers_mut()
                 .insert("x-test-error-code", HeaderValue::from_static(error_code));
+        }
+        if request_metadata
+            .typed_context
+            .get::<ResolvedPresentationMarker>()
+            .is_some()
+        {
+            response.headers_mut().insert(
+                "x-test-resolved-context",
+                HeaderValue::from_static("present"),
+            );
         }
         response
     }
@@ -586,6 +605,10 @@ async fn ingress_hook_maps_public_model_and_llm_router_excludes_internal_endpoin
     .await?;
 
     assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.headers.get("x-test-resolved-context"),
+        Some(&HeaderValue::from_static("present"))
+    );
     assert_eq!(resolved.load(Ordering::SeqCst), 1);
     assert_eq!(upstream.models().await, vec!["model/a"]);
     assert_eq!(
