@@ -153,13 +153,13 @@ pub trait IngressHooks: Send + Sync {
         Ok(())
     }
 
-    /// Resolves the route model after wire-format decoding and before route lookup.
+    /// Resolves the route model asynchronously after wire-format decoding and before route lookup.
     ///
     /// The returned model replaces `request.llm_request.model` for route execution.
     /// Returning `Err(response)` stops route lookup and uses that response as the
     /// endpoint response, allowing a host to reject an already decoded request.
     #[allow(clippy::result_large_err)]
-    fn resolve_model(
+    async fn resolve_model(
         &self,
         request: &mut Request,
         _wire_format: WireFormat,
@@ -838,44 +838,48 @@ fn resolve_route(
     body: Value,
     wire_format: WireFormat,
 ) -> std::result::Result<(&Route, Request), Response> {
-    resolve_route_inner(state, metadata, body, wire_format, None)
+    let request = decode_route_request(metadata, body, wire_format)?;
+    let route_model = request_model(&request)?;
+    resolve_decoded_route(state, request, route_model, wire_format)
 }
 
 #[allow(clippy::type_complexity, clippy::result_large_err)]
-fn resolve_route_with_hooks(
+async fn resolve_route_with_hooks(
     state: &ServerState,
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
 ) -> std::result::Result<(&Route, Request), Response> {
-    resolve_route_inner(
-        state,
-        metadata,
-        body,
-        wire_format,
-        Some(state.ingress_hooks.as_ref()),
-    )
+    let mut request = decode_route_request(metadata, body, wire_format)?;
+    let route_model = state
+        .ingress_hooks
+        .resolve_model(&mut request, wire_format)
+        .await?;
+    resolve_decoded_route(state, request, route_model, wire_format)
 }
 
-#[allow(clippy::type_complexity, clippy::result_large_err)]
-fn resolve_route_inner<'state>(
-    state: &'state ServerState,
+#[allow(clippy::result_large_err)]
+fn decode_route_request(
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
-    hooks: Option<&dyn IngressHooks>,
-) -> std::result::Result<(&'state Route, Request), Response> {
+) -> std::result::Result<Request, Response> {
     let llm_request = decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
-    let mut request = Request {
+    Ok(Request {
         llm_request,
         raw_request: Some(body),
         metadata: Some(metadata),
-    };
-    let route_model = match hooks {
-        Some(hooks) => hooks.resolve_model(&mut request, wire_format)?,
-        None => request_model(&request)?,
-    };
+    })
+}
+
+#[allow(clippy::type_complexity, clippy::result_large_err)]
+fn resolve_decoded_route(
+    state: &ServerState,
+    mut request: Request,
+    route_model: ModelId,
+    wire_format: WireFormat,
+) -> std::result::Result<(&Route, Request), Response> {
     request.llm_request.model = Some(route_model.to_string());
     let route = state.route_for_model(route_model.as_str()).ok_or_else(|| {
         error_response(
@@ -934,7 +938,8 @@ async fn handle_llm_request(
     routing_log_context: Option<routing_log::RoutingLogContext>,
 ) -> Response {
     let cache_probe = state.track_cache_eligibility.then(|| prefix_probe(&body));
-    let (route, request) = match resolve_route_with_hooks(&state, metadata, body, wire_format) {
+    let (route, request) = match resolve_route_with_hooks(&state, metadata, body, wire_format).await
+    {
         Ok(resolved) => resolved,
         Err(response) => return response,
     };

@@ -66,9 +66,10 @@ Ctrl+C and Unix `SIGTERM` stop new connections and allow active requests to drai
 
 Rust hosts can install [`IngressHooks`] on [`ServerState`] and use [`build_llm_router`] to expose
 only Chat Completions, Responses, and Messages. `prepare` runs before JSON body extraction, so a
-host can authenticate or reject without buffering an untrusted body. `resolve_model` runs after
-wire-format decoding and can map a public model to an internal route. `present_response` can adapt
-the final error envelope. All methods have defaults that preserve the standalone server behavior.
+host can authenticate or reject without buffering an untrusted body. The async `resolve_model`
+runs after wire-format decoding and can enforce host policy before mapping a public model to an
+internal route. `present_response` can adapt the final error envelope. All methods have defaults
+that preserve the standalone server behavior.
 
 The embedding crate must declare `async-trait` as a direct dependency before implementing the
 hook trait:
@@ -102,7 +103,7 @@ impl IngressHooks for HostHooks {
         Ok(())
     }
 
-    fn resolve_model(
+    async fn resolve_model(
         &self,
         _request: &mut Request,
         _wire_format: WireFormat,

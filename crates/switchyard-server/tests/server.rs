@@ -483,7 +483,9 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
 
 struct TestIngressHooks {
     prepared: Arc<AtomicUsize>,
+    resolved: Arc<AtomicUsize>,
     reject: bool,
+    reject_resolve: bool,
 }
 
 #[async_trait]
@@ -501,11 +503,16 @@ impl IngressHooks for TestIngressHooks {
         Ok(())
     }
 
-    fn resolve_model(
+    async fn resolve_model(
         &self,
         request: &mut AlgorithmRequest,
         _wire_format: switchyard_protocol::WireFormat,
     ) -> Result<ModelId, HttpResponse> {
+        tokio::task::yield_now().await;
+        self.resolved.fetch_add(1, Ordering::SeqCst);
+        if self.reject_resolve {
+            return Err(StatusCode::FORBIDDEN.into_response());
+        }
         request.llm_request.model = Some(ROUTE_MODEL.to_string());
         Ok(ModelId::from(ROUTE_MODEL))
     }
@@ -519,7 +526,9 @@ async fn ingress_hook_can_reject_before_json_body_extraction() -> TestResult {
     let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
         .with_ingress_hooks(Arc::new(TestIngressHooks {
             prepared: Arc::clone(&prepared),
+            resolved: Arc::new(AtomicUsize::new(0)),
             reject: true,
+            reject_resolve: false,
         }));
     let app = build_llm_router(state);
 
@@ -541,10 +550,13 @@ async fn ingress_hook_can_reject_before_json_body_extraction() -> TestResult {
 #[tokio::test]
 async fn ingress_hook_maps_public_model_and_llm_router_excludes_internal_endpoints() -> TestResult {
     let upstream = MockUpstream::start().await?;
+    let resolved = Arc::new(AtomicUsize::new(0));
     let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
         .with_ingress_hooks(Arc::new(TestIngressHooks {
             prepared: Arc::new(AtomicUsize::new(0)),
+            resolved: Arc::clone(&resolved),
             reject: false,
+            reject_resolve: false,
         }));
     let app = build_llm_router(state);
 
@@ -560,11 +572,43 @@ async fn ingress_hook_maps_public_model_and_llm_router_excludes_internal_endpoin
     .await?;
 
     assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(resolved.load(Ordering::SeqCst), 1);
     assert_eq!(upstream.models().await, vec!["model/a"]);
     assert_eq!(
         send(&app, "GET", "/metrics", None).await?.status,
         StatusCode::NOT_FOUND
     );
+    Ok(())
+}
+
+// An asynchronous decoded-request rejection must finish before route execution.
+#[tokio::test]
+async fn ingress_hook_can_reject_after_decode_before_route_execution() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let resolved = Arc::new(AtomicUsize::new(0));
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
+        .with_ingress_hooks(Arc::new(TestIngressHooks {
+            prepared: Arc::new(AtomicUsize::new(0)),
+            resolved: Arc::clone(&resolved),
+            reject: false,
+            reject_resolve: true,
+        }));
+    let app = build_llm_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "public-model",
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
+    assert_eq!(resolved.load(Ordering::SeqCst), 1);
+    assert!(upstream.models().await.is_empty());
     Ok(())
 }
 
