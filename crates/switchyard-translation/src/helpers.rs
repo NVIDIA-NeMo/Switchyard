@@ -151,22 +151,17 @@ pub fn encode_stream_with_extensions(
                 stamp_streamed_response_model(value, target, served_model_for_events.as_deref());
                 crate::codex_namespaces::restore_qualified_tool_names(value, &origins);
             }
-            // A codec that errored emits the error event last and nothing after it, so the
-            // final value is the terminal frame.
-            let terminal = state.errored.then(|| encoded.pop()).flatten();
+            let terminal = encoded.pop();
             for value in encoded {
                 yield value;
             }
-            if state.errored {
-                Err(terminal.map_or_else(
-                    || {
-                        LlmClientError::ResponseTranslation(
-                            "stream ended on an in-band error without an error event".to_string(),
-                        )
-                        .into()
-                    },
-                    LlmStreamError::Stream,
-                ))?;
+            match (state.errored, terminal) {
+                (false, Some(value)) => yield value,
+                (true, Some(value)) => Err(LlmStreamError::Upstream(value))?,
+                (true, None) => Err(LlmStreamError::Client(LlmClientError::ResponseTranslation(
+                    "stream ended after an error without a terminal event".to_string(),
+                )))?,
+                _ => ()
             }
         }
         for mut value in codec.finish(&mut state) {
@@ -582,7 +577,7 @@ mod tests {
                 );
                 // The error rides the error channel, carrying the codec's own encoded event
                 // so the consumer can forward the upstream payload rather than rebuild it.
-                let [Err(LlmStreamError::Stream(event))] = errors.as_slice() else {
+                let [Err(LlmStreamError::Upstream(event))] = errors.as_slice() else {
                     panic!("{target:?}/{message:?}: expected one in-band error, got {errors:?}");
                 };
                 assert!(
@@ -642,7 +637,7 @@ mod tests {
 
         // The replayed provider event is the terminal frame, so it arrives verbatim on the
         // error channel and nothing follows it.
-        let [Err(LlmStreamError::Stream(event))] = events.as_slice() else {
+        let [Err(LlmStreamError::Upstream(event))] = events.as_slice() else {
             return Err(format!("expected one in-band error, got {events:?}").into());
         };
         assert_eq!(*event, json!({"type": "error", "message": "boom"}));
@@ -851,7 +846,7 @@ mod tests {
             block_on(encode_stream(chunks, WireFormat::OpenAiResponses, None)?.collect::<Vec<_>>());
 
         // `response.failed` stays a terminal error, replayed with its payload intact.
-        let [Err(LlmStreamError::Stream(event))] = replayed.as_slice() else {
+        let [Err(LlmStreamError::Upstream(event))] = replayed.as_slice() else {
             return Err(format!("expected one in-band error, got {replayed:?}").into());
         };
         assert_eq!(

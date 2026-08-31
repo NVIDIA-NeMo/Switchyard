@@ -33,7 +33,7 @@ pub(crate) fn frame_stream(
                 },
                 // The upstream's own error event, already in the target format: forward it
                 // verbatim so its code and type survive, rather than synthesizing one.
-                Err(LlmStreamError::Stream(value)) => {
+                Err(LlmStreamError::Upstream(value)) => {
                     failed = true;
                     frame_event(target_format, value.clone()).unwrap_or_else(|error| {
                         tracing::warn!(error = %error, "in-band error event could not be framed");
@@ -148,7 +148,7 @@ mod tests {
         });
         let body = chat_body(vec![
             Ok(json!({"id": "before"})),
-            Err(LlmStreamError::Stream(upstream_error)),
+            Err(LlmStreamError::Upstream(upstream_error)),
             Ok(json!({"id": "after"})),
         ])
         .await?;

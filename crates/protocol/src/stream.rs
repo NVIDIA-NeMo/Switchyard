@@ -28,9 +28,9 @@ const MID_STREAM_UPSTREAM_STATUS: StatusCode = StatusCode::BAD_GATEWAY;
 /// Why a translated event stream stopped early.
 #[derive(Debug, Error)]
 pub enum LlmStreamError {
-    /// An error the upstream sse error
+    /// An upstream sse error
     #[error("upstream stream error: {0}")]
-    Stream(Value),
+    Upstream(Value),
 
     /// The stream itself failed
     #[error(transparent)]
