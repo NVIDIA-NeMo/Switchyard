@@ -3,7 +3,7 @@
 
 use nemo_relay_plugin::LlmRequest as RelayRequest;
 use serde_json::Value as Json;
-use switchyard_protocol::{AggLlmResponse, LlmRequest, WireFormat};
+use switchyard_protocol::{AggLlmResponse, LlmRequest, ProviderExtensions, WireFormat};
 use switchyard_translation::{
     DeterministicIdPolicy, DiagnosticSeverity, LossyConversionPolicy, PreservationPolicy,
     TargetCapabilities, TranslationDiagnostic, TranslationEngine, TranslationPolicy,
@@ -26,9 +26,10 @@ pub(crate) fn encode_response(
     engine: &TranslationEngine,
     protocol: WireFormat,
     response: &AggLlmResponse,
+    request_extensions: &ProviderExtensions,
 ) -> Result<Json, String> {
     let output = engine
-        .encode_response(protocol, response, &policy())
+        .encode_response_with_extensions(protocol, response, request_extensions, &policy())
         .map_err(error)?;
     safe(&output.diagnostics)?;
     Ok(output.body)

@@ -12,10 +12,11 @@ use nemo_relay_plugin::{
 use serde_json::{Map, json};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
 use switchyard_protocol::{
-    LlmResponse, LlmResponseChunk, Metadata, Request, Response, Usage, WireFormat,
+    LlmResponse, LlmResponseChunk, Metadata, ProviderExtensions, Request, Response, Usage,
+    WireFormat,
 };
 use switchyard_runner::{Route, RouteErrorSummary, Runner, stream_error_summary};
-use switchyard_translation::{TranslationEngine, encode_stream};
+use switchyard_translation::{TranslationEngine, encode_stream_with_extensions};
 
 use crate::config::SwitchyardConfig;
 use crate::translation;
@@ -106,10 +107,16 @@ impl SwitchyardRuntime {
         inbound: WireFormat,
         request: Request,
     ) -> Execution<Json> {
+        let request_extensions = request.llm_request.extensions.clone();
         let Execution { result, mut events } = self.execute(inbound, request).await;
         let (result, finalization_failed) = match result {
             Ok(response) => {
-                let result = finalize_buffered_response(&self.translation, inbound, response);
+                let result = finalize_buffered_response(
+                    &self.translation,
+                    inbound,
+                    response,
+                    &request_extensions,
+                );
                 let failed = result.is_err();
                 (result, failed)
             }
@@ -127,6 +134,7 @@ impl SwitchyardRuntime {
         request: Request,
         emit_event: RoutingEventEmitter,
     ) -> Execution<ReturnedEventStream> {
+        let request_extensions = request.llm_request.extensions.clone();
         let Execution { result, mut events } = self.execute(inbound, request).await;
         let (result, finalization_failed) = match result {
             Ok(response) => {
@@ -137,7 +145,8 @@ impl SwitchyardRuntime {
                         RoutingEvent::Metric(_) => None,
                     })
                     .unwrap_or_else(|| Json::Object(Map::new()));
-                let result = returned_events(response, inbound, metadata, emit_event);
+                let result =
+                    returned_events(response, inbound, &request_extensions, metadata, emit_event);
                 let failed = result.is_err();
                 (result, failed)
             }
@@ -344,16 +353,18 @@ fn finalize_buffered_response(
     translation_engine: &TranslationEngine,
     inbound: WireFormat,
     response: Response,
+    request_extensions: &ProviderExtensions,
 ) -> Result<Json, String> {
     let LlmResponse::Agg(response) = response.llm_response else {
         return Err("Switchyard returned a stream for a buffered request".into());
     };
-    translation::encode_response(translation_engine, inbound, &response)
+    translation::encode_response(translation_engine, inbound, &response, request_extensions)
 }
 
 fn returned_events(
     response: Response,
     inbound: WireFormat,
+    request_extensions: &ProviderExtensions,
     metadata: Json,
     emit_event: RoutingEventEmitter,
 ) -> Result<ReturnedEventStream, String> {
@@ -405,7 +416,7 @@ fn returned_events(
         }
         item
     }));
-    let events = encode_stream(chunks, inbound, None)
+    let events = encode_stream_with_extensions(chunks, inbound, None, request_extensions)
         .map_err(|error| format!("Switchyard response stream setup failed: {error}"))?;
     Ok(Box::pin(events.map(|item| {
         item.map_err(|error| format!("Switchyard response stream failed: {error}"))
@@ -707,6 +718,29 @@ mod tests {
         .expect("cross-format runtime should load")
     }
 
+    fn namespaced_responses_request() -> RelayRequest {
+        RelayRequest {
+            headers: Map::new(),
+            content: json!({
+                "model": "switchyard/default",
+                "input": "Search the docs",
+                "tools": [{
+                    "type": "namespace",
+                    "name": "mcp__docs",
+                    "tools": [{
+                        "type": "function",
+                        "name": "search",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                            "required": ["query"],
+                        },
+                    }],
+                }],
+            }),
+        }
+    }
+
     #[test]
     fn only_configured_route_models_are_managed() {
         let runtime = runtime_for("switchyard");
@@ -780,6 +814,114 @@ mod tests {
             assert_eq!(response["object"], "response");
             assert_eq!(response["model"], "target/model");
         }
+    }
+
+    #[tokio::test]
+    async fn buffered_responses_restore_codex_tool_namespaces() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_partial_json(json!({"model": "target/model"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl_tool",
+                "object": "chat.completion",
+                "model": "target/model",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_search",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__docs__search",
+                                "arguments": "{\"query\":\"routing\"}",
+                            },
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let runtime = runtime_for_target("openai_chat", &format!("{}/v1", server.uri()));
+        let request = runtime
+            .decode_request(
+                WireFormat::OpenAiResponses,
+                namespaced_responses_request(),
+                false,
+            )
+            .expect("namespaced Responses request should decode");
+
+        let response = runtime
+            .execute_buffered(WireFormat::OpenAiResponses, request)
+            .await
+            .result
+            .expect("buffered target call should succeed");
+        let tool_call = response["output"]
+            .as_array()
+            .and_then(|output| output.iter().find(|item| item["type"] == "function_call"))
+            .expect("Responses output should contain a function call");
+        assert_eq!(tool_call["name"], "search");
+        assert_eq!(tool_call["namespace"], "mcp__docs");
+    }
+
+    #[tokio::test]
+    async fn streaming_responses_restore_codex_tool_namespaces() {
+        let server = MockServer::start().await;
+        let sse = concat!(
+            "data: {\"id\":\"chatcmpl_tool\",\"object\":\"chat.completion.chunk\",\"model\":\"target/model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_search\",\"type\":\"function\",\"function\":{\"name\":\"mcp__docs__search\",\"arguments\":\"{\\\"query\\\":\\\"routing\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl_tool\",\"object\":\"chat.completion.chunk\",\"model\":\"target/model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_partial_json(
+                json!({"model": "target/model", "stream": true}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let runtime = runtime_for_target("openai_chat", &format!("{}/v1", server.uri()));
+        let request = runtime
+            .decode_request(
+                WireFormat::OpenAiResponses,
+                namespaced_responses_request(),
+                true,
+            )
+            .expect("namespaced streaming Responses request should decode");
+
+        let stream = runtime
+            .execute_stream(WireFormat::OpenAiResponses, request, Arc::new(|_| {}))
+            .await
+            .result
+            .expect("streaming target call should succeed");
+        let events = stream
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("response stream should encode");
+
+        for event_type in ["response.output_item.added", "response.output_item.done"] {
+            let item = events
+                .iter()
+                .find(|event| event["type"] == event_type)
+                .map(|event| &event["item"])
+                .unwrap_or_else(|| panic!("stream produced no {event_type}"));
+            assert_eq!(item["name"], "search", "{event_type}");
+            assert_eq!(item["namespace"], "mcp__docs", "{event_type}");
+        }
+        let completed = events
+            .iter()
+            .find(|event| event["type"] == "response.completed")
+            .expect("stream produced no response.completed event");
+        assert_eq!(completed["response"]["output"][0]["name"], "search");
+        assert_eq!(completed["response"]["output"][0]["namespace"], "mcp__docs");
     }
 
     #[test]
@@ -1017,6 +1159,7 @@ mod tests {
         let mut stream = returned_events(
             response,
             WireFormat::OpenAiChat,
+            &ProviderExtensions::default(),
             json!({"session_id": "session"}),
             Arc::new(move |event| emitted.lock().unwrap().push(event)),
         )
@@ -1068,6 +1211,7 @@ mod tests {
         let stream = returned_events(
             response,
             WireFormat::OpenAiChat,
+            &ProviderExtensions::default(),
             json!({}),
             Arc::new(move |event| emitted.lock().unwrap().push(event)),
         )
@@ -1101,6 +1245,7 @@ mod tests {
         let stream = returned_events(
             response,
             WireFormat::OpenAiChat,
+            &ProviderExtensions::default(),
             json!({"session_id": "session"}),
             Arc::new(move |mark| emitted.lock().unwrap().push(mark)),
         )
