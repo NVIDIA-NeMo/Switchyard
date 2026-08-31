@@ -2766,6 +2766,12 @@ async fn chat_stream_error_does_not_emit_success_terminal_chunk() -> TestResult 
         !after_error.contains(r#""finish_reason":"stop""#),
         "a finish_reason=stop chunk followed an upstream stream error:\n{body}"
     );
+    // `[DONE]` is the Chat success sentinel: an SDK client stops there and keeps the
+    // truncated turn as a completed answer, so a failed stream must not emit it.
+    assert!(
+        !after_error.contains("[DONE]"),
+        "a [DONE] success sentinel followed an upstream stream error:\n{body}"
+    );
     Ok(())
 }
 

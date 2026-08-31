@@ -19,8 +19,8 @@ use crate::codecs::stream::encode_response_stream_event;
 use crate::sse;
 use crate::{
     AggLlmResponse, FormatId, LlmRequest, LlmResponseChunk, LlmResponseStream,
-    LlmResponseStreamEvent, Result, StreamCodecRegistry, StreamTranslationState, TranslationEngine,
-    TranslationPolicy, WireFormat,
+    LlmResponseStreamEvent, LlmStreamError, Result, StreamCodecRegistry, StreamTranslationState,
+    TranslationEngine, TranslationPolicy, WireFormat,
 };
 
 static DEFAULT_TRANSLATION_POLICY: LazyLock<TranslationPolicy> =
@@ -91,12 +91,8 @@ pub fn encode_aggregated_response_with_extensions(
 /// A stream of wire-format event objects in one format — the unframed body of an
 /// SSE response. The serving layer frames each `Value` (e.g. as an SSE
 /// `data:`/`event:` block).
-pub type RawEventStream = Pin<
-    Box<
-        dyn Stream<Item = std::result::Result<Value, Box<dyn std::error::Error + Send + Sync>>>
-            + Send,
-    >,
->;
+pub type RawEventStream =
+    Pin<Box<dyn Stream<Item = std::result::Result<Value, LlmStreamError>> + Send>>;
 
 /// Encodes a stream of IR chunks into a stream of target-format wire events.
 ///
@@ -148,20 +144,24 @@ pub fn encode_stream_with_extensions(
 
     let events = try_stream! {
         while let Some(item) = chunks.next().await {
-            let event = item?;
-            for mut value in
-                encode_response_stream_event(&mut state, codec.as_ref(), &target_format, event)
-            {
-                stamp_streamed_response_model(
-                    &mut value,
-                    target,
-                    served_model_for_events.as_deref(),
-                );
-                crate::codex_namespaces::restore_qualified_tool_names(&mut value, &origins);
+            let event = item.map_err(LlmStreamError::Client)?;
+            let mut encoded =
+                encode_response_stream_event(&mut state, codec.as_ref(), &target_format, event);
+            for value in &mut encoded {
+                stamp_streamed_response_model(value, target, served_model_for_events.as_deref());
+                crate::codex_namespaces::restore_qualified_tool_names(value, &origins);
+            }
+            let terminal = encoded.pop();
+            for value in encoded {
                 yield value;
             }
-            if state.errored {
-                return;
+            match (state.errored, terminal) {
+                (false, Some(value)) => yield value,
+                (true, Some(value)) => Err(LlmStreamError::Upstream(value))?,
+                (true, None) => Err(LlmStreamError::Client(LlmClientError::ResponseTranslation(
+                    "stream ended after an error without a terminal event".to_string(),
+                )))?,
+                _ => ()
             }
         }
         for mut value in codec.finish(&mut state) {
@@ -348,7 +348,7 @@ mod tests {
         decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
         encode_request, encode_stream, stamp_streamed_response_model,
     };
-    use crate::{LlmResponseStream, WireFormat};
+    use crate::{LlmResponseStream, LlmStreamError, WireFormat};
 
     // A boxed stream item error, matching the streamed IR contract.
     type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -438,7 +438,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         )
         .into_iter()
-        .collect::<Result<Vec<Value>, BoxError>>()?;
+        .collect::<Result<Vec<Value>, LlmStreamError>>()?;
 
         let content: String = events
             .iter()
@@ -481,7 +481,7 @@ mod tests {
             .collect::<Vec<_>>(),
         )
         .into_iter()
-        .collect::<Result<Vec<Value>, BoxError>>()?;
+        .collect::<Result<Vec<Value>, LlmStreamError>>()?;
 
         assert_eq!(events[0]["type"], "message_start");
         assert_eq!(events[0]["message"]["model"], "served/model");
@@ -510,7 +510,7 @@ mod tests {
             encode_stream(chunks, WireFormat::AnthropicMessages, None)?.collect::<Vec<_>>(),
         )
         .into_iter()
-        .collect::<Result<Vec<Value>, BoxError>>()?;
+        .collect::<Result<Vec<Value>, LlmStreamError>>()?;
 
         assert_eq!(events[0]["message"]["model"], "upstream/model");
         Ok(())
@@ -530,8 +530,9 @@ mod tests {
     }
 
     // An in-band error is terminal for every target format: the encoder emits the pre-error
-    // content and the error, then drops any later chunk. Production truncates the source before
-    // the encoder, so this contract is only observable by driving encode_stream directly.
+    // content, surfaces the error event through the error channel, and drops any later chunk.
+    // Production truncates the source before the encoder, so this contract is only observable
+    // by driving encode_stream directly.
     #[test]
     fn encode_stream_stops_after_an_in_band_error() -> Result<(), BoxError> {
         for message in [
@@ -561,24 +562,57 @@ mod tests {
                     .into()),
                 ])
                 .boxed();
-                let events = block_on(encode_stream(chunks, target, None)?.collect::<Vec<_>>())
-                    .into_iter()
-                    .collect::<Result<Vec<Value>, BoxError>>()?;
-                let body = serde_json::to_string(&events)?;
+                let results = block_on(encode_stream(chunks, target, None)?.collect::<Vec<_>>());
+                let (data, errors): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
+                let data = data.into_iter().flatten().collect::<Vec<Value>>();
+                let body = serde_json::to_string(&data)?;
+
                 assert!(
                     body.contains("before"),
                     "{target:?}: pre-error content missing:\n{body}"
                 );
                 assert!(
-                    body.contains("boom"),
-                    "{target:?}: error event missing:\n{body}"
-                );
-                assert!(
                     !body.contains("after"),
                     "{target:?}/{message:?}: content leaked after the error:\n{body}"
                 );
+                // The error rides the error channel, carrying the codec's own encoded event
+                // so the consumer can forward the upstream payload rather than rebuild it.
+                let [Err(LlmStreamError::Upstream(event))] = errors.as_slice() else {
+                    panic!("{target:?}/{message:?}: expected one in-band error, got {errors:?}");
+                };
+                assert!(
+                    serde_json::to_string(event)?.contains("boom"),
+                    "{target:?}: error event lost its message: {event}"
+                );
             }
         }
+        Ok(())
+    }
+
+    // A clean stop stays entirely on the data channel, so a consumer that appends a
+    // format-level success sentinel only does so for a turn that actually completed.
+    #[test]
+    fn encode_stream_keeps_a_normal_stop_off_the_error_channel() -> Result<(), BoxError> {
+        let chunks: LlmResponseStream = stream::iter(vec![
+            Ok(LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "hi".to_string(),
+            }
+            .into()),
+            Ok(LlmResponseChunk::MessageStop {
+                reason: Some("stop".to_string()),
+            }
+            .into()),
+        ])
+        .boxed();
+
+        let results =
+            block_on(encode_stream(chunks, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>());
+
+        assert!(
+            results.iter().all(Result::is_ok),
+            "a completed turn reported an error: {results:?}"
+        );
         Ok(())
     }
 
@@ -599,11 +633,14 @@ mod tests {
             .boxed();
 
         let events =
-            block_on(encode_stream(chunks, WireFormat::OpenAiResponses, None)?.collect::<Vec<_>>())
-                .into_iter()
-                .collect::<Result<Vec<Value>, BoxError>>()?;
+            block_on(encode_stream(chunks, WireFormat::OpenAiResponses, None)?.collect::<Vec<_>>());
 
-        assert_eq!(events, vec![json!({"type": "error", "message": "boom"})]);
+        // The replayed provider event is the terminal frame, so it arrives verbatim on the
+        // error channel and nothing follows it.
+        let [Err(LlmStreamError::Upstream(event))] = events.as_slice() else {
+            return Err(format!("expected one in-band error, got {events:?}").into());
+        };
+        assert_eq!(*event, json!({"type": "error", "message": "boom"}));
         Ok(())
     }
 
@@ -631,7 +668,7 @@ mod tests {
         let events =
             block_on(encode_stream(chunks, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>())
                 .into_iter()
-                .collect::<Result<Vec<Value>, BoxError>>()?;
+                .collect::<Result<Vec<Value>, LlmStreamError>>()?;
         let body = serde_json::to_string(&events)?;
         assert!(
             events
@@ -679,7 +716,7 @@ mod tests {
         let replayed =
             block_on(encode_stream(decoded, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>())
                 .into_iter()
-                .collect::<Result<Vec<Value>, BoxError>>()?;
+                .collect::<Result<Vec<Value>, LlmStreamError>>()?;
 
         assert_eq!(replayed, vec![provider_event]);
         Ok(())
@@ -806,16 +843,18 @@ mod tests {
         )
         .boxed();
         let replayed =
-            block_on(encode_stream(chunks, WireFormat::OpenAiResponses, None)?.collect::<Vec<_>>())
-                .into_iter()
-                .collect::<Result<Vec<Value>, BoxError>>()?;
+            block_on(encode_stream(chunks, WireFormat::OpenAiResponses, None)?.collect::<Vec<_>>());
 
+        // `response.failed` stays a terminal error, replayed with its payload intact.
+        let [Err(LlmStreamError::Upstream(event))] = replayed.as_slice() else {
+            return Err(format!("expected one in-band error, got {replayed:?}").into());
+        };
         assert_eq!(
-            replayed,
-            vec![json!({
+            *event,
+            json!({
                 "type": "response.failed",
                 "response": {"error": {"message": "upstream failed"}}
-            })]
+            })
         );
         Ok(())
     }
