@@ -75,10 +75,10 @@ impl SwitchyardRuntime {
     pub(crate) fn decode_request(
         &self,
         inbound: WireFormat,
-        request: &RelayRequest,
+        request: RelayRequest,
         streaming: bool,
     ) -> Result<Request, String> {
-        let mut llm_request = translation::decode_request(&self.translation, inbound, request)?;
+        let mut llm_request = translation::decode_request(&self.translation, inbound, &request)?;
         llm_request.stream = streaming;
         let headers = string_headers(&request.headers);
         let mut metadata = Metadata::from_headers(&headers);
@@ -95,7 +95,7 @@ impl SwitchyardRuntime {
         metadata.wire_format = Some(inbound);
         Ok(Request {
             llm_request,
-            raw_request: Some(request.content.clone()),
+            raw_request: Some(request.content),
             metadata: Some(metadata),
         })
     }

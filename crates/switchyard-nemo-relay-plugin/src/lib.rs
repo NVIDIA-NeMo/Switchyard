@@ -74,7 +74,7 @@ fn register_buffered(
                 if !request_model(&request).is_some_and(|model| runtime.manages_model(model)) {
                     return next.call(request).await;
                 }
-                let decoded = runtime.decode_request(inbound, &request, false)?;
+                let decoded = runtime.decode_request(inbound, request, false)?;
                 let execution = runtime.execute_buffered(inbound, decoded).await;
                 emit_events(&plugin_runtime, execution.events);
                 execution.result
@@ -102,7 +102,7 @@ fn register_stream(
                 if !request_model(&request).is_some_and(|model| runtime.manages_model(model)) {
                     return next.call(request).await;
                 }
-                let decoded = runtime.decode_request(inbound, &request, true)?;
+                let decoded = runtime.decode_request(inbound, request, true)?;
                 let stream_plugin_runtime = plugin_runtime.clone();
                 let execution = runtime
                     .execute_stream(
