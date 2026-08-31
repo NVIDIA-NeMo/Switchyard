@@ -94,7 +94,6 @@ impl SwitchyardRuntime {
             metadata.session_id = None;
         }
         metadata.http_headers = Some(headers);
-        metadata.wire_format = Some(inbound);
         Ok(Request {
             llm_request,
             raw_request: Some(request.content),
@@ -107,7 +106,7 @@ impl SwitchyardRuntime {
         inbound: WireFormat,
         request: Request,
     ) -> Execution<Json> {
-        let Execution { result, mut events } = self.execute(request).await;
+        let Execution { result, mut events } = self.execute(inbound, request).await;
         let (result, finalization_failed) = match result {
             Ok(response) => {
                 let result = finalize_buffered_response(&self.translation, inbound, response);
@@ -128,7 +127,7 @@ impl SwitchyardRuntime {
         request: Request,
         emit_event: RoutingEventEmitter,
     ) -> Execution<ReturnedEventStream> {
-        let Execution { result, mut events } = self.execute(request).await;
+        let Execution { result, mut events } = self.execute(inbound, request).await;
         let (result, finalization_failed) = match result {
             Ok(response) => {
                 let metadata = events
@@ -150,7 +149,7 @@ impl SwitchyardRuntime {
         Execution { result, events }
     }
 
-    async fn execute(&self, request: Request) -> Execution<Response> {
+    async fn execute(&self, inbound: WireFormat, request: Request) -> Execution<Response> {
         let Some(route) = self.route(&request) else {
             return Execution {
                 result: Err("Switchyard has no route for this request model".into()),
@@ -165,7 +164,7 @@ impl SwitchyardRuntime {
             severity: Some(LogSeverity::Info),
         })];
         events.push(request_metric(route.algorithm_name(), metadata.clone()));
-        if let Err(error) = route.check_caller_format(metadata_wire_format(&request)) {
+        if let Err(error) = route.check_caller_format(inbound) {
             self.error_mark(&mut events, "caller_format", None);
             return Execution {
                 result: Err(format!("Switchyard caller format is incompatible: {error}")),
@@ -339,14 +338,6 @@ fn take_observations(observations: &Mutex<Vec<RunObservation>>) -> Vec<RunObserv
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     )
-}
-
-fn metadata_wire_format(request: &Request) -> WireFormat {
-    request
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.wire_format)
-        .expect("decoded Relay requests always carry a wire format")
 }
 
 fn finalize_buffered_response(
@@ -662,6 +653,8 @@ mod tests {
     use switchyard_llm_client::ClientRouter;
     use switchyard_protocol::{LlmClientError, LlmResponseStreamEvent, ModelId, Usage};
     use switchyard_runner::{AlgorithmSpec, ModelCapabilities, RunnerError};
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
 
@@ -683,11 +676,110 @@ mod tests {
         }
     }
 
+    fn runtime_for_target(format: &str, base_url: &str) -> SwitchyardRuntime {
+        let deployment = json!({
+            "schema_version": 1,
+            "llm_clients": {
+                "target": {
+                    "format": format,
+                    "base_url": base_url,
+                }
+            },
+            "targets": {
+                "default": {
+                    "id": "target/model",
+                    "llm_client": "target",
+                }
+            },
+            "routes": {
+                "default": {
+                    "id": "switchyard/default",
+                    "type": "passthrough",
+                    "target": "default",
+                }
+            }
+        });
+        SwitchyardRuntime::new(crate::config::SwitchyardConfig {
+            priority: 0,
+            switchyard_config_path: None,
+            switchyard_config: Some(deployment.as_object().unwrap().clone()),
+        })
+        .expect("cross-format runtime should load")
+    }
+
     #[test]
     fn only_configured_route_models_are_managed() {
         let runtime = runtime_for("switchyard");
         assert!(runtime.manages_model("switchyard"));
         assert!(!runtime.manages_model("other"));
+    }
+
+    #[tokio::test]
+    async fn responses_requests_use_the_configured_target_format() {
+        for (format, endpoint, upstream_response) in [
+            (
+                "openai_chat",
+                "/v1/chat/completions",
+                json!({
+                    "id": "chatcmpl_test",
+                    "object": "chat.completion",
+                    "model": "target/model",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }),
+            ),
+            (
+                "anthropic_messages",
+                "/v1/messages",
+                json!({
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "target/model",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }),
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .and(body_partial_json(json!({"model": "target/model"})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(upstream_response))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let runtime = runtime_for_target(format, &format!("{}/v1", server.uri()));
+            let request = RelayRequest {
+                headers: Map::new(),
+                content: json!({
+                    "model": "switchyard/default",
+                    "input": "hello",
+                }),
+            };
+            let decoded = runtime
+                .decode_request(WireFormat::OpenAiResponses, request, false)
+                .expect("Responses request should decode");
+            assert_eq!(
+                decoded
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.wire_format),
+                None
+            );
+
+            let execution = runtime
+                .execute_buffered(WireFormat::OpenAiResponses, decoded)
+                .await;
+            let response = execution.result.expect("target call should succeed");
+            assert_eq!(response["object"], "response");
+            assert_eq!(response["model"], "target/model");
+        }
     }
 
     #[test]
