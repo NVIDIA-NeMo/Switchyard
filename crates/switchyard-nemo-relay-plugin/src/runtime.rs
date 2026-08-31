@@ -11,7 +11,9 @@ use nemo_relay_plugin::{
 };
 use serde_json::{Map, json};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
-use switchyard_protocol::{LlmResponse, Metadata, Request, Response, WireFormat};
+use switchyard_protocol::{
+    LlmResponse, LlmResponseChunk, Metadata, Request, Response, Usage, WireFormat,
+};
 use switchyard_runner::{Route, RouteErrorSummary, Runner, stream_error_summary};
 use switchyard_translation::{TranslationEngine, encode_stream};
 
@@ -365,11 +367,43 @@ fn returned_events(
     emit_event: RoutingEventEmitter,
 ) -> Result<ReturnedEventStream, String> {
     let served_model = response.served_model().cloned();
-    let chunks = match response.llm_response {
-        LlmResponse::Agg(response) => response.into_stream(),
-        LlmResponse::Stream(chunks) => chunks,
+    let (chunks, observe_stream_usage) = match response.llm_response {
+        LlmResponse::Agg(response) => (response.into_stream(), false),
+        LlmResponse::Stream(chunks) => (chunks, true),
     };
+    let mut latest_usage = None;
+    let mut terminal_seen = false;
+    let mut usage_emitted = false;
+    let mut stream_failed = false;
     let chunks = Box::pin(chunks.map(move |item| {
+        stream_failed |= match &item {
+            Err(_) => true,
+            Ok(event) => event.normalized().iter().any(|chunk| {
+                matches!(
+                    chunk,
+                    LlmResponseChunk::StreamError { .. } | LlmResponseChunk::DecodeError { .. }
+                )
+            }),
+        };
+        if observe_stream_usage && !stream_failed && !usage_emitted {
+            if let Ok(event) = &item {
+                for chunk in event.normalized() {
+                    match chunk {
+                        LlmResponseChunk::Usage(usage) => latest_usage = Some(usage.clone()),
+                        LlmResponseChunk::MessageStop { .. } => terminal_seen = true,
+                        _ => {}
+                    }
+                }
+            }
+            if terminal_seen
+                && let (Some(model), Some(usage)) = (served_model.as_ref(), latest_usage.as_ref())
+            {
+                for event in usage_metrics("answer", model.as_str(), usage, &metadata) {
+                    emit_event(event);
+                }
+                usage_emitted = true;
+            }
+        }
         if let Err(error) = &item {
             for event in route_execution_error_events(
                 &stream_error_summary(error, served_model.as_ref()),
@@ -468,6 +502,15 @@ fn token_usage_metrics(
     let Some(usage) = call.usage.as_ref() else {
         return Vec::new();
     };
+    usage_metrics(call_role, call.selected_model.as_str(), usage, metadata)
+}
+
+fn usage_metrics(
+    call_role: &str,
+    target_model: &str,
+    usage: &Usage,
+    metadata: &Json,
+) -> Vec<RoutingEvent> {
     [
         ("input", usage.input_tokens),
         ("cached_input", usage.cached_input_tokens()),
@@ -490,7 +533,7 @@ fn token_usage_metrics(
                 json!(value),
                 json!({
                     "call_role": call_role,
-                    "target_model": call.selected_model.as_str(),
+                    "target_model": target_model,
                     "token_type": token_type,
                 }),
                 metadata.clone(),
@@ -854,6 +897,93 @@ mod tests {
                 "token_type": "output",
             }))
         );
+    }
+
+    #[tokio::test]
+    async fn stream_usage_emits_answer_token_metrics() {
+        let response = Response {
+            llm_response: LlmResponse::Stream(Box::pin(futures_util::stream::iter([
+                Ok(LlmResponseStreamEvent::new(vec![
+                    LlmResponseChunk::MessageStop { reason: None },
+                ])),
+                Ok(LlmResponseStreamEvent::new(vec![LlmResponseChunk::Usage(
+                    Usage {
+                        input_tokens: Some(10),
+                        output_tokens: Some(3),
+                        total_tokens: Some(13),
+                        ..Usage::default()
+                    },
+                )])),
+            ]))),
+            metadata: Some(Metadata {
+                served_model: Some(ModelId::from("selected-target")),
+                ..Default::default()
+            }),
+        };
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let emitted = Arc::clone(&captured);
+        let mut stream = returned_events(
+            response,
+            WireFormat::OpenAiChat,
+            json!({"session_id": "session"}),
+            Arc::new(move |event| emitted.lock().unwrap().push(event)),
+        )
+        .expect("stream setup should succeed");
+
+        assert!(captured.lock().unwrap().is_empty());
+        assert!(stream.next().await.expect("encoded stream event").is_ok());
+        assert!(captured.lock().unwrap().is_empty());
+        assert!(stream.next().await.expect("encoded usage event").is_ok());
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        let token_types = events
+            .iter()
+            .map(|event| {
+                let RoutingEvent::Metric(metric) = event else {
+                    panic!("stream usage should emit only metrics");
+                };
+                assert_eq!(metric.name, "switchyard.routing.llm_tokens");
+                assert_eq!(metric.metadata, json!({"session_id": "session"}));
+                let attributes = metric.measurements[0].attributes.as_ref().unwrap();
+                assert_eq!(attributes["call_role"], "answer");
+                assert_eq!(attributes["target_model"], "selected-target");
+                attributes["token_type"].as_str().unwrap().to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(token_types, ["input", "output", "total"]);
+    }
+
+    #[tokio::test]
+    async fn aggregate_response_stream_does_not_reemit_usage_metrics() {
+        let mut aggregate =
+            switchyard_protocol::text_response(Some("selected-target".into()), "ok");
+        aggregate.usage = Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(3),
+            total_tokens: Some(13),
+            ..Usage::default()
+        };
+        let response = Response {
+            llm_response: LlmResponse::Agg(aggregate),
+            metadata: Some(Metadata {
+                served_model: Some(ModelId::from("selected-target")),
+                ..Default::default()
+            }),
+        };
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let emitted = Arc::clone(&captured);
+        let stream = returned_events(
+            response,
+            WireFormat::OpenAiChat,
+            json!({}),
+            Arc::new(move |event| emitted.lock().unwrap().push(event)),
+        )
+        .expect("stream setup should succeed");
+
+        let events = stream.collect::<Vec<_>>().await;
+        assert!(events.iter().all(Result::is_ok));
+        assert!(captured.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
