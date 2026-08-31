@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use futures_util::{Stream, StreamExt};
+use http::StatusCode;
 use nemo_relay_plugin::{
     Json, LlmRequest as RelayRequest, LogSeverity, MetricKind, MetricMeasurement, MetricValueType,
     PluginRuntime,
@@ -12,8 +13,8 @@ use nemo_relay_plugin::{
 use serde_json::{Map, json};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
 use switchyard_protocol::{
-    LlmResponse, LlmResponseChunk, Metadata, ProviderExtensions, Request, Response, Usage,
-    WireFormat,
+    LlmClientError, LlmResponse, LlmResponseChunk, LlmStreamError, Metadata, ProviderExtensions,
+    Request, Response, Usage, WireFormat,
 };
 use switchyard_runner::{Route, RouteErrorSummary, Runner, stream_error_summary};
 use switchyard_translation::{TranslationEngine, encode_stream_with_extensions};
@@ -377,16 +378,25 @@ fn returned_events(
     let mut terminal_seen = false;
     let mut usage_emitted = false;
     let mut stream_failed = false;
+    let mut failure_emitted = false;
     let chunks = Box::pin(chunks.map(move |item| {
-        stream_failed |= match &item {
-            Err(_) => true,
-            Ok(event) => event.normalized().iter().any(|chunk| {
-                matches!(
-                    chunk,
-                    LlmResponseChunk::StreamError { .. } | LlmResponseChunk::DecodeError { .. }
-                )
-            }),
-        };
+        let in_band_error = item
+            .as_ref()
+            .ok()
+            .and_then(|event| normalized_stream_error(event.normalized()));
+        let stream_error = in_band_error.as_ref().or_else(|| item.as_ref().err());
+        stream_failed |= stream_error.is_some();
+        if let Some(error) = stream_error
+            && !failure_emitted
+        {
+            for event in route_execution_error_events(
+                &stream_error_summary(error, served_model.as_ref()),
+                metadata.clone(),
+            ) {
+                emit_event(event);
+            }
+            failure_emitted = true;
+        }
         if observe_stream_usage && !stream_failed && !usage_emitted {
             if let Ok(event) = &item {
                 for chunk in event.normalized() {
@@ -406,21 +416,46 @@ fn returned_events(
                 usage_emitted = true;
             }
         }
-        if let Err(error) = &item {
-            for event in route_execution_error_events(
-                &stream_error_summary(error, served_model.as_ref()),
-                metadata.clone(),
-            ) {
-                emit_event(event);
-            }
-        }
         item
     }));
     let events = encode_stream_with_extensions(chunks, inbound, None, request_extensions)
         .map_err(|error| format!("Switchyard response stream setup failed: {error}"))?;
-    Ok(Box::pin(events.map(|item| {
-        item.map_err(|error| format!("Switchyard response stream failed: {error}"))
-    })))
+    Ok(Box::pin(
+        events.map(|item| item.map_err(relay_stream_error)),
+    ))
+}
+
+/// Produces a telemetry-only error summary source for a normalized in-band failure.
+///
+/// The translation layer retains the original provider error event for client delivery;
+/// this conversion is only used to classify the failure without putting its message in marks.
+fn normalized_stream_error(chunks: &[LlmResponseChunk]) -> Option<LlmClientError> {
+    chunks.iter().find_map(|chunk| match chunk {
+        LlmResponseChunk::DecodeError { message } => {
+            Some(LlmClientError::ResponseTranslation(message.clone()))
+        }
+        LlmResponseChunk::StreamError { message } => Some(LlmClientError::UpstreamHttp {
+            status: StatusCode::BAD_GATEWAY,
+            body: message.clone(),
+        }),
+        _ => None,
+    })
+}
+
+/// Converts translation errors to Relay's string-only stream-error boundary.
+///
+/// `LlmStreamError::Upstream` retains a provider-shaped JSON value so its caller can
+/// make protocol decisions, but neither that value nor a client error's source message
+/// is safe for Relay's outer observability scope. Preserve the error result while
+/// exposing only a stable failure class.
+fn relay_stream_error(error: LlmStreamError) -> String {
+    match error {
+        LlmStreamError::Upstream(_) => "Switchyard upstream stream error".into(),
+        LlmStreamError::Client(error) => format!(
+            "Switchyard stream error: {}",
+            stream_error_summary(&error, None).kind.as_str()
+        ),
+    }
 }
 
 fn route_execution_error_mark(summary: &RouteErrorSummary, metadata: Json) -> RoutingMark {
@@ -1253,6 +1288,12 @@ mod tests {
 
         let events = stream.collect::<Vec<_>>().await;
         assert!(events[0].is_err());
+        assert!(
+            !events[0]
+                .as_ref()
+                .expect_err("stream should fail")
+                .contains(secret)
+        );
         let events = captured.lock().unwrap();
         assert_eq!(events.len(), 2);
         let RoutingEvent::Mark(mark) = &events[0] else {
@@ -1275,5 +1316,96 @@ mod tests {
                 "phase": "during_stream",
             }))
         );
+    }
+
+    async fn assert_normalized_stream_failure(
+        chunk: LlmResponseChunk,
+        expected_category: &str,
+        expected_status: Option<u16>,
+    ) {
+        let secret = "provider response body";
+        let response = Response {
+            llm_response: LlmResponse::Stream(Box::pin(futures_util::stream::iter([Ok(
+                LlmResponseStreamEvent::new(vec![chunk]),
+            )]))),
+            metadata: Some(Metadata {
+                served_model: Some(ModelId::from("selected-target")),
+                ..Default::default()
+            }),
+        };
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let emitted = Arc::clone(&captured);
+        let stream = returned_events(
+            response,
+            WireFormat::OpenAiChat,
+            &ProviderExtensions::default(),
+            json!({"session_id": "session"}),
+            Arc::new(move |event| emitted.lock().unwrap().push(event)),
+        )
+        .expect("stream setup should succeed");
+
+        let client_events = stream.collect::<Vec<_>>().await;
+        assert_eq!(client_events.len(), 1);
+        assert!(client_events[0].is_err());
+        assert!(
+            !client_events[0]
+                .as_ref()
+                .expect_err("stream should fail")
+                .contains(secret)
+        );
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 2, "one mark and one counter should emit");
+        let RoutingEvent::Mark(mark) = &events[0] else {
+            panic!("first event should be the safe failure mark");
+        };
+        assert_eq!(mark.data["category"], expected_category);
+        assert_eq!(mark.data["phase"], "during_stream");
+        assert_eq!(
+            mark.data["upstream_status"],
+            expected_status.map_or(Json::Null, Json::from)
+        );
+        assert_eq!(mark.data["target"], "selected-target");
+        assert!(!mark.data.to_string().contains(secret));
+        let RoutingEvent::Metric(metric) = &events[1] else {
+            panic!("second event should be the failure counter");
+        };
+        assert_eq!(metric.name, "switchyard.routing.failures");
+        let mut expected_attributes = json!({
+            "failure_kind": "route_execution",
+            "category": expected_category,
+            "phase": "during_stream",
+        });
+        if let Some(status) = expected_status {
+            expected_attributes
+                .as_object_mut()
+                .expect("expected metric attributes should be an object")
+                .insert("upstream_status".into(), json!(status));
+        }
+        assert_eq!(metric.measurements[0].attributes, Some(expected_attributes));
+    }
+
+    #[tokio::test]
+    async fn normalized_stream_error_emits_failure_telemetry_once() {
+        assert_normalized_stream_failure(
+            LlmResponseChunk::StreamError {
+                message: "provider response body".into(),
+            },
+            "upstream_http",
+            Some(502),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn normalized_decode_error_emits_failure_telemetry_once() {
+        assert_normalized_stream_failure(
+            LlmResponseChunk::DecodeError {
+                message: "provider response body".into(),
+            },
+            "response_translation",
+            None,
+        )
+        .await;
     }
 }
