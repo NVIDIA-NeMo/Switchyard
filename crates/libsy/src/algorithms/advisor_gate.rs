@@ -36,6 +36,7 @@ use switchyard_protocol::{
     SamplingParams,
 };
 
+use crate::algorithms::util::tool_signals::ToolSignals;
 use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
 use crate::{LibsyError, Result};
 
@@ -50,10 +51,7 @@ use telemetry::{
     record_review,
 };
 use transcript::{VERDICT_PATTERN, Verdict, advisor_reply_text, parse_verdict, review_transcript};
-use turn::{
-    GatedTurn, assistant_turns, buffer_turn, count_tool_results, has_tool_use, reasoning_text,
-    visible_text,
-};
+use turn::{GatedTurn, buffer_turn, has_tool_use, reasoning_text, visible_text};
 
 /// APPROVE/REDO reviewer contract sent as the advisor's system prompt.
 pub const REVIEWER_SYSTEM_PROMPT: &str =
@@ -338,21 +336,24 @@ impl AdvisorGate {
             .await?;
         let turn = buffer_turn(self.executor.as_str(), response).await?;
 
+        // Request-side guard counts come from the shared ToolSignals
+        // extraction — the same definition of tool-result/turn counting the
+        // stage router uses.
+        let signals = ToolSignals::from_request(&request, None);
         // The stall checkpoint fires once per conversation regardless of the
         // turn's shape — even a tool-call turn — for executors that grind
         // without ever declaring completion.
         let stall_key = stall_key(&request);
         let stall = self.config.gate_stall_turns > 0
             && !self.stall_already_fired(stall_key)
-            && assistant_turns(&request.llm_request.messages) >= self.config.gate_stall_turns;
+            && signals.assistant_turn_count >= self.config.gate_stall_turns;
         let triggered = match &self.trigger {
             CompiledTrigger::Pattern(pattern) => {
                 pattern.is_match(visible_text(&turn.agg).as_deref().unwrap_or(""))
             }
             CompiledTrigger::NoToolCall => {
                 !has_tool_use(&turn.agg)
-                    && count_tool_results(&request.llm_request.messages)
-                        >= self.config.gate_min_tool_results
+                    && signals.tool_result_count >= self.config.gate_min_tool_results
             }
         };
         if !(triggered || stall) {

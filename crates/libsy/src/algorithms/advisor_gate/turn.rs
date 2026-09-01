@@ -7,7 +7,7 @@
 use futures::StreamExt;
 use switchyard_protocol::{
     AggLlmResponse, ContentBlock, LlmClientError, LlmResponse, LlmResponseChunk,
-    LlmResponseStreamEvent, Message, Metadata, Response, ResponseAccumulator, Role, StopReason,
+    LlmResponseStreamEvent, Metadata, Response, ResponseAccumulator, StopReason,
 };
 
 use crate::{LibsyError, Result};
@@ -150,24 +150,4 @@ pub(super) fn reasoning_text(agg: &AggLlmResponse) -> Option<String> {
     } else {
         Some(joined)
     }
-}
-
-/// Tool results carried by the conversation so far (both wires normalize
-/// tool results into `ContentBlock::ToolResult`).
-pub(super) fn count_tool_results(messages: &[Message]) -> u32 {
-    let count = messages
-        .iter()
-        .flat_map(|message| message.content.iter())
-        .filter(|block| matches!(block, ContentBlock::ToolResult(_)))
-        .count();
-    u32::try_from(count).unwrap_or(u32::MAX)
-}
-
-/// Assistant turns already in the request — the stall checkpoint's clock.
-pub(super) fn assistant_turns(messages: &[Message]) -> u32 {
-    let count = messages
-        .iter()
-        .filter(|message| message.role == Role::Assistant)
-        .count();
-    u32::try_from(count).unwrap_or(u32::MAX)
 }

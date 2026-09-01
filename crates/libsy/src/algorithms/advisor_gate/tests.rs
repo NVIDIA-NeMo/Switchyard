@@ -796,6 +796,36 @@ async fn min_tool_results_defers_gate() {
 }
 
 #[tokio::test]
+async fn min_tool_results_counts_batched_result_blocks() {
+    // Anthropic batches several tool_result blocks into one user message;
+    // the guard counts blocks, not messages.
+    let script = Script::new();
+    let gate = gate(AdvisorGateConfig {
+        gate_min_tool_results: 2,
+        ..AdvisorGateConfig::default()
+    });
+    let tool_result = |id: &str| {
+        ContentBlock::ToolResult(ToolResult {
+            tool_call_id: id.to_string(),
+            content: vec![ContentBlock::Text {
+                text: "ok".to_string(),
+            }],
+            is_error: None,
+        })
+    };
+    let batched = request(vec![
+        Message::text(Role::User, "build X"),
+        Message {
+            role: Role::User,
+            content: vec![tool_result("t1"), tool_result("t2")],
+        },
+    ]);
+    let serve = script.serve("APPROVE", |_| reply("done"));
+    test_drive(gate, batched, serve).await.expect("routes");
+    assert_eq!(script.advisor_consults(), 1);
+}
+
+#[tokio::test]
 async fn stall_checkpoint_reviews_mid_task_once() {
     let script = Script::new();
     let gate = gate(AdvisorGateConfig {
@@ -858,6 +888,29 @@ async fn simultaneous_trigger_does_not_latch_stall() {
         .await
         .expect("routes");
     assert_eq!(script.advisor_consults(), 2);
+}
+
+#[tokio::test]
+async fn stall_counts_assistant_turns_not_messages() {
+    // Three messages but one assistant turn: below the threshold, so the
+    // checkpoint stays quiet — the stall clock is assistant turns, not
+    // conversation length.
+    let script = Script::new();
+    let gate = gate(AdvisorGateConfig {
+        gate_stall_turns: 2,
+        ..AdvisorGateConfig::default()
+    });
+    let conversation = request(vec![
+        Message::text(Role::User, "build X"),
+        Message::text(Role::Assistant, "step 1"),
+        Message::text(Role::User, "keep going"),
+    ]);
+    let serve = script.serve("APPROVE", {
+        let turn = parking_lot::Mutex::new(Some(tool_call_turn()));
+        move |_| turn.lock().take().expect("one executor call")
+    });
+    test_drive(gate, conversation, serve).await.expect("routes");
+    assert_eq!(script.advisor_consults(), 0);
 }
 
 // ── Reasoning-only and empty turns ──────────────────────────────────────
