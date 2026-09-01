@@ -701,7 +701,7 @@ fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
                     .get("input_schema")
                     .cloned()
                     .unwrap_or_else(|| json!({})),
-                strict: None,
+                strict: tool.get("strict").and_then(Value::as_bool),
             })
         })
         .collect()

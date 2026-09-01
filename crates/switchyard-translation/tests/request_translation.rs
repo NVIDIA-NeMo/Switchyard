@@ -654,6 +654,47 @@ fn anthropic_tool_without_name_is_dropped_before_openai_chat() -> TestResult {
     Ok(())
 }
 
+// Verifies Anthropic tool strictness survives translation into both OpenAI formats.
+#[test]
+fn anthropic_tool_strictness_is_preserved_for_openai_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{"role": "user", "content": "Use a tool."}],
+        "max_tokens": 100,
+        "tools": [
+            {"name": "strict_tool", "input_schema": {}, "strict": true},
+            {"name": "non_strict_tool", "input_schema": {}, "strict": false},
+            {"name": "unspecified_tool", "input_schema": {}}
+        ]
+    });
+
+    let chat = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    let responses = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(chat["tools"][0]["function"]["strict"], true);
+    assert_eq!(chat["tools"][1]["function"]["strict"], false);
+    assert!(chat["tools"][2]["function"].get("strict").is_none());
+    assert_eq!(responses["tools"][0]["strict"], true);
+    assert_eq!(responses["tools"][1]["strict"], false);
+    assert!(responses["tools"][2].get("strict").is_none());
+    Ok(())
+}
+
 // Verifies OpenAI-compatible Anthropic extension fields are preserved.
 #[test]
 fn anthropic_openai_compatible_extensions_are_preserved_for_openai_chat() -> TestResult {
