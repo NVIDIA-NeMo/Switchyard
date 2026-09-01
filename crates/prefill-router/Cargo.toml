@@ -12,10 +12,17 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.2.0" }
 pyo3 = { version = "0.28.3", features = ["auto-initialize"] }
 switchyard-protocol.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 
 [build-dependencies]
 pyo3-build-config = "0.28.3"
+
+[[test]]
+name = "algorithm"
+path = "tests/algorithm.rs"

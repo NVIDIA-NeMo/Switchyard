@@ -3,10 +3,12 @@
 
 //! Learned prefill routing behind a backend-neutral forward contract.
 
+mod algorithm;
 mod error;
 mod router;
 mod transformers;
 
+pub use algorithm::{PrefillRouterAlgo, PrefillRouterConfig};
 pub use error::{PrefillRouterError, Result};
 pub use router::PrefillRouter;
 pub use transformers::{TransformersForward, TransformersForwardConfig};
