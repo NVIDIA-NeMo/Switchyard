@@ -13,7 +13,9 @@ use switchyard_server::{
     ServerRunOptions, ServerState, TlsOptions, run_server,
 };
 
-const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+// Keep the standalone server local by default. Exposing it on all interfaces
+// requires an explicit --host value.
+const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 const DEFAULT_PORT: u16 = 4000;
 
 /// Command-line arguments accepted by the Rust server binary.
