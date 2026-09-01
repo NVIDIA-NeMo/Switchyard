@@ -652,7 +652,7 @@ def test_dry_run_harbor_path_uses_local_dataset_and_closed_book_artifact(
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert "--dataset" not in harbor
     assert _option_value(harbor, "--path") == str(dataset)
-    assert _option_value(harbor, "--artifact") == "/etc/proxy-public/strip.jsonl"
+    assert _option_value(harbor, "--artifact") == "/etc/proxy-ca/strip.jsonl"
     assert "version=0.144.5" in _option_values(harbor, "--ak")
     assert "CODEX_DISABLE_WEB_SEARCH=1" in _option_values(harbor, "--ae")
     catalog_env = next(
@@ -696,7 +696,7 @@ def test_dry_run_open_book_uses_proxy_topology_without_tool_disables(tmp_path: P
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert _option_value(harbor, "--path") == str(dataset)
-    assert _option_value(harbor, "--artifact") == "/etc/proxy-public/strip.jsonl"
+    assert _option_value(harbor, "--artifact") == "/etc/proxy-ca/strip.jsonl"
     assert "CODEX_DISABLE_WEB_SEARCH=1" not in _option_values(harbor, "--ae")
     assert not _option_values(harbor, "--ve")
     assert "book_mode:     open" in result.stdout

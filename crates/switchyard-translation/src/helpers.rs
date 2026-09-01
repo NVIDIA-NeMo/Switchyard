@@ -76,15 +76,16 @@ pub fn encode_aggregated_response_with_extensions(
     request_extensions: &switchyard_protocol::ProviderExtensions,
 ) -> Result<Value> {
     let mut body = DEFAULT_TRANSLATION_ENGINE
-        .encode_response(wire_format, agg, &DEFAULT_TRANSLATION_POLICY)?
+        .encode_response_with_extensions(
+            wire_format,
+            agg,
+            request_extensions,
+            &DEFAULT_TRANSLATION_POLICY,
+        )?
         .body;
     if let (Some(model), Value::Object(object)) = (served_model, &mut body) {
         object.insert("model".to_string(), Value::String(model.to_string()));
     }
-    crate::codex_namespaces::restore_qualified_tool_names(
-        &mut body,
-        &crate::codex_namespaces::qualified_tool_origins(request_extensions),
-    );
     Ok(body)
 }
 

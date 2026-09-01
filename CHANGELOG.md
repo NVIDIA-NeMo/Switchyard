@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **NeMo Relay native plugin** — a dynamically loaded integration that loads
+  Switchyard's standard TOML deployment and executes its `switchyard-runner`-
+  supported configured routes in process. Managed calls require NeMo Relay
+  `>=0.8.1,<0.9.0`; unknown models use Relay's continuation unchanged.
+
+- **NeMo Relay routing marks** — routing-model usage, measured routing
+  overhead, and selected-model decisions are emitted as ATOF marks. The final
+  serving call remains represented only by Relay's outer LLM lifecycle event to
+  prevent double-counting.
+
 - **Advisor-gate routing** — new `advisor` route type pairing the serving
   executor with a stronger judge-only advisor that reviews terminal turns:
   APPROVE releases the buffered turn, REDO discards it and feeds the advisor's
