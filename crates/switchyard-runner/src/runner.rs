@@ -99,13 +99,10 @@ impl Runner {
     ) -> Option<DecisionDescription> {
         let route = self.route(model.as_str())?;
         let resolve = |selected: &ModelId| route.decision_target(selected);
+        let mut model_ids = outcome.selected_model_ids.iter();
         Some(DecisionDescription {
-            selected: resolve(&outcome.selected_model_id)?,
-            fallbacks: outcome
-                .fallback_models
-                .iter()
-                .map(resolve)
-                .collect::<Option<Vec<_>>>()?,
+            selected: resolve(model_ids.next()?)?,
+            fallbacks: model_ids.map(resolve).collect::<Option<Vec<_>>>()?,
         })
     }
 }

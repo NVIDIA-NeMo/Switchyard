@@ -80,10 +80,10 @@ async def run_algorithm(
                 if outcome.response is not None:
                     match outcome.response:
                         case LlmResponse.Agg(response):
-                            return outcome.selected_model_id, response
+                            return outcome.selected_model_ids[0], response
                         case LlmResponse.Stream(_):
                             raise AssertionError("test helper expected an aggregate response")
-                candidates = [outcome.selected_model_id, *outcome.fallback_models]
+                candidates = outcome.selected_model_ids
                 for index, target in enumerate(candidates):
                     candidate_request = {**outcome.request, "model": target}
                     client = (clients or {})[target]
@@ -93,7 +93,7 @@ async def run_algorithm(
                         if index + 1 == len(candidates):
                             raise
                     else:
-                        return outcome.selected_model_id, response
+                        return outcome.selected_model_ids[0], response
     raise AssertionError("algorithm stream ended without an outcome")
 
 
@@ -111,8 +111,7 @@ async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() 
 
     assert variants == ["done"]
     assert outcome is not None
-    assert outcome.selected_model_id == "fast"
-    assert outcome.fallback_models == []
+    assert outcome.selected_model_ids == ["fast"]
     assert outcome.response is None
     response = await client.call(outcome.request)
     assert client.calls[0]["model"] == "fast"
@@ -156,7 +155,7 @@ async def test_routing_call_accepts_a_streamed_response() -> None:
                 outcome = done
 
     assert outcome is not None
-    assert outcome.selected_model_id == "model-b"
+    assert outcome.selected_model_ids == ["model-b", "model-a"]
 
 
 async def test_classifier_config_accepts_a_prompt_override() -> None:

@@ -166,15 +166,14 @@ async def test_litellm_conversion_preserves_stage_tool_signal_input() -> None:
     # ToolSignals reads only normalized messages, so exact equality protects every signal input.
     assert _request(litellm_messages)["messages"] == original_messages
     assert direct_outcome is not None
-    assert direct_outcome.selected_model_id == SOL
-    assert direct_outcome.fallback_models == [TERRA]
+    assert direct_outcome.selected_model_ids == [SOL, TERRA]
 
     context = routing_context(litellm_messages)
     await stage_plugin().run(context)
 
     assert context.signals["switchyard"] == {
-        "selected_model_id": direct_outcome.selected_model_id,
-        "fallback_models": direct_outcome.fallback_models,
+        "selected_model_id": direct_outcome.selected_model_ids[0],
+        "fallback_models": direct_outcome.selected_model_ids[1:],
     }
 
 

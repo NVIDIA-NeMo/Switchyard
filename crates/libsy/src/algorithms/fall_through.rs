@@ -641,8 +641,10 @@ mod tests {
         tokio::pin!(stream);
         while let Some(step) = stream.next().await {
             if let crate::Step::Done(outcome) = step? {
-                assert_eq!(outcome.selected_model_id, ModelId::from("mid"));
-                assert_eq!(outcome.fallback_models, target_set(&["weak", "strong"]));
+                assert_eq!(
+                    outcome.selected_model_ids,
+                    target_set(&["mid", "weak", "strong"])
+                );
                 assert_eq!(outcome.request.llm_request.model.as_deref(), Some("mid"));
                 assert!(outcome.response.is_none());
                 return Ok(());

@@ -68,10 +68,10 @@ async def main() -> None:
             case Step.CallModel(call):
                 call.respond(await client.call(call.request, call.models[0]))
             case Step.Done(outcome):
-                print("Decision:", outcome.selected_model_id)
+                print("Decision:", outcome.selected_model_ids[0])
                 response = outcome.response or await client.call(
                     outcome.request,
-                    outcome.selected_model_id,
+                    outcome.selected_model_ids[0],
                 )
                 match response:
                     case LlmResponse.Agg(aggregate_response):

@@ -181,7 +181,7 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
                             "Switchyard algorithm produced a response while routing, "
                             "which a LiteLLM routing plugin cannot return"
                         )
-                    selected = outcome.selected_model_id
+                    selected = outcome.selected_model_ids[0]
                     if selected not in candidates:
                         raise ValueError(
                             f"Switchyard selected {selected!r}, which is not in LiteLLM's "
@@ -197,7 +197,7 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
                     ]
                     context.signals["switchyard"] = {
                         "selected_model_id": selected,
-                        "fallback_models": outcome.fallback_models,
+                        "fallback_models": outcome.selected_model_ids[1:],
                     }
                     if request_patch["set"] or request_patch.get("remove"):
                         context.signals["switchyard"]["request_patch"] = request_patch

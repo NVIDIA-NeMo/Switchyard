@@ -53,7 +53,7 @@ pub(crate) async fn test_drive(
         fulfill(Arc::clone(&routing_serve), call)
     })
     .await?;
-    let selected_model = outcome.selected_model_id.clone();
+    let selected_model = outcome.selected_model_id()?.clone();
     let response = match outcome.response {
         Some(response) => response,
         None => serve

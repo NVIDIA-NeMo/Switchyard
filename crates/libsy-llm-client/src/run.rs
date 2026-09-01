@@ -67,13 +67,10 @@ pub async fn run(
     let overhead = run_started.elapsed();
     metrics::record_routing_overhead(&algorithm_name, overhead);
 
-    let selected_model_id = outcome.selected_model_id;
+    let selected_model_id = outcome.selected_model_id()?.clone();
     let (result, answer_duration) = if let Some(response) = outcome.response {
         (Ok(response), None)
     } else {
-        let mut models = Vec::with_capacity(1 + outcome.fallback_models.len());
-        models.push(selected_model_id.clone());
-        models.extend(outcome.fallback_models);
         let answer_started = Instant::now();
         let observe = |observation| {
             if let Some(observer) = &observer {
@@ -84,7 +81,7 @@ pub async fn run(
             &clients,
             &algorithm_name,
             &outcome.request,
-            &models,
+            &outcome.selected_model_ids,
             CallPhase::Completion,
             &observe,
         )
@@ -119,8 +116,8 @@ pub async fn decide(
         serve(routing_clients.clone(), call, None)
     })
     .await?;
-    outcome.request =
-        clients.prepare_completion_request(outcome.request, &outcome.selected_model_id);
+    let selected_model_id = outcome.selected_model_id()?.clone();
+    outcome.request = clients.prepare_completion_request(outcome.request, &selected_model_id);
     Ok(outcome)
 }
 
@@ -750,7 +747,10 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(outcome.fallback_models, [ModelId::from("strong")]);
+        assert_eq!(
+            outcome.selected_model_ids,
+            [ModelId::from("weak"), ModelId::from("strong")]
+        );
         assert_eq!(instruction_text(&outcome.request), ["weak prompt"]);
         Ok(())
     }

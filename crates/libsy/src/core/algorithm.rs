@@ -62,10 +62,8 @@ impl CallModel {
 
 /// The terminal result of routing.
 pub struct RoutingOutcome {
-    /// The model selected by the algorithm and tried first by the client.
-    pub selected_model_id: ModelId,
-    /// Additional models the client may try in order after an eligible failure.
-    pub fallback_models: Vec<ModelId>,
+    /// Models selected by the algorithm, ordered best model first.
+    pub selected_model_ids: Vec<ModelId>,
     /// The request after all routing-time rewrites, stamped with the selected model.
     pub request: Request,
     /// A response produced while routing, or `None` when the client must make the answer call.
@@ -73,6 +71,12 @@ pub struct RoutingOutcome {
 }
 
 impl RoutingOutcome {
+    /// The model the algorithm recommends, the best model for this request.
+    /// `LibsyError::NoTargets` if the algorithm selected no models, which should be impossible.
+    pub fn selected_model_id(&self) -> Result<&ModelId> {
+        self.selected_model_ids.first().ok_or(LibsyError::NoTargets)
+    }
+
     /// The decision is that client should send this `request`. The `selected_model_id`
     /// will be written into it by this function.
     /// If that fails client should try the `fallback_models` in order.
@@ -82,9 +86,11 @@ impl RoutingOutcome {
         mut request: Request,
     ) -> Self {
         request.llm_request.model = Some(selected_model_id.to_string());
+        let mut selected_model_ids = Vec::with_capacity(1 + fallback_models.len());
+        selected_model_ids.push(selected_model_id);
+        selected_model_ids.extend(fallback_models);
         Self {
-            selected_model_id,
-            fallback_models,
+            selected_model_ids,
             request,
             response: None,
         }
@@ -95,8 +101,7 @@ impl RoutingOutcome {
     pub fn answered(selected_model_id: ModelId, mut request: Request, response: Response) -> Self {
         request.llm_request.model = Some(selected_model_id.to_string());
         Self {
-            selected_model_id,
-            fallback_models: Vec::new(),
+            selected_model_ids: vec![selected_model_id],
             request,
             response: Some(response),
         }
@@ -194,7 +199,7 @@ impl Driver {
         let selected_model = result
             .as_ref()
             .ok()
-            .map(|outcome| outcome.selected_model_id.clone());
+            .and_then(|outcome| outcome.selected_model_id().ok().cloned());
         let step = result.map(|outcome| Step::Done(Box::new(outcome)));
         self.step_tx
             .send(step)
@@ -472,16 +477,15 @@ mod tests {
             request(),
         );
 
-        assert_eq!(outcome.selected_model_id, "selected");
         assert_eq!(
-            outcome.fallback_models,
-            target_set(&["fallback-one", "fallback-two"])
+            outcome.selected_model_ids,
+            target_set(&["selected", "fallback-one", "fallback-two"])
         );
         assert_eq!(outcome.request.model_id().as_deref(), Some("selected"));
         assert!(outcome.response.is_none());
 
         let outcome = RoutingOutcome::route_to("only".into(), Vec::new(), request());
-        assert!(outcome.fallback_models.is_empty());
+        assert_eq!(outcome.selected_model_ids, target_set(&["only"]));
 
         let outcome = RoutingOutcome::answered(
             "answered".into(),
@@ -492,9 +496,8 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.selected_model_id, "answered");
+        assert_eq!(outcome.selected_model_ids, target_set(&["answered"]));
         assert_eq!(outcome.request.model_id().as_deref(), Some("answered"));
-        assert!(outcome.fallback_models.is_empty());
         assert_eq!(
             outcome
                 .response
