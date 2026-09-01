@@ -693,11 +693,24 @@ fn record_gen_ai_request(url: &str, model: &str, streaming: bool) {
     }
 }
 
+// The upstream a request was sent to, without anything that can carry a credential.
+fn redacted_endpoint(url: &reqwest::Url) -> String {
+    let mut url = url.clone();
+    url.set_query(None);
+    url.set_fragment(None);
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.to_string()
+}
+
 fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     // Reqwest labels truncated or otherwise unreadable response bodies as decode
     // errors, so distinguish them from serde JSON failures at the call site.
-    // Drop the url first: it reaches callers and logs, and a provider key can ride
-    // in it as a query parameter.
+    // The url reaches callers, and a provider key can ride in it as a query
+    // parameter, so keep it to the log and drop it from the error.
+    if let Some(url) = error.url() {
+        tracing::warn!(upstream = %redacted_endpoint(url), "upstream request failed");
+    }
     let error = error.without_url();
     if error.is_timeout() {
         LlmClientError::Timeout {
@@ -916,6 +929,12 @@ mod tests {
             .await
             .expect_err("closed port");
         assert!(!convert_reqwest_error(error).to_string().contains("CANARY"));
+    }
+
+    #[test]
+    fn redacted_endpoint_keeps_only_the_address() {
+        let url = reqwest::Url::parse("https://user:pw@host/v1/chat?key=CANARY#frag").unwrap();
+        assert_eq!(redacted_endpoint(&url), "https://host/v1/chat");
     }
     use std::collections::BTreeMap;
     use std::error::Error;
