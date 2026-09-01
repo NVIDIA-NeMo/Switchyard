@@ -7,7 +7,7 @@
 <a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">use </span>futures::StreamExt;
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>switchyard_protocol::{
 <a href=#9 id=9 data-nosnippet>9</a>    AggLlmResponse, ContentBlock, LlmClientError, LlmResponse, LlmResponseChunk,
-<a href=#10 id=10 data-nosnippet>10</a>    LlmResponseStreamEvent, Message, Metadata, Response, ResponseAccumulator, Role, StopReason,
+<a href=#10 id=10 data-nosnippet>10</a>    LlmResponseStreamEvent, Metadata, Response, ResponseAccumulator, StopReason,
 <a href=#11 id=11 data-nosnippet>11</a>};
 <a href=#12 id=12 data-nosnippet>12</a>
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>crate::{LibsyError, <span class="prelude-ty">Result</span>};
@@ -151,24 +151,4 @@
 <a href=#151 id=151 data-nosnippet>151</a>        <span class="prelude-val">Some</span>(joined)
 <a href=#152 id=152 data-nosnippet>152</a>    }
 <a href=#153 id=153 data-nosnippet>153</a>}
-<a href=#154 id=154 data-nosnippet>154</a>
-<a href=#155 id=155 data-nosnippet>155</a><span class="doccomment">/// Tool results carried by the conversation so far (both wires normalize
-<a href=#156 id=156 data-nosnippet>156</a>/// tool results into `ContentBlock::ToolResult`).
-<a href=#157 id=157 data-nosnippet>157</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>count_tool_results(messages: <span class="kw-2">&amp;</span>[Message]) -&gt; u32 {
-<a href=#158 id=158 data-nosnippet>158</a>    <span class="kw">let </span>count = messages
-<a href=#159 id=159 data-nosnippet>159</a>        .iter()
-<a href=#160 id=160 data-nosnippet>160</a>        .flat_map(|message| message.content.iter())
-<a href=#161 id=161 data-nosnippet>161</a>        .filter(|block| <span class="macro">matches!</span>(block, ContentBlock::ToolResult(<span class="kw">_</span>)))
-<a href=#162 id=162 data-nosnippet>162</a>        .count();
-<a href=#163 id=163 data-nosnippet>163</a>    u32::try_from(count).unwrap_or(u32::MAX)
-<a href=#164 id=164 data-nosnippet>164</a>}
-<a href=#165 id=165 data-nosnippet>165</a>
-<a href=#166 id=166 data-nosnippet>166</a><span class="doccomment">/// Assistant turns already in the request — the stall checkpoint's clock.
-<a href=#167 id=167 data-nosnippet>167</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>assistant_turns(messages: <span class="kw-2">&amp;</span>[Message]) -&gt; u32 {
-<a href=#168 id=168 data-nosnippet>168</a>    <span class="kw">let </span>count = messages
-<a href=#169 id=169 data-nosnippet>169</a>        .iter()
-<a href=#170 id=170 data-nosnippet>170</a>        .filter(|message| message.role == Role::Assistant)
-<a href=#171 id=171 data-nosnippet>171</a>        .count();
-<a href=#172 id=172 data-nosnippet>172</a>    u32::try_from(count).unwrap_or(u32::MAX)
-<a href=#173 id=173 data-nosnippet>173</a>}
 </code></pre></div></section></main></body></html>
