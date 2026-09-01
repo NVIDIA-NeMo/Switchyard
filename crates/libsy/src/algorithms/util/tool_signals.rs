@@ -5,7 +5,8 @@
 //!
 //! The extractor walks normalized messages, finds tool calls and results,
 //! pattern-matches their text against a curated error table, and aggregates
-//! conversation-history metrics used by [`crate::StageRouter`].
+//! conversation-history metrics used by [`crate::StageRouter`] and the
+//! advisor gate's request-side guards.
 //!
 //! All logic is pure and deterministic — no I/O, no shared state.
 
@@ -13,7 +14,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use switchyard_protocol::{ContentBlock, Request};
+use switchyard_protocol::{ContentBlock, Request, Role};
 
 use crate::Result;
 
@@ -207,7 +208,9 @@ pub const DEFAULT_RECENT_WINDOW: usize = 3;
 /// Tool-execution signals extracted from a normalized [`Request`].
 ///
 /// A request-side processor stores these signals in [`State`](crate::State) for
-/// [`crate::StageRouter`] and its classifier to consume.
+/// [`crate::StageRouter`] and its classifier to consume. The advisor gate's
+/// request-side guards read the conversation-shape counts directly via
+/// [`ToolSignals::from_request`].
 #[derive(Clone, Debug, Default)]
 pub struct ToolSignals {
     /// Max severity across the recent window (last `recent_window` tool results):
@@ -239,6 +242,12 @@ pub struct ToolSignals {
     pub pure_bash_streak: u32,
     /// At least one of the last three tool results matched a test-pass pattern.
     pub tests_passed: bool,
+    /// Total `ToolResult` blocks, counted per block (a message batching N
+    /// results contributes N) and including empty-content results.
+    pub tool_result_count: u32,
+    /// Messages with `Role::Assistant`, unlike [`ToolSignals::turn_depth`],
+    /// which counts every message regardless of role.
+    pub assistant_turn_count: u32,
     /// Message-count proxy for turn depth. Wire-format dependent (Anthropic batches
     /// tool results into fewer messages than OpenAI-chat), so gates keyed on it are
     /// approximate across request origins.
@@ -353,8 +362,13 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     let mut compacted = false;
+    let mut tool_result_count = 0usize;
+    let mut assistant_turn_count = 0usize;
 
     for message in messages {
+        if message.role == Role::Assistant {
+            assistant_turn_count += 1;
+        }
         for block in &message.content {
             match block {
                 ContentBlock::ToolCall(call) => {
@@ -364,6 +378,8 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
                     });
                 }
                 ContentBlock::ToolResult(result) => {
+                    // Before the empty-text filter: empty results still count.
+                    tool_result_count += 1;
                     let text = result
                         .content
                         .iter()
@@ -387,6 +403,8 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
 
     let mut signal = build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window);
     signal.compacted = compacted;
+    signal.tool_result_count = u32::try_from(tool_result_count).unwrap_or(u32::MAX);
+    signal.assistant_turn_count = u32::try_from(assistant_turn_count).unwrap_or(u32::MAX);
     signal
 }
 
@@ -524,7 +542,10 @@ fn build_signal(
         tests_passed,
         turn_depth,
         // Set by extract_tool_signals_with_window after the format-specific extract,
-        // which scans all message contents for the compaction marker.
+        // which scans all message contents for the compaction marker and tallies
+        // the raw conversation-shape counts.
+        tool_result_count: 0,
+        assistant_turn_count: 0,
         compacted: false,
     }
 }
@@ -801,6 +822,38 @@ mod tests {
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, 0.0);
         assert_eq!(sig.write_count, 1);
+    }
+
+    #[test]
+    fn conversation_counts_are_per_block_and_role_aware() {
+        // A batched user message (Anthropic shape) contributes one count per
+        // ToolResult block, empty-content results included. assistant_turn_count
+        // tracks Role::Assistant only, while turn_depth counts every message.
+        let result = |content: Vec<ContentBlock>| {
+            ContentBlock::ToolResult(ToolResult {
+                tool_call_id: String::new(),
+                content,
+                is_error: None,
+            })
+        };
+        let request = with_messages(vec![
+            Message::text(Role::User, "do something"),
+            Message::text(Role::Assistant, "working"),
+            Message {
+                role: Role::User,
+                content: vec![
+                    result(vec![ContentBlock::Text {
+                        text: "ok".to_string(),
+                    }]),
+                    result(Vec::new()),
+                ],
+            },
+            tc("Bash"),
+        ]);
+        let sig = ToolSignals::from_request(&request, None);
+        assert_eq!(sig.tool_result_count, 2);
+        assert_eq!(sig.assistant_turn_count, 2);
+        assert_eq!(sig.turn_depth, 4);
     }
 
     #[test]
