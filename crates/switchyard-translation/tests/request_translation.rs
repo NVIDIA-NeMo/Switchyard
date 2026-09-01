@@ -2301,3 +2301,50 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
     );
     Ok(())
 }
+
+// Verifies a flat Responses `input_file` decodes instead of being dropped.
+//
+// The Responses wire carries `file_data`/`filename` directly on the block, while
+// `decode_file_source` read a direct `file_id` but not a direct `file_data`, so a
+// Responses file fell through to `FileSource::Raw`. Chat's raw file encoder maps
+// only Anthropic `document` blocks and returns `None` otherwise -- so the file did
+// not merely lose its filename, it vanished from the request entirely.
+#[test]
+fn responses_flat_file_data_survives_into_chat() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5.4-mini",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "read this"},
+                {
+                    "type": "input_file",
+                    "file_data": "JVBERi0xLjQK",
+                    "filename": "report.pdf"
+                }
+            ]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let content = output["messages"][0]["content"]
+        .as_array()
+        .ok_or("Chat content should be an array")?;
+    let file = content
+        .iter()
+        .find(|block| block["type"] == "file")
+        .ok_or("the file must survive into Chat, not be dropped as unmappable raw")?;
+    assert_eq!(file["file"]["file_data"], "JVBERi0xLjQK");
+    assert_eq!(file["file"]["filename"], "report.pdf");
+    Ok(())
+}

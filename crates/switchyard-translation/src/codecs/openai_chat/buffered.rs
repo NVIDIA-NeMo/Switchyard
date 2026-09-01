@@ -588,6 +588,11 @@ pub(crate) fn decode_image_source(block: &Map<String, Value>) -> Option<ImageSou
 }
 
 /// Decodes OpenAI file block shapes into normalized file sources.
+///
+/// Accepts both the Chat shape, which nests the payload under a `file` object,
+/// and the Responses shape, which carries `file_id`/`file_data`/`filename`
+/// directly on the block. Returns `FileSource::Raw` when neither shape carries a
+/// field this can normalize.
 pub(crate) fn decode_file_source(block: &Map<String, Value>) -> FileSource {
     if let Some(file) = block.get("file").and_then(Value::as_object) {
         if let Some(file_id) = file.get("file_id").and_then(Value::as_str) {
@@ -604,8 +609,19 @@ pub(crate) fn decode_file_source(block: &Map<String, Value>) -> FileSource {
         }
         return FileSource::Raw(Value::Object(file.clone()));
     }
+    // A Chat block never reaches here with these keys, having matched the nested
+    // branch above.
     if let Some(file_id) = block.get("file_id").and_then(Value::as_str) {
         return FileSource::FileId(file_id.to_string());
+    }
+    if let Some(file_data) = block.get("file_data").and_then(Value::as_str) {
+        return FileSource::FileData {
+            data: file_data.to_string(),
+            filename: block
+                .get("filename")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        };
     }
     FileSource::Raw(Value::Object(block.clone()))
 }
