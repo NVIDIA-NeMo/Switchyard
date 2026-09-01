@@ -136,11 +136,8 @@ impl TranslatingLlmClient {
                 backend.validate_extra_headers(&config.model_name)?;
             }
         }
-        let build_client = |builder: reqwest::ClientBuilder| {
-            builder.build().map_err(|error| LlmClientError::Transport {
-                source: Box::new(error),
-            })
-        };
+        let build_client =
+            |builder: reqwest::ClientBuilder| builder.build().map_err(convert_reqwest_error);
         let client = build_client(reqwest::Client::builder())?;
         // A redirect could move provider-specific headers to another origin.
         // Forwarded credentials are sent only to the configured URL.
@@ -464,17 +461,9 @@ impl TranslatingLlmClient {
                 // Adapt the reqwest body stream to plain bytes; the SSE-decode itself is
                 // transport-agnostic and lives in `switchyard-translation`.
                 let bytes = http_response.bytes_stream().map(|chunk| {
-                    chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
-                        if error.is_timeout() {
-                            LlmClientError::Timeout {
-                                source: Box::new(error),
-                            }
-                        } else {
-                            LlmClientError::Transport {
-                                source: Box::new(error),
-                            }
-                        }
-                    })
+                    chunk
+                        .map(|bytes| bytes.to_vec())
+                        .map_err(convert_reqwest_error)
                 });
                 let mut chunks = decode_stream(bytes, wire_format)?;
                 // Providers reject an over-ceiling streaming request with an in-band
@@ -707,6 +696,9 @@ fn record_gen_ai_request(url: &str, model: &str, streaming: bool) {
 fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     // Reqwest labels truncated or otherwise unreadable response bodies as decode
     // errors, so distinguish them from serde JSON failures at the call site.
+    // Drop the url first: it reaches callers and logs, and a provider key can ride
+    // in it as a query parameter.
+    let error = error.without_url();
     if error.is_timeout() {
         LlmClientError::Timeout {
             source: Box::new(error),
@@ -915,6 +907,16 @@ fn is_reserved_header(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn transport_errors_drop_the_upstream_url() {
+        let error = reqwest::Client::new()
+            .post("http://127.0.0.1:1/v1?key=CANARY")
+            .send()
+            .await
+            .expect_err("closed port");
+        assert!(!convert_reqwest_error(error).to_string().contains("CANARY"));
+    }
     use std::collections::BTreeMap;
     use std::error::Error;
     use std::io::{Read, Write};
