@@ -19,7 +19,7 @@ use crate::codecs::stream::{
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
-use crate::llm::{AggLlmResponse, LlmRequest};
+use crate::llm::{AggLlmResponse, LlmRequest, ProviderExtensions};
 use crate::policy::TranslationPolicy;
 
 /// Encoded translation result with any diagnostics emitted along the way.
@@ -199,6 +199,25 @@ impl TranslationEngine {
             body: encoded.body,
             diagnostics: encoded.diagnostics,
         })
+    }
+
+    /// Encodes a neutral response IR while applying metadata retained from its request.
+    ///
+    /// Request extensions are used to restore caller-specific response details, such as
+    /// Codex tool namespaces, without exposing those details to the upstream provider.
+    pub fn encode_response_with_extensions(
+        &self,
+        target: impl Into<FormatId>,
+        response: &AggLlmResponse,
+        request_extensions: &ProviderExtensions,
+        policy: &TranslationPolicy,
+    ) -> Result<TranslationOutput> {
+        let mut output = self.encode_response(target, response, policy)?;
+        crate::codex_namespaces::restore_qualified_tool_names(
+            &mut output.body,
+            &crate::codex_namespaces::qualified_tool_origins(request_extensions),
+        );
+        Ok(output)
     }
 
     /// Translates a response body from source format to target format.
