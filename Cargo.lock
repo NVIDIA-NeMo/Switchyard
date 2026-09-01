@@ -1543,7 +1543,7 @@ version = "0.2.0"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
- "serde_json",
+ "switchyard-protocol",
  "thiserror 2.0.18",
  "tracing",
 ]

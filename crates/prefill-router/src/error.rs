@@ -7,12 +7,16 @@ use thiserror::Error;
 /// Errors produced while extracting prefill features.
 #[derive(Debug, Error)]
 pub enum PrefillRouterError {
+    /// The learned router could not be constructed from its configuration.
+    #[error("invalid prefill-router configuration: {0}")]
+    InvalidConfiguration(String),
+
     /// The caller supplied an invalid prefill request.
     #[error("invalid prefill request: {0}")]
     InvalidRequest(String),
 
-    /// The embedded Transformers implementation failed.
-    #[error("Transformers {operation} failed: {source}")]
+    /// An embedded Python operation failed.
+    #[error("embedded Python {operation} failed: {source}")]
     Python {
         operation: &'static str,
         #[source]

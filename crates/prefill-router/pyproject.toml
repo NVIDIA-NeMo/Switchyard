@@ -6,14 +6,10 @@ name = "prefill-router-tests"
 version = "0.0.0"
 requires-python = ">=3.10"
 dependencies = [
+    "accelerate>=1.0",
     "numpy>=1.26",
     "torch>=2.0",
     "transformers>=5.0",
-]
-
-[dependency-groups]
-dev = [
-    "model-router-toolkit @ https://github.com/NVIDIA-AI-Blueprints/llm-router/archive/8a9d3509fbde879d9795258081bab9553b458e04.tar.gz",
 ]
 
 [tool.uv]
