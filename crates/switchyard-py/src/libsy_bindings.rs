@@ -517,24 +517,17 @@ impl PyModelCall {
 /// The terminal routing selection, rewritten request, and optional existing response.
 #[pyclass(name = "RoutingOutcome", module = "switchyard.libsy", frozen)]
 struct PyRoutingOutcome {
-    selected_model_id: String,
-    fallback_models: Vec<String>,
+    selected_model_ids: Vec<String>,
     request: Py<PyAny>,
     response: Option<Py<PyAny>>,
 }
 
 #[pymethods]
 impl PyRoutingOutcome {
-    /// The model selected by the algorithm and tried first by the host.
+    /// Models selected by the algorithm, ordered best model first.
     #[getter]
-    fn selected_model_id(&self) -> &str {
-        &self.selected_model_id
-    }
-
-    /// Additional models the host may try in order after an eligible failure.
-    #[getter]
-    fn fallback_models(&self) -> Vec<String> {
-        self.fallback_models.clone()
+    fn selected_model_ids(&self) -> Vec<String> {
+        self.selected_model_ids.clone()
     }
 
     /// The normalized request after routing-time rewrites.
@@ -679,8 +672,7 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
         }),
         RustStep::Done(outcome) => {
             let RoutingOutcome {
-                selected_model_id,
-                fallback_models,
+                selected_model_ids,
                 request,
                 response,
             } = *outcome;
@@ -689,8 +681,7 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                     outcome: Py::new(
                         py,
                         PyRoutingOutcome {
-                            selected_model_id: selected_model_id.to_string(),
-                            fallback_models: fallback_models
+                            selected_model_ids: selected_model_ids
                                 .iter()
                                 .map(ToString::to_string)
                                 .collect(),

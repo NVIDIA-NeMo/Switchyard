@@ -723,7 +723,7 @@ async fn decision(
             match encode_aggregated_response(
                 &aggregate,
                 input_format,
-                Some(outcome.selected_model_id.as_str()),
+                outcome.selected_model_id().ok().map(ModelId::as_str),
             ) {
                 Ok(response) => Some(response),
                 Err(error) => return server_error(error.to_string()),
