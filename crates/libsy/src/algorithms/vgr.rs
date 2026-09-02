@@ -4,11 +4,15 @@
 //! Verification-gated routing: capability derivation and branch selection.
 //!
 //! The router decides whether to commit a locally produced attempt or escalate
-//! it, based on evidence about that specific attempt. This module holds the two
-//! pure, no-I/O stages that run before any evidence is gathered:
-//! [`derive_capabilities`], which builds the [`Capabilities`] the decision core
-//! is allowed to see, and [`select_branch`], which picks the verification regime
-//! those capabilities license.
+//! it, based on evidence about that specific attempt. This module holds the
+//! decision core: everything that is pure and does no I/O, so that what the
+//! router concludes is separable from the calls that gathered the evidence.
+//!
+//! Three stages, in order. [`derive_capabilities`] builds the [`Capabilities`]
+//! the decision core is allowed to see. [`select_branch`] picks the verification
+//! regime those capabilities license. [`decide::decide_from_signals`] applies
+//! that regime's rule to the evidence and returns a decision. The rules
+//! themselves live in [`rules`], and the constants they read in [`policy`].
 //!
 //! # Trust model
 //!
@@ -31,9 +35,14 @@
 
 use switchyard_protocol::Request;
 
+mod decide;
+mod policy;
 mod render;
+mod rules;
 mod text;
 
+#[cfg(test)]
+mod decide_tests;
 #[cfg(test)]
 mod tests;
 
