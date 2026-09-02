@@ -1136,6 +1136,7 @@ fn chat_compatible_extensions_survive_to_responses() -> TestResult {
         "service_tier": "flex",
         "store": false,
         "stream_options": {"include_usage": true},
+        "logprobs": true,
         "top_logprobs": 2,
         "user": "u-123"
     });
@@ -1160,6 +1161,7 @@ fn chat_compatible_extensions_survive_to_responses() -> TestResult {
     // Chat-only fields are not in the Responses allowlist, so they stay dropped.
     assert!(output.get("stream_options").is_none());
     assert!(output.get("top_logprobs").is_none());
+    assert!(output.get("logprobs").is_none());
     Ok(())
 }
 
@@ -1177,6 +1179,7 @@ fn responses_chat_compatible_extensions_survive_to_openai_chat() -> TestResult {
         "service_tier": "flex",
         "store": false,
         "stream_options": {"include_usage": true},
+        "logprobs": true,
         "top_logprobs": 2,
         "user": "u-123"
     });
@@ -1198,6 +1201,8 @@ fn responses_chat_compatible_extensions_survive_to_openai_chat() -> TestResult {
     assert_eq!(output["service_tier"], "flex");
     assert_eq!(output["store"], false);
     assert_eq!(output["stream_options"], json!({"include_usage": true}));
+    // Chat gates top_logprobs behind logprobs, so both must survive together.
+    assert_eq!(output["logprobs"], true);
     assert_eq!(output["top_logprobs"], 2);
     assert_eq!(output["user"], "u-123");
     Ok(())
