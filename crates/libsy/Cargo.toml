@@ -37,6 +37,7 @@ tokio.workspace = true
 tokio-stream = "0.1"
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
+flate2 = "1.0"
 
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.

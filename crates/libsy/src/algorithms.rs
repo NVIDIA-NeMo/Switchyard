@@ -10,6 +10,7 @@ pub mod advisor_gate;
 pub mod composite;
 mod escalation;
 pub mod fall_through;
+pub mod gzip_knn;
 pub mod llm_class;
 pub mod noop;
 pub mod passthrough;
