@@ -412,12 +412,6 @@ impl GZipKNNBuilder {
         self
     }
 
-    /// Set the k parameter for k-NN voting.
-    pub fn with_k(mut self, k: usize) -> Self {
-        self.config.k = k;
-        self
-    }
-
     /// Set the category-to-tier mapping.
     pub fn with_category_tier_map(mut self, map: HashMap<String, String>) -> Self {
         self.config.category_tier_map = map;
@@ -572,10 +566,9 @@ mod tests {
             .unwrap()
             .block_on(adapter.score(&mut (), &mut request, None))?;
 
-        // High confidence query should return Scores (short-circuit judges) or Ambiguous
-        match classification {
-            Classification::Scores(_) | Classification::Ambiguous(_) => Ok(()),
-        }
+        // High confidence query should return Scores (short-circuit judges)
+        assert!(matches!(classification, Classification::Scores(_)));
+        Ok(())
     }
 
     #[test]
@@ -618,10 +611,9 @@ mod tests {
             .unwrap()
             .block_on(adapter.score(&mut (), &mut request, None))?;
 
-        // Below threshold should mostly return Ambiguous (defer to judges)
-        match classification {
-            Classification::Ambiguous(_) | Classification::Scores(_) => Ok(()),
-        }
+        // Below threshold should return Ambiguous (defer to judges)
+        assert!(matches!(classification, Classification::Ambiguous(_)));
+        Ok(())
     }
 
     #[test]
