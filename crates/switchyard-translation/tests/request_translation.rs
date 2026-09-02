@@ -1853,6 +1853,44 @@ fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestR
     Ok(())
 }
 
+// Verifies OpenAI tool strictness survives translation to Anthropic.
+#[test]
+fn openai_tool_strictness_is_preserved_for_anthropic() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5",
+        "messages": [{"role": "user", "content": "Use a tool."}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {"name": "strict", "parameters": {}, "strict": true}
+            },
+            {
+                "type": "function",
+                "function": {"name": "non_strict", "parameters": {}, "strict": false}
+            },
+            {
+                "type": "function",
+                "function": {"name": "unspecified", "parameters": {}}
+            }
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["tools"][0]["strict"], true);
+    assert_eq!(output["tools"][1]["strict"], false);
+    assert!(output["tools"][2].get("strict").is_none());
+    Ok(())
+}
+
 // Verifies Anthropic-bound OpenAI requests get the required max_tokens fallback.
 #[test]
 fn openai_request_to_anthropic_adds_required_default_max_tokens() -> TestResult {
