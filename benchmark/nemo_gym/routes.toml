@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.nvidia]
+format = "openai_chat"
+base_url = "https://integrate.api.nvidia.com/v1"
+api_key_env = "NVIDIA_API_KEY"
+
+# Reuse the efficient model for classification; Switchyard tracks its judge and answer calls
+# separately.
+[targets.efficient]
+id = "nvidia/nemotron-3.5-lightning-30b-a3b"
+llm_client = "nvidia"
+extra_body = { temperature = 0, chat_template_kwargs = { enable_thinking = false } }
+
+# The strong model is both the fixed baseline and the routed condition's capable target.
+[targets.strong]
+id = "nvidia/nemotron-3-super-120b-a12b"
+llm_client = "nvidia"
+extra_body = { chat_template_kwargs = { enable_thinking = false } }
+
+# Fixed control: every request is served by the strong target.
+[routes.strong-only]
+id = "strong-only"
+type = "passthrough"
+target = "strong"
+
+# Routed condition: the classifier chooses the weak or strong answer target.
+[routes.policy-model]
+id = "policy-model"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "efficient"
+strong_target = "strong"
+weak_target = "efficient"
+base_threshold = 0.5
+threshold_step = 0.1
+max_output_tokens = 1024
