@@ -21,6 +21,7 @@ use crate::{ServerError, ServerResult, metrics};
 
 const DEFAULT_LOG_FILTER: &str = "info,opentelemetry=warn";
 const DEFAULT_SERVICE_NAME: &str = "switchyard-server";
+const SWITCHYARD_TELEMETRY_ENV: &str = "SWITCHYARD_TELEMETRY";
 
 struct Observability {
     tracer_provider: Option<SdkTracerProvider>,
@@ -74,6 +75,9 @@ impl Extractor for HeaderExtractor<'_> {
 
 pub(crate) fn otlp_enabled(signal: &str) -> bool {
     if env_var_is_true("OTEL_SDK_DISABLED") {
+        return false;
+    }
+    if !env_var_is_true(SWITCHYARD_TELEMETRY_ENV) {
         return false;
     }
     if env::var(format!("OTEL_{signal}_EXPORTER"))

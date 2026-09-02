@@ -171,6 +171,9 @@ containing `opus`, `sonnet`, then `haiku`. Other ties preserve the route's targe
 ## Metrics
 
 `GET /metrics` exposes Prometheus text from the server's process-wide OpenTelemetry provider.
+Outbound OTLP export is disabled unless `SWITCHYARD_TELEMETRY` is explicitly enabled with a truthy
+value such as `1` or `true`; configuring `OTEL_EXPORTER_OTLP_*` alone is not treated as telemetry
+opt-in. The local `/metrics` endpoint remains available either way.
 Routed-call compatibility metrics are:
 
 | Metric | Type | Labels | Meaning |
