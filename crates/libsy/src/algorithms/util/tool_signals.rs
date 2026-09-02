@@ -220,6 +220,14 @@ pub struct ToolSignals {
     pub severity: f32,
     /// Consecutive clean tool results back from the most recent. `0` if the last failed.
     pub no_error_streak: u32,
+    /// Tool results in the whole request whose text matched an error pattern.
+    ///
+    /// Unwindowed, unlike [`ToolSignals::severity`]: a veto that asks "did
+    /// anything fail during this task" must see errors the recent window has
+    /// already decayed out of. Reported, not host-observed — it is derived from
+    /// the conversation the client supplied, so it can witness failure but
+    /// cannot attest success.
+    pub error_count: u32,
     /// Total edit-style tool calls in the request.
     pub edit_count: u32,
     /// Total write-style tool calls in the request.
@@ -471,6 +479,13 @@ fn build_signal(
         }
     }
 
+    // Unwindowed, so a caller that vetoes on "any error at all" sees errors the
+    // recent window has already decayed out of.
+    let error_count = tool_texts
+        .iter()
+        .filter(|text| classify_text(text).0 > 0.0)
+        .count() as u32;
+
     let no_error_streak = compute_no_error_streak(&tool_texts);
 
     // Single pass: cumulative + sliding-window counters together. Also tracks
@@ -530,6 +545,7 @@ fn build_signal(
     ToolSignals {
         severity,
         no_error_streak,
+        error_count,
         edit_count,
         write_count,
         read_count,
