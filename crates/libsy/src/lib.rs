@@ -16,6 +16,10 @@ pub use error::{DriverError, LibsyError, Result};
 mod algorithms;
 pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
 pub use algorithms::composite::{CompositeRouter, CompositeRouterConfig};
+pub use algorithms::gzip_knn::{
+    GZipKNNClassifier, GZipKNNClassifierAdapter, GZipKNNBuilder, GZipKNNFallbackConfig,
+    TrainingExample,
+};
 pub use algorithms::llm_class::{
     CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
     TaskClassifierConfig,
@@ -43,3 +47,5 @@ pub use algorithms::util::stage::{
 };
 
 mod observability;
+
+pub mod prompts;
