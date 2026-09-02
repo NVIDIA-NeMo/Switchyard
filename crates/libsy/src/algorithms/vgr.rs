@@ -36,6 +36,7 @@
 use switchyard_protocol::Request;
 
 mod decide;
+mod matching;
 mod policy;
 mod render;
 mod rules;
@@ -43,6 +44,8 @@ mod text;
 
 #[cfg(test)]
 mod decide_tests;
+#[cfg(test)]
+mod matching_tests;
 #[cfg(test)]
 mod tests;
 
