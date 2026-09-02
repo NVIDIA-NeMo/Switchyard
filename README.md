@@ -6,6 +6,20 @@
 
 **Switchyard routes each LLM call to the cheapest model that can still do the job. Without changing a line of your agent.**
 
+**[Get started →](#get-started)**
+
+```mermaid
+flowchart LR
+    A["Claude Code · Codex CLI<br/>OpenAI / Anthropic SDK clients"]
+    SY["Switchyard<br/>routing algorithm + protocol translation"]
+    E["Efficient model<br/>GLM, Qwen, your own vLLM"]
+    C["Capable model<br/>Opus, GPT, NVIDIA NIM"]
+
+    A -->|"unchanged native API"| SY
+    SY -->|"routine turns"| E
+    SY -->|"hard turns"| C
+```
+
 It has three modes:
 
 **1. A Rust proxy** — run it in front of the agent you already use:
@@ -47,25 +61,6 @@ Switchyard is pre-alpha software that is evolving rapidly. The API and algorithm
 > - switchyard-llm-client: Alpha. May change significantly.
 > - switchyard-runner: Alpha. Evolving rapidly.
 > - switchyard-server: Demo server, not for production use.
-
-## What Is Switchyard
-
-Most routers route on the things around a request: model name, price list,
-endpoint health. Switchyard routes on the request itself and on how the agent's
-run is going — how hard the task looks, what the last tool calls returned,
-and how the model is doing so far.
-
-```mermaid
-flowchart LR
-    A["Claude Code · Codex CLI<br/>OpenAI / Anthropic SDK clients"]
-    SY["Switchyard<br/>routing algorithm + protocol translation"]
-    E["Efficient model<br/>GLM, Qwen, your own vLLM"]
-    C["Capable model<br/>Opus, GPT, NVIDIA NIM"]
-
-    A -->|"unchanged native API"| SY
-    SY -->|"routine turns"| E
-    SY -->|"hard turns"| C
-```
 
 ## Why Switchyard
 
