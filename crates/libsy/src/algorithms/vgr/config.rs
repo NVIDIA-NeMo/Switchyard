@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use switchyard_protocol::ModelId;
 
 use super::policy::Policy;
+use super::safety::{BreakerConfig, KillSwitch};
 use crate::{LibsyError, Result};
 
 /// How much authority a decision has over the traffic it decides.
@@ -194,6 +195,25 @@ pub struct VgrConfig {
     /// Exceeding it does not fail the request; it ends evidence gathering, and
     /// whatever was not established stays unestablished — which escalates.
     pub deadline: Duration,
+    /// An operator handle that stops local commits without rebuilding the route.
+    ///
+    /// Unset means no runtime stop exists, which is not the same as one that is
+    /// never engaged: the operator must hold a handle for there to be anything
+    /// to engage.
+    pub kill_switch: Option<KillSwitch>,
+    /// Tuning for the local-endpoint circuit breaker.
+    pub breaker: BreakerConfig,
+    /// Whether the router types the request before deriving capabilities.
+    ///
+    /// Typing costs one cheap local call per turn and is what makes the
+    /// answer and conversational regimes reachable at all; abstaining selects
+    /// the default regime, which is more conservative rather than weaker.
+    pub task_typing: bool,
+    /// Whether a session that escalated stays on the capable tier.
+    ///
+    /// Off by default: holding a session on the capable tier is a cost decision
+    /// an operator makes, not one this router should make for them.
+    pub latch_escalation: bool,
 }
 
 impl VgrConfig {
@@ -212,6 +232,10 @@ impl VgrConfig {
             structured_answer: false,
             speculation_carry: false,
             deadline: Duration::from_secs(30),
+            kill_switch: None,
+            breaker: BreakerConfig::default(),
+            task_typing: false,
+            latch_escalation: false,
         }
     }
 

@@ -44,6 +44,7 @@ use crate::{Result, RoutingOutcome};
 use self::config::VgrConfig;
 use self::fall_through::FallThrough;
 use crate::algorithms::fall_through;
+use crate::algorithms::util::affinity::AffinityRouter;
 
 mod config;
 mod decide;
@@ -55,6 +56,8 @@ mod render;
 mod rules;
 mod rungs;
 mod runtime;
+mod safety;
+mod telemetry;
 mod text;
 
 #[cfg(test)]
@@ -88,11 +91,23 @@ impl Vgr {
         let local = config.targets.local.clone();
         let cloud = config.targets.cloud.clone();
         let targets = vec![local.clone(), cloud.clone()];
-        let classifier = Arc::new(runtime::VgrClassifier { config });
+        let latch = config.latch_escalation.then(|| {
+            // Retaining only the capable tier is what makes this an escalation
+            // latch rather than plain affinity: a local commit leaves the
+            // session free to be verified afresh next turn, while an escalation
+            // sticks. Registered ahead of the verification classifier, so a
+            // latched session does not even pay for the local attempt.
+            Arc::new(AffinityRouter::new().with_latch_only([config.targets.cloud.clone()]))
+        });
+        let breaker = safety::CircuitBreaker::new(config.breaker);
+        let classifier = Arc::new(runtime::VgrClassifier { config, breaker });
+
+        let mut route = FallThrough::new_with_state(targets).with_name("vgr");
+        if let Some(latch) = latch {
+            route = route.with_processor(latch.clone()).with_classifier(latch);
+        }
         Ok(Self {
-            route: FallThrough::new_with_state(targets)
-                .with_name("vgr")
-                .with_classifier(classifier),
+            route: route.with_classifier(classifier),
             local,
             cloud,
         })
@@ -173,6 +188,23 @@ pub(super) enum ToolErrorCount {
     Host(i32),
     /// A count from any other provenance.
     Untrusted(i32),
+}
+
+impl ToolErrorCount {
+    /// Returns the reported number of tool errors.
+    fn count(self) -> i32 {
+        match self {
+            Self::Host(count) | Self::Untrusted(count) => count,
+        }
+    }
+
+    /// Low-cardinality provenance label for telemetry.
+    fn source_label(self) -> &'static str {
+        match self {
+            Self::Host(_) => "host",
+            Self::Untrusted(_) => "untrusted",
+        }
+    }
 }
 
 /// The complete input the decision core sees.

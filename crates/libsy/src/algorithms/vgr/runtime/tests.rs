@@ -17,12 +17,13 @@ use futures::StreamExt;
 use parking_lot::Mutex;
 use switchyard_protocol::{
     ContentBlock, FormatId, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent,
-    ModelId, PreservationMetadata, Request, Response, Usage, WireFormat, text_request,
-    text_response,
+    Message, ModelId, PreservationMetadata, Request, Response, Role, ToolResult, Usage, WireFormat,
+    text_request, text_response,
 };
 
 use super::super::config::{Checker, CheckerRequest, ServingMode, ValidatedChecker, VgrConfig};
 use super::super::mode::ACTIVE_APPROVAL;
+use super::super::safety::{BreakerConfig, KillSwitch};
 use crate::core::testing::{ServeResult, test_drive};
 use crate::{Algorithm, LibsyError, Result, Step};
 
@@ -797,5 +798,446 @@ async fn coding_without_a_validated_checker_cannot_commit() -> Result<()> {
     .await?;
 
     assert_eq!(target, ModelId::from(CLOUD));
+    Ok(())
+}
+
+// ─── operator controls ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn an_engaged_kill_switch_escalates_without_producing_an_attempt() {
+    // The operator's stop must cost nothing: no attempt, no verifier, no local
+    // call of any kind.
+    let switch = KillSwitch::new();
+    switch.engage();
+    let log = CallLog::default();
+    let seen = log.clone();
+    let config = VgrConfig {
+        kill_switch: Some(switch.clone()),
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config).expect("builds"));
+
+    let (target, _) = test_drive(route.clone(), request("what is the capital?"), {
+        let seen = seen.clone();
+        move |t: ModelId, _r| {
+            let log = seen.clone();
+            async move {
+                log.record(&t);
+                let result: ServeResult = Ok(reply("cloud answer"));
+                result
+            }
+        }
+    })
+    .await
+    .expect("routes");
+
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(log.targets(), vec![CLOUD]);
+
+    // Releasing it restores verification on the very next turn, without the
+    // route being rebuilt.
+    switch.release();
+    let (target, _) = test_drive(
+        route,
+        request("what is the capital?"),
+        move |t: ModelId, _r| {
+            let log = seen.clone();
+            async move {
+                log.record(&t);
+                let result: ServeResult = if t == *LOCAL {
+                    Ok(reply_with_readout("Paris.", 0.97))
+                } else {
+                    Ok(reply("cloud answer"))
+                };
+                result
+            }
+        },
+    )
+    .await
+    .expect("routes");
+    assert_eq!(target, ModelId::from(LOCAL));
+}
+
+#[tokio::test]
+async fn a_dead_local_endpoint_stops_being_called_once_the_breaker_opens() {
+    // Without the breaker every request pays a fresh failed call forever. The
+    // turn still escalates either way, so what is asserted is the cost.
+    let log = CallLog::default();
+    let config = VgrConfig {
+        breaker: BreakerConfig {
+            threshold: 2,
+            cooldown: Duration::from_secs(60),
+        },
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config).expect("builds"));
+
+    // Two failed turns open the circuit. The local tier answers nothing; the
+    // context-overflow class is used because it escalates rather than erroring.
+    for _ in 0..2 {
+        let seen = log.clone();
+        let (target, _) = test_drive(route.clone(), request("hello"), move |t: ModelId, _r| {
+            let log = seen.clone();
+            async move {
+                log.record(&t);
+                let result: ServeResult = if t == *LOCAL {
+                    Err(LlmClientError::Transport {
+                        source: std::io::Error::other("connection refused").into(),
+                    })
+                } else {
+                    Ok(reply("cloud answer"))
+                };
+                result
+            }
+        })
+        .await
+        .expect("routes");
+        assert_eq!(target, ModelId::from(CLOUD));
+    }
+    assert_eq!(log.targets(), vec![LOCAL, CLOUD, LOCAL, CLOUD]);
+
+    // The third turn skips the local tier entirely.
+    let seen = log.clone();
+    let (target, _) = test_drive(route, request("hello"), move |t: ModelId, _r| {
+        let log = seen.clone();
+        async move {
+            log.record(&t);
+            let result: ServeResult = Ok(reply("cloud answer"));
+            result
+        }
+    })
+    .await
+    .expect("routes");
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(log.targets().iter().filter(|t| *t == LOCAL).count(), 2);
+}
+
+#[tokio::test]
+async fn a_hung_verifier_cannot_overrun_the_decision_budget() {
+    // The deadline binds each call, not just the gaps between them: a verifier
+    // that accepts the request and never answers must not hold the turn open.
+    let config = VgrConfig {
+        deadline: Duration::from_millis(150),
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config).expect("builds"));
+
+    let started = std::time::Instant::now();
+    let (target, _) = test_drive(
+        route,
+        request("what is the capital?"),
+        |t: ModelId, _r| async move {
+            let result: ServeResult = if t == *LOCAL {
+                // The attempt answers; the readout that follows never does.
+                static ATTEMPTED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if ATTEMPTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    Ok(reply("never arrives"))
+                } else {
+                    Ok(reply("Paris."))
+                }
+            } else {
+                Ok(reply("cloud answer"))
+            };
+            result
+        },
+    )
+    .await
+    .expect("routes");
+
+    // Evidence that was never gathered escalates, and the turn ends near the
+    // budget rather than near the verifier's own timeout.
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn an_escalated_session_stays_on_the_capable_tier() {
+    // The latch retains only the capable tier, so a session that escalated is
+    // not re-verified — and does not pay for another local attempt.
+    let log = CallLog::default();
+    let config = VgrConfig {
+        latch_escalation: true,
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config).expect("builds"));
+    let session = || Request {
+        metadata: Some(switchyard_protocol::Metadata {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        }),
+        ..request("what is the capital?")
+    };
+
+    let seen = log.clone();
+    let (target, _) = test_drive(route.clone(), session(), move |t: ModelId, _r| {
+        let log = seen.clone();
+        async move {
+            log.record(&t);
+            let result: ServeResult = if t == *LOCAL {
+                Ok(reply_with_readout("Paris.", 0.02))
+            } else {
+                Ok(reply("cloud answer"))
+            };
+            result
+        }
+    })
+    .await
+    .expect("routes");
+    assert_eq!(target, ModelId::from(CLOUD));
+    let verified_turn = log.targets().iter().filter(|t| *t == LOCAL).count();
+    assert!(verified_turn > 0, "the first turn was verified");
+
+    let seen = log.clone();
+    let (target, _) = test_drive(route, session(), move |t: ModelId, _r| {
+        let log = seen.clone();
+        async move {
+            log.record(&t);
+            let result: ServeResult = Ok(reply("cloud answer"));
+            result
+        }
+    })
+    .await
+    .expect("routes");
+
+    assert_eq!(target, ModelId::from(CLOUD));
+    // The latched turn produced no attempt and consulted no verifier.
+    assert_eq!(
+        log.targets().iter().filter(|t| *t == LOCAL).count(),
+        verified_turn
+    );
+}
+
+// ─── host-tool evidence ──────────────────────────────────────────────────────
+
+/// A request whose conversation carries one failed tool result.
+fn request_with_tool_error(text: &str) -> Request {
+    let mut base = request(text);
+    base.llm_request.messages.push(Message {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult(ToolResult {
+            tool_call_id: "call-1".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Traceback (most recent call last)\nModuleNotFoundError: no module named x"
+                    .to_string(),
+            }],
+            is_error: None,
+        })],
+    });
+    base
+}
+
+#[tokio::test]
+async fn a_reported_tool_error_vetoes_a_commit_the_evidence_would_otherwise_license() {
+    // The veto is the point: a confident readout is not enough when the
+    // conversation shows the work failed along the way.
+    let route = Arc::new(super::super::Vgr::new(active()).expect("builds"));
+    let (target, _) = test_drive(
+        route,
+        request_with_tool_error("install the package"),
+        |t: ModelId, _r| async move {
+            let result: ServeResult = if t == *LOCAL {
+                Ok(reply_with_readout("Installed it.", 0.99))
+            } else {
+                Ok(reply("cloud answer"))
+            };
+            result
+        },
+    )
+    .await
+    .expect("routes");
+
+    assert_eq!(target, ModelId::from(CLOUD));
+}
+
+#[tokio::test]
+async fn a_clean_reported_count_does_not_authorize_an_agentic_commit() {
+    // This router proxies model calls and never runs the tools, so a clean tool
+    // record is reported rather than attested. It may witness failure but it
+    // must not stand in for the host evidence the agentic regimes require —
+    // otherwise a client controls whether its own work is verified.
+    let route = Arc::new(super::super::Vgr::new(active()).expect("builds"));
+    let (target, _) = test_drive(
+        route,
+        request("run the deployment"),
+        |t: ModelId, _r| async move {
+            let result: ServeResult = if t == *LOCAL {
+                // Tool activity in the attempt selects an agentic regime, and
+                // the readout is as confident as it can be.
+                Ok(reply_with_readout(
+                    "[tool] deploy\nAll steps completed.",
+                    0.99,
+                ))
+            } else {
+                Ok(reply("cloud answer"))
+            };
+            result
+        },
+    )
+    .await
+    .expect("routes");
+
+    assert_eq!(target, ModelId::from(CLOUD));
+}
+
+// ─── task typing and the agreement rung ──────────────────────────────────────
+
+#[tokio::test]
+async fn typing_the_request_makes_the_answer_regime_reachable() -> Result<()> {
+    // Without typing, no request reaches the answer regime at all: derivation
+    // only carries a final answer when the router typed the task as one.
+    let log = CallLog::default();
+    let seen = log.clone();
+    let config = VgrConfig {
+        task_typing: true,
+        structured_answer: true,
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config).expect("builds"));
+
+    let (target, response) = test_drive(
+        route,
+        request("what is the capital of France?"),
+        move |t: ModelId, r: Request| {
+            let log = seen.clone();
+            async move {
+                log.record(&t);
+                let asked = r
+                    .llm_request
+                    .messages
+                    .first()
+                    .and_then(|m| m.text_content(""))
+                    .unwrap_or_default();
+                let result: ServeResult = match log.targets().len() {
+                    1 => Ok(reply("Paris.")),
+                    // The typing rung, then the witness.
+                    2 => Ok(reply("answer")),
+                    _ => {
+                        // The witness is asked the task and never shown the attempt,
+                        // so agreement between the two is evidence, not an echo.
+                        assert!(
+                            !asked.contains("Paris."),
+                            "witness saw the attempt: {asked}"
+                        );
+                        Ok(reply("Paris."))
+                    }
+                };
+                result
+            }
+        },
+    )
+    .await?;
+
+    assert_eq!(target, ModelId::from(LOCAL));
+    assert_eq!(served_text(response).await?, "Paris.");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_witness_that_disagrees_does_not_commit_the_answer() {
+    let config = VgrConfig {
+        task_typing: true,
+        structured_answer: true,
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config).expect("builds"));
+    let log = CallLog::default();
+    let seen = log.clone();
+
+    let (target, _) = test_drive(
+        route,
+        request("what is the capital of France?"),
+        move |t: ModelId, _r| {
+            let log = seen.clone();
+            async move {
+                log.record(&t);
+                let result: ServeResult = match log.targets().len() {
+                    1 => Ok(reply("Lyon.")),
+                    2 => Ok(reply("answer")),
+                    // An independently produced answer that contradicts the attempt.
+                    3 => Ok(reply("Paris.")),
+                    _ => Ok(reply_with_readout("no", 0.01)),
+                };
+                result
+            }
+        },
+    )
+    .await
+    .expect("routes");
+
+    assert_eq!(target, ModelId::from(CLOUD));
+}
+
+#[tokio::test]
+async fn an_unparsable_typing_reply_abstains_to_the_default_regime() -> Result<()> {
+    // Abstention must select the default regime, which is more conservative
+    // than any type would have been — never a weaker one.
+    let config = VgrConfig {
+        task_typing: true,
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config).expect("builds"));
+    let log = CallLog::default();
+    let seen = log.clone();
+
+    let (target, response) = test_drive(
+        route,
+        request("what is the capital?"),
+        move |t: ModelId, _r| {
+            let log = seen.clone();
+            async move {
+                log.record(&t);
+                let result: ServeResult = match log.targets().len() {
+                    1 => Ok(reply("Paris.")),
+                    // Neither a known type nor the abstain word.
+                    2 => Ok(reply("I think this is probably a question about geography")),
+                    _ => Ok(reply_with_readout("yes", 0.97)),
+                };
+                result
+            }
+        },
+    )
+    .await?;
+
+    // The default regime commits on a confident readout, so the turn still
+    // resolves — it is just verified by the universal judge rather than by an
+    // answer-specific rung.
+    assert_eq!(target, ModelId::from(LOCAL));
+    assert_eq!(served_text(response).await?, "Paris.");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_configured_checker_suppresses_the_typing_call() -> Result<()> {
+    // The checker's regime is selected by operator configuration, so no type
+    // can change it and paying for one would be waste.
+    let log = CallLog::default();
+    let seen = log.clone();
+    let config = VgrConfig {
+        task_typing: true,
+        checker: Some(validated_checker(Some(true))?),
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config)?);
+
+    let (target, _) = test_drive(route, request("fix the build"), move |t: ModelId, _r| {
+        let log = seen.clone();
+        async move {
+            log.record(&t);
+            let result: ServeResult = Ok(reply("a patch"));
+            result
+        }
+    })
+    .await?;
+
+    assert_eq!(target, ModelId::from(LOCAL));
+    // The attempt, and nothing else.
+    assert_eq!(log.targets(), vec![LOCAL]);
     Ok(())
 }
