@@ -110,6 +110,19 @@ attributes. `target_model` comes from the configured Switchyard target set,
 rather than arbitrary caller input, keeping the metric cardinality bounded by
 the deployment.
 
+Every non-metric mark sets `data_schema.name` to the mark name and
+`data_schema.version` to `1`. Consumers should tolerate unknown fields and
+values. Removing or renaming fields, changing their type, or changing their
+meaning requires a new schema version.
+
+| Mark | Data fields |
+| --- | --- |
+| `switchyard.routing.requested` | `algorithm` |
+| `switchyard.routing.llm_call` | `call_index`, `selected_model`, `call_role`, `outcome`, `latency_ms` |
+| `switchyard.routing.overhead` | `latency_ms` |
+| `switchyard.routing.decision` | `algorithm`, `selected_model` |
+| `switchyard.routing.error` | `failure_kind`; optional `category`, `phase`, `upstream_status`, and `target` |
+
 ## Failure policy
 
 `switchyard-llm-client` owns provider retry and route-candidate fallback
