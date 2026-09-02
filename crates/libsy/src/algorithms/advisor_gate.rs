@@ -10,8 +10,8 @@
 //! buffered turn unchanged; `REDO` appends the discarded turn's text and the
 //! advisor's plan as feedback, then re-invokes the executor so it keeps
 //! working. Each budget scope (one benchmark evaluation, one session, or the
-//! whole instance — see [`budget_scope`]) is reviewed at most `max_reviews`
-//! times; afterwards every call is a pure passthrough.
+//! whole instance — see [`budget::budget_scope`]) is reviewed at most
+//! `max_reviews` times; afterwards every call is a pure passthrough.
 //!
 //! This design is a near-superset of solo executor behavior: identical until
 //! the executor first claims to be done, plus one quality gate that catches
@@ -24,34 +24,46 @@
 //! turn passes through as an implicit APPROVE — refund the consumed review,
 //! and count toward a per-scope failure cap that stops consulting a down
 //! advisor entirely.
+//!
+//! Structure: [`AdvisorGate`] is a thin orchestrator over the gate's
+//! components. The [`signals`] processor folds each event's facts into the
+//! per-turn state — conversation counts on [`Event::Request`], the generated
+//! turn's shape on [`Event::ModelResponse`] — the [`trigger`] classifier
+//! reads them after the executor call, and the [`budget`] ledger holds the
+//! only mutable state: the reserve/refund review budget and the stall latch.
 
-use std::collections::{HashMap, HashSet};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 
-use parking_lot::Mutex;
 use switchyard_protocol::{
     ContentBlock, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Request, Role,
     SamplingParams,
 };
 
-use crate::algorithms::util::tool_signals::ToolSignals;
 use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
+use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
 
+mod budget;
+mod signals;
 mod telemetry;
 #[cfg(test)]
 mod tests;
 mod transcript;
+mod trigger;
 mod turn;
 
+use budget::{ReviewBudget, ScopeKey, budget_scope, stall_key};
+use signals::{GateSignalProcessor, GateSignals};
 use telemetry::{
     ReviewAudit, emit_discarded_audit, emit_review_audit, record_consult_failure, record_discarded,
     record_review,
 };
 use transcript::{VERDICT_PATTERN, Verdict, advisor_reply_text, parse_verdict, review_transcript};
-use turn::{GatedTurn, buffer_turn, has_tool_use, reasoning_text, visible_text};
+use trigger::TriggerClassifier;
+#[cfg(test)]
+use turn::has_tool_use;
+use turn::{GatedTurn, buffer_turn, reasoning_text, visible_text};
 
 /// APPROVE/REDO reviewer contract sent as the advisor's system prompt.
 pub const REVIEWER_SYSTEM_PROMPT: &str =
@@ -72,14 +84,6 @@ const REASONING_TAIL_LABEL: &str =
 /// REDO echo when the discarded turn had neither text nor reasoning; strict
 /// endpoints (Anthropic) reject empty text blocks, so never echo "".
 const EMPTY_ECHO_PLACEHOLDER: &str = "(the executor produced no output this turn)";
-/// Failed consults tolerated per scope before the gate stops consulting.
-/// Failures refund the review budget — a transient advisor error must not
-/// silently exhaust `max_reviews` with zero real reviews — so this separate
-/// cap is what bounds per-turn consult latency against a down advisor.
-const MAX_FAILED_CONSULTS: u32 = 3;
-/// Bounds tracked budget scopes and stall keys; a scope dropped at the bound
-/// re-arms like a process restart (rare, harmless).
-const MAX_TRACKED_SCOPES: usize = 1_024;
 /// Benchmark harnesses stamp every request of one evaluation — sub-agents
 /// included — with this header, so it is the review budget's first-choice
 /// scope: "reviews for *this* task" survives gateways shared by many tasks.
@@ -147,38 +151,6 @@ impl Default for AdvisorGateConfig {
     }
 }
 
-/// The trigger with its pattern compiled once at construction.
-enum CompiledTrigger {
-    NoToolCall,
-    Pattern(regex::Regex),
-}
-
-/// Review budget scope, in precedence order: the benchmark harness header
-/// (exact evaluation identity, sub-agents included), then the host-resolved
-/// session id, then one instance-wide scope for headerless clients.
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-enum ScopeKey {
-    Instance,
-    Client(String),
-    Session(String),
-}
-
-/// Per-scope review ledger.
-#[derive(Default)]
-struct ScopeState {
-    reviews: u32,
-    failed_consults: u32,
-    exhaustion_logged: bool,
-}
-
-/// Shared mutable gate state; every access is a short critical section and
-/// the lock is never held across an await.
-#[derive(Default)]
-struct GateState {
-    scopes: HashMap<ScopeKey, ScopeState>,
-    stall_fired: HashSet<u64>,
-}
-
 /// Advisor review gate: executor turns pass through until the first terminal
 /// turn, which a stronger advisor reviews once per scope budget (APPROVE
 /// releases it, REDO feeds the plan back and re-invokes the executor).
@@ -186,9 +158,13 @@ pub struct AdvisorGate {
     executor: ModelId,
     advisor: ModelId,
     config: AdvisorGateConfig,
-    trigger: CompiledTrigger,
+    /// Folds request- and response-side facts into the per-turn [`GateSignals`].
+    signals: GateSignalProcessor,
+    /// Decides, from the signals, whether the buffered turn warrants review.
+    trigger: TriggerClassifier,
+    /// Reserve/refund review ledger and stall latch — the gate's only mutable state.
+    budget: ReviewBudget,
     verdict_re: regex::Regex,
-    state: Mutex<GateState>,
 }
 
 impl AdvisorGate {
@@ -203,110 +179,20 @@ impl AdvisorGate {
         if config.transcript_max_chars < 256 {
             return Err(algorithm_error("transcript_max_chars must be at least 256"));
         }
-        let trigger = match &config.gate_trigger {
-            GateTrigger::NoToolCall => CompiledTrigger::NoToolCall,
-            GateTrigger::Pattern(pattern) => {
-                if pattern.is_empty() {
-                    return Err(algorithm_error(
-                        "gate_trigger 'pattern' requires a non-empty gate_trigger_pattern",
-                    ));
-                }
-                CompiledTrigger::Pattern(regex::Regex::new(pattern).map_err(|error| {
-                    algorithm_error(format!(
-                        "gate_trigger_pattern is not a valid regex: {error}"
-                    ))
-                })?)
-            }
-        };
+        let trigger = TriggerClassifier::new(&config)?;
         let verdict_re = regex::Regex::new(VERDICT_PATTERN).map_err(|error| {
             algorithm_error(format!("verdict pattern failed to compile: {error}"))
         })?;
+        let budget = ReviewBudget::new(config.max_reviews);
         Ok(Self {
             executor,
             advisor,
             config,
+            signals: GateSignalProcessor,
             trigger,
+            budget,
             verdict_re,
-            state: Mutex::new(GateState::default()),
         })
-    }
-
-    // ── Scope ledger ────────────────────────────────────────────────────────
-
-    /// Whether the scope's budget or failure cap is spent; logs once per scope.
-    fn check_exhausted(&self, scope: &ScopeKey) -> bool {
-        let mut state = self.state.lock();
-        let Some(entry) = state.scopes.get_mut(scope) else {
-            return false;
-        };
-        let exhausted = entry.reviews >= self.config.max_reviews
-            || entry.failed_consults >= MAX_FAILED_CONSULTS;
-        if exhausted && !entry.exhaustion_logged {
-            entry.exhaustion_logged = true;
-            tracing::info!(
-                target: "libsy",
-                scope = ?scope,
-                "advisor gate: review budget spent; passing through"
-            );
-        }
-        exhausted
-    }
-
-    /// Atomically re-checks exhaustion and reserves one review. Reserving
-    /// before the consult await means concurrent same-scope requests cannot
-    /// overdraw `max_reviews`; a loser returns its buffered turn unreviewed.
-    fn try_reserve(&self, scope: &ScopeKey) -> bool {
-        let mut state = self.state.lock();
-        if state.scopes.len() >= MAX_TRACKED_SCOPES && !state.scopes.contains_key(scope) {
-            let evict = state
-                .scopes
-                .keys()
-                .find(|key| **key != ScopeKey::Instance)
-                .cloned();
-            if let Some(key) = evict {
-                state.scopes.remove(&key);
-            }
-        }
-        let max_reviews = self.config.max_reviews;
-        let entry = state.scopes.entry(scope.clone()).or_default();
-        if entry.reviews >= max_reviews || entry.failed_consults >= MAX_FAILED_CONSULTS {
-            return false;
-        }
-        entry.reviews += 1;
-        true
-    }
-
-    /// Returns a reserved review after a failed consult and counts the
-    /// failure; applied on fail-open *and* fail-closed paths so the failure
-    /// cap bounds both.
-    fn refund_failure(&self, scope: &ScopeKey) {
-        let mut state = self.state.lock();
-        let entry = state.scopes.entry(scope.clone()).or_default();
-        entry.reviews = entry.reviews.saturating_sub(1);
-        entry.failed_consults += 1;
-    }
-
-    /// Drops a completed session's ledger entry; the instance scope persists.
-    fn evict_scope(&self, scope: &ScopeKey) {
-        if *scope == ScopeKey::Instance {
-            return;
-        }
-        self.state.lock().scopes.remove(scope);
-    }
-
-    fn stall_already_fired(&self, key: u64) -> bool {
-        self.state.lock().stall_fired.contains(&key)
-    }
-
-    fn mark_stall_fired(&self, key: u64) {
-        let mut state = self.state.lock();
-        if state.stall_fired.len() >= MAX_TRACKED_SCOPES {
-            let drop = state.stall_fired.iter().next().copied();
-            if let Some(key) = drop {
-                state.stall_fired.remove(&key);
-            }
-        }
-        state.stall_fired.insert(key);
     }
 
     // ── Gate flow ───────────────────────────────────────────────────────────
@@ -321,13 +207,28 @@ impl AdvisorGate {
         // verbatim preserved-body replay, zero buffering. Executor errors
         // (including ContextWindowExceeded) propagate for the host's
         // client-visible mapping.
-        if self.check_exhausted(scope) {
+        if self.budget.check_exhausted(scope) {
             return Ok(RoutingOutcome::route_to(
                 self.executor.clone(),
                 Vec::new(),
                 request,
             ));
         }
+
+        // Request-side signals fold in before the executor runs: conversation
+        // counts from the shared ToolSignals extraction — the same definition
+        // of tool-result/turn counting the stage router uses.
+        let mut request = request;
+        let mut signals = GateSignals::default();
+        self.signals
+            .process(
+                &mut signals,
+                Event::Request {
+                    request: &mut request,
+                    driver: Some(driver),
+                },
+            )
+            .await?;
 
         // Gated phase: generate the turn once, fully buffered, so the gate
         // can inspect it before the client sees anything.
@@ -336,27 +237,21 @@ impl AdvisorGate {
             .await?;
         let turn = buffer_turn(self.executor.as_str(), response).await?;
 
-        // Request-side guard counts come from the shared ToolSignals
-        // extraction — the same definition of tool-result/turn counting the
-        // stage router uses.
-        let signals = ToolSignals::from_request(&request, None);
+        // Response-side signals fold in after it: a terminal turn never
+        // appears on any subsequent request — the harness stops once the
+        // executor answers without tools — so the trigger classifier can only
+        // run on the model-response event.
+        self.signals
+            .process(&mut signals, Event::ModelResponse(&turn.agg))
+            .await?;
+
+        let decision = self.trigger.classify(&signals);
         // The stall checkpoint fires once per conversation regardless of the
         // turn's shape — even a tool-call turn — for executors that grind
         // without ever declaring completion.
         let stall_key = stall_key(&request);
-        let stall = self.config.gate_stall_turns > 0
-            && !self.stall_already_fired(stall_key)
-            && signals.assistant_turn_count >= self.config.gate_stall_turns;
-        let triggered = match &self.trigger {
-            CompiledTrigger::Pattern(pattern) => {
-                pattern.is_match(visible_text(&turn.agg).as_deref().unwrap_or(""))
-            }
-            CompiledTrigger::NoToolCall => {
-                !has_tool_use(&turn.agg)
-                    && signals.tool_result_count >= self.config.gate_min_tool_results
-            }
-        };
-        if !(triggered || stall) {
+        let stall = decision.stalled && !self.budget.stall_already_fired(stall_key);
+        if decision.fired.is_none() && !stall {
             return Ok(RoutingOutcome::answered(
                 self.executor.clone(),
                 request,
@@ -365,10 +260,10 @@ impl AdvisorGate {
         }
         // A stall consumed by a simultaneous trigger does not latch, so the
         // checkpoint can still fire later if this review is refunded.
-        if stall && !triggered {
-            self.mark_stall_fired(stall_key);
+        if stall && decision.fired.is_none() {
+            self.budget.mark_stall_fired(stall_key);
         }
-        if !self.try_reserve(scope) {
+        if !self.budget.try_reserve(scope) {
             return Ok(RoutingOutcome::answered(
                 self.executor.clone(),
                 request,
@@ -376,11 +271,7 @@ impl AdvisorGate {
             ));
         }
 
-        let trigger_label = match (&self.trigger, triggered) {
-            (CompiledTrigger::Pattern(_), true) => "pattern",
-            (CompiledTrigger::NoToolCall, true) => "no_tool_call",
-            _ => "stall",
-        };
+        let trigger_label = decision.fired.unwrap_or("stall");
         let review_tail = visible_text(&turn.agg).or_else(|| {
             reasoning_text(&turn.agg).map(|reasoning| format!("{REASONING_TAIL_LABEL}{reasoning}"))
         });
@@ -395,7 +286,7 @@ impl AdvisorGate {
             )),
             Ok(ConsultOutcome::Redo { plan }) => Ok(self.redo(request, turn, &plan)),
             Ok(ConsultOutcome::Failed) => {
-                self.refund_failure(scope);
+                self.budget.refund_failure(scope);
                 Ok(RoutingOutcome::answered(
                     self.executor.clone(),
                     request,
@@ -403,7 +294,7 @@ impl AdvisorGate {
                 ))
             }
             Err(error) => {
-                self.refund_failure(scope);
+                self.budget.refund_failure(scope);
                 Err(error)
             }
         }
@@ -593,7 +484,7 @@ impl Algorithm for AdvisorGate {
             == Some(true);
         let result = self.route_inner(&driver, request, &scope).await;
         if session_final {
-            self.evict_scope(&scope);
+            self.budget.evict_scope(&scope);
         }
         result
     }
@@ -604,44 +495,6 @@ enum ConsultOutcome {
     Approve,
     Redo { plan: String },
     Failed,
-}
-
-// ── Budget scope ────────────────────────────────────────────────────────────
-
-/// Resolves the review budget scope: the benchmark harness header wins (it is
-/// stamped on every request of one evaluation, sub-agents included), then the
-/// host-resolved session id, then one shared instance scope.
-fn budget_scope(request: &Request) -> ScopeKey {
-    let metadata = request.metadata.as_ref();
-    if let Some(value) = metadata
-        .and_then(|metadata| metadata.http_headers.as_ref())
-        .and_then(|headers| headers.get(BENCH_SESSION_HEADER))
-        .and_then(|value| value.to_str().ok())
-        && !value.is_empty()
-    {
-        return ScopeKey::Client(value.to_string());
-    }
-    if let Some(id) = metadata.and_then(|metadata| metadata.session_id.as_deref())
-        && !id.is_empty()
-    {
-        return ScopeKey::Session(id.to_string());
-    }
-    ScopeKey::Instance
-}
-
-/// Latches the stall checkpoint per conversation: hash of the first user
-/// message's text, which is constant across a session's turns.
-fn stall_key(request: &Request) -> u64 {
-    let text = request
-        .llm_request
-        .messages
-        .iter()
-        .find(|message| message.role == Role::User)
-        .and_then(|message| message.text_content("\n"))
-        .unwrap_or_default();
-    let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish()
 }
 
 fn algorithm_error(message: impl Into<String>) -> LibsyError {
