@@ -33,13 +33,28 @@
 
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
 use switchyard_protocol::Request;
 
+use crate::core::algorithm::{Algorithm, Driver};
+use crate::core::state::State;
+use crate::{Result, RoutingOutcome};
+
+use self::config::VgrConfig;
+use self::fall_through::FallThrough;
+use crate::algorithms::fall_through;
+
+mod config;
 mod decide;
 mod matching;
+mod mode;
 mod policy;
+mod readout;
 mod render;
 mod rules;
+mod runtime;
+mod rungs;
 mod text;
 
 #[cfg(test)]
@@ -48,6 +63,47 @@ mod decide_tests;
 mod matching_tests;
 #[cfg(test)]
 mod tests;
+
+/// A verification-gated route.
+///
+/// Calls the local tier, gathers evidence about the answer it produced, and
+/// either releases that answer or escalates to the capable tier. Composed on
+/// [`FallThrough`] like every other algorithm here, with a single classifier:
+/// the whole decision is one unit of work, not a cascade of independent
+/// recommendations.
+pub struct Vgr {
+    route: FallThrough<State>,
+}
+
+impl Vgr {
+    /// Builds a verification-gated route.
+    ///
+    /// Errors when the serving mode is configured incoherently — the one
+    /// setting whose misconfiguration would otherwise be silent.
+    pub fn new(config: VgrConfig) -> Result<Self> {
+        mode::validate(&config.mode).map_err(|message| crate::LibsyError::AlgorithmError {
+            message,
+        })?;
+        let targets = vec![config.targets.local.clone(), config.targets.cloud.clone()];
+        let classifier = Arc::new(runtime::VgrClassifier { config });
+        Ok(Self {
+            route: FallThrough::new_with_state(targets)
+                .with_name("vgr")
+                .with_classifier(classifier),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Algorithm for Vgr {
+    fn name(&self) -> &str {
+        "vgr"
+    }
+
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
+        self.route.execute(driver, request).await
+    }
+}
 
 /// The verification regime a request's capabilities license.
 ///
