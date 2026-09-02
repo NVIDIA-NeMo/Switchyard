@@ -419,3 +419,31 @@ async def test_context_window_failure_falls_back_to_the_next_model() -> None:
 
     assert selected_model == "fast"
     assert response["model"] == "strong"
+
+
+def test_stage_router_accepts_additive_tool_semantics() -> None:
+    algorithm = algorithms.stage_router(
+        "strong",
+        "fast",
+        picker="efficient_first",
+        confidence_threshold=0.5,
+        tool_semantics={
+            "observe": ["KB_search"],
+            "mutate": ["send_payment_request"],
+            "plan": ["create_research_plan"],
+            "new": ["send_message_to_user"],
+        },
+    )
+
+    assert callable(algorithm.run_stream)
+
+
+def test_stage_router_rejects_unknown_tool_semantics_category() -> None:
+    with pytest.raises(ValueError, match="unknown tool_semantics category"):
+        algorithms.stage_router(
+            "strong",
+            "fast",
+            picker="efficient_first",
+            confidence_threshold=0.5,
+            tool_semantics={"complete": ["end_conversation"]},
+        )

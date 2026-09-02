@@ -257,9 +257,9 @@ impl ScoreResult {
 pub struct CodingAgentDimensions {
     /// Windowed max error severity in `[0, 1]`.
     pub severity: f64,
-    /// `1.0` when a deep turn has no reads, plans, writes, or edits (pure churn).
+    /// `1.0` when a deep turn has no recognized observation, mutation, plan, or new activity.
     pub spinning: f64,
-    /// `1.0` when a deep turn reads/plans but does not write or edit.
+    /// `1.0` when a deep turn observes/plans but does not mutate or show new activity.
     pub exploring: f64,
     /// Fraction of recent tool ops that produced code (writes + edits).
     pub production_intensity: f64,
@@ -302,10 +302,11 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
     let deep_enough = signal.turn_depth >= STALL_MIN_TURN_DEPTH;
     let no_production = signal.recent_write_count == 0 && signal.recent_edit_count == 0;
     let investigating = signal.recent_read_count >= 1 || signal.recent_todowrite_count >= 1;
+    let new_activity = signal.recent_new_count >= 1;
     // spinning vs exploring partition the "not producing" case by investigative
     // activity, so at most one fires — no double-counting on the production axis.
-    let spinning = deep_enough && no_production && !investigating;
-    let exploring = deep_enough && no_production && investigating;
+    let spinning = deep_enough && no_production && !investigating && !new_activity;
+    let exploring = deep_enough && no_production && investigating && !new_activity;
 
     CodingAgentDimensions {
         severity: f64::from(signal.severity),
@@ -733,6 +734,21 @@ mod tests {
             }
             other => panic!("expected consult-classifier, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn new_activity_suppresses_stall_dimensions_without_biasing_the_score() {
+        let signal = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            recent_new_count: 1,
+            ..Default::default()
+        };
+
+        let dimensions = dimensions_from_signal(&signal);
+
+        assert_eq!(dimensions.spinning, 0.0);
+        assert_eq!(dimensions.exploring, 0.0);
+        assert_eq!(score_signal(&signal).score, 0.0);
     }
 
     // ─── StageClassifier ─────────────────────────────────────────────────

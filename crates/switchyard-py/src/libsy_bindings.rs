@@ -16,7 +16,7 @@ use switchyard_libsy::{
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
     PickerMode, Random, RoutingOutcome, StageRouter, StageRouterConfig, Step as RustStep,
-    StepStream, TaskClassifierConfig,
+    StepStream, TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
     LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId,
@@ -778,6 +778,7 @@ fn build_llm_classifier(config: LlmClassifierConfig) -> PyResult<PyAlgorithm> {
     only_on_wrong_signal_escalation=true,
     capable_system_prompt=None,
     efficient_system_prompt=None,
+    tool_semantics=None,
     classifier=None
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -793,6 +794,7 @@ fn stage_router_algorithm(
     only_on_wrong_signal_escalation: bool,
     capable_system_prompt: Option<String>,
     efficient_system_prompt: Option<String>,
+    tool_semantics: Option<HashMap<String, Vec<String>>>,
     classifier: Option<Py<PyLlmFallback>>,
 ) -> PyResult<PyAlgorithm> {
     let mode = match picker {
@@ -826,6 +828,19 @@ fn stage_router_algorithm(
     }
     if let Some(prompt) = efficient_system_prompt {
         config.tier_prompts = config.tier_prompts.with(efficient.clone(), prompt);
+    }
+    if let Some(mut semantics) = tool_semantics {
+        config.tool_semantics = ToolSemantics {
+            observe: semantics.remove("observe").unwrap_or_default(),
+            mutate: semantics.remove("mutate").unwrap_or_default(),
+            plan: semantics.remove("plan").unwrap_or_default(),
+            new: semantics.remove("new").unwrap_or_default(),
+        };
+        if let Some(category) = semantics.keys().next() {
+            return Err(PyValueError::new_err(format!(
+                "unknown tool_semantics category {category:?}; expected observe, mutate, plan, or new"
+            )));
+        }
     }
     config.llm_fallback = classifier
         .map(|classifier| classifier.bind(py).try_borrow()?.clone_core(py))

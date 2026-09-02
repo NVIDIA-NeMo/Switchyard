@@ -1363,6 +1363,73 @@ base_threshold = 0.5
 }
 
 #[tokio::test]
+async fn stage_router_uses_configured_tool_semantics() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "capable_first"
+confidence_threshold = 0.3
+
+[routes.stage.tool_semantics]
+mutate = ["send_payment_request"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/stage",
+            "messages": [
+                {"role": "user", "content": "pay the balance"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_payment_request",
+                        "arguments": "{}"
+                    }
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "payment sent"}
+            ]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/weak")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_classifier_routes_four_targets_and_falls_back_on_an_invalid_verdict() -> TestResult
 {
     let upstream = MockUpstream::start().await?;

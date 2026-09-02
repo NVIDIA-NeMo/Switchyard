@@ -15,10 +15,9 @@ remaining targets in configured order for that request. See
 
 ## How it works
 
-A coding agent's run moves through stages: early on it explores the codebase and
-recovers from errors, and later it settles into more mechanical implementation.
-Those stages call for different amounts of model capability, which is what the
-router keys on.
+A tool-using agent's run moves through stages that call for different amounts of
+model capability. The built-in vocabulary is calibrated for coding agents: it
+recognizes file observation, mutation, planning, shell activity, and test results.
 
 For each LLM call, stage-router estimates which stage the agent is in from the
 **tool-result history** on the conversation, scoring two axes:
@@ -207,6 +206,35 @@ switchyard-server --config routes.toml --port 4000
 ```
 
 This is the recommended default: routing on tool signals alone, no classifier.
+
+### Optional: custom tool semantics
+
+Extend the built-in coding vocabulary when an agent uses domain-specific tool
+names. Mappings are route-scoped, additive, and matched by exact name without
+regard to ASCII case:
+
+```toml
+[routes.stage.tool_semantics]
+observe = ["KB_search", "get_customer_by_phone"]
+mutate = ["send_payment_request", "update_inventory"]
+plan = ["create_research_plan"]
+new = ["start_conversation", "send_message_to_user"]
+```
+
+The categories affect existing stage signals:
+
+- `observe` counts as investigation, like the built-in read and search tools.
+- `mutate` counts as production, like the built-in write and edit tools.
+- `plan` counts as investigation, like the built-in planning tools.
+- `new` records forward activity that suppresses false `spinning` and
+  `exploring` signals, but does not otherwise favor either tier.
+- `unknown` remains the fallback for tools that match neither the built-in
+  vocabulary nor configured semantics.
+
+Configuration cannot reclassify a built-in tool. Empty names, duplicate names
+across categories, and unknown category keys are rejected when the route is
+loaded. Argument-aware wrapper tools, inferred semantics, and learned routing
+rules are outside this exact-name configuration.
 
 ### Optional: handoff notes
 
