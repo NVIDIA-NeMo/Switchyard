@@ -1,7 +1,12 @@
 <!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Harbor Benchmarks
+# Switchyard Benchmarks
+
+For a fixed-model versus routed comparison with NeMo Gym, see the
+[NeMo Gym example](nemo_gym/README.md).
+
+## Harbor
 
 Use this guide to run Harbor Terminal-Bench Lite from a fresh Switchyard clone.
 It covers the two smoke paths most people need first:
