@@ -244,7 +244,7 @@ if TYPE_CHECKING:
         only_on_wrong_signal_escalation: bool = True,
         capable_system_prompt: str | None = None,
         efficient_system_prompt: str | None = None,
-        tool_semantics: Mapping[str, Sequence[str]] | None = None,
+        tool_semantics: dict[str, Sequence[str]] | None = None,
         classifier: LlmFallback | None = None,
     ) -> Algorithm: ...
 

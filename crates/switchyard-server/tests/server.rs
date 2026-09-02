@@ -1362,6 +1362,7 @@ base_threshold = 0.5
     Ok(())
 }
 
+// A configured mutation must select the efficient tier through the HTTP configuration path.
 #[tokio::test]
 async fn stage_router_uses_configured_tool_semantics() -> TestResult {
     let upstream = MockUpstream::start().await?;

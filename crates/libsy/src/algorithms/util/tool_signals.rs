@@ -432,7 +432,8 @@ fn classify_tool_call_with_semantics(
     command: Option<&str>,
     semantics: &ToolSemantics,
 ) -> ToolSemantic {
-    let lower = name.to_lowercase();
+    // Built-in names and Bash command inference take precedence over route-scoped mappings.
+    let lower = name.to_ascii_lowercase();
     if WRITE_TOOL_NAMES.contains(&lower.as_str()) {
         return ToolSemantic::Mutate(MutationKind::Write);
     }
@@ -1419,6 +1420,23 @@ mod tests {
         assert_eq!(signal.new_count, 1);
         assert_eq!(signal.recent_new_count, 1);
         assert_eq!(signal.pure_bash_streak, 0);
+    }
+
+    #[test]
+    fn configured_tool_semantics_only_fold_ascii_case() {
+        let semantics = ToolSemantics {
+            observe: vec!["kb_search".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            classify_tool_call_with_semantics("KB_SEARCH", None, &semantics),
+            ToolSemantic::Observe
+        );
+        assert_eq!(
+            classify_tool_call_with_semantics("KB_SEARCH", None, &semantics),
+            ToolSemantic::Unknown
+        );
     }
 
     #[test]

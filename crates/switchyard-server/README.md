@@ -125,8 +125,9 @@ tier per turn, without an extra classifier call on every turn. Domain-specific e
 can extend its built-in coding vocabulary through `tool_semantics.observe`,
 `tool_semantics.mutate`, `tool_semantics.plan`, and neutral `tool_semantics.new`. `capable_target`,
 `efficient_target`, `picker` (`efficient_first` or `capable_first`), and `confidence_threshold`
-are required. Optional handoff notes, per-tier system prompts, and a capability-judge fallback are
-documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
+are required. All configured semantic names use exact ASCII case-insensitive matching. Optional
+handoff notes, per-tier system prompts, and a capability-judge fallback are documented in
+[Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
 
 ## Endpoints
 

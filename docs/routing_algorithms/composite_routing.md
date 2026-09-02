@@ -37,6 +37,7 @@ confidence_threshold = 0.5
 [routes.switchyard.stage.tool_semantics]
 observe = ["lookup_customer"]
 mutate = ["update_inventory"]
+plan = ["create_research_plan"]
 new = ["send_message"]
 ```
 

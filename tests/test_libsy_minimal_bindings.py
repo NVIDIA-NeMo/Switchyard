@@ -421,12 +421,14 @@ async def test_context_window_failure_falls_back_to_the_next_model() -> None:
     assert response["model"] == "strong"
 
 
-def test_stage_router_accepts_additive_tool_semantics() -> None:
+async def test_stage_router_applies_additive_tool_semantics() -> None:
+    """Verify that configured mutation semantics reach stage-router scoring."""
+
     algorithm = algorithms.stage_router(
         "strong",
         "fast",
-        picker="efficient_first",
-        confidence_threshold=0.5,
+        picker="capable_first",
+        confidence_threshold=0.3,
         tool_semantics={
             "observe": ["KB_search"],
             "mutate": ["send_payment_request"],
@@ -435,7 +437,43 @@ def test_stage_router_accepts_additive_tool_semantics() -> None:
         },
     )
 
-    assert callable(algorithm.run_stream)
+    selected_model, _ = await run_algorithm(
+        algorithm,
+        {"strong": EchoClient("strong"), "fast": EchoClient("fast")},
+        request={
+            "model": "auto",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "pay the balance"}],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_call",
+                            "id": "call_1",
+                            "name": "send_payment_request",
+                            "arguments": {},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_call_id": "call_1",
+                            "content": [{"type": "text", "text": "payment sent"}],
+                            "is_error": None,
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert selected_model == "fast"
 
 
 def test_stage_router_rejects_unknown_tool_semantics_category() -> None:
