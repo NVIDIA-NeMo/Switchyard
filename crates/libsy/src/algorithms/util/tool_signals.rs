@@ -278,12 +278,18 @@ struct ObservedToolCall {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ToolCategory {
+enum MutationKind {
     Write,
     Edit,
-    Read,
+}
+
+/// Domain-neutral meaning assigned to an observed tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolSemantic {
+    Mutate(MutationKind),
+    Observe,
     Plan,
-    Other,
+    Unknown,
 }
 
 /// Request-side processor that extracts tool-result signals from each request
@@ -314,38 +320,38 @@ impl Processor<State> for ToolSignalProcessor {
     }
 }
 
-fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
+fn classify_tool_call(name: &str, command: Option<&str>) -> ToolSemantic {
     let lower = name.to_lowercase();
     if WRITE_TOOL_NAMES.contains(&lower.as_str()) {
-        return ToolCategory::Write;
+        return ToolSemantic::Mutate(MutationKind::Write);
     }
     if EDIT_TOOL_NAMES.contains(&lower.as_str()) {
-        return ToolCategory::Edit;
+        return ToolSemantic::Mutate(MutationKind::Edit);
     }
     if READ_TOOL_NAMES.contains(&lower.as_str()) {
-        return ToolCategory::Read;
+        return ToolSemantic::Observe;
     }
     if PLAN_TOOL_NAMES.contains(&lower.as_str()) {
-        return ToolCategory::Plan;
+        return ToolSemantic::Plan;
     }
     if BASH_TOOL_NAMES.contains(&lower.as_str())
         && let Some(cmd) = command
     {
         // Write/edit redirection trumps read-like operands.
         if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
-            return ToolCategory::Write;
+            return ToolSemantic::Mutate(MutationKind::Write);
         }
         if cmd.contains("python") && PYTHON_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
-            return ToolCategory::Write;
+            return ToolSemantic::Mutate(MutationKind::Write);
         }
         if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p)) {
-            return ToolCategory::Edit;
+            return ToolSemantic::Mutate(MutationKind::Edit);
         }
         if BASH_READ_PATTERNS.iter().any(|p| cmd.contains(p)) {
-            return ToolCategory::Read;
+            return ToolSemantic::Observe;
         }
     }
-    ToolCategory::Other
+    ToolSemantic::Unknown
 }
 
 // ─── extraction entry point ───────────────────────────────────────────────────
@@ -474,7 +480,7 @@ fn build_signal(
     let no_error_streak = compute_no_error_streak(&tool_texts);
 
     // Single pass: cumulative + sliding-window counters together. Also tracks
-    // the trailing pure-bash streak (consecutive `Other`-category calls back
+    // the trailing pure-bash streak (consecutive `Unknown` calls back
     // from the end) — the build-pit proxy.
     let recent_start = tool_calls.len().saturating_sub(recent_window);
     let mut write_count = 0u32;
@@ -490,38 +496,38 @@ fn build_signal(
     for (i, tc) in tool_calls.iter().enumerate().rev() {
         let cat = classify_tool_call(&tc.name, tc.command.as_deref());
         if streak_open {
-            if matches!(cat, ToolCategory::Other) {
+            if matches!(cat, ToolSemantic::Unknown) {
                 pure_bash_streak += 1;
             } else {
                 streak_open = false;
             }
         }
         match cat {
-            ToolCategory::Write => {
+            ToolSemantic::Mutate(MutationKind::Write) => {
                 write_count += 1;
                 if i >= recent_start {
                     recent_write_count += 1;
                 }
             }
-            ToolCategory::Edit => {
+            ToolSemantic::Mutate(MutationKind::Edit) => {
                 edit_count += 1;
                 if i >= recent_start {
                     recent_edit_count += 1;
                 }
             }
-            ToolCategory::Read => {
+            ToolSemantic::Observe => {
                 read_count += 1;
                 if i >= recent_start {
                     recent_read_count += 1;
                 }
             }
-            ToolCategory::Plan => {
+            ToolSemantic::Plan => {
                 todowrite_count += 1;
                 if i >= recent_start {
                     recent_todowrite_count += 1;
                 }
             }
-            ToolCategory::Other => {}
+            ToolSemantic::Unknown => {}
         }
     }
 
@@ -1099,13 +1105,13 @@ mod tests {
 
     #[test]
     fn todowrite_classifies_as_plan() {
-        assert_eq!(classify_tool_call("TodoWrite", None), ToolCategory::Plan);
-        assert_eq!(classify_tool_call("todo_write", None), ToolCategory::Plan);
+        assert_eq!(classify_tool_call("TodoWrite", None), ToolSemantic::Plan);
+        assert_eq!(classify_tool_call("todo_write", None), ToolSemantic::Plan);
     }
 
     #[test]
     fn codex_update_plan_classifies_as_plan() {
-        assert_eq!(classify_tool_call("update_plan", None), ToolCategory::Plan);
+        assert_eq!(classify_tool_call("update_plan", None), ToolSemantic::Plan);
     }
 
     #[test]
@@ -1113,46 +1119,55 @@ mod tests {
         // shell_command + heredoc -> Write.
         assert_eq!(
             classify_tool_call("shell_command", Some("cat > /app/foo.py <<'eof'\nx=1\neof")),
-            ToolCategory::Write,
+            ToolSemantic::Mutate(MutationKind::Write),
         );
         // shell_command + read-like inspection -> Read.
         assert_eq!(
             classify_tool_call("shell_command", Some("ls /app")),
-            ToolCategory::Read,
+            ToolSemantic::Observe,
         );
         // shell_command without matching patterns -> Other.
         assert_eq!(
             classify_tool_call("shell_command", Some("./run_tests.sh")),
-            ToolCategory::Other,
+            ToolSemantic::Unknown,
         );
     }
 
     #[test]
     fn read_tool_classifies_as_read() {
-        assert_eq!(classify_tool_call("Read", None), ToolCategory::Read);
-        assert_eq!(classify_tool_call("View", None), ToolCategory::Read);
+        assert_eq!(classify_tool_call("Read", None), ToolSemantic::Observe);
+        assert_eq!(classify_tool_call("View", None), ToolSemantic::Observe);
     }
 
     #[test]
     fn hermes_tool_names_classify() {
         // Hermes (NousResearch) file tools route by name.
-        assert_eq!(classify_tool_call("write_file", None), ToolCategory::Write);
-        assert_eq!(classify_tool_call("patch", None), ToolCategory::Edit);
-        assert_eq!(classify_tool_call("read_file", None), ToolCategory::Read);
-        assert_eq!(classify_tool_call("search_files", None), ToolCategory::Read);
+        assert_eq!(
+            classify_tool_call("write_file", None),
+            ToolSemantic::Mutate(MutationKind::Write)
+        );
+        assert_eq!(
+            classify_tool_call("patch", None),
+            ToolSemantic::Mutate(MutationKind::Edit)
+        );
+        assert_eq!(classify_tool_call("read_file", None), ToolSemantic::Observe);
+        assert_eq!(
+            classify_tool_call("search_files", None),
+            ToolSemantic::Observe
+        );
         // Hermes runs shell through `terminal`, which carries a `command` arg,
         // so its intent comes from the Bash-pattern match like codex's shell_command.
         assert_eq!(
             classify_tool_call("terminal", Some("sed -i 's/a/b/' /app/x.py")),
-            ToolCategory::Edit,
+            ToolSemantic::Mutate(MutationKind::Edit),
         );
         assert_eq!(
             classify_tool_call("terminal", Some("grep foo /app")),
-            ToolCategory::Read,
+            ToolSemantic::Observe,
         );
         assert_eq!(
             classify_tool_call("terminal", Some("./run_tests.sh")),
-            ToolCategory::Other,
+            ToolSemantic::Unknown,
         );
     }
 
@@ -1167,7 +1182,7 @@ mod tests {
         for cmd in cases {
             assert_eq!(
                 classify_tool_call("Bash", Some(cmd)),
-                ToolCategory::Read,
+                ToolSemantic::Observe,
                 "expected Read for {cmd}"
             );
         }
@@ -1179,7 +1194,7 @@ mod tests {
         // write redirection must win.
         assert_eq!(
             classify_tool_call("Bash", Some("cat /etc/hosts > /tmp/out")),
-            ToolCategory::Write,
+            ToolSemantic::Mutate(MutationKind::Write),
         );
     }
 
