@@ -77,11 +77,13 @@ Each histogram emits `_bucket`, `_sum`, and `_count` series. Use
 
 ## Outcome counters for error-rate ratios
 
-The `outcome` label takes exactly three values:
+For HTTP-derived responses and attempts, the `outcome` label takes three values:
 
 * `ok` = HTTP 2xx
 * `retryable_error` = HTTP 408, 429, any 5xx, or a failure before an HTTP status
 * `other_error` = everything else (400, 401, 403, 422, …)
+
+In addition, `switchyard_client_responses_total` records `outcome="client_disconnected"` when a client drops the connection before a response is returned.
 
 | Metric | Type | Meaning |
 |---|---|---|
