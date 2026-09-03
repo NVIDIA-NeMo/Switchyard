@@ -1541,10 +1541,13 @@ dependencies = [
 name = "prefill-router"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "pyo3",
  "pyo3-build-config",
+ "switchyard-libsy",
  "switchyard-protocol",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
