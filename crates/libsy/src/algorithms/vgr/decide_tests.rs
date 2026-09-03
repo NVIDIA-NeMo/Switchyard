@@ -503,7 +503,7 @@ fn the_dial_adds_a_readout_arm_that_still_answers_to_the_veto() {
     assert_eq!(route_no_dial(&chat(), &chat_over), Route::Cloud);
 
     // The latest reference point also gives the agentic branch a readout arm.
-    let agentic_caps = agentic(Some(0), Some(ToolErrorsSource::Host));
+    let agentic_caps = agentic(Some(ToolErrorCount::Host(0)));
     let agentic_over = readout(0.25);
     assert_eq!(route(&agentic_caps, &agentic_over), Route::Local);
     assert_eq!(route_no_dial(&agentic_caps, &agentic_over), Route::Cloud);
