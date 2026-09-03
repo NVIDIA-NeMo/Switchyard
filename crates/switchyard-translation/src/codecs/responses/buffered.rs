@@ -889,6 +889,7 @@ fn decode_responses_tools(
                 .get("name")
                 .and_then(Value::as_str)
                 .filter(|name| !name.is_empty());
+            let description = tool.get("description").and_then(Value::as_str);
             for mut child in decode_responses_tools(tool.get("tools"), namespaces, custom_tools) {
                 // A nested container already qualified its own children, and the
                 // innermost name is the one that identifies the tool.
@@ -899,7 +900,10 @@ fn decode_responses_tools(
                     let qualified =
                         crate::codex_namespaces::qualified_tool_name(container, &child.name);
                     crate::codex_namespaces::record_tool_namespace(
-                        namespaces, &qualified, container,
+                        namespaces,
+                        &qualified,
+                        container,
+                        description,
                     );
                     child.name = qualified;
                 }
@@ -1498,9 +1502,15 @@ fn encode_responses_tools(
         }
     }
     for (namespace, children) in containers {
+        let description = namespaces
+            .and_then(|namespaces| {
+                crate::codex_namespaces::namespace_description(namespaces, &namespace)
+            })
+            .unwrap_or_default();
         out.push(json!({
             "type": "namespace",
             "name": namespace,
+            "description": description,
             "tools": children,
         }));
     }
