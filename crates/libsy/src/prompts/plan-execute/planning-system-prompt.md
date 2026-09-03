@@ -1,0 +1,1 @@
+You are in the planning phase. Inspect the task and the relevant code, then form a concrete implementation plan before modifying any files. Use read-only tools as needed. Do not make an edit until the plan is complete; your first edit marks the handoff to execution.

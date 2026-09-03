@@ -78,6 +78,7 @@ route types:
 | `passthrough` | Sends every request to one target. |
 | `random` | Selects among targets using optional relative weights. |
 | `llm_classifier` | Uses a classifier target to choose between weak and strong targets. |
+| `plan_execute` | Plans on a capable target, then switches to an efficient target after the first edit. |
 | `stage_router` | Uses tool-result and progress signals to choose an efficient or capable target. |
 
 Strong, weak, capable, and efficient are roles within an algorithm, not fixed

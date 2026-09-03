@@ -1254,6 +1254,206 @@ confidence_threshold = 0.5
     Ok(())
 }
 
+/// A Codex-style Responses trajectory starts on the capable planner and hands
+/// the complete conversation to the efficient executor after `apply_patch`.
+#[tokio::test]
+async fn plan_execute_route_hands_off_after_the_first_edit() -> TestResult {
+    const PLANNING_PROMPT: &str = "Inspect first and make a concrete plan before editing.";
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.capable]
+id = "model/capable"
+llm_client = "upstream"
+
+[targets.efficient]
+id = "model/efficient"
+llm_client = "upstream"
+
+[routes.plan_execute]
+id = "switchyard/plan-execute"
+type = "plan_execute"
+capable_target = "capable"
+efficient_target = "efficient"
+planning_prompt = "{PLANNING_PROMPT}"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let planning = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/plan-execute",
+            "instructions": "Keep the public API stable.",
+            "input": "Fix the parser."
+        })),
+    )
+    .await?;
+    assert_eq!(planning.status, StatusCode::OK);
+    assert_eq!(
+        planning
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/capable")
+    );
+
+    let executing = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/plan-execute",
+            "instructions": "Keep the public API stable.",
+            "input": [
+                {"type": "message", "role": "user", "content": "Fix the parser."},
+                {"type": "message", "role": "assistant", "content": "The plan is ready."},
+                {
+                    "type": "function_call",
+                    "call_id": "call-edit",
+                    "name": "apply_patch",
+                    "arguments": "{\"patch\":\"*** Begin Patch\"}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-edit",
+                    "output": "Success. Updated the file."
+                }
+            ]
+        })),
+    )
+    .await?;
+    assert_eq!(executing.status, StatusCode::OK);
+    assert_eq!(
+        executing
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/efficient")
+    );
+
+    let chat_execution = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/plan-execute",
+            "messages": [
+                {"role": "user", "content": "Fix the parser."},
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call-edit",
+                        "type": "function",
+                        "function": {
+                            "name": "apply_patch",
+                            "arguments": "{\"patch\":\"*** Begin Patch\"}"
+                        }
+                    }]
+                },
+                {"role": "tool", "tool_call_id": "call-edit", "content": "updated"}
+            ]
+        })),
+    )
+    .await?;
+    assert_eq!(chat_execution.status, StatusCode::OK);
+    assert_eq!(
+        chat_execution
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/efficient")
+    );
+
+    let anthropic_execution = send(
+        &app,
+        "POST",
+        "/v1/messages",
+        Some(json!({
+            "model": "switchyard/plan-execute",
+            "max_tokens": 128,
+            "messages": [
+                {"role": "user", "content": "Fix the parser."},
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "call-edit",
+                        "name": "write_file",
+                        "input": {"path": "src/parser.rs", "content": "fixed"}
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "call-edit",
+                        "content": "updated"
+                    }]
+                }
+            ]
+        })),
+    )
+    .await?;
+    assert_eq!(anthropic_execution.status, StatusCode::OK);
+    assert_eq!(
+        anthropic_execution
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/efficient")
+    );
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 4);
+    assert_eq!(calls[0]["model"], "model/capable");
+    assert_eq!(calls[1]["model"], "model/efficient");
+    assert_eq!(calls[2]["model"], "model/efficient");
+    assert_eq!(calls[3]["model"], "model/efficient");
+    let planning_messages = calls[0]["messages"]
+        .as_array()
+        .ok_or("planning request did not contain messages")?;
+    assert_eq!(planning_messages[0]["role"], "system");
+    assert_eq!(planning_messages[0]["content"], PLANNING_PROMPT);
+    assert!(
+        planning_messages
+            .iter()
+            .any(|message| message["content"] == "Keep the public API stable.")
+    );
+    assert!(
+        calls[1]["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.iter().all(|message| {
+                message["content"]
+                    .as_str()
+                    .is_none_or(|content| !content.contains(PLANNING_PROMPT))
+            })),
+        "the planning instruction must be pruned from the execution request"
+    );
+    for call in &calls[2..] {
+        assert!(
+            !call["messages"].to_string().contains(PLANNING_PROMPT),
+            "the planning instruction must be absent after cross-format decoding"
+        );
+    }
+    assert!(
+        calls[1]["messages"]
+            .to_string()
+            .contains("The plan is ready."),
+        "the efficient model must inherit the pre-edit trajectory"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn toml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
     let upstream = MockUpstream::start().await?;

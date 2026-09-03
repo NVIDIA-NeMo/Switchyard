@@ -28,6 +28,7 @@ nav:
       - Sub-Agent-Aware Routing: routing_algorithms/subagent_routing.md
       - Random Routing: routing_algorithms/random_routing.md
       - LLM Classifier Routing: routing_algorithms/llm_classifier_routing.md
+      - Plan/Execute Routing: routing_algorithms/plan_execute_routing.md
       - Stage-Router Routing: routing_algorithms/stage_router_routing.md
       - Composite Routing: routing_algorithms/composite_routing.md
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md

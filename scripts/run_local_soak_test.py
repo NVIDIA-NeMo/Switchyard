@@ -32,6 +32,7 @@ ROUTES = (
     ("noop", "switchyard/noop"),
     ("random", "switchyard/random"),
     ("passthrough", "switchyard/passthrough"),
+    ("plan_execute", "switchyard/plan-execute"),
     ("llm_classifier", "switchyard/classifier"),
     ("stage_router", "switchyard/stage"),
 )

@@ -138,6 +138,7 @@ request should use the weak or strong target. The Rust server also supports:
 |---|---|---|
 | [Random](routing_algorithms/random_routing.md) | You need a weighted split for A/B tests or baselines. | `random` |
 | [LLM classifier](routing_algorithms/llm_classifier_routing.md) | Request content should decide whether to use the weak or strong target. | `llm_classifier` |
+| [Plan/execute](routing_algorithms/plan_execute_routing.md) | A capable model should plan, then an efficient model should execute after the first edit. | `plan_execute` |
 | [Stage router](routing_algorithms/stage_router_routing.md) | Tool-result and progress signals should select an efficient or capable target. | `stage_router` |
 
 A single TOML file can declare multiple routes. The table key, such as

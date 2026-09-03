@@ -193,6 +193,22 @@ benchmark/server-configs/tb-lite-single-gpt-5-5.toml
 benchmark/server-configs/tb-lite-single-opus-4-7.toml
 ```
 
+To benchmark the plan/execute boundary, use
+`benchmark/server-configs/tb-lite-plan-execute-opus-kimi.toml`. It starts each task on Opus and
+hands the preserved trajectory to Kimi after the first edit or write tool call:
+
+```bash
+bash benchmark/run-baseline.sh \
+  --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
+  --server-config benchmark/server-configs/tb-lite-plan-execute-opus-kimi.toml \
+  --model switchyard \
+  --agent codex \
+  --reasoning-effort xhigh \
+  --n-tasks 1 \
+  --n-concurrent 1 \
+  --max-retries 0
+```
+
 By default, the runner starts in the background and prints the PID, log path, and kill command.
 
 ## Book Modes

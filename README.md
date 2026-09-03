@@ -94,6 +94,7 @@ algorithm list, or the [`switchyard-libsy`](crates/libsy/README.md) crate docs.
 | Strategy | Use it when | Route `type` |
 |---|---|---|
 | [LLM Classifier](docs/routing_algorithms/llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
+| [Plan/Execute](docs/routing_algorithms/plan_execute_routing.md) | A capable model should plan, then an efficient model should execute after the first edit. | `plan_execute` |
 | [Stage Router](docs/routing_algorithms/stage_router_routing.md) | Signals already in the conversation, such as tool results and errors, should route most turns without an extra model call. | `stage_router` |
 | [Escalation Router](docs/routing_algorithms/escalation_router_routing.md) | Every turn runs on the weak tier first, and a judge reads that answer to decide whether to send the same request to the strong tier. | `llm_classifier` with `mode = "escalation"` |
 | [Composite](docs/routing_algorithms/composite_routing.md) | Routing algorithms are composed, one setting the configuration of another before handing off. Today an LLM classifier sets the tier a stage router falls open to. | `composite` |

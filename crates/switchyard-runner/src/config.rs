@@ -739,6 +739,46 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn plan_execute_route_builds_and_claims_both_targets() -> RunnerResult<()> {
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[routes.plan_execute]
+id = "switchyard/plan-execute"
+type = "plan_execute"
+capable_target = "strong"
+efficient_target = "weak"
+planning_prompt = "Inspect and plan before editing."
+"#
+        );
+        let runner = runner_from_toml(&config)?;
+
+        assert!(
+            runner
+                .models()
+                .any(|model| model.id.as_str() == "switchyard/plan-execute")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn plan_execute_route_rejects_an_empty_prompt() {
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[routes.plan_execute]
+id = "switchyard/plan-execute"
+type = "plan_execute"
+capable_target = "strong"
+efficient_target = "weak"
+planning_prompt = "   "
+"#
+        );
+
+        assert!(error_message(&config).contains("planning_prompt must not be empty"));
+    }
+
+    #[test]
     fn passthrough_and_stage_accept_subagent_routing() -> RunnerResult<()> {
         let stage = stage_config();
         let stage_with_classifier = with_subagent_llm_classifier(&stage, "stage", "");

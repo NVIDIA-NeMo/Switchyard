@@ -199,6 +199,18 @@ Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
 the schema automatically: through the structured-output request in `json_schema`
 mode, or in the prompt in `json_object` mode.
 
+### `plan_execute`
+
+Starts on a capable planning target and switches to an efficient execution
+target after the first edit or write tool call. See
+[Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `capable_target` | Yes | — | Target used before the first mutation. |
+| `efficient_target` | Yes | — | Target used from the first mutation onward. |
+| `planning_prompt` | No | packaged prompt | Non-empty system instruction prepended only during planning. |
+
 ### `stage_router`
 
 Scores tool signals to pick a tier per turn. See
