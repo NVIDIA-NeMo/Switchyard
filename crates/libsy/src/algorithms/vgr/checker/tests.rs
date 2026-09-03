@@ -74,6 +74,37 @@ async fn a_run_that_edits_the_suite_to_pass_reports_nothing() {
 }
 
 #[tokio::test]
+async fn a_run_that_edits_the_suite_and_restores_it_reports_nothing() {
+    // The gap content hashing alone cannot see: edit a test, run against the
+    // edited version, then put the original bytes back. Both content hashes
+    // match. Only the inode-change time gives it away, and userspace cannot set
+    // that — the `touch` here backdates mtime and still does not hide it.
+    const EXPECTED: &str = "expected answer\n";
+    // The runner edits a second test file, uses the edited version, then puts
+    // the original bytes back and backdates it.
+    let tests = suite(
+        "chmod u+w \"$TESTS_DIR/expected.txt\"\n\
+         printf 'anything goes\\n' > \"$TESTS_DIR/expected.txt\"\n\
+         printf 'expected answer\\n' > \"$TESTS_DIR/expected.txt\"\n\
+         touch -d '2020-01-01' \"$TESTS_DIR/expected.txt\"\n\
+         exit 0\n",
+    );
+    std::fs::write(tests.path().join("expected.txt"), EXPECTED).expect("write victim");
+
+    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
+    assert_eq!(checker.check("task", "attempt").await, None);
+
+    // Not vacuous: the file really is byte-identical to what was pinned, so a
+    // content-only manifest would have accepted this run.
+    let restored =
+        std::fs::read_to_string(checker.tests_path().join("expected.txt")).expect("read");
+    assert_eq!(
+        restored, EXPECTED,
+        "the suite did not restore the original bytes, so this proves nothing"
+    );
+}
+
+#[tokio::test]
 async fn a_run_that_adds_a_test_file_reports_nothing() {
     // Additions change the tree even though every original file is untouched.
     let tests = suite("echo extra > \"$TESTS_DIR/added.txt\"; exit 0\n");

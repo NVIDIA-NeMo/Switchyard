@@ -413,10 +413,9 @@ fn hash_into(
                 .to_string_lossy()
                 .into_owned();
             let contents = std::fs::read(&path)?;
-            hashed.insert(
-                relative,
-                hex(ring::digest::digest(&ring::digest::SHA256, &contents)),
-            );
+            let digest = hex(ring::digest::digest(&ring::digest::SHA256, &contents));
+            let stamp = inode_stamp(&entry.metadata()?);
+            hashed.insert(relative, format!("{digest}{stamp}"));
         }
     }
     Ok(())
@@ -438,6 +437,36 @@ fn manifest_sha(files: &BTreeMap<String, String>, command: &[String]) -> String 
         context.update(argument.as_bytes());
     }
     hex(context.finish())
+}
+
+/// Identity of a file beyond its contents: inode, size, and inode-change time.
+///
+/// Content hashing alone cannot see a suite that was edited, run against, and
+/// restored to its original bytes — both hashes match and the run passes. `ctime`
+/// closes that: the kernel updates it on every write and on every metadata
+/// change, and unlike `mtime` it cannot be set from userspace, so restoring
+/// content or backdating with `touch` does not hide the edit. The inode catches
+/// a file replaced wholesale rather than modified in place.
+///
+/// Preventing the edit outright would need a read-only bind mount, which needs a
+/// user namespace the router cannot rely on having. Detecting it is enough here,
+/// because an unverifiable snapshot yields no verdict and escalates.
+#[cfg(unix)]
+fn inode_stamp(metadata: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!(
+        ":{}:{}:{}.{}",
+        metadata.ino(),
+        metadata.size(),
+        metadata.ctime(),
+        metadata.ctime_nsec()
+    )
+}
+
+/// Contents alone off Unix, where there is no `ctime` to consult.
+#[cfg(not(unix))]
+fn inode_stamp(_metadata: &std::fs::Metadata) -> String {
+    String::new()
 }
 
 /// Renders a digest as lower-case hex.
