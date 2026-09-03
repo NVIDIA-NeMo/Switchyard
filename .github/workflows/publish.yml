@@ -477,6 +477,7 @@ jobs:
             switchyard-translation \
             switchyard-libsy \
             switchyard-llm-client \
+            switchyard-runner \
             switchyard-server; do
             crate_version="$(jq -r --arg crate "${crate}" \
               '.packages[] | select(.name == $crate) | .version' <<<"${metadata}")"
@@ -513,4 +514,5 @@ jobs:
           publish_crate switchyard-translation
           publish_crate switchyard-libsy
           publish_crate switchyard-llm-client
+          publish_crate switchyard-runner
           publish_crate switchyard-server
