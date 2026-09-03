@@ -2328,6 +2328,7 @@ dependencies = [
  "http",
  "jsonptr",
  "jsonschema",
+ "libc",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",

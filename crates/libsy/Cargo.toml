@@ -42,6 +42,8 @@ tracing-opentelemetry.workspace = true
 # assembly, and there is no reason to put that in a Windows wheel that cannot
 # use the checker anyway.
 [target.'cfg(unix)'.dependencies]
+# Direct process-group signalling and no-follow file opens for the checker.
+libc = "0.2"
 # SHA-256 for the checker's pinned test manifest.
 ring = "0.17"
 # Private snapshot directories for the checker's pinned test suite.

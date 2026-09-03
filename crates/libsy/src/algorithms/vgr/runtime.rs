@@ -330,6 +330,7 @@ impl VgrClassifier {
         // branch, so it runs alone and first.
         if branch == Branch::Checks {
             if let Some(checker) = &self.config.checker {
+                record.checker_manifest = Some(checker.manifest_identity().to_owned());
                 let task = match caps.task_text.as_deref() {
                     Some(task) => task,
                     None => return signals,

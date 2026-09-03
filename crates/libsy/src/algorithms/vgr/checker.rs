@@ -30,19 +30,40 @@
 //! short — is indeterminate, which commits nothing.
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::TempDir;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use super::config::Checker;
+use super::config::{Checker, CheckerRequest};
 
-/// Characters of the attempt and task written into the run directory.
+/// Characters of the attempt and task written into private control files.
 ///
 /// The command reads them from files rather than argv, so a large attempt
 /// cannot overflow the argument list.
 const ATTEMPT_FILE: &str = "attempt.txt";
 const TASK_FILE: &str = "task.txt";
+const WORKSPACE_ENV: &str = "WORKSPACE_DIR";
+const HASH_CHUNK_BYTES: usize = 64 * 1024;
+const DEFAULT_MAX_ENTRIES: usize = 100_000;
+const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const PROTECTED_ENV: [&str; 8] = [
+    "TESTS_DIR",
+    "ATTEMPT_FILE",
+    "TASK_FILE",
+    "HOME",
+    "TMPDIR",
+    "PATH",
+    "LANG",
+    WORKSPACE_ENV,
+];
 
 /// The operator's attestation that a deployment sandbox confines this checker.
 ///
@@ -52,34 +73,113 @@ const TASK_FILE: &str = "task.txt";
 /// bare host under the impression it is contained.
 pub const SANDBOX_ATTESTATION: &str = "vgr-checker-runs-in-deployment-sandbox";
 
+/// An RAII-owned candidate source tree materialized for one checker run.
+pub struct CandidateWorkspace {
+    root: TempDir,
+}
+
+impl CandidateWorkspace {
+    /// Owns a newly materialized workspace until the checker run finishes.
+    pub fn new(root: TempDir) -> std::io::Result<Self> {
+        let metadata = std::fs::symlink_metadata(root.path())?;
+        if !metadata.file_type().is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "candidate workspace root is not a directory",
+            ));
+        }
+        Ok(Self { root })
+    }
+
+    /// The candidate source directory used as the checker's working directory.
+    pub fn path(&self) -> &Path {
+        self.root.path()
+    }
+}
+
+/// Trusted host materialization for the candidate source tree under test.
+///
+/// Implementations may interpret the candidate text, but the checker does not.
+/// The identity must be stable for equivalent materialization behavior and must
+/// not contain request data; it is included in the public manifest digest.
+#[async_trait::async_trait]
+pub trait WorkspaceProvider: Send + Sync {
+    /// Stable, non-sensitive identity of this materialization contract.
+    fn manifest_identity(&self) -> &str;
+
+    /// Materializes one candidate source tree and returns its owned lifetime.
+    async fn materialize(
+        &self,
+        task_text: &str,
+        attempt: &str,
+    ) -> std::io::Result<CandidateWorkspace>;
+}
+
 /// How an operator configures the checker.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CheckerConfig {
     /// Directory holding the task's test suite. Copied at construction.
     pub tests_dir: PathBuf,
     /// The command to run, as an argv list. Never a shell string.
     ///
-    /// Two placeholders are substituted per run: `{tests}` becomes the pinned
-    /// snapshot path, `{workdir}` the per-run directory holding the attempt.
+    /// Two placeholders are substituted per run: `{tests}` becomes the private
+    /// per-run test copy, and `{workdir}` becomes the candidate workspace.
     pub command: Vec<String>,
-    /// How long one run may take before it is abandoned.
+    /// How long materialization, verification, and command execution may take.
     pub timeout: Duration,
-    /// Extra environment entries, applied over the scrubbed base.
+    /// Extra environment entries applied before the protected host values.
     pub env: Vec<(String, String)>,
+    /// Maximum namespace entries, including the test tree root.
+    pub max_snapshot_entries: usize,
+    /// Maximum regular-file bytes read during each copy or verification pass.
+    pub max_snapshot_bytes: u64,
+    /// Trusted host materialization for the candidate sources under test.
+    pub workspace_provider: Arc<dyn WorkspaceProvider>,
     /// The operator's [`SANDBOX_ATTESTATION`], recorded verbatim.
     pub sandbox_attestation: String,
 }
 
 impl CheckerConfig {
     /// A configuration running `command` against the suite in `tests_dir`.
-    pub fn new(tests_dir: impl Into<PathBuf>, command: Vec<String>) -> Self {
+    pub fn new(
+        tests_dir: impl Into<PathBuf>,
+        command: Vec<String>,
+        workspace_provider: Arc<dyn WorkspaceProvider>,
+    ) -> Self {
         Self {
             tests_dir: tests_dir.into(),
             command,
             timeout: Duration::from_secs(120),
             env: Vec::new(),
+            max_snapshot_entries: DEFAULT_MAX_ENTRIES,
+            max_snapshot_bytes: DEFAULT_MAX_BYTES,
+            workspace_provider,
             sandbox_attestation: String::new(),
         }
+    }
+}
+
+impl fmt::Debug for CheckerConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let env_keys = self
+            .env
+            .iter()
+            .map(|(key, _value)| key.as_str())
+            .collect::<Vec<_>>();
+        formatter
+            .debug_struct("CheckerConfig")
+            .field("tests_dir", &self.tests_dir)
+            .field("command", &self.command)
+            .field("timeout", &self.timeout)
+            .field("env_keys", &env_keys)
+            .field("max_snapshot_entries", &self.max_snapshot_entries)
+            .field("max_snapshot_bytes", &self.max_snapshot_bytes)
+            .field(
+                "workspace_provider",
+                &self.workspace_provider.manifest_identity(),
+            )
+            .field("sandbox_attestation", &self.sandbox_attestation)
+            .finish()
     }
 }
 
@@ -92,6 +192,18 @@ pub enum CheckerSetupError {
     /// The operator did not attest that a deployment sandbox confines this checker.
     #[error("checker requires the sandbox attestation {SANDBOX_ATTESTATION:?}")]
     NotAttested,
+    /// A protected environment value was supplied by the operator.
+    #[error("checker environment key {0:?} is reserved for the host")]
+    ReservedEnvironmentKey(String),
+    /// An environment key or value cannot be passed to a process.
+    #[error("checker environment entry {0:?} is invalid")]
+    InvalidEnvironmentEntry(String),
+    /// The materialization contract has no safe stable identity.
+    #[error("checker workspace provider requires a stable non-empty manifest identity")]
+    InvalidWorkspaceIdentity,
+    /// Snapshot resource limits must both be non-zero.
+    #[error("checker snapshot byte and entry limits must be non-zero")]
+    InvalidSnapshotLimits,
     /// The test suite could not be snapshotted.
     #[error("checker could not snapshot its test suite: {0}")]
     Snapshot(#[source] std::io::Error),
@@ -101,17 +213,23 @@ pub enum CheckerSetupError {
          so it cannot be snapshotted or hashed"
     )]
     UnsupportedEntry(PathBuf),
+    /// The suite contains more namespace entries than the configured bound.
+    #[error("checker test suite exceeds the {0}-entry snapshot limit")]
+    SnapshotEntryLimit(usize),
+    /// The suite contains more file bytes than the configured bound.
+    #[error("checker test suite exceeds the {0}-byte snapshot limit")]
+    SnapshotByteLimit(u64),
 }
 
 /// The pinned record of what the checker will run, and against what.
 ///
-/// Its `sha` covers every test file's path and contents together with the
-/// command, so a decision can record exactly which suite licensed it.
+/// Its stable `sha` covers paths, entry kinds, file contents, command,
+/// materialization contract, limits, and effective environment. Volatile
+/// inode and ctime stamps are kept separately and never enter this identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Manifest {
-    /// Snapshot-relative path to the SHA-256 of that file's contents.
-    files: BTreeMap<String, String>,
-    /// One hash over the whole suite and the command.
+    entries: BTreeMap<PathBuf, StableEntry>,
+    /// One stable public audit hash over the complete checker contract.
     pub sha: String,
 }
 
@@ -122,9 +240,12 @@ pub struct Manifest {
 /// enforce would be read as a safety claim it cannot honour.
 pub struct PinnedChecker {
     config: CheckerConfig,
-    /// The private snapshot. Held so it outlives every run and is removed on drop.
+    /// The private pinned source. Commands only see a private copy of it.
     snapshot: TempDir,
+    pinned: TreeSnapshot,
     manifest: Manifest,
+    admission: Arc<Semaphore>,
+    protected_path: String,
 }
 
 impl PinnedChecker {
@@ -134,28 +255,28 @@ impl PinnedChecker {
     /// operator's original directory cannot change what is being verified
     /// against mid-flight.
     pub fn new(config: CheckerConfig) -> Result<Self, CheckerSetupError> {
-        if config.command.is_empty() {
-            return Err(CheckerSetupError::EmptyCommand);
-        }
-        if config.sandbox_attestation != SANDBOX_ATTESTATION {
-            return Err(CheckerSetupError::NotAttested);
-        }
+        validate_config(&config)?;
+        let limits = SnapshotLimits::from(&config);
         let snapshot = TempDir::with_prefix("vgr-checker-").map_err(CheckerSetupError::Snapshot)?;
         let tests_path = snapshot.path().join("tests");
-        copy_tree(&config.tests_dir, &tests_path)?;
+        copy_tree(&config.tests_dir, &tests_path, limits).map_err(CheckerSetupError::from)?;
         // Read-only is a courtesy, not the control: the same uid can undo it.
-        // The manifest re-check is what actually catches a modified suite.
-        set_read_only(&tests_path).map_err(CheckerSetupError::Snapshot)?;
-
-        let files = hash_tree(&tests_path).map_err(CheckerSetupError::Snapshot)?;
+        // Stable namespace/content plus mutation stamps are the actual control.
+        set_read_only(&tests_path).map_err(CheckerSetupError::from)?;
+        let pinned = snapshot_tree(&tests_path, limits).map_err(CheckerSetupError::from)?;
+        let entries = pinned.entries.clone();
+        let protected_path = current_path();
         let manifest = Manifest {
-            sha: manifest_sha(&files, &config.command),
-            files,
+            sha: manifest_sha(&entries, &config, &protected_path),
+            entries,
         };
         Ok(Self {
             config,
             snapshot,
+            pinned,
             manifest,
+            admission: Arc::new(Semaphore::new(1)),
+            protected_path,
         })
     }
 
@@ -169,41 +290,158 @@ impl PinnedChecker {
         self.snapshot.path().join("tests")
     }
 
-    /// Whether the snapshot still matches what was pinned.
-    fn verifies(&self, stage: &'static str) -> bool {
-        match hash_tree(&self.tests_path()) {
-            Ok(current) if current == self.manifest.files => true,
-            Ok(_) => {
-                tracing::warn!(
-                    target: "libsy",
-                    stage,
-                    "vgr checker test snapshot no longer matches its pinned manifest"
-                );
-                false
-            }
+    /// Stable public identity of the pinned checker contract.
+    pub fn manifest_identity(&self) -> &str {
+        &self.manifest.sha
+    }
+
+    /// Runs one admitted checker operation from materialization through teardown.
+    async fn check_once(&self, task_text: &str, attempt: &str) -> Option<bool> {
+        let permit = match Arc::clone(&self.admission).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_closed) => return None,
+        };
+        let workspace = match self
+            .config
+            .workspace_provider
+            .materialize(task_text, attempt)
+            .await
+        {
+            Ok(workspace) => workspace,
             Err(error) => {
                 tracing::warn!(
                     target: "libsy",
-                    stage,
                     kind = ?error.kind(),
-                    "vgr checker could not re-hash its test snapshot"
+                    "vgr checker could not materialize its candidate workspace"
                 );
-                false
+                return None;
+            }
+        };
+
+        let control = match TempDir::with_prefix("vgr-checker-control-") {
+            Ok(control) => control,
+            Err(error) => {
+                tracing::warn!(
+                    target: "libsy",
+                    kind = ?error.kind(),
+                    "vgr checker could not create its private control directory"
+                );
+                return None;
+            }
+        };
+        let tmp = control.path().join("tmp");
+        if let Err(error) = tokio::fs::create_dir(&tmp).await {
+            tracing::warn!(
+                target: "libsy",
+                kind = ?error.kind(),
+                "vgr checker could not create its private temporary directory"
+            );
+            return None;
+        }
+        let attempt_file = control.path().join(ATTEMPT_FILE);
+        let task_file = control.path().join(TASK_FILE);
+        if let Err(error) = tokio::fs::write(&attempt_file, attempt).await {
+            tracing::warn!(
+                target: "libsy",
+                kind = ?error.kind(),
+                "vgr checker could not write its attempt control file"
+            );
+            return None;
+        }
+        if let Err(error) = tokio::fs::write(&task_file, task_text).await {
+            tracing::warn!(
+                target: "libsy",
+                kind = ?error.kind(),
+                "vgr checker could not write its task control file"
+            );
+            return None;
+        }
+
+        let pinned_path = self.tests_path();
+        let pinned = self.pinned.clone();
+        let limits = SnapshotLimits::from(&self.config);
+        let (permit, prepared) = match blocking_with_permit(permit, move || {
+            prepare_run_tests(&pinned_path, &pinned, limits)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_join) => {
+                tracing::warn!(
+                    target: "libsy",
+                    "vgr checker snapshot worker did not complete"
+                );
+                return None;
+            }
+        };
+        let run_tests = match prepared {
+            Ok(run_tests) => run_tests,
+            Err(error) => {
+                log_tree_error("pre-run", &error);
+                return None;
+            }
+        };
+
+        let passed = match self
+            .run_command(&workspace, &run_tests, &attempt_file, &task_file, &tmp)
+            .await
+        {
+            Ok(passed) => passed,
+            Err(error) => {
+                tracing::warn!(
+                    target: "libsy",
+                    kind = ?error.kind(),
+                    "vgr checker run did not complete"
+                );
+                return None;
+            }
+        };
+
+        let pinned_path = self.tests_path();
+        let run_tests_path = run_tests.path().to_path_buf();
+        let run_baseline = run_tests.baseline.clone();
+        let pinned = self.pinned.clone();
+        let (_permit, verified) = match blocking_with_permit(permit, move || {
+            verify_after_run(
+                &pinned_path,
+                &pinned,
+                &run_tests_path,
+                &run_baseline,
+                limits,
+            )
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_join) => {
+                tracing::warn!(
+                    target: "libsy",
+                    "vgr checker verification worker did not complete"
+                );
+                return None;
+            }
+        };
+        match verified {
+            Ok(()) => Some(passed),
+            Err(error) => {
+                log_tree_error("post-run", &error);
+                None
             }
         }
     }
 
-    /// Runs the command once and reports the exit status.
-    async fn run(&self, task_text: &str, attempt: &str) -> std::io::Result<bool> {
-        // A fresh directory per run, removed when this returns, so one run
-        // cannot see or corrupt another's working state.
-        let workdir = TempDir::with_prefix("vgr-checker-run-")?;
-        let work = workdir.path();
-        std::fs::write(work.join(ATTEMPT_FILE), attempt)?;
-        std::fs::write(work.join(TASK_FILE), task_text)?;
-
-        let tests = self.tests_path();
-        let substituted: Vec<String> = self
+    /// Runs the configured argv in the candidate workspace.
+    async fn run_command(
+        &self,
+        workspace: &CandidateWorkspace,
+        run_tests: &RunTests,
+        attempt_file: &Path,
+        task_file: &Path,
+        tmp: &Path,
+    ) -> std::io::Result<bool> {
+        let work = workspace.path();
+        let tests = run_tests.path();
+        let substituted = self
             .config
             .command
             .iter()
@@ -212,7 +450,7 @@ impl PinnedChecker {
                     .replace("{tests}", &tests.to_string_lossy())
                     .replace("{workdir}", &work.to_string_lossy())
             })
-            .collect();
+            .collect::<Vec<_>>();
         let (program, arguments) = substituted
             .split_first()
             .ok_or_else(|| std::io::Error::other("checker command is empty"))?;
@@ -223,56 +461,36 @@ impl PinnedChecker {
             .current_dir(work)
             // A whitelist, not the router's environment: the child has no
             // reason to inherit credentials the router holds.
-            .env_clear()
-            .env(
-                "PATH",
-                std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
-            )
-            .env("HOME", work)
-            .env("TMPDIR", work)
-            .env("LANG", "C.UTF-8")
-            .env("TESTS_DIR", &tests)
-            .env("ATTEMPT_FILE", work.join(ATTEMPT_FILE))
-            .env("TASK_FILE", work.join(TASK_FILE))
-            .stdin(std::process::Stdio::null())
-            // Discarded rather than captured. Output derived from the attempt
-            // must not reach the router's logs, and nothing reads it: the
-            // verdict is the exit status alone.
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            // Killed if this future is dropped, which is how the router's
-            // deadline stops a run rather than merely stopping waiting for one.
-            .kill_on_drop(true)
-            // Its own process group, so the whole tree can be signalled. A test
-            // suite is a process *tree* — a runner that forks workers is the
-            // normal case, not the exotic one — and killing only the direct
-            // child would leave those workers running on the host after the
-            // router has stopped waiting for them.
-            .process_group(0);
+            .env_clear();
         for (key, value) in &self.config.env {
             command.env(key, value);
         }
+        // Protected values are intentionally last as defense in depth. Setup
+        // rejects these keys too, but no future construction path may reverse
+        // host ownership of the execution contract.
+        command
+            .env("PATH", &self.protected_path)
+            .env("HOME", work)
+            .env("TMPDIR", tmp)
+            .env("LANG", "C.UTF-8")
+            .env("TESTS_DIR", tests)
+            .env("ATTEMPT_FILE", attempt_file)
+            .env("TASK_FILE", task_file)
+            .env(WORKSPACE_ENV, work)
+            .stdin(std::process::Stdio::null())
+            // Discarded rather than captured. Output derived from the attempt
+            // must not reach the router's logs.
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .process_group(0);
 
         let mut child = command.spawn()?;
-        // Read before waiting: the id is gone once the child is reaped, and the
-        // group must still be reachable at that point. `process_group(0)` makes
-        // the child its own group leader, so its pid is the group id.
-        let group = child.id();
-        // Fires however the run ends — clean exit, timeout, or this future being
-        // dropped by the router's deadline — so nothing the suite spawned
-        // outlives the decision it was gathering evidence for.
-        let _reaper = ProcessGroupReaper(group);
-
-        let status = tokio::time::timeout(self.config.timeout, child.wait())
-            .await
-            .map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::TimedOut, "checker timed out")
-            })??;
-
-        // Only the exit status is recorded. The command's output is a function of
-        // the attempt and the task, so it is conversation content by another
-        // route — a suite that printed the attempt would put it in the router's
-        // logs. Nothing here is worth that, since the verdict is the exit code.
+        // `process_group(0)` makes the child its own group leader, so its pid is
+        // the process-group id. The reaper is declared after the child so it
+        // signals the group before `kill_on_drop` handles the direct child.
+        let _reaper = ProcessGroupReaper(child.id());
+        let status = child.wait().await?;
         tracing::debug!(
             target: "libsy",
             status = status.code(),
@@ -284,41 +502,28 @@ impl PinnedChecker {
 
 #[async_trait::async_trait]
 impl Checker for PinnedChecker {
-    async fn check(&self, task_text: &str, attempt: &str) -> Option<bool> {
-        // Before: the suite must be what was pinned, or there is nothing
-        // trustworthy to run.
-        if !self.verifies("pre-run") {
+    async fn check(&self, request: CheckerRequest<'_>) -> Option<bool> {
+        if request.manifest_identity != self.manifest.sha {
+            tracing::warn!(target: "libsy", "vgr checker manifest identity mismatch");
             return None;
         }
-        let passed = match self.run(task_text, attempt).await {
-            Ok(passed) => passed,
-            Err(error) => {
-                tracing::warn!(
-                    target: "libsy",
-                    kind = ?error.kind(),
-                    "vgr checker run did not complete"
-                );
-                return None;
+        let timeout = self.config.timeout.min(request.remaining);
+        match tokio::time::timeout(
+            timeout,
+            self.check_once(request.task_text, request.attempt),
+        )
+        .await
+        {
+            Ok(verdict) => verdict,
+            Err(_elapsed) => {
+                tracing::warn!(target: "libsy", "vgr checker timed out");
+                None
             }
-        };
-        // After: a pass certifies the tests were byte-identical before *and*
-        // after, so an attempt that edited them to make them pass reports
-        // nothing rather than success. A failing run is still a fail — only a
-        // pass needs certifying.
-        if passed && !self.verifies("post-run") {
-            return None;
         }
-        Some(passed)
     }
 }
 
 /// Signals a checker run's whole process group when the run goes out of scope.
-///
-/// The router can cancel a decision at any point, and a suite that forked
-/// workers would otherwise leave them running: `kill_on_drop` reaches the direct
-/// child only. Being able to stop work it started is the router's own
-/// responsibility, and is separate from confining that work, which is the
-/// deployment sandbox's.
 struct ProcessGroupReaper(Option<u32>);
 
 impl Drop for ProcessGroupReaper {
@@ -326,147 +531,540 @@ impl Drop for ProcessGroupReaper {
         let Some(group) = self.0 else {
             return;
         };
-        // Best effort, and deliberately not through a new dependency: sending a
-        // signal to a process group needs `libc::kill` with a negative pid,
-        // which is an `unsafe` call this repository has no precedent for in
-        // production code. `kill` is POSIX and reaches the same syscall.
-        //
-        // Failure is ignored because there is nothing useful to do about it and
-        // the common case is benign: the group is already empty because the
-        // suite exited cleanly and was reaped.
-        let _ = std::process::Command::new("kill")
-            .args(["-KILL", "--", &format!("-{group}")])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        if let Err(error) = kill_process_group(group) {
+            tracing::warn!(
+                target: "libsy",
+                kind = ?error.kind(),
+                raw_os_error = error.raw_os_error(),
+                "vgr checker could not signal its process group"
+            );
+        }
     }
 }
 
-/// Copies `from` to `to`, creating directories as needed.
-///
-/// Only regular files and directories are representable in the manifest, so
-/// anything else is an error rather than an omission.
-fn copy_tree(from: &Path, to: &Path) -> Result<(), CheckerSetupError> {
-    std::fs::create_dir_all(to).map_err(CheckerSetupError::Snapshot)?;
-    for entry in std::fs::read_dir(from).map_err(CheckerSetupError::Snapshot)? {
-        let entry = entry.map_err(CheckerSetupError::Snapshot)?;
-        let kind = entry.file_type().map_err(CheckerSetupError::Snapshot)?;
-        let target = to.join(entry.file_name());
-        if kind.is_dir() {
-            copy_tree(&entry.path(), &target)?;
-        } else if kind.is_file() {
-            std::fs::copy(entry.path(), &target).map_err(CheckerSetupError::Snapshot)?;
-        } else {
-            // Symlinks, sockets, devices and FIFOs. Skipping them silently would
-            // snapshot an incomplete suite that still passes, and following a
-            // symlink would let the manifest hash content living outside the
-            // snapshot that can change underneath it. Neither is safe, so an
-            // unrepresentable suite is refused rather than approximated.
-            return Err(CheckerSetupError::UnsupportedEntry(entry.path()));
+/// Sends SIGKILL directly to a positive child process-group id.
+fn kill_process_group(group: u32) -> std::io::Result<()> {
+    let group = i32::try_from(group)
+        .ok()
+        .filter(|group| *group > 0)
+        .ok_or_else(|| std::io::Error::other("invalid checker process group"))?;
+    // SAFETY: `libc::kill` dereferences no pointers. `group` is checked positive,
+    // so negating it is representable and POSIX interprets it as a process-group
+    // id rather than an unrelated single process.
+    let result = unsafe { libc::kill(-group, libc::SIGKILL) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(error)
+}
+
+/// Holds the private tests used by exactly one run and their mutation baseline.
+struct RunTests {
+    owner: TempDir,
+    path: PathBuf,
+    baseline: TreeSnapshot,
+}
+
+impl RunTests {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Moves admission into blocking work so cancellation cannot release it early.
+async fn blocking_with_permit<T, F>(
+    permit: OwnedSemaphorePermit,
+    work: F,
+) -> Result<(OwnedSemaphorePermit, T), tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let result = work();
+        (permit, result)
+    })
+    .await
+}
+
+/// Builds and verifies the one test copy exposed to a command.
+fn prepare_run_tests(
+    pinned_path: &Path,
+    pinned: &TreeSnapshot,
+    limits: SnapshotLimits,
+) -> Result<RunTests, TreeError> {
+    ensure_matches(snapshot_tree(pinned_path, limits)?, pinned)?;
+    let owner = TempDir::with_prefix("vgr-checker-tests-").map_err(TreeError::Io)?;
+    let tests_path = owner.path().join("tests");
+    copy_tree(pinned_path, &tests_path, limits)?;
+    set_read_only(&tests_path)?;
+    let baseline = snapshot_tree(&tests_path, limits)?;
+    if baseline.entries != pinned.entries {
+        return Err(TreeError::Mismatch);
+    }
+    // A source mutation racing the copy is caught even if the copied bytes look
+    // self-consistent.
+    ensure_matches(snapshot_tree(pinned_path, limits)?, pinned)?;
+    Ok(RunTests {
+        owner,
+        path: tests_path,
+        baseline,
+    })
+}
+
+/// Verifies both the private run copy and the unexposed pinned source.
+fn verify_after_run(
+    pinned_path: &Path,
+    pinned: &TreeSnapshot,
+    run_tests_path: &Path,
+    run_baseline: &TreeSnapshot,
+    limits: SnapshotLimits,
+) -> Result<(), TreeError> {
+    ensure_matches(snapshot_tree(run_tests_path, limits)?, run_baseline)?;
+    ensure_matches(snapshot_tree(pinned_path, limits)?, pinned)
+}
+
+fn ensure_matches(current: TreeSnapshot, expected: &TreeSnapshot) -> Result<(), TreeError> {
+    if current == *expected {
+        Ok(())
+    } else {
+        Err(TreeError::Mismatch)
+    }
+}
+
+fn validate_config(config: &CheckerConfig) -> Result<(), CheckerSetupError> {
+    if config.command.is_empty() {
+        return Err(CheckerSetupError::EmptyCommand);
+    }
+    if config.sandbox_attestation != SANDBOX_ATTESTATION {
+        return Err(CheckerSetupError::NotAttested);
+    }
+    if config.max_snapshot_entries == 0 || config.max_snapshot_bytes == 0 {
+        return Err(CheckerSetupError::InvalidSnapshotLimits);
+    }
+    let identity = config.workspace_provider.manifest_identity();
+    if identity.is_empty() || identity.len() > 4096 || identity.contains('\0') {
+        return Err(CheckerSetupError::InvalidWorkspaceIdentity);
+    }
+    for (key, value) in &config.env {
+        if PROTECTED_ENV.contains(&key.as_str()) {
+            return Err(CheckerSetupError::ReservedEnvironmentKey(key.clone()));
+        }
+        if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
+            return Err(CheckerSetupError::InvalidEnvironmentEntry(key.clone()));
         }
     }
     Ok(())
 }
 
-/// Marks every file in the tree read-only.
-fn set_read_only(root: &Path) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            set_read_only(&entry.path())?;
-        } else if kind.is_file() {
-            let mut permissions = entry.metadata()?.permissions();
-            permissions.set_readonly(true);
-            std::fs::set_permissions(entry.path(), permissions)?;
+#[derive(Clone, Copy)]
+struct SnapshotLimits {
+    entries: usize,
+    bytes: u64,
+}
+
+impl From<&CheckerConfig> for SnapshotLimits {
+    fn from(config: &CheckerConfig) -> Self {
+        Self {
+            entries: config.max_snapshot_entries,
+            bytes: config.max_snapshot_bytes,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TreeSnapshot {
+    entries: BTreeMap<PathBuf, StableEntry>,
+    stamps: BTreeMap<PathBuf, MutationStamp>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum StableEntry {
+    Directory,
+    File(String),
+}
+
+/// Volatile tamper evidence, deliberately excluded from the public manifest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MutationStamp {
+    inode: u64,
+    size: u64,
+    ctime: i64,
+    ctime_nsec: i64,
+    mode: u32,
+}
+
+impl MutationStamp {
+    fn from(metadata: &std::fs::Metadata) -> Self {
+        Self {
+            inode: metadata.ino(),
+            size: metadata.size(),
+            ctime: metadata.ctime(),
+            ctime_nsec: metadata.ctime_nsec(),
+            mode: metadata.mode(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum TreeError {
+    Io(std::io::Error),
+    Unsupported(PathBuf),
+    EntryLimit(usize),
+    ByteLimit(u64),
+    ChangedDuringSnapshot,
+    Mismatch,
+}
+
+impl From<std::io::Error> for TreeError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<TreeError> for CheckerSetupError {
+    fn from(error: TreeError) -> Self {
+        match error {
+            TreeError::Io(error) => Self::Snapshot(error),
+            TreeError::Unsupported(path) => Self::UnsupportedEntry(path),
+            TreeError::EntryLimit(limit) => Self::SnapshotEntryLimit(limit),
+            TreeError::ByteLimit(limit) => Self::SnapshotByteLimit(limit),
+            TreeError::ChangedDuringSnapshot => Self::Snapshot(std::io::Error::other(
+                "test suite changed while it was being snapshotted",
+            )),
+            TreeError::Mismatch => {
+                Self::Snapshot(std::io::Error::other("test suite snapshot did not match"))
+            }
+        }
+    }
+}
+
+fn log_tree_error(stage: &'static str, error: &TreeError) {
+    let reason = match error {
+        TreeError::Io(error) => match error.kind() {
+            std::io::ErrorKind::NotFound => "not_found",
+            std::io::ErrorKind::PermissionDenied => "permission_denied",
+            _ => "io",
+        },
+        TreeError::Unsupported(_) => "unsupported_entry",
+        TreeError::EntryLimit(_) => "entry_limit",
+        TreeError::ByteLimit(_) => "byte_limit",
+        TreeError::ChangedDuringSnapshot => "changed_during_snapshot",
+        TreeError::Mismatch => "manifest_mismatch",
+    };
+    tracing::warn!(
+        target: "libsy",
+        stage,
+        reason,
+        "vgr checker test snapshot could not be verified"
+    );
+}
+
+#[derive(Clone, Copy)]
+struct Usage {
+    limits: SnapshotLimits,
+    entries: usize,
+    bytes: u64,
+}
+
+impl Usage {
+    fn new(limits: SnapshotLimits) -> Self {
+        Self {
+            limits,
+            entries: 0,
+            bytes: 0,
+        }
+    }
+
+    fn add_entry(&mut self) -> Result<(), TreeError> {
+        self.entries = self
+            .entries
+            .checked_add(1)
+            .ok_or(TreeError::EntryLimit(self.limits.entries))?;
+        if self.entries > self.limits.entries {
+            return Err(TreeError::EntryLimit(self.limits.entries));
+        }
+        Ok(())
+    }
+
+    fn check_file_size(&self, bytes: u64) -> Result<(), TreeError> {
+        let total = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(TreeError::ByteLimit(self.limits.bytes))?;
+        if total > self.limits.bytes {
+            return Err(TreeError::ByteLimit(self.limits.bytes));
+        }
+        Ok(())
+    }
+
+    fn add_bytes(&mut self, bytes: usize) -> Result<(), TreeError> {
+        self.bytes = self
+            .bytes
+            .checked_add(bytes as u64)
+            .ok_or(TreeError::ByteLimit(self.limits.bytes))?;
+        if self.bytes > self.limits.bytes {
+            return Err(TreeError::ByteLimit(self.limits.bytes));
+        }
+        Ok(())
+    }
+}
+
+/// Copies a regular-file/directory tree with bounded streaming I/O.
+fn copy_tree(from: &Path, to: &Path, limits: SnapshotLimits) -> Result<(), TreeError> {
+    let root_metadata = std::fs::symlink_metadata(from)?;
+    if !root_metadata.file_type().is_dir() {
+        return Err(TreeError::Unsupported(from.to_path_buf()));
+    }
+    std::fs::create_dir(to)?;
+    let mut usage = Usage::new(limits);
+    usage.add_entry()?;
+    let mut directories = vec![(from.to_path_buf(), to.to_path_buf())];
+    while let Some((source, target)) = directories.pop() {
+        let before = std::fs::symlink_metadata(&source)?;
+        if !before.file_type().is_dir() {
+            return Err(TreeError::Unsupported(source));
+        }
+        let before_stamp = MutationStamp::from(&before);
+        for entry in std::fs::read_dir(&source)? {
+            let entry = entry?;
+            let source_path = entry.path();
+            let target_path = target.join(entry.file_name());
+            let metadata = std::fs::symlink_metadata(&source_path)?;
+            usage.add_entry()?;
+            if metadata.file_type().is_dir() {
+                std::fs::create_dir(&target_path)?;
+                directories.push((source_path, target_path));
+            } else if metadata.file_type().is_file() {
+                copy_file(&source_path, &target_path, &metadata, &mut usage)?;
+            } else {
+                return Err(TreeError::Unsupported(source_path));
+            }
+        }
+        let after = std::fs::symlink_metadata(&source)?;
+        if MutationStamp::from(&after) != before_stamp {
+            return Err(TreeError::ChangedDuringSnapshot);
         }
     }
     Ok(())
 }
 
-/// Hashes every file in the tree, keyed by its path relative to `root`.
-///
-/// Ordered, so two trees with the same contents always produce the same map
-/// and the same manifest hash.
-fn hash_tree(root: &Path) -> std::io::Result<BTreeMap<String, String>> {
-    let mut hashed = BTreeMap::new();
-    hash_into(root, root, &mut hashed)?;
-    Ok(hashed)
+fn copy_file(
+    source: &Path,
+    target: &Path,
+    metadata: &std::fs::Metadata,
+    usage: &mut Usage,
+) -> Result<(), TreeError> {
+    usage.check_file_size(metadata.len())?;
+    let mut input = open_regular_file(source)?;
+    let opened = input.metadata()?;
+    if !opened.file_type().is_file()
+        || MutationStamp::from(&opened) != MutationStamp::from(metadata)
+    {
+        return Err(TreeError::ChangedDuringSnapshot);
+    }
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)?;
+    let mut buffer = [0_u8; HASH_CHUNK_BYTES];
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        usage.add_bytes(read)?;
+        output.write_all(&buffer[..read])?;
+    }
+    std::fs::set_permissions(target, metadata.permissions())?;
+    if MutationStamp::from(&input.metadata()?) != MutationStamp::from(&opened) {
+        return Err(TreeError::ChangedDuringSnapshot);
+    }
+    Ok(())
 }
 
-fn hash_into(
-    root: &Path,
-    current: &Path,
-    hashed: &mut BTreeMap<String, String>,
-) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(current)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        let path = entry.path();
-        if kind.is_dir() {
-            hash_into(root, &path, hashed)?;
-        } else if kind.is_file() {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| std::io::Error::other("snapshot entry escaped its root"))?
-                .to_string_lossy()
-                .into_owned();
-            let contents = std::fs::read(&path)?;
-            let digest = hex(ring::digest::digest(&ring::digest::SHA256, &contents));
-            let stamp = inode_stamp(&entry.metadata()?);
-            hashed.insert(relative, format!("{digest}{stamp}"));
+/// Marks every regular file in the tree read-only and rejects every other kind.
+fn set_read_only(root: &Path) -> Result<(), TreeError> {
+    let metadata = std::fs::symlink_metadata(root)?;
+    if !metadata.file_type().is_dir() {
+        return Err(TreeError::Unsupported(root.to_path_buf()));
+    }
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_dir() {
+                directories.push(path);
+            } else if metadata.file_type().is_file() {
+                let mut permissions = metadata.permissions();
+                permissions.set_readonly(true);
+                std::fs::set_permissions(path, permissions)?;
+            } else {
+                return Err(TreeError::Unsupported(path));
+            }
         }
     }
     Ok(())
 }
 
-/// One hash over the whole suite and the command it will be run with.
-///
-/// Lengths are folded in alongside the values so that no two different suites
-/// can produce the same digest by shifting a boundary between fields.
-fn manifest_sha(files: &BTreeMap<String, String>, command: &[String]) -> String {
+/// Hashes the complete namespace and captures separate mutation stamps.
+fn snapshot_tree(root: &Path, limits: SnapshotLimits) -> Result<TreeSnapshot, TreeError> {
+    let root_metadata = std::fs::symlink_metadata(root)?;
+    if !root_metadata.file_type().is_dir() {
+        return Err(TreeError::Unsupported(root.to_path_buf()));
+    }
+    let mut usage = Usage::new(limits);
+    let mut entries = BTreeMap::new();
+    let mut stamps = BTreeMap::new();
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let relative = relative_path(root, &directory)?;
+        let before = std::fs::symlink_metadata(&directory)?;
+        if !before.file_type().is_dir() {
+            return Err(TreeError::Unsupported(directory));
+        }
+        usage.add_entry()?;
+        entries.insert(relative.clone(), StableEntry::Directory);
+        stamps.insert(relative, MutationStamp::from(&before));
+        let before_stamp = MutationStamp::from(&before);
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_dir() {
+                directories.push(path);
+            } else if metadata.file_type().is_file() {
+                usage.add_entry()?;
+                let relative = relative_path(root, &path)?;
+                let (digest, stamp) = hash_file(&path, &metadata, &mut usage)?;
+                entries.insert(relative.clone(), StableEntry::File(digest));
+                stamps.insert(relative, stamp);
+            } else {
+                return Err(TreeError::Unsupported(path));
+            }
+        }
+        let after = std::fs::symlink_metadata(&directory)?;
+        if MutationStamp::from(&after) != before_stamp {
+            return Err(TreeError::ChangedDuringSnapshot);
+        }
+    }
+    Ok(TreeSnapshot { entries, stamps })
+}
+
+fn relative_path(root: &Path, path: &Path) -> Result<PathBuf, TreeError> {
+    path.strip_prefix(root)
+        .map(Path::to_path_buf)
+        .map_err(|_| TreeError::Io(std::io::Error::other("snapshot entry escaped its root")))
+}
+
+fn hash_file(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    usage: &mut Usage,
+) -> Result<(String, MutationStamp), TreeError> {
+    usage.check_file_size(metadata.len())?;
+    let mut file = open_regular_file(path)?;
+    let opened = file.metadata()?;
+    if !opened.file_type().is_file()
+        || MutationStamp::from(&opened) != MutationStamp::from(metadata)
+    {
+        return Err(TreeError::ChangedDuringSnapshot);
+    }
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
-    for (path, digest) in files {
-        context.update(&(path.len() as u64).to_le_bytes());
-        context.update(path.as_bytes());
-        context.update(digest.as_bytes());
+    let mut buffer = [0_u8; HASH_CHUNK_BYTES];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        usage.add_bytes(read)?;
+        context.update(&buffer[..read]);
     }
-    for argument in command {
-        context.update(&(argument.len() as u64).to_le_bytes());
-        context.update(argument.as_bytes());
+    let after = file.metadata()?;
+    let stamp = MutationStamp::from(&opened);
+    if MutationStamp::from(&after) != stamp {
+        return Err(TreeError::ChangedDuringSnapshot);
+    }
+    Ok((hex(context.finish()), stamp))
+}
+
+fn open_regular_file(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+/// One stable hash over the suite and complete execution contract.
+fn manifest_sha(
+    entries: &BTreeMap<PathBuf, StableEntry>,
+    config: &CheckerConfig,
+    protected_path: &str,
+) -> String {
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    digest_field(&mut context, b"vgr-pinned-checker-manifest-v2");
+    for (path, entry) in entries {
+        digest_field(&mut context, path.as_os_str().as_bytes());
+        match entry {
+            StableEntry::Directory => digest_field(&mut context, b"directory"),
+            StableEntry::File(digest) => {
+                digest_field(&mut context, b"file");
+                digest_field(&mut context, digest.as_bytes());
+            }
+        }
+    }
+    for argument in &config.command {
+        digest_field(&mut context, argument.as_bytes());
+    }
+    digest_field(
+        &mut context,
+        config.workspace_provider.manifest_identity().as_bytes(),
+    );
+    digest_field(
+        &mut context,
+        config.timeout.as_nanos().to_string().as_bytes(),
+    );
+    digest_field(
+        &mut context,
+        config.max_snapshot_entries.to_string().as_bytes(),
+    );
+    digest_field(
+        &mut context,
+        config.max_snapshot_bytes.to_string().as_bytes(),
+    );
+    for (key, value) in manifest_environment(config, protected_path) {
+        digest_field(&mut context, key.as_bytes());
+        digest_field(&mut context, value.as_bytes());
     }
     hex(context.finish())
 }
 
-/// Identity of a file beyond its contents: inode, size, and inode-change time.
-///
-/// Content hashing alone cannot see a suite that was edited, run against, and
-/// restored to its original bytes — both hashes match and the run passes. `ctime`
-/// closes that: the kernel updates it on every write and on every metadata
-/// change, and unlike `mtime` it cannot be set from userspace, so restoring
-/// content or backdating with `touch` does not hide the edit. The inode catches
-/// a file replaced wholesale rather than modified in place.
-///
-/// Preventing the edit outright would need a read-only bind mount, which needs a
-/// user namespace the router cannot rely on having. Detecting it is enough here,
-/// because an unverifiable snapshot yields no verdict and escalates.
-#[cfg(unix)]
-fn inode_stamp(metadata: &std::fs::Metadata) -> String {
-    use std::os::unix::fs::MetadataExt;
-    format!(
-        ":{}:{}:{}.{}",
-        metadata.ino(),
-        metadata.size(),
-        metadata.ctime(),
-        metadata.ctime_nsec()
-    )
+fn manifest_environment(config: &CheckerConfig, protected_path: &str) -> BTreeMap<String, String> {
+    let mut environment = config.env.iter().cloned().collect::<BTreeMap<_, _>>();
+    environment.insert("PATH".into(), protected_path.to_string());
+    environment.insert("LANG".into(), "C.UTF-8".into());
+    environment.insert("HOME".into(), "{workspace}".into());
+    environment.insert("TMPDIR".into(), "{control}/tmp".into());
+    environment.insert("TESTS_DIR".into(), "{private-tests}".into());
+    environment.insert("ATTEMPT_FILE".into(), "{control}/attempt.txt".into());
+    environment.insert("TASK_FILE".into(), "{control}/task.txt".into());
+    environment.insert(WORKSPACE_ENV.into(), "{workspace}".into());
+    environment
 }
 
-/// Contents alone off Unix, where there is no `ctime` to consult.
-#[cfg(not(unix))]
-fn inode_stamp(_metadata: &std::fs::Metadata) -> String {
-    String::new()
+fn current_path() -> String {
+    std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+}
+
+fn digest_field(context: &mut ring::digest::Context, value: &[u8]) {
+    context.update(&(value.len() as u64).to_le_bytes());
+    context.update(value);
 }
 
 /// Renders a digest as lower-case hex.

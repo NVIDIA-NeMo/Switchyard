@@ -140,6 +140,8 @@ pub(super) struct Record {
     pub(super) task_type: Option<TaskType>,
     /// Provenance of the tool-error count the veto acted on, when there was one.
     pub(super) tool_errors_source: Option<&'static str>,
+    /// Stable public identity of the checker contract used for this decision.
+    pub(super) checker_manifest: Option<String>,
     /// The prompt set the verifiers were called with.
     pub(super) prompt_version: &'static str,
 }
@@ -204,6 +206,7 @@ impl Record {
             prompt_version = self.prompt_version,
             task_type = ?self.task_type,
             tool_errors_source = ?self.tool_errors_source,
+            checker_manifest = self.checker_manifest.as_deref(),
             elapsed_ms = self.elapsed.as_millis() as u64,
             stages = %stages,
             unknowns = %unknowns,
@@ -229,7 +232,43 @@ pub(super) fn count_redactions(judged: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+    use tracing::field::{Field, Visit};
+    use tracing::{Event, Subscriber};
+    use tracing_subscriber::layer::{Context, SubscriberExt as _};
+    use tracing_subscriber::{Layer, Registry};
+
     use super::*;
+
+    #[derive(Default)]
+    struct FieldVisitor(BTreeMap<String, String>);
+
+    impl Visit for FieldVisitor {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+    }
+
+    struct CaptureLayer(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+
+    impl<S> Layer<S> for CaptureLayer
+    where
+        S: Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+            let mut visitor = FieldVisitor::default();
+            event.record(&mut visitor);
+            self.0.lock().push(visitor.0);
+        }
+    }
 
     #[test]
     fn a_budget_reason_marks_the_turn_as_cut_short() {
@@ -263,5 +302,24 @@ mod tests {
     fn redaction_events_count_the_scrubbed_spans() {
         assert_eq!(count_redactions("nothing to scrub"), 0);
         assert_eq!(count_redactions("key [REDACTED] and mail [REDACTED]"), 2);
+    }
+
+    #[test]
+    fn checker_manifest_identity_is_emitted_with_the_decision() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = Registry::default().with(CaptureLayer(Arc::clone(&captured)));
+        let mut record = Record::new();
+        record.checker_manifest = Some("stable-checker-digest".to_string());
+
+        tracing::subscriber::with_default(subscriber, || record.emit());
+
+        let fields = captured.lock();
+        assert_eq!(
+            fields
+                .first()
+                .and_then(|event| event.get("checker_manifest"))
+                .map(String::as_str),
+            Some("stable-checker-digest")
+        );
     }
 }

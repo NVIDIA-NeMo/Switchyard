@@ -146,8 +146,7 @@ impl ValidatedChecker {
         .flatten()
     }
 
-    #[cfg(test)]
-    fn manifest_identity(&self) -> &str {
+    pub(super) fn manifest_identity(&self) -> &str {
         &self.manifest_identity
     }
 }

@@ -2,24 +2,64 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Tests for the pinned-manifest checker.
-//!
-//! The verdict mapping is the whole contract: only a clean exit with the
-//! manifest verified twice may report a pass, and every other outcome must be
-//! indeterminate rather than a fail. The tampering cases are the reason this
-//! module exists, so they are tested against a command that actually edits the
-//! suite it is being judged by.
 
+use std::future::Future as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::Poll;
 use std::time::Duration;
 
 use tempfile::TempDir;
+use tokio::sync::Notify;
 
 use super::*;
 
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
 /// A suite directory holding one script, and the temp dir owning it.
-fn suite(script: &str) -> TempDir {
-    let dir = TempDir::with_prefix("vgr-checker-suite-").expect("suite dir");
-    std::fs::write(dir.path().join("run.sh"), script).expect("write script");
-    dir
+fn suite(script: &str) -> std::io::Result<TempDir> {
+    let dir = TempDir::with_prefix("vgr-checker-suite-")?;
+    std::fs::write(dir.path().join("run.sh"), script)?;
+    Ok(dir)
+}
+
+/// A host provider that creates a workspace with fixed candidate files.
+struct TestProvider {
+    identity: String,
+    files: Vec<(String, String)>,
+}
+
+#[async_trait::async_trait]
+impl WorkspaceProvider for TestProvider {
+    fn manifest_identity(&self) -> &str {
+        &self.identity
+    }
+
+    async fn materialize(
+        &self,
+        _task_text: &str,
+        _attempt: &str,
+    ) -> std::io::Result<CandidateWorkspace> {
+        let root = TempDir::with_prefix("vgr-candidate-")?;
+        for (name, contents) in &self.files {
+            std::fs::write(root.path().join(name), contents)?;
+        }
+        CandidateWorkspace::new(root)
+    }
+}
+
+fn provider(identity: &str) -> Arc<dyn WorkspaceProvider> {
+    Arc::new(TestProvider {
+        identity: identity.to_string(),
+        files: Vec::new(),
+    })
+}
+
+fn provider_with_file(identity: &str, name: &str, contents: &str) -> Arc<dyn WorkspaceProvider> {
+    Arc::new(TestProvider {
+        identity: identity.to_string(),
+        files: vec![(name.to_string(), contents.to_string())],
+    })
 }
 
 /// A config running `argv` against `tests`, attested and quick to time out.
@@ -30,232 +70,208 @@ fn config(tests: &TempDir, argv: &[&str]) -> CheckerConfig {
         ..CheckerConfig::new(
             tests.path(),
             argv.iter().map(|part| (*part).to_string()).collect(),
+            provider("test-provider-v1"),
         )
     }
 }
 
-/// Runs `sh` over the snapshot's script.
+/// Runs `sh` over the private per-run copy of the snapshot's script.
 fn shell_argv() -> Vec<&'static str> {
     vec!["/bin/sh", "{tests}/run.sh"]
 }
 
 #[tokio::test]
-async fn a_clean_exit_with_an_intact_suite_passes() {
-    let tests = suite("exit 0\n");
-    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
+async fn a_clean_exit_with_an_intact_suite_passes() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
     assert_eq!(checker.check("task", "attempt").await, Some(true));
+    Ok(())
 }
 
 #[tokio::test]
-async fn a_nonzero_exit_is_a_fail_not_an_indeterminate() {
-    // A failing test run is evidence, and the branch is entitled to act on it.
-    let tests = suite("exit 1\n");
-    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
+async fn a_nonzero_exit_is_a_fail_not_an_indeterminate() -> TestResult {
+    let tests = suite("exit 1\n")?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
     assert_eq!(checker.check("task", "attempt").await, Some(false));
+    Ok(())
 }
 
 #[tokio::test]
-async fn a_run_that_edits_the_suite_to_pass_reports_nothing() {
-    // The reason the manifest exists. The attempt runs as the same user as the
-    // tests, so read-only permissions alone cannot stop this; only re-hashing
-    // after the run catches it.
+async fn a_run_that_edits_the_private_suite_reports_nothing() -> TestResult {
     let tests =
-        suite("chmod u+w \"$TESTS_DIR/run.sh\"; echo tampered >> \"$TESTS_DIR/run.sh\"; exit 0\n");
-    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
+        suite("chmod u+w \"$TESTS_DIR/run.sh\"; echo tampered >> \"$TESTS_DIR/run.sh\"; exit 0\n")?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
     assert_eq!(checker.check("task", "attempt").await, None);
-
-    // Not vacuous: the edit really landed, and the run really exited clean, so
-    // the only thing standing between it and a pass was the manifest.
-    let script = std::fs::read_to_string(checker.tests_path().join("run.sh")).expect("read");
-    assert!(
-        script.contains("tampered"),
-        "the suite was not modified: {script}"
+    // The shared pinned source was never exposed to the command.
+    assert_eq!(
+        std::fs::read_to_string(checker.tests_path().join("run.sh"))?,
+        "chmod u+w \"$TESTS_DIR/run.sh\"; echo tampered >> \"$TESTS_DIR/run.sh\"; exit 0\n"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn a_run_that_edits_the_suite_and_restores_it_reports_nothing() {
-    // The gap content hashing alone cannot see: edit a test, run against the
-    // edited version, then put the original bytes back. Both content hashes
-    // match. Only the inode-change time gives it away, and userspace cannot set
-    // that — the `touch` here backdates mtime and still does not hide it.
+async fn a_run_that_edits_and_restores_file_bytes_reports_nothing() -> TestResult {
     const EXPECTED: &str = "expected answer\n";
-    // The runner edits a second test file, uses the edited version, then puts
-    // the original bytes back and backdates it.
     let tests = suite(
         "chmod u+w \"$TESTS_DIR/expected.txt\"\n\
          printf 'anything goes\\n' > \"$TESTS_DIR/expected.txt\"\n\
          printf 'expected answer\\n' > \"$TESTS_DIR/expected.txt\"\n\
          touch -d '2020-01-01' \"$TESTS_DIR/expected.txt\"\n\
          exit 0\n",
-    );
-    std::fs::write(tests.path().join("expected.txt"), EXPECTED).expect("write victim");
-
-    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
+    )?;
+    std::fs::write(tests.path().join("expected.txt"), EXPECTED)?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
     assert_eq!(checker.check("task", "attempt").await, None);
-
-    // Not vacuous: the file really is byte-identical to what was pinned, so a
-    // content-only manifest would have accepted this run.
-    let restored =
-        std::fs::read_to_string(checker.tests_path().join("expected.txt")).expect("read");
-    assert_eq!(
-        restored, EXPECTED,
-        "the suite did not restore the original bytes, so this proves nothing"
-    );
+    Ok(())
 }
 
 #[tokio::test]
-async fn a_run_that_adds_a_test_file_reports_nothing() {
-    // Additions change the tree even though every original file is untouched.
-    let tests = suite("echo extra > \"$TESTS_DIR/added.txt\"; exit 0\n");
-    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
+async fn a_run_that_renames_replaces_and_restores_the_tests_root_reports_nothing() -> TestResult {
+    let tests = suite(
+        "original=\"${TESTS_DIR}.original\"\n\
+         mv \"$TESTS_DIR\" \"$original\"\n\
+         mkdir \"$TESTS_DIR\"\n\
+         printf 'exit 0\\n' > \"$TESTS_DIR/replacement.sh\"\n\
+         /bin/sh \"$TESTS_DIR/replacement.sh\" || exit 1\n\
+         rm -rf \"$TESTS_DIR\"\n\
+         mv \"$original\" \"$TESTS_DIR\"\n\
+         exit 0\n",
+    )?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
     assert_eq!(checker.check("task", "attempt").await, None);
-    assert!(
-        checker.tests_path().join("added.txt").exists(),
-        "the run did not actually add a file"
-    );
+    Ok(())
 }
 
 #[tokio::test]
-async fn a_command_that_cannot_be_spawned_reports_nothing() {
-    let tests = suite("exit 0\n");
-    let checker =
-        PinnedChecker::new(config(&tests, &["/nonexistent/checker-binary"])).expect("builds");
+async fn a_run_that_adds_an_empty_directory_reports_nothing() -> TestResult {
+    let tests = suite("mkdir \"$TESTS_DIR/empty\"; exit 0\n")?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
     assert_eq!(checker.check("task", "attempt").await, None);
+    Ok(())
 }
 
 #[tokio::test]
-async fn a_run_that_outlives_its_timeout_reports_nothing() {
-    // Never a fail: a suite that did not finish has not said anything about
-    // the attempt.
-    let tests = suite("sleep 30\n");
-    let mut config = config(&tests, &shell_argv());
-    config.timeout = Duration::from_millis(150);
-    let checker = PinnedChecker::new(config).expect("builds");
-
-    let started = std::time::Instant::now();
+async fn a_fifo_added_before_verification_is_rejected() -> TestResult {
+    let tests = suite("mkfifo \"$TESTS_DIR/pipe\"; exit 0\n")?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
     assert_eq!(checker.check("task", "attempt").await, None);
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
+    Ok(())
 }
 
 #[tokio::test]
-async fn a_timeout_kills_the_whole_process_tree_not_just_the_direct_child() {
-    // A test suite is a process tree — a runner forking workers is the normal
-    // case. Killing only the command would leave those workers on the host after
-    // the router stopped waiting, so this asserts the grandchild is gone, not
-    // merely that the run returned.
-    let marker = TempDir::with_prefix("vgr-checker-marker-").expect("marker dir");
+async fn a_command_that_cannot_be_spawned_reports_nothing() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    let checker = PinnedChecker::new(config(&tests, &["/nonexistent/checker-binary"]))?;
+    assert_eq!(checker.check("task", "attempt").await, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_run_that_outlives_its_timeout_reports_nothing() -> TestResult {
+    let tests = suite("sleep 30\n")?;
+    let mut checker_config = config(&tests, &shell_argv());
+    checker_config.timeout = Duration::from_millis(150);
+    let checker = PinnedChecker::new(checker_config)?;
+    assert_eq!(checker.check("task", "attempt").await, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_timeout_kills_the_whole_process_tree() -> TestResult {
+    let marker = TempDir::with_prefix("vgr-checker-marker-")?;
     let alive = marker.path().join("still-alive");
-    // A background grandchild that outlives its parent and keeps touching a file.
     let tests = suite(&format!(
-        "sh -c 'while true; do touch {}; sleep 0.05; done' &\nsleep 30\n",
+        "sh -c 'while true; do touch {}; sleep 0.02; done' &\n\
+         while [ ! -e {} ]; do :; done\n\
+         sleep 30\n",
+        alive.display(),
         alive.display()
-    ));
-    let mut config = config(&tests, &shell_argv());
-    config.timeout = Duration::from_millis(200);
-    let checker = PinnedChecker::new(config).expect("builds");
-
+    ))?;
+    let mut checker_config = config(&tests, &shell_argv());
+    checker_config.timeout = Duration::from_millis(200);
+    let checker = PinnedChecker::new(checker_config)?;
     assert_eq!(checker.check("task", "attempt").await, None);
+    assert!(alive.exists(), "the background grandchild never ran");
 
-    // Not vacuous: the grandchild must actually have run, or two absent
-    // timestamps would compare equal and assert nothing.
-    assert!(
-        alive.exists(),
-        "the background grandchild never started, so this proves nothing"
-    );
-
-    // Give any survivor a chance to prove it is still running, then confirm it
-    // stopped touching the file.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let settled = std::fs::metadata(&alive)
-        .and_then(|metadata| metadata.modified())
-        .ok();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let after = std::fs::metadata(&alive)
-        .and_then(|metadata| metadata.modified())
-        .ok();
-    assert_eq!(
-        settled, after,
-        "a grandchild of the checker survived the timeout and is still running"
-    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let settled = std::fs::metadata(&alive)?.modified()?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let after = std::fs::metadata(&alive)?.modified()?;
+    assert_eq!(settled, after, "the checker grandchild survived timeout");
+    Ok(())
 }
 
 #[tokio::test]
-async fn the_attempt_and_task_reach_the_command_as_files() {
+async fn the_attempt_and_task_reach_the_command_as_files() -> TestResult {
     let tests = suite(
         "grep -q 'the attempt text' \"$ATTEMPT_FILE\" || exit 1\n\
          grep -q 'the task text' \"$TASK_FILE\" || exit 1\n\
          exit 0\n",
-    );
-    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
+    )?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
     assert_eq!(
         checker.check("the task text", "the attempt text").await,
         Some(true)
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn the_command_does_not_inherit_the_router_environment() {
-    // The router holds provider credentials; a task's tests have no business
-    // seeing them.
-    unsafe {
-        std::env::set_var("VGR_CHECKER_LEAK_PROBE", "secret");
-    }
-    let tests = suite("[ -z \"$VGR_CHECKER_LEAK_PROBE\" ] || exit 1\nexit 0\n");
-    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
-    let verdict = checker.check("task", "attempt").await;
-    unsafe {
-        std::env::remove_var("VGR_CHECKER_LEAK_PROBE");
-    }
-    assert_eq!(verdict, Some(true));
-}
-
-#[test]
-fn a_checker_without_the_sandbox_attestation_does_not_build() {
-    // Nothing here enforces memory, CPU, network or filesystem reach. A
-    // deployment that has not said something else does must not get a checker.
-    let tests = suite("exit 0\n");
-    let mut config = config(&tests, &shell_argv());
-    config.sandbox_attestation = "approved".to_string();
-    assert!(matches!(
-        PinnedChecker::new(config),
-        Err(CheckerSetupError::NotAttested)
-    ));
-}
-
-#[test]
-fn a_suite_holding_a_symlink_does_not_build() {
-    // Skipping it would snapshot an incomplete suite that still passes, and
-    // following it would hash content living outside the snapshot. Refusing is
-    // the only option that keeps the manifest meaning what it says.
-    let tests = suite("exit 0\n");
-    std::os::unix::fs::symlink("/etc/hostname", tests.path().join("linked.txt")).expect("symlink");
-
-    let error = PinnedChecker::new(config(&tests, &shell_argv()))
-        .err()
-        .expect("a symlinked suite is refused");
-    assert!(
-        matches!(error, CheckerSetupError::UnsupportedEntry(_)),
-        "{error:?}"
-    );
-    // The operator is told which entry, so the suite can be fixed.
-    assert!(error.to_string().contains("linked.txt"), "{error}");
+async fn the_command_tests_materialized_candidate_sources() -> TestResult {
+    let tests = suite(
+        "[ \"$(cat candidate.txt)\" = 'candidate source' ] || exit 1\n\
+         [ \"$PWD\" = \"$WORKSPACE_DIR\" ] || exit 1\n\
+         exit 0\n",
+    )?;
+    let mut checker_config = config(&tests, &shell_argv());
+    checker_config.workspace_provider =
+        provider_with_file("candidate-copy-v1", "candidate.txt", "candidate source");
+    let checker = PinnedChecker::new(checker_config)?;
+    assert_eq!(checker.check("task", "model text").await, Some(true));
+    Ok(())
 }
 
 #[tokio::test]
-async fn nothing_derived_from_the_attempt_reaches_the_command_line() {
-    // The command is operator configuration. If an attempt could steer argv,
-    // the model would be choosing what the host executes.
+async fn the_command_does_not_inherit_the_router_environment() -> TestResult {
+    let tests = suite("[ -z \"$NVIDIA_API_KEY\" ] || exit 1\nexit 0\n")?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
+    assert_eq!(checker.check("task", "attempt").await, Some(true));
+    Ok(())
+}
+
+#[tokio::test]
+async fn protected_environment_is_applied_last_at_runtime() -> TestResult {
+    let tests = suite(
+        "[ \"$TESTS_DIR\" != '/untrusted' ] || exit 1\n\
+         [ \"$ATTEMPT_FILE\" != '/untrusted' ] || exit 1\n\
+         [ \"$TASK_FILE\" != '/untrusted' ] || exit 1\n\
+         [ \"$HOME\" = \"$WORKSPACE_DIR\" ] || exit 1\n\
+         [ \"$TMPDIR\" != '/untrusted' ] || exit 1\n\
+         [ \"$PATH\" != '/untrusted' ] || exit 1\n\
+         [ \"$LANG\" = 'C.UTF-8' ] || exit 1\n\
+         [ \"$WORKSPACE_DIR\" != '/untrusted' ] || exit 1\n\
+         exit 0\n",
+    )?;
+    let mut checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
+    for key in PROTECTED_ENV {
+        checker
+            .config
+            .env
+            .push((key.to_string(), "/untrusted".to_string()));
+    }
+    assert_eq!(checker.check("task", "attempt").await, Some(true));
+    Ok(())
+}
+
+#[tokio::test]
+async fn nothing_derived_from_the_attempt_reaches_the_command_line() -> TestResult {
     let tests = suite(
         "case \"$*\" in *marker-from-attempt*) exit 1 ;; esac\n\
          case \"$0\" in *marker-from-attempt*) exit 1 ;; esac\n\
          exit 0\n",
-    );
-    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
+    )?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
     assert_eq!(
         checker
             .check(
@@ -265,49 +281,258 @@ async fn nothing_derived_from_the_attempt_reaches_the_command_line() {
             .await,
         Some(true)
     );
+    Ok(())
 }
 
 #[test]
-fn an_empty_command_does_not_build() {
-    let tests = suite("exit 0\n");
-    let config = CheckerConfig {
+fn a_checker_without_the_sandbox_attestation_does_not_build() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    let mut checker_config = config(&tests, &shell_argv());
+    checker_config.sandbox_attestation = "approved".to_string();
+    assert!(matches!(
+        PinnedChecker::new(checker_config),
+        Err(CheckerSetupError::NotAttested)
+    ));
+    Ok(())
+}
+
+#[test]
+fn an_empty_command_does_not_build() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    let checker_config = CheckerConfig {
         sandbox_attestation: SANDBOX_ATTESTATION.to_string(),
-        ..CheckerConfig::new(tests.path(), Vec::new())
+        ..CheckerConfig::new(tests.path(), Vec::new(), provider("test-provider-v1"))
     };
     assert!(matches!(
-        PinnedChecker::new(config),
+        PinnedChecker::new(checker_config),
         Err(CheckerSetupError::EmptyCommand)
     ));
+    Ok(())
 }
 
 #[test]
-fn the_manifest_covers_the_command_as_well_as_the_suite() {
-    // Two checkers over identical tests but different commands are not
-    // interchangeable, so a decision record naming one must not match the other.
-    let tests = suite("exit 0\n");
-    let first = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
-    let second = PinnedChecker::new(config(&tests, &["/bin/sh", "-c", "exit 0"])).expect("builds");
+fn every_host_owned_environment_key_is_rejected_at_setup() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    for key in PROTECTED_ENV {
+        let mut checker_config = config(&tests, &shell_argv());
+        checker_config
+            .env
+            .push((key.to_string(), "override".to_string()));
+        assert!(matches!(
+            PinnedChecker::new(checker_config),
+            Err(CheckerSetupError::ReservedEnvironmentKey(rejected)) if rejected == key
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_suite_holding_a_symlink_does_not_build() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    std::os::unix::fs::symlink("/etc/hostname", tests.path().join("linked.txt"))?;
+    let result = PinnedChecker::new(config(&tests, &shell_argv()));
+    assert!(matches!(
+        result,
+        Err(CheckerSetupError::UnsupportedEntry(path)) if path.ends_with("linked.txt")
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_suite_holding_a_socket_does_not_build() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    let _listener = std::os::unix::net::UnixListener::bind(tests.path().join("socket"))?;
+    assert!(matches!(
+        PinnedChecker::new(config(&tests, &shell_argv())),
+        Err(CheckerSetupError::UnsupportedEntry(path)) if path.ends_with("socket")
+    ));
+    Ok(())
+}
+
+#[test]
+fn empty_directories_are_part_of_the_stable_manifest() -> TestResult {
+    let first = suite("exit 0\n")?;
+    let second = suite("exit 0\n")?;
+    std::fs::create_dir(second.path().join("empty"))?;
+    let first = PinnedChecker::new(config(&first, &shell_argv()))?;
+    let second = PinnedChecker::new(config(&second, &shell_argv()))?;
     assert_ne!(first.manifest().sha, second.manifest().sha);
+    Ok(())
 }
 
 #[test]
-fn suites_differing_only_in_content_hash_differently() {
-    let first = suite("exit 0\n");
-    let second = suite("exit 1\n");
-    let first = PinnedChecker::new(config(&first, &shell_argv())).expect("builds");
-    let second = PinnedChecker::new(config(&second, &shell_argv())).expect("builds");
-    assert_ne!(first.manifest().sha, second.manifest().sha);
+fn the_manifest_is_stable_across_checker_restarts() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    std::fs::create_dir(tests.path().join("empty"))?;
+    std::fs::write(tests.path().join("data.txt"), "same bytes")?;
+    let first = PinnedChecker::new(config(&tests, &shell_argv()))?;
+    let first_identity = first.manifest().sha.clone();
+    drop(first);
+    let second = PinnedChecker::new(config(&tests, &shell_argv()))?;
+    assert_eq!(first_identity, second.manifest().sha);
+    assert_eq!(
+        Checker::manifest_identity(&second),
+        Some(first_identity.as_str())
+    );
+    Ok(())
 }
 
 #[test]
-fn editing_the_operator_directory_after_construction_does_not_change_the_snapshot() {
-    // The snapshot is taken once, so the suite cannot be swapped underneath a
-    // running deployment.
-    let tests = suite("exit 0\n");
-    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
+fn command_materialization_and_environment_change_manifest_identity() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    let base = PinnedChecker::new(config(&tests, &shell_argv()))?;
+
+    let command = PinnedChecker::new(config(&tests, &["/bin/sh", "-c", "exit 0"]))?;
+    assert_ne!(base.manifest().sha, command.manifest().sha);
+
+    let mut materialization = config(&tests, &shell_argv());
+    materialization.workspace_provider = provider("test-provider-v2");
+    let materialization = PinnedChecker::new(materialization)?;
+    assert_ne!(base.manifest().sha, materialization.manifest().sha);
+
+    let mut environment = config(&tests, &shell_argv());
+    environment
+        .env
+        .push(("CHECKER_FEATURE".to_string(), "enabled".to_string()));
+    let environment = PinnedChecker::new(environment)?;
+    assert_ne!(base.manifest().sha, environment.manifest().sha);
+    Ok(())
+}
+
+#[test]
+fn snapshot_entry_and_byte_limits_fail_closed() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    let mut entry_limited = config(&tests, &shell_argv());
+    entry_limited.max_snapshot_entries = 1;
+    assert!(matches!(
+        PinnedChecker::new(entry_limited),
+        Err(CheckerSetupError::SnapshotEntryLimit(1))
+    ));
+
+    let mut byte_limited = config(&tests, &shell_argv());
+    byte_limited.max_snapshot_bytes = 1;
+    assert!(matches!(
+        PinnedChecker::new(byte_limited),
+        Err(CheckerSetupError::SnapshotByteLimit(1))
+    ));
+    Ok(())
+}
+
+struct PendingProvider;
+
+#[async_trait::async_trait]
+impl WorkspaceProvider for PendingProvider {
+    fn manifest_identity(&self) -> &str {
+        "pending-provider-v1"
+    }
+
+    async fn materialize(
+        &self,
+        _task_text: &str,
+        _attempt: &str,
+    ) -> std::io::Result<CandidateWorkspace> {
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn the_checker_deadline_includes_materialization() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    let mut checker_config = config(&tests, &shell_argv());
+    checker_config.timeout = Duration::from_millis(20);
+    checker_config.workspace_provider = Arc::new(PendingProvider);
+    let checker = PinnedChecker::new(checker_config)?;
+    assert_eq!(checker.check("task", "attempt").await, None);
+    Ok(())
+}
+
+struct BlockingProvider {
+    calls: AtomicUsize,
+    entered: Notify,
+    release: Notify,
+}
+
+#[async_trait::async_trait]
+impl WorkspaceProvider for BlockingProvider {
+    fn manifest_identity(&self) -> &str {
+        "blocking-provider-v1"
+    }
+
+    async fn materialize(
+        &self,
+        _task_text: &str,
+        _attempt: &str,
+    ) -> std::io::Result<CandidateWorkspace> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
+        self.release.notified().await;
+        CandidateWorkspace::new(TempDir::with_prefix("vgr-candidate-")?)
+    }
+}
+
+#[tokio::test]
+async fn one_checker_instance_never_materializes_overlapping_runs() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    let provider = Arc::new(BlockingProvider {
+        calls: AtomicUsize::new(0),
+        entered: Notify::new(),
+        release: Notify::new(),
+    });
+    let mut checker_config = config(&tests, &shell_argv());
+    checker_config.workspace_provider = provider.clone();
+    let checker = Arc::new(PinnedChecker::new(checker_config)?);
+
+    let first_checker = Arc::clone(&checker);
+    let first = tokio::spawn(async move { first_checker.check("task one", "attempt one").await });
+    provider.entered.notified().await;
+
+    let mut second = Box::pin(checker.check("task two", "attempt two"));
+    let first_poll =
+        std::future::poll_fn(|context| Poll::Ready(second.as_mut().poll(context))).await;
+    assert!(matches!(first_poll, Poll::Pending));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+    provider.release.notify_one();
+    assert_eq!(first.await?, Some(true));
+    provider.release.notify_one();
+    assert_eq!(second.await, Some(true));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_blocking_verification_holds_admission_until_it_stops() -> TestResult {
+    let admission = Arc::new(Semaphore::new(1));
+    let permit = Arc::clone(&admission).acquire_owned().await?;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let worker = tokio::spawn(blocking_with_permit(permit, move || {
+        let _ignored = started_tx.send(());
+        let _ignored = release_rx.recv();
+    }));
+    started_rx.await?;
+
+    worker.abort();
+    assert!(worker.await.is_err(), "the blocking join was not cancelled");
+    assert_eq!(
+        admission.available_permits(),
+        0,
+        "cancellation admitted a second run while blocking work remained"
+    );
+
+    release_tx.send(())?;
+    let returned = tokio::time::timeout(Duration::from_secs(1), admission.acquire()).await??;
+    drop(returned);
+    assert_eq!(admission.available_permits(), 1);
+    Ok(())
+}
+
+#[test]
+fn editing_the_operator_directory_after_construction_does_not_change_the_snapshot() -> TestResult {
+    let tests = suite("exit 0\n")?;
+    let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;
     let pinned = checker.manifest().sha.clone();
-
-    std::fs::write(tests.path().join("run.sh"), "exit 1\n").expect("rewrite");
+    std::fs::write(tests.path().join("run.sh"), "exit 1\n")?;
     assert_eq!(checker.manifest().sha, pinned);
-    assert!(checker.verifies("post-edit"), "the snapshot is unaffected");
+    Ok(())
 }

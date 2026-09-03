@@ -21,11 +21,17 @@ use switchyard_protocol::{
     text_request, text_response,
 };
 
+#[cfg(unix)]
+use super::super::checker::{
+    CandidateWorkspace, CheckerConfig, PinnedChecker, SANDBOX_ATTESTATION, WorkspaceProvider,
+};
 use super::super::config::{Checker, CheckerRequest, ServingMode, ValidatedChecker, VgrConfig};
 use super::super::mode::ACTIVE_APPROVAL;
 use super::super::safety::{BreakerConfig, KillSwitch};
 use crate::core::testing::{ServeResult, test_drive};
 use crate::{Algorithm, LibsyError, Result, Step};
+#[cfg(unix)]
+use tempfile::TempDir;
 
 const LOCAL: &str = "local-tier";
 const CLOUD: &str = "cloud-tier";
@@ -667,6 +673,25 @@ impl Checker for HangingChecker {
     }
 }
 
+#[cfg(unix)]
+struct EmptyWorkspaceProvider;
+
+#[cfg(unix)]
+#[async_trait::async_trait]
+impl WorkspaceProvider for EmptyWorkspaceProvider {
+    fn manifest_identity(&self) -> &str {
+        "runtime-test-workspace-v1"
+    }
+
+    async fn materialize(
+        &self,
+        _task_text: &str,
+        _attempt: &str,
+    ) -> std::io::Result<CandidateWorkspace> {
+        CandidateWorkspace::new(TempDir::with_prefix("vgr-runtime-candidate-")?)
+    }
+}
+
 #[tokio::test]
 async fn checker_receives_pinned_deadline_and_is_cancelled_at_the_budget() -> Result<()> {
     const CHECKER_BUDGET: Duration = Duration::from_millis(30);
@@ -954,6 +979,70 @@ async fn a_hung_verifier_cannot_overrun_the_decision_budget() {
         "{:?}",
         started.elapsed()
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_vgr_deadline_cancels_a_pinned_checker_process_tree()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let marker_owner = TempDir::with_prefix("vgr-runtime-marker-")?;
+    let marker = marker_owner.path().join("grandchild-alive");
+    let tests = TempDir::with_prefix("vgr-runtime-suite-")?;
+    std::fs::write(
+        tests.path().join("run.sh"),
+        format!(
+            "sh -c 'while true; do touch {}; sleep 0.02; done' &\n\
+             while [ ! -e {} ]; do :; done\n\
+             sleep 30\n",
+            marker.display(),
+            marker.display()
+        ),
+    )?;
+    let checker = PinnedChecker::new(CheckerConfig {
+        timeout: Duration::from_secs(10),
+        sandbox_attestation: SANDBOX_ATTESTATION.to_string(),
+        ..CheckerConfig::new(
+            tests.path(),
+            vec!["/bin/sh".to_string(), "{tests}/run.sh".to_string()],
+            Arc::new(EmptyWorkspaceProvider),
+        )
+    })?;
+    let manifest_identity = checker.manifest_identity().to_owned();
+    let config = VgrConfig {
+        checker: Some(ValidatedChecker::new(
+            Arc::new(checker),
+            manifest_identity,
+        )?),
+        deadline: Duration::from_millis(500),
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config)?);
+
+    let (target, _) = test_drive(
+        route,
+        request("fix the build"),
+        |t: ModelId, _r| async move {
+            let result: ServeResult = if t == *LOCAL {
+                Ok(reply("candidate patch"))
+            } else {
+                Ok(reply("cloud answer"))
+            };
+            result
+        },
+    )
+    .await?;
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert!(marker.exists(), "the checker grandchild never started");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let settled = std::fs::metadata(&marker)?.modified()?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let after = std::fs::metadata(&marker)?.modified()?;
+    assert_eq!(
+        settled, after,
+        "the checker grandchild survived the outer VGR deadline"
+    );
+    Ok(())
 }
 
 #[tokio::test]
