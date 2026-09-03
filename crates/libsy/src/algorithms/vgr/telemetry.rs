@@ -27,8 +27,8 @@
 
 use std::time::Duration;
 
-use super::decide::{Decision, Route};
 use super::TaskType;
+use super::decide::{Decision, Route};
 
 /// Identifies the prompt set the verifiers were called with.
 ///
