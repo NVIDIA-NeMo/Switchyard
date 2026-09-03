@@ -133,21 +133,22 @@ impl ReviewBudget {
         self.state.lock().scopes.remove(scope);
     }
 
-    /// Whether the stall checkpoint already fired for this conversation key.
-    pub(super) fn stall_already_fired(&self, key: u64) -> bool {
-        self.state.lock().stall_fired.contains(&key)
-    }
-
-    /// Latches the stall checkpoint for this conversation key.
-    pub(super) fn mark_stall_fired(&self, key: u64) {
+    /// Atomically latches the stall checkpoint for a conversation key,
+    /// returning true only when this call set the latch. Check and insert
+    /// share one critical section so concurrent stalls on the same
+    /// conversation cannot both claim the checkpoint.
+    pub(super) fn try_mark_stall_fired(&self, key: u64) -> bool {
         let mut state = self.state.lock();
+        if state.stall_fired.contains(&key) {
+            return false;
+        }
         if state.stall_fired.len() >= MAX_TRACKED_SCOPES {
             let drop = state.stall_fired.iter().next().copied();
             if let Some(key) = drop {
                 state.stall_fired.remove(&key);
             }
         }
-        state.stall_fired.insert(key);
+        state.stall_fired.insert(key)
     }
 }
 
@@ -229,11 +230,10 @@ mod tests {
     }
 
     #[test]
-    fn the_stall_latch_holds_per_key() {
+    fn the_stall_latch_admits_one_caller_per_key() {
         let budget = ReviewBudget::new(1);
-        assert!(!budget.stall_already_fired(7));
-        budget.mark_stall_fired(7);
-        assert!(budget.stall_already_fired(7));
-        assert!(!budget.stall_already_fired(8));
+        assert!(budget.try_mark_stall_fired(7));
+        assert!(!budget.try_mark_stall_fired(7));
+        assert!(budget.try_mark_stall_fired(8));
     }
 }

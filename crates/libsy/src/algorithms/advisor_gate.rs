@@ -248,20 +248,20 @@ impl AdvisorGate {
         let decision = self.trigger.classify(&signals);
         // The stall checkpoint fires once per conversation regardless of the
         // turn's shape — even a tool-call turn — for executors that grind
-        // without ever declaring completion.
-        let stall_key = stall_key(&request);
-        let stall = decision.stalled && !self.budget.stall_already_fired(stall_key);
+        // without ever declaring completion. The latch is only attempted when
+        // no trigger fired — a stall consumed by a simultaneous trigger does
+        // not latch, so the checkpoint can still fire later if this review is
+        // refunded — and it is atomic, so of two concurrent stalls on one
+        // conversation exactly one claims the checkpoint.
+        let stall = decision.fired.is_none()
+            && decision.stalled
+            && self.budget.try_mark_stall_fired(stall_key(&request));
         if decision.fired.is_none() && !stall {
             return Ok(RoutingOutcome::answered(
                 self.executor.clone(),
                 request,
                 turn.into_response(),
             ));
-        }
-        // A stall consumed by a simultaneous trigger does not latch, so the
-        // checkpoint can still fire later if this review is refunded.
-        if stall && decision.fired.is_none() {
-            self.budget.mark_stall_fired(stall_key);
         }
         if !self.budget.try_reserve(scope) {
             return Ok(RoutingOutcome::answered(
