@@ -13,9 +13,9 @@ use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
     ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
     CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
-    ToolSemantics,
+    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
+    PlanExecute, PlanExecuteConfig, Random, StageRouter, StageRouterConfig, SubagentRouter,
+    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -240,6 +240,17 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// Plans with a capable model, then switches permanently to an efficient
+    /// model when the conversation records its first edit or write tool call.
+    PlanExecute {
+        /// Target used before the first edit.
+        capable_target: String,
+        /// Target used from the first edit onward.
+        efficient_target: String,
+        /// Replaces the built-in planning system prompt.
+        #[serde(default)]
+        planning_prompt: Option<String>,
+    },
     /// Asks a judge model which target should serve the request.
     LlmClassifier {
         /// Judge and tier settings, written directly in the route table.
@@ -440,6 +451,11 @@ impl AlgorithmSpec {
                 }
                 names
             }
+            Self::PlanExecute {
+                capable_target,
+                efficient_target,
+                ..
+            } => vec![capable_target.as_str(), efficient_target.as_str()],
             Self::LlmClassifier { config, .. } => {
                 match config.mode.unwrap_or(if config.escalation.is_some() {
                     ClassifierMode::Escalation
@@ -569,6 +585,7 @@ impl AlgorithmSpec {
             Self::Noop { .. }
             | Self::Random { .. }
             | Self::Passthrough { .. }
+            | Self::PlanExecute { .. }
             | Self::LlmClassifier { .. }
             | Self::StageRouter { .. }
             | Self::Auto { .. }
@@ -908,6 +925,25 @@ fn build_algorithm(
             let algorithm = Passthrough::new(parent_target);
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
+        }
+        AlgorithmSpec::PlanExecute {
+            capable_target,
+            efficient_target,
+            planning_prompt,
+        } => {
+            let capable = resolve_target_model_id(route_name, capable_target, targets)?;
+            let efficient = resolve_target_model_id(route_name, efficient_target, targets)?;
+            let mut config = PlanExecuteConfig::default();
+            if let Some(prompt) = planning_prompt {
+                config.planning_prompt = prompt.clone();
+            }
+            let algorithm = PlanExecute::new(capable, efficient, config).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("plan_execute route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
         }
         AlgorithmSpec::LlmClassifier {
             config: classifier_config,
