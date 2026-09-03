@@ -46,6 +46,13 @@ use self::fall_through::FallThrough;
 use crate::algorithms::fall_through;
 use crate::algorithms::util::affinity::AffinityRouter;
 
+// Unix-only: the checker puts its child in a process group so a cancelled
+// decision kills the whole test tree, and reads inode metadata to detect a
+// suite that was edited and restored. Neither has a Windows equivalent worth
+// approximating, and no deployment runs the router there — so the platform gets
+// a working crate without a built-in checker rather than a weaker one. The
+// `Checker` trait itself is cross-platform, so an operator can still supply one.
+#[cfg(unix)]
 mod checker;
 mod config;
 mod decide;

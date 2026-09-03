@@ -31,17 +31,21 @@ opentelemetry = { version = "0.32", default-features = false, features = ["metri
 parking_lot.workspace = true
 rand.workspace = true
 regex.workspace = true
-# SHA-256 for the checker's pinned test manifest. Already in the workspace
-# graph via rustls, so this adds a direct edge rather than new compiled code.
-ring = "0.17"
 switchyard-protocol.workspace = true
-# Private snapshot directories for the checker's pinned test suite.
-tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream = "0.1"
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
+
+# The checker is Unix-only, so its dependencies are too: `ring` compiles C and
+# assembly, and there is no reason to put that in a Windows wheel that cannot
+# use the checker anyway.
+[target.'cfg(unix)'.dependencies]
+# SHA-256 for the checker's pinned test manifest.
+ring = "0.17"
+# Private snapshot directories for the checker's pinned test suite.
+tempfile = "3"
 
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.
