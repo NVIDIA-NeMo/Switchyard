@@ -285,6 +285,33 @@ async fn upstream_chat(
                 .is_some_and(|content| content.contains("schema-invalid verdict"))
         })
     });
+    // A verification-gated route's cheap readout asks for token logprobs and is
+    // scored by probability rather than read as text. Which way it leans is keyed
+    // on the target id so a test can choose a committing or an escalating run.
+    if body["logprobs"].as_bool() == Some(true) {
+        let p_yes: f64 = if model.contains("vgr-verified") {
+            0.97
+        } else {
+            0.01
+        };
+        return Json(json!({
+            "id": "chatcmpl-vgr-readout",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "yes"},
+                "logprobs": {"content": [{"top_logprobs": [
+                    {"token": "yes", "logprob": p_yes.ln()},
+                    {"token": "no", "logprob": (1.0 - p_yes).ln()}
+                ]}]},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}
+        }))
+        .into_response();
+    }
+
     let content = if model == "model/classifier" && custom_target_schema {
         if requests_invalid_verdict {
             r#"{"decision":{"target":"unknown"}}"#
@@ -3582,5 +3609,155 @@ target = "shared"
         .collect::<BTreeMap<_, _>>();
     assert_eq!(capabilities["sees"]["vision"], json!(true));
     assert_eq!(capabilities["blind"]["vision"], json!(null));
+    Ok(())
+}
+
+/// A `type = "vgr"` deployment: the local tier answers, the router gathers
+/// evidence about that answer, and the turn is committed or escalated.
+///
+/// `local_id` picks which way the readout leans, so one config helper serves
+/// both the committing and the escalating case.
+fn vgr_config(base_url: &str, local_id: &str) -> String {
+    format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.local]
+id = "{local_id}"
+llm_client = "upstream"
+
+[targets.cloud]
+id = "model/vgr-cloud"
+llm_client = "upstream"
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+mode = "active"
+active_approval = "vgr-active-serving-approved"
+"#
+    )
+}
+
+#[tokio::test]
+async fn vgr_route_commits_the_local_attempt_when_the_evidence_licenses_it() -> TestResult {
+    // The point of the algorithm: the cheap tier's answer is served because
+    // evidence about *that answer* supported it, not because a pre-hoc judge
+    // predicted the request was easy.
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&vgr_config(&upstream.base_url, "model/vgr-verified-local"))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "what is the capital of France?"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/vgr-verified-local"),
+        "a confident readout should commit the local attempt"
+    );
+    // The attempt is served from the buffered response rather than regenerated,
+    // so the capable tier is never called.
+    let calls = upstream.calls.lock().await.clone();
+    assert!(
+        calls.iter().all(|call| call["model"] != "model/vgr-cloud"),
+        "committing must not pay for the capable tier: {calls:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_route_escalates_when_the_evidence_does_not_license_a_commit() -> TestResult {
+    // Fail-closed: evidence that does not support the attempt escalates, and the
+    // capable tier answers the turn.
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&vgr_config(
+        &upstream.base_url,
+        "model/vgr-unverified-local",
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "what is the capital of France?"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/vgr-cloud"),
+        "an unsupported attempt should escalate"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_route_in_shadow_mode_decides_but_serves_the_capable_tier() -> TestResult {
+    // The safe observation mode: full decision records at no routing risk, which
+    // is how a deployment earns confidence before enabling local commits.
+    let upstream = MockUpstream::start().await?;
+    let config = vgr_config(&upstream.base_url, "model/vgr-verified-local").replace(
+        "mode = \"active\"\nactive_approval = \"vgr-active-serving-approved\"",
+        "mode = \"shadow\"",
+    );
+    let state = load_test_config(&config)?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "what is the capital of France?"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/vgr-cloud"),
+        "shadow mode never serves a local commit, however strong the evidence"
+    );
+    // It still produced and verified an attempt: that is what makes the record
+    // worth recording.
+    let calls = upstream.calls.lock().await.clone();
+    assert!(
+        calls
+            .iter()
+            .any(|call| call["model"] == "model/vgr-verified-local"),
+        "shadow mode still exercises the local tier: {calls:?}"
+    );
     Ok(())
 }

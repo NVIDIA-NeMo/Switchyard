@@ -268,6 +268,46 @@ instead. The stage table takes no `picker`: the classifier supplies that tier pe
 classifier cannot reach falls open to the efficient tier. Leaving out
 `classifier` is recommended: that judge runs ahead of the fall-open tier.
 
+### `vgr`
+
+Verification-gated routing. The local tier answers, the router gathers evidence
+about *that answer* — a checker's test run, agreement with an independently
+produced answer, a cheap probability readout — and either serves it or escalates
+to the capable tier. See [Verification-Gated Routing](../routing_algorithms/vgr_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `local_target` | Yes | — | Tier that produces the attempt being verified. |
+| `cloud_target` | Yes | — | Tier a request escalates to when the attempt is not licensed. |
+| `judge_target` | No | local tier | Answers the cheap local verification rungs. Not a routing destination. |
+| `cloud_judge_target` | No | unset | Answers the cloud confirmation rungs. Unset removes them, which the rules read as evidence never gathered rather than as indeterminate. Not a routing destination. |
+| `mode` | No | `off` | `off`, `evaluate`, `shadow`, or `active`. See below. |
+| `active_approval` | With `active` | — | The attestation `mode = "active"` requires, verbatim: `vgr-active-serving-approved`. |
+| `deadline_seconds` | No | `30` | Budget for the whole decision, verification included. Exceeding it ends evidence gathering, and what was not established escalates. |
+| `task_typing` | No | `false` | Types the request with one cheap local call before deriving capabilities. Required for the answer and conversational regimes to be reachable at all. |
+| `latch_escalation` | No | `false` | A session that escalated stays on the capable tier, skipping verification on later turns. |
+| `speculation_carry` | No | `false` | An escalation carries the rejected attempt forward as unverified reference. Measured to help on research-style work and hurt on conversational work, so it is per-route. |
+| `structured_answer` | No | `false` | Declares that this surface enforces a schema-validated terse final answer, which is the only place typed agreement counts as evidence. |
+| `breaker_threshold` | No | `5` | Consecutive local-tier failures that stop the local tier being called. |
+| `breaker_cooldown_seconds` | No | `30` | How long the local tier is skipped before one trial request is allowed through. |
+| `checker.tests_dir` | Yes, in `[checker]` | — | Directory holding the task's tests. Snapshotted and hashed at startup. |
+| `checker.command` | Yes, in `[checker]` | — | Argv list, never a shell string. `{tests}` and `{workdir}` are substituted. |
+| `checker.sandbox_attestation` | Yes, in `[checker]` | — | The operator's declaration that a deployment sandbox confines the checker, verbatim: `vgr-checker-runs-in-deployment-sandbox`. |
+| `checker.timeout_seconds` | No | `120` | How long one checker run may take. |
+| `checker.validated` | No | `false` | Whether the checker was validated against a pinned manifest. Only a validated checker lets a coding decision be served locally. |
+
+**Serving modes.** Deciding and serving are separate steps, which is what lets a
+deployment measure the router before it routes anything. `off` makes no decisions
+and spends nothing. `shadow` decides and records but always serves the capable
+tier. `active` serves decisions, subject to the readiness gates, and is the only
+mode that can commit locally — hence the attestation. `evaluate` serves the
+*ungated* decision and is for isolated measurement only: it will serve routes the
+gates exist to refuse.
+
+**The checker is Unix-only.** The `[checker]` table is accepted on every platform
+so a deployment's configuration stays portable, but building one on Windows
+reports that it is unsupported rather than starting without it.
+
 ## Validation Errors
 
 `--dry-run` prefixes configuration failures with
