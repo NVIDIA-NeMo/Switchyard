@@ -79,7 +79,7 @@ Each histogram emits `_bucket`, `_sum`, and `_count` series. Use
 
 The `outcome` label takes exactly three values:
 
-* `success` = HTTP 2xx
+* `ok` = HTTP 2xx
 * `retryable_error` = HTTP 408, 429, any 5xx, or a failure before an HTTP status
 * `other_error` = everything else (400, 401, 403, 422, …)
 
