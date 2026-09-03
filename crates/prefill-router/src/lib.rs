@@ -27,3 +27,7 @@ pub trait PrefillForward: Send {
     /// Releases resources held by the implementation.
     fn unload(&mut self) -> Result<()>;
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/algorithm.rs"]
+mod algorithm_tests;

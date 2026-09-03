@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libsy::{Algorithm, LibsyError};
-use prefill_router::{PrefillForward, PrefillRouterAlgo, Result};
 use switchyard_protocol::{
-    ContentBlock, LlmRequest, Message, Metadata, ModelId, Request, Role, ToolResult, text_request,
+    ContentBlock, LlmRequest, Message, ModelId, Request, Role, ToolResult, text_request,
 };
+
+use crate::{PrefillForward, PrefillRouterAlgo, Result};
 
 struct RecordingForward {
     calls: Arc<AtomicUsize>,
@@ -85,10 +86,7 @@ fn request(messages: Vec<Message>) -> Request {
             ..LlmRequest::default()
         },
         raw_request: None,
-        metadata: Some(Metadata {
-            session_id: Some("session-1".to_string()),
-            ..Metadata::default()
-        }),
+        metadata: None,
     }
 }
 
@@ -96,7 +94,7 @@ fn request(messages: Vec<Message>) -> Request {
 async fn routes_on_latest_user_text_and_reuses_decision_for_tool_steps() -> libsy::Result<()> {
     let (forward, calls, prompts) = forward();
     let route: Arc<dyn Algorithm> = Arc::new(
-        PrefillRouterAlgo::from_test_forward(target_set(), forward).map_err(|error| {
+        PrefillRouterAlgo::from_forward(target_set(), forward).map_err(|error| {
             LibsyError::AlgorithmError {
                 message: error.to_string(),
             }
@@ -121,6 +119,8 @@ async fn routes_on_latest_user_text_and_reuses_decision_for_tool_steps() -> libs
     let continuation = selected(
         Arc::clone(&route),
         request(vec![
+            Message::text(Role::User, "initial task"),
+            Message::text(Role::Assistant, "working"),
             Message::text(Role::User, "follow-up task"),
             Message::text(Role::Assistant, "calling a tool"),
             Message {

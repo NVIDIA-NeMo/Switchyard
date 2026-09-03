@@ -4,13 +4,14 @@
 //! libsy adapter for checkpoint-backed prefill routing.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use libsy::{
     AffinityRouter, Algorithm, Classifier, Driver, Event, LibsyError, Processor, RoutingOutcome,
 };
 use switchyard_protocol::{ModelId, Request, Role};
+use tokio::sync::Mutex;
 
 use crate::{
     PrefillForward, PrefillRouter, PrefillRouterError, Result, TransformersForward,
@@ -20,7 +21,7 @@ use crate::{
 const ALGORITHM_NAME: &str = "prefill_router";
 
 /// Configuration for a libsy prefill-router algorithm.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct PrefillRouterConfig {
     /// Ordered routing targets, matching the checkpoint head order.
     pub targets: Vec<ModelId>,
@@ -80,11 +81,14 @@ pub struct PrefillRouterAlgo {
     router: Arc<Mutex<PrefillRouter<AnyPrefillForward>>>,
     targets: Vec<ModelId>,
     default_target: ModelId,
-    affinity: Arc<AffinityRouter>,
+    affinity: AffinityRouter,
 }
 
 impl PrefillRouterAlgo {
-    fn from_forward(targets: Vec<ModelId>, forward: impl PrefillForward + 'static) -> Result<Self> {
+    pub(crate) fn from_forward(
+        targets: Vec<ModelId>,
+        forward: impl PrefillForward + 'static,
+    ) -> Result<Self> {
         let Some(default_target) = targets.first().cloned() else {
             return Err(PrefillRouterError::InvalidConfiguration(
                 "at least one target is required".to_string(),
@@ -95,16 +99,10 @@ impl PrefillRouterAlgo {
             router: Arc::new(Mutex::new(router)),
             targets,
             default_target,
-            affinity: Arc::new(AffinityRouter::new().with_release_on_user_turn()),
+            affinity: AffinityRouter::new()
+                .with_message_hash_fallback()
+                .with_release_on_user_turn(),
         })
-    }
-
-    #[doc(hidden)]
-    pub fn from_test_forward(
-        targets: Vec<ModelId>,
-        forward: impl PrefillForward + 'static,
-    ) -> Result<Self> {
-        Self::from_forward(targets, forward)
     }
 }
 
@@ -150,13 +148,10 @@ impl Algorithm for PrefillRouterAlgo {
             .find(|text| !text.trim().is_empty())
         {
             Some(prompt) => {
-                let router = Arc::clone(&self.router);
+                // Wait asynchronously before occupying a blocking worker with model inference.
+                let mut router = Arc::clone(&self.router).lock_owned().await;
                 let predictions = tokio::task::spawn_blocking(move || {
-                    router
-                        .lock()
-                        .map_err(|_| "prefill router lock was poisoned".to_string())?
-                        .predict(&prompt)
-                        .map_err(|error| error.to_string())
+                    router.predict(&prompt).map_err(|error| error.to_string())
                 })
                 .await
                 .map_err(|error| LibsyError::AlgorithmError {

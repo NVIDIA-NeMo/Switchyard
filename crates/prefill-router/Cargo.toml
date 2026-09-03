@@ -22,7 +22,3 @@ tracing.workspace = true
 
 [build-dependencies]
 pyo3-build-config = "0.28.3"
-
-[[test]]
-name = "algorithm"
-path = "tests/algorithm.rs"
