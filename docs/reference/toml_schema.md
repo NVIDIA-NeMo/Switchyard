@@ -280,29 +280,41 @@ to the capable tier. See [Verification-Gated Routing](../routing_algorithms/vgr_
 | `local_target` | Yes | — | Tier that produces the attempt being verified. |
 | `cloud_target` | Yes | — | Tier a request escalates to when the attempt is not licensed. |
 | `judge_target` | No | local tier | Answers the cheap local verification rungs. Not a routing destination. |
-| `cloud_judge_target` | No | unset | Answers the cloud confirmation rungs. Unset removes them, which the rules read as evidence never gathered rather than as indeterminate. Not a routing destination. |
-| `mode` | No | `off` | `off`, `evaluate`, `shadow`, or `active`. See below. |
-| `active_approval` | With `active` | — | The attestation `mode = "active"` requires, verbatim: `vgr-active-serving-approved`. |
+| `cloud_judge_target` | No | cloud tier | Answers the cloud confirmation rungs. An explicit target overrides the capable tier. Not a routing destination. |
+| `mode` | No | `off` | The public runner accepts `off`, `evaluate`, and `shadow`. `active` is reserved for library embedders and is rejected at public-runner startup. See below. |
+| `active_approval` | With `active` | — | Library attestation validated verbatim as `prospective-validation-and-canary-approved`; it does not make public-runner Active available. |
 | `deadline_seconds` | No | `30` | Budget for the whole decision, verification included. Exceeding it ends evidence gathering, and what was not established escalates. |
-| `task_typing` | No | `false` | Types the request with one cheap local call before deriving capabilities. Required for the answer and conversational regimes to be reachable at all. |
+| `task_typing` | No | `true` | Types the request with one cheap local call before deriving capabilities. Set `false` to opt out; without it the answer and conversational regimes are unreachable. |
 | `latch_escalation` | No | `false` | A session that escalated stays on the capable tier, skipping verification on later turns. |
 | `speculation_carry` | No | `false` | An escalation carries the rejected attempt forward as unverified reference. Measured to help on research-style work and hurt on conversational work, so it is per-route. |
 | `structured_answer` | No | `false` | Declares that this surface enforces a schema-validated terse final answer, which is the only place typed agreement counts as evidence. |
 | `breaker_threshold` | No | `5` | Consecutive local-tier failures that stop the local tier being called. |
 | `breaker_cooldown_seconds` | No | `30` | How long the local tier is skipped before one trial request is allowed through. |
 | `checker.tests_dir` | Yes, in `[checker]` | — | Directory holding the task's tests. Snapshotted and hashed at startup. |
+| `checker.materialize_command` | Yes, in `[checker]` | — | Trusted host argv that materializes the attempted source tree under `WORKSPACE_DIR`. |
 | `checker.command` | Yes, in `[checker]` | — | Argv list, never a shell string. `{tests}` and `{workdir}` are substituted. |
 | `checker.sandbox_attestation` | Yes, in `[checker]` | — | The operator's declaration that a deployment sandbox confines the checker, verbatim: `vgr-checker-runs-in-deployment-sandbox`. |
 | `checker.timeout_seconds` | No | `120` | How long one checker run may take. |
-| `checker.validated` | No | `false` | Whether the checker was validated against a pinned manifest. Only a validated checker lets a coding decision be served locally. |
+| `checker.validated` | Yes, in `[checker]` | — | Must be `true`; the checker handle is bound to its pinned manifest identity at construction. |
 
 **Serving modes.** Deciding and serving are separate steps, which is what lets a
 deployment measure the router before it routes anything. `off` makes no decisions
 and spends nothing. `shadow` decides and records but always serves the capable
-tier. `active` serves decisions, subject to the readiness gates, and is the only
-mode that can commit locally — hence the attestation. `evaluate` serves the
-*ungated* decision and is for isolated measurement only: it will serve routes the
-gates exist to refuse.
+tier. `evaluate` serves the *ungated* decision and is for isolated measurement
+only: it will serve routes the gates exist to refuse. `active` remains a libsy
+mode for embedders that provide native privacy/no-egress enforcement and an
+operator runtime kill switch. The public runner has neither control wired and
+rejects `active` even when the approval string is correct.
+
+The local and cloud targets must resolve to distinct model IDs, even when their
+target or client names differ, because the runtime client router is keyed only
+by model ID.
+
+**Trusted tool evidence.** `switchyard-server` is not a tool executor. Tool
+results supplied in a request are marked Untrusted: they may veto but never
+authorize an agentic commit, so native-runner agentic VGR branches cannot serve
+locally. Only a server-owned execution integration may set Host provenance;
+client headers, metadata, and message content never qualify.
 
 **The checker is Unix-only.** The `[checker]` table is accepted on every platform
 so a deployment's configuration stays portable, but building one on Windows

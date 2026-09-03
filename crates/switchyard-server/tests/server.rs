@@ -3639,14 +3639,71 @@ id = "switchyard/vgr"
 type = "vgr"
 local_target = "local"
 cloud_target = "cloud"
-mode = "active"
-active_approval = "vgr-active-serving-approved"
+mode = "evaluate"
 "#
     )
 }
 
+#[cfg(unix)]
+fn vgr_checker_config(
+    base_url: &str,
+    tests_dir: &std::path::Path,
+    marker: &std::path::Path,
+    mode: &str,
+    behavior: &str,
+) -> String {
+    let command = match behavior {
+        "tamper" => format!(
+            r#"["/bin/sh", "-c", "[ \"$(cat candidate.txt)\" = 'ok' ] || exit 1; printf ran > \"$1\"; chmod u+w \"$2\"; printf tampered >> \"$2\"; exit 0", "checker", "{}", "{{tests}}/case.txt"]"#,
+            marker.display()
+        ),
+        "indeterminate" => r#"["/definitely/missing/vgr-checker"]"#.to_string(),
+        _ => format!(
+            r#"["/bin/sh", "-c", "[ \"$(cat candidate.txt)\" = 'ok' ] || exit 1; printf ran > \"$1\"; exit 0", "checker", "{}"]"#,
+            marker.display()
+        ),
+    };
+    format!(
+        r#"{}
+
+[routes.vgr.checker]
+tests_dir = "{}"
+materialize_command = ["/bin/sh", "-c", 'cp "$ATTEMPT_FILE" "$WORKSPACE_DIR/candidate.txt"']
+command = {}
+sandbox_attestation = "vgr-checker-runs-in-deployment-sandbox"
+validated = true
+"#,
+        vgr_config(base_url, "model/vgr-verified-local")
+            .replace("mode = \"evaluate\"", &format!("mode = \"{mode}\"")),
+        tests_dir.display(),
+        command,
+    )
+}
 #[tokio::test]
-async fn vgr_route_commits_the_local_attempt_when_the_evidence_licenses_it() -> TestResult {
+async fn native_vgr_active_mode_is_rejected_even_with_current_approval() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let config = vgr_config(&upstream.base_url, "model/vgr-verified-local").replace(
+        "mode = \"evaluate\"",
+        "mode = \"active\"\nactive_approval = \"prospective-validation-and-canary-approved\"",
+    );
+    let error = match load_test_config(&config) {
+        Ok(_) => return Err("native active VGR configuration unexpectedly succeeded".into()),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("native privacy/no-egress enforcement"),
+        "{message}"
+    );
+    assert!(
+        message.contains("operator runtime kill-switch controls are not wired"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_route_evaluate_exposes_a_licensed_local_decision() -> TestResult {
     // The point of the algorithm: the cheap tier's answer is served because
     // evidence about *that answer* supported it, not because a pre-hoc judge
     // predicted the request was easy.
@@ -3674,18 +3731,39 @@ async fn vgr_route_commits_the_local_attempt_when_the_evidence_licenses_it() -> 
         Some("model/vgr-verified-local"),
         "a confident readout should commit the local attempt"
     );
-    // The attempt is served from the buffered response rather than regenerated,
-    // so the capable tier is never called.
+    // Evaluate exposes the raw decision for isolated measurement. The attempt
+    // must be served from its buffer rather than regenerated.
     let calls = upstream.calls.lock().await.clone();
-    assert!(
-        calls.iter().all(|call| call["model"] != "model/vgr-cloud"),
-        "committing must not pay for the capable tier: {calls:?}"
+    let local_candidates = calls
+        .iter()
+        .filter(|call| {
+            call["model"] == "model/vgr-verified-local"
+                && call["logprobs"].as_bool() != Some(true)
+                && call["messages"][0]["role"] == "user"
+                && call["messages"][0]["content"] == "what is the capital of France?"
+        })
+        .count();
+    assert_eq!(
+        local_candidates, 1,
+        "the buffered candidate must be generated exactly once: {calls:?}"
+    );
+    let capable_generations = calls
+        .iter()
+        .filter(|call| {
+            call["model"] == "model/vgr-cloud"
+                && call["messages"][0]["role"] == "user"
+                && call["messages"][0]["content"] == "what is the capital of France?"
+        })
+        .count();
+    assert_eq!(
+        capable_generations, 0,
+        "a local decision must not generate a capable-tier answer: {calls:?}"
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn vgr_route_escalates_when_the_evidence_does_not_license_a_commit() -> TestResult {
+async fn vgr_route_evaluate_exposes_an_unlicensed_cloud_decision() -> TestResult {
     // Fail-closed: evidence that does not support the attempt escalates, and the
     // capable tier answers the turn.
     let upstream = MockUpstream::start().await?;
@@ -3723,10 +3801,8 @@ async fn vgr_route_in_shadow_mode_decides_but_serves_the_capable_tier() -> TestR
     // The safe observation mode: full decision records at no routing risk, which
     // is how a deployment earns confidence before enabling local commits.
     let upstream = MockUpstream::start().await?;
-    let config = vgr_config(&upstream.base_url, "model/vgr-verified-local").replace(
-        "mode = \"active\"\nactive_approval = \"vgr-active-serving-approved\"",
-        "mode = \"shadow\"",
-    );
+    let config = vgr_config(&upstream.base_url, "model/vgr-verified-local")
+        .replace("mode = \"evaluate\"", "mode = \"shadow\"");
     let state = load_test_config(&config)?;
     let app = build_switchyard_router(state);
 
@@ -3759,5 +3835,63 @@ async fn vgr_route_in_shadow_mode_decides_but_serves_the_capable_tier() -> TestR
             .any(|call| call["model"] == "model/vgr-verified-local"),
         "shadow mode still exercises the local tier: {calls:?}"
     );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call["logprobs"].as_bool() == Some(true)),
+        "shadow mode must run a real scored readout, not only generate a candidate: {calls:?}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn vgr_checker_table_runs_real_pass_shadow_and_tamper_paths() -> TestResult {
+    // Public Active is intentionally rejected above. These TOML-driven
+    // evaluate/shadow cases prove the native runner builds and executes the
+    // real checker; direct libsy Active tests separately prove readiness gating.
+    for (mode, behavior, expected_model) in [
+        ("evaluate", "pass", "model/vgr-verified-local"),
+        ("shadow", "pass", "model/vgr-cloud"),
+        ("evaluate", "tamper", "model/vgr-cloud"),
+        ("evaluate", "indeterminate", "model/vgr-cloud"),
+    ] {
+        let upstream = MockUpstream::start().await?;
+        let root = tempfile::tempdir()?;
+        let tests = root.path().join("tests");
+        std::fs::create_dir(&tests)?;
+        std::fs::write(tests.join("case.txt"), "pinned")?;
+        let marker = root.path().join(format!("{mode}-{behavior}.ran"));
+        let config = vgr_checker_config(&upstream.base_url, &tests, &marker, mode, behavior);
+        let state = load_test_config(&config)?;
+        let app = build_switchyard_router(state);
+
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/vgr",
+                "messages": [{"role": "user", "content": "fix the build"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_model),
+            "mode={mode} behavior={behavior}"
+        );
+        if behavior != "indeterminate" {
+            assert_eq!(
+                std::fs::read_to_string(&marker)?,
+                "ran",
+                "the configured checker command must consume materialized candidate source"
+            );
+        }
+    }
     Ok(())
 }

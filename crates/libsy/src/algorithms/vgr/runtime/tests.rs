@@ -16,14 +16,16 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use parking_lot::Mutex;
 use switchyard_protocol::{
-    ContentBlock, FormatId, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent,
-    Message, ModelId, PreservationMetadata, Request, Response, Role, ToolResult, Usage, WireFormat,
-    text_request, text_response,
+    AggLlmResponse, ContentBlock, FormatId, LlmClientError, LlmResponse, LlmResponseChunk,
+    LlmResponseStreamEvent, Message, ModelId, PreservationMetadata, Request, Response,
+    ResponseOutput, Role, StopReason, ToolCall, ToolResult, Usage, WireFormat, text_request,
+    text_response,
 };
 
 #[cfg(unix)]
 use super::super::checker::{
-    CandidateWorkspace, CheckerConfig, PinnedChecker, SANDBOX_ATTESTATION, WorkspaceProvider,
+    CandidateWorkspace, CheckerConfig, CommandWorkspaceProvider, CommandWorkspaceProviderConfig,
+    PinnedChecker, SANDBOX_ATTESTATION, WorkspaceProvider,
 };
 use super::super::config::{Checker, CheckerRequest, ServingMode, ValidatedChecker, VgrConfig};
 use super::super::mode::ACTIVE_APPROVAL;
@@ -51,6 +53,9 @@ fn active() -> VgrConfig {
         mode: ServingMode::Active {
             approval: ACTIVE_APPROVAL.into(),
         },
+        // Most runtime fixtures predate the typing rung and pin a direct
+        // verification call sequence. Dedicated tests below cover the default.
+        task_typing: false,
         ..VgrConfig::new(ModelId::from(LOCAL), ModelId::from(CLOUD))
     }
 }
@@ -79,6 +84,43 @@ fn reply(text: &str) -> Response {
         llm_response: LlmResponse::Agg(text_response(None, text.to_string())),
         metadata: None,
     }
+}
+
+/// A proposed assistant turn that invokes one tool.
+fn tool_aggregate(name: &str) -> AggLlmResponse {
+    AggLlmResponse {
+        outputs: vec![ResponseOutput {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: "call-1".into(),
+                name: name.into(),
+                arguments: serde_json::json!({"path": "input.txt"}),
+            })],
+            stop_reason: Some(StopReason::ToolUse),
+        }],
+        ..Default::default()
+    }
+}
+
+fn tool_reply(name: &str) -> Response {
+    Response {
+        llm_response: LlmResponse::Agg(tool_aggregate(name)),
+        metadata: None,
+    }
+}
+
+fn is_turn_verification(request: &Request) -> bool {
+    request
+        .llm_request
+        .instructions
+        .iter()
+        .flat_map(|instruction| &instruction.content)
+        .any(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { text } if text.contains("escalation judge inside an agentic router")
+            )
+        })
 }
 
 /// Records every target called, in order, so cost can be asserted.
@@ -354,6 +396,39 @@ impl Drop for DropSignal {
 }
 
 #[tokio::test]
+async fn judged_coding_dial_spends_exactly_one_cloud_confirmation() -> Result<()> {
+    let log = CallLog::default();
+    let seen = log.clone();
+    let config = VgrConfig {
+        mode: ServingMode::Evaluate,
+        task_typing: false,
+        targets: super::super::config::Targets {
+            cloud_judge: Some(ModelId::from(CLOUD)),
+            ..VgrConfig::new(ModelId::from(LOCAL), ModelId::from(CLOUD)).targets
+        },
+        ..VgrConfig::new(ModelId::from(LOCAL), ModelId::from(CLOUD))
+    };
+    let route = Arc::new(super::super::Vgr::new(config)?);
+    let (target, _) = test_drive(route, request("fix the build"), move |t: ModelId, _r| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&t);
+            let response = match seen.targets().len() {
+                1 => reply("```rust\nfn fixed() {}\n```"),
+                2 => reply_with_readout("yes", 0.25),
+                _ => reply("yes"),
+            };
+            Ok(response)
+        }
+    })
+    .await?;
+
+    assert_eq!(target, ModelId::from(LOCAL));
+    assert_eq!(log.targets(), vec![LOCAL, LOCAL, CLOUD]);
+    Ok(())
+}
+
+#[tokio::test]
 async fn cancelling_stream_buffering_drops_the_source_stream() -> Result<()> {
     let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
     let dropped = Arc::new(AtomicBool::new(false));
@@ -405,6 +480,40 @@ async fn a_weak_readout_escalates_to_the_capable_tier() -> Result<()> {
     .await?;
 
     assert_eq!(target, ModelId::from(CLOUD));
+    Ok(())
+}
+
+#[tokio::test]
+async fn judged_coding_dial_refutation_escalates() -> Result<()> {
+    let log = CallLog::default();
+    let seen = log.clone();
+    let config = VgrConfig {
+        mode: ServingMode::Evaluate,
+        task_typing: false,
+        targets: super::super::config::Targets {
+            cloud_judge: Some(ModelId::from(CLOUD)),
+            ..VgrConfig::new(ModelId::from(LOCAL), ModelId::from(CLOUD)).targets
+        },
+        ..VgrConfig::new(ModelId::from(LOCAL), ModelId::from(CLOUD))
+    };
+    let route = Arc::new(super::super::Vgr::new(config)?);
+    let (target, _) = test_drive(route, request("fix the build"), move |t: ModelId, _r| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&t);
+            let response = match seen.targets().len() {
+                1 => reply("```rust\nfn broken() {}\n```"),
+                2 => reply_with_readout("yes", 0.25),
+                3 => reply("no"),
+                _ => reply("cloud"),
+            };
+            Ok(response)
+        }
+    })
+    .await?;
+
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(log.targets(), vec![LOCAL, LOCAL, CLOUD, CLOUD]);
     Ok(())
 }
 
@@ -492,6 +601,11 @@ async fn active_mode_requires_the_approval_attestation() {
         ..VgrConfig::new(ModelId::from(LOCAL), ModelId::from(CLOUD))
     };
     assert!(super::super::Vgr::new(config).is_err());
+}
+
+#[test]
+fn config_defaults_enable_task_typing() {
+    assert!(VgrConfig::new(ModelId::from(LOCAL), ModelId::from(CLOUD)).task_typing);
 }
 
 #[tokio::test]
@@ -1121,25 +1235,32 @@ fn request_with_tool_error(text: &str) -> Request {
 
 #[tokio::test]
 async fn a_reported_tool_error_vetoes_a_commit_the_evidence_would_otherwise_license() {
-    // The veto is the point: a confident readout is not enough when the
-    // conversation shows the work failed along the way.
+    // An error-bearing agentic run that is not host-attested as recovered is
+    // already terminal: it must spend zero verifier rungs.
+    let log = CallLog::default();
+    let seen = log.clone();
     let route = Arc::new(super::super::Vgr::new(active()).expect("builds"));
     let (target, _) = test_drive(
         route,
         request_with_tool_error("install the package"),
-        |t: ModelId, _r| async move {
-            let result: ServeResult = if t == *LOCAL {
-                Ok(reply_with_readout("Installed it.", 0.99))
-            } else {
-                Ok(reply("cloud answer"))
-            };
-            result
+        move |t: ModelId, _r| {
+            let seen = seen.clone();
+            async move {
+                seen.record(&t);
+                let result: ServeResult = if t == *LOCAL {
+                    Ok(reply_with_readout("[tool] install\nInstalled it.", 0.99))
+                } else {
+                    Ok(reply("cloud answer"))
+                };
+                result
+            }
         },
     )
     .await
     .expect("routes");
 
     assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(log.targets(), vec![LOCAL, CLOUD]);
 }
 
 #[tokio::test]
@@ -1408,4 +1529,317 @@ async fn a_configured_checker_suppresses_the_typing_call() -> Result<()> {
     // The attempt, and nothing else.
     assert_eq!(log.targets(), vec![LOCAL]);
     Ok(())
+}
+
+#[cfg(unix)]
+fn real_checker(
+    script: &str,
+) -> std::result::Result<ValidatedChecker, Box<dyn std::error::Error + Send + Sync>> {
+    let suite = tempfile::tempdir()?;
+    std::fs::write(suite.path().join("case.txt"), "pinned")?;
+    let workspace_provider = CommandWorkspaceProvider::new(CommandWorkspaceProviderConfig::new(
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "cp \"$ATTEMPT_FILE\" \"$WORKSPACE_DIR/candidate.txt\"".to_string(),
+        ],
+        Duration::from_secs(10),
+    ))?;
+    let mut config = CheckerConfig::new(
+        suite.path(),
+        vec!["/bin/sh".into(), "-c".into(), script.into()],
+        Arc::new(workspace_provider),
+    );
+    config.sandbox_attestation = SANDBOX_ATTESTATION.into();
+    let checker = PinnedChecker::new(config)?;
+    let manifest_identity = checker.manifest_identity().to_owned();
+    Ok(ValidatedChecker::new(
+        Arc::new(checker),
+        manifest_identity,
+    )?)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn active_mode_applies_real_checker_readiness_and_tamper_results()
+-> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Public runner Active is intentionally unavailable. These direct libsy
+    // cases are the other half of the checker-table integration split: they
+    // prove Active serves only an effective, validated checker pass.
+    for (script, validated, expected) in [
+        ("exit 0", true, ModelId::from(LOCAL)),
+        ("exit 0", false, ModelId::from(CLOUD)),
+        (
+            "chmod u+w {tests}/case.txt; printf tampered >> {tests}/case.txt; exit 0",
+            true,
+            ModelId::from(CLOUD),
+        ),
+    ] {
+        let checker = if validated {
+            Some(real_checker(script)?)
+        } else {
+            None
+        };
+        let config = VgrConfig {
+            checker,
+            ..active()
+        };
+        let route = Arc::new(super::super::Vgr::new(config)?);
+        let (target, _) = test_drive(
+            route,
+            request("fix the build"),
+            |t: ModelId, _r| async move {
+                if t == *LOCAL {
+                    Ok(reply("a patch"))
+                } else {
+                    Ok(reply("cloud"))
+                }
+            },
+        )
+        .await?;
+        assert_eq!(target, expected, "{script} validated={validated}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn no_tool_turn_skips_in_flight_verification() -> crate::Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let route = Arc::new(super::super::Vgr::new(active())?);
+    let turn_judges = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&turn_judges);
+    let (target, _) = test_drive(route, request("say hello"), move |t: ModelId, r| {
+        let seen = Arc::clone(&seen);
+        async move {
+            if is_turn_verification(&r) {
+                seen.fetch_add(1, Ordering::Relaxed);
+            }
+            let response = if t == *LOCAL {
+                reply_with_readout("hello", 0.99)
+            } else {
+                reply("cloud")
+            };
+            Ok(response)
+        }
+    })
+    .await?;
+
+    assert_eq!(target, ModelId::from(LOCAL));
+    assert_eq!(turn_judges.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_tool_turn_votes_latch_the_session_without_more_local_calls() -> crate::Result<()> {
+    let route = Arc::new(super::super::Vgr::new(active())?);
+    let log = CallLog::default();
+    let session = || Request {
+        metadata: Some(switchyard_protocol::Metadata {
+            session_id: Some("turn-session".into()),
+            ..Default::default()
+        }),
+        ..request("inspect the files")
+    };
+
+    for expected in [ModelId::from(LOCAL), ModelId::from(CLOUD)] {
+        let seen = log.clone();
+        let (target, _) = test_drive(route.clone(), session(), move |t: ModelId, r| {
+            let seen = seen.clone();
+            async move {
+                seen.record(&t);
+                if is_turn_verification(&r) {
+                    Ok(reply_with_readout("yes", 0.8))
+                } else if t == *LOCAL {
+                    Ok(tool_reply("read_file"))
+                } else {
+                    Ok(reply("cloud"))
+                }
+            }
+        })
+        .await?;
+        assert_eq!(target, expected);
+    }
+
+    let local_calls_at_latch = log.targets().iter().filter(|t| *t == LOCAL).count();
+    let seen = log.clone();
+    let (target, _) = test_drive(route, session(), move |t: ModelId, _r| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&t);
+            Ok(reply("cloud"))
+        }
+    })
+    .await?;
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(
+        log.targets().iter().filter(|t| *t == LOCAL).count(),
+        local_calls_at_latch,
+        "latched sessions spend neither another candidate nor another judge call"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_turn_verification_decline_clears_the_confirmation_streak() -> crate::Result<()> {
+    let route = Arc::new(super::super::Vgr::new(active())?);
+    let session = || Request {
+        metadata: Some(switchyard_protocol::Metadata {
+            session_id: Some("decline-session".into()),
+            ..Default::default()
+        }),
+        ..request("inspect the files")
+    };
+
+    for probability in [0.8, 0.2, 0.8] {
+        let (target, _) = test_drive(route.clone(), session(), move |t: ModelId, r| async move {
+            if is_turn_verification(&r) {
+                Ok(reply_with_readout("verdict", probability))
+            } else if t == *LOCAL {
+                Ok(tool_reply("read_file"))
+            } else {
+                Ok(reply("cloud"))
+            }
+        })
+        .await?;
+        assert_eq!(target, ModelId::from(LOCAL));
+    }
+
+    let (target, _) = test_drive(route, session(), move |t: ModelId, r| async move {
+        if is_turn_verification(&r) {
+            Ok(reply_with_readout("yes", 0.8))
+        } else if t == *LOCAL {
+            Ok(tool_reply("read_file"))
+        } else {
+            Ok(reply("cloud"))
+        }
+    })
+    .await?;
+    assert_eq!(target, ModelId::from(CLOUD));
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_indeterminate_turn_vote_is_fail_open() -> crate::Result<()> {
+    let route = Arc::new(super::super::Vgr::new(active())?);
+    let (target, response) = test_drive(
+        route,
+        request("inspect the files"),
+        |t: ModelId, r| async move {
+            if is_turn_verification(&r) {
+                Ok(reply("ambiguous"))
+            } else if t == *LOCAL {
+                Ok(tool_reply("read_file"))
+            } else {
+                Ok(reply("cloud"))
+            }
+        },
+    )
+    .await?;
+    assert_eq!(target, ModelId::from(LOCAL));
+    let aggregate = response.llm_response.into_agg().await.map_err(|source| {
+        crate::LibsyError::AlgorithmError {
+            message: format!("buffered tool response failed: {source}"),
+        }
+    })?;
+    assert!(super::super::rungs::has_tool_call(&aggregate));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_non_transport_turn_judge_error_is_fail_open() -> crate::Result<()> {
+    let route = Arc::new(super::super::Vgr::new(active())?);
+    let (target, _) = test_drive(
+        route,
+        request("inspect the files"),
+        |t: ModelId, r| async move {
+            if is_turn_verification(&r) {
+                Err(LlmClientError::General("judge rejected the prompt".into()))
+            } else if t == *LOCAL {
+                Ok(tool_reply("read_file"))
+            } else {
+                Ok(reply("cloud"))
+            }
+        },
+    )
+    .await?;
+    assert_eq!(target, ModelId::from(LOCAL));
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_transport_failure_during_turn_verification_latches_cloud() -> crate::Result<()> {
+    let route = Arc::new(super::super::Vgr::new(active())?);
+    let log = CallLog::default();
+    let session = || Request {
+        metadata: Some(switchyard_protocol::Metadata {
+            session_id: Some("transport-session".into()),
+            ..Default::default()
+        }),
+        ..request("inspect the files")
+    };
+    let seen = log.clone();
+    let (target, _) = test_drive(route.clone(), session(), move |t: ModelId, r| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&t);
+            if is_turn_verification(&r) {
+                Err(LlmClientError::Transport {
+                    source: std::io::Error::other("connection refused").into(),
+                })
+            } else if t == *LOCAL {
+                Ok(tool_reply("read_file"))
+            } else {
+                Ok(reply("cloud"))
+            }
+        }
+    })
+    .await?;
+    assert_eq!(target, ModelId::from(CLOUD));
+    let local_calls = log.targets().iter().filter(|t| *t == LOCAL).count();
+
+    let seen = log.clone();
+    let (target, _) = test_drive(route, session(), move |t: ModelId, _r| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&t);
+            Ok(reply("cloud"))
+        }
+    })
+    .await?;
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(
+        log.targets().iter().filter(|t| *t == LOCAL).count(),
+        local_calls
+    );
+    Ok(())
+}
+
+#[test]
+fn turn_view_preserves_anchors_and_proposed_turn_within_policy_budget() {
+    let mut request = request("opening task");
+    request
+        .llm_request
+        .instructions
+        .push(switchyard_protocol::InstructionBlock {
+            role: Role::System,
+            content: vec![ContentBlock::Text {
+                text: "system anchor sk-abcdefghijklmnopqrstuvwx".into(),
+            }],
+        });
+    for index in 0..40 {
+        request.llm_request.messages.push(Message::text(
+            Role::Assistant,
+            format!("window-{index} {}", "x".repeat(700)),
+        ));
+    }
+    let policy = super::super::policy::Policy::CURRENT.turn_verification;
+    let view = super::super::rungs::turn_view(&request, &tool_aggregate("read_file"), &policy);
+
+    assert!(view.contains("[task] opening task"));
+    assert!(view.contains("system anchor [REDACTED]"));
+    assert!(view.contains("[proposed next turn]"));
+    assert!(view.contains("read_file"));
+    assert!(!view.contains("window-0"));
+    assert!(view.chars().count() <= policy.max_chars);
 }

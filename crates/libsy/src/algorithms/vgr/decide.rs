@@ -86,11 +86,12 @@ pub struct Decision {
 /// but it can never authorize a commit.
 fn resolve_tool_errors(caps: &Capabilities, sig: &Signals) -> ToolErrors {
     let Some(reported) = caps.tool_errors else {
-        // No host count: the reported entry stands alone, and an entry that
-        // carries no count is the same as no entry at all.
+        // A reported failure may still veto, but a reported clean count has no
+        // provenance and therefore cannot authorize an agentic commit.
         return match sig.tool_errors {
             ToolErrorSignal::Absent | ToolErrorSignal::NoCount => ToolErrors::NoInformation,
             ToolErrorSignal::Indeterminate => ToolErrors::Indeterminate,
+            ToolErrorSignal::Count(0) => ToolErrors::NoInformation,
             ToolErrorSignal::Count(count) => ToolErrors::Count(count),
         };
     };
@@ -108,6 +109,38 @@ fn resolve_tool_errors(caps: &Capabilities, sig: &Signals) -> ToolErrors {
         return ToolErrors::NoInformation;
     }
     ToolErrors::Count(reported_count)
+}
+
+/// Whether host evidence describes the policy's bounded recovered-run shape.
+fn recovered_run_ok(caps: &Capabilities, tool_errors: ToolErrors, policy: &Policy) -> bool {
+    let config = policy.short_recovered_run;
+    if !config.enabled || !caps.tool_errors.is_some_and(ToolErrorCount::is_host) {
+        return false;
+    }
+    let ToolErrors::Count(errors) = tool_errors else {
+        return false;
+    };
+    let Some(results) = caps.tool_results else {
+        return false;
+    };
+    errors >= config.min_errors
+        && results >= 0
+        && results <= config.max_tool_results
+        && (!config.tail_clean || caps.tool_tail_clean == Some(true))
+}
+
+/// Whether the agentic branch can profitably spend local verification rungs.
+pub(super) fn agentic_can_gather(
+    caps: &Capabilities,
+    sig: &Signals,
+    policy: &Policy,
+) -> (bool, bool) {
+    let tool_errors = resolve_tool_errors(caps, sig);
+    let recovered = recovered_run_ok(caps, tool_errors, policy);
+    (
+        matches!(tool_errors, ToolErrors::Count(0)) || recovered,
+        recovered,
+    )
 }
 
 /// Decides whether to commit the local attempt or escalate.
@@ -138,9 +171,25 @@ pub fn decide_from_signals(
         ToolErrors::NoInformation | ToolErrors::Count(0)
     );
 
+    let recovered =
+        branch == Branch::AgenticVerified && recovered_run_ok(caps, tool_errors, policy);
+    let mut resolved_signals = *sig;
+    resolved_signals.recovered_run = recovered;
+    if recovered {
+        resolved_signals.tool_results = caps.tool_results;
+        resolved_signals.tool_tail_clean = caps.tool_tail_clean;
+    }
+
     let commit = match branch {
         Branch::Checks => rules::rule_checks(sig.tests_pass),
-        Branch::CodingNoChecks => rules::rule_coding_no_checks(sig, thr, dial) && veto_ok,
+        Branch::CodingNoChecks => {
+            rules::rule_coding_no_checks(
+                &resolved_signals,
+                thr,
+                dial,
+                policy.coding_dial_requires_judge,
+            ) && veto_ok
+        }
         Branch::Answer => rules::rule_answer(sig, caps.structured_answer, policy),
         Branch::Chat => rules::rule_chat(sig, thr, dial) && veto_ok,
         // An operator's prior never outranks the host's own error count.
@@ -148,7 +197,9 @@ pub fn decide_from_signals(
             rules::rule_agentic_recognized(caps.prior_local, thr) && veto_ok
         }
         // The veto is this branch's own rule, so it is not applied twice.
-        Branch::AgenticVerified => rules::rule_agentic_verified(tool_errors, sig, thr, dial),
+        Branch::AgenticVerified => {
+            rules::rule_agentic_verified(tool_errors, &resolved_signals, thr, dial)
+        }
         Branch::DefaultVerified => rules::rule_default_verified(sig, thr, dial) && veto_ok,
         Branch::Unknown => false,
     };
@@ -160,7 +211,7 @@ pub fn decide_from_signals(
         effective_route,
         readiness_gate,
         branch,
-        signals: *sig,
+        signals: resolved_signals,
         policy_version: policy.version,
     }
 }

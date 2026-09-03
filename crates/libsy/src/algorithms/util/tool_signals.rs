@@ -228,6 +228,10 @@ pub struct ToolSignals {
     /// the conversation the client supplied, so it can witness failure but
     /// cannot attest success.
     pub error_count: u32,
+    /// Total normalized tool results in the conversation.
+    pub tool_results: u32,
+    /// Whether the final normalized tool result was free of known error patterns.
+    pub tool_tail_clean: bool,
     /// Total edit-style tool calls in the request.
     pub edit_count: u32,
     /// Total write-style tool calls in the request.
@@ -369,6 +373,8 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
     let messages = &request.llm_request.messages;
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
+    let mut tool_results = 0u32;
+    let mut tool_tail_clean = false;
     let mut compacted = false;
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
@@ -388,12 +394,14 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
                 ContentBlock::ToolResult(result) => {
                     // Before the empty-text filter: empty results still count.
                     tool_result_count += 1;
+                    tool_results = tool_results.saturating_add(1);
                     let text = result
                         .content
                         .iter()
                         .filter_map(text_of)
                         .collect::<Vec<_>>()
                         .join("\n");
+                    tool_tail_clean = classify_text(&text).0 == 0.0;
                     if !text.is_empty() {
                         tool_texts.push(text);
                     }
@@ -409,7 +417,14 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
         }
     }
 
-    let mut signal = build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window);
+    let mut signal = build_signal(
+        tool_texts,
+        tool_calls,
+        tool_results,
+        tool_tail_clean,
+        messages.len() as u32,
+        recent_window,
+    );
     signal.compacted = compacted;
     signal.tool_result_count = u32::try_from(tool_result_count).unwrap_or(u32::MAX);
     signal.assistant_turn_count = u32::try_from(assistant_turn_count).unwrap_or(u32::MAX);
@@ -462,6 +477,8 @@ fn text_of(block: &ContentBlock) -> Option<&str> {
 fn build_signal(
     tool_texts: Vec<String>,
     tool_calls: Vec<ObservedToolCall>,
+    tool_results: u32,
+    tool_tail_clean: bool,
     turn_depth: u32,
     recent_window: usize,
 ) -> ToolSignals {
@@ -546,6 +563,8 @@ fn build_signal(
         severity,
         no_error_streak,
         error_count,
+        tool_results,
+        tool_tail_clean,
         edit_count,
         write_count,
         read_count,

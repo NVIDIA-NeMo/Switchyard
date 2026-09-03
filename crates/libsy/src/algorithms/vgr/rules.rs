@@ -106,6 +106,12 @@ pub struct Signals {
     /// A tool-error count reported alongside the decision, which the host's own
     /// count overrides on disagreement.
     pub tool_errors: ToolErrorSignal,
+    /// Total tool results in a host-attested recovered run.
+    pub tool_results: Option<i32>,
+    /// Whether the final tool result in a host-attested recovered run was clean.
+    pub tool_tail_clean: Option<bool>,
+    /// Whether the host-attested short-recovered-run arm was active.
+    pub recovered_run: bool,
 }
 
 /// A tool-error count as reported in the signal snapshot.
@@ -174,7 +180,12 @@ pub fn rule_checks(tests_pass: Option<Tri>) -> bool {
 /// semantics, so a deployment that consults no cloud verifier is unaffected.
 /// The coding dial is the judged family: clearing its bar also requires a
 /// definite grading-judge affirmation.
-pub fn rule_coding_no_checks(sig: &Signals, thr: &Thresholds, dial: Option<f64>) -> bool {
+pub fn rule_coding_no_checks(
+    sig: &Signals,
+    thr: &Thresholds,
+    dial: Option<f64>,
+    dial_requires_judge: bool,
+) -> bool {
     let confident = clears(sig.readout, thr.readout);
     let deliberated = clears(sig.deliberation, thr.deliberation);
     let mut local_evidence = affirms(sig.evidence_strict) && deliberated;
@@ -195,9 +206,10 @@ pub fn rule_coding_no_checks(sig: &Signals, thr: &Thresholds, dial: Option<f64>)
         && sig.evidence_confirm.is_some()
         && affirms(sig.cloud_judge)
         && affirms(sig.evidence_confirm);
-    let dial_confirmed = clears_dial(sig.readout, dial) && affirms(sig.cloud_judge);
 
-    readout_alone || band_confirmed || local_evidence || dial_confirmed
+    let dial_commit =
+        clears_dial(sig.readout, dial) && (!dial_requires_judge || affirms(sig.cloud_judge));
+    readout_alone || band_confirmed || local_evidence || dial_commit
 }
 
 /// Commits a typed answer on verification of the answer itself.
@@ -259,7 +271,7 @@ pub fn rule_agentic_verified(
     thr: &Thresholds,
     dial: Option<f64>,
 ) -> bool {
-    tool_errors.is_clean() && rule_default_verified(sig, thr, dial)
+    (tool_errors.is_clean() || sig.recovered_run) && rule_default_verified(sig, thr, dial)
 }
 
 /// Commits derived traffic that carries no confident type.

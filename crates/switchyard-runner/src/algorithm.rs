@@ -361,14 +361,15 @@ pub struct VgrRouteConfig {
     /// How much authority decisions have over the traffic they decide.
     #[serde(default)]
     pub mode: VgrModeConfig,
-    /// The operator's approval attestation, required by `mode = "active"`.
+    /// The library approval attestation validated before public-runner Active
+    /// reports that its required runtime controls are unavailable.
     #[serde(default)]
     pub active_approval: Option<String>,
     /// Budget for the whole decision, verification included.
     #[serde(default = "default_vgr_deadline_seconds")]
     pub deadline_seconds: f64,
     /// Whether the router types the request before deriving capabilities.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub task_typing: bool,
     /// Whether a session that escalated stays on the capable tier.
     #[serde(default)]
@@ -404,7 +405,7 @@ pub enum VgrModeConfig {
     Evaluate,
     /// Decisions are made and recorded, but the capable tier is always served.
     Shadow,
-    /// Decisions route traffic, subject to the readiness gates.
+    /// Reserved for library embedders; rejected by the public runner.
     Active,
 }
 
@@ -418,6 +419,8 @@ pub enum VgrModeConfig {
 pub struct VgrCheckerConfig {
     /// Directory holding the task's test suite. Snapshotted at startup.
     pub tests_dir: PathBuf,
+    /// Trusted host command that materializes the attempted source tree.
+    pub materialize_command: Vec<String>,
     /// The command to run, as an argv list. Never a shell string.
     ///
     /// `{tests}` is replaced with the pinned snapshot path and `{workdir}` with
@@ -428,10 +431,11 @@ pub struct VgrCheckerConfig {
     /// How long one checker run may take.
     #[serde(default = "default_vgr_checker_timeout_seconds")]
     pub timeout_seconds: f64,
-    /// Whether the operator validated the checker against a pinned manifest.
+    /// Whether the operator validated the checker against its pinned manifest.
     ///
-    /// Distinct from configuring one: only a validated checker satisfies the
-    /// readiness gate that lets a coding decision be served locally.
+    /// Must be true when a checker table is configured; the library type binds
+    /// the checker handle and validation identity so an unvalidated state cannot
+    /// be constructed.
     #[serde(default)]
     pub validated: bool,
 }
@@ -1264,13 +1268,20 @@ fn build_vgr(
             .map(|name| resolve_target_model_id(route_name, name, targets))
             .transpose()
     };
-    let mut vgr = VgrConfig::new(
-        resolve_target_model_id(route_name, &config.local_target, targets)?,
-        resolve_target_model_id(route_name, &config.cloud_target, targets)?,
-    );
+    let local = resolve_target_model_id(route_name, &config.local_target, targets)?;
+    let cloud = resolve_target_model_id(route_name, &config.cloud_target, targets)?;
+    if local == cloud {
+        return Err(AlgorithmConfigError::new(format!(
+            "vgr route {route_name}: local_target {:?} and cloud_target {:?} both resolve to \
+             model ID {local:?}; VGR tiers must have distinct model IDs because ClientRouter is \
+             keyed only by ModelId",
+            config.local_target, config.cloud_target
+        )));
+    }
+    let mut vgr = VgrConfig::new(local, cloud.clone());
     vgr.targets = VgrTargets {
         judge: resolve_optional(&config.judge_target)?,
-        cloud_judge: resolve_optional(&config.cloud_judge_target)?,
+        cloud_judge: resolve_optional(&config.cloud_judge_target)?.or(Some(cloud)),
         ..vgr.targets
     };
     vgr.mode = vgr_mode(route_name, config)?;
@@ -1288,9 +1299,7 @@ fn build_vgr(
         )?,
     };
     if let Some(checker) = &config.checker {
-        let (handle, validated) = build_vgr_checker(route_name, checker)?;
-        vgr.checker = Some(handle);
-        vgr.checker_validated = validated;
+        vgr.checker = Some(build_vgr_checker(route_name, checker)?);
     }
     let algorithm = Vgr::new(vgr).map_err(|error| {
         AlgorithmConfigError::with_source(format!("vgr route {route_name}: {error}"), error)
@@ -1298,24 +1307,30 @@ fn build_vgr(
     Ok(Arc::new(algorithm))
 }
 
-/// Resolves the serving mode, attaching the approval attestation `active` needs.
+/// Resolves a public serving mode and rejects Active until its controls exist.
 ///
-/// The attestation is carried separately in TOML rather than as the mode value,
-/// so that `mode = "active"` without it is a legible error instead of a mode
-/// name nobody can guess.
+/// The library retains Active for embedders that provide the required runtime
+/// controls. The native runner cannot truthfully make that claim yet.
 fn vgr_mode(route_name: &str, config: &VgrRouteConfig) -> AlgorithmResult<libsy::ServingMode> {
     Ok(match config.mode {
         VgrModeConfig::Off => libsy::ServingMode::Off,
         VgrModeConfig::Evaluate => libsy::ServingMode::Evaluate,
         VgrModeConfig::Shadow => libsy::ServingMode::Shadow,
         VgrModeConfig::Active => {
-            let approval = config.active_approval.clone().ok_or_else(|| {
-                AlgorithmConfigError::new(format!(
-                    "vgr route {route_name}: mode = \"active\" requires \
+            return Err(
+                if config.active_approval.as_deref() != Some(ACTIVE_APPROVAL) {
+                    AlgorithmConfigError::new(format!(
+                        "vgr route {route_name}: mode = \"active\" requires \
                      active_approval = {ACTIVE_APPROVAL:?}"
-                ))
-            })?;
-            libsy::ServingMode::Active { approval }
+                    ))
+                } else {
+                    AlgorithmConfigError::new(format!(
+                        "vgr route {route_name}: mode = \"active\" is unavailable in the native \
+                     runner because native privacy/no-egress enforcement and operator runtime \
+                     kill-switch controls are not wired"
+                    ))
+                },
+            );
         }
     })
 }
@@ -1325,18 +1340,40 @@ fn vgr_mode(route_name: &str, config: &VgrRouteConfig) -> AlgorithmResult<libsy:
 fn build_vgr_checker(
     route_name: &str,
     checker: &VgrCheckerConfig,
-) -> AlgorithmResult<(Arc<dyn libsy::Checker>, bool)> {
-    let mut built = libsy::CheckerConfig::new(checker.tests_dir.clone(), checker.command.clone());
-    built.sandbox_attestation = checker.sandbox_attestation.clone();
-    built.timeout = duration_from_seconds(
+) -> AlgorithmResult<libsy::ValidatedChecker> {
+    if !checker.validated {
+        return Err(AlgorithmConfigError::new(format!(
+            "vgr route {route_name}: checker.validated must be true"
+        )));
+    }
+    let timeout = duration_from_seconds(
         route_name,
         "checker.timeout_seconds",
         checker.timeout_seconds,
     )?;
+    let workspace_provider = libsy::CommandWorkspaceProvider::new(
+        libsy::CommandWorkspaceProviderConfig::new(
+            checker.materialize_command.clone(),
+            timeout,
+        ),
+    )
+    .map_err(|error| {
+        AlgorithmConfigError::with_source(format!("vgr route {route_name}: {error}"), error)
+    })?;
+    let mut built = libsy::CheckerConfig::new(
+        checker.tests_dir.clone(),
+        checker.command.clone(),
+        Arc::new(workspace_provider),
+    );
+    built.sandbox_attestation = checker.sandbox_attestation.clone();
+    built.timeout = timeout;
     let checker_handle = libsy::PinnedChecker::new(built).map_err(|error| {
         AlgorithmConfigError::with_source(format!("vgr route {route_name}: {error}"), error)
     })?;
-    Ok((Arc::new(checker_handle), checker.validated))
+    let manifest_identity = checker_handle.manifest_identity().to_owned();
+    libsy::ValidatedChecker::new(Arc::new(checker_handle), manifest_identity).map_err(|error| {
+        AlgorithmConfigError::with_source(format!("vgr route {route_name}: {error}"), error)
+    })
 }
 
 /// The same key is accepted everywhere; only building it is Unix-only.
@@ -1344,7 +1381,7 @@ fn build_vgr_checker(
 fn build_vgr_checker(
     route_name: &str,
     _checker: &VgrCheckerConfig,
-) -> AlgorithmResult<(Arc<dyn libsy::Checker>, bool)> {
+) -> AlgorithmResult<libsy::ValidatedChecker> {
     Err(AlgorithmConfigError::new(format!(
         "vgr route {route_name}: the checker is only supported on unix platforms"
     )))
@@ -1381,6 +1418,10 @@ const fn default_transcript_max_chars() -> usize {
 
 const fn default_vgr_deadline_seconds() -> f64 {
     30.0
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 fn default_vgr_breaker_threshold() -> u32 {

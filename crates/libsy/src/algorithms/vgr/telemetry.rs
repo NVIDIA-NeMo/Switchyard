@@ -37,7 +37,7 @@ use super::decide::{Decision, Route};
 /// reference derives this by hashing its own source text, which has no Rust
 /// analogue; a hand-maintained version is the honest equivalent — it must be
 /// bumped when a prompt in [`rungs`](super::rungs) changes.
-pub(super) const PROMPT_VERSION: &str = "1";
+pub(super) const PROMPT_VERSION: &str = "2";
 
 /// Which rung a timing belongs to.
 ///
@@ -59,6 +59,8 @@ pub(super) enum Stage {
     Deliberation,
     /// A cloud confirmation call.
     CloudJudge,
+    /// Judging a proposed tool-bearing assistant turn in flight.
+    TurnVerification,
 }
 
 impl Stage {
@@ -72,6 +74,7 @@ impl Stage {
             Stage::Readout => "readout",
             Stage::Deliberation => "deliberation",
             Stage::CloudJudge => "cloud_judge",
+            Stage::TurnVerification => "turn_verification",
         }
     }
 }

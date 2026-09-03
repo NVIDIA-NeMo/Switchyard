@@ -36,9 +36,12 @@ pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
 pub use algorithms::vgr::Vgr;
 #[cfg(unix)]
 pub use algorithms::vgr::checker::{
-    CheckerConfig, CheckerSetupError, PinnedChecker, SANDBOX_ATTESTATION,
+    CheckerConfig, CheckerSetupError, CommandWorkspaceProvider, CommandWorkspaceProviderConfig,
+    CommandWorkspaceProviderSetupError, PinnedChecker, SANDBOX_ATTESTATION,
 };
-pub use algorithms::vgr::config::{Checker, ServingMode, Targets, VgrConfig};
+pub use algorithms::vgr::config::{
+    Checker, CheckerRequest, ServingMode, Targets, ValidatedChecker, VgrConfig,
+};
 pub use algorithms::vgr::mode::ACTIVE_APPROVAL;
 pub use algorithms::vgr::safety::{BreakerConfig, KillSwitch};
 

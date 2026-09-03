@@ -28,7 +28,7 @@ pub(super) fn serve_route(mode: &ServingMode, decision: &Decision) -> Route {
 }
 
 /// The attestation an operator must record to serve live local commits.
-pub const ACTIVE_APPROVAL: &str = "vgr-active-serving-approved";
+pub const ACTIVE_APPROVAL: &str = "prospective-validation-and-canary-approved";
 
 /// Whether a mode is configured coherently.
 ///
@@ -116,6 +116,13 @@ mod tests {
                 approval: "approved".into()
             })
             .is_err()
+        );
+        assert!(
+            validate(&ServingMode::Active {
+                approval: "vgr-active-serving-approved".into()
+            })
+            .is_err(),
+            "the retired approval token must fail closed"
         );
         assert!(
             validate(&ServingMode::Active {

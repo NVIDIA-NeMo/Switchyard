@@ -233,7 +233,7 @@ impl VgrConfig {
             deadline: Duration::from_secs(30),
             kill_switch: None,
             breaker: BreakerConfig::default(),
-            task_typing: false,
+            task_typing: true,
             latch_escalation: false,
         }
     }

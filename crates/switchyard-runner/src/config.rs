@@ -927,6 +927,49 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn vgr_defaults_task_typing_and_cloud_judging() -> RunnerResult<()> {
+        let config = vgr_config()
+            .replace("cloud_judge_target = \"vgr_cloud_judge\"\n", "")
+            .replace("task_typing = true\n", "");
+        let parsed: DeploymentConfig = toml::from_str(&config).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse vgr config: {error}"))
+        })?;
+        let Some(route) = parsed.routes.get("vgr") else {
+            return Err(RunnerError::configuration("vgr route is missing"));
+        };
+        let AlgorithmSpec::Vgr {
+            config: route_config,
+        } = &route.algorithm
+        else {
+            return Err(RunnerError::configuration("vgr route parsed incorrectly"));
+        };
+        assert!(route_config.task_typing);
+        assert_eq!(route_config.cloud_judge_target, None);
+        assert_eq!(
+            route.algorithm.callable_target_names(),
+            ["weak", "strong"],
+            "the default cloud judge reuses the cloud target's callable client"
+        );
+        runner_from_toml(&config)?;
+
+        let opt_out = vgr_config().replace("task_typing = true", "task_typing = false");
+        let opted_out: DeploymentConfig = toml::from_str(&opt_out).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse vgr opt-out: {error}"))
+        })?;
+        let Some(RouteConfig {
+            algorithm: AlgorithmSpec::Vgr {
+                config: opted_out_config,
+            },
+            ..
+        }) = opted_out.routes.get("vgr")
+        else {
+            return Err(RunnerError::configuration("vgr opt-out route is missing"));
+        };
+        assert!(!opted_out_config.task_typing);
+        Ok(())
+    }
+
+    #[test]
     fn vgr_rejects_an_unknown_field() {
         // The enum's own deny_unknown_fields does not reach through the flatten,
         // so VgrRouteConfig carries its own; without it a typo is discarded.
@@ -941,19 +984,66 @@ confidence_threshold = 0.5
     }
 
     #[test]
-    fn vgr_active_mode_requires_the_approval_attestation() {
-        // Active is the one mode that can serve a local commit, so a route that
-        // asks for it without the attestation must fail loudly at startup rather
-        // than silently serving cloud forever.
+    fn vgr_rejects_duplicate_tier_model_ids_even_across_clients() {
+        let duplicate = vgr_config().replace(
+            "local_target = \"weak\"",
+            "local_target = \"vgr_duplicate\"",
+        ) + "\n[targets.vgr_duplicate]\nid = \"strong/model\"\nllm_client = \"anthropic\"\n";
+        let message = error_message(&duplicate);
+        for expected in [
+            "vgr route vgr",
+            "local_target \"vgr_duplicate\"",
+            "cloud_target \"strong\"",
+            "strong/model",
+            "ClientRouter is keyed only by ModelId",
+        ] {
+            assert!(message.contains(expected), "{message}");
+        }
+
+        let same_client = duplicate.replace(
+            "[targets.vgr_duplicate]\nid = \"strong/model\"\nllm_client = \"anthropic\"",
+            "[targets.vgr_duplicate]\nid = \"strong/model\"\nllm_client = \"responses\"",
+        );
+        let same_client_message = error_message(&same_client);
+        assert!(
+            same_client_message.contains("both resolve to model ID"),
+            "{same_client_message}"
+        );
+    }
+
+    #[test]
+    fn vgr_active_mode_validates_approval_then_rejects_unwired_controls() {
         let config = vgr_config().replace("mode = \"shadow\"", "mode = \"active\"");
         let message = error_message(&config);
         assert!(message.contains("active_approval"), "{message}");
 
-        let approved = config.replace(
+        let retired = config.replace(
             "mode = \"active\"",
             "mode = \"active\"\nactive_approval = \"vgr-active-serving-approved\"",
         );
-        assert!(runner_from_toml(&approved).is_ok());
+        let retired_message = error_message(&retired);
+        assert!(
+            retired_message.contains("prospective-validation-and-canary-approved"),
+            "{retired_message}"
+        );
+
+        let approved = config.replace(
+            "mode = \"active\"",
+            "mode = \"active\"\nactive_approval = \"prospective-validation-and-canary-approved\"",
+        );
+        let approved_message = error_message(&approved);
+        assert!(
+            approved_message.contains("mode = \"active\" is unavailable"),
+            "{approved_message}"
+        );
+        assert!(
+            approved_message.contains("native privacy/no-egress enforcement"),
+            "{approved_message}"
+        );
+        assert!(
+            approved_message.contains("operator runtime kill-switch controls are not wired"),
+            "{approved_message}"
+        );
     }
 
     #[test]

@@ -80,7 +80,7 @@ fn continued_tool_session() -> Request {
 /// Derives with the defaults the Python corpus uses: no checker and no reported
 /// tool-error count.
 fn derive(request: &Request, attempt: &str, task_type: Option<TaskType>) -> Capabilities {
-    derive_capabilities(request, attempt, false, task_type, None)
+    derive_capabilities(request, attempt, false, task_type, None, None, None)
 }
 
 /// Derives and selects, the shape nearly every Python assertion takes.
@@ -184,7 +184,7 @@ fn branch_priority_is_strictly_ordered() {
 
 #[test]
 fn operator_configured_checker_wins_over_every_derived_signal() {
-    let caps = derive_capabilities(&ask(), PLAIN, true, Some(TaskType::Chat), None);
+    let caps = derive_capabilities(&ask(), PLAIN, true, Some(TaskType::Chat), None, None, None);
     assert_eq!(select_branch(&caps), Branch::Checks);
 }
 
@@ -493,8 +493,18 @@ fn budgets_are_measured_in_characters_not_bytes() {
 
 #[test]
 fn tool_error_count_and_provenance_are_carried_as_one_value() {
-    let host = derive_capabilities(&ask(), TOOLED, false, None, Some(ToolErrorCount::Host(2)));
+    let host = derive_capabilities(
+        &ask(),
+        TOOLED,
+        false,
+        None,
+        Some(ToolErrorCount::Host(2)),
+        Some(3),
+        Some(false),
+    );
     assert_eq!(host.tool_errors, Some(ToolErrorCount::Host(2)));
+    assert_eq!(host.tool_results, Some(3));
+    assert_eq!(host.tool_tail_clean, Some(false));
 
     let untrusted = derive_capabilities(
         &ask(),
@@ -502,8 +512,12 @@ fn tool_error_count_and_provenance_are_carried_as_one_value() {
         false,
         None,
         Some(ToolErrorCount::Untrusted(0)),
+        Some(0),
+        Some(true),
     );
     assert_eq!(untrusted.tool_errors, Some(ToolErrorCount::Untrusted(0)));
+    assert_eq!(untrusted.tool_results, Some(0));
+    assert_eq!(untrusted.tool_tail_clean, Some(true));
 }
 
 #[test]

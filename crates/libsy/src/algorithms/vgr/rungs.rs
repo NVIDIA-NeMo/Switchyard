@@ -22,6 +22,7 @@ use switchyard_protocol::{
     Role,
 };
 
+use super::policy::TurnVerification;
 use super::rules::Tri;
 
 /// Completion budget for a deliberating verifier.
@@ -75,6 +76,17 @@ Reply with one word.";
 /// attempt, so this prompt is given the task alone and never sees the attempt.
 const WITNESS_SYSTEM: &str = "Answer the task question directly.";
 
+/// Judges whether a proposed tool-bearing turn shows a persistent bad
+/// trajectory that should be moved to the capable tier.
+const TURN_JUDGE_SYSTEM: &str = "You are an escalation judge inside an agentic router. The \
+session runs on the EFFICIENT tier (a cheap but capable model). You see a condensed view of the \
+session — the task framing and the most recent turns — plus the tool call the model wants to run \
+next. Judge the TRAJECTORY, not the difficulty of the task: is this run genuinely in trouble — \
+stuck in a loop, repeatedly making the same mistake, ignoring tool results, or failing to make \
+progress — such that the CAPABLE tier should take over? A single failed command, ordinary \
+iteration, or a hard task is not enough. Thin or ambiguous evidence means no. Reply with exactly \
+one word: yes or no.";
+
 /// Instruction appended to the witness request itself.
 const WITNESS_SUFFIX: &str = "\n\nGive ONLY the final answer, as short as possible.";
 
@@ -104,6 +116,8 @@ pub(super) enum Question {
     Typing,
     /// What is the answer to this task?
     Witness,
+    /// Is this proposed tool-bearing turn part of a persistently bad trajectory?
+    TurnTrajectory,
 }
 
 impl Question {
@@ -117,6 +131,7 @@ impl Question {
             // alone, so the verifier guard would be redundant text.
             Question::Typing => return TYPING_SYSTEM.to_string(),
             Question::Witness => return format!("{WITNESS_SYSTEM}{INJECTION_GUARD}"),
+            Question::TurnTrajectory => return format!("{TURN_JUDGE_SYSTEM}{INJECTION_GUARD}"),
         };
         format!("{base}{INJECTION_GUARD}")
     }
@@ -148,6 +163,122 @@ pub(super) fn build_witness_request(
         WITNESS_MAX_OUTPUT_TOKENS,
         metadata,
     )
+}
+
+/// Builds the quick probability-scored in-flight turn judgment.
+pub(super) fn build_turn_request(
+    view: &str,
+    metadata: Option<switchyard_protocol::Metadata>,
+) -> Request {
+    build_request(
+        Question::TurnTrajectory,
+        view,
+        super::readout::MAX_OUTPUT_TOKENS,
+        metadata,
+    )
+}
+
+/// Whether the proposed assistant response contains a normalized tool call.
+pub(super) fn has_tool_call(response: &AggLlmResponse) -> bool {
+    response.outputs.iter().any(|output| {
+        output.role == Role::Assistant
+            && output
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+    })
+}
+
+/// Condenses the trajectory while preserving its anchors and proposed turn.
+pub(super) fn turn_view(
+    request: &Request,
+    proposed: &AggLlmResponse,
+    config: &TurnVerification,
+) -> String {
+    let (turns, _) = super::text::turns(request);
+    let system_index = turns.iter().position(|turn| turn.role == Role::System);
+    let first_user_index = turns.iter().position(|turn| turn.role == Role::User);
+
+    let mut anchors = Vec::new();
+    if let Some(index) = system_index {
+        anchors.push(turn_line(&turns[index], config.system_chars));
+    }
+    if let Some(index) = first_user_index {
+        let task = super::text::clip_mid(
+            &super::text::redact(&turns[index].text),
+            config.first_user_chars,
+            0.5,
+        );
+        anchors.push(format!("[task] {task}"));
+    }
+
+    let mut window: Vec<String> = turns
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != system_index && Some(*index) != first_user_index)
+        .rev()
+        .take(config.recent_messages)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|(_, turn)| turn_line(turn, config.message_chars))
+        .collect();
+
+    let proposed = format!(
+        "[proposed next turn] {}",
+        proposed_turn_line(proposed, config.message_chars)
+    );
+    while !window.is_empty() && joined_chars(&anchors, &window, &proposed) > config.max_chars {
+        window.remove(0);
+    }
+    anchors.extend(window);
+    anchors.push(proposed);
+    anchors.join("\n").chars().take(config.max_chars).collect()
+}
+
+fn turn_line(turn: &super::text::Turn, budget: usize) -> String {
+    let role = format!("{:?}", turn.role).to_ascii_lowercase();
+    let text = super::text::redact(&turn.text);
+    format!("[{role}] {}", super::text::clip_mid(&text, budget, 0.5))
+}
+
+fn proposed_turn_line(response: &AggLlmResponse, budget: usize) -> String {
+    let mut fragments = Vec::new();
+    for output in response
+        .outputs
+        .iter()
+        .filter(|output| output.role == Role::Assistant)
+    {
+        for block in &output.content {
+            match block {
+                ContentBlock::Text { text } if !text.trim().is_empty() => {
+                    fragments.push(super::text::redact(text));
+                }
+                ContentBlock::ToolCall(call) => {
+                    fragments.push(format!(
+                        "[tool call] {}({})",
+                        super::text::redact(&call.name),
+                        super::text::redact(&call.arguments.to_string())
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    let rendered = fragments.join(" ");
+    format!(
+        "[assistant] {}",
+        super::text::clip_mid(&rendered, budget, 0.5)
+    )
+}
+
+fn joined_chars(anchors: &[String], window: &[String], proposed: &str) -> usize {
+    anchors
+        .iter()
+        .chain(window)
+        .map(|line| super::text::char_len(line) + 1)
+        .sum::<usize>()
+        + super::text::char_len(proposed)
 }
 
 /// Reads a typing reply as a task type.

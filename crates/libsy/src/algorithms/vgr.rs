@@ -24,7 +24,11 @@
 //! 2. **The router's own typing of the request** — a [`TaskType`] the router
 //!    produced itself. Anything outside the known set is an abstention.
 //! 3. **Locally produced attempt evidence** — the attempt this router generated,
-//!    and only that attempt. Request content must never mint evidence.
+//!    and only that attempt.
+//! 4. **Request-derived tool summaries**, carried only as
+//!    [`ToolErrorCount::Untrusted`]. They may veto but never authorize; only a
+//!    server-owned executor may construct Host evidence. Headers, metadata, and
+//!    client message fields must never mint Host provenance.
 //!
 //! The derivation lattice is **monotone**: no input reachable by a client
 //! selects a weaker verification regime than the default one. Evidence found in
@@ -191,7 +195,7 @@ pub enum TaskType {
 /// authorize a commit. An untrusted report may veto a commit when it reports
 /// errors, but never authorize one when it reports none.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ToolErrorCount {
+pub enum ToolErrorCount {
     /// A count from the routing host's own execution log.
     Host(i32),
     /// A count from any other provenance.
@@ -200,19 +204,19 @@ pub(super) enum ToolErrorCount {
 
 impl ToolErrorCount {
     /// Returns the reported number of tool errors.
-    pub(super) fn count(self) -> i32 {
+    pub fn count(self) -> i32 {
         match self {
             Self::Host(count) | Self::Untrusted(count) => count,
         }
     }
 
     /// Whether this count comes from the routing host's execution log.
-    pub(super) fn is_host(self) -> bool {
+    pub fn is_host(self) -> bool {
         matches!(self, Self::Host(_))
     }
 
     /// Low-cardinality provenance label for telemetry.
-    pub(super) fn source_label(self) -> &'static str {
+    pub fn source_label(self) -> &'static str {
         match self {
             Self::Host(_) => "host",
             Self::Untrusted(_) => "untrusted",
@@ -255,6 +259,10 @@ pub struct Capabilities {
     pub is_agentic: bool,
     /// A reported tool-error count and its provenance. Never client-declared.
     pub tool_errors: Option<ToolErrorCount>,
+    /// Total tool results in the execution log summarized with `tool_errors`.
+    pub tool_results: Option<i32>,
+    /// Whether the final result in that execution log was clean.
+    pub tool_tail_clean: Option<bool>,
 }
 
 /// Selects the verification regime a request's capabilities license.
@@ -304,6 +312,8 @@ pub fn derive_capabilities(
     checker_configured: bool,
     task_type: Option<TaskType>,
     tool_errors: Option<ToolErrorCount>,
+    tool_results: Option<i32>,
+    tool_tail_clean: Option<bool>,
 ) -> Capabilities {
     let (turns, unsupported) = text::turns(request);
     if unsupported {
@@ -328,6 +338,8 @@ pub fn derive_capabilities(
         task_text: Some(task_text.clone()),
         attempt: Some(attempt.to_string()),
         tool_errors,
+        tool_results,
+        tool_tail_clean,
         ..Default::default()
     };
 
@@ -337,6 +349,8 @@ pub fn derive_capabilities(
             has_checks: true,
             // The checker is the evidence; a tool-error count plays no part.
             tool_errors: None,
+            tool_results: None,
+            tool_tail_clean: None,
             ..observed
         };
     }
@@ -346,6 +360,8 @@ pub fn derive_capabilities(
             final_answer: Some(attempt.to_string()),
             transcript: Some(render::render_session(&turns, attempt)),
             tool_errors: None,
+            tool_results: None,
+            tool_tail_clean: None,
             ..observed
         };
     }

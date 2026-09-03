@@ -39,10 +39,12 @@ use switchyard_protocol::{
 };
 
 use super::config::{ServingMode, VgrConfig};
-use super::decide::{Decision, Readiness, Route, decide_from_signals};
+use super::decide::{Decision, Readiness, Route, agentic_can_gather, decide_from_signals};
 use super::rules::{Signals, ToolErrorSignal, Tri};
 use super::rungs::{self, Question};
-use super::safety::{CircuitBreaker, indicates_endpoint_failure};
+use super::safety::{
+    CircuitBreaker, indicates_endpoint_failure, indicates_transport_unavailability,
+};
 use super::telemetry::{Record, Stage, Unknown, count_redactions};
 use super::{
     Branch, Capabilities, TaskType, ToolErrorCount, derive_capabilities, matching, readout, text,
@@ -52,14 +54,23 @@ use crate::algorithms::util::prompts::{append_note, drop_exact_replay};
 use crate::algorithms::util::tool_signals::ToolSignals;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier};
-use crate::core::state::State;
+use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
+
+const TURN_STREAK_KEY: &str = "vgr.turn_verification.streak";
+const TURN_LATCHED_KEY: &str = "vgr.turn_verification.latched";
 
 /// Which tier a call is billed to, for the record's token accounting.
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Billing {
     Local,
     Cloud,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TurnAction {
+    Stay,
+    Escalate,
 }
 
 /// Runs one verification-gated turn.
@@ -73,7 +84,7 @@ pub(super) struct VgrClassifier {
 impl Classifier<State> for VgrClassifier {
     async fn score(
         &self,
-        _state: &mut State,
+        state: &mut State,
         request: &mut Request,
         driver: Option<&Driver>,
     ) -> Result<(Classification, Option<Response>)> {
@@ -101,6 +112,8 @@ impl Classifier<State> for VgrClassifier {
             Some("kill_switch")
         } else if self.breaker.is_open() {
             Some("breaker_open")
+        } else if turn_latched(state) {
+            Some("turn_verification_latched")
         } else {
             None
         };
@@ -184,6 +197,40 @@ impl Classifier<State> for VgrClassifier {
         };
         record.local_tokens += tokens(buffered.aggregate());
 
+        if self.config.policy.turn_verification.enabled
+            && rungs::has_tool_call(buffered.aggregate())
+        {
+            let action = self
+                .verify_turn(
+                    driver,
+                    request,
+                    buffered.aggregate(),
+                    state,
+                    &mut record,
+                    started,
+                )
+                .await;
+            let served = if action == TurnAction::Escalate
+                || matches!(self.config.mode, ServingMode::Off | ServingMode::Shadow)
+            {
+                Route::Cloud
+            } else {
+                Route::Local
+            };
+            record.short_circuit = Some(if action == TurnAction::Escalate {
+                "turn_verification_escalated"
+            } else {
+                "turn_verification_complete"
+            });
+            record.served_route = Some(served);
+            record.elapsed = started.elapsed();
+            record.emit();
+            if served == Route::Local {
+                return Ok((decisive(&targets.local), Some(buffered.into_response())));
+            }
+            return Ok((decisive(&targets.cloud), None));
+        }
+
         let attempt = rungs::response_text(buffered.aggregate()).unwrap_or_default();
         let task_type = self.type_task(driver, request, &mut record, started).await;
         record.task_type = task_type;
@@ -216,6 +263,88 @@ impl Classifier<State> for VgrClassifier {
 }
 
 impl VgrClassifier {
+    /// Judges one proposed tool-bearing assistant turn and advances its
+    /// session-local confirmation streak.
+    async fn verify_turn(
+        &self,
+        driver: &Driver,
+        request: &Request,
+        proposed: &AggLlmResponse,
+        state: &mut State,
+        record: &mut Record,
+        started: Instant,
+    ) -> TurnAction {
+        let config = self.config.policy.turn_verification;
+        let view = rungs::turn_view(request, proposed, &config);
+        let mut call = rungs::build_turn_request(&view, request.metadata.clone());
+        readout::request_logprobs(&mut call);
+
+        let Some(budget) = self.remaining(started) else {
+            record.unknown(Stage::TurnVerification, Unknown::DeadlineExhausted);
+            return TurnAction::Stay;
+        };
+        let target = self.config.judge_target().clone();
+        let call_started = Instant::now();
+        let outcome = tokio::time::timeout(budget, async {
+            let response = driver.call_model(call, vec![target.clone()]).await?;
+            response
+                .llm_response
+                .into_agg()
+                .await
+                .map_err(|source| LibsyError::client_call(target.clone(), source))
+        })
+        .await;
+        record.stage(Stage::TurnVerification, call_started.elapsed());
+
+        let agg = match outcome {
+            Ok(Ok(agg)) => agg,
+            Ok(Err(error)) => {
+                record.error(Stage::TurnVerification, &error);
+                record.unknown(Stage::TurnVerification, Unknown::CallFailed);
+                if target == self.config.targets.local && indicates_transport_unavailability(&error)
+                {
+                    self.breaker.record_failure();
+                    latch_turns(state);
+                    return TurnAction::Escalate;
+                }
+                return TurnAction::Stay;
+            }
+            Err(_elapsed) => {
+                record.unknown(Stage::TurnVerification, Unknown::TimedOut);
+                if target == self.config.targets.local {
+                    self.breaker.record_failure();
+                    latch_turns(state);
+                    return TurnAction::Escalate;
+                }
+                return TurnAction::Stay;
+            }
+        };
+        if target == self.config.targets.local {
+            record.local_tokens += tokens(&agg);
+        } else {
+            record.cloud_tokens += tokens(&agg);
+        }
+        let Some(probability) = readout::p_yes(&agg) else {
+            record.unknown(Stage::TurnVerification, Unknown::Unparsable);
+            return TurnAction::Stay;
+        };
+        if probability < config.escalate_at {
+            state.extra.remove(TURN_STREAK_KEY);
+            return TurnAction::Stay;
+        }
+
+        let streak = turn_streak(state).saturating_add(1);
+        state
+            .extra
+            .insert(TURN_STREAK_KEY.into(), StateValue::Count(streak));
+        if streak >= config.confirmations {
+            latch_turns(state);
+            TurnAction::Escalate
+        } else {
+            TurnAction::Stay
+        }
+    }
+
     /// Builds the capabilities this turn is judged under.
     ///
     /// The tool-error count is derived from the conversation the client
@@ -230,13 +359,15 @@ impl VgrClassifier {
         task_type: Option<TaskType>,
         record: &mut Record,
     ) -> Capabilities {
-        let errors = ToolSignals::from_request(request, None).error_count;
+        let tool_signals = ToolSignals::from_request(request, None);
         let mut caps = derive_capabilities(
             request,
             attempt,
             self.config.checker.is_some(),
             task_type,
-            Some(ToolErrorCount::Untrusted(errors as i32)),
+            Some(ToolErrorCount::Untrusted(tool_signals.error_count as i32)),
+            Some(tool_signals.tool_results as i32),
+            Some(tool_signals.tool_tail_clean),
         );
         // Operator declarations, which derivation never produces on its own.
         caps.structured_answer = self.config.structured_answer;
@@ -315,6 +446,8 @@ impl VgrClassifier {
                 Some(count) => ToolErrorSignal::Count(count.count()),
                 None => ToolErrorSignal::Absent,
             },
+            tool_results: caps.tool_results,
+            tool_tail_clean: caps.tool_tail_clean,
             ..Signals::default()
         };
         let branch = super::select_branch(caps);
@@ -322,6 +455,15 @@ impl VgrClassifier {
         if branch == Branch::Unknown {
             return signals;
         }
+        let recovered_run = if branch == Branch::AgenticVerified {
+            let (can_gather, recovered) = agentic_can_gather(caps, &signals, &self.config.policy);
+            if !can_gather {
+                return signals;
+            }
+            recovered
+        } else {
+            false
+        };
         let Some(judged) = caps.transcript.as_deref() else {
             return signals;
         };
@@ -359,6 +501,35 @@ impl VgrClassifier {
         if self.settled(caps, &signals) {
             return signals;
         }
+        // The shipped coding dial uses the judged family. A dial candidate
+        // buys exactly one strict cloud confirmation immediately: yes commits,
+        // while no, unknown, or an unavailable judge blocks that arm. Running
+        // local deliberation first cannot change this arm and only adds cost.
+        if branch == Branch::CodingNoChecks
+            && signals
+                .readout
+                .zip(self.config.policy.offload_dial.coding)
+                .is_some_and(|(readout, dial)| readout >= dial)
+        {
+            if let Some(cloud_judge) = self.config.targets.cloud_judge.clone() {
+                signals.cloud_judge = Some(
+                    self.ask(
+                        driver,
+                        cloud_judge,
+                        Billing::Cloud,
+                        Question::Evidence,
+                        judged,
+                        rungs::DELIBERATION_MAX_OUTPUT_TOKENS,
+                        request,
+                        Stage::CloudJudge,
+                        record,
+                        started,
+                    )
+                    .await,
+                );
+            }
+            return signals;
+        }
 
         // The deliberating readout: the same question, reasoned before answering.
         signals.deliberation = match self
@@ -383,6 +554,12 @@ impl VgrClassifier {
             Tri::Unknown => None,
         };
         if self.settled(caps, &signals) {
+            return signals;
+        }
+        // The bounded recovery arm is intentionally local-only: it may spend a
+        // readout and deliberation, but an error-bearing run must not consume a
+        // capable-tier verification rung.
+        if recovered_run {
             return signals;
         }
 
@@ -465,6 +642,9 @@ impl VgrClassifier {
                     )
                     .await,
                 );
+                if self.settled(caps, &signals) {
+                    return signals;
+                }
                 // The second confirmation is only ever consulted after the
                 // first affirms, so a refutation costs one call, not two.
                 if signals.cloud_judge == Some(Tri::Yes) {
@@ -631,16 +811,16 @@ impl VgrClassifier {
             return None;
         };
         let call_started = Instant::now();
-        let outcome =
-            tokio::time::timeout(budget, async {
-                let response = driver.call_model(call, vec![target]).await?;
-                response.llm_response.into_agg().await.map_err(|source| {
-                    LibsyError::AlgorithmError {
-                        message: format!("verifier response could not be read: {source}"),
-                    }
-                })
-            })
-            .await;
+        let call_target = target.clone();
+        let outcome = tokio::time::timeout(budget, async {
+            let response = driver.call_model(call, vec![call_target.clone()]).await?;
+            response
+                .llm_response
+                .into_agg()
+                .await
+                .map_err(|source| LibsyError::client_call(call_target, source))
+        })
+        .await;
         record.stage(stage, call_started.elapsed());
 
         match outcome {
@@ -772,6 +952,26 @@ fn client_error_fallback_eligible(error: &LlmClientError) -> bool {
         }
         _ => false,
     }
+}
+
+fn turn_streak(state: &State) -> u32 {
+    match state.extra.get(TURN_STREAK_KEY) {
+        Some(StateValue::Count(streak)) => *streak,
+        _ => 0,
+    }
+}
+
+fn turn_latched(state: &State) -> bool {
+    matches!(
+        state.extra.get(TURN_LATCHED_KEY),
+        Some(StateValue::Count(value)) if *value > 0
+    )
+}
+
+fn latch_turns(state: &mut State) {
+    state
+        .extra
+        .insert(TURN_LATCHED_KEY.into(), StateValue::Count(1));
 }
 
 /// Carries the rejected attempt forward as reference for the capable tier.

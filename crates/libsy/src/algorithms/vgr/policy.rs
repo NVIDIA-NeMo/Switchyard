@@ -69,6 +69,40 @@ impl OffloadDial {
     }
 }
 
+/// Shape that lets a short agentic run recover from earlier tool errors.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShortRecoveredRun {
+    /// Whether the recovery arm is part of this policy.
+    pub enabled: bool,
+    /// Least number of earlier tool errors needed to call the run recovered.
+    pub min_errors: i32,
+    /// Most tool results a recovered run may contain.
+    pub max_tool_results: i32,
+    /// Whether the final tool result must be clean.
+    pub tail_clean: bool,
+}
+
+/// Frozen controls for judging proposed tool-bearing assistant turns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TurnVerification {
+    /// Whether proposed tool-bearing turns are judged.
+    pub enabled: bool,
+    /// Consecutive escalation votes required to latch a session.
+    pub confirmations: u32,
+    /// Probability at or above which a judgment is an escalation vote.
+    pub escalate_at: f64,
+    /// Number of recent conversation messages retained.
+    pub recent_messages: usize,
+    /// Per-message character budget in the recent window.
+    pub message_chars: usize,
+    /// Character budget for the system anchor.
+    pub system_chars: usize,
+    /// Character budget for the opening user-task anchor.
+    pub first_user_chars: usize,
+    /// Backstop for the complete rendered trajectory.
+    pub max_chars: usize,
+}
+
 /// The complete constant set a decision is made under.
 ///
 /// Carried on every [`Decision`](super::Decision) as `policy_version`, so a
@@ -89,10 +123,21 @@ pub struct Policy {
     /// agreement over an operator-declared structured surface, or at the dial
     /// bar — never on the judge alone.
     pub answer_judge_arms: bool,
+    /// Whether the coding dial arm requires a strict cloud-judge affirmation.
+    pub coding_dial_requires_judge: bool,
+    /// Host-attested short-run recovery from earlier tool errors.
+    pub short_recovered_run: ShortRecoveredRun,
+    /// In-flight verification of proposed tool-bearing turns.
+    pub turn_verification: TurnVerification,
 }
 
 impl Policy {
     /// The current constant set.
+    ///
+    /// Switchyard's first Rust policy release was assigned identity `1.0.0` in
+    /// MR !3. Its behavior is synchronized with the reference POLICY 2.11
+    /// shipment, but that upstream development label does not replace the Rust
+    /// release identity recorded in telemetry and replay data.
     pub const CURRENT: Self = Self {
         version: "1.0.0",
         thresholds: Thresholds {
@@ -109,6 +154,23 @@ impl Policy {
             agentic: Some(0.2),
         },
         answer_judge_arms: false,
+        coding_dial_requires_judge: true,
+        short_recovered_run: ShortRecoveredRun {
+            enabled: true,
+            min_errors: 1,
+            max_tool_results: 15,
+            tail_clean: true,
+        },
+        turn_verification: TurnVerification {
+            enabled: true,
+            confirmations: 2,
+            escalate_at: 0.5,
+            recent_messages: 28,
+            message_chars: 500,
+            system_chars: 1_000,
+            first_user_chars: 2_000,
+            max_chars: 18_000,
+        },
     };
 }
 

@@ -172,6 +172,28 @@ pub(super) fn indicates_endpoint_failure(error: &LibsyError) -> bool {
     )
 }
 
+/// Whether a turn-judge failure proves that its local endpoint is unavailable.
+///
+/// Unlike the terminal commit gate, in-flight verification is fail-open on a
+/// judge error. Only transport, timeout, and gateway-unavailable failures are
+/// strong enough to override that and latch cloud.
+pub(super) fn indicates_transport_unavailability(error: &LibsyError) -> bool {
+    match error {
+        LibsyError::ClientCall { source, .. } => match source {
+            switchyard_protocol::LlmClientError::Transport { .. }
+            | switchyard_protocol::LlmClientError::Timeout { .. } => true,
+            switchyard_protocol::LlmClientError::UpstreamHttp { status, .. } => matches!(
+                *status,
+                http::StatusCode::BAD_GATEWAY
+                    | http::StatusCode::SERVICE_UNAVAILABLE
+                    | http::StatusCode::GATEWAY_TIMEOUT
+            ),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

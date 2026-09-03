@@ -13,7 +13,9 @@
 //! Exhaustive rule-by-rule conformance is checked out of tree, by replaying the
 //! reference's frozen corpus; it is not duplicated here.
 
-use super::decide::{Decision, Readiness, ReadinessGate, Route, decide_from_signals};
+use super::decide::{
+    Decision, Readiness, ReadinessGate, Route, agentic_can_gather, decide_from_signals,
+};
 use super::policy::{OffloadDial, Policy};
 use super::rules::{Signals, ToolErrorSignal, Tri};
 use super::{Branch, Capabilities, ToolErrorCount};
@@ -63,6 +65,18 @@ fn agentic(tool_errors: Option<ToolErrorCount>) -> Capabilities {
         is_agentic: true,
         tool_errors,
         ..Default::default()
+    }
+}
+
+fn recovered_agentic(
+    tool_errors: ToolErrorCount,
+    tool_results: Option<i32>,
+    tool_tail_clean: Option<bool>,
+) -> Capabilities {
+    Capabilities {
+        tool_results,
+        tool_tail_clean,
+        ..agentic(Some(tool_errors))
     }
 }
 
@@ -554,6 +568,156 @@ fn enabling_the_dial_only_ever_adds_commits() {
                 }
             }
         }
+    }
+}
+
+// ─── policy 2.11 short recovered run ─────────────────────────────────────────
+
+#[test]
+fn current_policy_keeps_switchyard_identity_and_ports_recovery_constants() {
+    let policy = Policy::default();
+    assert_eq!(policy.version, "1.0.0");
+    assert!(policy.coding_dial_requires_judge);
+    assert_eq!(
+        policy.short_recovered_run,
+        super::policy::ShortRecoveredRun {
+            enabled: true,
+            min_errors: 1,
+            max_tool_results: 15,
+            tail_clean: true,
+        }
+    );
+}
+
+#[test]
+fn recovered_run_shape_and_shipped_bars_bind() {
+    let strong = readout(0.95);
+    for (errors, results, tail, expected) in [
+        (1, Some(15), Some(true), Route::Local),
+        (3, Some(15), Some(true), Route::Local),
+        (1, Some(16), Some(true), Route::Cloud),
+        (1, Some(15), Some(false), Route::Cloud),
+        (1, Some(15), None, Route::Cloud),
+        (46, Some(51), Some(true), Route::Cloud),
+        (0, Some(5), Some(true), Route::Local),
+        (1, Some(-1), Some(true), Route::Cloud),
+        (1, None, Some(true), Route::Cloud),
+    ] {
+        let caps = recovered_agentic(ToolErrorCount::Host(errors), results, tail);
+        assert_eq!(
+            route(&caps, &strong),
+            expected,
+            "errors={errors} results={results:?} tail={tail:?}"
+        );
+    }
+
+    let caps = recovered_agentic(ToolErrorCount::Host(1), Some(5), Some(true));
+    assert_eq!(route(&caps, &readout(0.2)), Route::Local);
+    assert_eq!(
+        route(
+            &caps,
+            &Signals {
+                readout: Some(0.19),
+                deliberation: Some(0.49),
+                ..Default::default()
+            }
+        ),
+        Route::Cloud
+    );
+    assert_eq!(
+        route(
+            &caps,
+            &Signals {
+                readout: Some(0.1),
+                deliberation: Some(0.5),
+                ..Default::default()
+            }
+        ),
+        Route::Local
+    );
+}
+
+#[test]
+fn only_matching_host_provenance_can_relax_the_agentic_error_veto() {
+    let strong = readout(0.99);
+    let untrusted = recovered_agentic(ToolErrorCount::Untrusted(1), Some(5), Some(true));
+    assert_eq!(route(&untrusted, &strong), Route::Cloud);
+    let absent = Capabilities {
+        tool_results: Some(5),
+        tool_tail_clean: Some(true),
+        ..agentic(None)
+    };
+    assert_eq!(route(&absent, &strong), Route::Cloud);
+
+    let host = recovered_agentic(ToolErrorCount::Host(1), Some(5), Some(true));
+    let disagreement = Signals {
+        tool_errors: ToolErrorSignal::Count(0),
+        ..strong
+    };
+    assert_eq!(route(&host, &disagreement), Route::Cloud);
+    let agreement = Signals {
+        tool_errors: ToolErrorSignal::Count(1),
+        ..strong
+    };
+    let decision = decide(&host, &agreement);
+    assert_eq!(decision.route, Route::Local);
+    assert!(decision.signals.recovered_run);
+    assert_eq!(decision.signals.tool_results, Some(5));
+    assert_eq!(decision.signals.tool_tail_clean, Some(true));
+
+    // A caller cannot assert recovery directly in Signals; it is recomputed
+    // solely from typed host capabilities.
+    let spoofed = Signals {
+        recovered_run: true,
+        ..strong
+    };
+    assert_eq!(
+        route(
+            &recovered_agentic(ToolErrorCount::Untrusted(1), Some(5), Some(true)),
+            &spoofed
+        ),
+        Route::Cloud
+    );
+}
+
+#[test]
+fn disabling_recovery_preserves_the_error_veto() {
+    let mut policy = Policy::CURRENT;
+    policy.short_recovered_run.enabled = false;
+    let decision = decide_from_signals(
+        &recovered_agentic(ToolErrorCount::Host(1), Some(5), Some(true)),
+        &readout(0.95),
+        &policy,
+        &Readiness::default(),
+    );
+    assert_eq!(decision.route, Route::Cloud);
+}
+
+#[test]
+fn runtime_rungs_are_available_only_to_clean_or_recovered_agentic_runs() {
+    let reported = ToolErrorSignal::Count(1);
+    let signals = Signals {
+        tool_errors: reported,
+        ..Default::default()
+    };
+    assert_eq!(
+        agentic_can_gather(
+            &recovered_agentic(ToolErrorCount::Host(1), Some(5), Some(true)),
+            &signals,
+            &Policy::CURRENT,
+        ),
+        (true, true)
+    );
+    for caps in [
+        recovered_agentic(ToolErrorCount::Host(1), Some(16), Some(true)),
+        recovered_agentic(ToolErrorCount::Host(1), Some(5), Some(false)),
+        recovered_agentic(ToolErrorCount::Untrusted(1), Some(5), Some(true)),
+    ] {
+        assert_eq!(
+            agentic_can_gather(&caps, &signals, &Policy::CURRENT),
+            (false, false),
+            "{caps:?}"
+        );
     }
 }
 
