@@ -48,8 +48,18 @@ pub fn record_tool_namespace(
     namespaces: &mut Map<String, Value>,
     qualified: &str,
     namespace: &str,
+    description: Option<&str>,
 ) {
-    namespaces.insert(qualified.to_string(), Value::String(namespace.to_string()));
+    let value = description.map_or_else(
+        || Value::String(namespace.to_string()),
+        |description| {
+            serde_json::json!({
+                "namespace": namespace,
+                "description": description,
+            })
+        },
+    );
+    namespaces.insert(qualified.to_string(), value);
 }
 
 /// Stores a collected mapping on a request's extensions, when it has entries.
@@ -79,11 +89,27 @@ pub fn split_qualified_name(
     namespaces: &Map<String, Value>,
     qualified: &str,
 ) -> Option<(String, String)> {
-    let namespace = namespaces.get(qualified).and_then(Value::as_str)?;
+    let value = namespaces.get(qualified)?;
+    let namespace = value
+        .as_str()
+        .or_else(|| value.get("namespace").and_then(Value::as_str))?;
     let tool = qualified
         .strip_prefix(namespace)?
         .strip_prefix(NAMESPACE_SEPARATOR)?;
     Some((tool.to_string(), namespace.to_string()))
+}
+
+/// Returns a retained description for `namespace`.
+pub fn namespace_description<'a>(
+    namespaces: &'a Map<String, Value>,
+    namespace: &str,
+) -> Option<&'a str> {
+    namespaces.values().find_map(|value| {
+        let object = value.as_object()?;
+        (object.get("namespace").and_then(Value::as_str) == Some(namespace))
+            .then(|| object.get("description").and_then(Value::as_str))
+            .flatten()
+    })
 }
 
 /// Reverse map from an upstream tool name to its Codex tool name and namespace.
@@ -179,8 +205,8 @@ mod tests {
     use switchyard_protocol::ProviderExtensions;
 
     use super::{
-        attach_tool_namespaces, qualified_tool_name, qualified_tool_origins, record_tool_namespace,
-        restore_qualified_tool_names, split_qualified_name, tool_namespaces,
+        attach_tool_namespaces, namespace_description, qualified_tool_name, qualified_tool_origins,
+        record_tool_namespace, restore_qualified_tool_names, split_qualified_name, tool_namespaces,
     };
 
     fn extensions(pairs: &[(&str, &str)]) -> ProviderExtensions {
@@ -190,6 +216,7 @@ mod tests {
                 &mut namespaces,
                 &qualified_tool_name(namespace, tool),
                 namespace,
+                None,
             );
         }
         let mut extensions = ProviderExtensions::default();
@@ -214,6 +241,26 @@ mod tests {
         assert_eq!(
             split_qualified_name(nested, "mcp__docs__fetch__raw"),
             Some(("fetch__raw".to_string(), "mcp__docs".to_string()))
+        );
+    }
+
+    #[test]
+    fn retains_a_namespace_description_without_changing_name_lookup() {
+        let mut namespaces = Map::new();
+        record_tool_namespace(
+            &mut namespaces,
+            "multi_agent_v1__spawn_agent",
+            "multi_agent_v1",
+            Some("Tools for managing sub-agents."),
+        );
+
+        assert_eq!(
+            split_qualified_name(&namespaces, "multi_agent_v1__spawn_agent"),
+            Some(("spawn_agent".to_string(), "multi_agent_v1".to_string()))
+        );
+        assert_eq!(
+            namespace_description(&namespaces, "multi_agent_v1"),
+            Some("Tools for managing sub-agents.")
         );
     }
 
