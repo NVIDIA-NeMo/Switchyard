@@ -1139,6 +1139,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#prefill_router" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        prefill_router
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#llm_classifier" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1342,6 +1353,17 @@
     <span class="md-ellipsis">
       
         random
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#prefill_router" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        prefill_router
       
     </span>
   </a>
@@ -1678,6 +1700,64 @@ see <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing
 </tr>
 </tbody>
 </table>
+<h3 id="prefill_router"><code>prefill_router</code><a class="headerlink" href="#prefill_router" title="Permanent link">&para;</a></h3>
+<p>Routes the latest non-empty user message with a checkpoint-backed prefill classifier. Build
+<code>switchyard-server</code> with <code>--features prefill-router</code> and make the prefill router's Python
+dependencies available in the active virtual environment.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th style="text-align: center;">Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>targets</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Target names in the exact order expected by the checkpoint outputs.</td>
+</tr>
+<tr>
+<td><code>checkpoint</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Path to the tensor-only router checkpoint. Relative paths use the server's working directory.</td>
+</tr>
+<tr>
+<td><code>device</code></td>
+<td style="text-align: center;">No</td>
+<td>auto</td>
+<td>PyTorch device used for encoder inference, such as <code>cpu</code>, <code>cuda</code>, or <code>cuda:0</code>.</td>
+</tr>
+<tr>
+<td><code>cache_dir</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Directory where Hugging Face caches the downloaded encoder and tokenizer.</td>
+</tr>
+<tr>
+<td><code>max_length</code></td>
+<td style="text-align: center;">No</td>
+<td><code>2048</code></td>
+<td>Maximum tokenized encoder input length; longer prompts are truncated.</td>
+</tr>
+<tr>
+<td><code>batch_size</code></td>
+<td style="text-align: center;">No</td>
+<td><code>32</code></td>
+<td>Maximum prompts per encoder forward pass.</td>
+</tr>
+</tbody>
+</table>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[routes.prefill]</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard/prefill&quot;</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;prefill_router&quot;</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span><span class="p">]</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">checkpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/models/router.pt&quot;</span>
+</span></code></pre></div>
 <h3 id="llm_classifier"><code>llm_classifier</code><a class="headerlink" href="#llm_classifier" title="Permanent link">&para;</a></h3>
 <p>Runs one of three judge-backed modes: <code>capability</code>, <code>escalation</code>, or <code>custom</code>.
 <code>classifier_target</code> and <code>max_output_tokens</code> apply to all three.</p>
