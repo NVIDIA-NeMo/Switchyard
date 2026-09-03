@@ -33,6 +33,14 @@ pub use algorithms::util::escalation::EscalationJudgeConfig;
 pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
+pub use algorithms::vgr::Vgr;
+#[cfg(unix)]
+pub use algorithms::vgr::checker::{
+    CheckerConfig, CheckerSetupError, PinnedChecker, SANDBOX_ATTESTATION,
+};
+pub use algorithms::vgr::config::{Checker, ServingMode, Targets, VgrConfig};
+pub use algorithms::vgr::mode::ACTIVE_APPROVAL;
+pub use algorithms::vgr::safety::{BreakerConfig, KillSwitch};
 
 // Stage-router scoring and tier selection — the shared signal-driven routing
 // core (scorer, picker, and the `StageClassifier`).

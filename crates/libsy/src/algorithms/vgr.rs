@@ -53,18 +53,18 @@ use crate::algorithms::util::affinity::AffinityRouter;
 // a working crate without a built-in checker rather than a weaker one. The
 // `Checker` trait itself is cross-platform, so an operator can still supply one.
 #[cfg(unix)]
-mod checker;
-mod config;
+pub mod checker;
+pub mod config;
 mod decide;
 mod matching;
-mod mode;
+pub mod mode;
 mod policy;
 mod readout;
 mod render;
 mod rules;
 mod rungs;
 mod runtime;
-mod safety;
+pub mod safety;
 mod telemetry;
 mod text;
 
@@ -78,10 +78,10 @@ mod tests;
 /// A verification-gated route.
 ///
 /// Calls the local tier, gathers evidence about the answer it produced, and
-/// either releases that answer or escalates to the capable tier. Composed on
-/// [`FallThrough`] like every other algorithm here, with a single classifier:
-/// the whole decision is one unit of work, not a cascade of independent
-/// recommendations.
+/// either releases that answer or escalates to the capable tier. Composed on the
+/// shared fall-through shell like every other algorithm here, with a single
+/// classifier: the whole decision is one unit of work, not a cascade of
+/// independent recommendations.
 pub struct Vgr {
     route: FallThrough<State>,
     local: switchyard_protocol::ModelId,
