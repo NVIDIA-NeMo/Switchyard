@@ -112,6 +112,48 @@ async fn a_run_that_outlives_its_timeout_reports_nothing() {
 }
 
 #[tokio::test]
+async fn a_timeout_kills_the_whole_process_tree_not_just_the_direct_child() {
+    // A test suite is a process tree — a runner forking workers is the normal
+    // case. Killing only the command would leave those workers on the host after
+    // the router stopped waiting, so this asserts the grandchild is gone, not
+    // merely that the run returned.
+    let marker = TempDir::with_prefix("vgr-checker-marker-").expect("marker dir");
+    let alive = marker.path().join("still-alive");
+    // A background grandchild that outlives its parent and keeps touching a file.
+    let tests = suite(&format!(
+        "sh -c 'while true; do touch {}; sleep 0.05; done' &\nsleep 30\n",
+        alive.display()
+    ));
+    let mut config = config(&tests, &shell_argv());
+    config.timeout = Duration::from_millis(200);
+    let checker = PinnedChecker::new(config).expect("builds");
+
+    assert_eq!(checker.check("task", "attempt").await, None);
+
+    // Not vacuous: the grandchild must actually have run, or two absent
+    // timestamps would compare equal and assert nothing.
+    assert!(
+        alive.exists(),
+        "the background grandchild never started, so this proves nothing"
+    );
+
+    // Give any survivor a chance to prove it is still running, then confirm it
+    // stopped touching the file.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let settled = std::fs::metadata(&alive)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after = std::fs::metadata(&alive)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    assert_eq!(
+        settled, after,
+        "a grandchild of the checker survived the timeout and is still running"
+    );
+}
+
+#[tokio::test]
 async fn the_attempt_and_task_reach_the_command_as_files() {
     let tests = suite(
         "grep -q 'the attempt text' \"$ATTEMPT_FILE\" || exit 1\n\

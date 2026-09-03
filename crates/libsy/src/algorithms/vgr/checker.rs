@@ -242,12 +242,28 @@ impl PinnedChecker {
             .stderr(std::process::Stdio::null())
             // Killed if this future is dropped, which is how the router's
             // deadline stops a run rather than merely stopping waiting for one.
-            .kill_on_drop(true);
+            .kill_on_drop(true)
+            // Its own process group, so the whole tree can be signalled. A test
+            // suite is a process *tree* — a runner that forks workers is the
+            // normal case, not the exotic one — and killing only the direct
+            // child would leave those workers running on the host after the
+            // router has stopped waiting for them.
+            .process_group(0);
         for (key, value) in &self.config.env {
             command.env(key, value);
         }
 
-        let status = tokio::time::timeout(self.config.timeout, command.status())
+        let mut child = command.spawn()?;
+        // Read before waiting: the id is gone once the child is reaped, and the
+        // group must still be reachable at that point. `process_group(0)` makes
+        // the child its own group leader, so its pid is the group id.
+        let group = child.id();
+        // Fires however the run ends — clean exit, timeout, or this future being
+        // dropped by the router's deadline — so nothing the suite spawned
+        // outlives the decision it was gathering evidence for.
+        let _reaper = ProcessGroupReaper(group);
+
+        let status = tokio::time::timeout(self.config.timeout, child.wait())
             .await
             .map_err(|_| {
                 std::io::Error::new(std::io::ErrorKind::TimedOut, "checker timed out")
@@ -293,6 +309,37 @@ impl Checker for PinnedChecker {
             return None;
         }
         Some(passed)
+    }
+}
+
+/// Signals a checker run's whole process group when the run goes out of scope.
+///
+/// The router can cancel a decision at any point, and a suite that forked
+/// workers would otherwise leave them running: `kill_on_drop` reaches the direct
+/// child only. Being able to stop work it started is the router's own
+/// responsibility, and is separate from confining that work, which is the
+/// deployment sandbox's.
+struct ProcessGroupReaper(Option<u32>);
+
+impl Drop for ProcessGroupReaper {
+    fn drop(&mut self) {
+        let Some(group) = self.0 else {
+            return;
+        };
+        // Best effort, and deliberately not through a new dependency: sending a
+        // signal to a process group needs `libc::kill` with a negative pid,
+        // which is an `unsafe` call this repository has no precedent for in
+        // production code. `kill` is POSIX and reaches the same syscall.
+        //
+        // Failure is ignored because there is nothing useful to do about it and
+        // the common case is benign: the group is already empty because the
+        // suite exited cleanly and was reaped.
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", "--", &format!("-{group}")])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 }
 
