@@ -154,7 +154,7 @@ into label space.
 | Label | Values | Where |
 |---|---|---|
 | `model` | One per configured endpoint, typically 2–6 per deployment. | All per-endpoint metrics. |
-| `outcome` | Exactly 3: `success`, `retryable_error`, `other_error`. | Outcome counters |
+| `outcome` | `ok`, `retryable_error`, `other_error`; plus `client_disconnected` on `switchyard_client_responses_total`. | Outcome counters |
 | `code` | Bounded: the known-code allowlist (`200`, `400`, `401`, `403`, `404`, `408`, `409`, `422`, `429`, `500`, `502`, `503`, `504`), plus `none` and the per-class buckets `1xx`/`2xx`/`3xx`/`4xx`/`5xx`/`other`. About 20 values max. | `switchyard_upstream_attempts_total` |
 | `le` | The configured histogram bucket boundaries. | Histogram buckets |
 | `algorithm` | One stable value per configured algorithm. | Routing-overhead histogram, in-flight gauge |
