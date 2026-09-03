@@ -143,7 +143,9 @@ pub fn decide_from_signals(
         Branch::Answer => rules::rule_answer(sig, caps.structured_answer, policy),
         Branch::Chat => rules::rule_chat(sig, thr, dial) && veto_ok,
         // An operator's prior never outranks the host's own error count.
-        Branch::AgenticRecognized => rules::rule_agentic_recognized(caps.prior_local, thr) && veto_ok,
+        Branch::AgenticRecognized => {
+            rules::rule_agentic_recognized(caps.prior_local, thr) && veto_ok
+        }
         // The veto is this branch's own rule, so it is not applied twice.
         Branch::AgenticVerified => rules::rule_agentic_verified(tool_errors, sig, thr, dial),
         Branch::DefaultVerified => rules::rule_default_verified(sig, thr, dial) && veto_ok,
@@ -189,7 +191,10 @@ pub fn readiness_effective(
         Branch::AgenticVerified | Branch::AgenticRecognized
             if caps.tool_errors_source != Some(ToolErrorsSource::Host) =>
         {
-            (Route::Cloud, Some(ReadinessGate::ToolEvidenceNotHostAttested))
+            (
+                Route::Cloud,
+                Some(ReadinessGate::ToolEvidenceNotHostAttested),
+            )
         }
         _ => (Route::Local, None),
     }

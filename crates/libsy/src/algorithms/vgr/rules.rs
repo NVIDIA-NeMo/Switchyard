@@ -172,6 +172,8 @@ pub fn rule_checks(tests_pass: Option<Tri>) -> bool {
 ///
 /// A confirmation that was never consulted leaves the rule at its unconfirmed
 /// semantics, so a deployment that consults no cloud verifier is unaffected.
+/// The coding dial is the judged family: clearing its bar also requires a
+/// definite grading-judge affirmation.
 pub fn rule_coding_no_checks(sig: &Signals, thr: &Thresholds, dial: Option<f64>) -> bool {
     let confident = clears(sig.readout, thr.readout);
     let deliberated = clears(sig.deliberation, thr.deliberation);
@@ -193,8 +195,9 @@ pub fn rule_coding_no_checks(sig: &Signals, thr: &Thresholds, dial: Option<f64>)
         && sig.evidence_confirm.is_some()
         && affirms(sig.cloud_judge)
         && affirms(sig.evidence_confirm);
+    let dial_confirmed = clears_dial(sig.readout, dial) && affirms(sig.cloud_judge);
 
-    readout_alone || band_confirmed || local_evidence || clears_dial(sig.readout, dial)
+    readout_alone || band_confirmed || local_evidence || dial_confirmed
 }
 
 /// Commits a typed answer on verification of the answer itself.

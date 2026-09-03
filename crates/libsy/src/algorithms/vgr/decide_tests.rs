@@ -225,7 +225,11 @@ fn the_coding_readout_strata_require_escalating_cloud_confirmation() {
             ..dual
         },
     ] {
-        assert_eq!(route_no_dial(&caps, &weakened), Route::Cloud, "{weakened:?}");
+        assert_eq!(
+            route_no_dial(&caps, &weakened),
+            Route::Cloud,
+            "{weakened:?}"
+        );
     }
 
     // Below the band, neither confirmation helps.
@@ -409,55 +413,87 @@ fn an_answer_commits_on_verification_or_on_a_structured_surface_only() {
 
 // ─── the offload dial: the operator-facing tuning knob ────────────────────────
 
-/// From `test_dial_point_is_the_exp86_selection`.
 #[test]
-fn the_offload_dial_is_set_to_its_selected_operating_point() {
+fn the_policy_version_starts_at_one() {
+    assert_eq!(Policy::CURRENT.version, "1.0.0");
+}
+
+/// From `test_dial_point_is_the_exp98_selection`.
+#[test]
+fn the_policy_parameters_match_the_authoritative_reference() {
     // Changing any of these changes how much traffic is served locally. This
     // test exists so that a retune is a deliberate, visible edit.
-    let dial = Policy::CURRENT.offload_dial;
+    let policy = Policy::CURRENT;
+    assert_eq!(policy.thresholds.readout, 0.9);
+    assert_eq!(policy.thresholds.readout_band_low, 0.5);
+    assert_eq!(policy.thresholds.deliberation, 0.5);
+    assert_eq!(policy.thresholds.prior, 0.5);
+    assert!(!policy.answer_judge_arms);
+
+    let dial = policy.offload_dial;
     assert_eq!(dial.for_branch(Branch::CodingNoChecks), Some(0.2));
     assert_eq!(dial.for_branch(Branch::Chat), Some(0.3));
     assert_eq!(dial.for_branch(Branch::Answer), Some(0.7));
     assert_eq!(dial.for_branch(Branch::DefaultVerified), Some(0.7));
-    // The deliberation arm already saturates this branch.
-    assert_eq!(dial.for_branch(Branch::AgenticVerified), None);
+    assert_eq!(dial.for_branch(Branch::AgenticVerified), Some(0.2));
     // Neither of these consults a readout at all.
     assert_eq!(dial.for_branch(Branch::Checks), None);
     assert_eq!(dial.for_branch(Branch::AgenticRecognized), None);
 }
 
-/// From `test_coding_dial_commits_and_unknown_never`,
-/// `test_coding_dial_outranks_judge_refutation`, and
+/// From `test_judged_family_requires_judge_yes`.
+#[test]
+fn the_coding_dial_requires_a_strict_judge_affirmation() {
+    let caps = coding();
+    for (judge, expected) in [
+        (Some(Tri::Yes), Route::Local),
+        (Some(Tri::No), Route::Cloud),
+        (Some(Tri::Unknown), Route::Cloud),
+        (None, Route::Cloud),
+    ] {
+        let sig = Signals {
+            readout: Some(0.25),
+            cloud_judge: judge,
+            ..Default::default()
+        };
+        assert_eq!(route(&caps, &sig), expected, "{judge:?}");
+    }
+}
+
+/// From `test_coding_dial_commits_and_unknown_never` and
 /// `test_host_veto_binds_the_dial_arm`.
 #[test]
 fn the_dial_adds_a_readout_arm_that_still_answers_to_the_veto() {
-    // A readout clearing the dial commits where the base rule would not — even
-    // against an explicit judge refutation, which is the point of the arm.
-    let refuted_low_readout = Signals {
+    // A readout clearing the coding dial commits where the base rule would not
+    // once the judged family receives its strict confirmation.
+    let confirmed_low_readout = Signals {
         readout: Some(0.25),
         evidence_strict: Some(Tri::No),
         deliberation: Some(0.0),
-        cloud_judge: Some(Tri::No),
+        cloud_judge: Some(Tri::Yes),
         ..Default::default()
     };
-    assert_eq!(route(&coding(), &refuted_low_readout), Route::Local);
-    assert_eq!(route_no_dial(&coding(), &refuted_low_readout), Route::Cloud);
+    assert_eq!(route(&coding(), &confirmed_low_readout), Route::Local);
+    assert_eq!(
+        route_no_dial(&coding(), &confirmed_low_readout),
+        Route::Cloud
+    );
 
     // Below the dial, and with no readout at all, it does not.
     let under = Signals {
         readout: Some(0.15),
-        ..refuted_low_readout
+        ..confirmed_low_readout
     };
     assert_eq!(route(&coding(), &under), Route::Cloud);
     let none = Signals {
         readout: None,
-        ..refuted_low_readout
+        ..confirmed_low_readout
     };
     assert_eq!(route(&coding(), &none), Route::Cloud);
 
     // The host veto binds the dial arm like every other arm.
     let vetoed = with_host_errors(coding(), 2);
-    assert_eq!(route(&vetoed, &refuted_low_readout), Route::Cloud);
+    assert_eq!(route(&vetoed, &confirmed_low_readout), Route::Cloud);
 
     // Chat gains an arm at its own, higher bar.
     let chat_over = Signals {
@@ -467,6 +503,12 @@ fn the_dial_adds_a_readout_arm_that_still_answers_to_the_veto() {
     };
     assert_eq!(route(&chat(), &chat_over), Route::Local);
     assert_eq!(route_no_dial(&chat(), &chat_over), Route::Cloud);
+
+    // The latest reference point also gives the agentic branch a readout arm.
+    let agentic_caps = agentic(Some(0), Some(ToolErrorsSource::Host));
+    let agentic_over = readout(0.25);
+    assert_eq!(route(&agentic_caps, &agentic_over), Route::Local);
+    assert_eq!(route_no_dial(&agentic_caps, &agentic_over), Route::Cloud);
 }
 
 #[test]
@@ -475,7 +517,14 @@ fn enabling_the_dial_only_ever_adds_commits() {
     // into an escalation. Retuning a dial value is safe only while this holds;
     // it is also what lets the reference's frozen pre-dial corpus stay a valid
     // check on the current rules.
-    let scores = [None, Some(0.0), Some(0.25), Some(0.55), Some(0.75), Some(0.95)];
+    let scores = [
+        None,
+        Some(0.0),
+        Some(0.25),
+        Some(0.55),
+        Some(0.75),
+        Some(0.95),
+    ];
     let verdicts = [None, Some(Tri::Yes), Some(Tri::No), Some(Tri::Unknown)];
     let branches = [
         coding(),
@@ -568,7 +617,10 @@ fn readiness_gates_force_escalation_until_their_machinery_is_deployed() {
         deliberation: Some(1.0),
         ..Default::default()
     };
-    assert_eq!(decide(&attested, &deliberated).effective_route, Route::Local);
+    assert_eq!(
+        decide(&attested, &deliberated).effective_route,
+        Route::Local
+    );
 
     // An escalation is never gated: there is nothing to make safe.
     let escalated = decide(&coding(), &Signals::default());

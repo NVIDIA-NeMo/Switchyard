@@ -30,11 +30,11 @@ pub struct Thresholds {
 
 /// The per-branch offload dial: an extra readout bar that licenses a commit.
 ///
-/// Each entry adds one disjunct to its branch's rule — commit if the branch's
-/// base rule commits **or** the readout clears the dial. A `None` entry disables
-/// the arm for that branch, which reproduces the pre-dial policy exactly. The
-/// dial only ever adds commits; it can never turn a commit into an escalation,
-/// and every veto that binds a branch also binds its dial arm.
+/// Each entry adds a readout arm to its branch's rule. The coding arm also
+/// requires its grading judge to affirm. A `None` entry disables the arm for
+/// that branch, which reproduces the pre-dial policy exactly. The dial only ever
+/// adds commits; it can never turn a commit into an escalation, and every veto
+/// that binds a branch also binds its dial arm.
 ///
 /// Lowering a dial admits more local commits, which raises the share of traffic
 /// served locally. The values are an empirical selection, not a derivation.
@@ -94,7 +94,7 @@ pub struct Policy {
 impl Policy {
     /// The current constant set.
     pub const CURRENT: Self = Self {
-        version: "2.10.0-dev",
+        version: "1.0.0",
         thresholds: Thresholds {
             readout: 0.9,
             readout_band_low: 0.5,
@@ -106,9 +106,7 @@ impl Policy {
             chat: Some(0.3),
             answer: Some(0.7),
             default_verified: Some(0.7),
-            // The deliberation arm already saturates this branch; a readout arm
-            // added nothing at any bar.
-            agentic: None,
+            agentic: Some(0.2),
         },
         answer_judge_arms: false,
     };
