@@ -31,7 +31,12 @@ opentelemetry = { version = "0.32", default-features = false, features = ["metri
 parking_lot.workspace = true
 rand.workspace = true
 regex.workspace = true
+# SHA-256 for the checker's pinned test manifest. Already in the workspace
+# graph via rustls, so this adds a direct edge rather than new compiled code.
+ring = "0.17"
 switchyard-protocol.workspace = true
+# Private snapshot directories for the checker's pinned test suite.
+tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream = "0.1"

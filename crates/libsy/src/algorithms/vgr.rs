@@ -46,6 +46,7 @@ use self::fall_through::FallThrough;
 use crate::algorithms::fall_through;
 use crate::algorithms::util::affinity::AffinityRouter;
 
+mod checker;
 mod config;
 mod decide;
 mod matching;
