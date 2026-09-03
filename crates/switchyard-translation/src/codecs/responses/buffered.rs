@@ -29,6 +29,8 @@ use crate::util::{
     string_value, validate_request_capabilities,
 };
 
+const RESPONSES_REASONING_DETAIL_TYPE: &str = "switchyard.responses_reasoning_item";
+
 /// Format codec for OpenAI Responses payloads.
 pub struct OpenAiResponsesCodec;
 
@@ -427,7 +429,7 @@ fn decode_responses_input(
                                 &mut pending_reasoning,
                             );
                         }
-                        pending_reasoning.extend(decode_responses_reasoning_item(item));
+                        pending_reasoning.extend(decode_responses_reasoning_item(item, true));
                     }
                     Some("function_call") => {
                         if !pending_tool_outputs.is_empty() {
@@ -646,7 +648,10 @@ fn flush_responses_tool_block(
 }
 
 // Decodes a Responses reasoning item into private reasoning IR content.
-fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBlock> {
+fn decode_responses_reasoning_item(
+    item: &Map<String, Value>,
+    retain_input_item: bool,
+) -> Vec<ContentBlock> {
     let mut parts = Vec::new();
     collect_responses_reasoning_text(item.get("content"), &mut parts);
     collect_responses_reasoning_text(item.get("summary"), &mut parts);
@@ -656,7 +661,15 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
     vec![ContentBlock::Reasoning {
         text: parts.join("\n"),
         signature: None,
-        details: Vec::new(),
+        details: retain_input_item
+            .then(|| {
+                json!({
+                    "type": RESPONSES_REASONING_DETAIL_TYPE,
+                    "item": item,
+                })
+            })
+            .into_iter()
+            .collect(),
     }]
 }
 
@@ -810,6 +823,7 @@ fn decode_responses_tools(
                 .get("name")
                 .and_then(Value::as_str)
                 .filter(|name| !name.is_empty());
+            let description = tool.get("description").and_then(Value::as_str);
             for mut child in decode_responses_tools(tool.get("tools"), namespaces) {
                 // A nested container already qualified its own children, and the
                 // innermost name is the one that identifies the tool.
@@ -820,7 +834,10 @@ fn decode_responses_tools(
                     let qualified =
                         crate::codex_namespaces::qualified_tool_name(container, &child.name);
                     crate::codex_namespaces::record_tool_namespace(
-                        namespaces, &qualified, container,
+                        namespaces,
+                        &qualified,
+                        container,
+                        description,
                     );
                     child.name = qualified;
                 }
@@ -1089,12 +1106,14 @@ fn encode_responses_special_input(
         ContentBlock::Reasoning {
             text,
             signature: None,
-            ..
-        } => Some(json!({
-            "type": "reasoning",
-            "content": [{"type": "reasoning_text", "text": text}],
-            "summary": [],
-        })),
+            details,
+        } => retained_responses_reasoning_item(details).or_else(|| {
+            Some(json!({
+                "type": "reasoning",
+                "content": [{"type": "reasoning_text", "text": text}],
+                "summary": [],
+            }))
+        }),
         ContentBlock::ToolCall(call) => {
             // A Responses client dispatches on name plus namespace, so undo the
             // qualification this request applied for a flat upstream.
@@ -1123,6 +1142,15 @@ fn encode_responses_special_input(
         })),
         _ => None,
     }
+}
+
+// Recovers an exact Responses reasoning item retained through normalized routing.
+fn retained_responses_reasoning_item(details: &[Value]) -> Option<Value> {
+    details.iter().find_map(|detail| {
+        (detail.get("type").and_then(Value::as_str) == Some(RESPONSES_REASONING_DETAIL_TYPE))
+            .then(|| detail.get("item").cloned())
+            .flatten()
+    })
 }
 
 // Maps normalized roles back to Responses role strings.
@@ -1244,9 +1272,15 @@ fn encode_responses_tools(
         }
     }
     for (namespace, children) in containers {
+        let description = namespaces
+            .and_then(|namespaces| {
+                crate::codex_namespaces::namespace_description(namespaces, &namespace)
+            })
+            .unwrap_or_default();
         out.push(json!({
             "type": "namespace",
             "name": namespace,
+            "description": description,
             "tools": children,
         }));
     }
@@ -1316,7 +1350,7 @@ fn decode_responses_output_item(
         })),
         Some("reasoning") => Ok(Some(ResponseOutput {
             role: Role::Assistant,
-            content: decode_responses_reasoning_item(item),
+            content: decode_responses_reasoning_item(item, false),
             stop_reason: None,
         })),
         _ => Ok(None),

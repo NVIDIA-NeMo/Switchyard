@@ -452,6 +452,10 @@ fn reasoning_details_from_blocks(content: &[ContentBlock]) -> Vec<Value> {
             _ => None,
         })
         .flatten()
+        .filter(|detail| {
+            detail.get("type").and_then(Value::as_str)
+                != Some("switchyard.responses_reasoning_item")
+        })
         .cloned()
         .collect()
 }
