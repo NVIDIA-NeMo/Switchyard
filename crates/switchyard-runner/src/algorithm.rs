@@ -10,12 +10,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use libsy::{
-    AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
-    ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
-    CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TargetPrompts,
-    TaskClassifierConfig,
+    ACTIVE_APPROVAL, AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig,
+    ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeRouter,
+    CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig,
+    GateTrigger, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
+    Passthrough, PickerMode, Random, StageRouter, StageRouterConfig, SubagentRouter,
+    SubagentRouterConfig, TargetPrompts, Targets as VgrTargets, TaskClassifierConfig, Vgr,
+    VgrConfig,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -328,6 +329,111 @@ pub enum AlgorithmSpec {
         /// Maximum prompts per encoder forward pass.
         batch_size: Option<usize>,
     },
+    /// The local tier answers, evidence is gathered about that answer, and the
+    /// turn is either committed or escalated to the capable tier.
+    Vgr {
+        #[serde(flatten)]
+        config: VgrRouteConfig,
+    },
+}
+
+/// A verification-gated route as an operator writes it.
+///
+/// Separate from [`libsy::VgrConfig`] rather than reused: that type carries an
+/// `Arc<dyn Checker>` and so is neither `Deserialize` nor `Debug`, and several of
+/// its fields are runtime handles with no configuration-file meaning.
+///
+/// `deny_unknown_fields` here is what rejects a typo on a flattened `vgr` route,
+/// since the enum's own `deny_unknown_fields` does not apply through a flatten.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VgrRouteConfig {
+    /// The tier that produces the attempt being verified.
+    pub local_target: String,
+    /// The tier a request escalates to when the attempt is not licensed.
+    pub cloud_target: String,
+    /// Answers the cheap local verification rungs. Defaults to the local tier.
+    #[serde(default)]
+    pub judge_target: Option<String>,
+    /// Answers the cloud confirmation rungs. Leaving it unset removes them.
+    #[serde(default)]
+    pub cloud_judge_target: Option<String>,
+    /// How much authority decisions have over the traffic they decide.
+    #[serde(default)]
+    pub mode: VgrModeConfig,
+    /// The operator's approval attestation, required by `mode = "active"`.
+    #[serde(default)]
+    pub active_approval: Option<String>,
+    /// Budget for the whole decision, verification included.
+    #[serde(default = "default_vgr_deadline_seconds")]
+    pub deadline_seconds: f64,
+    /// Whether the router types the request before deriving capabilities.
+    #[serde(default)]
+    pub task_typing: bool,
+    /// Whether a session that escalated stays on the capable tier.
+    #[serde(default)]
+    pub latch_escalation: bool,
+    /// Whether an escalation carries the local attempt forward as context.
+    #[serde(default)]
+    pub speculation_carry: bool,
+    /// Whether this surface enforces a schema-validated terse final answer.
+    #[serde(default)]
+    pub structured_answer: bool,
+    /// Consecutive local-tier failures that stop the local tier being called.
+    #[serde(default = "default_vgr_breaker_threshold")]
+    pub breaker_threshold: u32,
+    /// How long the local tier is skipped before one trial request is allowed.
+    #[serde(default = "default_vgr_breaker_cooldown_seconds")]
+    pub breaker_cooldown_seconds: f64,
+    /// The sandboxed test checker, when one is deployed.
+    #[serde(default)]
+    pub checker: Option<VgrCheckerConfig>,
+}
+
+/// How much authority a verification-gated route's decisions have.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VgrModeConfig {
+    /// Decisions are not made; every request goes to the capable tier.
+    #[default]
+    Off,
+    /// Decisions are made and the decided route is served, ungated.
+    ///
+    /// Isolated measurement only: the readiness gates are not applied, so this
+    /// serves routes a production deployment would refuse.
+    Evaluate,
+    /// Decisions are made and recorded, but the capable tier is always served.
+    Shadow,
+    /// Decisions route traffic, subject to the readiness gates.
+    Active,
+}
+
+/// An operator-configured test checker for a verification-gated route.
+///
+/// The same keys are accepted on every platform so a deployment's configuration
+/// is portable; building one off Unix reports that it is unsupported rather than
+/// the key silently not existing.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VgrCheckerConfig {
+    /// Directory holding the task's test suite. Snapshotted at startup.
+    pub tests_dir: PathBuf,
+    /// The command to run, as an argv list. Never a shell string.
+    ///
+    /// `{tests}` is replaced with the pinned snapshot path and `{workdir}` with
+    /// the per-run directory holding the attempt.
+    pub command: Vec<String>,
+    /// The operator's attestation that a deployment sandbox confines the checker.
+    pub sandbox_attestation: String,
+    /// How long one checker run may take.
+    #[serde(default = "default_vgr_checker_timeout_seconds")]
+    pub timeout_seconds: f64,
+    /// Whether the operator validated the checker against a pinned manifest.
+    ///
+    /// Distinct from configuring one: only a validated checker satisfies the
+    /// readiness gate that lets a coding decision be served locally.
+    #[serde(default)]
+    pub validated: bool,
 }
 
 /// What fires an advisor route's review.
@@ -489,6 +595,11 @@ impl AlgorithmSpec {
                 executor_target, ..
             } => vec![executor_target],
             Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
+            // Only these two ever serve a client-visible turn; the judges are
+            // consulted, never routed to.
+            Self::Vgr { config } => {
+                vec![config.local_target.as_str(), config.cloud_target.as_str()]
+            }
         }
     }
 
@@ -527,6 +638,14 @@ impl AlgorithmSpec {
                 }
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
+            // Both judges answer verification questions and are never routing
+            // destinations, so they appear here and not in routing_target_names.
+            // Omitting them would build no client for them and fail at the first
+            // rung, long after --dry-run reported the route healthy.
+            Self::Vgr { config } => {
+                names.extend(config.judge_target.as_deref());
+                names.extend(config.cloud_judge_target.as_deref());
+            }
             _ => {}
         }
         names
@@ -1130,7 +1249,122 @@ fn build_algorithm(
                 )))
             }
         }
+        AlgorithmSpec::Vgr { config } => build_vgr(route_name, config, targets),
     }
+}
+
+/// Builds a verification-gated route from its configured target names.
+fn build_vgr(
+    route_name: &str,
+    config: &VgrRouteConfig,
+    targets: &BTreeMap<String, ModelId>,
+) -> AlgorithmResult<Arc<dyn Algorithm>> {
+    let resolve_optional = |name: &Option<String>| -> AlgorithmResult<Option<ModelId>> {
+        name.as_deref()
+            .map(|name| resolve_target_model_id(route_name, name, targets))
+            .transpose()
+    };
+    let mut vgr = VgrConfig::new(
+        resolve_target_model_id(route_name, &config.local_target, targets)?,
+        resolve_target_model_id(route_name, &config.cloud_target, targets)?,
+    );
+    vgr.targets = VgrTargets {
+        judge: resolve_optional(&config.judge_target)?,
+        cloud_judge: resolve_optional(&config.cloud_judge_target)?,
+        ..vgr.targets
+    };
+    vgr.mode = vgr_mode(route_name, config)?;
+    vgr.deadline = duration_from_seconds(route_name, "deadline_seconds", config.deadline_seconds)?;
+    vgr.task_typing = config.task_typing;
+    vgr.latch_escalation = config.latch_escalation;
+    vgr.speculation_carry = config.speculation_carry;
+    vgr.structured_answer = config.structured_answer;
+    vgr.breaker = BreakerConfig {
+        threshold: config.breaker_threshold,
+        cooldown: duration_from_seconds(
+            route_name,
+            "breaker_cooldown_seconds",
+            config.breaker_cooldown_seconds,
+        )?,
+    };
+    if let Some(checker) = &config.checker {
+        let (handle, validated) = build_vgr_checker(route_name, checker)?;
+        vgr.checker = Some(handle);
+        vgr.checker_validated = validated;
+    }
+    let algorithm = Vgr::new(vgr).map_err(|error| {
+        AlgorithmConfigError::with_source(format!("vgr route {route_name}: {error}"), error)
+    })?;
+    Ok(Arc::new(algorithm))
+}
+
+/// Resolves the serving mode, attaching the approval attestation `active` needs.
+///
+/// The attestation is carried separately in TOML rather than as the mode value,
+/// so that `mode = "active"` without it is a legible error instead of a mode
+/// name nobody can guess.
+fn vgr_mode(route_name: &str, config: &VgrRouteConfig) -> AlgorithmResult<libsy::ServingMode> {
+    Ok(match config.mode {
+        VgrModeConfig::Off => libsy::ServingMode::Off,
+        VgrModeConfig::Evaluate => libsy::ServingMode::Evaluate,
+        VgrModeConfig::Shadow => libsy::ServingMode::Shadow,
+        VgrModeConfig::Active => {
+            let approval = config.active_approval.clone().ok_or_else(|| {
+                AlgorithmConfigError::new(format!(
+                    "vgr route {route_name}: mode = \"active\" requires \
+                     active_approval = {ACTIVE_APPROVAL:?}"
+                ))
+            })?;
+            libsy::ServingMode::Active { approval }
+        }
+    })
+}
+
+/// Builds the checker, reporting the platform gap rather than hiding the key.
+#[cfg(unix)]
+fn build_vgr_checker(
+    route_name: &str,
+    checker: &VgrCheckerConfig,
+) -> AlgorithmResult<(Arc<dyn libsy::Checker>, bool)> {
+    let mut built = libsy::CheckerConfig::new(checker.tests_dir.clone(), checker.command.clone());
+    built.sandbox_attestation = checker.sandbox_attestation.clone();
+    built.timeout = duration_from_seconds(
+        route_name,
+        "checker.timeout_seconds",
+        checker.timeout_seconds,
+    )?;
+    let checker_handle = libsy::PinnedChecker::new(built).map_err(|error| {
+        AlgorithmConfigError::with_source(format!("vgr route {route_name}: {error}"), error)
+    })?;
+    Ok((Arc::new(checker_handle), checker.validated))
+}
+
+/// The same key is accepted everywhere; only building it is Unix-only.
+#[cfg(not(unix))]
+fn build_vgr_checker(
+    route_name: &str,
+    _checker: &VgrCheckerConfig,
+) -> AlgorithmResult<(Arc<dyn libsy::Checker>, bool)> {
+    Err(AlgorithmConfigError::new(format!(
+        "vgr route {route_name}: the checker is only supported on unix platforms"
+    )))
+}
+
+/// Converts a configured number of seconds into a duration.
+///
+/// Rejects values a duration cannot represent — negative, NaN, or infinite —
+/// rather than saturating them into a deadline nobody asked for.
+fn duration_from_seconds(
+    route_name: &str,
+    field: &str,
+    seconds: f64,
+) -> AlgorithmResult<std::time::Duration> {
+    std::time::Duration::try_from_secs_f64(seconds).map_err(|error| {
+        AlgorithmConfigError::with_source(
+            format!("vgr route {route_name}: {field} must be a non-negative number of seconds"),
+            error,
+        )
+    })
 }
 
 const fn default_max_reviews() -> u32 {
@@ -1145,7 +1379,23 @@ const fn default_transcript_max_chars() -> usize {
     200_000
 }
 
-const fn default_fail_open() -> bool {
+const fn default_vgr_deadline_seconds() -> f64 {
+    30.0
+}
+
+fn default_vgr_breaker_threshold() -> u32 {
+    5
+}
+
+fn default_vgr_breaker_cooldown_seconds() -> f64 {
+    30.0
+}
+
+fn default_vgr_checker_timeout_seconds() -> f64 {
+    120.0
+}
+
+fn default_fail_open() -> bool {
     true
 }
 

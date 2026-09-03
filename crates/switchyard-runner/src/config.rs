@@ -688,6 +688,25 @@ base_threshold = 0.5
         )
     }
 
+    fn vgr_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+[targets.vgr_cloud_judge]
+id = "vgr-cloud-judge/model"
+llm_client = "primary"
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "weak"
+cloud_target = "strong"
+cloud_judge_target = "vgr_cloud_judge"
+mode = "shadow"
+task_typing = true
+"#
+        )
+    }
+
     fn composite_config() -> String {
         format!(
             r#"{VALID_CONFIG}
@@ -871,6 +890,76 @@ confidence_threshold = 0.5
             "picker = \"efficient_first\"\nmagic = true",
         );
         assert!(error_message(&config).contains("unknown field"));
+    }
+
+    #[test]
+    fn vgr_route_builds_from_toml() -> RunnerResult<()> {
+        let state = runner_from_toml(&vgr_config())?;
+        assert!(
+            state
+                .models()
+                .any(|model| model.id.as_str() == "switchyard/vgr"),
+            "the vgr route is served"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn vgr_judge_targets_are_callable_even_though_they_are_not_routed_to() {
+        // The judges answer verification rungs and are never routing
+        // destinations. If they are missing from `callable_target_names` no HTTP
+        // client is built for them, which compiles, passes --dry-run, and then
+        // fails at the first rung.
+        let parsed: DeploymentConfig = toml::from_str(&vgr_config()).expect("parses");
+        let route = parsed.routes.get("vgr").expect("vgr route");
+        let routed = route.algorithm.routing_target_names();
+        let callable = route.algorithm.callable_target_names();
+
+        assert_eq!(routed, ["weak", "strong"]);
+        assert!(
+            callable.contains(&"vgr_cloud_judge"),
+            "cloud judge must get a client: {callable:?}"
+        );
+        assert!(
+            !routed.contains(&"vgr_cloud_judge"),
+            "a judge is not a routing destination: {routed:?}"
+        );
+    }
+
+    #[test]
+    fn vgr_rejects_an_unknown_field() {
+        // The enum's own deny_unknown_fields does not reach through the flatten,
+        // so VgrRouteConfig carries its own; without it a typo is discarded.
+        let config = vgr_config().replace("task_typing = true", "task_typng = true");
+        assert!(error_message(&config).contains("unknown field"));
+    }
+
+    #[test]
+    fn vgr_rejects_an_unknown_target() {
+        let config = vgr_config().replace("local_target = \"weak\"", "local_target = \"absent\"");
+        assert!(error_message(&config).contains("unknown target absent"));
+    }
+
+    #[test]
+    fn vgr_active_mode_requires_the_approval_attestation() {
+        // Active is the one mode that can serve a local commit, so a route that
+        // asks for it without the attestation must fail loudly at startup rather
+        // than silently serving cloud forever.
+        let config = vgr_config().replace("mode = \"shadow\"", "mode = \"active\"");
+        let message = error_message(&config);
+        assert!(message.contains("active_approval"), "{message}");
+
+        let approved = config.replace(
+            "mode = \"active\"",
+            "mode = \"active\"\nactive_approval = \"vgr-active-serving-approved\"",
+        );
+        assert!(runner_from_toml(&approved).is_ok());
+    }
+
+    #[test]
+    fn vgr_rejects_a_deadline_that_is_not_a_duration() {
+        let config = vgr_config().replace("task_typing = true", "deadline_seconds = -1.0");
+        assert!(error_message(&config).contains("deadline_seconds"));
     }
 
     #[test]
