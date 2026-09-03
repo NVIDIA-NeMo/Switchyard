@@ -35,6 +35,18 @@ fn numbers_compare_by_value_never_by_prefix() {
     assert!(!match_answers("penguin", "8"));
 }
 
+/// Decimal comparison stays exact regardless of magnitude.
+#[test]
+fn decimals_compare_canonically_without_floating_point_rounding() {
+    assert!(!match_answers("1,000,000,000", "1,000,000,001"));
+    assert!(!match_answers("9007199254740992", "9007199254740993"));
+    assert!(match_answers(
+        "9007199254740993.000",
+        "9,007,199,254,740,993"
+    ));
+    assert!(!agrees("1000000000", "Final answer: 1000000001 events"));
+}
+
 /// From `test_numeric_values_not_prefixes`.
 #[test]
 fn units_are_part_of_the_value() {
@@ -69,6 +81,17 @@ fn text_agreement_is_equality_not_containment() {
     assert!(match_answers("Jerome Wiesner", "jerome  wiesner."));
 }
 
+/// Unicode letters remain significant and apostrophe variants normalize alike.
+#[test]
+fn unicode_tokens_preserve_letters_and_close_negation_bypasses() {
+    assert!(!match_answers("café", "cafè"));
+    assert!(match_answers("CAFÉ", "café"));
+    assert!(match_answers("O'Brien", "O’Brien"));
+    for message in ["Final answer: isn't 17", "Final answer: isn’t 17"] {
+        assert_eq!(match_answer_verdict("17", message), Tri::Unknown);
+    }
+}
+
 /// From `test_fragments_never_match_messages`.
 #[test]
 fn code_fragments_and_stopwords_never_match() {
@@ -76,7 +99,15 @@ fn code_fragments_and_stopwords_never_match() {
     // fragments like these matching incidentally inside a longer message.
     let message = "## Report\nif retry: report += '| Block'\n\
                    The z_ score threshold was 3.\nFinal answer: penguin\n";
-    for fragment in ["if", "| Block", "retry", "z_", "report += \"", "## 1", "within ="] {
+    for fragment in [
+        "if",
+        "| Block",
+        "retry",
+        "z_",
+        "report += \"",
+        "## 1",
+        "within =",
+    ] {
         assert!(!agrees(fragment, message), "matched fragment {fragment:?}");
     }
 }
@@ -95,6 +126,14 @@ fn matching_anchors_to_the_span_the_message_concludes_with() {
                     The country with the longest coastline is Canada.";
     assert!(!agrees("United States", compared));
     assert!(agrees("Canada", compared));
+}
+
+/// Marker extraction starts after the final marker, even on the same line.
+#[test]
+fn final_answer_marker_supersedes_earlier_same_line_markers() {
+    let message = "Answer: 42; Final answer: 17";
+    assert_eq!(match_answer_verdict("42", message), Tri::No);
+    assert_eq!(match_answer_verdict("17", message), Tri::Yes);
 }
 
 /// From `test_corrections_and_negations`.
@@ -126,13 +165,44 @@ fn corrections_supersede_and_contradictions_resolve_to_unknown() {
     }
 }
 
+/// Infix contrasts remain ambiguous while postfix corrections restart the answer.
+#[test]
+fn infix_contrasts_do_not_masquerade_as_postfix_corrections() {
+    for contrast in [
+        "Final answer: 17 instead of 42",
+        "Final answer: 17, instead of 42",
+    ] {
+        assert_eq!(match_answer_verdict("17", contrast), Tri::Unknown);
+        assert_eq!(match_answer_verdict("42", contrast), Tri::Unknown);
+    }
+
+    let correction = "Final answer: 42; instead, 17";
+    assert_eq!(match_answer_verdict("42", correction), Tri::No);
+    assert_eq!(match_answer_verdict("17", correction), Tri::Yes);
+}
+
+/// Multiple viable values never collapse to a matching subset.
+#[test]
+fn multiple_typed_final_values_resolve_to_unknown() {
+    let quantities = "Final answer: 17 and 42";
+    assert_eq!(match_answer_verdict("17", quantities), Tri::Unknown);
+    assert_eq!(match_answer_verdict("42", quantities), Tri::Unknown);
+
+    let location = "Final answer: Paris, Texas";
+    assert_eq!(match_answer_verdict("Paris", location), Tri::Unknown);
+    assert_eq!(match_answer_verdict("Paris, Texas", location), Tri::Yes);
+}
+
 /// From `test_real_answers_match_messages`.
 #[test]
 fn genuine_answers_still_match_their_messages() {
     // The strictness above is worthless if it rejects real agreement.
     let message = "I checked the video.\nThe species shown is a penguin.\nFinal answer: penguin";
     assert!(agrees("penguin", message));
-    assert!(agrees("Jerome Wiesner", "It was Jerome Wiesner who said this."));
+    assert!(agrees(
+        "Jerome Wiesner",
+        "It was Jerome Wiesner who said this."
+    ));
     assert!(agrees("42", "The count came to 42 events total."));
 
     // But a number embedded in a longer number is a different number, and a

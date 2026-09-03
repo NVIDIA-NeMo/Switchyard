@@ -46,8 +46,20 @@ static STOPWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 /// Words that turn a nearby candidate into a rejected one rather than an answer.
 static NEGATIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
-        "not", "no", "never", "isnt", "wasnt", "without", "excluding", "except", "rather",
-        "instead", "neither", "nor", "wrong", "incorrect",
+        "not",
+        "no",
+        "never",
+        "isnt",
+        "wasnt",
+        "without",
+        "excluding",
+        "except",
+        "rather",
+        "instead",
+        "neither",
+        "nor",
+        "wrong",
+        "incorrect",
     ]
     .into_iter()
     .collect()
@@ -57,39 +69,40 @@ static NEGATIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 const NEGATION_WINDOW: usize = 3;
 
 /// A terse answer that is entirely a quantity, optionally signed or unit-bearing.
-static NUMBERISH: LazyLock<Regex> =
-    LazyLock::new(|| regex(r"^[\s$€£+-]*[\d][\d,\s]*(?:\.\d+)?\s*%?$"));
+static NUMBERISH: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"^[\s$€£+-]*[0-9][0-9,\s]*(?:\.[0-9]+)?\s*%?$").ok());
 
-/// A normalized token: a run of lowercase alphanumerics, keeping a decimal tail.
-static TOKEN: LazyLock<Regex> = LazyLock::new(|| regex(r"[a-z0-9]+(?:\.[0-9]+)?"));
+/// A normalized token: a Unicode alphanumeric run, keeping an ASCII decimal tail.
+static TOKEN: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"[\p{L}\p{N}]+(?:\.[0-9]+)?").ok());
 
 /// A currency-prefixed quantity embedded in prose.
-static CURRENCY_QUANTITY: LazyLock<Regex> =
-    LazyLock::new(|| regex(r"([$€£])\s*(\d[\d,]*(?:\.\d+)?)"));
+static CURRENCY_QUANTITY: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"([$€£])\s*([0-9][0-9,]*(?:\.[0-9]+)?)").ok());
 
 /// A percent-suffixed quantity embedded in prose.
-static PERCENT_QUANTITY: LazyLock<Regex> = LazyLock::new(|| regex(r"(\d[\d,]*(?:\.\d+)?)\s*%"));
+static PERCENT_QUANTITY: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*%").ok());
 
-/// An explicit statement of the answer, capturing what follows the marker.
-static ANSWER_MARKER: LazyLock<Regex> = LazyLock::new(|| {
-    regex(
-        r"(?i)(?:final\s+answer|answer|conclusion|result|correction|revised\s+answer|actually)\s*(?:is|:|=|-)\s*(.+)",
+/// An explicit statement of the answer.
+static ANSWER_MARKER: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:final\s+answer|revised\s+answer|answer|conclusion|result|correction|actually)\s*(?:is|:|=|-)\s*",
     )
+    .ok()
 });
 
 /// A marker after which the operative answer restarts, used to split a span.
-static CORRECTION_SPLIT: LazyLock<Regex> = LazyLock::new(|| {
-    regex(r"(?i)\b(?:actually|instead|correction|revised(?:\s+answer)?|rather|i\s+meant)\b[,:\s]*")
+static CORRECTION_SPLIT: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:\b(?:actually|correction|revised(?:\s+answer)?|i\s+meant)\b[,:\s]*|(?:^|[,;])\s*(?:instead|rather)\s*[:,]\s*)",
+    )
+    .ok()
 });
 
-/// Compiles a pattern that is a module constant.
-///
-/// The patterns here are fixed literals that are known to compile; a failure
-/// would be a bug in this file rather than a runtime condition, so it degrades
-/// to a regex that never matches instead of panicking.
-fn regex(pattern: &str) -> Regex {
-    Regex::new(pattern).unwrap_or_else(|_| Regex::new(r"$.^").unwrap_or_else(|_| unreachable!()))
-}
+/// Contrasts join two viable values rather than introducing a correction.
+static INFIX_CONTRAST: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(?:instead\s+of|rather\s+than)\b").ok());
 
 /// The unit a quantity carries. Part of the value, never discarded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,9 +116,9 @@ enum Unit {
 }
 
 /// A parsed quantity: a magnitude and the unit that types it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Quantity {
-    value: f64,
+    value: String,
     unit: Unit,
 }
 
@@ -113,12 +126,49 @@ impl Quantity {
     /// Whether two quantities are the same answer.
     ///
     /// Units must be identical, so `$5` never equals `5` or `€5`. Magnitudes
-    /// compare with a relative tolerance rather than exactly, so `5.0` equals
-    /// `5` without `100` ever equalling `1`.
-    fn agrees_with(self, other: Quantity) -> bool {
-        self.unit == other.unit
-            && (self.value - other.value).abs()
-                <= 1e-9 * self.value.abs().max(other.value.abs()).max(1.0)
+    /// use a canonical decimal representation, so formatting differences are
+    /// ignored without losing precision.
+    fn agrees_with(&self, other: &Quantity) -> bool {
+        self.unit == other.unit && self.value == other.value
+    }
+}
+
+/// Canonicalizes a finite decimal without converting through a floating point type.
+fn canonical_decimal(s: &str) -> Option<String> {
+    let compact: String = s
+        .chars()
+        .filter(|c| !matches!(c, ',' | '+') && !c.is_whitespace())
+        .collect();
+    let (negative, unsigned) = match compact.strip_prefix('-') {
+        Some(unsigned) => (true, unsigned),
+        None => (false, compact.as_str()),
+    };
+    let mut parts = unsigned.split('.');
+    let integer = parts.next()?;
+    let fraction = parts.next();
+    if parts.next().is_some()
+        || integer.is_empty()
+        || !integer.chars().all(|c| c.is_ascii_digit())
+        || fraction
+            .is_some_and(|digits| digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()))
+    {
+        return None;
+    }
+
+    let integer = match integer.trim_start_matches('0') {
+        "" => "0",
+        digits => digits,
+    };
+    let fraction = match fraction {
+        Some(digits) => digits.trim_end_matches('0'),
+        None => "",
+    };
+    let is_zero = integer == "0" && fraction.is_empty();
+    let sign = if negative && !is_zero { "-" } else { "" };
+    if fraction.is_empty() {
+        Some(format!("{sign}{integer}"))
+    } else {
+        Some(format!("{sign}{integer}.{fraction}"))
     }
 }
 
@@ -129,7 +179,11 @@ impl Quantity {
 /// coherent quantity and is rejected.
 fn parse_quantity(s: &str) -> Option<Quantity> {
     let t = s.trim();
-    if t.is_empty() || !NUMBERISH.is_match(t) {
+    if t.is_empty()
+        || !NUMBERISH
+            .as_ref()
+            .is_some_and(|pattern| pattern.is_match(t))
+    {
         return None;
     }
     // Which currency symbols appear at all, not how many times: a repeated
@@ -149,14 +203,14 @@ fn parse_quantity(s: &str) -> Option<Quantity> {
         .chars()
         .filter(|c| !matches!(c, ',' | '$' | '€' | '£' | '%' | '+') && !c.is_whitespace())
         .collect();
-    digits.parse::<f64>().ok().map(|value| Quantity { value, unit })
+    canonical_decimal(&digits).map(|value| Quantity { value, unit })
 }
 
 /// The magnitude of a terse numeric answer, ignoring its unit.
 ///
 /// Unit-blind, so it is used for deciding whether something *is* a number, never
 /// for deciding whether two numbers agree.
-fn parse_number(s: &str) -> Option<f64> {
+fn parse_number(s: &str) -> Option<String> {
     parse_quantity(s).map(|q| q.value)
 }
 
@@ -166,24 +220,68 @@ fn parse_number(s: &str) -> Option<f64> {
 /// agree. Fusing makes the unit part of the token, so unit-bearing and bare
 /// quantities can never match each other.
 fn fuse_units(s: &str) -> String {
-    let currency_fused = CURRENCY_QUANTITY.replace_all(s, |caps: &regex::Captures| {
-        let marker = caps[1].chars().next().map_or(0, u32::from);
-        format!(" cur{}u{} ", marker, caps[2].replace(',', ""))
-    });
-    PERCENT_QUANTITY
-        .replace_all(&currency_fused, |caps: &regex::Captures| {
-            format!(" pct{} ", caps[1].replace(',', ""))
-        })
-        .into_owned()
+    let mut fused = s.to_string();
+    if let Some(pattern) = CURRENCY_QUANTITY.as_ref() {
+        fused = pattern
+            .replace_all(&fused, |caps: &regex::Captures| {
+                let marker = caps
+                    .get(1)
+                    .and_then(|capture| capture.as_str().chars().next())
+                    .map_or(0, u32::from);
+                let magnitude = match caps
+                    .get(2)
+                    .and_then(|capture| canonical_decimal(capture.as_str()))
+                {
+                    Some(value) => value,
+                    None => {
+                        return caps
+                            .get(0)
+                            .map_or("", |capture| capture.as_str())
+                            .to_string();
+                    }
+                };
+                format!(" cur{marker}u{magnitude} ")
+            })
+            .into_owned();
+    }
+    if let Some(pattern) = PERCENT_QUANTITY.as_ref() {
+        fused = pattern
+            .replace_all(&fused, |caps: &regex::Captures| {
+                let magnitude = match caps
+                    .get(1)
+                    .and_then(|capture| canonical_decimal(capture.as_str()))
+                {
+                    Some(value) => value,
+                    None => {
+                        return caps
+                            .get(0)
+                            .map_or("", |capture| capture.as_str())
+                            .to_string();
+                    }
+                };
+                format!(" pct{magnitude} ")
+            })
+            .into_owned();
+    }
+    fused
 }
 
 /// Normalizes text to the token sequence that matching compares.
 fn norm_tokens(s: &str) -> Vec<String> {
-    let fused = fuse_units(s).to_lowercase();
-    TOKEN
-        .find_iter(&fused)
-        .map(|m| m.as_str().to_string())
-        .collect()
+    let fused: String = fuse_units(s)
+        .chars()
+        // Apostrophes are joiners inside words. Dropping every common variant
+        // makes `isn't` and `isn’t` the same negation token.
+        .filter(|c| !matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{02bc}' | '\u{ff07}'))
+        .flat_map(char::to_lowercase)
+        .collect();
+    match TOKEN.as_ref() {
+        Some(pattern) => pattern
+            .find_iter(&fused)
+            .map(|m| m.as_str().to_string())
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 /// Whether a candidate could plausibly identify an answer at all.
@@ -217,7 +315,7 @@ fn informative(s: &str) -> bool {
 /// `Paris` never agrees with `Paris, Texas`.
 pub fn match_answers(a: &str, b: &str) -> bool {
     match (parse_quantity(a), parse_quantity(b)) {
-        (Some(qa), Some(qb)) => qa.agrees_with(qb),
+        (Some(qa), Some(qb)) => qa.agrees_with(&qb),
         // One side is a bare quantity and the other is not: different kinds of
         // answer, so they cannot agree.
         (Some(_), None) | (None, Some(_)) => false,
@@ -233,24 +331,16 @@ pub fn match_answers(a: &str, b: &str) -> bool {
 /// The last explicit answer marker wins; failing that, the last non-empty line.
 /// A mention anywhere else in the text is reasoning, not a conclusion.
 fn extract_final_answer(message: &str) -> String {
-    let mut marked: Option<String> = None;
-    for line in message.lines() {
-        if let Some(caps) = ANSWER_MARKER.captures(line)
-            && let Some(tail) = caps.get(1)
-            && !tail.as_str().trim().is_empty()
-        {
-            marked = Some(tail.as_str().trim().to_string());
-        }
-    }
-    if let Some(marked) = marked {
-        return marked;
+    if let Some(marker) = ANSWER_MARKER.as_ref()
+        && let Some(last) = marker.find_iter(message).last()
+    {
+        return message[last.end()..].trim().to_string();
     }
     message
         .lines()
         .map(str::trim)
         .rfind(|line| !line.is_empty())
-        .unwrap_or("")
-        .to_string()
+        .map_or_else(String::new, str::to_string)
 }
 
 /// Whether any of the few tokens before position `index` negates what follows.
@@ -268,21 +358,27 @@ fn negated_at(tokens: &[String], index: usize) -> bool {
 /// countries and endorses neither in a form this can read — so it is ambiguous,
 /// and ambiguity never becomes agreement.
 fn resolve_span(span: &str) -> (String, bool) {
-    let parts: Vec<&str> = CORRECTION_SPLIT.split(span).collect();
-    let operative = match parts.last() {
-        Some(last) if !last.trim().is_empty() => last.trim().to_string(),
-        _ => span.trim().to_string(),
+    let operative = match CORRECTION_SPLIT.as_ref().and_then(|pattern| {
+        pattern
+            .split(span)
+            .filter(|part| !part.trim().is_empty())
+            .last()
+    }) {
+        Some(last) => last.trim().to_string(),
+        None => span.trim().to_string(),
     };
-    let ambiguous = norm_tokens(&operative)
-        .iter()
-        .any(|t| NEGATIONS.contains(t.as_str()));
+    let ambiguous = INFIX_CONTRAST
+        .as_ref()
+        .is_some_and(|pattern| pattern.is_match(&operative))
+        || norm_tokens(&operative)
+            .iter()
+            .any(|t| NEGATIONS.contains(t.as_str()));
     (operative, ambiguous)
 }
 
 /// A quantity found inside a span, with the byte offset it starts at.
 struct SpanQuantity {
-    value: f64,
-    unit: Unit,
+    quantity: Quantity,
     start: usize,
 }
 
@@ -322,8 +418,7 @@ fn span_quantities(span: &str) -> Vec<SpanQuantity> {
         match scan_quantity(&chars, start) {
             Some((end, quantity)) => {
                 found.push(SpanQuantity {
-                    value: quantity.value,
-                    unit: quantity.unit,
+                    quantity,
                     // Byte offset, for slicing the prefix the caller tokenizes.
                     start: chars[..start].iter().map(|c| c.len_utf8()).sum(),
                 });
@@ -346,7 +441,11 @@ fn scan_quantity(chars: &[char], start: usize) -> Option<(usize, Quantity)> {
 
     // `[$€£]?` is greedy: prefer consuming the marker, then try without it.
     let has_marker = at(start).is_some_and(|c| matches!(c, '$' | '€' | '£'));
-    for marker_len in if has_marker { [1, 0].as_slice() } else { [0].as_slice() } {
+    for marker_len in if has_marker {
+        [1, 0].as_slice()
+    } else {
+        [0].as_slice()
+    } {
         let number_start = start + marker_len;
         if !digit(number_start) {
             continue;
@@ -406,27 +505,32 @@ fn scan_quantity(chars: &[char], start: usize) -> Option<(usize, Quantity)> {
 /// single short token is not enough to match a longer span, since a common word
 /// would land anywhere. Any match preceded by negation is a rejected candidate,
 /// not an answer.
-fn match_in_span(answer: &str, span: &str) -> bool {
+fn match_in_span(answer: &str, span: &str) -> Tri {
     let answer_tokens = norm_tokens(answer);
 
     if let Some(target) = parse_quantity(answer) {
-        return span_quantities(span).into_iter().any(|found| {
-            let candidate = Quantity {
-                value: found.value,
-                unit: found.unit,
-            };
-            if !candidate.agrees_with(target) {
-                return false;
-            }
+        let mut candidates = span_quantities(span).into_iter().filter(|found| {
             let prefix = norm_tokens(&span[..found.start]);
             let length = prefix.len();
             !negated_at(&prefix, length)
         });
+        let candidate = match candidates.next() {
+            Some(found) => found,
+            None => return Tri::No,
+        };
+        if candidates.next().is_some() {
+            return Tri::Unknown;
+        }
+        return if candidate.quantity.agrees_with(&target) {
+            Tri::Yes
+        } else {
+            Tri::No
+        };
     }
 
     let span_tokens = norm_tokens(span);
     if span_tokens == answer_tokens {
-        return true;
+        return Tri::Yes;
     }
     // A lone short token would match incidentally, so a run has to be either
     // several tokens long or one substantial one.
@@ -435,18 +539,33 @@ fn match_in_span(answer: &str, span: &str) -> bool {
             .first()
             .is_some_and(|t| t.chars().count() >= 5);
     if !distinctive {
-        return false;
+        return Tri::No;
     }
     // A run longer than the span cannot occur in it, and `windows` requires a
     // non-zero width; both are guarded here rather than relied on from above.
     let k = answer_tokens.len();
     if k == 0 || k > span_tokens.len() {
-        return false;
+        return Tri::No;
     }
-    span_tokens
+    let mut matches = span_tokens
         .windows(k)
         .enumerate()
-        .any(|(i, run)| run == answer_tokens && !negated_at(&span_tokens, i))
+        .filter(|(i, run)| *run == answer_tokens && !negated_at(&span_tokens, *i));
+    if matches.next().is_none() {
+        return Tri::No;
+    }
+    // Lists and coordinated phrases carry more than one plausible text value.
+    // Exact multi-token answers return above, while subset matches stay unknown.
+    if matches.next().is_some()
+        || span.chars().any(|c| matches!(c, ',' | ';'))
+        || span_tokens
+            .iter()
+            .any(|token| token == "and" || token == "or")
+    {
+        Tri::Unknown
+    } else {
+        Tri::Yes
+    }
 }
 
 /// Whether a witness answer agrees with an attempt's final message.
@@ -463,9 +582,5 @@ pub fn match_answer_verdict(answer: &str, message: &str) -> Tri {
     if ambiguous {
         return Tri::Unknown;
     }
-    if match_in_span(answer, &operative) {
-        Tri::Yes
-    } else {
-        Tri::No
-    }
+    match_in_span(answer, &operative)
 }
