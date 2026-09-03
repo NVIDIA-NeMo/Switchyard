@@ -203,11 +203,15 @@ impl SwitchyardRuntime {
         match route.execute(request, Some(observer)).await {
             Ok(output) => {
                 self.emit_observations(&mut events, take_observations(&observations), &metadata);
+                let served_model = output.response.served_model().map(|model| model.as_str());
                 events.push(RoutingEvent::Mark(RoutingMark {
                     name: "switchyard.routing.decision".into(),
                     data: json!({
                         "algorithm": route.algorithm_name(),
-                        "selected_model": output.selected_model,
+                        "selected_model": output.selected_model.as_str(),
+                        "served_model": served_model,
+                        "fallback_used": served_model
+                            .map(|model| model != output.selected_model.as_str()),
                     }),
                     metadata,
                     severity: Some(LogSeverity::Info),
@@ -264,6 +268,21 @@ impl SwitchyardRuntime {
                     events.push(routing_overhead_metric(latency_ms, metadata.clone()));
                 }
                 RunObservation::AnswerCall(call) => {
+                    call_index += 1;
+                    let outcome = if call.is_success { "ok" } else { "error" };
+                    let latency_ms = call.duration.as_secs_f64() * 1_000.0;
+                    events.push(RoutingEvent::Mark(RoutingMark {
+                        name: "switchyard.routing.llm_call".into(),
+                        data: json!({
+                            "call_index": call_index,
+                            "selected_model": call.selected_model.as_str(),
+                            "call_role": "answer",
+                            "outcome": outcome,
+                            "latency_ms": latency_ms,
+                        }),
+                        metadata: metadata.clone(),
+                        severity: Some(LogSeverity::Debug),
+                    }));
                     events.extend(token_usage_metrics("answer", &call, metadata));
                 }
             }
@@ -860,6 +879,19 @@ mod tests {
             let execution = runtime
                 .execute_buffered(WireFormat::OpenAiResponses, decoded)
                 .await;
+            let decision = execution
+                .events
+                .iter()
+                .find_map(|event| match event {
+                    RoutingEvent::Mark(mark) if mark.name == "switchyard.routing.decision" => {
+                        Some(&mark.data)
+                    }
+                    RoutingEvent::Mark(_) | RoutingEvent::Metric(_) => None,
+                })
+                .expect("decision mark should be emitted");
+            assert_eq!(decision["selected_model"], "target/model");
+            assert_eq!(decision["served_model"], "target/model");
+            assert_eq!(decision["fallback_used"], false);
             let response = execution.result.expect("target call should succeed");
             assert_eq!(response["object"], "response");
             assert_eq!(response["model"], "target/model");
@@ -1153,33 +1185,56 @@ mod tests {
     }
 
     #[test]
-    fn answer_observations_emit_token_metrics_without_answer_logs() {
+    fn answer_observations_emit_call_marks_and_token_metrics() {
         let runtime = runtime_for("switchyard");
         let mut events = Vec::new();
         runtime.emit_observations(
             &mut events,
-            vec![RunObservation::AnswerCall(LlmCallObservation {
-                selected_model: ModelId::from("selected-target"),
-                is_success: true,
-                duration: std::time::Duration::from_millis(2),
-                usage: Some(Usage {
-                    output_tokens: Some(9),
-                    ..Usage::default()
+            vec![
+                RunObservation::AnswerCall(LlmCallObservation {
+                    selected_model: ModelId::from("weak-target"),
+                    is_success: false,
+                    duration: std::time::Duration::from_millis(2),
+                    usage: None,
                 }),
-            })],
+                RunObservation::AnswerCall(LlmCallObservation {
+                    selected_model: ModelId::from("strong-target"),
+                    is_success: true,
+                    duration: std::time::Duration::from_millis(3),
+                    usage: Some(Usage {
+                        output_tokens: Some(9),
+                        ..Usage::default()
+                    }),
+                }),
+            ],
             &json!({}),
         );
 
-        assert_eq!(events.len(), 1);
-        let RoutingEvent::Metric(metric) = &events[0] else {
-            panic!("answer observation should only emit a token metric");
+        assert_eq!(events.len(), 3);
+        for (event, index, target, outcome, latency_ms) in [
+            (&events[0], 1, "weak-target", "error", 2.0),
+            (&events[1], 2, "strong-target", "ok", 3.0),
+        ] {
+            let RoutingEvent::Mark(mark) = event else {
+                panic!("answer observation should emit a call mark");
+            };
+            assert_eq!(mark.name, "switchyard.routing.llm_call");
+            assert_eq!(mark.data["call_index"], index);
+            assert_eq!(mark.data["selected_model"], target);
+            assert_eq!(mark.data["call_role"], "answer");
+            assert_eq!(mark.data["outcome"], outcome);
+            assert_eq!(mark.data["latency_ms"], latency_ms);
+            assert_eq!(mark.severity, Some(LogSeverity::Debug));
+        }
+        let RoutingEvent::Metric(metric) = &events[2] else {
+            panic!("successful answer usage should emit a token metric");
         };
         assert_eq!(metric.name, "switchyard.routing.llm_tokens");
         assert_eq!(
             metric.measurements[0].attributes,
             Some(json!({
                 "call_role": "answer",
-                "target_model": "selected-target",
+                "target_model": "strong-target",
                 "token_type": "output",
             }))
         );
