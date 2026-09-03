@@ -1730,19 +1730,19 @@ dependencies available in the active virtual environment.</p>
 <td><code>device</code></td>
 <td style="text-align: center;">No</td>
 <td>auto</td>
-<td>Torch device such as <code>cpu</code>, <code>cuda</code>, or <code>cuda:1</code>.</td>
+<td>PyTorch device used for encoder inference, such as <code>cpu</code>, <code>cuda</code>, or <code>cuda:0</code>.</td>
 </tr>
 <tr>
 <td><code>cache_dir</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>Hugging Face model cache directory.</td>
+<td>Directory where Hugging Face caches the downloaded encoder and tokenizer.</td>
 </tr>
 <tr>
 <td><code>max_length</code></td>
 <td style="text-align: center;">No</td>
 <td><code>2048</code></td>
-<td>Maximum tokenized prompt length.</td>
+<td>Maximum tokenized encoder input length; longer prompts are truncated.</td>
 </tr>
 <tr>
 <td><code>batch_size</code></td>
