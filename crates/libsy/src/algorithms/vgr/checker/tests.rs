@@ -155,6 +155,46 @@ fn a_checker_without_the_sandbox_attestation_does_not_build() {
 }
 
 #[test]
+fn a_suite_holding_a_symlink_does_not_build() {
+    // Skipping it would snapshot an incomplete suite that still passes, and
+    // following it would hash content living outside the snapshot. Refusing is
+    // the only option that keeps the manifest meaning what it says.
+    let tests = suite("exit 0\n");
+    std::os::unix::fs::symlink("/etc/hostname", tests.path().join("linked.txt")).expect("symlink");
+
+    let error = PinnedChecker::new(config(&tests, &shell_argv()))
+        .err()
+        .expect("a symlinked suite is refused");
+    assert!(
+        matches!(error, CheckerSetupError::UnsupportedEntry(_)),
+        "{error:?}"
+    );
+    // The operator is told which entry, so the suite can be fixed.
+    assert!(error.to_string().contains("linked.txt"), "{error}");
+}
+
+#[tokio::test]
+async fn nothing_derived_from_the_attempt_reaches_the_command_line() {
+    // The command is operator configuration. If an attempt could steer argv,
+    // the model would be choosing what the host executes.
+    let tests = suite(
+        "case \"$*\" in *marker-from-attempt*) exit 1 ;; esac\n\
+         case \"$0\" in *marker-from-attempt*) exit 1 ;; esac\n\
+         exit 0\n",
+    );
+    let checker = PinnedChecker::new(config(&tests, &shell_argv())).expect("builds");
+    assert_eq!(
+        checker
+            .check(
+                "{tests} marker-from-attempt",
+                "{workdir} marker-from-attempt"
+            )
+            .await,
+        Some(true)
+    );
+}
+
+#[test]
 fn an_empty_command_does_not_build() {
     let tests = suite("exit 0\n");
     let config = CheckerConfig {

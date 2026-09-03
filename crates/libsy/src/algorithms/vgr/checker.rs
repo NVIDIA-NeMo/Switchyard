@@ -44,9 +44,6 @@ use super::config::Checker;
 const ATTEMPT_FILE: &str = "attempt.txt";
 const TASK_FILE: &str = "task.txt";
 
-/// Bytes of captured output kept for diagnostics.
-const DEFAULT_MAX_OUTPUT_BYTES: usize = 1 << 20;
-
 /// The operator's attestation that a deployment sandbox confines this checker.
 ///
 /// Required verbatim, because everything this module does not enforce — memory,
@@ -67,8 +64,6 @@ pub struct CheckerConfig {
     pub command: Vec<String>,
     /// How long one run may take before it is abandoned.
     pub timeout: Duration,
-    /// Bytes of captured output kept for diagnostics.
-    pub max_output_bytes: usize,
     /// Extra environment entries, applied over the scrubbed base.
     pub env: Vec<(String, String)>,
     /// The operator's [`SANDBOX_ATTESTATION`], recorded verbatim.
@@ -82,7 +77,6 @@ impl CheckerConfig {
             tests_dir: tests_dir.into(),
             command,
             timeout: Duration::from_secs(120),
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             env: Vec::new(),
             sandbox_attestation: String::new(),
         }
@@ -101,6 +95,12 @@ pub enum CheckerSetupError {
     /// The test suite could not be snapshotted.
     #[error("checker could not snapshot its test suite: {0}")]
     Snapshot(#[source] std::io::Error),
+    /// The suite holds something the manifest cannot represent.
+    #[error(
+        "checker test suite entry {0:?} is neither a regular file nor a directory, \
+         so it cannot be snapshotted or hashed"
+    )]
+    UnsupportedEntry(PathBuf),
 }
 
 /// The pinned record of what the checker will run, and against what.
@@ -142,7 +142,7 @@ impl PinnedChecker {
         }
         let snapshot = TempDir::with_prefix("vgr-checker-").map_err(CheckerSetupError::Snapshot)?;
         let tests_path = snapshot.path().join("tests");
-        copy_tree(&config.tests_dir, &tests_path).map_err(CheckerSetupError::Snapshot)?;
+        copy_tree(&config.tests_dir, &tests_path)?;
         // Read-only is a courtesy, not the control: the same uid can undo it.
         // The manifest re-check is what actually catches a modified suite.
         set_read_only(&tests_path).map_err(CheckerSetupError::Snapshot)?;
@@ -235,6 +235,11 @@ impl PinnedChecker {
             .env("ATTEMPT_FILE", work.join(ATTEMPT_FILE))
             .env("TASK_FILE", work.join(TASK_FILE))
             .stdin(std::process::Stdio::null())
+            // Discarded rather than captured. Output derived from the attempt
+            // must not reach the router's logs, and nothing reads it: the
+            // verdict is the exit status alone.
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             // Killed if this future is dropped, which is how the router's
             // deadline stops a run rather than merely stopping waiting for one.
             .kill_on_drop(true);
@@ -242,21 +247,22 @@ impl PinnedChecker {
             command.env(key, value);
         }
 
-        let output = tokio::time::timeout(self.config.timeout, command.output())
+        let status = tokio::time::timeout(self.config.timeout, command.status())
             .await
             .map_err(|_| {
                 std::io::Error::new(std::io::ErrorKind::TimedOut, "checker timed out")
             })??;
 
-        // Output is for diagnosis only; it never reaches the decision record,
-        // which must stay free of anything derived from a task's content.
+        // Only the exit status is recorded. The command's output is a function of
+        // the attempt and the task, so it is conversation content by another
+        // route — a suite that printed the attempt would put it in the router's
+        // logs. Nothing here is worth that, since the verdict is the exit code.
         tracing::debug!(
             target: "libsy",
-            status = output.status.code(),
-            output = %clip(&output.stdout, self.config.max_output_bytes),
+            status = status.code(),
             "vgr checker run"
         );
-        Ok(output.status.success())
+        Ok(status.success())
     }
 }
 
@@ -292,18 +298,25 @@ impl Checker for PinnedChecker {
 
 /// Copies `from` to `to`, creating directories as needed.
 ///
-/// Symlinks are not followed: a link in the suite would let the manifest hash
-/// content that lives outside the snapshot and can change underneath it.
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
+/// Only regular files and directories are representable in the manifest, so
+/// anything else is an error rather than an omission.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), CheckerSetupError> {
+    std::fs::create_dir_all(to).map_err(CheckerSetupError::Snapshot)?;
+    for entry in std::fs::read_dir(from).map_err(CheckerSetupError::Snapshot)? {
+        let entry = entry.map_err(CheckerSetupError::Snapshot)?;
+        let kind = entry.file_type().map_err(CheckerSetupError::Snapshot)?;
         let target = to.join(entry.file_name());
         if kind.is_dir() {
             copy_tree(&entry.path(), &target)?;
         } else if kind.is_file() {
-            std::fs::copy(entry.path(), &target)?;
+            std::fs::copy(entry.path(), &target).map_err(CheckerSetupError::Snapshot)?;
+        } else {
+            // Symlinks, sockets, devices and FIFOs. Skipping them silently would
+            // snapshot an incomplete suite that still passes, and following a
+            // symlink would let the manifest hash content living outside the
+            // snapshot that can change underneath it. Neither is safe, so an
+            // unrepresentable suite is refused rather than approximated.
+            return Err(CheckerSetupError::UnsupportedEntry(entry.path()));
         }
     }
     Ok(())
@@ -387,12 +400,6 @@ fn hex(digest: ring::digest::Digest) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-/// Renders captured output for a log line, bounded and lossy.
-fn clip(bytes: &[u8], budget: usize) -> String {
-    let end = bytes.len().min(budget);
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 #[cfg(test)]
