@@ -326,8 +326,8 @@ impl VgrClassifier {
             return signals;
         };
 
-        // The sandboxed checker is ground truth and supersedes every other
-        // rung on its branch, so it runs alone and first.
+        // The checker is ground truth and supersedes every other rung on its
+        // branch, so it runs alone and first.
         if branch == Branch::Checks {
             if let Some(checker) = &self.config.checker {
                 let task = match caps.task_text.as_deref() {
