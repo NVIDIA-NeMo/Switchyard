@@ -2,13 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The trigger classifier: decides, from the gate's signals, whether the
-//! buffered turn warrants a review, and which trigger claims it.
-//!
-//! Runs after the executor call, on response-side signals: a request-side
-//! trigger would review one turn late for mid-task turns and never for the
-//! terminal turn — the premature-"done" moment the gate exists to catch.
-//! Pure over its inputs; the once-per-conversation stall latch and the
-//! review budget live in the ledger.
+//! buffered turn warrants a review. Response-side on purpose — a request-side
+//! trigger would never see the terminal turn the gate exists to catch.
 
 use crate::Result;
 
@@ -25,8 +20,7 @@ enum CompiledTrigger {
 /// checkpoint threshold.
 pub(super) struct TriggerClassifier {
     trigger: CompiledTrigger,
-    /// For the `no_tool_call` trigger: tool results the conversation must
-    /// carry before a terminal turn is reviewable.
+    /// Tool results required before a `no_tool_call` terminal turn is reviewable.
     min_tool_results: u32,
     /// Assistant turns at which the stall checkpoint is reached; 0 disables.
     stall_turns: u32,
@@ -34,12 +28,10 @@ pub(super) struct TriggerClassifier {
 
 /// What the classifier concluded about one buffered turn.
 pub(super) struct TriggerDecision {
-    /// The terminal-turn trigger that fired, as the telemetry `trigger`
-    /// label ("no_tool_call" | "pattern"); `None` when the turn is not
-    /// terminal.
+    /// The trigger that fired, as the telemetry label ("no_tool_call" |
+    /// "pattern"); `None` when the turn is not terminal.
     pub(super) fired: Option<&'static str>,
-    /// The conversation reached the stall checkpoint. Threshold only — the
-    /// once-per-conversation latch belongs to the budget ledger.
+    /// The stall threshold is reached; the per-conversation latch is the ledger's.
     pub(super) stalled: bool,
 }
 

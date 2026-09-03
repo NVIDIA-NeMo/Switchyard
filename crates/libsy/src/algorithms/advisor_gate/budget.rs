@@ -2,15 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The gate's mutable ledger: the per-scope review budget behind a
-//! reserve/refund interface, plus the per-conversation stall latch.
-//!
-//! Reservation is deliberately not split from the consult outcome: failed and
-//! unparseable consults refund their reservation (a pre-routing reservation
-//! would leak budget on advisor outages — whether to refund is only knowable
-//! after the consult), and reserving before the consult await keeps
-//! concurrent same-scope requests from overdrawing `max_reviews`. This is the
-//! gate's only mutable shared state, behind one lock, next to the code that
-//! refunds it.
+//! reserve/refund interface, plus the per-conversation stall latch — the
+//! gate's only shared mutable state, behind one lock.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -20,18 +13,14 @@ use switchyard_protocol::{Request, Role};
 
 use super::BENCH_SESSION_HEADER;
 
-/// Failed consults tolerated per scope before the gate stops consulting.
-/// Failures refund the review budget — a transient advisor error must not
-/// silently exhaust `max_reviews` with zero real reviews — so this separate
-/// cap is what bounds per-turn consult latency against a down advisor.
+/// Failed consults tolerated per scope before the gate stops consulting;
+/// failures refund the budget, so this cap is what bounds a down advisor.
 const MAX_FAILED_CONSULTS: u32 = 3;
 /// Bounds tracked budget scopes and stall keys; a scope dropped at the bound
 /// re-arms like a process restart (rare, harmless).
 const MAX_TRACKED_SCOPES: usize = 1_024;
 
-/// Review budget scope, in precedence order: the benchmark harness header
-/// (exact evaluation identity, sub-agents included), then the host-resolved
-/// session id, then one instance-wide scope for headerless clients.
+/// Review budget scope; resolution and precedence live in [`budget_scope`].
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(super) enum ScopeKey {
     Instance,
@@ -47,17 +36,14 @@ struct ScopeState {
     exhaustion_logged: bool,
 }
 
-/// Shared mutable gate state; every access is a short critical section and
-/// the lock is never held across an await.
+/// Shared mutable gate state; locked briefly, never across an await.
 #[derive(Default)]
 struct GateState {
     scopes: HashMap<ScopeKey, ScopeState>,
     stall_fired: HashSet<u64>,
 }
 
-/// The review budget: at most `max_reviews` reserved reviews per scope, a
-/// failure cap on refunded consults, and the stall checkpoint's
-/// once-per-conversation latch.
+/// Per-scope review budget plus the stall checkpoint's per-conversation latch.
 pub(super) struct ReviewBudget {
     max_reviews: u32,
     state: Mutex<GateState>,
@@ -91,9 +77,8 @@ impl ReviewBudget {
         exhausted
     }
 
-    /// Atomically re-checks exhaustion and reserves one review. Reserving
-    /// before the consult await means concurrent same-scope requests cannot
-    /// overdraw `max_reviews`; a loser returns its buffered turn unreviewed.
+    /// Atomically re-checks exhaustion and reserves one review, so concurrent
+    /// same-scope requests cannot overdraw `max_reviews`.
     pub(super) fn try_reserve(&self, scope: &ScopeKey) -> bool {
         let mut state = self.state.lock();
         if state.scopes.len() >= MAX_TRACKED_SCOPES && !state.scopes.contains_key(scope) {
@@ -116,8 +101,7 @@ impl ReviewBudget {
     }
 
     /// Returns a reserved review after a failed consult and counts the
-    /// failure; applied on fail-open *and* fail-closed paths so the failure
-    /// cap bounds both.
+    /// failure (fail-open and fail-closed paths alike).
     pub(super) fn refund_failure(&self, scope: &ScopeKey) {
         let mut state = self.state.lock();
         let entry = state.scopes.entry(scope.clone()).or_default();
@@ -133,10 +117,8 @@ impl ReviewBudget {
         self.state.lock().scopes.remove(scope);
     }
 
-    /// Atomically latches the stall checkpoint for a conversation key,
-    /// returning true only when this call set the latch. Check and insert
-    /// share one critical section so concurrent stalls on the same
-    /// conversation cannot both claim the checkpoint.
+    /// Atomically latches the stall checkpoint for a conversation key; true
+    /// only for the call that set the latch.
     pub(super) fn try_mark_stall_fired(&self, key: u64) -> bool {
         let mut state = self.state.lock();
         if state.stall_fired.contains(&key) {
@@ -152,8 +134,7 @@ impl ReviewBudget {
     }
 }
 
-/// Resolves the review budget scope: the benchmark harness header wins (it is
-/// stamped on every request of one evaluation, sub-agents included), then the
+/// Resolves the review budget scope: the benchmark harness header, then the
 /// host-resolved session id, then one shared instance scope.
 pub(super) fn budget_scope(request: &Request) -> ScopeKey {
     let metadata = request.metadata.as_ref();

@@ -25,12 +25,10 @@
 //! and count toward a per-scope failure cap that stops consulting a down
 //! advisor entirely.
 //!
-//! Structure: [`AdvisorGate`] is a thin orchestrator over the gate's
-//! components. The [`signals`] processor folds each event's facts into the
-//! per-turn state — conversation counts on [`Event::Request`], the generated
-//! turn's shape on [`Event::ModelResponse`] — the [`trigger`] classifier
-//! reads them after the executor call, and the [`budget`] ledger holds the
-//! only mutable state: the reserve/refund review budget and the stall latch.
+//! Structure: [`AdvisorGate`] is a thin orchestrator — the [`signals`]
+//! processor folds each event's facts into per-turn state, the [`trigger`]
+//! classifier reads them after the executor call, and the [`budget`] ledger
+//! holds the only mutable state.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -215,9 +213,7 @@ impl AdvisorGate {
             ));
         }
 
-        // Request-side signals fold in before the executor runs: conversation
-        // counts from the shared ToolSignals extraction — the same definition
-        // of tool-result/turn counting the stage router uses.
+        // Request-side signals fold in before the executor runs.
         let mut request = request;
         let mut signals = GateSignals::default();
         self.signals
@@ -237,22 +233,17 @@ impl AdvisorGate {
             .await?;
         let turn = buffer_turn(self.executor.as_str(), response).await?;
 
-        // Response-side signals fold in after it: a terminal turn never
-        // appears on any subsequent request — the harness stops once the
-        // executor answers without tools — so the trigger classifier can only
-        // run on the model-response event.
+        // Response-side signals fold in after it: the terminal turn never
+        // appears on a later request, so the trigger runs on this event.
         self.signals
             .process(&mut signals, Event::ModelResponse(&turn.agg))
             .await?;
 
         let decision = self.trigger.classify(&signals);
         // The stall checkpoint fires once per conversation regardless of the
-        // turn's shape — even a tool-call turn — for executors that grind
-        // without ever declaring completion. The latch is only attempted when
-        // no trigger fired — a stall consumed by a simultaneous trigger does
-        // not latch, so the checkpoint can still fire later if this review is
-        // refunded — and it is atomic, so of two concurrent stalls on one
-        // conversation exactly one claims the checkpoint.
+        // turn's shape. Only a stall with no simultaneous trigger latches
+        // (atomically — one winner per conversation), so a refunded review
+        // leaves the checkpoint re-armed.
         let stall = decision.fired.is_none()
             && decision.stalled
             && self.budget.try_mark_stall_fired(stall_key(&request));

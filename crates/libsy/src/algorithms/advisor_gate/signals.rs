@@ -1,13 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Gate signals, split by the event that carries them.
-//!
-//! Conversation counts are request-side facts, but the turn the gate reviews
-//! is not: when the executor answers without a tool call the harness stops,
-//! so the terminal turn never appears on any subsequent request. The
-//! processor therefore folds [`Event::Request`] and [`Event::ModelResponse`]
-//! into one state the trigger classifier reads after the executor call.
+//! Gate signals, split by the event that carries them: conversation counts
+//! fold in on [`Event::Request`], the generated turn's shape on
+//! [`Event::ModelResponse`], and the trigger classifier reads both.
 
 use async_trait::async_trait;
 
@@ -20,9 +16,7 @@ use super::turn::{has_tool_use, visible_text};
 /// Facts the trigger classifier reads, keyed by the event that produced them.
 #[derive(Default)]
 pub(super) struct GateSignals {
-    /// Conversation counts from the incoming request — the shared
-    /// [`ToolSignals`] extraction, the same definition of tool-result/turn
-    /// counting the stage router uses.
+    /// Conversation counts from the shared [`ToolSignals`] extraction.
     pub(super) conversation: ToolSignals,
     /// Shape of the turn the executor just generated.
     pub(super) turn: TurnSignals,
@@ -37,8 +31,7 @@ pub(super) struct TurnSignals {
     pub(super) visible_text: Option<String>,
 }
 
-/// Extracts the gate's signals: conversation counts on [`Event::Request`],
-/// the generated turn's shape on [`Event::ModelResponse`].
+/// Fills [`GateSignals`], each event writing its own side.
 pub(super) struct GateSignalProcessor;
 
 #[async_trait]
