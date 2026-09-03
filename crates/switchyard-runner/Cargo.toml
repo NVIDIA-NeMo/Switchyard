@@ -13,8 +13,12 @@ repository.workspace = true
 rust-version.workspace = true
 publish = ["crates-io"]
 
+[features]
+prefill-router = ["dep:prefill-router"]
+
 [dependencies]
 libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.2.0" }
+prefill-router = { path = "../prefill-router", version = "0.2.0", optional = true }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

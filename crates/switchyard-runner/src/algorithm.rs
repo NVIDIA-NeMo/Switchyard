@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use libsy::{
@@ -311,6 +312,22 @@ pub enum AlgorithmSpec {
         #[serde(default = "default_fail_open")]
         fail_open: bool,
     },
+    /// Routes using a checkpoint-backed prefill classifier.
+    PrefillRouter {
+        /// Target names in checkpoint output order.
+        targets: Vec<String>,
+        /// Tensor-only router checkpoint path.
+        checkpoint: PathBuf,
+        /// PyTorch device used for encoder inference, such as `cpu`, `cuda`, or
+        /// `cuda:0`. Auto-detected when omitted.
+        device: Option<String>,
+        /// Directory where Hugging Face caches the downloaded encoder and tokenizer.
+        cache_dir: Option<PathBuf>,
+        /// Maximum tokenized encoder input length; longer prompts are truncated.
+        max_length: Option<usize>,
+        /// Maximum prompts per encoder forward pass.
+        batch_size: Option<usize>,
+    },
 }
 
 /// What fires an advisor route's review.
@@ -471,6 +488,7 @@ impl AlgorithmSpec {
             Self::Advisor {
                 executor_target, ..
             } => vec![executor_target],
+            Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
         }
     }
 
@@ -1071,6 +1089,46 @@ fn build_algorithm(
                 )
             })?;
             Ok(Arc::new(algorithm))
+        }
+        AlgorithmSpec::PrefillRouter {
+            targets: names,
+            checkpoint,
+            device,
+            cache_dir,
+            max_length,
+            batch_size,
+        } => {
+            #[cfg(feature = "prefill-router")]
+            {
+                let targets =
+                    resolve_targets(route_name, names.iter().map(String::as_str), targets)?;
+                let mut config = prefill_router::PrefillRouterConfig::new(targets, checkpoint);
+                config.device.clone_from(device);
+                config.cache_dir.clone_from(cache_dir);
+                if let Some(max_length) = max_length {
+                    config.max_length = *max_length;
+                }
+                if let Some(batch_size) = batch_size {
+                    config.batch_size = *batch_size;
+                }
+                let algorithm = config.build().map_err(|error| {
+                    AlgorithmConfigError::with_source(
+                        format!("prefill_router route {route_name}: {error}"),
+                        error,
+                    )
+                })?;
+                Ok(Arc::new(algorithm))
+            }
+
+            #[cfg(not(feature = "prefill-router"))]
+            {
+                let _ = (
+                    names, checkpoint, device, cache_dir, max_length, batch_size, targets,
+                );
+                Err(AlgorithmConfigError::new(format!(
+                    "prefill_router route {route_name} requires the `prefill-router` Cargo feature"
+                )))
+            }
         }
     }
 }

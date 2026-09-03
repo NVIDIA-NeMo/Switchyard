@@ -141,6 +141,29 @@ Splits traffic across targets. See
 | `weights` | No | equal | Finite, non-negative relative weights in `targets` order, with at least one positive value. Invalid weights are rejected at load time. |
 | `seed` | No | unset | Reproduces the selection sequence. |
 
+### `prefill_router`
+
+Routes the latest non-empty user message with a checkpoint-backed prefill classifier. Build
+`switchyard-server` with `--features prefill-router` and make the prefill router's Python
+dependencies available in the active virtual environment.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `targets` | Yes | — | Target names in the exact order expected by the checkpoint outputs. |
+| `checkpoint` | Yes | — | Path to the tensor-only router checkpoint. Relative paths use the server's working directory. |
+| `device` | No | auto | PyTorch device used for encoder inference, such as `cpu`, `cuda`, or `cuda:0`. |
+| `cache_dir` | No | unset | Directory where Hugging Face caches the downloaded encoder and tokenizer. |
+| `max_length` | No | `2048` | Maximum tokenized encoder input length; longer prompts are truncated. |
+| `batch_size` | No | `32` | Maximum prompts per encoder forward pass. |
+
+```toml
+[routes.prefill]
+id = "switchyard/prefill"
+type = "prefill_router"
+targets = ["fast", "strong"]
+checkpoint = "/models/router.pt"
+```
+
 ### `llm_classifier`
 
 Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
