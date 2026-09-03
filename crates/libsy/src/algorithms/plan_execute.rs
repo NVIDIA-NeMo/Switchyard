@@ -280,6 +280,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shell_redirection_switches_to_execution() {
+        let messages = vec![tool_call(
+            "exec_command",
+            json!({"cmd": "printf 'completed\\n' > task.txt"}),
+        )];
+
+        let (selected, routed) = route_and_capture(algorithm(), request(messages, None)).await;
+
+        assert_eq!(selected, "model/efficient");
+        assert!(routed.llm_request.instructions.is_empty());
+    }
+
+    #[tokio::test]
     async fn execution_latches_by_session_after_history_compaction() {
         let algorithm = algorithm();
         let edit = request(
