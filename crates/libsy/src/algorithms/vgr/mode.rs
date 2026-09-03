@@ -47,17 +47,18 @@ pub(super) fn validate(mode: &ServingMode) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::Branch;
     use super::super::decide::ReadinessGate;
     use super::super::rules::Signals;
+    use super::*;
 
     /// A decision with the given decided and readiness-gated routes.
     fn decision(route: Route, effective_route: Route) -> Decision {
         Decision {
             route,
             effective_route,
-            readiness_gate: (effective_route != route).then_some(ReadinessGate::SecureCheckerMissing),
+            readiness_gate: (effective_route != route)
+                .then_some(ReadinessGate::SecureCheckerMissing),
             branch: Branch::CodingNoChecks,
             signals: Signals::default(),
             policy_version: "test",
@@ -123,5 +124,4 @@ mod tests {
             .is_err()
         );
     }
-
 }

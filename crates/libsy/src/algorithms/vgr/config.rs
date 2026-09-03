@@ -8,11 +8,13 @@
 //! consequentially — whether decisions are allowed to route traffic at all.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use switchyard_protocol::ModelId;
 
 use super::policy::Policy;
+use crate::{LibsyError, Result};
 
 /// How much authority a decision has over the traffic it decides.
 ///
@@ -47,22 +49,106 @@ pub enum ServingMode {
     },
 }
 
-/// An operator-supplied sandboxed checker.
+/// One invocation of an operator-supplied sandboxed checker.
 ///
-/// The checker executes a task's own tests and reports whether they passed,
-/// which is the only ground truth in the evidence stack. It runs in this
-/// process rather than through the routing host, because it never leaves the
-/// local machine and has no reason to make a round trip.
+/// The absolute deadline and remaining budget describe the same decision
+/// deadline. The manifest identity is pinned by [`ValidatedChecker`], not chosen
+/// by a request or by the checker implementation.
+#[derive(Clone, Copy, Debug)]
+pub struct CheckerRequest<'a> {
+    /// The task whose locally produced attempt is being checked.
+    pub task_text: &'a str,
+    /// The locally produced attempt to check.
+    pub attempt: &'a str,
+    /// Absolute monotonic deadline for the check.
+    pub deadline: Instant,
+    /// Budget remaining when the checker was invoked.
+    pub remaining: Duration,
+    /// Operator-authenticated identity of the immutable check manifest.
+    pub manifest_identity: &'a str,
+}
+
+/// An asynchronous, cancellation-safe sandboxed checker.
 ///
-/// Implementations must be self-limiting: the router bounds the whole decision
-/// by a deadline, but cannot terminate work it did not spawn.
+/// Dropping the returned future must cancel the check or terminate its isolated
+/// worker. VGR also enforces [`CheckerRequest::deadline`] around every call.
+#[async_trait]
 pub trait Checker: Send + Sync {
     /// Runs the task's checks against an attempt, reporting whether they passed.
     ///
     /// `None` means the checks could not be run to a conclusion — a timeout, a
     /// sandbox failure, a missing manifest. It is not a failure verdict, but it
     /// commits nothing either.
-    fn check(&self, task_text: &str, attempt: &str) -> Option<bool>;
+    async fn check(&self, request: CheckerRequest<'_>) -> Option<bool>;
+}
+
+/// A checker bound to validation evidence for one pinned manifest.
+///
+/// Keeping the checker handle and authenticated manifest identity in one value
+/// makes it impossible for route configuration to claim checker validation
+/// without also supplying the checker that was validated.
+#[derive(Clone)]
+pub struct ValidatedChecker {
+    checker: Arc<dyn Checker>,
+    manifest_identity: Arc<str>,
+}
+
+impl ValidatedChecker {
+    /// Binds a checker to an operator-authenticated immutable manifest identity.
+    ///
+    /// The host authenticates the identity before construction. Empty,
+    /// whitespace-padded, or control-character identities are rejected so the
+    /// pinned value is unambiguous when passed to the checker.
+    pub fn new(
+        checker: Arc<dyn Checker>,
+        authenticated_manifest_identity: impl Into<String>,
+    ) -> Result<Self> {
+        let identity = authenticated_manifest_identity.into();
+        if identity.is_empty()
+            || identity.trim() != identity
+            || identity.chars().any(char::is_control)
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "vgr checker requires an authenticated manifest identity".to_string(),
+            });
+        }
+        Ok(Self {
+            checker,
+            manifest_identity: Arc::from(identity),
+        })
+    }
+
+    /// Runs the bound checker with its pinned manifest identity.
+    pub(super) async fn check(
+        &self,
+        task_text: &str,
+        attempt: &str,
+        deadline: Instant,
+    ) -> Option<bool> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let request = CheckerRequest {
+            task_text,
+            attempt,
+            deadline,
+            remaining,
+            manifest_identity: &self.manifest_identity,
+        };
+        tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            self.checker.check(request),
+        )
+        .await
+        .ok()
+        .flatten()
+    }
+
+    #[cfg(test)]
+    fn manifest_identity(&self) -> &str {
+        &self.manifest_identity
+    }
 }
 
 /// The tiers a verification-gated route moves between.
@@ -93,14 +179,8 @@ pub struct VgrConfig {
     pub policy: Policy,
     /// How much authority decisions have.
     pub mode: ServingMode,
-    /// An operator-configured sandboxed checker, when one is deployed.
-    pub checker: Option<Arc<dyn Checker>>,
-    /// Whether the operator validated the checker against a pinned manifest.
-    ///
-    /// Separate from [`VgrConfig::checker`] because possessing a checker and
-    /// having verified it is trustworthy are different claims, and only the
-    /// second one satisfies the readiness gate.
-    pub checker_validated: bool,
+    /// A checker bound to its authenticated pinned-manifest evidence.
+    pub checker: Option<ValidatedChecker>,
     /// Whether the operator declares this surface enforces a schema-validated
     /// terse final-answer format, on which typed agreement is checkable.
     pub structured_answer: bool,
@@ -129,7 +209,6 @@ impl VgrConfig {
             policy: Policy::CURRENT,
             mode: ServingMode::Off,
             checker: None,
-            checker_validated: false,
             structured_answer: false,
             speculation_carry: false,
             deadline: Duration::from_secs(30),
@@ -138,6 +217,47 @@ impl VgrConfig {
 
     /// The tier that answers verification questions, defaulting to local.
     pub(super) fn judge_target(&self) -> &ModelId {
-        self.targets.judge.as_ref().unwrap_or(&self.targets.local)
+        match self.targets.judge.as_ref() {
+            Some(judge) => judge,
+            None => &self.targets.local,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoopChecker;
+
+    #[async_trait]
+    impl Checker for NoopChecker {
+        async fn check(&self, _request: CheckerRequest<'_>) -> Option<bool> {
+            None
+        }
+    }
+
+    #[test]
+    fn checker_validation_binds_a_handle_to_one_manifest() -> Result<()> {
+        let checker = ValidatedChecker::new(
+            Arc::new(NoopChecker),
+            "sha256:0123456789abcdef0123456789abcdef",
+        )?;
+
+        assert_eq!(
+            checker.manifest_identity(),
+            "sha256:0123456789abcdef0123456789abcdef"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checker_validation_rejects_ambiguous_manifest_identity() {
+        for identity in ["", " manifest", "manifest ", "manifest\nother"] {
+            assert!(
+                ValidatedChecker::new(Arc::new(NoopChecker), identity).is_err(),
+                "{identity:?} must not become checker evidence"
+            );
+        }
     }
 }

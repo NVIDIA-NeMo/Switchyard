@@ -53,8 +53,8 @@ mod policy;
 mod readout;
 mod render;
 mod rules;
-mod runtime;
 mod rungs;
+mod runtime;
 mod text;
 
 #[cfg(test)]
@@ -73,6 +73,8 @@ mod tests;
 /// recommendations.
 pub struct Vgr {
     route: FallThrough<State>,
+    local: switchyard_protocol::ModelId,
+    cloud: switchyard_protocol::ModelId,
 }
 
 impl Vgr {
@@ -81,15 +83,18 @@ impl Vgr {
     /// Errors when the serving mode is configured incoherently — the one
     /// setting whose misconfiguration would otherwise be silent.
     pub fn new(config: VgrConfig) -> Result<Self> {
-        mode::validate(&config.mode).map_err(|message| crate::LibsyError::AlgorithmError {
-            message,
-        })?;
-        let targets = vec![config.targets.local.clone(), config.targets.cloud.clone()];
+        mode::validate(&config.mode)
+            .map_err(|message| crate::LibsyError::AlgorithmError { message })?;
+        let local = config.targets.local.clone();
+        let cloud = config.targets.cloud.clone();
+        let targets = vec![local.clone(), cloud.clone()];
         let classifier = Arc::new(runtime::VgrClassifier { config });
         Ok(Self {
             route: FallThrough::new_with_state(targets)
                 .with_name("vgr")
                 .with_classifier(classifier),
+            local,
+            cloud,
         })
     }
 }
@@ -101,7 +106,19 @@ impl Algorithm for Vgr {
     }
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
-        self.route.execute(driver, request).await
+        let mut outcome = self.route.execute(driver, request).await?;
+        if outcome.selected_model_id == self.cloud {
+            // A cloud decision is terminal. Falling backward to local would
+            // bypass the verification decision that selected cloud.
+            outcome.fallback_models.clear();
+        } else if outcome.selected_model_id == self.local && outcome.response.is_none() {
+            // Local may fail forward to cloud on the host's eligible-failure
+            // policy. Current local commits carry their buffered response, but
+            // retain the directional contract if that implementation changes.
+            outcome.fallback_models.clear();
+            outcome.fallback_models.push(self.cloud.clone());
+        }
+        Ok(outcome)
     }
 }
 

@@ -25,8 +25,10 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
+use futures::StreamExt;
+use http::StatusCode;
 use switchyard_protocol::{
-    AggLlmResponse, LlmClientError, LlmResponse, Request, Response,
+    AggLlmResponse, LlmClientError, LlmResponse, LlmResponseStreamEvent, Request, Response,
 };
 
 use super::config::{ServingMode, VgrConfig};
@@ -68,43 +70,40 @@ impl Classifier<State> for VgrClassifier {
         }
 
         let started = Instant::now();
+        let deadline = match started.checked_add(self.config.deadline) {
+            Some(deadline) => deadline,
+            None => started,
+        };
 
-        // The local attempt, with a single candidate so its failures surface
-        // here rather than being silently served by a fallback.
+        // Keep the attempt call local-only so a cloud escalation is prepared as
+        // the terminal completion call. Eligible local failures select cloud
+        // below instead of surfacing or falling backward later.
         let local_response = match driver
             .call_model(request.clone(), vec![targets.local.clone()])
             .await
         {
             Ok(response) => response,
-            // A local tier that cannot take the request has produced no
-            // attempt to verify, so there is nothing to gate.
-            Err(LibsyError::ClientCall {
-                source: LlmClientError::ContextWindowExceeded { .. },
-                ..
-            }) => return Ok((decisive(&targets.cloud), None)),
+            // An eligible local failure produced no attempt to verify. A host
+            // that did not consume the candidate fallback may serve cloud next.
+            Err(error) if fallback_eligible(&error) => {
+                return Ok((decisive(&targets.cloud), None));
+            }
             Err(error) => return Err(error),
         };
-        let agg = match local_response.llm_response.into_agg().await {
-            Ok(agg) => agg,
-            Err(LlmClientError::Transport { .. }) => {
+        let buffered = match BufferedResponse::new(local_response).await {
+            Ok(buffered) => buffered,
+            Err(source) if client_error_fallback_eligible(&source) => {
                 return Ok((decisive(&targets.cloud), None));
             }
             Err(source) => return Err(LibsyError::client_call(targets.local.clone(), source)),
         };
 
-        let attempt = rungs::response_text(&agg).unwrap_or_default();
+        let attempt = rungs::response_text(buffered.aggregate()).unwrap_or_default();
         let caps = self.derive(request, &attempt);
         let signals = self
-            .gather(driver, &caps, &attempt, request, started)
+            .gather(driver, &caps, &attempt, request, deadline)
             .await?;
-        let decision = decide_from_signals(
-            &caps,
-            &signals,
-            &self.config.policy,
-            &Readiness {
-                checker_validated: self.config.checker_validated,
-            },
-        );
+        let decision = decide_from_signals(&caps, &signals, &self.config.policy, &self.readiness());
 
         tracing::info!(
             branch = ?decision.branch,
@@ -116,17 +115,9 @@ impl Classifier<State> for VgrClassifier {
         );
 
         if super::mode::serve_route(&self.config.mode, &decision) == Route::Local {
-            // Re-materialize the buffered attempt so the turn is not paid for
-            // twice, matching the shape the request arrived in.
-            let served = Response {
-                llm_response: if request.llm_request.stream {
-                    LlmResponse::Stream(agg.into_stream())
-                } else {
-                    LlmResponse::Agg(agg)
-                },
-                metadata: local_response.metadata,
-            };
-            return Ok((decisive(&targets.local), Some(served)));
+            // Return the original aggregate or the exact buffered event sequence.
+            // No synthetic stream reconstruction is involved.
+            return Ok((decisive(&targets.local), Some(buffered.into_response())));
         }
 
         // Escalating: the capable tier may be given the rejected attempt as
@@ -165,7 +156,7 @@ impl VgrClassifier {
         caps: &Capabilities,
         attempt: &str,
         request: &Request,
-        started: Instant,
+        deadline: Instant,
     ) -> Result<Signals> {
         let mut signals = Signals::default();
         let branch = super::select_branch(caps);
@@ -181,8 +172,11 @@ impl VgrClassifier {
         // rung on its branch, so it runs alone and first.
         if branch == Branch::Checks {
             if let Some(checker) = &self.config.checker {
-                let task = caps.task_text.clone().unwrap_or_default();
-                signals.tests_pass = Some(match checker.check(&task, attempt) {
+                let task = match caps.task_text.as_deref() {
+                    Some(task) => task,
+                    None => return Ok(signals),
+                };
+                signals.tests_pass = Some(match checker.check(task, attempt, deadline).await {
                     Some(true) => Tri::Yes,
                     Some(false) => Tri::No,
                     None => Tri::Unknown,
@@ -193,7 +187,8 @@ impl VgrClassifier {
 
         // Typed agreement is free: it compares text this router already holds.
         if branch == Branch::Answer
-            && let (Some(answer), Some(task)) = (caps.final_answer.as_deref(), caps.task_text.as_deref())
+            && let (Some(answer), Some(task)) =
+                (caps.final_answer.as_deref(), caps.task_text.as_deref())
         {
             signals.agreement = Some(matching::match_answer_verdict(task, answer));
             if self.settled(caps, &signals) {
@@ -202,7 +197,7 @@ impl VgrClassifier {
         }
 
         // The cheap readout: a few tokens, scored by probability.
-        if self.out_of_time(started) {
+        if self.out_of_time(deadline) {
             return Ok(signals);
         }
         signals.readout = self.readout(driver, judged, request, branch).await;
@@ -211,7 +206,7 @@ impl VgrClassifier {
         }
 
         // The deliberating readout: the same question, reasoned before answering.
-        if self.out_of_time(started) {
+        if self.out_of_time(deadline) {
             return Ok(signals);
         }
         signals.deliberation = match self
@@ -240,33 +235,61 @@ impl VgrClassifier {
         let Some(cloud_judge) = self.config.targets.cloud_judge.clone() else {
             return Ok(signals);
         };
-        if self.out_of_time(started) {
+        if self.out_of_time(deadline) {
             return Ok(signals);
         }
         match branch {
             Branch::Answer => {
                 signals.answer_verifier = Some(
-                    self.ask(driver, cloud_judge.clone(), Question::Answer, judged,
-                             rungs::DELIBERATION_MAX_OUTPUT_TOKENS, request).await,
+                    self.ask(
+                        driver,
+                        cloud_judge.clone(),
+                        Question::Answer,
+                        judged,
+                        rungs::DELIBERATION_MAX_OUTPUT_TOKENS,
+                        request,
+                    )
+                    .await,
                 );
-                if !self.settled(caps, &signals) && !self.out_of_time(started) {
+                if !self.settled(caps, &signals) && !self.out_of_time(deadline) {
                     signals.evidence_verifier = Some(
-                        self.ask(driver, cloud_judge, Question::Evidence, judged,
-                                 rungs::DELIBERATION_MAX_OUTPUT_TOKENS, request).await,
+                        self.ask(
+                            driver,
+                            cloud_judge,
+                            Question::Evidence,
+                            judged,
+                            rungs::DELIBERATION_MAX_OUTPUT_TOKENS,
+                            request,
+                        )
+                        .await,
                     );
                 }
             }
             Branch::CodingNoChecks | Branch::Chat => {
                 signals.cloud_judge = Some(
-                    self.ask(driver, cloud_judge.clone(), Question::Evidence, judged,
-                             rungs::DELIBERATION_MAX_OUTPUT_TOKENS, request).await,
+                    self.ask(
+                        driver,
+                        cloud_judge.clone(),
+                        Question::Evidence,
+                        judged,
+                        rungs::DELIBERATION_MAX_OUTPUT_TOKENS,
+                        request,
+                    )
+                    .await,
                 );
                 // The second confirmation is only ever consulted after the
                 // first affirms, so a refutation costs one call, not two.
-                if signals.cloud_judge == Some(Tri::Yes) && !self.out_of_time(started) {
+                if signals.cloud_judge == Some(Tri::Yes) && !self.out_of_time(deadline) {
                     signals.evidence_confirm = Some(
-                        self.ask(driver, cloud_judge, Question::Answer, judged,
-                                 rungs::DELIBERATION_MAX_OUTPUT_TOKENS, request).await,
+                        self.ask(
+                            driver,
+                            cloud_judge,
+                            Question::Answer,
+                            judged,
+                            rungs::DELIBERATION_MAX_OUTPUT_TOKENS,
+                            request,
+                        )
+                        .await,
                     );
                 }
             }
@@ -299,7 +322,7 @@ impl VgrClassifier {
             .call_model(call, vec![self.config.judge_target().clone()])
             .await
             .ok()?;
-        readout::p_yes(&buffer(response).await?)
+        readout::p_yes(BufferedResponse::new(response).await.ok()?.aggregate())
     }
 
     /// Puts one question to a verifier, folding every failure into indeterminate.
@@ -316,11 +339,16 @@ impl VgrClassifier {
         max_output_tokens: u64,
         request: &Request,
     ) -> Tri {
-        let call = rungs::build_request(question, judged, max_output_tokens, request.metadata.clone());
+        let call = rungs::build_request(
+            question,
+            judged,
+            max_output_tokens,
+            request.metadata.clone(),
+        );
         match driver.call_model(call, vec![target]).await {
-            Ok(response) => match buffer(response).await {
-                Some(agg) => rungs::parse_verdict(&agg),
-                None => Tri::Unknown,
+            Ok(response) => match BufferedResponse::new(response).await {
+                Ok(buffered) => rungs::parse_verdict(buffered.aggregate()),
+                Err(_) => Tri::Unknown,
             },
             Err(error) => {
                 tracing::debug!(?question, error = %error, "vgr verifier unavailable");
@@ -335,27 +363,111 @@ impl VgrClassifier {
     /// short-circuits: a decision still resolving to escalate may yet be turned
     /// by a rung that has not run.
     fn settled(&self, caps: &Capabilities, signals: &Signals) -> bool {
-        decide_from_signals(
-            caps,
-            signals,
-            &self.config.policy,
-            &Readiness {
-                checker_validated: self.config.checker_validated,
-            },
-        )
-        .route
+        decide_from_signals(caps, signals, &self.config.policy, &self.readiness()).route
             == Route::Local
     }
 
     /// Whether the decision budget is spent.
-    fn out_of_time(&self, started: Instant) -> bool {
-        started.elapsed() >= self.config.deadline
+    fn out_of_time(&self, deadline: Instant) -> bool {
+        Instant::now() >= deadline
+    }
+
+    /// Readiness evidence is inseparable from the configured checker handle.
+    fn readiness(&self) -> Readiness {
+        Readiness {
+            checker_validated: self.config.checker.is_some(),
+        }
     }
 }
 
-/// Buffers a response, discarding it if it cannot be read.
-async fn buffer(response: Response) -> Option<AggLlmResponse> {
-    response.llm_response.into_agg().await.ok()
+/// A response buffered for inspection while retaining its original return shape.
+struct BufferedResponse {
+    aggregate: AggLlmResponse,
+    response: Response,
+}
+
+impl BufferedResponse {
+    /// Buffers a live stream into exact replayable events, or clones an aggregate
+    /// for inspection while retaining the original value.
+    async fn new(response: Response) -> std::result::Result<Self, LlmClientError> {
+        let Response {
+            llm_response,
+            metadata,
+        } = response;
+        match llm_response {
+            LlmResponse::Agg(aggregate) => Ok(Self {
+                aggregate: aggregate.clone(),
+                response: Response {
+                    llm_response: LlmResponse::Agg(aggregate),
+                    metadata,
+                },
+            }),
+            LlmResponse::Stream(mut stream) => {
+                let mut events = Vec::new();
+                while let Some(event) = stream.next().await {
+                    events.push(event?);
+                }
+                let aggregate = aggregate_events(&events).await?;
+                Ok(Self {
+                    aggregate,
+                    response: Response {
+                        llm_response: LlmResponse::Stream(replay_events(events)),
+                        metadata,
+                    },
+                })
+            }
+        }
+    }
+
+    fn aggregate(&self) -> &AggLlmResponse {
+        &self.aggregate
+    }
+
+    fn into_response(self) -> Response {
+        self.response
+    }
+}
+
+/// Aggregates a clone of buffered events through the protocol's checked API.
+async fn aggregate_events(
+    events: &[LlmResponseStreamEvent],
+) -> std::result::Result<AggLlmResponse, LlmClientError> {
+    LlmResponse::Stream(replay_events(events.to_vec()))
+        .into_agg()
+        .await
+}
+
+/// Replays buffered events exactly, including preservation and event boundaries.
+fn replay_events(events: Vec<LlmResponseStreamEvent>) -> switchyard_protocol::LlmResponseStream {
+    Box::pin(futures::stream::iter(
+        events
+            .into_iter()
+            .map(Ok::<LlmResponseStreamEvent, LlmClientError>),
+    ))
+}
+
+/// Whether a routed local-call failure is safe to escalate around.
+fn fallback_eligible(error: &LibsyError) -> bool {
+    matches!(
+        error,
+        LibsyError::ClientCall { source, .. } if client_error_fallback_eligible(source)
+    )
+}
+
+/// Matches the host client's existing candidate-fallback policy.
+fn client_error_fallback_eligible(error: &LlmClientError) -> bool {
+    match error {
+        LlmClientError::ContextWindowExceeded { .. }
+        | LlmClientError::Transport { .. }
+        | LlmClientError::Timeout { .. } => true,
+        LlmClientError::UpstreamHttp { status, .. } => {
+            matches!(
+                *status,
+                StatusCode::FORBIDDEN | StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+            ) || status.is_server_error()
+        }
+        _ => false,
+    }
 }
 
 /// Carries the rejected attempt forward as reference for the capable tier.
@@ -365,6 +477,15 @@ async fn buffer(response: Response) -> Option<AggLlmResponse> {
 /// preserved replay body is mandatory: the request is being mutated, so a
 /// stored verbatim copy would be sent instead of the edit.
 fn carry_attempt(request: &mut Request, attempt: &str, decision: &Decision) {
+    // libsy does not receive per-target context-window capabilities. Reuse the
+    // conservative attempt budget already applied to VGR verifier prompts,
+    // reserving room for the clipping marker so the carried body stays bounded.
+    const CLIPPING_MARKER_RESERVE: usize = 64;
+    let attempt = super::text::clip_mid(
+        attempt,
+        super::render::ATTEMPT_BUDGET.saturating_sub(CLIPPING_MARKER_RESERVE),
+        1.0 / 3.0,
+    );
     let note = format!(
         "\n\nA previous attempt at this task was produced locally and was NOT verified \
          (verification regime: {:?}). Treat it as unverified reference material, not as a \

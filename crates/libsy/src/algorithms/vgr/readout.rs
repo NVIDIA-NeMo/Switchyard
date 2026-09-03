@@ -75,8 +75,8 @@ pub(super) fn p_yes(response: &AggLlmResponse) -> Option<f64> {
         };
         let probability = probability.exp();
         match normalize(entry.get("token")?.as_str()?) {
-            Verdict::Yes => yes = Some(yes.unwrap_or(0.0) + probability),
-            Verdict::No => no = Some(no.unwrap_or(0.0) + probability),
+            Verdict::Yes => *yes.get_or_insert(0.0) += probability,
+            Verdict::No => *no.get_or_insert(0.0) += probability,
             Verdict::Other => {}
         }
     }
@@ -84,10 +84,10 @@ pub(super) fn p_yes(response: &AggLlmResponse) -> Option<f64> {
     match (yes, no) {
         // Both verdicts present: the score is yes against the pair.
         (Some(yes), Some(no)) if yes + no > 0.0 => Some(yes / (yes + no)),
-        // Only one appeared among the alternatives, so the other's mass is
-        // below the reporting cutoff and is taken as negligible.
-        (Some(yes), None) => Some(yes.clamp(0.0, 1.0)),
-        (None, Some(no)) => Some((1.0 - no).clamp(0.0, 1.0)),
+        // Normalize over observed verdict mass, matching the reference: one
+        // observed verdict receives the whole binary mass.
+        (Some(_), None) => Some(1.0),
+        (None, Some(_)) => Some(0.0),
         _ => None,
     }
 }
@@ -104,7 +104,10 @@ enum Verdict {
 /// Providers report the token as emitted, so the same verdict arrives variously
 /// as `yes`, `Yes`, or a space-prefixed form depending on the tokenizer.
 fn normalize(token: &str) -> Verdict {
-    let token = token.trim().trim_matches(['"', '\'', '.', ',']).to_lowercase();
+    let token = token
+        .trim()
+        .trim_matches(['"', '\'', '.', ','])
+        .to_lowercase();
     match token.as_str() {
         "yes" | "y" | "true" => Verdict::Yes,
         "no" | "n" | "false" => Verdict::No,
@@ -143,8 +146,7 @@ mod tests {
             alternative("no", 0.2),
             alternative("\n", 0.2),
         ]));
-        let score = p_yes(&response).expect("scored");
-        assert!((score - 0.75).abs() < 1e-9, "got {score}");
+        assert!(p_yes(&response).is_some_and(|score| (score - 0.75).abs() < 1e-9));
     }
 
     #[test]
@@ -152,17 +154,19 @@ mod tests {
         // The same verdict arrives capitalized or space-prefixed by tokenizer.
         for token in [" Yes", "YES", "yes.", "\"yes\""] {
             let response = response_with(json!([alternative(token, 0.9), alternative("no", 0.1)]));
-            let score = p_yes(&response).expect("scored");
-            assert!((score - 0.9).abs() < 1e-9, "{token}: got {score}");
+            assert!(
+                p_yes(&response).is_some_and(|score| (score - 0.9).abs() < 1e-9),
+                "{token}"
+            );
         }
     }
 
     #[test]
-    fn a_lone_verdict_takes_the_unreported_mass_as_negligible() {
+    fn a_lone_verdict_receives_the_whole_observed_binary_mass() {
         let only_yes = response_with(json!([alternative("yes", 0.97)]));
-        assert!((p_yes(&only_yes).expect("scored") - 0.97).abs() < 1e-9);
+        assert_eq!(p_yes(&only_yes), Some(1.0));
         let only_no = response_with(json!([alternative("no", 0.95)]));
-        assert!((p_yes(&only_no).expect("scored") - 0.05).abs() < 1e-9);
+        assert_eq!(p_yes(&only_no), Some(0.0));
     }
 
     #[test]
