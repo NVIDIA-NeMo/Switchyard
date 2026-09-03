@@ -17,6 +17,7 @@ configuration and tuning. For the vocabulary these pages use, see
 | [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
 | [Stage-Router Routing](stage_router_routing.md) | Built-in or configured tool-activity signals should route most turns without an extra classifier call. | `stage_router` |
 | Auto Routing | You want a recommended default instead of picking a strategy yourself. For a deeper dive on the current default, see [Stage-Router Routing](stage_router_routing.md); for full control, pick one of the strategies above instead. | `auto` |
+| [Plan/Execute Routing](plan_execute_routing.md) | A capable model should plan the task, then an efficient model should execute after the first edit. | `plan_execute` |
 | [Composite Routing](composite_routing.md) | Routing algorithms are composed, one setting the configuration of another before handing off. Today an LLM classifier sets a stage router's default tier. | `composite` |
 | [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `llm_classifier` with `escalation` |
 | [Advisor-Gate Routing](advisor_gate_routing.md) | One model should serve every turn, with a stronger reviewer approving its "done" claims or sending back a redo plan. | `advisor` |

@@ -86,6 +86,7 @@ python3.12 scripts/benchmark_routing_algorithms.py \
   --direct-model mock/weak \
   --model noop=switchyard/noop \
   --model passthrough=switchyard/passthrough \
+  --model plan_execute=switchyard/plan-execute \
   --model random=switchyard/random \
   --model llm_classifier=switchyard/classifier \
   --model stage_router=switchyard/stage \
@@ -219,12 +220,13 @@ The script gives each tool one job:
 | Combined report | Joins scenario, load, oha, AIPerf, and routing-counter metrics in Markdown, CSV, JSON, and an overhead plot. It keeps resilience rows separate from throughput rows. |
 | `switchyard-soak` | Runs the standard scenario set while checking public API variants, server health, metrics, process use, and required results. |
 
-`scripts/local_soak_test.toml` exercises `noop`, `random`, `passthrough`, `llm_classifier`, and
-`stage_router`. It uses the accepted maximum retry count (10), a zero-weight random target, and the
-upper classifier and stage thresholds (1.0). Classifier affinity is disabled so every measured
-request includes the classifier call. The scenario backend returns `p_solve=1.0` for easy markers
-and `p_solve=0.1` for hard markers; with the configured threshold, those requests select the weak
-and strong targets respectively. The config is validated with
+`scripts/local_soak_test.toml` exercises `noop`, `random`, `passthrough`, `plan_execute`,
+`llm_classifier`, and `stage_router`. It uses the accepted maximum retry count (10), a zero-weight
+random target, and the upper classifier and stage thresholds (1.0). Classifier affinity is disabled
+so every measured request includes the classifier call. The scenario backend returns `p_solve=1.0`
+for easy markers and `p_solve=0.1` for hard markers; with the configured threshold, those requests
+select the weak and strong targets respectively. The `stage-transitions` scenario contains an
+`apply_patch` call and therefore exercises the plan/execute handoff. The config is validated with
 `switchyard-server --dry-run` before either service starts.
 
 Run resilience cases separately so expected transport failures do not contaminate throughput

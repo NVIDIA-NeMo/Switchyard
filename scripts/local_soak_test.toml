@@ -38,6 +38,12 @@ id = "switchyard/passthrough"
 type = "passthrough"
 target = "weak"
 
+[routes.plan_execute]
+id = "switchyard/plan-execute"
+type = "plan_execute"
+capable_target = "strong"
+efficient_target = "weak"
+
 [routes.classifier]
 id = "switchyard/classifier"
 type = "llm_classifier"
