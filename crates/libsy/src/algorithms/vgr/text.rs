@@ -129,9 +129,7 @@ pub(super) fn user_task_text(turns: &[Turn]) -> String {
 /// The answer branch's instruments see only the latest user message, so on a
 /// multi-turn request they are invalid rather than merely weaker.
 pub(super) fn has_assistant_turn(turns: &[Turn]) -> bool {
-    turns
-        .iter()
-        .any(|turn| turn.role == Role::Assistant && !turn.text.trim().is_empty())
+    turns.iter().any(|turn| turn.role == Role::Assistant)
 }
 
 /// Baseline secret and PII scrub applied before any text leaves the device.

@@ -15,7 +15,7 @@ use switchyard_protocol::{
     ToolCall, ToolResult,
 };
 
-use super::{Branch, Capabilities, TaskType, ToolErrorsSource, derive_capabilities, select_branch};
+use super::{Branch, Capabilities, TaskType, ToolErrorCount, derive_capabilities, select_branch};
 
 // ─── fixtures ─────────────────────────────────────────────────────────────────
 
@@ -45,17 +45,42 @@ fn ask() -> Request {
     request(&[(Role::User, "Fix the failing build")])
 }
 
-/// Derives with the defaults the Python corpus uses: no checker, host-attested
-/// tool errors, no count reported.
+/// A continued tool session whose assistant history has no text.
+fn continued_tool_session() -> Request {
+    Request {
+        llm_request: LlmRequest {
+            messages: vec![
+                Message::text(Role::User, "Find the project version"),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolCall(ToolCall {
+                        id: "call-1".into(),
+                        name: "read_file".into(),
+                        arguments: serde_json::json!({"path": "Cargo.toml"}),
+                    })],
+                },
+                Message {
+                    role: Role::Tool,
+                    content: vec![ContentBlock::ToolResult(ToolResult {
+                        tool_call_id: "call-1".into(),
+                        content: vec![ContentBlock::Text {
+                            text: "version = \"0.2.0\"".into(),
+                        }],
+                        is_error: Some(false),
+                    })],
+                },
+                Message::text(Role::User, "What version did you find?"),
+            ],
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// Derives with the defaults the Python corpus uses: no checker and no reported
+/// tool-error count.
 fn derive(request: &Request, attempt: &str, task_type: Option<TaskType>) -> Capabilities {
-    derive_capabilities(
-        request,
-        attempt,
-        false,
-        task_type,
-        None,
-        ToolErrorsSource::Host,
-    )
+    derive_capabilities(request, attempt, false, task_type, None)
 }
 
 /// Derives and selects, the shape nearly every Python assertion takes.
@@ -159,14 +184,7 @@ fn branch_priority_is_strictly_ordered() {
 
 #[test]
 fn operator_configured_checker_wins_over_every_derived_signal() {
-    let caps = derive_capabilities(
-        &ask(),
-        PLAIN,
-        true,
-        Some(TaskType::Chat),
-        None,
-        ToolErrorsSource::Host,
-    );
+    let caps = derive_capabilities(&ask(), PLAIN, true, Some(TaskType::Chat), None);
     assert_eq!(select_branch(&caps), Branch::Checks);
 }
 
@@ -326,6 +344,24 @@ fn a_multi_turn_typed_answer_takes_the_chat_regime_instead() {
 }
 
 #[test]
+fn a_tool_only_assistant_turn_counts_as_conversation_history() {
+    let (turns, unsupported) = super::text::turns(&continued_tool_session());
+    assert!(!unsupported);
+    assert!(super::text::has_assistant_turn(&turns));
+}
+
+#[test]
+fn a_continued_tool_session_typed_as_answer_takes_the_chat_regime() {
+    let caps = derive(
+        &continued_tool_session(),
+        "The project version is 0.2.0.",
+        Some(TaskType::Answer),
+    );
+    assert_eq!(select_branch(&caps), Branch::Chat);
+    assert_eq!(caps.final_answer, None);
+}
+
+#[test]
 fn code_activity_detection_matches_activity_forms_only() {
     assert!(super::text::observed_hardening(
         "$ pytest\n3 passed in 0.1s"
@@ -456,41 +492,35 @@ fn budgets_are_measured_in_characters_not_bytes() {
 }
 
 #[test]
-fn host_attested_tool_error_provenance_is_carried_through_derivation() {
-    let host = derive_capabilities(&ask(), TOOLED, false, None, Some(2), ToolErrorsSource::Host);
-    assert_eq!(host.tool_errors, Some(2));
-    assert_eq!(host.tool_errors_source, Some(ToolErrorsSource::Host));
+fn tool_error_count_and_provenance_are_carried_as_one_value() {
+    let host = derive_capabilities(&ask(), TOOLED, false, None, Some(ToolErrorCount::Host(2)));
+    assert_eq!(host.tool_errors, Some(ToolErrorCount::Host(2)));
 
     let untrusted = derive_capabilities(
         &ask(),
         TOOLED,
         false,
         None,
-        Some(0),
-        ToolErrorsSource::Untrusted,
+        Some(ToolErrorCount::Untrusted(0)),
     );
-    assert_eq!(
-        untrusted.tool_errors_source,
-        Some(ToolErrorsSource::Untrusted)
-    );
+    assert_eq!(untrusted.tool_errors, Some(ToolErrorCount::Untrusted(0)));
 }
 
 #[test]
 fn secrets_are_redacted_before_the_transcript_is_rendered() {
     let caps = derive(&ask(), "token sk-abcdefghijklmnopqrstuvwx done", None);
-    let transcript = caps
-        .transcript
-        .expect("default regime renders a transcript");
-    assert!(!transcript.contains("sk-abcdefghijklmnopqrstuvwx"));
-    assert!(transcript.contains("[REDACTED]"));
+    assert!(caps.transcript.as_ref().is_some_and(|transcript| {
+        !transcript.contains("sk-abcdefghijklmnopqrstuvwx") && transcript.contains("[REDACTED]")
+    }));
 }
 
 #[test]
 fn the_coding_view_keeps_the_latest_request_and_the_attempt_evidence() {
     let attempt = "diff --git a/x b/x\n$ pytest\n1 passed\n";
     let caps = derive(&ask(), attempt, Some(TaskType::Coding));
-    let transcript = caps.transcript.expect("coding regime renders a transcript");
-    assert!(transcript.contains("LATEST REQUEST:\nFix the failing build"));
-    assert!(transcript.contains("FILES MODIFIED:"));
-    assert!(transcript.contains("FINAL TEST RUN:"));
+    assert!(caps.transcript.as_ref().is_some_and(|transcript| {
+        transcript.contains("LATEST REQUEST:\nFix the failing build")
+            && transcript.contains("FILES MODIFIED:")
+            && transcript.contains("FINAL TEST RUN:")
+    }));
 }

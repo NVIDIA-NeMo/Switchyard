@@ -77,17 +77,17 @@ pub enum TaskType {
     Chat,
 }
 
-/// Provenance of a tool-error count.
+/// A reported tool-error count together with its provenance.
 ///
-/// Only [`ToolErrorsSource::Host`] — the runtime's own tool-execution log — can
-/// authorize a commit. Any other provenance may veto a commit when it reports
+/// Only [`ToolErrorCount::Host`] — the runtime's own tool-execution log — can
+/// authorize a commit. An untrusted report may veto a commit when it reports
 /// errors, but never authorize one when it reports none.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ToolErrorsSource {
-    /// The routing host's own execution log.
-    Host,
-    /// Any other provenance: usable as a veto, never as authorization.
-    Untrusted,
+pub(super) enum ToolErrorCount {
+    /// A count from the routing host's own execution log.
+    Host(i32),
+    /// A count from any other provenance.
+    Untrusted(i32),
 }
 
 /// The complete input the decision core sees.
@@ -115,8 +115,6 @@ pub struct Capabilities {
     pub prior_local: Option<f64>,
     /// No confident type, but there is an attempt to verify.
     pub default_verified: bool,
-    /// Provenance of [`Capabilities::tool_errors`].
-    pub tool_errors_source: Option<ToolErrorsSource>,
     /// The locally produced attempt text. Scoped to the attempt only: request
     /// content must never mint evidence.
     pub attempt: Option<String>,
@@ -125,8 +123,8 @@ pub struct Capabilities {
     pub structured_answer: bool,
     /// Typed as agentic, or the attempt shows tool activity.
     pub is_agentic: bool,
-    /// The runtime's own tool-error count. Never client-declared.
-    pub tool_errors: Option<i32>,
+    /// A reported tool-error count and its provenance. Never client-declared.
+    pub tool_errors: Option<ToolErrorCount>,
 }
 
 /// Selects the verification regime a request's capabilities license.
@@ -162,8 +160,8 @@ pub fn select_branch(caps: &Capabilities) -> Branch {
 ///
 /// `task_type` must be the router's own typing output, never a client field;
 /// `None` is an abstention and derives to the default regime. `attempt` is the
-/// text this router generated locally. `tool_errors` is the runtime's own
-/// tool-execution error count, carried with its `tool_errors_source` provenance.
+/// text this router generated locally. `tool_errors` carries a tool-execution
+/// error count together with its provenance.
 ///
 /// Returns capabilities selecting [`Branch::Unknown`] when the request carries
 /// content the router cannot faithfully judge, when there is no user text or no
@@ -175,8 +173,7 @@ pub fn derive_capabilities(
     attempt: &str,
     checker_configured: bool,
     task_type: Option<TaskType>,
-    tool_errors: Option<i32>,
-    tool_errors_source: ToolErrorsSource,
+    tool_errors: Option<ToolErrorCount>,
 ) -> Capabilities {
     let (turns, unsupported) = text::turns(request);
     if unsupported {
@@ -201,7 +198,6 @@ pub fn derive_capabilities(
         task_text: Some(task_text.clone()),
         attempt: Some(attempt.to_string()),
         tool_errors,
-        tool_errors_source: Some(tool_errors_source),
         ..Default::default()
     };
 
@@ -211,7 +207,6 @@ pub fn derive_capabilities(
             has_checks: true,
             // The checker is the evidence; a tool-error count plays no part.
             tool_errors: None,
-            tool_errors_source: None,
             ..observed
         };
     }
@@ -221,7 +216,6 @@ pub fn derive_capabilities(
             final_answer: Some(attempt.to_string()),
             transcript: Some(render::render_session(&turns, attempt)),
             tool_errors: None,
-            tool_errors_source: None,
             ..observed
         };
     }
