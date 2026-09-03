@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["LlmResponse","LlmResponseChunk","LlmStreamError"],"struct":["LlmResponseStreamEvent","ProviderStreamEvent","ResponseAccumulator"],"type":["LlmResponseStream"]};
