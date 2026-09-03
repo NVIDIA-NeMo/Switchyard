@@ -248,20 +248,20 @@
 <a href=#248 id=248 data-nosnippet>248</a>        <span class="kw">let </span>decision = <span class="self">self</span>.trigger.classify(<span class="kw-2">&amp;</span>signals);
 <a href=#249 id=249 data-nosnippet>249</a>        <span class="comment">// The stall checkpoint fires once per conversation regardless of the
 <a href=#250 id=250 data-nosnippet>250</a>        // turn's shape — even a tool-call turn — for executors that grind
-<a href=#251 id=251 data-nosnippet>251</a>        // without ever declaring completion.
-<a href=#252 id=252 data-nosnippet>252</a>        </span><span class="kw">let </span>stall_key = stall_key(<span class="kw-2">&amp;</span>request);
-<a href=#253 id=253 data-nosnippet>253</a>        <span class="kw">let </span>stall = decision.stalled &amp;&amp; !<span class="self">self</span>.budget.stall_already_fired(stall_key);
-<a href=#254 id=254 data-nosnippet>254</a>        <span class="kw">if </span>decision.fired.is_none() &amp;&amp; !stall {
-<a href=#255 id=255 data-nosnippet>255</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(RoutingOutcome::answered(
-<a href=#256 id=256 data-nosnippet>256</a>                <span class="self">self</span>.executor.clone(),
-<a href=#257 id=257 data-nosnippet>257</a>                request,
-<a href=#258 id=258 data-nosnippet>258</a>                turn.into_response(),
-<a href=#259 id=259 data-nosnippet>259</a>            ));
-<a href=#260 id=260 data-nosnippet>260</a>        }
-<a href=#261 id=261 data-nosnippet>261</a>        <span class="comment">// A stall consumed by a simultaneous trigger does not latch, so the
-<a href=#262 id=262 data-nosnippet>262</a>        // checkpoint can still fire later if this review is refunded.
-<a href=#263 id=263 data-nosnippet>263</a>        </span><span class="kw">if </span>stall &amp;&amp; decision.fired.is_none() {
-<a href=#264 id=264 data-nosnippet>264</a>            <span class="self">self</span>.budget.mark_stall_fired(stall_key);
+<a href=#251 id=251 data-nosnippet>251</a>        // without ever declaring completion. The latch is only attempted when
+<a href=#252 id=252 data-nosnippet>252</a>        // no trigger fired — a stall consumed by a simultaneous trigger does
+<a href=#253 id=253 data-nosnippet>253</a>        // not latch, so the checkpoint can still fire later if this review is
+<a href=#254 id=254 data-nosnippet>254</a>        // refunded — and it is atomic, so of two concurrent stalls on one
+<a href=#255 id=255 data-nosnippet>255</a>        // conversation exactly one claims the checkpoint.
+<a href=#256 id=256 data-nosnippet>256</a>        </span><span class="kw">let </span>stall = decision.fired.is_none()
+<a href=#257 id=257 data-nosnippet>257</a>            &amp;&amp; decision.stalled
+<a href=#258 id=258 data-nosnippet>258</a>            &amp;&amp; <span class="self">self</span>.budget.try_mark_stall_fired(stall_key(<span class="kw-2">&amp;</span>request));
+<a href=#259 id=259 data-nosnippet>259</a>        <span class="kw">if </span>decision.fired.is_none() &amp;&amp; !stall {
+<a href=#260 id=260 data-nosnippet>260</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(RoutingOutcome::answered(
+<a href=#261 id=261 data-nosnippet>261</a>                <span class="self">self</span>.executor.clone(),
+<a href=#262 id=262 data-nosnippet>262</a>                request,
+<a href=#263 id=263 data-nosnippet>263</a>                turn.into_response(),
+<a href=#264 id=264 data-nosnippet>264</a>            ));
 <a href=#265 id=265 data-nosnippet>265</a>        }
 <a href=#266 id=266 data-nosnippet>266</a>        <span class="kw">if </span>!<span class="self">self</span>.budget.try_reserve(scope) {
 <a href=#267 id=267 data-nosnippet>267</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(RoutingOutcome::answered(
