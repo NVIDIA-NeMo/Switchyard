@@ -163,3 +163,37 @@ fn algorithm_build_reports_unknown_configured_target() {
         "route plugin references unknown target missing"
     );
 }
+
+// Preserve checkpoint target order and explicit TOML overrides.
+#[test]
+fn prefill_router_config_preserves_target_order_and_overrides() {
+    let spec: AlgorithmSpec = toml::from_str(
+        r#"
+type = "prefill_router"
+targets = ["fast", "strong"]
+checkpoint = "/models/router.pt"
+device = "cuda:1"
+max_length = 4096
+batch_size = 8
+"#,
+    )
+    .expect("prefill router config should parse");
+
+    let AlgorithmSpec::PrefillRouter {
+        targets,
+        checkpoint,
+        device,
+        cache_dir,
+        max_length,
+        batch_size,
+    } = spec
+    else {
+        panic!("expected prefill router config");
+    };
+    assert_eq!(targets, ["fast", "strong"]);
+    assert_eq!(checkpoint.to_string_lossy(), "/models/router.pt");
+    assert_eq!(device.as_deref(), Some("cuda:1"));
+    assert_eq!(cache_dir, None);
+    assert_eq!(max_length, Some(4096));
+    assert_eq!(batch_size, Some(8));
+}

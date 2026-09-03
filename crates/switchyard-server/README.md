@@ -73,8 +73,9 @@ upstream, and a route's `id` is the model clients send to select that algorithm.
 Each target references an entry under `llm_clients`. All configured clients use
 `TranslatingLlmClient`; supported formats are `openai_chat`, `openai_responses`, and
 `anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`,
-`llm_classifier`, and `stage_router`. An `api_key_env` value names an environment variable; the TOML
-never contains the secret itself. If omitted, the client sends no authentication.
+`llm_classifier`, and `stage_router`. The optional `prefill-router` feature also enables
+`prefill_router`. An `api_key_env` value names an environment variable; the TOML never contains the
+secret itself. If omitted, the client sends no authentication.
 A client can set `forward_auth = true` instead of `api_key_env` to send the
 caller's credential to the configured upstream. OpenAI clients forward
 `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients

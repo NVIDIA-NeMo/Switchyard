@@ -16,6 +16,9 @@ documentation = "https://docs.rs/switchyard-server"
 keywords = ["llm", "proxy", "routing", "openai", "anthropic"]
 publish = ["crates-io"]
 
+[features]
+prefill-router = ["switchyard-runner/prefill-router"]
+
 [dependencies]
 async-stream.workspace = true
 async-trait.workspace = true
