@@ -16,7 +16,7 @@
 use super::decide::{Decision, Readiness, ReadinessGate, Route, decide_from_signals};
 use super::policy::{OffloadDial, Policy};
 use super::rules::{Signals, ToolErrorSignal, Tri};
-use super::{Branch, Capabilities, ToolErrorsSource};
+use super::{Branch, Capabilities, ToolErrorCount};
 
 // ─── fixtures ─────────────────────────────────────────────────────────────────
 
@@ -55,14 +55,13 @@ fn answer(structured_answer: bool) -> Capabilities {
 }
 
 /// Capabilities selecting the evidence-verified agentic branch.
-fn agentic(tool_errors: Option<i32>, source: Option<ToolErrorsSource>) -> Capabilities {
+fn agentic(tool_errors: Option<ToolErrorCount>) -> Capabilities {
     Capabilities {
         task_text: Some("move my meeting".into()),
         transcript: Some("view".into()),
         attempt: Some("[tool result] ok".into()),
         is_agentic: true,
         tool_errors,
-        tool_errors_source: source,
         ..Default::default()
     }
 }
@@ -81,8 +80,7 @@ fn default_verified() -> Capabilities {
 /// The same capabilities, carrying a host-attested tool-error count.
 fn with_host_errors(caps: Capabilities, count: i32) -> Capabilities {
     Capabilities {
-        tool_errors: Some(count),
-        tool_errors_source: Some(ToolErrorsSource::Host),
+        tool_errors: Some(ToolErrorCount::Host(count)),
         ..caps
     }
 }
@@ -137,7 +135,7 @@ fn indeterminate_evidence_never_commits_on_any_branch() {
         chat(),
         answer(true),
         default_verified(),
-        agentic(Some(0), Some(ToolErrorsSource::Host)),
+        agentic(Some(ToolErrorCount::Host(0))),
         Capabilities {
             has_checks: true,
             ..Default::default()
@@ -286,7 +284,7 @@ fn a_host_error_count_vetoes_every_attempt_judging_branch() {
         with_host_errors(coding(), 2),
         with_host_errors(chat(), 2),
         with_host_errors(default_verified(), 2),
-        with_host_errors(agentic(Some(2), Some(ToolErrorsSource::Host)), 2),
+        with_host_errors(agentic(Some(ToolErrorCount::Host(2))), 2),
     ] {
         assert_eq!(route(&caps, &overwhelming), Route::Cloud, "{caps:?}");
     }
@@ -356,7 +354,7 @@ fn only_a_clean_host_attested_count_authorizes_a_commit() {
     assert_eq!(route(&host_clean, &confident), Route::Local);
 
     // A clean count of untrusted provenance authorizes nothing.
-    let untrusted = agentic(Some(0), Some(ToolErrorsSource::Untrusted));
+    let untrusted = agentic(Some(ToolErrorCount::Untrusted(0)));
     let deliberated = Signals {
         deliberation: Some(1.0),
         ..Default::default()
@@ -532,7 +530,7 @@ fn enabling_the_dial_only_ever_adds_commits() {
         answer(false),
         answer(true),
         default_verified(),
-        agentic(Some(0), Some(ToolErrorsSource::Host)),
+        agentic(Some(ToolErrorCount::Host(0))),
     ];
     for caps in &branches {
         for readout in scores {
@@ -602,7 +600,7 @@ fn readiness_gates_force_escalation_until_their_machinery_is_deployed() {
     // Both agentic branches need host-attested tool evidence.
     let recognized = Capabilities {
         prior_local: Some(0.9),
-        ..agentic(None, Some(ToolErrorsSource::Untrusted))
+        ..agentic(None)
     };
     let decision = decide(&recognized, &Signals::default());
     assert_eq!(decision.branch, Branch::AgenticRecognized);
@@ -612,7 +610,7 @@ fn readiness_gates_force_escalation_until_their_machinery_is_deployed() {
         decision.readiness_gate,
         Some(ReadinessGate::ToolEvidenceNotHostAttested)
     );
-    let attested = agentic(Some(0), Some(ToolErrorsSource::Host));
+    let attested = agentic(Some(ToolErrorCount::Host(0)));
     let deliberated = Signals {
         deliberation: Some(1.0),
         ..Default::default()

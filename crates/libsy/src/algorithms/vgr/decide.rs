@@ -18,7 +18,7 @@
 
 use super::policy::Policy;
 use super::rules::{self, Signals, ToolErrorSignal, ToolErrors};
-use super::{Branch, Capabilities, ToolErrorsSource, select_branch};
+use super::{Branch, Capabilities, ToolErrorCount, select_branch};
 
 /// Where a request is served.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,7 +85,7 @@ pub struct Decision {
 /// a count may still veto — a reported failure escalates whoever reported it —
 /// but it can never authorize a commit.
 fn resolve_tool_errors(caps: &Capabilities, sig: &Signals) -> ToolErrors {
-    let Some(host_count) = caps.tool_errors else {
+    let Some(reported) = caps.tool_errors else {
         // No host count: the reported entry stands alone, and an entry that
         // carries no count is the same as no entry at all.
         return match sig.tool_errors {
@@ -94,19 +94,20 @@ fn resolve_tool_errors(caps: &Capabilities, sig: &Signals) -> ToolErrors {
             ToolErrorSignal::Count(count) => ToolErrors::Count(count),
         };
     };
+    let reported_count = reported.count();
 
     let contradicts_host = match sig.tool_errors {
         ToolErrorSignal::Absent => false,
         ToolErrorSignal::NoCount | ToolErrorSignal::Indeterminate => true,
-        ToolErrorSignal::Count(count) => count != host_count,
+        ToolErrorSignal::Count(count) => count != reported_count,
     };
     if contradicts_host {
         return ToolErrors::Indeterminate;
     }
-    if host_count == 0 && caps.tool_errors_source != Some(ToolErrorsSource::Host) {
+    if reported_count == 0 && !reported.is_host() {
         return ToolErrors::NoInformation;
     }
-    ToolErrors::Count(host_count)
+    ToolErrors::Count(reported_count)
 }
 
 /// Decides whether to commit the local attempt or escalate.
@@ -189,7 +190,7 @@ pub fn readiness_effective(
         // Provenance is the whole gate here: these branches commit on the
         // absence of tool errors, which only the runtime's own log can attest.
         Branch::AgenticVerified | Branch::AgenticRecognized
-            if caps.tool_errors_source != Some(ToolErrorsSource::Host) =>
+            if !matches!(caps.tool_errors, Some(ToolErrorCount::Host(_))) =>
         {
             (
                 Route::Cloud,

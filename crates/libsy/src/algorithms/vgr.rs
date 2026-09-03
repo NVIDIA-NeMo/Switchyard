@@ -192,14 +192,19 @@ pub(super) enum ToolErrorCount {
 
 impl ToolErrorCount {
     /// Returns the reported number of tool errors.
-    fn count(self) -> i32 {
+    pub(super) fn count(self) -> i32 {
         match self {
             Self::Host(count) | Self::Untrusted(count) => count,
         }
     }
 
+    /// Whether this count comes from the routing host's execution log.
+    pub(super) fn is_host(self) -> bool {
+        matches!(self, Self::Host(_))
+    }
+
     /// Low-cardinality provenance label for telemetry.
-    fn source_label(self) -> &'static str {
+    pub(super) fn source_label(self) -> &'static str {
         match self {
             Self::Host(_) => "host",
             Self::Untrusted(_) => "untrusted",

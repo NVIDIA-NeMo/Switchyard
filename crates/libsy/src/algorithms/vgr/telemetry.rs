@@ -28,7 +28,7 @@
 use std::time::Duration;
 
 use super::decide::{Decision, Route};
-use super::{TaskType, ToolErrorsSource};
+use super::TaskType;
 
 /// Identifies the prompt set the verifiers were called with.
 ///
@@ -139,7 +139,7 @@ pub(super) struct Record {
     /// The router's own typing of the request, when it typed it.
     pub(super) task_type: Option<TaskType>,
     /// Provenance of the tool-error count the veto acted on, when there was one.
-    pub(super) tool_errors_source: Option<ToolErrorsSource>,
+    pub(super) tool_errors_source: Option<&'static str>,
     /// The prompt set the verifiers were called with.
     pub(super) prompt_version: &'static str,
 }
