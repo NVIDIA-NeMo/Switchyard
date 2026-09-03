@@ -1116,8 +1116,10 @@ async fn typing_the_request_makes_the_answer_regime_reachable() -> Result<()> {
                     .unwrap_or_default();
                 let result: ServeResult = match log.targets().len() {
                     1 => Ok(reply("Paris.")),
-                    // The typing rung, then the witness.
                     2 => Ok(reply("answer")),
+                    // The local rungs come first and neither commits.
+                    3 => Ok(reply_with_readout("yes", 0.1)),
+                    4 => Ok(reply("no")),
                     _ => {
                         // The witness is asked the task and never shown the attempt,
                         // so agreement between the two is evidence, not an echo.
@@ -1136,6 +1138,86 @@ async fn typing_the_request_makes_the_answer_regime_reachable() -> Result<()> {
 
     assert_eq!(target, ModelId::from(LOCAL));
     assert_eq!(served_text(response).await?, "Paris.");
+    // Cheapest-first: the attempt, typing, readout and deliberation are all
+    // local, and the cloud witness is only reached once none of them settled it.
+    assert_eq!(log.targets(), vec![LOCAL, LOCAL, LOCAL, LOCAL, CLOUD]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_confident_local_readout_commits_an_answer_without_paying_for_a_witness() -> Result<()> {
+    // The witness is a cloud call and the readout is four local tokens, so an
+    // answer the readout can settle must never reach the witness.
+    let log = CallLog::default();
+    let seen = log.clone();
+    let config = VgrConfig {
+        task_typing: true,
+        structured_answer: true,
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config)?);
+
+    let (target, _) = test_drive(
+        route,
+        request("what is the capital of France?"),
+        move |t: ModelId, _r| {
+            let log = seen.clone();
+            async move {
+                log.record(&t);
+                let result: ServeResult = match log.targets().len() {
+                    1 => Ok(reply("Paris.")),
+                    2 => Ok(reply("answer")),
+                    // Clears the answer branch's dial bar on its own.
+                    _ => Ok(reply_with_readout("yes", 0.95)),
+                };
+                result
+            }
+        },
+    )
+    .await?;
+
+    assert_eq!(target, ModelId::from(LOCAL));
+    assert_eq!(log.targets(), vec![LOCAL, LOCAL, LOCAL]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unstructured_answer_surface_never_pays_for_a_witness() -> Result<()> {
+    // The answer rule reads agreement only on an operator-declared structured
+    // surface, so asking a witness anywhere else buys nothing.
+    let log = CallLog::default();
+    let seen = log.clone();
+    let config = VgrConfig {
+        task_typing: true,
+        structured_answer: false,
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config)?);
+
+    let (target, _) = test_drive(
+        route,
+        request("what is the capital of France?"),
+        move |t: ModelId, _r| {
+            let log = seen.clone();
+            async move {
+                log.record(&t);
+                let result: ServeResult = match log.targets().len() {
+                    1 => Ok(reply("Paris.")),
+                    2 => Ok(reply("answer")),
+                    3 => Ok(reply_with_readout("yes", 0.1)),
+                    4 => Ok(reply("no")),
+                    _ => Ok(reply("cloud answer")),
+                };
+                result
+            }
+        },
+    )
+    .await?;
+
+    assert_eq!(target, ModelId::from(CLOUD));
+    // No cloud judge is configured, so the turn escalates after the local rungs
+    // without a witness call.
+    assert_eq!(log.targets(), vec![LOCAL, LOCAL, LOCAL, LOCAL, CLOUD]);
     Ok(())
 }
 

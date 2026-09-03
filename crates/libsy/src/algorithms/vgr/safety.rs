@@ -72,13 +72,19 @@ impl Default for BreakerConfig {
     }
 }
 
-/// Mutable breaker state, held behind one lock so the two fields cannot disagree.
+/// Mutable breaker state, held behind one lock so the fields cannot disagree.
 #[derive(Debug, Default)]
 struct BreakerState {
     /// Local-tier failures since the last success.
     consecutive_failures: u32,
     /// When the circuit opened, if it is open.
     opened_at: Option<Instant>,
+    /// Whether a half-open trial has been admitted and has not reported back.
+    ///
+    /// Without this, every caller arriving after the cooldown expires would be
+    /// admitted at once, so a dead endpoint would be hit by the whole concurrent
+    /// load rather than by one probe.
+    trial_in_flight: bool,
 }
 
 /// Stops calling a local endpoint that has failed repeatedly.
@@ -104,21 +110,28 @@ impl CircuitBreaker {
 
     /// Whether the local tier should be skipped for this turn.
     ///
-    /// Expiring the cooldown is a write, so this is not a read-only predicate:
-    /// the trial request is admitted by the same call that observes the
-    /// expiry, which is what keeps exactly one trial in flight per cooldown.
+    /// Admitting the half-open trial is a write, so this is not a read-only
+    /// predicate: the same call that observes the cooldown expiring claims the
+    /// trial, and every concurrent caller keeps seeing an open circuit until
+    /// that trial reports back through [`CircuitBreaker::record_success`] or
+    /// [`CircuitBreaker::record_failure`].
     pub(super) fn is_open(&self) -> bool {
         let mut state = self.state.lock();
-        let Some(opened_at) = state.opened_at else {
+        if state.opened_at.is_none() {
             return false;
-        };
-        if opened_at.elapsed() < self.config.cooldown {
+        }
+        // The circuit stays open while a trial is out, however long ago it
+        // started: one probe at a time, not one per cooldown period.
+        if state.trial_in_flight {
             return true;
         }
-        // Half-open: admit one trial, but leave the count one short of the
-        // threshold so that trial failing re-opens the circuit at once.
-        state.opened_at = None;
-        state.consecutive_failures = self.config.threshold.saturating_sub(1);
+        let cooled = state
+            .opened_at
+            .is_some_and(|opened_at| opened_at.elapsed() >= self.config.cooldown);
+        if !cooled {
+            return true;
+        }
+        state.trial_in_flight = true;
         false
     }
 
@@ -127,12 +140,17 @@ impl CircuitBreaker {
         let mut state = self.state.lock();
         state.consecutive_failures = 0;
         state.opened_at = None;
+        state.trial_in_flight = false;
     }
 
     /// Records a local-tier call that failed, opening the circuit at the threshold.
+    ///
+    /// A failure while open is a failed half-open trial, which restarts the
+    /// cooldown rather than admitting another probe immediately.
     pub(super) fn record_failure(&self) {
         let mut state = self.state.lock();
         state.consecutive_failures += 1;
+        state.trial_in_flight = false;
         if state.consecutive_failures >= self.config.threshold {
             state.opened_at = Some(Instant::now());
         }
@@ -193,6 +211,39 @@ mod tests {
         // ...and a single failure of that trial re-opens the circuit, rather
         // than the count starting over from zero.
         breaker.record_failure();
+        assert!(breaker.is_open());
+    }
+
+    #[test]
+    fn only_one_caller_is_admitted_per_half_open_trial() {
+        // The point of half-open is to probe with a single request. If every
+        // caller arriving after the cooldown were admitted, a dead endpoint
+        // would take the full concurrent load once per cooldown.
+        let breaker = breaker();
+        breaker.record_failure();
+        breaker.record_failure();
+        std::thread::sleep(Duration::from_millis(30));
+
+        assert!(!breaker.is_open(), "the first caller takes the trial");
+        for _ in 0..5 {
+            assert!(breaker.is_open(), "a trial is already in flight");
+        }
+
+        // The trial reporting back is what releases the circuit either way.
+        breaker.record_success();
+        assert!(!breaker.is_open());
+    }
+
+    #[test]
+    fn a_failed_trial_restarts_the_cooldown_rather_than_admitting_another() {
+        let breaker = breaker();
+        breaker.record_failure();
+        breaker.record_failure();
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!breaker.is_open());
+
+        breaker.record_failure();
+        // Re-opened, and the fresh cooldown has not elapsed.
         assert!(breaker.is_open());
     }
 

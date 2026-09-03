@@ -120,64 +120,68 @@ impl Classifier<State> for VgrClassifier {
         // Keep the attempt call local-only so a cloud escalation is prepared as
         // the terminal completion call. Eligible local failures select cloud
         // below instead of surfacing or falling backward later.
+        // The budget covers producing *and* buffering the attempt: an endpoint
+        // that accepts the request and then stalls mid-stream would otherwise
+        // hold the turn open past the deadline, which is exactly the failure the
+        // capable tier is there to absorb.
+        let Some(attempt_budget) = self.remaining(started) else {
+            record.unknown(Stage::Attempt, Unknown::DeadlineExhausted);
+            record.short_circuit = Some("local_timed_out");
+            record.served_route = Some(Route::Cloud);
+            record.elapsed = started.elapsed();
+            record.emit();
+            return Ok((decisive(&targets.cloud), None));
+        };
         let attempt_started = Instant::now();
-        let local_response = match driver
-            .call_model(request.clone(), vec![targets.local.clone()])
-            .await
-        {
-            Ok(response) => response,
-            // An eligible local failure produced no attempt to verify. A host
-            // that did not consume the candidate fallback may serve cloud next.
-            Err(error) if fallback_eligible(&error) => {
-                if indicates_endpoint_failure(&error) {
-                    self.breaker.record_failure();
-                }
-                record.stage(Stage::Attempt, attempt_started.elapsed());
-                record.error(Stage::Attempt, &error);
-                record.short_circuit = Some("local_unavailable");
-                record.served_route = Some(Route::Cloud);
-                record.elapsed = started.elapsed();
-                record.emit();
-                return Ok((decisive(&targets.cloud), None));
-            }
-            Err(error) => {
-                if indicates_endpoint_failure(&error) {
-                    self.breaker.record_failure();
-                }
-                record.stage(Stage::Attempt, attempt_started.elapsed());
-                record.error(Stage::Attempt, &error);
-                return Err(error);
-            }
-        };
-        let buffered = match BufferedResponse::new(local_response).await {
-            Ok(buffered) => {
-                self.breaker.record_success();
-                buffered
-            }
-            Err(source) if client_error_fallback_eligible(&source) => {
-                let error = LibsyError::client_call(targets.local.clone(), source);
-                if indicates_endpoint_failure(&error) {
-                    self.breaker.record_failure();
-                }
-                record.stage(Stage::Attempt, attempt_started.elapsed());
-                record.error(Stage::Attempt, &error);
-                record.short_circuit = Some("local_unavailable");
-                record.served_route = Some(Route::Cloud);
-                record.elapsed = started.elapsed();
-                record.emit();
-                return Ok((decisive(&targets.cloud), None));
-            }
-            Err(source) => {
-                let error = LibsyError::client_call(targets.local.clone(), source);
-                if indicates_endpoint_failure(&error) {
-                    self.breaker.record_failure();
-                }
-                record.stage(Stage::Attempt, attempt_started.elapsed());
-                record.error(Stage::Attempt, &error);
-                return Err(error);
-            }
-        };
+        let attempted = tokio::time::timeout(attempt_budget, async {
+            let response = driver
+                .call_model(request.clone(), vec![targets.local.clone()])
+                .await?;
+            BufferedResponse::new(response)
+                .await
+                .map_err(|source| LibsyError::client_call(targets.local.clone(), source))
+        })
+        .await;
         record.stage(Stage::Attempt, attempt_started.elapsed());
+
+        let buffered = match attempted {
+            // Success is recorded only once the attempt is fully buffered: a
+            // call that returns a stream and then fails mid-transport is a
+            // failed call, not a healthy one.
+            Ok(Ok(attempt)) => {
+                self.breaker.record_success();
+                attempt
+            }
+            Ok(Err(error)) if fallback_eligible(&error) => {
+                if indicates_endpoint_failure(&error) {
+                    self.breaker.record_failure();
+                }
+                record.error(Stage::Attempt, &error);
+                record.short_circuit = Some("local_unavailable");
+                record.served_route = Some(Route::Cloud);
+                record.elapsed = started.elapsed();
+                record.emit();
+                return Ok((decisive(&targets.cloud), None));
+            }
+            Ok(Err(error)) => {
+                if indicates_endpoint_failure(&error) {
+                    self.breaker.record_failure();
+                }
+                record.error(Stage::Attempt, &error);
+                return Err(error);
+            }
+            Err(_elapsed) => {
+                // A tier that does not answer within the budget is unhealthy in
+                // exactly the way the breaker exists to notice.
+                self.breaker.record_failure();
+                record.unknown(Stage::Attempt, Unknown::TimedOut);
+                record.short_circuit = Some("local_timed_out");
+                record.served_route = Some(Route::Cloud);
+                record.elapsed = started.elapsed();
+                record.emit();
+                return Ok((decisive(&targets.cloud), None));
+            }
+        };
         record.local_tokens += tokens(buffered.aggregate());
 
         let attempt = rungs::response_text(buffered.aggregate()).unwrap_or_default();
@@ -351,22 +355,6 @@ impl VgrClassifier {
             return signals;
         }
 
-        // Typed agreement against an independently produced answer. The witness
-        // never sees the attempt, so agreement between them is evidence rather
-        // than an echo.
-        if branch == Branch::Answer
-            && let (Some(answer), Some(task)) =
-                (caps.final_answer.as_deref(), caps.task_text.as_deref())
-        {
-            signals.agreement = Some(
-                self.agree(driver, task, answer, request, record, started)
-                    .await,
-            );
-            if self.settled(caps, &signals) {
-                return signals;
-            }
-        }
-
         // The cheap readout: a few tokens, scored by probability.
         signals.readout = self
             .readout(driver, judged, request, branch, record, started)
@@ -399,6 +387,29 @@ impl VgrClassifier {
         };
         if self.settled(caps, &signals) {
             return signals;
+        }
+
+        // Typed agreement against an independently produced answer. The witness
+        // never sees the attempt, so agreement between them is evidence rather
+        // than an echo.
+        //
+        // It runs after the local rungs, not before: the witness is a cloud call
+        // and the readout is four local tokens, so asking it first would spend
+        // the expensive rung on answers the cheap one would have committed. And
+        // only on a structured surface, because that is the only place the
+        // answer rule reads agreement at all — anywhere else the call is waste.
+        if branch == Branch::Answer
+            && self.config.structured_answer
+            && let (Some(answer), Some(task)) =
+                (caps.final_answer.as_deref(), caps.task_text.as_deref())
+        {
+            signals.agreement = Some(
+                self.agree(driver, task, answer, request, record, started)
+                    .await,
+            );
+            if self.settled(caps, &signals) {
+                return signals;
+            }
         }
 
         // Cloud confirmation, only where a branch can use it and only if the
