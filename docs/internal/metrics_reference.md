@@ -77,11 +77,13 @@ Each histogram emits `_bucket`, `_sum`, and `_count` series. Use
 
 ## Outcome counters for error-rate ratios
 
-The `outcome` label takes exactly three values:
+For HTTP-derived responses and attempts, the `outcome` label takes three values:
 
-* `success` = HTTP 2xx
+* `ok` = HTTP 2xx
 * `retryable_error` = HTTP 408, 429, any 5xx, or a failure before an HTTP status
 * `other_error` = everything else (400, 401, 403, 422, …)
+
+In addition, `switchyard_client_responses_total` records `outcome="client_disconnected"` when a client drops the connection before a response is returned.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -152,7 +154,7 @@ into label space.
 | Label | Values | Where |
 |---|---|---|
 | `model` | One per configured endpoint, typically 2–6 per deployment. | All per-endpoint metrics. |
-| `outcome` | Exactly 3: `success`, `retryable_error`, `other_error`. | Outcome counters |
+| `outcome` | `ok`, `retryable_error`, `other_error`; plus `client_disconnected` on `switchyard_client_responses_total`. | Outcome counters |
 | `code` | Bounded: the known-code allowlist (`200`, `400`, `401`, `403`, `404`, `408`, `409`, `422`, `429`, `500`, `502`, `503`, `504`), plus `none` and the per-class buckets `1xx`/`2xx`/`3xx`/`4xx`/`5xx`/`other`. About 20 values max. | `switchyard_upstream_attempts_total` |
 | `le` | The configured histogram bucket boundaries. | Histogram buckets |
 | `algorithm` | One stable value per configured algorithm. | Routing-overhead histogram, in-flight gauge |

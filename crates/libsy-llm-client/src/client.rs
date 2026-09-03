@@ -289,7 +289,7 @@ impl TranslatingLlmClient {
             // The retained handle updates this same attempt span with its outcome.
             match result {
                 Ok(response) => {
-                    span.record("outcome", "success");
+                    span.record("outcome", "ok");
                     span.record("status_code", response.status());
                     span.record("will_retry", false);
                     if attempt > 0 {

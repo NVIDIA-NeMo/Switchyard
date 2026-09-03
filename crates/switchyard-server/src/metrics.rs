@@ -129,7 +129,7 @@ fn seed_outcome_metrics() {
 
     let client_responses = meter.u64_counter("switchyard.client_responses").build();
     for outcome in [
-        "success",
+        "ok",
         "retryable_error",
         "other_error",
         CLIENT_DISCONNECTED_OUTCOME,

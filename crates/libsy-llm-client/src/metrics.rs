@@ -42,9 +42,13 @@ pub(crate) const fn is_retryable_http_status(status: u16) -> bool {
     status == 408 || status == 429 || (status >= 500 && status <= 599)
 }
 
+/// Maps an HTTP status code (or lack thereof) to a normalized outcome metric label:
+/// - `"ok"` for HTTP 2xx success responses.
+/// - `"retryable_error"` for retryable HTTP statuses (408, 429, 5xx) or non-HTTP failures (`None`).
+/// - `"other_error"` for all other client or non-retryable statuses.
 pub const fn http_outcome_label(status: Option<u16>) -> &'static str {
     match status {
-        Some(200..=299) => "success",
+        Some(200..=299) => "ok",
         Some(status) if is_retryable_http_status(status) => "retryable_error",
         None => "retryable_error",
         Some(_) => "other_error",
@@ -170,6 +174,7 @@ mod tests {
 
     #[test]
     fn outcome_labels_match_the_retry_policy() {
+        assert_eq!(http_outcome_label(Some(200)), "ok");
         for status in [408, 429, 500, 502, 599] {
             assert!(is_retryable_http_status(status));
             assert_eq!(http_outcome_label(Some(status)), "retryable_error");
