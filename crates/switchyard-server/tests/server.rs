@@ -327,20 +327,21 @@ async fn upstream_messages_requires_forwarded_oauth(
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
-    let has_expected_headers = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        == Some("Bearer claude-oauth-token")
-        && headers
-            .get("anthropic-beta")
+    let has_expected_headers = body["model"] == "model/anthropic-diagnostics"
+        || (headers
+            .get("authorization")
             .and_then(|value| value.to_str().ok())
-            == Some("oauth-2025-04-20")
-        && headers
-            .get("anthropic-version")
-            .and_then(|value| value.to_str().ok())
-            == Some("2023-06-01")
-        && !headers.contains_key("chatgpt-account-id")
-        && !headers.contains_key("x-openai-fedramp");
+            == Some("Bearer claude-oauth-token")
+            && headers
+                .get("anthropic-beta")
+                .and_then(|value| value.to_str().ok())
+                == Some("oauth-2025-04-20")
+            && headers
+                .get("anthropic-version")
+                .and_then(|value| value.to_str().ok())
+                == Some("2023-06-01")
+            && !headers.contains_key("chatgpt-account-id")
+            && !headers.contains_key("x-openai-fedramp"));
     if !has_expected_headers {
         return (
             StatusCode::UNAUTHORIZED,
@@ -815,6 +816,89 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
             .ok_or_else(|| format!("missing {metric} series for {MODEL}"))?;
         assert!(!line.contains("tier="), "unexpected tier label in {line}");
     }
+    Ok(())
+}
+
+// A successful cross-provider request must expose any contract weakening in runtime telemetry.
+#[tokio::test]
+async fn metrics_exposes_lossy_outbound_request_translation() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.anthropic]
+format = "anthropic_messages"
+base_url = "{base_url}"
+max_retries = 0
+
+[targets.anthropic]
+id = "model/anthropic-diagnostics"
+llm_client = "anthropic"
+
+[routes.diagnostics]
+id = "switchyard/diagnostics"
+type = "passthrough"
+target = "anthropic"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+    let before = send(&app, "GET", "/metrics", None)
+        .await?
+        .text()?
+        .to_string();
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/diagnostics",
+            "messages": [{"role": "user", "content": "Return constrained JSON"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer",
+                    "strict": true,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"answer": {"type": "string", "minLength": 5}},
+                        "required": ["answer"]
+                    }
+                }
+            }
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0]
+            .pointer("/output_config/format/schema/properties/answer/minLength")
+            .is_none()
+    );
+    drop(calls);
+
+    let after = send(&app, "GET", "/metrics", None)
+        .await?
+        .text()?
+        .to_string();
+    assert_eq!(
+        metric_delta(
+            &before,
+            &after,
+            "switchyard_translation_diagnostics_total",
+            &[
+                ("code", "lossy_conversion"),
+                ("format", "anthropic_messages"),
+                ("operation", "request_encode"),
+                ("severity", "warning"),
+            ],
+        ),
+        Some(1.0)
+    );
     Ok(())
 }
 

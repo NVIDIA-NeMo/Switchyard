@@ -37,6 +37,7 @@ use libsy::{Algorithm, LibsyError, RoutingOutcome};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use switchyard_llm_client::metrics::{TranslationOperation, record_translation_diagnostics};
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
 use switchyard_runner::{
@@ -46,7 +47,9 @@ use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
 
-use switchyard_translation::{WireFormat, decode_request, encode_aggregated_response};
+use switchyard_translation::{
+    WireFormat, decode_request_with_diagnostics, encode_aggregated_response_with_diagnostics,
+};
 
 use crate::response::into_http_response;
 use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
@@ -720,12 +723,19 @@ async fn decision(
             // The request moved into the decision run, so its namespace mapping
             // is gone by here. A Codex tool call in this preview keeps its
             // qualified name.
-            match encode_aggregated_response(
+            match encode_aggregated_response_with_diagnostics(
                 &aggregate,
                 input_format,
                 outcome.selected_model_id().ok().map(ModelId::as_str),
             ) {
-                Ok(response) => Some(response),
+                Ok(encoded) => {
+                    record_translation_diagnostics(
+                        &encoded.diagnostics,
+                        TranslationOperation::ResponseEncode,
+                        input_format,
+                    );
+                    Some(encoded.body)
+                }
                 Err(error) => return server_error(error.to_string()),
             }
         }
@@ -941,8 +951,14 @@ fn resolve_route(
     body: Value,
     wire_format: WireFormat,
 ) -> std::result::Result<(&Route, Request), Response> {
-    let llm_request = decode_request(wire_format, &body)
+    let decoded = decode_request_with_diagnostics(wire_format, &body)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+    record_translation_diagnostics(
+        &decoded.diagnostics,
+        TranslationOperation::RequestDecode,
+        wire_format,
+    );
+    let llm_request = decoded.request;
     let requested_model = llm_request
         .model
         .clone()

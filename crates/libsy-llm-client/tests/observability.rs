@@ -38,6 +38,7 @@ use switchyard_libsy::{
     LlmClassifierConfig, LlmTaskClassifier, PickerMode, RoutingOutcome, StageRouter,
     StageRouterConfig, Step, TaskClassifierConfig,
 };
+use switchyard_llm_client::metrics::{TranslationOperation, record_translation_diagnostics};
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::ModelId;
 use switchyard_protocol::{
@@ -48,6 +49,7 @@ use switchyard_protocol::{
     LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, text_request,
     text_response,
 };
+use switchyard_translation::TranslationDiagnostic;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -642,6 +644,66 @@ fn otel_attribute<'a>(span: &'a SpanData, key: &str) -> Option<&'a OtelValue> {
         .iter()
         .find(|attribute| attribute.key.as_str() == key)
         .map(|attribute| &attribute.value)
+}
+
+#[tokio::test]
+async fn translation_diagnostics_emit_a_metric_and_structured_warning() {
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, _, _) = telemetry();
+    let attributes = [
+        ("code", "lossy_conversion"),
+        ("format", "anthropic_messages"),
+        ("operation", "request_encode"),
+        ("severity", "warning"),
+    ];
+    let before = u64_counter_value(
+        &flushed_metrics(exporter, provider),
+        "switchyard.translation_diagnostics",
+        &attributes,
+    )
+    .unwrap_or_default();
+    let event_count = store.events().len();
+
+    record_translation_diagnostics(
+        &[TranslationDiagnostic::warning(
+            "lossy_conversion",
+            "Anthropic structured output dropped unsupported JSON Schema constraints",
+        )
+        .at_path("$.response_format")],
+        TranslationOperation::RequestEncode,
+        WireFormat::AnthropicMessages,
+    );
+
+    let after = u64_counter_value(
+        &flushed_metrics(exporter, provider),
+        "switchyard.translation_diagnostics",
+        &attributes,
+    );
+    assert_eq!(after, Some(before + 1));
+    let events = store.events();
+    assert!(
+        events[event_count..].iter().any(|event| {
+            event.target == "libsy"
+                && event.level == "WARN"
+                && event
+                    .fields
+                    .get("code")
+                    .is_some_and(|value| value == "lossy_conversion")
+                && event
+                    .fields
+                    .get("format")
+                    .is_some_and(|value| value == "anthropic_messages")
+                && event
+                    .fields
+                    .get("operation")
+                    .is_some_and(|value| value == "request_encode")
+                && event.fields.get("diagnostic").is_some_and(|value| {
+                    value.contains("dropped unsupported JSON Schema constraints")
+                })
+        }),
+        "no structured translation warning in {:?}",
+        &events[event_count..]
+    );
 }
 
 #[tokio::test]

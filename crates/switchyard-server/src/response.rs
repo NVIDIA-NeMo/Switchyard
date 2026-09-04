@@ -7,9 +7,11 @@ use std::error::Error;
 
 use axum::Json;
 use axum::response::{IntoResponse, Response as HttpResponse};
+use switchyard_llm_client::metrics::{TranslationOperation, record_translation_diagnostics};
 use switchyard_protocol::{LlmResponse, ProviderExtensions, Response as AlgorithmResponse};
 use switchyard_translation::{
-    WireFormat, encode_aggregated_response_with_extensions, encode_stream_with_extensions,
+    WireFormat, encode_aggregated_response_with_extensions_and_diagnostics,
+    encode_stream_with_extensions,
 };
 
 use crate::sse::frame_stream;
@@ -27,13 +29,18 @@ pub(crate) fn into_http_response(
 ) -> Result<HttpResponse, BoxError> {
     match response.llm_response {
         LlmResponse::Agg(response) => {
-            let body = encode_aggregated_response_with_extensions(
+            let encoded = encode_aggregated_response_with_extensions_and_diagnostics(
                 &response,
                 target_format,
                 served_model.as_deref(),
                 &request_extensions,
             )?;
-            Ok(Json(body).into_response())
+            record_translation_diagnostics(
+                &encoded.diagnostics,
+                TranslationOperation::ResponseEncode,
+                target_format,
+            );
+            Ok(Json(encoded.body).into_response())
         }
         LlmResponse::Stream(stream) => {
             let events = encode_stream_with_extensions(
