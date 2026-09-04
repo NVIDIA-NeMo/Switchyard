@@ -66,7 +66,19 @@ pub(crate) fn observe_client_call(result: Result<Response>) -> Result<Response> 
         }
         Err(error) => {
             let error_type = client_call_error_type(&error);
-            record_client_error(&span, &error_type, &error);
+            match &error {
+                LibsyError::ClientCall {
+                    target,
+                    source: LlmClientError::UpstreamHttp { status, .. },
+                } => record_client_error(
+                    &span,
+                    &error_type,
+                    &format_args!(
+                        "client call to target {target:?} failed: upstream HTTP {status}"
+                    ),
+                ),
+                _ => record_client_error(&span, &error_type, &error),
+            }
             Err(error)
         }
     }

@@ -413,6 +413,9 @@ impl RoutedLlmClient for ClassifierClient {
     }
 }
 
+// Conversation text that a provider may quote in an upstream error body.
+const LEAKED_CONTENT: &str = "patient name is Jane Doe";
+
 enum JudgeOutcome {
     CallFailure,
     Reply(&'static str),
@@ -440,7 +443,7 @@ impl RoutedLlmClient for JudgeClient {
         match &self.outcome {
             JudgeOutcome::CallFailure => Err(LlmClientError::UpstreamHttp {
                 status: http::StatusCode::INTERNAL_SERVER_ERROR,
-                body: "server error".to_string(),
+                body: format!(r#"{{"error":{{"message":"server error: {LEAKED_CONTENT}"}}}}"#),
             }),
             JudgeOutcome::Reply(text) => Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, *text)),
@@ -1211,6 +1214,39 @@ async fn typed_client_failure_records_semantic_error_type() {
         client_span.fields.get("error.type").map(String::as_str),
         Some("timeout")
     );
+}
+
+/// Verifies that the client span retains the HTTP status without the upstream body.
+#[tokio::test]
+async fn upstream_body_is_redacted_from_the_client_call_span() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const JUDGE: &str = "redaction-judge";
+    let client = Arc::new(JudgeClient {
+        judge_model: JUDGE.into(),
+        outcome: JudgeOutcome::CallFailure,
+    }) as Arc<dyn RoutedLlmClient>;
+    run(
+        classifier_router(JUDGE, "redaction-weak", "redaction-strong")?,
+        client,
+        classifier_request(),
+    )
+    .await?;
+
+    let spans = store.spans();
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", JUDGE);
+    assert_eq!(
+        client_span.fields.get("error.type").map(String::as_str),
+        Some("500")
+    );
+    let error = client_span
+        .fields
+        .get("error")
+        .map(String::as_str)
+        .unwrap_or("");
+    assert!(error.contains("upstream HTTP 500"), "{client_span:?}");
+    assert!(!error.contains(LEAKED_CONTENT), "{client_span:?}");
+    Ok(())
 }
 
 #[tokio::test]
