@@ -1276,6 +1276,7 @@ target = "azure"
         }
     }
 
+    // Header validation preserves opaque value bytes that the HTTP client can send.
     #[test]
     fn accepts_additional_headers() -> RunnerResult<()> {
         let configured = VALID_CONFIG.replacen(
@@ -1289,6 +1290,7 @@ target = "azure"
         Ok(())
     }
 
+    // Malformed names and values fail during offline deployment construction.
     #[test]
     fn rejects_additional_headers_that_http_cannot_encode() {
         let cases = [
@@ -1364,6 +1366,7 @@ target = "azure"
         assert!(message.contains("is empty"));
     }
 
+    // Both provider auth forms must be encodable without exposing credentials in errors.
     #[test]
     fn rejects_api_keys_that_cannot_form_auth_headers() {
         const INVALID_KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_INVALID_HEADER_KEY";
