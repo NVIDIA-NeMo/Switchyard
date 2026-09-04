@@ -23,6 +23,8 @@ nav:
   - Concepts:
       - Core Concepts: core_concepts.md
       - Architecture: architecture.md
+  - Integrations:
+      - NeMo Relay: integrations/nemo_relay.md
   - Routing:
       - Overview: routing_algorithms/overview.md
       - Sub-Agent-Aware Routing: routing_algorithms/subagent_routing.md
