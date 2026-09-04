@@ -989,6 +989,15 @@ mod tests {
         )]
     }
 
+    // A one-model config list: "gpt" served over OpenAI Responses at base_url.
+    fn responses_map(base_url: &str) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(config(base_url)),
+            None,
+        )]
+    }
+
     fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {
         vec![ModelConfig::new(
             "gpt",
@@ -2291,4 +2300,158 @@ mod tests {
             .await?;
         Ok(())
     }
+    // The ChatGPT Codex Responses backend rejects `max_output_tokens` on every
+    // inbound path; a normal OpenAI `/v1/responses` endpoint keeps it. The
+    // strip must be Codex-specific, not a blanket Responses-format behavior.
+    #[tokio::test]
+    async fn codex_responses_requests_drop_max_output_tokens()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen_for_mock = seen.clone();
+        Mock::given(method("POST"))
+            .and(path("/backend-api/codex/responses"))
+            .and(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                seen_for_mock.store(body.get("max_output_tokens").is_some(), Ordering::SeqCst);
+                true
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "status": "completed",
+                "model": "gpt",
+                "output": [{"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "ok"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&responses_map(
+            &format!("{}/backend-api/codex", server.uri()),
+        ))?;
+        let raw = json!({
+            "model": "client-facing",
+            "max_output_tokens": 4096,
+            "input": "hi"
+        });
+        let RawResponse::Buffered(body) = client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?
+        else {
+            panic!("expected a buffered response");
+        };
+        assert_eq!(body["status"], "completed");
+        // The parameter never reached the Codex-shaped upstream.
+        assert!(!seen.load(Ordering::SeqCst), "max_output_tokens leaked upstream");
+        Ok(())
+    }
+
+    // Chat requests routed to the Codex backend lose the translated
+    // `max_tokens -> max_output_tokens` field too.
+    #[tokio::test]
+    async fn codex_chat_requests_drop_translated_max_output_tokens()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen_for_mock = seen.clone();
+        Mock::given(method("POST"))
+            .and(path("/backend-api/codex/responses"))
+            .and(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                seen_for_mock.store(body.get("max_output_tokens").is_some(), Ordering::SeqCst);
+                true
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "status": "completed",
+                "model": "gpt",
+                "output": [{"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "ok"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&responses_map(
+            &format!("{}/backend-api/codex", server.uri()),
+        ))?;
+        let raw = json!({
+            "model": "client-facing",
+            "max_tokens": 512,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        // Inbound chat -> internal -> outbound Responses.
+        let RawResponse::Buffered(body) = client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?
+        else {
+            panic!("expected a buffered response");
+        };
+        // Inbound chat -> the raw response comes back chat-shaped.
+        assert_eq!(body["choices"][0]["message"]["content"], json!("ok"));
+        assert!(!seen.load(Ordering::SeqCst), "translated max_output_tokens leaked upstream");
+        Ok(())
+    }
+
+    // Non-Codex OpenAI Responses backends keep `max_output_tokens`.
+    #[tokio::test]
+    async fn openai_responses_requests_keep_max_output_tokens()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen_for_mock = seen.clone();
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                seen_for_mock.store(body.get("max_output_tokens") == Some(&json!(4096)), Ordering::SeqCst);
+                true
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "status": "completed",
+                "model": "gpt",
+                "output": [{"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "ok"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&responses_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "max_output_tokens": 4096,
+            "input": "hi"
+        });
+        let RawResponse::Buffered(body) = client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?
+        else {
+            panic!("expected a buffered response");
+        };
+        assert_eq!(body["status"], "completed");
+        assert!(seen.load(Ordering::SeqCst), "non-codex Responses backends keep max_output_tokens");
+        Ok(())
+    }
+
 }
