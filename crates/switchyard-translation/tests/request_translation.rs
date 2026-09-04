@@ -13,6 +13,7 @@ use switchyard_translation::{
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
+use switchyard_translation::PreservationPolicy;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -2441,5 +2442,49 @@ fn responses_system_role_items_normalize_to_developer_typed_and_untyped() -> Tes
             && !serialized.contains("\"role\": \"system\""),
         "no system role may survive on the Responses wire"
     );
+    Ok(())
+}
+
+// Embed-preservation replay must also stay wire-legal: preservation metadata is
+// embedded in the translated body, but no `system`-role input item may survive
+// into the outgoing input array.
+#[test]
+fn responses_embed_preservation_replay_has_no_system_role_items() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Embed,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "input": [
+            {"type": "message", "role": "system", "content": "Be terse."},
+            {"type": "message", "role": "user", "content": "hi"}
+        ],
+        "stream": true
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    if let Some(input) = output["input"].as_array() {
+        for item in input {
+            assert_ne!(
+                item.get("role").and_then(Value::as_str),
+                Some("system"),
+                "embed-preservation replay must not re-emit system-role items"
+            );
+        }
+    }
+    // Same-format requests under the Embed policy replay the exact preserved
+    // body (cross-format hops carry the metadata envelope instead); the replay
+    // must be a canonical input array with no `system`-role items.
+    assert!(output["input"].is_array(), "replay must keep a canonical input array");
     Ok(())
 }
