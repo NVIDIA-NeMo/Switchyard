@@ -136,7 +136,17 @@ impl Backend {
     /// than normal OpenAI `/v1/responses` endpoints.
     pub fn is_codex(&self) -> bool {
         matches!(self, Backend::OpenAiResponses(_))
-            && self.config().base_url.contains("/backend-api/codex")
+            && self
+                .config()
+                .base_url
+                // Path-boundary match, not a substring match: strip query and
+                // fragment, then require the path to END with /backend-api/codex.
+                // Near-matches (e.g. https://proxy.example/backend-api/codex-compat
+                // or https://proxy.example/not-backend-api/codex) are NOT Codex.
+                .split(['?', '#'])
+                .next()
+                .map(|rest| rest.trim_end_matches('/').ends_with("/backend-api/codex"))
+                .unwrap_or(false)
     }
 
     /// The fully resolved upstream URL for this backend's endpoint.

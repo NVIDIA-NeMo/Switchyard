@@ -2454,4 +2454,61 @@ mod tests {
         Ok(())
     }
 
+    // Negative control: a URL that merely CONTAINS a codex-like path segment is
+    // not a Codex backend; the parameter must survive.
+    #[tokio::test]
+    async fn codex_near_match_urls_keep_max_output_tokens()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for near_path in ["/backend-api/codex-compat", "/not-backend-api/codex"] {
+            let server = MockServer::start().await;
+            let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let seen_for_mock = seen.clone();
+            let path_suffix = if near_path == "/backend-api/codex-compat" {
+                "/backend-api/codex-compat/responses"
+            } else {
+                "/not-backend-api/codex/responses"
+            };
+            Mock::given(method("POST"))
+                .and(path(path_suffix))
+                .and(move |request: &wiremock::Request| {
+                    let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                    seen_for_mock.store(body.get("max_output_tokens") == Some(&json!(4096)), Ordering::SeqCst);
+                    true
+                })
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "resp_1",
+                    "object": "response",
+                    "status": "completed",
+                    "model": "gpt",
+                    "output": [{"type": "message", "role": "assistant",
+                                "content": [{"type": "output_text", "text": "ok"}]}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                })))
+                .mount(&server)
+                .await;
+
+            let base = format!("{}{}", server.uri(), near_path);
+            let client = TranslatingLlmClient::new(&responses_map(&base))?;
+            let raw = json!({
+                "model": "client-facing",
+                "max_output_tokens": 4096,
+                "input": "hi"
+            });
+            let RawResponse::Buffered(body) = client
+                .call_rewrite_model_raw(
+                    raw,
+                    None,
+                    Some(&ModelId::from("gpt")),
+                    WireFormat::OpenAiResponses,
+                )
+                .await?
+            else {
+                panic!("expected a buffered response");
+            };
+            assert_eq!(body["status"], "completed");
+            assert!(seen.load(Ordering::SeqCst), "near-match URL must not be treated as Codex");
+        }
+        Ok(())
+    }
+
 }
