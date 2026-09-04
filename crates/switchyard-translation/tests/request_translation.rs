@@ -13,6 +13,7 @@ use switchyard_translation::{
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
+use switchyard_translation::PreservationPolicy;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -2387,5 +2388,190 @@ fn responses_flat_file_data_survives_into_chat() -> TestResult {
         .ok_or("the file must survive into Chat, not be dropped as unmappable raw")?;
     assert_eq!(file["file"]["file_data"], "JVBERi0xLjQK");
     assert_eq!(file["file"]["filename"], "report.pdf");
+    Ok(())
+}
+
+// Strict Codex Responses backends reject `system`-role input items ("System
+// messages are not allowed"); they require `developer`. Typed items
+// ({"type":"message","role":"system"}) and untyped role-keyed items alike must
+// normalize to `developer` in the raw body BEFORE preservation capture, so
+// exact-request passthrough stays wire-legal too.
+#[test]
+fn responses_system_role_items_normalize_to_developer_typed_and_untyped() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "input": [
+            {"type": "message", "role": "system", "content": [
+                {"type": "input_text", "text": "typed system"}
+            ]},
+            {"role": "system", "content": [
+                {"type": "input_text", "text": "untyped system"}
+            ]},
+            {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "hi"}
+            ]}
+        ],
+        "stream": true
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .ok_or("Responses input should remain an array")?;
+    assert_eq!(
+        input[0]["role"], "developer",
+        "typed system item must normalize to developer"
+    );
+    assert_eq!(
+        input[1]["role"], "developer",
+        "untyped system item must normalize to developer"
+    );
+    assert_eq!(input[2]["role"], "user", "user item must be untouched");
+    let serialized = serde_json::to_string(&output)?;
+    assert!(
+        !serialized.contains("\"role\":\"system\"") && !serialized.contains("\"role\": \"system\""),
+        "no system role may survive on the Responses wire"
+    );
+    Ok(())
+}
+
+// Embed-preservation replay must also stay wire-legal: preservation metadata is
+// embedded in the translated body, but no `system`-role input item may survive
+// into the outgoing input array.
+#[test]
+fn responses_embed_preservation_replay_has_no_system_role_items() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Embed,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "input": [
+            {"type": "message", "role": "system", "content": "Be terse."},
+            {"type": "message", "role": "user", "content": "hi"}
+        ],
+        "stream": true
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    if let Some(input) = output["input"].as_array() {
+        for item in input {
+            assert_ne!(
+                item.get("role").and_then(Value::as_str),
+                Some("system"),
+                "embed-preservation replay must not re-emit system-role items"
+            );
+        }
+    }
+    // Same-format requests under the Embed policy replay the exact preserved
+    // body (cross-format hops carry the metadata envelope instead); the replay
+    // must be a canonical input array with no `system`-role items.
+    assert!(
+        output["input"].is_array(),
+        "replay must keep a canonical input array"
+    );
+    Ok(())
+}
+
+// The Responses encoder must never emit the scalar string `input` shape:
+// single-user-text requests encode as the canonical message-item list (strict
+// Codex backends reject the scalar form; list input is universally accepted by
+// normal /v1/responses endpoints). CodeRabbit finding on PR #619.
+#[test]
+fn responses_encode_never_emits_scalar_string_input() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4o",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .expect("encoded input must be a message-item list, never a scalar string");
+    assert_eq!(input.len(), 1, "single user text becomes one message item");
+    assert_eq!(
+        input[0].get("type").and_then(Value::as_str),
+        Some("message")
+    );
+    assert_eq!(input[0].get("role").and_then(Value::as_str), Some("user"));
+    Ok(())
+}
+
+// Preserved replay must also stay wire-legal for scalar input: a preserved
+// body carrying the scalar string `input` would otherwise bypass the
+// always-list guarantee, so the replay normalizes it to the canonical single
+// user message-item list. CodeRabbit finding on PR #619.
+#[test]
+fn responses_preserved_scalar_input_replays_as_message_list() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Embed,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "input": "hi",
+        "stream": true
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .expect("preserved replay must keep a canonical input list");
+    assert_eq!(
+        input.len(),
+        1,
+        "scalar input becomes exactly one message item"
+    );
+    assert_eq!(
+        input[0].get("type").and_then(Value::as_str),
+        Some("message")
+    );
+    assert_eq!(input[0].get("role").and_then(Value::as_str), Some("user"));
+    assert_eq!(
+        input[0].pointer("/content/0/type").and_then(Value::as_str),
+        Some("input_text")
+    );
+    assert_eq!(
+        input[0].pointer("/content/0/text").and_then(Value::as_str),
+        Some("hi"),
+        "scalar input text must be preserved verbatim"
+    );
     Ok(())
 }

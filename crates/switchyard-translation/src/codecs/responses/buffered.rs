@@ -122,9 +122,17 @@ impl FormatCodec for OpenAiResponsesCodec {
         request: &LlmRequest,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
-        if let Some(body) =
+        if let Some(mut body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, _policy)
         {
+            // Strict Responses backends reject `system`-role input items ("System
+            // messages are not allowed"); they require `developer`. The preserved
+            // body replays verbatim, so normalize it here to keep exact-request
+            // passthrough wire-legal. A scalar string `input` is likewise
+            // converted to the canonical message-item list so preserved bodies
+            // keep the always-list wire shape the encode path guarantees.
+            normalize_system_input_roles(&mut body);
+            normalize_input_to_message_list(&mut body);
             return Ok(EncodedRequest {
                 body,
                 diagnostics: Vec::new(),
@@ -1011,20 +1019,17 @@ fn encode_responses_text_format(response_format: &Value) -> Value {
 }
 
 // Encodes normalized messages into the Responses `input` shape.
+//
+// The result is ALWAYS a message-item list. Strict Responses backends
+// (chatgpt.com Codex endpoint) reject the scalar string form, and list input
+// is universally accepted by normal `/v1/responses` endpoints, so the
+// historical single-user-text scalar fast path is intentionally gone.
 fn encode_responses_input(
     messages: &[Message],
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
     namespaces: Option<&Map<String, Value>>,
 ) -> Result<Value> {
-    if messages.len() == 1
-        && matches!(messages[0].role, Role::User)
-        && messages[0].content.len() == 1
-        && matches!(messages[0].content[0], ContentBlock::Text { .. })
-        && let ContentBlock::Text { text } = &messages[0].content[0]
-    {
-        return Ok(Value::String(text.clone()));
-    }
     let mut encoded = Vec::new();
     for message in messages {
         // Anthropic-signed thinking cannot be sent as Responses input.
@@ -1126,11 +1131,49 @@ fn encode_responses_special_input(
 }
 
 // Maps normalized roles back to Responses role strings.
+// Rewrites `system`-role items in a raw Responses `input` array to `developer`.
+// Strict Responses backends (chatgpt.com Codex endpoint) reject `system`-role
+// input items ("System messages are not allowed"); they require `developer`.
+// Handles both typed items ({"type":"message","role":"system"}) and untyped
+// role-keyed items.
+fn normalize_system_input_roles(body: &mut Value) {
+    let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for item in input.iter_mut() {
+        if item.get("role").and_then(Value::as_str) == Some("system")
+            && let Some(obj) = item.as_object_mut()
+        {
+            obj.insert("role".to_string(), Value::String("developer".to_string()));
+        }
+    }
+}
+
+// Converts a scalar string `input` into the canonical single user message-item
+// list. Preserved bodies replay verbatim, so without this a preserved request
+// carrying `"input": "hi"` would bypass the always-list shape the encoder
+// guarantees (strict Codex backends reject the scalar form).
+fn normalize_input_to_message_list(body: &mut Value) {
+    let Some(Value::String(text)) = body.get("input") else {
+        return;
+    };
+    let item = json!({
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": text.clone()}],
+    });
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("input".to_string(), Value::Array(vec![item]));
+    }
+}
+
 fn role_to_responses(role: Role) -> &'static str {
     match role {
         Role::Assistant => "assistant",
-        Role::System => "system",
-        Role::Developer => "developer",
+        // Strict Responses backends reject `system`-role input items; they
+        // require `developer` (mirrors the codex wire rules for chat ->
+        // Responses conversions).
+        Role::System | Role::Developer => "developer",
         Role::User | Role::Tool => "user",
     }
 }
