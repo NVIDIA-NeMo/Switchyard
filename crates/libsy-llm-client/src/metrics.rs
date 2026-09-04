@@ -12,11 +12,33 @@ use std::{
 use opentelemetry::metrics::ObservableGauge;
 use opentelemetry::{KeyValue, global};
 use switchyard_libsy::Result;
-use switchyard_protocol::{ModelId, Response};
+use switchyard_protocol::{ModelId, Response, WireFormat};
+use switchyard_translation::{DiagnosticSeverity, TranslationDiagnostic};
 
 static TOTAL_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_ERRORS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_GAUGES: OnceLock<(ObservableGauge<u64>, ObservableGauge<u64>)> = OnceLock::new();
+
+/// Runtime boundary at which a buffered translation diagnostic was emitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TranslationOperation {
+    RequestDecode,
+    RequestEncode,
+    ResponseDecode,
+    ResponseEncode,
+}
+
+impl TranslationOperation {
+    /// Returns the bounded metric-label value for this operation.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestDecode => "request_decode",
+            Self::RequestEncode => "request_encode",
+            Self::ResponseDecode => "response_decode",
+            Self::ResponseEncode => "response_encode",
+        }
+    }
+}
 
 /// Registers process-wide compatibility gauges with the installed global meter provider.
 pub fn initialize() {
@@ -102,6 +124,47 @@ pub(crate) fn record_retry_recovered() {
         .u64_counter("switchyard.router_retry_recovered")
         .build()
         .add(1, &[]);
+}
+
+/// Records translation diagnostics without putting request-derived values in metric labels.
+pub fn record_translation_diagnostics(
+    diagnostics: &[TranslationDiagnostic],
+    operation: TranslationOperation,
+    format: WireFormat,
+) {
+    for diagnostic in diagnostics {
+        let severity = diagnostic_severity_label(&diagnostic.severity);
+        global::meter("switchyard")
+            .u64_counter("switchyard.translation_diagnostics")
+            .build()
+            .add(
+                1,
+                &[
+                    KeyValue::new("code", diagnostic.code.clone()),
+                    KeyValue::new("format", format.as_str()),
+                    KeyValue::new("operation", operation.as_str()),
+                    KeyValue::new("severity", severity),
+                ],
+            );
+        tracing::warn!(
+            target: "libsy",
+            code = %diagnostic.code,
+            format = format.as_str(),
+            operation = operation.as_str(),
+            severity,
+            diagnostic = %diagnostic.message,
+            path = diagnostic.path.as_deref().unwrap_or(""),
+            "LLM protocol translation emitted a diagnostic"
+        );
+    }
+}
+
+const fn diagnostic_severity_label(severity: &DiagnosticSeverity) -> &'static str {
+    match severity {
+        DiagnosticSeverity::Info => "info",
+        DiagnosticSeverity::Warning => "warning",
+        DiagnosticSeverity::Error => "error",
+    }
 }
 
 /// Records the time needed to produce the routing outcome, including classifier calls,
