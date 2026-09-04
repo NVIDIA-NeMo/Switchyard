@@ -1352,10 +1352,7 @@ fn build_vgr_checker(
         checker.timeout_seconds,
     )?;
     let workspace_provider = libsy::CommandWorkspaceProvider::new(
-        libsy::CommandWorkspaceProviderConfig::new(
-            checker.materialize_command.clone(),
-            timeout,
-        ),
+        libsy::CommandWorkspaceProviderConfig::new(checker.materialize_command.clone(), timeout),
     )
     .map_err(|error| {
         AlgorithmConfigError::with_source(format!("vgr route {route_name}: {error}"), error)

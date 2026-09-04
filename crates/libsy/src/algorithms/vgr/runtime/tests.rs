@@ -1553,10 +1553,7 @@ fn real_checker(
     config.sandbox_attestation = SANDBOX_ATTESTATION.into();
     let checker = PinnedChecker::new(config)?;
     let manifest_identity = checker.manifest_identity().to_owned();
-    Ok(ValidatedChecker::new(
-        Arc::new(checker),
-        manifest_identity,
-    )?)
+    Ok(ValidatedChecker::new(Arc::new(checker), manifest_identity)?)
 }
 
 #[cfg(unix)]
