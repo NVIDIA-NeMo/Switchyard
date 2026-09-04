@@ -256,8 +256,18 @@ impl TranslatingLlmClient {
         if matches!(backend, Backend::Anthropic(_)) {
             enable_anthropic_prompt_caching(&mut body);
         }
+        // Target-pinned reasoning policy is canonical on both OpenAI leg formats:
+        // when the target pins a nested `reasoning` policy (e.g. an NT lane's
+        // `reasoning = { effort = "none" }` or `enabled = false` pin via
+        // extra_body), it overrides any caller-supplied reasoning representation.
+        // merge_extra_body only fills absent keys (or_insert), so the target pin
+        // must be re-asserted here; without it, a caller's own `reasoning` object
+        // would silently displace the target's policy.
         if matches!(backend, Backend::OpenAiChat(_)) {
+            canonicalize_reasoning_effort(&mut body, backend.extra_body().get("reasoning"));
             ensure_openai_stream_usage(&mut body);
+        } else if matches!(backend, Backend::OpenAiResponses(_)) {
+            canonicalize_reasoning_effort(&mut body, backend.extra_body().get("reasoning"));
         }
         let streaming = endpoint.allows_streaming()
             && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
@@ -826,6 +836,46 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     };
     for (key, value) in extra_body {
         object.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+}
+
+// Enforces exactly ONE canonical reasoning representation per upstream request,
+// and makes the TARGET's reasoning pin (route-author policy via extra_body)
+// authoritative over caller-supplied reasoning.
+//
+// Two rules, applied AFTER `merge_extra_body` (or_insert - caller values win -
+// so the target pin must be re-asserted here):
+//
+// 1. Target reasoning pin (e.g. `reasoning = { effort = "none" }` on an NT
+//    lane, or `reasoning = { enabled = false }`): the target pin REPLACES the
+//    caller's nested `reasoning` object (if any) and the flat `reasoning_effort`
+//    is dropped. Without this, a caller-supplied `reasoning` object displaces
+//    the target's policy through or_insert merge precedence, and an NT lane
+//    would run reasoning its route author disabled.
+// 2. No target pin: OpenRouter rejects the dual representation when the nested
+//    `reasoning` object carries an effort value AND the caller's flat
+//    `reasoning_effort` rides along with a conflicting value
+//    ("reasoning_effort and reasoning.effort are both provided with conflicting
+//    values"). The nested object is canonical; the flat field is dropped.
+fn canonicalize_reasoning_effort(body: &mut Value, reasoning_pin: Option<&Value>) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    if let Some(pin) = reasoning_pin {
+        // Rule 1: target policy pin is canonical - replaces any caller reasoning.
+        object.insert("reasoning".to_string(), pin.clone());
+        object.remove("reasoning_effort");
+        return;
+    }
+    // Rule 2: no target pin - avoid the conflicting dual representation.
+    if object
+        .get("reasoning")
+        .and_then(Value::as_object)
+        .and_then(|reasoning| reasoning.get("effort"))
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        object.remove("reasoning_effort");
     }
 }
 
@@ -2276,4 +2326,208 @@ mod tests {
             .await?;
         Ok(())
     }
+    // A target that pins its thinking policy as a nested `reasoning` object must
+    // not be displaced by a caller-supplied nested `reasoning` object: the merge
+    // only fills absent keys, so the target pin is re-asserted after it. An NT
+    // lane must reliably remain non-thinking regardless of caller parameters.
+    #[tokio::test]
+    async fn target_reasoning_pin_overrides_caller_nested_reasoning()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use std::sync::Mutex as StdMutex;
+        let server = MockServer::start().await;
+        let seen: Arc<StdMutex<Value>> = Arc::new(StdMutex::new(Value::Null));
+        let seen_for_assert = Arc::clone(&seen);
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                *seen_for_assert.lock().unwrap() = body.clone();
+                body.pointer("/reasoning/effort").and_then(Value::as_str) == Some("none")
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let extra_body = BTreeMap::from([(
+            "reasoning".to_string(),
+            json!({"effort": "none"}),
+        )]);
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", server.uri()),
+            extra_body,
+        ))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning": {"effort": "high"},
+            "reasoning_effort": "high",
+            "max_tokens": 16
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+
+        let seen_body = seen.lock().unwrap().clone();
+        assert_eq!(
+            seen_body.pointer("/reasoning/effort").and_then(Value::as_str),
+            Some("none"),
+            "target NT pin must replace the caller's nested reasoning object"
+        );
+        assert!(
+            seen_body.get("reasoning_effort").is_none(),
+            "flat reasoning_effort must be dropped when the target pins its policy"
+        );
+        Ok(())
+    }
+
+    // A target pinning `reasoning.enabled = false` must likewise override a
+    // caller-supplied nested reasoning object.
+    #[tokio::test]
+    async fn target_enabled_false_pin_overrides_caller_reasoning()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use std::sync::Mutex as StdMutex;
+        let server = MockServer::start().await;
+        let seen: Arc<StdMutex<Value>> = Arc::new(StdMutex::new(Value::Null));
+        let seen_for_assert = Arc::clone(&seen);
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                *seen_for_assert.lock().unwrap() = body.clone();
+                body.pointer("/reasoning/enabled") == Some(&Value::Bool(false))
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let extra_body = BTreeMap::from([(
+            "reasoning".to_string(),
+            json!({"enabled": false}),
+        )]);
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", server.uri()),
+            extra_body,
+        ))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning": {"effort": "medium"},
+            "max_tokens": 16
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+
+        let seen_body = seen.lock().unwrap().clone();
+        assert_eq!(
+            seen_body.pointer("/reasoning/enabled"),
+            Some(&Value::Bool(false)),
+            "target enabled=false pin must replace the caller's reasoning object"
+        );
+        assert!(
+            seen_body.pointer("/reasoning/effort").is_none(),
+            "caller effort must not ride alongside the target's enabled=false pin"
+        );
+        Ok(())
+    }
+
+    // Without a target pin, a nested `reasoning.effort` plus a caller flat
+    // `reasoning_effort` with a conflicting value is rejected by OpenRouter
+    // (dual representation). The nested object is canonical; the flat field is
+    // dropped.
+    #[tokio::test]
+    async fn target_pinned_reasoning_effort_suppresses_flat_reasoning_effort()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use std::sync::Mutex as StdMutex;
+        let server = MockServer::start().await;
+        let seen: Arc<StdMutex<Value>> = Arc::new(StdMutex::new(Value::Null));
+        let seen_for_assert = Arc::clone(&seen);
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                *seen_for_assert.lock().unwrap() = body.clone();
+                body.pointer("/reasoning/effort").and_then(Value::as_str) == Some("low")
+                    && body.get("reasoning_effort").is_none()
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let extra_body = BTreeMap::from([(
+            "reasoning".to_string(),
+            json!({"enabled": true, "effort": "low"}),
+        )]);
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", server.uri()),
+            extra_body,
+        ))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "medium",
+            "max_tokens": 16
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+
+        let seen_body = seen.lock().unwrap().clone();
+        assert!(
+            seen_body.get("reasoning_effort").is_none(),
+            "flat reasoning_effort must be suppressed when the body pins nested reasoning.effort"
+        );
+        assert_eq!(
+            seen_body.pointer("/reasoning/effort").and_then(Value::as_str),
+            Some("low"),
+            "nested reasoning.effort must reach the upstream"
+        );
+        Ok(())
+    }
+
 }
