@@ -18,17 +18,17 @@
 //!
 //! [`Capabilities`] are **never client-declared**, and never read from
 //! client-supplied structure such as tool schemas or third-party classifier
-//! output. [`derive_capabilities`] builds them from exactly three sources:
+//! output. [`derive_capabilities`] builds them from exactly four sources:
 //!
 //! 1. **Operator route configuration** — whether a checker is configured.
 //! 2. **The router's own typing of the request** — a [`TaskType`] the router
 //!    produced itself. Anything outside the known set is an abstention.
 //! 3. **Locally produced attempt evidence** — the attempt this router generated,
 //!    and only that attempt.
-//! 4. **Request-derived tool summaries**, carried only as
-//!    [`ToolErrorCount::Untrusted`]. They may veto but never authorize; only a
-//!    server-owned executor may construct Host evidence. Headers, metadata, and
-//!    client message fields must never mint Host provenance.
+//! 4. **Request-derived tool summaries** — the native runtime deliberately
+//!    trusts normalized transcript tool results as Host evidence. A client that
+//!    can submit conversation history can therefore authorize an agentic commit
+//!    by reporting a clean tool record.
 //!
 //! The derivation lattice is **monotone**: no input reachable by a client
 //! selects a weaker verification regime than the default one. Evidence found in
@@ -191,12 +191,12 @@ pub enum TaskType {
 
 /// A reported tool-error count together with its provenance.
 ///
-/// Only [`ToolErrorCount::Host`] — the runtime's own tool-execution log — can
+/// Only [`ToolErrorCount::Host`] — evidence the routing deployment trusts — can
 /// authorize a commit. An untrusted report may veto a commit when it reports
 /// errors, but never authorize one when it reports none.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolErrorCount {
-    /// A count from the routing host's own execution log.
+    /// A count trusted by the routing host.
     Host(i32),
     /// A count from any other provenance.
     Untrusted(i32),
@@ -210,7 +210,7 @@ impl ToolErrorCount {
         }
     }
 
-    /// Whether this count comes from the routing host's execution log.
+    /// Whether the routing host trusts this count.
     pub fn is_host(self) -> bool {
         matches!(self, Self::Host(_))
     }
@@ -362,6 +362,23 @@ pub fn derive_capabilities(
             tool_errors: None,
             tool_results: None,
             tool_tail_clean: None,
+            ..observed
+        };
+    }
+
+    let has_tool_trajectory = text::has_tool_trajectory(request);
+    let agentic_trajectory = task_type == Some(TaskType::Agentic)
+        || (has_tool_trajectory && !matches!(task_type, Some(TaskType::Answer | TaskType::Chat)));
+    if agentic_trajectory {
+        if !render::agentic_context_complete(&turns) {
+            return Capabilities {
+                task_text: Some(task_text),
+                ..Default::default()
+            };
+        }
+        return Capabilities {
+            transcript: Some(render::render_agentic_view(request, &turns, attempt)),
+            is_agentic: true,
             ..observed
         };
     }

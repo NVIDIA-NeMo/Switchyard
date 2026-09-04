@@ -310,11 +310,12 @@ The local and cloud targets must resolve to distinct model IDs, even when their
 target or client names differ, because the runtime client router is keyed only
 by model ID.
 
-**Trusted tool evidence.** `switchyard-server` is not a tool executor. Tool
-results supplied in a request are marked Untrusted: they may veto but never
-authorize an agentic commit, so native-runner agentic VGR branches cannot serve
-locally. Only a server-owned execution integration may set Host provenance;
-client headers, metadata, and message content never qualify.
+**Transcript tool evidence.** `switchyard-server` is not a tool executor, but
+VGR trusts normalized tool results supplied in request history as Host evidence.
+This enables native-runner agentic commits and also means a client that controls
+the conversation history can report a clean tool record. Agentic judged views
+include user task text, the bounded assistant/tool trajectory, and the current
+attempt; framework system and developer instructions are omitted.
 
 **The checker is Unix-only.** The `[checker]` table is accepted on every platform
 so a deployment's configuration stays portable, but building one on Windows

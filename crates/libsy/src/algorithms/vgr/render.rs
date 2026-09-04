@@ -3,23 +3,20 @@
 
 //! The judged views of a request and their completeness gates.
 //!
-//! Two renderers produce the transcript a downstream verifier reads: a general
-//! session view and a coding view that preserves independently extracted
-//! evidence sections. Each has a gate that answers whether the request can be
-//! represented *in full*; a request that would need a requirement turn clipped
-//! is never judged at all, because judging against partial requirements is worse
-//! than not judging.
+//! Three renderers produce the transcript a downstream verifier reads: a general
+//! session view, a coding view that preserves independently extracted evidence,
+//! and an agentic view that omits framework instructions while retaining the
+//! user task and tool trajectory.
 //!
-//! Two invariants hold across both renderers:
+//! Two invariants hold across all renderers:
 //!
 //! - **Redaction precedes budgeting.** Each section is redacted before its
 //!   budget applies, so redaction expansion can never push a later section out
 //!   of the verifier's window.
-//! - **The latest instruction and the attempt render last**, inside the window a
-//!   verifier is guaranteed to see, so a long earlier conversation cannot evict
-//!   them.
+//! - **The user task and attempt stay visible.** Requirement text is represented
+//!   in full, while trajectory and attempt evidence may clip to bounded windows.
 
-use switchyard_protocol::Role;
+use switchyard_protocol::{ContentBlock, Request, Role};
 
 use super::text::{Turn, char_len, clip_mid, redact};
 
@@ -38,6 +35,13 @@ const CODING_EARLIER_TURN_MAX: usize = 1000;
 const CODING_LATEST_MAX: usize = 12_000;
 const CODING_MAX_SYSTEM_TURNS: usize = 1;
 const CODING_SYSTEM_TURN_MAX: usize = 2000;
+
+/// Agentic-view budgets.
+///
+/// User requirements render in full; trajectory evidence may clip.
+const AGENTIC_REQUIREMENTS_BUDGET: usize = 8000;
+const AGENTIC_TRAJECTORY_BUDGET: usize = 12_000;
+const AGENTIC_EVENT_BUDGET: usize = 1400;
 
 /// Redacted, non-empty turns plus the index of the latest user turn.
 ///
@@ -161,6 +165,112 @@ pub(super) fn session_context_complete(turns: &[Turn], attempt: &str) -> bool {
         }
     }
     char_len(&render_session(turns, attempt)) <= SESSION_WINDOW
+}
+
+/// Whether all user-authored requirements fit the agentic view without clipping.
+///
+/// System and developer instructions are deliberately excluded because agent
+/// framework boilerplate is not part of the task-level view used by the
+/// reference experiments.
+pub(super) fn agentic_context_complete(turns: &[Turn]) -> bool {
+    let rendered = RenderedTurns::new(turns);
+    let user_turns = rendered
+        .turns
+        .iter()
+        .filter(|(role, _)| *role == Role::User)
+        .map(|(_, text)| text);
+    let (count, characters) = user_turns.fold((0usize, 0usize), |(count, characters), text| {
+        (count + 1, characters.saturating_add(char_len(text)))
+    });
+    count > 0 && characters <= AGENTIC_REQUIREMENTS_BUDGET
+}
+
+/// Renders the user task, prior tool trajectory, and current local attempt.
+///
+/// Agent framework instructions are omitted. User-authored text is preserved in
+/// full after [`agentic_context_complete`] succeeds, while model and tool
+/// evidence is bounded and tail-weighted.
+pub(super) fn render_agentic_view(request: &Request, turns: &[Turn], attempt: &str) -> String {
+    let rendered = RenderedTurns::new(turns);
+    let requirements = rendered
+        .turns
+        .iter()
+        .filter(|(role, _)| *role == Role::User)
+        .enumerate()
+        .map(|(index, (_, text))| {
+            let label = if index == 0 {
+                "user task".to_string()
+            } else {
+                format!("user update {index}")
+            };
+            format!("[{label}] {text}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let trajectory = agentic_trajectory(request);
+    let mut parts = vec![format!("USER TASK AND UPDATES:\n{requirements}")];
+    if !trajectory.is_empty() {
+        parts.push(format!(
+            "TOOL TRAJECTORY:\n{}",
+            clip_mid(&trajectory.join("\n"), AGENTIC_TRAJECTORY_BUDGET, 1.0 / 3.0)
+        ));
+    }
+    parts.push(format!(
+        "CURRENT ATTEMPT:\n{}",
+        clip_mid(&redact(attempt), ATTEMPT_BUDGET, 1.0 / 3.0)
+    ));
+    parts.join("\n\n")
+}
+
+/// Bounded assistant and tool events after the first user task.
+fn agentic_trajectory(request: &Request) -> Vec<String> {
+    let mut started = false;
+    let mut events = Vec::new();
+    for message in &request.llm_request.messages {
+        if !started {
+            let (text, _) = super::text::content_text(&message.content);
+            if message.role == Role::User && !text.trim().is_empty() {
+                started = true;
+            }
+            continue;
+        }
+
+        for block in &message.content {
+            let event = match block {
+                ContentBlock::Text { text } | ContentBlock::Refusal { text }
+                    if message.role == Role::Assistant =>
+                {
+                    Some(("assistant", text.clone()))
+                }
+                ContentBlock::Text { text } | ContentBlock::Refusal { text }
+                    if message.role == Role::Tool =>
+                {
+                    Some(("tool result", text.clone()))
+                }
+                ContentBlock::ToolCall(call) => {
+                    Some(("tool call", format!("{}({})", call.name, call.arguments)))
+                }
+                ContentBlock::ToolResult(result) => {
+                    let (text, _) = super::text::content_text(&result.content);
+                    let label = if result.is_error == Some(true) {
+                        "tool error"
+                    } else {
+                        "tool result"
+                    };
+                    Some((label, text))
+                }
+                _ => None,
+            };
+            if let Some((label, text)) = event {
+                events.push(format!(
+                    "[{label}] {}",
+                    clip_mid(&redact(&text), AGENTIC_EVENT_BUDGET, 0.5)
+                ));
+            }
+        }
+    }
+    events
 }
 
 /// True when every task-bearing turn of a coding conversation is representable

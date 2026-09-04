@@ -266,11 +266,9 @@ fn structurally_empty_requests_fail_closed_rather_than_erroring() {
 // ─── ported from test_derivation_monotone_hardening ───────────────────────────
 
 #[test]
-fn tool_structure_in_the_request_does_not_select_a_weaker_regime() {
-    // Tool traces in the request are ignored; only the router's own attempt
-    // carries evidence. The reference records this as the closed exploit: dummy
-    // tool structure plus a favorable prior cannot happen, because no
-    // derivation input produces a prior.
+fn tool_structure_in_the_request_hardens_to_agentic_without_minting_a_prior() {
+    // Trusted transcript tools select the stricter agentic regime, while the
+    // operator-only recognized prior remains unavailable to request content.
     let dummy_tools = Request {
         llm_request: LlmRequest {
             messages: vec![
@@ -297,7 +295,7 @@ fn tool_structure_in_the_request_does_not_select_a_weaker_regime() {
         ..Default::default()
     };
     let caps = derive(&dummy_tools, "All done, the answer is 4.", None);
-    assert_eq!(select_branch(&caps), Branch::DefaultVerified);
+    assert_eq!(select_branch(&caps), Branch::AgenticVerified);
     assert_eq!(caps.prior_local, None);
 }
 
@@ -464,6 +462,37 @@ fn instruction_blocks_are_derived_as_in_band_system_turns() {
         branch_of(&within_budget, PLAIN, None),
         Branch::DefaultVerified
     );
+}
+
+#[test]
+fn agentic_view_omits_framework_instructions_and_keeps_the_tool_trajectory() {
+    let framework = "framework boilerplate ".repeat(500);
+    let mut request = continued_tool_session();
+    request.llm_request.instructions.push(InstructionBlock {
+        role: Role::System,
+        content: vec![ContentBlock::Text {
+            text: framework.clone(),
+        }],
+    });
+
+    let caps = derive_capabilities(
+        &request,
+        CODED,
+        false,
+        Some(TaskType::Coding),
+        Some(ToolErrorCount::Host(0)),
+        Some(1),
+        Some(true),
+    );
+
+    assert_eq!(select_branch(&caps), Branch::AgenticVerified);
+    let transcript = caps.transcript.as_deref().unwrap_or_default();
+    assert!(transcript.contains("Find the project version"));
+    assert!(transcript.contains("What version did you find?"));
+    assert!(transcript.contains("read_file"));
+    assert!(transcript.contains(r#"version = "0.2.0""#));
+    assert!(transcript.contains(CODED));
+    assert!(!transcript.contains(&framework));
 }
 
 #[test]

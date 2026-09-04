@@ -224,9 +224,8 @@ pub struct ToolSignals {
     ///
     /// Unwindowed, unlike [`ToolSignals::severity`]: a veto that asks "did
     /// anything fail during this task" must see errors the recent window has
-    /// already decayed out of. Reported, not host-observed — it is derived from
-    /// the conversation the client supplied, so it can witness failure but
-    /// cannot attest success.
+    /// already decayed out of. This is derived from the conversation the client
+    /// supplied; each consumer decides whether that transcript is trusted.
     pub error_count: u32,
     /// Total normalized tool results in the conversation.
     pub tool_results: u32,

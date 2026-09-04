@@ -49,7 +49,7 @@ pub enum ReadinessGate {
     /// effectively local, whatever its evidence said.
     SecureCheckerMissing,
     /// The branch vetoes on tool errors, so the count must come from the
-    /// runtime's own execution log rather than from any other reporter.
+    /// evidence source the routing host has chosen to trust.
     ToolEvidenceNotHostAttested,
 }
 
@@ -239,7 +239,7 @@ pub fn readiness_effective(
             (Route::Cloud, Some(ReadinessGate::SecureCheckerMissing))
         }
         // Provenance is the whole gate here: these branches commit on the
-        // absence of tool errors, which only the runtime's own log can attest.
+        // absence of tool errors, which only a host-trusted source can attest.
         Branch::AgenticVerified | Branch::AgenticRecognized
             if !matches!(caps.tool_errors, Some(ToolErrorCount::Host(_))) =>
         {

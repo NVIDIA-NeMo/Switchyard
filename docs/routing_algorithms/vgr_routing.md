@@ -128,17 +128,21 @@ reference POLICY 2.11 shipment: the branch dials are coding `0.2`, chat `0.3`,
 answer `0.7`, default `0.7`, and agentic `0.2`; the coding dial arm additionally
 requires a strict cloud-judge affirmation.
 
-Agentic commits require tool evidence from a server-owned executor. A bounded
-recovered run may relax an earlier-error veto only when that executor attests at
-least one error, no more than 15 tool results, and a clean final result. Missing,
-malformed, request-derived, or contradictory summaries never authorize.
+Agentic commits use the tool record derived from normalized request history. A
+bounded recovered run may relax an earlier-error veto when that history reports
+at least one error, no more than 15 tool results, and a clean final result.
+Missing, malformed, or contradictory summaries never authorize.
 
-The native `switchyard-server` does not execute tools. Tool results found in
-request history are therefore marked **Untrusted**: they may veto a commit, but
-cannot authorize one. Consequently native-runner agentic branches never serve
-locally. Only an integration whose server-owned executor produced the execution
-log may set Host provenance; client headers, metadata, and message fields must
-never do so.
+The native `switchyard-server` deliberately trusts transcript tool results as
+Host evidence even though it does not execute the tools. This enables agentic
+local commits through the normal proxy API, but any client that can submit
+conversation history can also report a clean tool record.
+
+For agentic sessions, the judged view contains user task text, the bounded
+assistant/tool trajectory, and the current attempt. System and developer
+instructions are treated as agent-framework boilerplate and omitted from this
+view; non-agentic coding and general views continue to require their instruction
+content to fit without clipping.
 
 Tool-bearing assistant turns also use in-flight trajectory verification. Two
 consecutive escalation votes latch the session to the capable tier; a definite

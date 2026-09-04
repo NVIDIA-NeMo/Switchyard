@@ -132,6 +132,19 @@ pub(super) fn has_assistant_turn(turns: &[Turn]) -> bool {
     turns.iter().any(|turn| turn.role == Role::Assistant)
 }
 
+/// Whether the normalized conversation contains an executed or proposed tool step.
+pub(super) fn has_tool_trajectory(request: &Request) -> bool {
+    request.llm_request.messages.iter().any(|message| {
+        message.role == Role::Tool
+            || message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
+                )
+            })
+    })
+}
+
 /// Baseline secret and PII scrub applied before any text leaves the device.
 ///
 /// Idempotent: rendering applies it once per section and the gates measure

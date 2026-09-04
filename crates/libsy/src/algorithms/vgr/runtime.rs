@@ -347,11 +347,9 @@ impl VgrClassifier {
 
     /// Builds the capabilities this turn is judged under.
     ///
-    /// The tool-error count is derived from the conversation the client
-    /// supplied, so it is recorded as untrusted: this router proxies model
-    /// calls and does not execute the tools, so no host execution log exists to
-    /// attest it. Untrusted evidence may still veto — a reported failure
-    /// escalates whoever reported it — but it can never authorize a commit.
+    /// The native runtime trusts normalized tool-result history as its execution
+    /// record. This lets transcript evidence authorize agentic commits, and
+    /// deliberately makes clients responsible for supplying faithful history.
     fn derive(
         &self,
         request: &Request,
@@ -365,7 +363,7 @@ impl VgrClassifier {
             attempt,
             self.config.checker.is_some(),
             task_type,
-            Some(ToolErrorCount::Untrusted(tool_signals.error_count as i32)),
+            Some(ToolErrorCount::Host(tool_signals.error_count as i32)),
             Some(tool_signals.tool_results as i32),
             Some(tool_signals.tool_tail_clean),
         );

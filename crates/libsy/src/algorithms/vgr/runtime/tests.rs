@@ -16,10 +16,10 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use parking_lot::Mutex;
 use switchyard_protocol::{
-    AggLlmResponse, ContentBlock, FormatId, LlmClientError, LlmResponse, LlmResponseChunk,
-    LlmResponseStreamEvent, Message, ModelId, PreservationMetadata, Request, Response,
-    ResponseOutput, Role, StopReason, ToolCall, ToolResult, Usage, WireFormat, text_request,
-    text_response,
+    AggLlmResponse, ContentBlock, FormatId, InstructionBlock, LlmClientError, LlmResponse,
+    LlmResponseChunk, LlmResponseStreamEvent, Message, ModelId, PreservationMetadata, Request,
+    Response, ResponseOutput, Role, StopReason, ToolCall, ToolResult, Usage, WireFormat,
+    text_request, text_response,
 };
 
 #[cfg(unix)]
@@ -1214,7 +1214,7 @@ async fn an_escalated_session_stays_on_the_capable_tier() {
     );
 }
 
-// ─── host-tool evidence ──────────────────────────────────────────────────────
+// ─── transcript tool evidence ────────────────────────────────────────────────
 
 /// A request whose conversation carries one failed tool result.
 fn request_with_tool_error(text: &str) -> Request {
@@ -1233,10 +1233,34 @@ fn request_with_tool_error(text: &str) -> Request {
     base
 }
 
+/// A request whose conversation carries one successful tool result.
+fn request_with_clean_tool_result(text: &str) -> Request {
+    let mut base = request(text);
+    base.llm_request.messages.push(Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolCall(ToolCall {
+            id: "call-1".to_string(),
+            name: "terminal".to_string(),
+            arguments: serde_json::json!({"command": "deploy"}),
+        })],
+    });
+    base.llm_request.messages.push(Message {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult(ToolResult {
+            tool_call_id: "call-1".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Deployment completed successfully.".to_string(),
+            }],
+            is_error: Some(false),
+        })],
+    });
+    base
+}
+
 #[tokio::test]
 async fn a_reported_tool_error_vetoes_a_commit_the_evidence_would_otherwise_license() {
-    // An error-bearing agentic run that is not host-attested as recovered is
-    // already terminal: it must spend zero verifier rungs.
+    // An error-bearing agentic run that is not eligible for the bounded
+    // recovered-run arm is already terminal: it must spend zero verifier rungs.
     let log = CallLog::default();
     let seen = log.clone();
     let route = Arc::new(super::super::Vgr::new(active()).expect("builds"));
@@ -1264,19 +1288,25 @@ async fn a_reported_tool_error_vetoes_a_commit_the_evidence_would_otherwise_lice
 }
 
 #[tokio::test]
-async fn a_clean_reported_count_does_not_authorize_an_agentic_commit() {
-    // This router proxies model calls and never runs the tools, so a clean tool
-    // record is reported rather than attested. It may witness failure but it
-    // must not stand in for the host evidence the agentic regimes require —
-    // otherwise a client controls whether its own work is verified.
+async fn a_clean_transcript_tool_result_authorizes_an_agentic_commit() {
+    // The native runtime deliberately treats normalized transcript tool results
+    // as its trusted execution record and excludes framework instructions from
+    // the agentic judged view.
+    let log = CallLog::default();
+    let seen = log.clone();
     let route = Arc::new(super::super::Vgr::new(active()).expect("builds"));
-    let (target, _) = test_drive(
-        route,
-        request("run the deployment"),
-        |t: ModelId, _r| async move {
+    let mut transcript = request_with_clean_tool_result("run the deployment");
+    transcript.llm_request.instructions.push(InstructionBlock {
+        role: Role::System,
+        content: vec![ContentBlock::Text {
+            text: "framework boilerplate ".repeat(500),
+        }],
+    });
+    let (target, _) = test_drive(route, transcript, move |t: ModelId, _r| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&t);
             let result: ServeResult = if t == *LOCAL {
-                // Tool activity in the attempt selects an agentic regime, and
-                // the readout is as confident as it can be.
                 Ok(reply_with_readout(
                     "[tool] deploy\nAll steps completed.",
                     0.99,
@@ -1285,12 +1315,13 @@ async fn a_clean_reported_count_does_not_authorize_an_agentic_commit() {
                 Ok(reply("cloud answer"))
             };
             result
-        },
-    )
+        }
+    })
     .await
     .expect("routes");
 
-    assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(target, ModelId::from(LOCAL));
+    assert_eq!(log.targets(), vec![LOCAL, LOCAL]);
 }
 
 // ─── task typing and the agreement rung ──────────────────────────────────────
