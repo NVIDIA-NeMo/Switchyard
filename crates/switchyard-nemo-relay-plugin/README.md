@@ -78,10 +78,10 @@ backend from that format rather than translating a route to a different
 provider API. When one upstream model must serve multiple caller formats,
 declare a target and route for each corresponding client format.
 
-The plugin emits a routing request mark, routing-model call marks, measured
-routing-overhead marks, and a selected-model decision mark. Token usage is
-emitted as Switchyard metrics for both routing-model and answer-model calls;
-Relay retains ownership of the outer LLM lifecycle.
+The plugin emits routing request, model-call, measured-overhead, and decision
+marks. Call marks distinguish routing from answer calls; decisions distinguish
+selected from served models. Token metrics cover both call roles, while Relay
+retains ownership of the outer LLM lifecycle.
 
 ## Observability
 
@@ -89,8 +89,9 @@ When Relay is configured with OTLP logs and metrics exporters, the plugin emits
 typed telemetry through Relay's native plugin runtime:
 
 - Routing request, decision, and overhead marks are Info logs.
-- Per-routing-model call marks are Debug logs, including their outcome and
-  latency, but not token usage.
+- Per-model call marks are Debug logs with `call_role`, outcome, and latency,
+  but no token usage. Streaming marks cover stream creation; later failures are
+  reported separately.
 - Terminal routing and response-finalization failures are Error logs. Their
   payload contains only the safe Switchyard failure summary; it excludes
   provider response bodies and free-form provider messages.
@@ -109,6 +110,21 @@ The plugin does not attach sessions, requests, or provider messages as metric
 attributes. `target_model` comes from the configured Switchyard target set,
 rather than arbitrary caller input, keeping the metric cardinality bounded by
 the deployment.
+
+Every non-metric mark sets `data_schema.name` to the mark name and
+`data_schema.version` to `1`. Consumers should tolerate unknown fields and
+values. Removing or renaming fields, changing their type, or changing their
+meaning requires a new schema version.
+
+| Mark | Data fields |
+| --- | --- |
+| `switchyard.routing.requested` | `algorithm` |
+| `switchyard.routing.llm_call` | `call_index`, `selected_model`, `call_role`, `outcome`, `latency_ms` |
+| `switchyard.routing.overhead` | `latency_ms` |
+| `switchyard.routing.decision` | `algorithm`, `selected_model`, nullable `served_model`, nullable `fallback_used` |
+| `switchyard.routing.error` | `failure_kind`; optional `category`, `phase`, `upstream_status`, and `target` |
+
+`served_model` and `fallback_used` are `null` when serving metadata is unavailable.
 
 ## Failure policy
 
