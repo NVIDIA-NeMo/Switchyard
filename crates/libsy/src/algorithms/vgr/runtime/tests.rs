@@ -1009,10 +1009,7 @@ async fn the_vgr_deadline_cancels_a_pinned_checker_process_tree()
     })?;
     let manifest_identity = checker.manifest_identity().to_owned();
     let config = VgrConfig {
-        checker: Some(ValidatedChecker::new(
-            Arc::new(checker),
-            manifest_identity,
-        )?),
+        checker: Some(ValidatedChecker::new(Arc::new(checker), manifest_identity)?),
         deadline: Duration::from_millis(500),
         ..active()
     };
