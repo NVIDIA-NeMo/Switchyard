@@ -43,3 +43,84 @@ target = "invalid"
     );
     Ok(())
 }
+
+#[test]
+fn dry_run_rejects_invalid_configured_header() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let config = directory.path().join("routes.toml");
+    fs::write(
+        &config,
+        r#"
+schema_version = 1
+
+[llm_clients.invalid]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+extra_headers = { "bad header" = "value" }
+
+[targets.invalid]
+id = "upstream-model"
+llm_client = "invalid"
+
+[routes.invalid]
+id = "test-route"
+type = "passthrough"
+target = "invalid"
+"#,
+    )?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_switchyard-server"))
+        .args(["--config", config.to_string_lossy().as_ref(), "--dry-run"])
+        .output()?;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("invalid HTTP header name \"bad header\""),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn dry_run_rejects_api_key_that_cannot_form_auth_header() -> TestResult {
+    const INVALID_KEY_ENV: &str = "SWITCHYARD_CLI_TEST_INVALID_HEADER_KEY";
+    const INVALID_KEY: &str = "canary\nsecret";
+
+    let directory = tempfile::tempdir()?;
+    let config = directory.path().join("routes.toml");
+    fs::write(
+        &config,
+        format!(
+            r#"
+schema_version = 1
+
+[llm_clients.invalid]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+api_key_env = "{INVALID_KEY_ENV}"
+
+[targets.invalid]
+id = "upstream-model"
+llm_client = "invalid"
+
+[routes.invalid]
+id = "test-route"
+type = "passthrough"
+target = "invalid"
+"#
+        ),
+    )?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_switchyard-server"))
+        .args(["--config", config.to_string_lossy().as_ref(), "--dry-run"])
+        .env(INVALID_KEY_ENV, INVALID_KEY)
+        .output()?;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("api_key cannot be encoded as an HTTP header"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(INVALID_KEY), "API key leaked in: {stderr}");
+    Ok(())
+}
