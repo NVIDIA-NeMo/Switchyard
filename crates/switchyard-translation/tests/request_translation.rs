@@ -2438,8 +2438,7 @@ fn responses_system_role_items_normalize_to_developer_typed_and_untyped() -> Tes
     assert_eq!(input[2]["role"], "user", "user item must be untouched");
     let serialized = serde_json::to_string(&output)?;
     assert!(
-        !serialized.contains("\"role\":\"system\"")
-            && !serialized.contains("\"role\": \"system\""),
+        !serialized.contains("\"role\":\"system\"") && !serialized.contains("\"role\": \"system\""),
         "no system role may survive on the Responses wire"
     );
     Ok(())
@@ -2485,7 +2484,10 @@ fn responses_embed_preservation_replay_has_no_system_role_items() -> TestResult 
     // Same-format requests under the Embed policy replay the exact preserved
     // body (cross-format hops carry the metadata envelope instead); the replay
     // must be a canonical input array with no `system`-role items.
-    assert!(output["input"].is_array(), "replay must keep a canonical input array");
+    assert!(
+        output["input"].is_array(),
+        "replay must keep a canonical input array"
+    );
     Ok(())
 }
 
@@ -2515,7 +2517,10 @@ fn responses_encode_never_emits_scalar_string_input() -> TestResult {
         .as_array()
         .expect("encoded input must be a message-item list, never a scalar string");
     assert_eq!(input.len(), 1, "single user text becomes one message item");
-    assert_eq!(input[0].get("type").and_then(Value::as_str), Some("message"));
+    assert_eq!(
+        input[0].get("type").and_then(Value::as_str),
+        Some("message")
+    );
     assert_eq!(input[0].get("role").and_then(Value::as_str), Some("user"));
     Ok(())
 }
@@ -2549,8 +2554,15 @@ fn responses_preserved_scalar_input_replays_as_message_list() -> TestResult {
     let input = output["input"]
         .as_array()
         .expect("preserved replay must keep a canonical input list");
-    assert_eq!(input.len(), 1, "scalar input becomes exactly one message item");
-    assert_eq!(input[0].get("type").and_then(Value::as_str), Some("message"));
+    assert_eq!(
+        input.len(),
+        1,
+        "scalar input becomes exactly one message item"
+    );
+    assert_eq!(
+        input[0].get("type").and_then(Value::as_str),
+        Some("message")
+    );
     assert_eq!(input[0].get("role").and_then(Value::as_str), Some("user"));
     assert_eq!(
         input[0].pointer("/content/0/type").and_then(Value::as_str),
