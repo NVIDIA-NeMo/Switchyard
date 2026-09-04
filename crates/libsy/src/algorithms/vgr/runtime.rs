@@ -336,11 +336,7 @@ impl VgrClassifier {
                 };
                 let checker_started = Instant::now();
                 let verdict = checker
-                    .check(
-                        task,
-                        caps.attempt.as_deref().unwrap_or_default(),
-                        deadline,
-                    )
+                    .check(task, caps.attempt.as_deref().unwrap_or_default(), deadline)
                     .await;
                 record.stage(Stage::Checker, checker_started.elapsed());
                 signals.tests_pass = Some(match verdict {

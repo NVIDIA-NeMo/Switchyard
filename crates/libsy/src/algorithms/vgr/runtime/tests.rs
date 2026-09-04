@@ -154,8 +154,8 @@ async fn an_eligible_local_failure_escalates_to_cloud() -> Result<()> {
             "eligible local failure triggered another routing call",
         ));
     };
-    assert_eq!(outcome.selected_model_id, ModelId::from(CLOUD));
-    assert!(outcome.fallback_models.is_empty());
+    assert_eq!(outcome.selected_model_id()?, &ModelId::from(CLOUD));
+    assert_eq!(outcome.selected_model_ids, vec![ModelId::from(CLOUD)]);
     assert!(outcome.response.is_none());
     Ok(())
 }
@@ -176,8 +176,8 @@ async fn a_cloud_decision_never_falls_back_to_local() -> Result<()> {
     let Step::Done(outcome) = step else {
         return Err(test_error("off mode unexpectedly made a model call"));
     };
-    assert_eq!(outcome.selected_model_id, ModelId::from(CLOUD));
-    assert!(outcome.fallback_models.is_empty());
+    assert_eq!(outcome.selected_model_id()?, &ModelId::from(CLOUD));
+    assert_eq!(outcome.selected_model_ids, vec![ModelId::from(CLOUD)]);
     Ok(())
 }
 
