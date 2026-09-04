@@ -35,6 +35,10 @@ pub fn decode_request(wire_format: WireFormat, body: &Value) -> Result<LlmReques
 }
 
 /// Decodes a request and retains any diagnostics emitted by the codec.
+///
+/// # Errors
+///
+/// Returns an error when the request codec cannot decode `body`.
 pub fn decode_request_with_diagnostics(
     wire_format: WireFormat,
     body: &Value,
@@ -48,6 +52,10 @@ pub fn encode_request(request: &LlmRequest, wire_format: WireFormat) -> Result<V
 }
 
 /// Encodes a request and retains any diagnostics emitted by the codec.
+///
+/// # Errors
+///
+/// Returns an error when the request codec cannot encode `request`.
 pub fn encode_request_with_diagnostics(
     request: &LlmRequest,
     wire_format: WireFormat,
@@ -61,6 +69,10 @@ pub fn decode_aggregated_response(body: &Value, wire_format: WireFormat) -> Resu
 }
 
 /// Decodes a buffered response and retains any diagnostics emitted by the codec.
+///
+/// # Errors
+///
+/// Returns an error when the response codec cannot decode `body`.
 pub fn decode_aggregated_response_with_diagnostics(
     body: &Value,
     wire_format: WireFormat,
@@ -80,6 +92,10 @@ pub fn encode_aggregated_response(
 }
 
 /// Encodes a buffered response and retains any diagnostics emitted by the codec.
+///
+/// # Errors
+///
+/// Returns an error when the response codec cannot encode `agg`.
 pub fn encode_aggregated_response_with_diagnostics(
     agg: &AggLlmResponse,
     wire_format: WireFormat,
@@ -113,6 +129,10 @@ pub fn encode_aggregated_response_with_extensions(
 }
 
 /// Encodes a buffered response with request extensions and retains codec diagnostics.
+///
+/// # Errors
+///
+/// Returns an error when the response codec cannot encode `agg`.
 pub fn encode_aggregated_response_with_extensions_and_diagnostics(
     agg: &AggLlmResponse,
     wire_format: WireFormat,
