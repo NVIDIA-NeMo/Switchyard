@@ -122,9 +122,14 @@ impl FormatCodec for OpenAiResponsesCodec {
         request: &LlmRequest,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
-        if let Some(body) =
+        if let Some(mut body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, _policy)
         {
+            // Strict Responses backends reject `system`-role input items ("System
+            // messages are not allowed"); they require `developer`. The preserved
+            // body replays verbatim, so normalize it here to keep exact-request
+            // passthrough wire-legal.
+            normalize_system_input_roles(&mut body);
             return Ok(EncodedRequest {
                 body,
                 diagnostics: Vec::new(),
@@ -1017,14 +1022,10 @@ fn encode_responses_input(
     policy: &TranslationPolicy,
     namespaces: Option<&Map<String, Value>>,
 ) -> Result<Value> {
-    if messages.len() == 1
-        && matches!(messages[0].role, Role::User)
-        && messages[0].content.len() == 1
-        && matches!(messages[0].content[0], ContentBlock::Text { .. })
-        && let ContentBlock::Text { text } = &messages[0].content[0]
-    {
-        return Ok(Value::String(text.clone()));
-    }
+    // Strict Responses backends (chatgpt.com Codex endpoint) reject non-list
+    // input; callers of translated chat-completions cannot influence the shape.
+    // Always encode canonical message-item lists instead of the input-string
+    // shorthand.
     let mut encoded = Vec::new();
     for message in messages {
         // Anthropic-signed thinking cannot be sent as Responses input.
@@ -1126,11 +1127,31 @@ fn encode_responses_special_input(
 }
 
 // Maps normalized roles back to Responses role strings.
+// Rewrites `system`-role items in a raw Responses `input` array to `developer`.
+// Strict Responses backends (chatgpt.com Codex endpoint) reject `system`-role
+// input items ("System messages are not allowed"); they require `developer`.
+// Handles both typed items ({"type":"message","role":"system"}) and untyped
+// role-keyed items.
+fn normalize_system_input_roles(body: &mut Value) {
+    let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for item in input.iter_mut() {
+        if item.get("role").and_then(Value::as_str) == Some("system")
+            && let Some(obj) = item.as_object_mut()
+        {
+            obj.insert("role".to_string(), Value::String("developer".to_string()));
+        }
+    }
+}
+
 fn role_to_responses(role: Role) -> &'static str {
     match role {
         Role::Assistant => "assistant",
-        Role::System => "system",
-        Role::Developer => "developer",
+        // Strict Responses backends reject `system`-role input items; they
+        // require `developer` (mirrors the codex wire rules for chat ->
+        // Responses conversions).
+        Role::System | Role::Developer => "developer",
         Role::User | Role::Tool => "user",
     }
 }

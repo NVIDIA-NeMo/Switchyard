@@ -2389,3 +2389,89 @@ fn responses_flat_file_data_survives_into_chat() -> TestResult {
     assert_eq!(file["file"]["filename"], "report.pdf");
     Ok(())
 }
+
+// Strict Codex Responses backends reject `system`-role input items ("System
+// messages are not allowed"); they require `developer`. Typed items
+// ({"type":"message","role":"system"}) and untyped role-keyed items alike must
+// normalize to `developer` in the raw body BEFORE preservation capture, so
+// exact-request passthrough stays wire-legal too.
+#[test]
+fn responses_system_role_items_normalize_to_developer_typed_and_untyped() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "input": [
+            {"type": "message", "role": "system", "content": [
+                {"type": "input_text", "text": "typed system"}
+            ]},
+            {"role": "system", "content": [
+                {"type": "input_text", "text": "untyped system"}
+            ]},
+            {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "hi"}
+            ]}
+        ],
+        "stream": true
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .ok_or("Responses input should remain an array")?;
+    assert_eq!(
+        input[0]["role"], "developer",
+        "typed system item must normalize to developer"
+    );
+    assert_eq!(
+        input[1]["role"], "developer",
+        "untyped system item must normalize to developer"
+    );
+    assert_eq!(input[2]["role"], "user", "user item must be untouched");
+    let serialized = serde_json::to_string(&output)?;
+    assert!(
+        !serialized.contains("\"role\":\"system\"")
+            && !serialized.contains("\"role\": \"system\""),
+        "no system role may survive on the Responses wire"
+    );
+    Ok(())
+}
+
+// Strict Codex Responses backends reject the top-level input STRING shorthand
+// with 400 "Input must be a list". Single-message chat -> Responses requests
+// must always encode canonical message-item lists; callers of translated
+// chat-completions cannot influence the input shape themselves.
+#[test]
+fn responses_single_message_input_is_always_a_list_not_a_string() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "messages": [
+            {"role": "user", "content": "Reply with the single word OK."}
+        ],
+        "max_tokens": 16
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .ok_or("Responses input must be encoded as a message-item list, not the string shorthand")?;
+    assert_eq!(input.len(), 1, "the single user message must be present");
+    assert_eq!(input[0]["role"], "user");
+    Ok(())
+}
