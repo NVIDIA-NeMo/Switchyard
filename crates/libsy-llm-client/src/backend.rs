@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::{collections::BTreeMap, fmt};
 
 use reqwest::RequestBuilder;
-use reqwest::header::HeaderValue;
+use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::Value;
 use switchyard_protocol::{Metadata, WireFormat};
 
@@ -45,6 +45,7 @@ pub struct HttpBackendConfig {
     /// Base URL of the provider API (e.g. `https://api.openai.com/v1`).
     pub base_url: String,
     /// API key for the provider, loaded by the caller. `None` sends no configured auth.
+    /// Client construction rejects values that cannot form the provider's auth header.
     pub api_key: Option<String>,
     /// Whether this backend forwards the caller's provider credential and application headers.
     ///
@@ -53,7 +54,8 @@ pub struct HttpBackendConfig {
     /// Custom headers added to every outbound call to this backend.
     ///
     /// Provider-owned headers are rejected so a static value cannot replace
-    /// configured or forwarded auth. Header names are case-insensitive.
+    /// configured or forwarded auth. Names and values must be valid HTTP header bytes;
+    /// header names are case-insensitive.
     pub extra_headers: BTreeMap<String, String>,
     /// Default top-level request fields, applied only when the request omits the key.
     pub extra_body: BTreeMap<String, Value>,
@@ -98,8 +100,25 @@ pub enum Backend {
 }
 
 impl Backend {
-    // Checks custom headers before the client can send a request.
-    pub(crate) fn validate_extra_headers(&self, model_name: &str) -> Result<()> {
+    // Matches reqwest's header conversions before the client can send a request.
+    pub(crate) fn validate_configured_headers(&self, model_name: &str) -> Result<()> {
+        for (name, value) in &self.config().extra_headers {
+            if HeaderName::from_bytes(name.as_bytes()).is_err() {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {model_name:?} extra_headers contains invalid HTTP header name {name:?}"
+                    ),
+                });
+            }
+            if HeaderValue::from_bytes(value.as_bytes()).is_err() {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {model_name:?} has invalid HTTP header value for extra_headers entry {name:?}"
+                    ),
+                });
+            }
+        }
+
         let invalid_name = self.config().extra_headers.keys().find(|name| match self {
             Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
                 name.eq_ignore_ascii_case("authorization")
@@ -119,6 +138,23 @@ impl Backend {
             return Err(LlmClientError::Configuration {
                 message: format!(
                     "model {model_name:?} extra_headers cannot set {name:?}; extra_headers is only for additional headers"
+                ),
+            });
+        }
+
+        let Some(api_key) = self.config().api_key.as_deref() else {
+            return Ok(());
+        };
+        let valid_api_key = match self {
+            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
+                HeaderValue::try_from(format!("Bearer {api_key}")).is_ok()
+            }
+            Backend::Anthropic(_) => HeaderValue::from_str(api_key).is_ok(),
+        };
+        if !valid_api_key {
+            return Err(LlmClientError::Configuration {
+                message: format!(
+                    "model {model_name:?} api_key cannot be encoded as an HTTP header"
                 ),
             });
         }
