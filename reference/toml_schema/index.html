@@ -1628,6 +1628,12 @@ calls an upstream.</p>
 <td>unset</td>
 <td>Whether <code>GET /v1/models</code> advertises reasoning support to Codex direct-provider discovery. Unset routes are advertised as non-reasoning.</td>
 </tr>
+<tr>
+<td><code>vision</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Whether <code>GET /v1/models</code> advertises <strong>image input</strong> to Codex direct-provider discovery. Unset routes are advertised as text-only. This is not cosmetic: Codex reads <code>input_modalities</code> from the model card and, when it reads text-only, replaces an attached image with the text <code>image content omitted because you do not support image input</code> <strong>before sending</strong>, so a route whose target can see but which does not declare <code>vision = true</code> loses the image in the client. Declare it only when every target the route can select accepts images.</td>
+</tr>
 </tbody>
 </table>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
