@@ -1053,6 +1053,43 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn vgr_checker_requires_materialization_and_validation() {
+        let checker = format!(
+            "{}\n\
+             [routes.vgr.checker]\n\
+             tests_dir = \"/definitely/missing/vgr-tests\"\n\
+             command = [\"/bin/true\"]\n\
+             sandbox_attestation = \"vgr-checker-runs-in-deployment-sandbox\"\n\
+             validated = true\n",
+            vgr_config()
+        );
+        let missing = error_message(&checker);
+        assert!(missing.contains("materialize_command"), "{missing}");
+
+        let empty = checker.replace(
+            "tests_dir = \"/definitely/missing/vgr-tests\"",
+            "tests_dir = \"/definitely/missing/vgr-tests\"\nmaterialize_command = []",
+        );
+        let empty_message = error_message(&empty);
+        assert!(
+            empty_message.contains("materialize command"),
+            "{empty_message}"
+        );
+
+        let unvalidated = empty
+            .replace(
+                "materialize_command = []",
+                "materialize_command = [\"/bin/true\"]",
+            )
+            .replace("validated = true", "validated = false");
+        let unvalidated_message = error_message(&unvalidated);
+        assert!(
+            unvalidated_message.contains("checker.validated must be true"),
+            "{unvalidated_message}"
+        );
+    }
+
+    #[test]
     fn composite_stage_block_rejects_an_unknown_field() {
         let config = composite_config().replace(
             "confidence_threshold = 0.5",
