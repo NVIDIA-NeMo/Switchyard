@@ -3474,3 +3474,75 @@ async fn responses_round_trips_codex_tool_namespaces() -> TestResult {
     assert_eq!(completed["response"]["output"][0]["namespace"], "mcp__b");
     Ok(())
 }
+
+// Verifies a route declaring `vision = true` advertises image input, and that an
+// undeclared route still fails closed to text-only.
+//
+// This is not cosmetic metadata. Codex reads `input_modalities` from the model card
+// and, when it reads text-only, replaces an attached image with the literal text
+// "image content omitted because you do not support image input" before sending — so
+// a route whose target can see but which does not say so loses the image in the
+// client, and Switchyard never receives one to forward.
+#[tokio::test]
+async fn models_endpoint_advertises_image_input_only_for_vision_routes() -> TestResult {
+    const CONFIG: &str = r#"
+schema_version = 1
+
+[llm_clients.shared]
+format = "openai_responses"
+base_url = "http://127.0.0.1:1/v1"
+
+[targets.shared]
+id = "shared-model"
+llm_client = "shared"
+
+[routes.sees]
+id = "sees"
+type = "passthrough"
+target = "shared"
+vision = true
+
+[routes.blind]
+id = "blind"
+type = "passthrough"
+target = "shared"
+"#;
+    let app = build_switchyard_router(load_test_config(CONFIG)?);
+    let models = send(&app, "GET", "/v1/models", None).await?;
+    assert_eq!(models.status, StatusCode::OK);
+    let body = models.json()?;
+
+    let codex_metadata = body["models"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| {
+            entry["slug"]
+                .as_str()
+                .map(|slug| (slug.to_string(), entry.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        codex_metadata["sees"]["input_modalities"],
+        json!(["text", "image"])
+    );
+    assert_eq!(codex_metadata["blind"]["input_modalities"], json!(["text"]));
+
+    // The OpenAI `data` entry reports the raw Option, so an undeclared route stays
+    // distinguishable from one that declared `false`.
+    let capabilities = body["data"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| {
+            entry["id"]
+                .as_str()
+                .map(|id| (id.to_string(), entry["capabilities"].clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(capabilities["sees"]["vision"], json!(true));
+    assert_eq!(capabilities["blind"]["vision"], json!(null));
+    Ok(())
+}
