@@ -44,7 +44,7 @@ pub struct HttpBackendConfig {
     /// Base URL of the provider API (e.g. `https://api.openai.com/v1`).
     pub base_url: String,
     /// API key for the provider, loaded by the caller. `None` sends no configured auth.
-    /// Client construction rejects values that cannot form the provider's auth header.
+    /// Client construction rejects active values that cannot form the provider's auth header.
     pub api_key: Option<String>,
     /// Whether this backend forwards the caller's provider credential instead.
     pub forward_auth: bool,
@@ -130,7 +130,7 @@ impl Backend {
             });
         }
 
-        let Some(api_key) = self.config().api_key.as_deref() else {
+        let Some(api_key) = self.configured_api_key() else {
             return Ok(());
         };
         let valid_api_key = match self {
@@ -167,6 +167,15 @@ impl Backend {
         }
     }
 
+    // Static credentials are unused when the caller's authorization is forwarded.
+    fn configured_api_key(&self) -> Option<&str> {
+        if self.is_forwarding_auth() {
+            None
+        } else {
+            self.config().api_key.as_deref()
+        }
+    }
+
     /// The fully resolved upstream URL for this backend's endpoint.
     ///
     /// Tolerates base URLs that already include the provider path (or a bare
@@ -186,11 +195,7 @@ impl Backend {
     /// `x-api-key: <key>` plus the required `anthropic-version` header. A backend
     /// with `forward_auth` uses the caller's provider credential instead.
     pub fn apply_auth(&self, mut builder: RequestBuilder) -> RequestBuilder {
-        let api_key = if self.is_forwarding_auth() {
-            None
-        } else {
-            self.config().api_key.as_deref()
-        };
+        let api_key = self.configured_api_key();
         match self {
             Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
                 if let Some(api_key) = api_key {
@@ -441,6 +446,75 @@ mod tests {
             Backend::Anthropic(config("x")).wire_format(),
             WireFormat::AnthropicMessages
         );
+    }
+
+    // Header validation follows reqwest for both accepted and rejected bytes.
+    #[test]
+    fn validates_additional_header_bytes() {
+        let cases = [
+            ("x-display-name", "café", None),
+            (
+                "bad header",
+                "value",
+                Some("invalid HTTP header name \"bad header\""),
+            ),
+            (
+                "x-test-header",
+                "bad\nvalue",
+                Some("invalid HTTP header value for extra_headers entry \"x-test-header\""),
+            ),
+        ];
+
+        for (name, value, expected) in cases {
+            let mut config = config("x");
+            config
+                .extra_headers
+                .insert(name.to_string(), value.to_string());
+            let result = Backend::OpenAiChat(config).validate_configured_headers("model");
+            match expected {
+                Some(expected) => assert!(
+                    result.is_err_and(|error| error.to_string().contains(expected)),
+                    "expected {expected:?}"
+                ),
+                None => result.expect("encodable header must pass validation"),
+            }
+        }
+    }
+
+    // Only static credentials that apply_auth would send are validated.
+    #[test]
+    fn configured_api_key_validation_matches_auth_application() {
+        const INVALID_KEY: &str = "canary\nsecret";
+        let mut config = config("x");
+        config.api_key = Some(INVALID_KEY.to_string());
+        let builders: [fn(HttpBackendConfig) -> Backend; 2] =
+            [Backend::OpenAiChat, Backend::Anthropic];
+        let client = reqwest::Client::new();
+
+        for build_backend in builders {
+            let error = build_backend(config.clone())
+                .validate_configured_headers("model")
+                .expect_err("invalid API key must fail")
+                .to_string();
+            assert!(
+                error.contains("api_key cannot be encoded as an HTTP header"),
+                "{error}"
+            );
+            assert!(!error.contains(INVALID_KEY), "API key leaked in: {error}");
+
+            let mut forwarded = config.clone();
+            forwarded.forward_auth = true;
+            let backend = build_backend(forwarded);
+            backend
+                .validate_configured_headers("model")
+                .expect("unused API key must not fail validation");
+            let request = backend
+                .apply_auth(client.get("https://example.test"))
+                .build()
+                .expect("request");
+            assert!(!request.headers().contains_key("authorization"));
+            assert!(!request.headers().contains_key("x-api-key"));
+        }
     }
 
     #[test]
