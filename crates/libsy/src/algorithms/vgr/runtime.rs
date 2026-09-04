@@ -136,13 +136,8 @@ impl VgrClassifier {
     /// that exists, derivation abstains on task type, which selects the default
     /// verification regime rather than a weaker one.
     fn derive(&self, request: &Request, attempt: &str) -> Capabilities {
-        let mut caps = derive_capabilities(
-            request,
-            attempt,
-            self.config.checker.is_some(),
-            None,
-            None,
-        );
+        let mut caps =
+            derive_capabilities(request, attempt, self.config.checker.is_some(), None, None);
         // Operator declarations, which derivation never produces on its own.
         caps.structured_answer = self.config.structured_answer;
         caps
