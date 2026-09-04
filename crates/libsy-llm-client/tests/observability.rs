@@ -646,6 +646,7 @@ fn otel_attribute<'a>(span: &'a SpanData, key: &str) -> Option<&'a OtelValue> {
         .map(|attribute| &attribute.value)
 }
 
+// Verifies the required metric labels and exactly one structured warning per diagnostic.
 #[tokio::test]
 async fn translation_diagnostics_emit_a_metric_and_structured_warning() {
     let _guard = serialize_test().lock().await;
@@ -674,15 +675,41 @@ async fn translation_diagnostics_emit_a_metric_and_structured_warning() {
         WireFormat::AnthropicMessages,
     );
 
+    let snapshots = flushed_metrics(exporter, provider);
     let after = u64_counter_value(
-        &flushed_metrics(exporter, provider),
+        &snapshots,
         "switchyard.translation_diagnostics",
         &attributes,
     );
     assert_eq!(after, Some(before + 1));
+    let mut metric_attribute_keys = snapshots
+        .iter()
+        .flat_map(|snapshot| snapshot.scope_metrics())
+        .flat_map(|scope| scope.metrics())
+        .filter(|metric| metric.name() == "switchyard.translation_diagnostics")
+        .filter_map(|metric| match metric.data() {
+            AggregatedMetrics::U64(MetricData::Sum(sum)) => sum
+                .data_points()
+                .find(|point| attributes_match(point.attributes(), &attributes))
+                .map(|point| {
+                    point
+                        .attributes()
+                        .map(|attribute| attribute.key.as_str().to_string())
+                        .collect::<Vec<_>>()
+                }),
+            _ => None,
+        })
+        .next()
+        .expect("missing translation diagnostic metric attributes");
+    metric_attribute_keys.sort_unstable();
+    assert_eq!(
+        metric_attribute_keys,
+        ["code", "format", "operation", "severity"]
+    );
     let events = store.events();
-    assert!(
-        events[event_count..].iter().any(|event| {
+    let matching_warnings = events[event_count..]
+        .iter()
+        .filter(|event| {
             event.target == "libsy"
                 && event.level == "WARN"
                 && event
@@ -700,9 +727,11 @@ async fn translation_diagnostics_emit_a_metric_and_structured_warning() {
                 && event.fields.get("diagnostic").is_some_and(|value| {
                     value.contains("dropped unsupported JSON Schema constraints")
                 })
-        }),
-        "no structured translation warning in {:?}",
-        &events[event_count..]
+        })
+        .count();
+    assert_eq!(
+        matching_warnings, 1,
+        "expected one structured translation warning"
     );
 }
 

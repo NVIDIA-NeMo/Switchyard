@@ -327,6 +327,7 @@ async fn upstream_messages_requires_forwarded_oauth(
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
+    // The diagnostics fixture intentionally has no OAuth credentials.
     let has_expected_headers = body["model"] == "model/anthropic-diagnostics"
         || (headers
             .get("authorization")
@@ -844,10 +845,66 @@ target = "anthropic"
         base_url = upstream.base_url
     ))?;
     let app = build_switchyard_router(state);
+    let diagnostic_labels = [
+        ("code", "lossy_conversion"),
+        ("format", "anthropic_messages"),
+        ("operation", "request_encode"),
+        ("severity", "warning"),
+    ];
     let before = send(&app, "GET", "/metrics", None)
         .await?
         .text()?
         .to_string();
+
+    let lossless_response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/diagnostics",
+            "messages": [{"role": "user", "content": "Return JSON"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer",
+                    "strict": true,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                        "required": ["answer"]
+                    }
+                }
+            }
+        })),
+    )
+    .await?;
+    assert_eq!(lossless_response.status, StatusCode::OK);
+    assert_eq!(
+        lossless_response.json()?["choices"][0]["message"]["content"],
+        "ok"
+    );
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].pointer("/output_config/format/schema/properties/answer"),
+        Some(&json!({"type": "string"}))
+    );
+    drop(calls);
+
+    let after_lossless = send(&app, "GET", "/metrics", None)
+        .await?
+        .text()?
+        .to_string();
+    assert_eq!(
+        metric_delta(
+            &before,
+            &after_lossless,
+            "switchyard_translation_diagnostics_total",
+            &diagnostic_labels,
+        )
+        .unwrap_or_default(),
+        0.0
+    );
 
     let response = send(
         &app,
@@ -872,33 +929,41 @@ target = "anthropic"
     )
     .await?;
     assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
     let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 1);
+    assert_eq!(calls.len(), 2);
     assert!(
-        calls[0]
+        calls[1]
             .pointer("/output_config/format/schema/properties/answer/minLength")
             .is_none()
     );
     drop(calls);
 
-    let after = send(&app, "GET", "/metrics", None)
+    let after_lossy = send(&app, "GET", "/metrics", None)
         .await?
         .text()?
         .to_string();
     assert_eq!(
         metric_delta(
-            &before,
-            &after,
+            &after_lossless,
+            &after_lossy,
             "switchyard_translation_diagnostics_total",
-            &[
-                ("code", "lossy_conversion"),
-                ("format", "anthropic_messages"),
-                ("operation", "request_encode"),
-                ("severity", "warning"),
-            ],
+            &diagnostic_labels,
         ),
         Some(1.0)
     );
+    let diagnostic_line = metric_line(
+        &after_lossy,
+        "switchyard_translation_diagnostics_total",
+        &diagnostic_labels,
+    )
+    .ok_or("missing translation diagnostic metric")?;
+    for forbidden_label in ["diagnostic=", "path="] {
+        assert!(
+            !diagnostic_line.contains(forbidden_label),
+            "unexpected high-cardinality label in {diagnostic_line}"
+        );
+    }
     Ok(())
 }
 
