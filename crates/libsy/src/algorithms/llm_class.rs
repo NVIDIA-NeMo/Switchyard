@@ -173,6 +173,16 @@ impl ClassifierInput for TaskInput {
             Some(window) => trim_messages(&request.llm_request.messages, window),
             None => task_messages(&request.llm_request.messages),
         };
+        // Reasoning is provider-private and not required to classify the task. Some
+        // upstreams also reject an unsigned reasoning item replayed without the
+        // opaque state it was issued with, so it cannot travel through a windowed
+        // classifier request as ordinary history.
+        for message in &mut messages {
+            message
+                .content
+                .retain(|block| !matches!(block, ContentBlock::Reasoning { .. }));
+        }
+        messages.retain(|message| !message.content.is_empty());
         // Only the windowed path carries assistant turns and tool traffic for the judge
         // to be distracted by. The default path is user task messages only — the anchor
         // and the latest follow-up — so there is nothing there to outrank.
@@ -1465,6 +1475,99 @@ mod tests {
             Some(TRAILING_ROUTING_INSTRUCTION)
         );
         Ok(())
+    }
+
+    /// Reasoning is provider-private and some upstreams reject it replayed without the
+    /// opaque state it was issued with, so it must not reach a windowed classifier
+    /// request — visible assistant text and complete tool pairs still do.
+    #[test]
+    fn a_window_drops_reasoning_but_keeps_visible_text_and_tool_pairs() {
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            Message::text(Role::User, "initial task"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Reasoning {
+                        text: "private chain of thought".to_string(),
+                        signature: None,
+                        details: Vec::new(),
+                    },
+                    ContentBlock::Text {
+                        text: "visible answer".to_string(),
+                    },
+                ],
+            },
+            tool_call("call-1"),
+            tool_result("call-1"),
+        ];
+        let request = Request {
+            llm_request: LlmRequest {
+                messages,
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+
+        let built = TaskInput {
+            recent_turn_window: Some(10),
+        }
+        .build_messages(&State::default(), &request);
+
+        assert!(
+            !built
+                .iter()
+                .flat_map(|message| &message.content)
+                .any(|block| matches!(block, ContentBlock::Reasoning { .. })),
+            "{built:?}"
+        );
+        assert!(
+            built
+                .iter()
+                .any(|message| message.text_content("\n").as_deref() == Some("visible answer"))
+        );
+        assert!(built.contains(&tool_call("call-1")));
+        assert!(built.contains(&tool_result("call-1")));
+    }
+
+    /// A message whose only content was reasoning carries nothing useful to a
+    /// classifier once that reasoning is removed, so it must not survive as an
+    /// empty message.
+    #[test]
+    fn a_window_drops_a_message_that_was_reasoning_only() {
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            Message::text(Role::User, "initial task"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Reasoning {
+                    text: "private chain of thought".to_string(),
+                    signature: None,
+                    details: Vec::new(),
+                }],
+            },
+            Message::text(Role::User, "follow-up"),
+        ];
+        let request = Request {
+            llm_request: LlmRequest {
+                messages,
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+
+        let built = TaskInput {
+            recent_turn_window: Some(10),
+        }
+        .build_messages(&State::default(), &request);
+
+        // The reasoning-only assistant turn is gone entirely, not left behind empty;
+        // the routing instruction is the only other addition past the four fixtures.
+        assert_eq!(built.len(), 4);
+        assert!(!built.iter().any(|message| message.role == Role::Assistant));
+        assert!(built.iter().all(|message| !message.content.is_empty()));
     }
 
     #[test]
