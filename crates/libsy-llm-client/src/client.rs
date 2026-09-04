@@ -839,9 +839,11 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     }
 }
 
-// Enforces exactly ONE canonical reasoning representation per upstream request,
-// and makes the TARGET's reasoning pin (route-author policy via extra_body)
-// authoritative over caller-supplied reasoning.
+// Enforces exactly ONE canonical reasoning representation per upstream request
+// on OpenAI-family backends (OpenAI Chat and OpenAI Responses; Anthropic has a
+// separate thinking contract), and makes the TARGET's reasoning pin
+// (route-author policy via extra_body) authoritative over caller-supplied
+// reasoning.
 //
 // Two rules, applied AFTER `merge_extra_body` (or_insert - caller values win -
 // so the target pin must be re-asserted here):
@@ -2461,12 +2463,12 @@ mod tests {
         Ok(())
     }
 
-    // Without a target pin, a nested `reasoning.effort` plus a caller flat
+    // A target pinning nested `reasoning.effort` plus a caller flat
     // `reasoning_effort` with a conflicting value is rejected by OpenRouter
-    // (dual representation). The nested object is canonical; the flat field is
-    // dropped.
+    // (dual representation). The target's nested object is canonical; the flat
+    // field is dropped.
     #[tokio::test]
-    async fn target_pinned_reasoning_effort_suppresses_flat_reasoning_effort()
+    async fn body_nested_reasoning_effort_suppresses_conflicting_flat_reasoning_effort()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         use std::sync::Mutex as StdMutex;
         let server = MockServer::start().await;
@@ -2526,6 +2528,134 @@ mod tests {
             seen_body.pointer("/reasoning/effort").and_then(Value::as_str),
             Some("low"),
             "nested reasoning.effort must reach the upstream"
+        );
+        Ok(())
+    }
+
+    // No target pin: a caller body carrying BOTH a nested `reasoning.effort`
+    // and a flat `reasoning_effort` with a conflicting value must not ship the
+    // dual representation to the upstream (OpenRouter rejects it). The nested
+    // object wins; the flat field is dropped.
+    #[tokio::test]
+    async fn no_pin_nested_reasoning_effort_suppresses_conflicting_flat_reasoning_effort()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use std::sync::Mutex as StdMutex;
+        let server = MockServer::start().await;
+        let seen: Arc<StdMutex<Value>> = Arc::new(StdMutex::new(Value::Null));
+        let seen_for_assert = Arc::clone(&seen);
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                *seen_for_assert.lock().unwrap() = body.clone();
+                body.pointer("/reasoning/effort").and_then(Value::as_str) == Some("medium")
+                    && body.get("reasoning_effort").is_none()
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning": {"effort": "medium"},
+            "reasoning_effort": "high",
+            "max_tokens": 16
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+
+        let seen_body = seen.lock().unwrap().clone();
+        assert_eq!(
+            seen_body.pointer("/reasoning/effort").and_then(Value::as_str),
+            Some("medium"),
+            "nested reasoning.effort must reach the upstream"
+        );
+        assert!(
+            seen_body.get("reasoning_effort").is_none(),
+            "conflicting flat reasoning_effort must be dropped without a target pin"
+        );
+        Ok(())
+    }
+
+    // OpenAI Responses backend: a target `reasoning = { effort = "none" }` pin
+    // must replace the caller's nested reasoning object on the Responses wire.
+    #[tokio::test]
+    async fn responses_target_reasoning_pin_overrides_caller_nested_reasoning()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use std::sync::Mutex as StdMutex;
+        let server = MockServer::start().await;
+        let seen: Arc<StdMutex<Value>> = Arc::new(StdMutex::new(Value::Null));
+        let seen_for_assert = Arc::clone(&seen);
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                *seen_for_assert.lock().unwrap() = body.clone();
+                body.pointer("/reasoning/effort").and_then(Value::as_str) == Some("none")
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "status": "completed",
+                "model": "gpt",
+                "output": [{"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "ok"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let extra_body = BTreeMap::from([(
+            "reasoning".to_string(),
+            json!({"effort": "none"}),
+        )]);
+        // Responses backend with a reasoning pin; the caller's nested reasoning
+        // object arrives via the raw Responses body.
+        let mut backend = config(&format!("{}/v1", server.uri()));
+        backend.extra_body = extra_body;
+        let client = TranslatingLlmClient::new(&vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(backend),
+            None,
+        )])?;
+        let raw = json!({
+            "model": "client-facing",
+            "reasoning": {"effort": "high"},
+            "input": "hi"
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?;
+
+        let seen_body = seen.lock().unwrap().clone();
+        assert_eq!(
+            seen_body.pointer("/reasoning/effort").and_then(Value::as_str),
+            Some("none"),
+            "Responses-leg target NT pin must replace the caller's nested reasoning"
         );
         Ok(())
     }
