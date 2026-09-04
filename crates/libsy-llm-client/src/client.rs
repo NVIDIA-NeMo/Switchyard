@@ -131,9 +131,9 @@ impl TranslatingLlmClient {
         for config in model_configs {
             config
                 .default_backend
-                .validate_extra_headers(&config.model_name)?;
+                .validate_configured_headers(&config.model_name)?;
             for backend in config.other_backends.iter().flatten() {
-                backend.validate_extra_headers(&config.model_name)?;
+                backend.validate_configured_headers(&config.model_name)?;
             }
         }
         let build_client = |builder: reqwest::ClientBuilder| {
