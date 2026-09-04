@@ -855,10 +855,11 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
 //    the target's policy through or_insert merge precedence, and an NT lane
 //    would run reasoning its route author disabled.
 // 2. No target pin: OpenRouter rejects the dual representation when the nested
-//    `reasoning` object carries an effort value AND the caller's flat
-//    `reasoning_effort` rides along with a conflicting value
-//    ("reasoning_effort and reasoning.effort are both provided with conflicting
-//    values"). The nested object is canonical; the flat field is dropped.
+//    `reasoning` object AND the caller's flat `reasoning_effort` ride along
+//    together ("reasoning_effort and reasoning.effort are both provided with
+//    conflicting values"). ANY object-valued `reasoning` is canonical - not
+//    only one carrying a string `effort` (e.g. `{"enabled": false}` must also
+//    suppress the flat field, or the conflicting dual representation ships).
 fn canonicalize_reasoning_effort(body: &mut Value, reasoning_pin: Option<&Value>) {
     let Value::Object(object) = body else {
         return;
@@ -870,13 +871,9 @@ fn canonicalize_reasoning_effort(body: &mut Value, reasoning_pin: Option<&Value>
         return;
     }
     // Rule 2: no target pin - avoid the conflicting dual representation.
-    if object
-        .get("reasoning")
-        .and_then(Value::as_object)
-        .and_then(|reasoning| reasoning.get("effort"))
-        .and_then(Value::as_str)
-        .is_some()
-    {
+    // Any object-valued `reasoning` is canonical; the flat field is dropped
+    // regardless of whether the object carries a string `effort`.
+    if object.get("reasoning").and_then(Value::as_object).is_some() {
         object.remove("reasoning_effort");
     }
 }
@@ -2591,6 +2588,69 @@ mod tests {
         assert!(
             seen_body.get("reasoning_effort").is_none(),
             "conflicting flat reasoning_effort must be dropped without a target pin"
+        );
+        Ok(())
+    }
+
+    // No target pin: a nested `reasoning` object WITHOUT a string `effort`
+    // (e.g. `{"enabled": false}`) is still canonical - the flat
+    // `reasoning_effort` must be dropped so the upstream never sees the
+    // conflicting dual representation.
+    #[tokio::test]
+    async fn no_pin_object_reasoning_without_effort_suppresses_flat_reasoning_effort()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use std::sync::Mutex as StdMutex;
+        let server = MockServer::start().await;
+        let seen: Arc<StdMutex<Value>> = Arc::new(StdMutex::new(Value::Null));
+        let seen_for_assert = Arc::clone(&seen);
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                *seen_for_assert.lock().unwrap() = body.clone();
+                body.pointer("/reasoning/enabled") == Some(&Value::Bool(false))
+                    && body.get("reasoning_effort").is_none()
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning": {"enabled": false},
+            "reasoning_effort": "high",
+            "max_tokens": 16
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+
+        let seen_body = seen.lock().unwrap().clone();
+        assert_eq!(
+            seen_body.pointer("/reasoning/enabled"),
+            Some(&Value::Bool(false)),
+            "object-valued reasoning without effort must reach the upstream"
+        );
+        assert!(
+            seen_body.get("reasoning_effort").is_none(),
+            "flat reasoning_effort must be dropped when any object-valued reasoning is present"
         );
         Ok(())
     }
