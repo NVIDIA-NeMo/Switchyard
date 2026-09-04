@@ -136,29 +136,39 @@ impl Backend {
     /// than normal OpenAI `/v1/responses` endpoints.
     pub fn is_codex(&self) -> bool {
         matches!(self, Backend::OpenAiResponses(_))
-            && self
-                .config()
-                .base_url
-                // Path-boundary match, not a substring match: strip query and
-                // fragment, then require the path to END with /backend-api/codex.
-                // Near-matches (e.g. https://proxy.example/backend-api/codex-compat
-                // or https://proxy.example/not-backend-api/codex) are NOT Codex.
-                .split(['?', '#'])
-                .next()
-                .map(|rest| rest.trim_end_matches('/').ends_with("/backend-api/codex"))
-                .unwrap_or(false)
+            && {
+                // Path-boundary match, not a substring match: the base URL is
+                // normalized ONCE (query and fragment stripped by
+                // `split_base_url`, shared with `url()`) and the path must END
+                // with /backend-api/codex. Near-matches (e.g.
+                // https://proxy.example/backend-api/codex-compat or
+                // https://proxy.example/not-backend-api/codex) are NOT Codex.
+                let (base, _, _) = split_base_url(&self.config().base_url);
+                base.ends_with("/backend-api/codex")
+            }
     }
 
     /// The fully resolved upstream URL for this backend's endpoint.
     ///
     /// Tolerates base URLs that already include the provider path (or a bare
-    /// `/v1`), matching the join rules of the existing native backends.
+    /// `/v1`), matching the join rules of the existing native backends. The
+    /// endpoint path is appended BEFORE any query or fragment of the
+    /// configured base URL (one shared normalization with `is_codex`), so a
+    /// base like `https://host/backend-api/codex?route=x` resolves to
+    /// `https://host/backend-api/codex/responses?route=x` — never
+    /// `...codex?route=x/responses`.
     pub fn url(&self) -> String {
-        let base_url = self.config().base_url.trim_end_matches('/');
-        match self {
-            Backend::OpenAiChat(_) => openai_url(base_url, "/chat/completions"),
-            Backend::OpenAiResponses(_) => openai_url(base_url, "/responses"),
-            Backend::Anthropic(_) => anthropic_url(base_url),
+        let (base_url, query, fragment) = split_base_url(&self.config().base_url);
+        let endpoint = match self {
+            Backend::OpenAiChat(_) => openai_url(&base_url, "/chat/completions"),
+            Backend::OpenAiResponses(_) => openai_url(&base_url, "/responses"),
+            Backend::Anthropic(_) => anthropic_url(&base_url),
+        };
+        match (query, fragment) {
+            (Some(query), Some(fragment)) => format!("{endpoint}?{query}#{fragment}"),
+            (Some(query), None) => format!("{endpoint}?{query}"),
+            (None, Some(fragment)) => format!("{endpoint}#{fragment}"),
+            (None, None) => endpoint,
         }
     }
 
@@ -332,6 +342,24 @@ fn oauth_beta_header(value: &HeaderValue) -> Option<HeaderValue> {
     Some(value)
 }
 
+// Splits a configured base URL into (origin+path, query, fragment) so Codex
+// classification and endpoint construction share ONE normalization. An
+// endpoint path appended by `url()` must land BEFORE any query or fragment:
+// `https://h/codex?r=x` + `/responses` is `https://h/codex/responses?r=x`,
+// never `...codex?r=x/responses` (and a fragment must never swallow the
+// endpoint path entirely).
+fn split_base_url(base_url: &str) -> (String, Option<String>, Option<String>) {
+    let (without_fragment, fragment) = match base_url.split_once('#') {
+        Some((left, fragment)) => (left, Some(fragment.to_string())),
+        None => (base_url, None),
+    };
+    let (base, query) = match without_fragment.split_once('?') {
+        Some((left, query)) => (left, Some(query.to_string())),
+        None => (without_fragment, None),
+    };
+    (base.trim_end_matches('/').to_string(), query, fragment)
+}
+
 // Accept either a root `/v1` URL or an already-specific OpenAI endpoint URL.
 fn openai_url(base_url: &str, suffix: &str) -> String {
     let base_root = base_url
@@ -371,6 +399,49 @@ mod tests {
     fn openai_chat_url_joins_bare_v1() {
         let backend = Backend::OpenAiChat(config("https://api.openai.com/v1"));
         assert_eq!(backend.url(), "https://api.openai.com/v1/chat/completions");
+    }
+
+    // Codex classification and endpoint construction share ONE base-URL
+    // normalization (split_base_url): a base URL carrying a query is
+    // classified on its path and the endpoint path is appended BEFORE the
+    // query. CodeRabbit finding on PR #621.
+    #[test]
+    fn codex_base_url_with_query_appends_endpoint_before_query() {
+        let backend = Backend::OpenAiResponses(config("https://host/backend-api/codex?route=x"));
+        assert!(backend.is_codex());
+        assert_eq!(
+            backend.url(),
+            "https://host/backend-api/codex/responses?route=x"
+        );
+    }
+
+    #[test]
+    fn codex_base_url_with_fragment_keeps_the_endpoint_path() {
+        let backend = Backend::OpenAiResponses(config("https://host/backend-api/codex#frag"));
+        assert!(backend.is_codex());
+        assert_eq!(
+            backend.url(),
+            "https://host/backend-api/codex/responses#frag"
+        );
+    }
+
+    #[test]
+    fn codex_near_matches_with_query_remain_non_codex() {
+        assert!(!Backend::OpenAiResponses(
+            config("https://host/backend-api/codex-compat?v=1")
+        )
+        .is_codex());
+        assert!(!Backend::OpenAiResponses(
+            config("https://host/not-backend-api/codex?x=1")
+        )
+        .is_codex());
+    }
+
+    #[test]
+    fn normal_responses_base_url_is_unaffected_by_query_splitting() {
+        let backend = Backend::OpenAiResponses(config("https://api.openai.com/v1"));
+        assert!(!backend.is_codex());
+        assert_eq!(backend.url(), "https://api.openai.com/v1/responses");
     }
 
     #[test]
