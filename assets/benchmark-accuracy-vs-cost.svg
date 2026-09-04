@@ -73,12 +73,12 @@ svg {
 <circle cx="740.8" cy="130.5" r="7.5" class="m-base marker"/>
 <text x="186.0" y="320.0" class="t-ink2" font-size="12.5" font-weight="600" text-anchor="middle">GLM 5.2</text>
 <text x="275.7" y="435.5" class="t-ink2" font-size="12.5" font-weight="600" text-anchor="middle">Ultra 3</text>
-<text x="525.7" y="146.9" class="t-sy" font-size="12.5" font-weight="700" text-anchor="end">SY: Staged</text>
+<text x="525.7" y="146.9" class="t-sy" font-size="12.5" font-weight="700" text-anchor="end">Switchyard: Staged</text>
 <text x="525.7" y="162.9" class="t-ink2 num" font-size="11.5" text-anchor="end">72.7%  ·  $68.19</text>
 <text x="592.7" y="290.7" class="t-ink2" font-size="12.5" font-weight="600" text-anchor="middle">Kimi K2.6</text>
-<text x="613.4" y="205.9" class="t-sy" font-size="12.5" font-weight="700" text-anchor="middle">SY: Classifier</text>
+<text x="613.4" y="205.9" class="t-sy" font-size="12.5" font-weight="700" text-anchor="middle">Switchyard: Classifier</text>
 <text x="613.4" y="221.9" class="t-ink2 num" font-size="11.5" text-anchor="middle">71.2%  ·  $79.32</text>
-<text x="652.0" y="113.1" class="t-sy" font-size="12.5" font-weight="700" text-anchor="middle">SY: Escalation</text>
+<text x="652.0" y="113.1" class="t-sy" font-size="12.5" font-weight="700" text-anchor="middle">Switchyard: Escalation</text>
 <text x="652.0" y="129.1" class="t-ink2 num" font-size="11.5" text-anchor="middle">75.7%  ·  $85.00</text>
 <text x="733.1" y="387.9" class="t-ink2" font-size="12.5" font-weight="600" text-anchor="middle">DeepSeek V4 Pro</text>
 <text x="754.8" y="136.5" class="t-base" font-size="12.5" font-weight="700" text-anchor="start">Opus 4.8 baseline</text>

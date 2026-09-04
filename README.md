@@ -8,81 +8,206 @@
 
 **[Get started →](#get-started)**
 
+![Accuracy versus total cost on Terminal-Bench 2.1. Switchyard's staged, escalation, and classifier routes reach 71-76% accuracy for 13-30% less than the Opus 4.8 baseline, while single fixed models stay below 56%.](assets/benchmark-accuracy-vs-cost.svg)
+
+_\*Total cost based on average ISP token cost_
+
+## What is Switchyard
+
+Switchyard picks which model serves each LLM call.
+
+### Use Switchyard
+
+Switchyard runs inside gateways you may already have.
+
+- **NeMo Relay** — a native plugin. Load a `routes.toml` into a Relay deployment
+  you already run. [Setup →](#path-1--load-the-nemo-relay-plugin)
+- **LiteLLM** — a routing plugin for LiteLLM's `Router` and proxy.
+  [`examples/litellm`](examples/litellm/README.md)
+- **More integrations** coming soon.
+
 ```mermaid
 flowchart LR
-    A["Claude Code · Codex CLI<br/>OpenAI / Anthropic SDK clients"]
-    SY["Switchyard<br/>routing algorithm + protocol translation"]
-    E["Efficient model<br/>GLM, Qwen, your own vLLM"]
-    C["Capable model<br/>Opus, GPT, NVIDIA NIM"]
-
-    A -->|"unchanged native API"| SY
-    SY -->|"routine turns"| E
-    SY -->|"hard turns"| C
+    subgraph R["LiteLLM · NeMo Relay"]
+        P["Switchyard"]
+    end
+    P--> M["Efficient model"]
+    P--> N["Capable model"]
+    P--> O[etc.]
+    G[You] -->|"request"| P
+    style P fill:#76B900,stroke:#5A8F00,color:#000
 ```
 
-It has three modes:
+### Integrate Switchyard into your gateway or harness
 
-**1. A Rust proxy** — run it in front of the agent you already use:
+Embed the routing algorithms in your own. Switchyard picks the model; your
+harness makes the call, so your transport, retries, and credentials stay
+untouched.
+
+- Install: `pip install nemo-switchyard`
+- Then follow [Path 2 — Embed the Library](#path-2--embed-the-library):
+  construct an algorithm, drive its step stream, make the answer call.
+- Also available for Rust as `switchyard-libsy`; Path 2 has the `Cargo.toml`
+  block.
+
+```mermaid
+flowchart LR
+    subgraph R["Your LLM gateway / harness"]
+        P["Switchyard"]
+    end
+    P--> M["Efficient model"]
+    P--> N["Capable model"]
+    P--> O[etc.]
+    G["Your users"] -->|"request"| P
+    style P fill:#76B900,stroke:#5A8F00,color:#000
+```
+
+### Run Switchyard as a standalone proxy
+
+A server in front of an agent, when you have no gateway to put Switchyard in:
 
 ```bash
 cargo install --locked switchyard-server
 switchyard-server --config routes.toml --port 4000
 ```
 
-**2. An embeddable Rust library** — call the same algorithms from a gateway you already own:
+Point Claude Code, Codex CLI, or any OpenAI/Anthropic SDK client at the proxy.
+Switchyard decides per turn which model serves it.
 
-```bash
-cargo add --git https://github.com/NVIDIA-NeMo/Switchyard.git --tag v0.2.0 \
-  switchyard-libsy switchyard-protocol
+```mermaid
+flowchart LR
+    P["Switchyard<br/>standalone proxy"]
+    P--> M["Efficient model"]
+    P--> N["Capable model"]
+    P--> O[etc.]
+    G[You] -->|"unchanged native API"| P
+    style P fill:#76B900,stroke:#5A8F00,color:#000
 ```
 
-**3. A NeMo Relay plugin** — load the same `routes.toml` into a NeMo Relay deployment you already run:
+## Components
+
+Pre-1.0 software. APIs, configuration, and routing behavior can change between
+releases — pin the version you integrate.
+
+| Component | Stability | Use it for | Guidance |
+|---|---|---|---|
+| `switchyard-libsy` | **Beta** | Routing embedded in your own gateway or harness. You own model calls, credentials, and retries. | Trial integrations. API will change before v1.0. |
+| `switchyard-llm-client` | **Alpha** | HTTP model calls and protocol translation alongside libsy. | Experiments and pilots. |
+| `switchyard-runner` | **Alpha** | Running configured routes inside another runtime, such as NeMo Relay. | Integration work and supervised pilots. |
+| `switchyard-server` | **Demo** | A standalone OpenAI- and Anthropic-compatible proxy. | Demos and evaluation only. Not for production. |
+
+## Get Started
+
+Three paths, in the same order as above. Each is self-contained: start at
+step 1, stop when you reach the result named under the heading.
+
+### Path 1 — Load the NeMo Relay Plugin
+
+You finish with an existing NeMo Relay deployment routing through Switchyard.
+Requires NeMo Relay `>=0.8.1,<0.9.0`.
+
+**1. Build the plugin bundle.**
+
+```bash
+python crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py
+```
+
+**2. Write the Switchyard deployment** to `/etc/switchyard/routes.toml` — the
+same version-1 TOML the proxy uses. Copy the file from step 2 of Path 3 below.
+
+**3. Point Relay at the generated manifest.** Use exactly one deployment
+source: a path, as here, or the config nested under `switchyard_config`.
 
 ```toml
 [[plugins.dynamic]]
 manifest = "./plugins/switchyard/relay-plugin.toml"
 
 [plugins.dynamic.config]
+priority = 0
 switchyard_config_path = "/etc/switchyard/routes.toml"
 ```
 
-Relay runs any routing algorithm `switchyard-runner` supports while Switchyard owns provider HTTP dispatch. See [`switchyard-nemo-relay-plugin`](crates/switchyard-nemo-relay-plugin/README.md).
+**4. Restart Relay.** It now runs any algorithm `switchyard-runner` supports,
+while Switchyard owns provider HTTP dispatch.
 
-Point Claude Code, Codex CLI, or any OpenAI/Anthropic SDK client at it. Every request keeps its native API format; Switchyard decides per turn which model serves it.
+Details: [`switchyard-nemo-relay-plugin`](crates/switchyard-nemo-relay-plugin/README.md)
+and the [server configuration guide](crates/switchyard-server/CONFIGURATION.md).
 
-## Maturity
+### Path 2 — Embed the Library
 
-Switchyard is pre-alpha software that is evolving rapidly. The API and algorithms are expected to change significantly before we reach v1.0.
+You finish with your own harness picking a model per request and still making
+every model call itself. Shown in Python; the Rust API has the same shape.
 
-> [!WARNING]
-> Switchyard is a very young project showcasing active research. Component maturity levels:
->
-> - libsy: Beta. Ready for trial integration.
-> - switchyard-llm-client: Alpha. May change significantly.
-> - switchyard-runner: Alpha. Evolving rapidly.
-> - switchyard-server: Demo server, not for production use.
+**1. Install.**
 
-## Why Switchyard
+```bash
+pip install nemo-switchyard
+```
 
-Every Switchyard route below pairs the same Opus 4.8 capable tier with a cheaper
-efficient tier. The baseline is Opus 4.8 serving every turn.
+For Rust, add the crates to your `Cargo.toml` instead:
 
-![Accuracy versus total cost on Terminal-Bench 2.1. Switchyard's staged, escalation, and classifier routes reach 71-76% accuracy for 13-30% less than the Opus 4.8 baseline, while single fixed models stay below 56%.](assets/benchmark-accuracy-vs-cost.svg)
+```toml
+[dependencies]
+async-trait = "0.1"
+futures = "0.3"
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+tokio = { version = "1", features = ["macros", "rt"] }
+```
 
-| Configuration | Accuracy | Total cost | vs. Opus 4.8 baseline |
-|---|---:|---:|---|
-| Opus 4.8 baseline | 76.0% | $98.06 | — |
-| **[Escalation](#routing-algorithms)** | 75.7% | $85.00 | 99.6% of accuracy, 13.3% cheaper |
-| **[Stage](#routing-algorithms)** | 72.7% | $68.19 | 95.7% of accuracy, 30.5% cheaper |
-| **[Capability](#routing-algorithms)** | 71.2% | $79.32 | 93.7% of accuracy, 19.1% cheaper |
-| Kimi K2.6 alone | 55.8% | $76.28 | |
-| GLM 5.2 alone | 52.4% | $16.47 | |
-| DeepSeek V4 Pro alone | 48.7% | $96.92 | |
-| Ultra 3 alone | 39.0% | $29.66 | |
+**2. Construct an algorithm.** Target names are whatever your harness calls its
+models. This is the stage router from the benchmark; `random`,
+`llm_task_classifier`, and `llm_classifier` are built the same way.
 
-## Get Started
+```python
+from switchyard.libsy import LlmResponse, Step
+from switchyard.libsy.algorithms import stage_router
 
-Install [Rust with Cargo](https://rust-lang.org/tools/install/), then:
+algorithm = stage_router(
+    "capable",
+    "efficient",
+    picker="efficient_first",
+    confidence_threshold=0.5,
+)
+```
+
+**3. Drive it.** `run_stream` takes an OpenAI-style request dict and yields
+steps. A `CallModel` step is a classifier or judge call — make it with your own
+client and hand the result back. `Done` carries the pick.
+
+```python
+async def route(request: dict, clients: dict) -> tuple[str, dict]:
+    async for step in algorithm.run_stream(request):
+        match step:
+            case Step.CallModel(call):
+                target = call.models[0]
+                try:
+                    response = await clients[target].call({**call.request, "model": target})
+                except Exception as error:
+                    call.fail(error)
+                else:
+                    call.respond(LlmResponse.Agg(response))
+            case Step.Done(outcome):
+                return outcome.selected_model_ids[0], outcome.request
+```
+
+`clients` is your existing per-model client map. `call.models` lists fallbacks
+in order; `outcome.request` is the request to send, which may carry a rewrite
+the algorithm applied.
+
+**4. Make the answer call** with the returned model and request, using your own
+HTTP client, retries, and credentials. If `outcome.response` is set, routing
+already produced the answer and you can return it directly.
+
+Type reference: [`switchyard-libsy`](crates/libsy/README.md) and
+[`switchyard-protocol`](crates/protocol/README.md). In Rust the loop is
+`Algorithm::run_stream` yielding `Step::CallModel` and `Step::Done`, with
+`switchyard-llm-client`'s `run` available to drive it for you.
+
+### Path 3 — Run the Standalone Proxy
+
+You finish with a server on `localhost:4000` that any OpenAI or Anthropic client
+can call. Needs [Rust with Cargo](https://rust-lang.org/tools/install/).
 
 **1. Install the server.**
 
@@ -121,7 +246,10 @@ confidence_threshold = 0.5
 TOML
 ```
 
-**3. Run it.** `--dry-run` loads the config, prints `server OK:` and the model
+Every key is documented in the
+[server configuration guide](crates/switchyard-server/CONFIGURATION.md).
+
+**3. Start it.** `--dry-run` loads the config, prints `server OK:` and the model
 IDs it exposes, then exits without starting the server.
 
 ```bash
@@ -143,7 +271,7 @@ The same route also answers on `/v1/messages` (Anthropic Messages) and
 what, and `/metrics` exposes Prometheus counters for requests, errors, latency,
 tokens, and routing overhead.
 
-### Point a Coding Agent at It
+**5. Point a coding agent at it.**
 
 ```bash
 export ANTHROPIC_BASE_URL="http://localhost:4000"
@@ -156,22 +284,6 @@ Codex CLI and other OpenAI clients use the OpenAI variables instead:
 ```bash
 export OPENAI_BASE_URL="http://localhost:4000/v1"
 ```
-
-### Embed It in Your Own Gateway
-
-`switchyard-libsy` never calls a model: an algorithm returns the target it chose
-and hands the call back to you, so it drops into a proxy, gateway, or agent
-runtime you already run. Pair it with `switchyard-llm-client` to have the calls
-made for you.
-
-```toml
-[dependencies]
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
-```
-
-See [Getting Started](docs/getting_started.md#library-path) for setup, or the
-[`switchyard-libsy`](crates/libsy/README.md) crate docs.
 
 ## Routing Algorithms
 
@@ -196,7 +308,6 @@ the common route shape and self-hosted targets.
 
 ## Documentation
 
-- **[Getting Started](docs/getting_started.md)**: complete standalone server walkthrough
 - **[Core Concepts](docs/core_concepts.md)**: LLM clients, targets, routes, model IDs, and routing algorithms
 - **[Routing Overview](docs/routing_algorithms/overview.md)**: choose and configure a routing algorithm
 - **[TOML Schema](docs/reference/toml_schema.md)**: every configuration key
@@ -209,7 +320,18 @@ the common route shape and self-hosted targets.
 
 ## Benchmark Provenance
 
-The numbers in [Why Switchyard](#why-switchyard) are the v0.2.0 Terminal-Bench 2.1
+| Configuration | Accuracy | Total cost | vs. Opus 4.8 baseline |
+|---|---:|---:|---|
+| Opus 4.8 baseline | 76.0% | $98.06 | — |
+| **[Escalation](#routing-algorithms)** | 75.7% | $85.00 | 99.6% of accuracy, 13.3% cheaper |
+| **[Stage](#routing-algorithms)** | 72.7% | $68.19 | 95.7% of accuracy, 30.5% cheaper |
+| **[Capability](#routing-algorithms)** | 71.2% | $79.32 | 93.7% of accuracy, 19.1% cheaper |
+| Kimi K2.6 alone | 55.8% | $76.28 | |
+| GLM 5.2 alone | 52.4% | $16.47 | |
+| DeepSeek V4 Pro alone | 48.7% | $96.92 | |
+| Ultra 3 alone | 39.0% | $29.66 | |
+
+These are the v0.2.0 Terminal-Bench 2.1
 results from [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard](https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/).
 Those runs used NVIDIA-internal inference endpoints, so absolute solve rates may
 shift on another serving stack; the routing parameters are the ones that ran.
