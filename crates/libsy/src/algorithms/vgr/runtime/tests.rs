@@ -1560,9 +1560,8 @@ fn real_checker(
 #[tokio::test]
 async fn active_mode_applies_real_checker_readiness_and_tamper_results()
 -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Public runner Active is intentionally unavailable. These direct libsy
-    // cases are the other half of the checker-table integration split: they
-    // prove Active serves only an effective, validated checker pass.
+    // These direct libsy cases complement the runner's checker-table
+    // integration and prove Active serves only an effective, validated pass.
     for (script, validated, expected) in [
         ("exit 0", true, ModelId::from(LOCAL)),
         ("exit 0", false, ModelId::from(CLOUD)),

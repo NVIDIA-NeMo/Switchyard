@@ -56,14 +56,13 @@ so you can measure it against real traffic before it routes anything:
 | `off` | no | capable tier, always. Spends nothing. |
 | `shadow` | yes | capable tier, always. Full decision records at no routing risk. |
 | `evaluate` | yes | the *ungated* decision. Isolated measurement only. |
-| `active` | yes | Library embedders only: the decision, subject to readiness gates. Rejected by the public runner. |
+| `active` | yes | the readiness-gated decision. |
 
-The public `switchyard-server` runner supports `off`, `shadow`, and `evaluate`
-for measurement. It rejects `active` at startup, even with the library approval
-attestation, until native privacy/no-egress enforcement and an operator runtime
-kill switch are wired. Library embedders that supply both controls can use
-`ServingMode::Active`; its exact approval attestation is
-`prospective-validation-and-canary-approved`.
+The public `switchyard-server` runner supports all four modes. `active` requires
+the exact approval attestation `prospective-validation-and-canary-approved` and
+serves only the route that passes the readiness gates. Active mode does not add
+native privacy/no-egress enforcement or an operator runtime kill switch;
+deployments that require those controls must provide them outside the runner.
 
 ## Configure a verification-gated route
 
@@ -91,6 +90,13 @@ cloud_target = "cloud"
 mode = "shadow"                 # safe public-runner measurement mode
 task_typing = true              # default; set false to opt out
 deadline_seconds = 30
+```
+
+To enable live routing after evaluation, set:
+
+```toml
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
 ```
 
 `local_target` and `cloud_target` must resolve to different model IDs. Target
@@ -164,8 +170,8 @@ The suite is snapshotted and hashed at startup, then re-verified before the run
 and again before any pass is reported — because the attempt runs as the same
 user as the tests grading it, and nothing else stops it rewriting its own exam.
 In public-runner measurement, `evaluate` exposes the raw checker decision while
-`shadow` still serves cloud. For library embedders using Active, only a validated
-pass satisfies the readiness gate; an unvalidated or tampered suite serves cloud.
+`shadow` still serves cloud. In Active, only a validated pass satisfies the
+readiness gate; an unvalidated or tampered suite serves cloud.
 
 Two constraints follow from that:
 

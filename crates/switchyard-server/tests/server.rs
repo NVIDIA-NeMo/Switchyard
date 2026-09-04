@@ -3663,6 +3663,12 @@ fn vgr_checker_config(
             marker.display()
         ),
     };
+    let mode_config = if mode == "active" {
+        "mode = \"active\"\nactive_approval = \"prospective-validation-and-canary-approved\""
+            .to_string()
+    } else {
+        format!("mode = \"{mode}\"")
+    };
     format!(
         r#"{}
 
@@ -3674,30 +3680,41 @@ sandbox_attestation = "vgr-checker-runs-in-deployment-sandbox"
 validated = true
 "#,
         vgr_config(base_url, "model/vgr-verified-local")
-            .replace("mode = \"evaluate\"", &format!("mode = \"{mode}\"")),
+            .replace("mode = \"evaluate\"", &mode_config),
         tests_dir.display(),
         command,
     )
 }
+
 #[tokio::test]
-async fn native_vgr_active_mode_is_rejected_even_with_current_approval() -> TestResult {
+async fn native_vgr_active_mode_serves_a_licensed_local_decision() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let config = vgr_config(&upstream.base_url, "model/vgr-verified-local").replace(
         "mode = \"evaluate\"",
         "mode = \"active\"\nactive_approval = \"prospective-validation-and-canary-approved\"",
     );
-    let error = match load_test_config(&config) {
-        Ok(_) => return Err("native active VGR configuration unexpectedly succeeded".into()),
-        Err(error) => error,
-    };
-    let message = error.to_string();
-    assert!(
-        message.contains("native privacy/no-egress enforcement"),
-        "{message}"
-    );
-    assert!(
-        message.contains("operator runtime kill-switch controls are not wired"),
-        "{message}"
+    let state = load_test_config(&config)?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "what is the capital of France?"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/vgr-verified-local"),
+        "active mode must serve a readiness-gated local commit"
     );
     Ok(())
 }
@@ -3847,12 +3864,13 @@ async fn vgr_route_in_shadow_mode_decides_but_serves_the_capable_tier() -> TestR
 #[cfg(unix)]
 #[tokio::test]
 async fn vgr_checker_table_runs_real_pass_shadow_and_tamper_paths() -> TestResult {
-    // Public Active is intentionally rejected above. These TOML-driven
-    // evaluate/shadow cases prove the native runner builds and executes the
-    // real checker; direct libsy Active tests separately prove readiness gating.
+    // These TOML-driven cases prove the native runner builds and executes the
+    // real checker, and that Active applies its readiness verdict.
     for (mode, behavior, expected_model) in [
         ("evaluate", "pass", "model/vgr-verified-local"),
         ("shadow", "pass", "model/vgr-cloud"),
+        ("active", "pass", "model/vgr-verified-local"),
+        ("active", "tamper", "model/vgr-cloud"),
         ("evaluate", "tamper", "model/vgr-cloud"),
         ("evaluate", "indeterminate", "model/vgr-cloud"),
     ] {

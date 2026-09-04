@@ -281,8 +281,8 @@ to the capable tier. See [Verification-Gated Routing](../routing_algorithms/vgr_
 | `cloud_target` | Yes | — | Tier a request escalates to when the attempt is not licensed. |
 | `judge_target` | No | local tier | Answers the cheap local verification rungs. Not a routing destination. |
 | `cloud_judge_target` | No | cloud tier | Answers the cloud confirmation rungs. An explicit target overrides the capable tier. Not a routing destination. |
-| `mode` | No | `off` | The public runner accepts `off`, `evaluate`, and `shadow`. `active` is reserved for library embedders and is rejected at public-runner startup. See below. |
-| `active_approval` | With `active` | — | Library attestation validated verbatim as `prospective-validation-and-canary-approved`; it does not make public-runner Active available. |
+| `mode` | No | `off` | Serving authority: `off`, `evaluate`, `shadow`, or `active`. See below. |
+| `active_approval` | With `active` | — | Approval attestation validated verbatim as `prospective-validation-and-canary-approved`. |
 | `deadline_seconds` | No | `30` | Budget for the whole decision, verification included. Exceeding it ends evidence gathering, and what was not established escalates. |
 | `task_typing` | No | `true` | Types the request with one cheap local call before deriving capabilities. Set `false` to opt out; without it the answer and conversational regimes are unreachable. |
 | `latch_escalation` | No | `false` | A session that escalated stays on the capable tier, skipping verification on later turns. |
@@ -301,10 +301,10 @@ to the capable tier. See [Verification-Gated Routing](../routing_algorithms/vgr_
 deployment measure the router before it routes anything. `off` makes no decisions
 and spends nothing. `shadow` decides and records but always serves the capable
 tier. `evaluate` serves the *ungated* decision and is for isolated measurement
-only: it will serve routes the gates exist to refuse. `active` remains a libsy
-mode for embedders that provide native privacy/no-egress enforcement and an
-operator runtime kill switch. The public runner has neither control wired and
-rejects `active` even when the approval string is correct.
+only: it will serve routes the gates exist to refuse. `active` requires the
+approval attestation and serves the readiness-gated route. It does not provide
+native privacy/no-egress enforcement or an operator runtime kill switch;
+deployments that require those controls must supply them outside the runner.
 
 The local and cloud targets must resolve to distinct model IDs, even when their
 target or client names differ, because the runtime client router is keyed only

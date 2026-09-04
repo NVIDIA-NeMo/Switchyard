@@ -1012,7 +1012,7 @@ confidence_threshold = 0.5
     }
 
     #[test]
-    fn vgr_active_mode_validates_approval_then_rejects_unwired_controls() {
+    fn vgr_active_mode_requires_current_approval() {
         let config = vgr_config().replace("mode = \"shadow\"", "mode = \"active\"");
         let message = error_message(&config);
         assert!(message.contains("active_approval"), "{message}");
@@ -1031,18 +1031,9 @@ confidence_threshold = 0.5
             "mode = \"active\"",
             "mode = \"active\"\nactive_approval = \"prospective-validation-and-canary-approved\"",
         );
-        let approved_message = error_message(&approved);
         assert!(
-            approved_message.contains("mode = \"active\" is unavailable"),
-            "{approved_message}"
-        );
-        assert!(
-            approved_message.contains("native privacy/no-egress enforcement"),
-            "{approved_message}"
-        );
-        assert!(
-            approved_message.contains("operator runtime kill-switch controls are not wired"),
-            "{approved_message}"
+            runner_from_toml(&approved).is_ok(),
+            "the current approval must enable active mode"
         );
     }
 

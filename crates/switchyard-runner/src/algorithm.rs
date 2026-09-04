@@ -361,8 +361,7 @@ pub struct VgrRouteConfig {
     /// How much authority decisions have over the traffic they decide.
     #[serde(default)]
     pub mode: VgrModeConfig,
-    /// The library approval attestation validated before public-runner Active
-    /// reports that its required runtime controls are unavailable.
+    /// The approval attestation required when `mode` is `active`.
     #[serde(default)]
     pub active_approval: Option<String>,
     /// Budget for the whole decision, verification included.
@@ -1307,30 +1306,22 @@ fn build_vgr(
     Ok(Arc::new(algorithm))
 }
 
-/// Resolves a public serving mode and rejects Active until its controls exist.
-///
-/// The library retains Active for embedders that provide the required runtime
-/// controls. The native runner cannot truthfully make that claim yet.
+/// Resolves a public serving mode and validates the Active approval.
 fn vgr_mode(route_name: &str, config: &VgrRouteConfig) -> AlgorithmResult<libsy::ServingMode> {
     Ok(match config.mode {
         VgrModeConfig::Off => libsy::ServingMode::Off,
         VgrModeConfig::Evaluate => libsy::ServingMode::Evaluate,
         VgrModeConfig::Shadow => libsy::ServingMode::Shadow,
         VgrModeConfig::Active => {
-            return Err(
-                if config.active_approval.as_deref() != Some(ACTIVE_APPROVAL) {
-                    AlgorithmConfigError::new(format!(
-                        "vgr route {route_name}: mode = \"active\" requires \
+            if config.active_approval.as_deref() != Some(ACTIVE_APPROVAL) {
+                return Err(AlgorithmConfigError::new(format!(
+                    "vgr route {route_name}: mode = \"active\" requires \
                      active_approval = {ACTIVE_APPROVAL:?}"
-                    ))
-                } else {
-                    AlgorithmConfigError::new(format!(
-                        "vgr route {route_name}: mode = \"active\" is unavailable in the native \
-                     runner because native privacy/no-egress enforcement and operator runtime \
-                     kill-switch controls are not wired"
-                    ))
-                },
-            );
+                )));
+            }
+            libsy::ServingMode::Active {
+                approval: ACTIVE_APPROVAL.to_owned(),
+            }
         }
     })
 }
