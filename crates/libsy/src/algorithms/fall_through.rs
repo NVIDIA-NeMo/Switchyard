@@ -26,11 +26,11 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::algorithm::{self, Algorithm, Driver};
+use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result, RoutingOutcome};
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{Category, ModelId, Request, Response};
 
 struct SessionState<S> {
     state: Arc<AsyncMutex<S>>,
@@ -93,19 +93,17 @@ pub struct FallThrough<S = ()> {
     name: String,
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
-    targets: Vec<ModelId>,
     session_states: Option<Arc<SessionStates<S>>>,
     cleanup_started: Once,
 }
 
 impl FallThrough<()> {
     /// Creates an empty stateless router.
-    pub fn new(targets: Vec<ModelId>) -> Self {
+    pub fn new(_targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
             processors: Vec::new(),
             classifiers: Vec::new(),
-            targets,
             session_states: None,
             cleanup_started: Once::new(),
         }
@@ -117,12 +115,11 @@ where
     S: Default + Send + 'static,
 {
     /// Creates a router that retains one private `S` per session.
-    pub fn new_with_state(targets: Vec<ModelId>) -> Self {
+    pub fn new_with_state(_targets: Vec<ModelId>) -> Self {
         Self {
             name: "fall_through".to_string(),
             processors: Vec::new(),
             classifiers: Vec::new(),
-            targets,
             session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
             cleanup_started: Once::new(),
         }
@@ -196,7 +193,13 @@ where
         match served {
             Some(response) => Ok(RoutingOutcome::answered(target, request, response)),
             None => {
-                let fallback_models = self.fallbacks(&target);
+                // Every configured target other than the selection, in fallback order.
+                let fallback_models: Vec<ModelId> = driver
+                    .models_for(Category::Any)
+                    .iter()
+                    .filter(|candidate| **candidate != target)
+                    .cloned()
+                    .collect();
                 Ok(RoutingOutcome::route_to(target, fallback_models, request))
             }
         }
@@ -207,15 +210,6 @@ where
         if let Some(states) = &self.session_states {
             states.lock().remove(session);
         }
-    }
-
-    /// Every configured target other than the selection, in fallback order.
-    fn fallbacks(&self, target: &ModelId) -> Vec<ModelId> {
-        self.targets
-            .iter()
-            .filter(|candidate| *candidate != target)
-            .cloned()
-            .collect()
     }
 
     /// Returns this request's retained state without holding the registry lock.
@@ -267,7 +261,6 @@ where
         };
 
         // 3. Resolve the target and log the choice.
-        algorithm::ensure_model_is_target(&self.targets, &score.target)?;
         let target = score.target.clone();
         tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
 
@@ -634,10 +627,11 @@ mod tests {
         use futures::StreamExt;
 
         let router = Arc::new(
-            FallThrough::<()>::new(target_set(&["weak", "mid", "strong"]))
-                .with_classifier(fixed(vec![score("mid", 0.9)])),
+            FallThrough::<()>::new(vec![]).with_classifier(fixed(vec![score("mid", 0.9)])),
         );
-        let stream = router.run_stream(request());
+
+        let models = Category::to_map(Category::Any, &["weak", "mid", "strong"]);
+        let stream = router.run_stream(request(), models);
         tokio::pin!(stream);
         while let Some(step) = stream.next().await {
             if let crate::Step::Done(outcome) = step? {

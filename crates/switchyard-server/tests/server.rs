@@ -22,8 +22,9 @@ use serde_json::{Value, json};
 use switchyard_llm_client::{
     Backend, ClientRouter, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
-use switchyard_protocol::ModelId;
 use switchyard_protocol::RoutedLlmClient;
+use switchyard_protocol::{ModelId, WireFormat};
+use switchyard_runner::{DecisionTarget, ModelCapabilities, Route, Runner};
 use switchyard_server::config::load_server_state;
 use switchyard_server::{DEFAULT_MAX_REQUEST_BODY_BYTES, ServerState, build_switchyard_router};
 use tokio::net::TcpListener;
@@ -510,16 +511,32 @@ fn random_state_with_retries(
     let entries = routes
         .iter()
         .map(|(route_model, targets)| {
-            let target_set = targets.iter().map(|model| ModelId::from(*model)).collect();
-            let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
+            let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(None, None)?);
+            let decision_targets = targets
+                .iter()
+                .map(|model| DecisionTarget {
+                    target: (*model).to_string(),
+                    model: ModelId::from(*model),
+                    format: WireFormat::OpenAiChat,
+                    base_url: base_url.to_string(),
+                    extra_body: BTreeMap::new(),
+                })
+                .collect();
             Ok((
                 ModelId::from(*route_model),
-                algorithm,
-                ClientRouter::single(Arc::clone(&client)),
+                Route::new(
+                    algorithm,
+                    ClientRouter::single(Arc::clone(&client)),
+                    None,
+                    ModelCapabilities::default(),
+                    None,
+                    None,
+                    decision_targets,
+                ),
             ))
         })
         .collect::<TestResult<Vec<_>>>()?;
-    Ok(ServerState::new(entries)?)
+    ServerState::from_runner(Runner::new(entries)).map_err(Into::into)
 }
 
 async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Router)> {

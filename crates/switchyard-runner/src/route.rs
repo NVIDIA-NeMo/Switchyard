@@ -3,13 +3,13 @@
 
 //! One configured algorithm and the clients that serve its targets.
 
-use std::error::Error;
 use std::sync::Arc;
+use std::{collections::HashMap, error::Error};
 
 use libsy::{Algorithm, LibsyError, RoutingOutcome};
 use serde_json::Value;
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
-use switchyard_protocol::{LlmClientError, ModelId, Request, Response, WireFormat};
+use switchyard_protocol::{Category, LlmClientError, ModelId, Request, Response, WireFormat};
 use thiserror::Error;
 
 use crate::DecisionTarget;
@@ -168,6 +168,10 @@ impl Route {
             .cloned()
     }
 
+    pub fn model_ids(&self) -> impl Iterator<Item = &ModelId> {
+        self.decision_targets.iter().map(|target| &target.model)
+    }
+
     /// Rejects a caller format incompatible with forwarded credentials.
     pub fn check_caller_format(&self, input_format: WireFormat) -> Result<(), RunnerError> {
         if let Some(kind) = self.caller_auth
@@ -182,12 +186,14 @@ impl Route {
     pub async fn execute(
         &self,
         request: Request,
+        models: HashMap<Category, Vec<ModelId>>,
         observer: Option<RunObserver>,
     ) -> Result<RunOutput, RunnerError> {
         let (selected_model, response) = switchyard_llm_client::run(
             Arc::clone(&self.algorithm),
             self.clients.clone(),
             request,
+            models,
             observer,
         )
         .await?;
@@ -198,10 +204,19 @@ impl Route {
     }
 
     /// Completes routing-time calls without serving a post-routing completion.
-    pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        switchyard_llm_client::decide(Arc::clone(&self.algorithm), self.clients.clone(), request)
-            .await
-            .map_err(Into::into)
+    pub async fn decide(
+        &self,
+        request: Request,
+        models: HashMap<Category, Vec<ModelId>>,
+    ) -> Result<RoutingOutcome, RunnerError> {
+        switchyard_llm_client::decide(
+            Arc::clone(&self.algorithm),
+            self.clients.clone(),
+            request,
+            models,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Executes a model-bearing provider operation through a compatible target.

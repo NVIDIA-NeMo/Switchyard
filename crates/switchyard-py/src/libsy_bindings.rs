@@ -19,8 +19,8 @@ use switchyard_libsy::{
     StepStream, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId,
-    Request, Response,
+    Category, LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata,
+    ModelId, Request, Response,
 };
 use tokio::sync::Mutex;
 
@@ -637,11 +637,12 @@ impl PyAlgorithm {
     /// [`Metadata`] exactly as an HTTP host would (`Metadata::from_headers`),
     /// so metadata-driven algorithms see the same signals in Python as when
     /// served over HTTP.
-    #[pyo3(signature = (request, headers=None))]
+    #[pyo3(signature = (request, models, headers=None))]
     fn run_stream(
         &self,
         request: &Bound<'_, PyAny>,
-        headers: Option<std::collections::HashMap<String, String>>,
+        models: HashMap<String, Vec<String>>,
+        headers: Option<HashMap<String, String>>,
     ) -> PyResult<PyRunStream> {
         let headers = headers.as_ref().map(header_map_from_python).transpose()?;
         let request = Request {
@@ -649,9 +650,14 @@ impl PyAlgorithm {
             raw_request: None,
             metadata: headers.map(|headers| Metadata::from_headers(&headers)),
         };
+        let mut typed_models = HashMap::new();
+        for (k, v) in models {
+            let category: Category = k.parse().map_err(PyValueError::new_err)?;
+            typed_models.insert(category, v.into_iter().map(ModelId::from).collect());
+        }
         let stream = {
             let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
-            Arc::clone(&self.inner).run_stream(request)
+            Arc::clone(&self.inner).run_stream(request, typed_models)
         };
         Ok(PyRunStream {
             inner: Arc::new(Mutex::new(stream)),
@@ -707,17 +713,10 @@ fn noop_algorithm() -> PyAlgorithm {
 
 /// Construct random routing over targets with optional relative weights and seed.
 #[pyfunction(name = "random")]
-#[pyo3(signature = (targets, *, weights=None, seed=None))]
-fn random_algorithm(
-    targets: Vec<String>,
-    weights: Option<Vec<f64>>,
-    seed: Option<u64>,
-) -> PyResult<PyAlgorithm> {
-    let model_ids = targets.into_iter().map(ModelId::new).collect();
-    let algorithm = Random::new(model_ids, weights, seed).map_err(|error| match error {
-        RustLibsyError::NoTargets => PyValueError::new_err("random requires at least one target"),
-        other => PyValueError::new_err(other.to_string()),
-    })?;
+#[pyo3(signature = (weights=None, seed=None))]
+fn random_algorithm(weights: Option<Vec<f64>>, seed: Option<u64>) -> PyResult<PyAlgorithm> {
+    let algorithm =
+        Random::new(weights, seed).map_err(|other| PyValueError::new_err(other.to_string()))?;
     Ok(PyAlgorithm {
         inner: Arc::new(algorithm),
     })

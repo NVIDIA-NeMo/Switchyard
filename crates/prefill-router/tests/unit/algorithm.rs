@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -66,7 +67,7 @@ fn forward() -> (
 }
 
 async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<String> {
-    let outcome = libsy::drive(route, request, |call| async move {
+    let outcome = libsy::drive(route, request, HashMap::new(), |call| async move {
         call.respond(Ok(switchyard_protocol::Response {
             llm_response: switchyard_protocol::LlmResponse::Agg(
                 switchyard_protocol::text_response(None, "unused"),

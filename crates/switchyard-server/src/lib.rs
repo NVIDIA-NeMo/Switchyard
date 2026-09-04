@@ -13,7 +13,7 @@ mod sse;
 mod stats;
 mod usage_metrics;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
@@ -38,7 +38,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObservation, RunObserver};
-use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
+use switchyard_protocol::{Category, LlmClientError, Metadata, ModelId, Request, Usage};
 use switchyard_runner::{
     CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RunOutput, Runner, RunnerError,
 };
@@ -707,7 +707,12 @@ async fn decision(
         .as_deref()
         .map(ModelId::from)
         .unwrap_or_default();
-    let mut outcome = match route.decide(request).await {
+
+    // TODO: Don't create this every time
+    let models: HashMap<Category, Vec<ModelId>> =
+        [(Category::Any, route.model_ids().cloned().collect())].into();
+
+    let mut outcome = match route.decide(request, models).await {
         Ok(outcome) => outcome,
         Err(error) => return runner_error(error),
     };
@@ -1006,7 +1011,11 @@ async fn handle_llm_request(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
     );
-    let output = match route.execute(request, Some(observer)).await {
+
+    // TODO: Don't create this every time
+    let models: HashMap<Category, Vec<ModelId>> =
+        [(Category::Any, route.model_ids().cloned().collect())].into();
+    let output = match route.execute(request, models, Some(observer)).await {
         Ok(output) => output,
         Err(error) => return runner_error(error),
     };

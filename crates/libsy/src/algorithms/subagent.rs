@@ -118,15 +118,15 @@ mod tests {
     use parking_lot::Mutex;
     use serde_json::json;
     use switchyard_protocol::{
-        ContentBlock, InstructionBlock, Message, Metadata, ModelId, Request, Response, Role,
-        text_request,
+        Category, ContentBlock, InstructionBlock, Message, Metadata, ModelId, Request, Response,
+        Role, text_request,
     };
 
     use super::{SubagentRouter, SubagentRouterConfig};
     use crate::algorithms::passthrough::Passthrough;
     use crate::core::algorithm::Algorithm;
     use crate::core::classifier::{Classification, Classifier, Score};
-    use crate::core::testing::{echo, reply, test_drive};
+    use crate::core::testing::{echo, reply, test_drive, test_drive_with_models};
     use crate::{
         ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, Driver,
         LlmClassifierConfig, LlmTaskClassifier, State,
@@ -178,7 +178,7 @@ mod tests {
     }
 
     fn parent() -> Arc<dyn Algorithm> {
-        Arc::new(Passthrough::new("parent"))
+        Arc::new(Passthrough::default())
     }
 
     fn configured(classifier: Arc<dyn Classifier<State>>) -> crate::Result<Arc<SubagentRouter>> {
@@ -201,11 +201,21 @@ mod tests {
         });
         let router = configured(classifier.clone())?;
 
-        let (parent, _) = test_drive(router.clone(), request(None), echo()).await?;
-        let (first, _) = test_drive(router.clone(), child("child-1"), echo()).await?;
-        let (same_child, _) = test_drive(router.clone(), child("child-1"), echo()).await?;
-        let (sibling, _) = test_drive(router.clone(), child("child-2"), echo()).await?;
-        let (defaulted, _) = test_drive(router.clone(), child("child-3"), echo()).await?;
+        let models = Category::to_map(Category::Any, &["parent", "worker", "reviewer"]);
+        let (parent, _) =
+            test_drive_with_models(router.clone(), request(None), models.clone(), echo()).await?;
+        let (first, _) =
+            test_drive_with_models(router.clone(), child("child-1"), models.clone(), echo())
+                .await?;
+        let (same_child, _) =
+            test_drive_with_models(router.clone(), child("child-1"), models.clone(), echo())
+                .await?;
+        let (sibling, _) =
+            test_drive_with_models(router.clone(), child("child-2"), models.clone(), echo())
+                .await?;
+        let (defaulted, _) =
+            test_drive_with_models(router.clone(), child("child-3"), models.clone(), echo())
+                .await?;
         let maintenance = request(Some(Metadata {
             session_id: Some("session-1".to_string()),
             agent_id: Some("child-1".to_string()),
@@ -213,7 +223,8 @@ mod tests {
             is_delegated_work: false,
             ..Metadata::default()
         }));
-        let (maintenance, _) = test_drive(router, maintenance, echo()).await?;
+        let (maintenance, _) =
+            test_drive_with_models(router, maintenance, models.clone(), echo()).await?;
 
         assert_eq!(parent, "parent");
         assert_eq!(first, "worker");

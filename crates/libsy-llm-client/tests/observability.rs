@@ -10,7 +10,7 @@
 //! and model name. Counters are cumulative across flushes; the helpers take the
 //! latest (max) matching data point.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -39,7 +39,7 @@ use switchyard_libsy::{
     StageRouterConfig, Step, TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
-use switchyard_protocol::ModelId;
+use switchyard_protocol::{Category, ModelId};
 use switchyard_protocol::{
     ContentBlock, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
     RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
@@ -568,7 +568,14 @@ async fn run(
     client: Arc<dyn RoutedLlmClient>,
     request: Request,
 ) -> switchyard_libsy::Result<(ModelId, Response)> {
-    switchyard_llm_client::run(algorithm, ClientRouter::single(client), request, None).await
+    switchyard_llm_client::run(
+        algorithm,
+        ClientRouter::single(client),
+        request,
+        HashMap::new(),
+        None,
+    )
+    .await
 }
 
 fn classifier_router(
@@ -714,6 +721,14 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
         Arc::clone(&router),
         ClientRouter::single(client.clone()),
         request.clone(),
+        Category::to_map(
+            Category::Any,
+            &[
+                "affinity-fallback-strong",
+                "affinity-fallback-weak",
+                "affinity-fallback-judge",
+            ],
+        ),
         None,
     )
     .await?;
@@ -724,9 +739,14 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
     );
 
     client.efficient_available.store(true, Ordering::Relaxed);
-    let (selected, second_response) =
-        switchyard_llm_client::run(router, ClientRouter::single(client.clone()), request, None)
-            .await?;
+    let (selected, second_response) = switchyard_llm_client::run(
+        router,
+        ClientRouter::single(client.clone()),
+        request,
+        HashMap::new(),
+        None,
+    )
+    .await?;
     assert_eq!(selected, "affinity-fallback-weak");
     assert_eq!(
         second_response.served_model().map(ModelId::as_str),
@@ -1050,6 +1070,7 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
         algo(ALGO, MODEL),
         ClientRouter::single(client),
         request_with_metadata("observed-session", "observed-correlation"),
+        HashMap::new(),
         Some(observer),
     )
     .await?;
@@ -1224,7 +1245,10 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
         name: ALGO.to_string(),
         target: MODEL.into(),
     });
-    let stream = algorithm.run_stream(request_with_metadata("obs-session-2", "obs-corr-2"));
+    let stream = algorithm.run_stream(
+        request_with_metadata("obs-session-2", "obs-corr-2"),
+        HashMap::new(),
+    );
     tokio::pin!(stream);
 
     let mut saw_error_step = false;
@@ -1476,7 +1500,10 @@ async fn in_flight_gauge_reads_a_run_parked_on_an_unanswered_routing_call()
         name: ALGO.to_string(),
         target: MODEL.into(),
     });
-    let stream = algorithm.run_stream(request_with_metadata("obs-session-if", "obs-corr-if"));
+    let stream = algorithm.run_stream(
+        request_with_metadata("obs-session-if", "obs-corr-if"),
+        HashMap::new(),
+    );
     tokio::pin!(stream);
     let attributes = [("algorithm", ALGO)];
 
@@ -1531,7 +1558,10 @@ async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::R
     // disconnected client abandons a run. The run task is aborted mid-await and never
     // reaches the code that follows it, so only a drop can return the count.
     {
-        let stream = algorithm.run_stream(request_with_metadata("obs-session-ab", "obs-corr-ab"));
+        let stream = algorithm.run_stream(
+            request_with_metadata("obs-session-ab", "obs-corr-ab"),
+            HashMap::new(),
+        );
         tokio::pin!(stream);
         let Some(Ok(Step::CallModel(_call))) = stream.next().await else {
             return Err(test_error("expected an offloaded routing call"));

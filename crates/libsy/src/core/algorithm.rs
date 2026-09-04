@@ -4,7 +4,10 @@
 //! The [`Algorithm`] trait and its [`Driver`] — the orchestration contract every
 //! algorithm implements and the offload channel it uses for routing-time model calls.
 
-use std::{future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc,
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use futures::{FutureExt, Stream, StreamExt};
@@ -19,7 +22,7 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStreamEvent`] is its host/algorithm envelope; and
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{Category, ModelId, Request, Response};
 
 use crate::{DriverError, LibsyError, Result, observability};
 
@@ -112,14 +115,22 @@ impl RoutingOutcome {
 #[derive(Clone)]
 pub struct Driver {
     step_tx: mpsc::Sender<Result<Step>>,
+
     /// The owning algorithm's telemetry label, stamped onto every call this driver publishes.
     algorithm: String,
+
+    /// The models the algorithm can use, grouped by category.
+    /// Within a category they are typically ordered best-first.
+    models: HashMap<Category, Vec<ModelId>>,
 }
 
 impl Driver {
     /// Build an empty driver with its step channel ready. Created per call by
     /// [`run_stream`](Algorithm::run_stream). Also returns the Step receiver.
-    pub(crate) fn new(algorithm: &str) -> (Self, mpsc::Receiver<Result<Step>>) {
+    pub(crate) fn new(
+        algorithm: &str,
+        models: HashMap<Category, Vec<ModelId>>,
+    ) -> (Self, mpsc::Receiver<Result<Step>>) {
         // Capacity one keeps the algorithm paced by the stream consumer. It limits queued steps,
         // not model calls already pulled from the stream, which can still run at the same time.
         // A larger buffer would use more memory and let the algorithm run farther ahead with
@@ -129,6 +140,7 @@ impl Driver {
             Self {
                 step_tx,
                 algorithm: algorithm.to_string(),
+                models,
             },
             step_rx,
         )
@@ -192,6 +204,11 @@ impl Driver {
         result
     }
 
+    /// The available models for this category, typically ordered best-first.
+    pub fn models_for(&self, category: Category) -> &[ModelId] {
+        self.models.get(&category).map_or(&[], |v| v.as_slice())
+    }
+
     /// Emit the terminal step: [`Step::Done`] on `Ok`, or an `Err` stream
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
@@ -236,13 +253,14 @@ pub enum Step {
 pub async fn drive<F, Fut>(
     algorithm: Arc<dyn Algorithm>,
     request: Request,
+    models: HashMap<Category, Vec<ModelId>>,
     serve: F,
 ) -> Result<RoutingOutcome>
 where
     F: Fn(CallModel) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let stream = algorithm.run_stream(request);
+    let stream = algorithm.run_stream(request, models);
     tokio::pin!(stream);
 
     let mut in_flight = futures::stream::FuturesUnordered::new();
@@ -374,8 +392,12 @@ pub trait Algorithm: Send + Sync + 'static {
     /// the stream aborts the spawned algorithm task.
     ///
     /// Every invocation owns a separate [`Driver`].
-    fn run_stream(self: Arc<Self>, request: Request) -> StepStream {
-        let (driver, step_rx) = Driver::new(self.name());
+    fn run_stream(
+        self: Arc<Self>,
+        request: Request,
+        models: HashMap<Category, Vec<ModelId>>,
+    ) -> StepStream {
+        let (driver, step_rx) = Driver::new(self.name(), models);
         let span = observability::run_span(self.name(), &request);
         let handle = tokio::spawn(
             async move {
@@ -517,7 +539,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             // Distinct oneshots keep reverse-order replies paired with their producers, and a
             // retained call remains pending until the host responds.
-            let (driver, mut step_rx) = Driver::new("test");
+            let (driver, mut step_rx) = Driver::new("test", HashMap::new());
             let first_driver = driver.clone();
             let mut first = tokio::spawn(async move {
                 first_driver
@@ -574,7 +596,7 @@ mod tests {
             );
 
             // Dropping the host-facing promise closes only that call's reply channel.
-            let (driver, mut step_rx) = Driver::new("test");
+            let (driver, mut step_rx) = Driver::new("test", HashMap::new());
             let producer = tokio::spawn(async move {
                 driver
                     .call_model(request(), vec![ModelId::from("dropped")])
@@ -594,7 +616,7 @@ mod tests {
             ));
 
             // A standalone driver reports the typed step receiver disappearing at its next call.
-            let (driver, step_rx) = Driver::new("test");
+            let (driver, step_rx) = Driver::new("test", HashMap::new());
             drop(step_rx);
             let result = driver
                 .call_model(request(), vec![ModelId::from("closed")])
@@ -697,7 +719,7 @@ mod tests {
     async fn run_offloads_via_promise_then_finishes() -> Result<()> {
         // Every call is offloaded via a promise the orchestrator surfaces as a
         // `CallModel` step for us to fulfill.
-        let stream = orch(target_set(&["offload/model"])).run_stream(request());
+        let stream = orch(target_set(&["offload/model"])).run_stream(request(), HashMap::new());
         tokio::pin!(stream);
 
         let mut saw_call = false;
@@ -794,7 +816,7 @@ mod tests {
         // A client-less target offloads its call; we fulfill the promise with an
         // Err, which must flow back through `call_model_target` into the algorithm and
         // out as an error step — not a response.
-        let stream = orch(target_set(&["offload/model"])).run_stream(request());
+        let stream = orch(target_set(&["offload/model"])).run_stream(request(), HashMap::new());
         tokio::pin!(stream);
 
         let mut saw_error = false;
@@ -866,7 +888,7 @@ mod tests {
             dropped: dropped.clone(),
         });
 
-        let stream = algo.run_stream(request());
+        let stream = algo.run_stream(request(), HashMap::new());
         started_rx
             .recv()
             .await
@@ -903,7 +925,7 @@ mod tests {
         }
 
         let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
-        let stream = algo.run_stream(request());
+        let stream = algo.run_stream(request(), HashMap::new());
         tokio::pin!(stream);
 
         let mut saw_error = false;
