@@ -2488,3 +2488,78 @@ fn responses_embed_preservation_replay_has_no_system_role_items() -> TestResult 
     assert!(output["input"].is_array(), "replay must keep a canonical input array");
     Ok(())
 }
+
+// The Responses encoder must never emit the scalar string `input` shape:
+// single-user-text requests encode as the canonical message-item list (strict
+// Codex backends reject the scalar form; list input is universally accepted by
+// normal /v1/responses endpoints). CodeRabbit finding on PR #619.
+#[test]
+fn responses_encode_never_emits_scalar_string_input() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4o",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .expect("encoded input must be a message-item list, never a scalar string");
+    assert_eq!(input.len(), 1, "single user text becomes one message item");
+    assert_eq!(input[0].get("type").and_then(Value::as_str), Some("message"));
+    assert_eq!(input[0].get("role").and_then(Value::as_str), Some("user"));
+    Ok(())
+}
+
+// Preserved replay must also stay wire-legal for scalar input: a preserved
+// body carrying the scalar string `input` would otherwise bypass the
+// always-list guarantee, so the replay normalizes it to the canonical single
+// user message-item list. CodeRabbit finding on PR #619.
+#[test]
+fn responses_preserved_scalar_input_replays_as_message_list() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Embed,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "input": "hi",
+        "stream": true
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .expect("preserved replay must keep a canonical input list");
+    assert_eq!(input.len(), 1, "scalar input becomes exactly one message item");
+    assert_eq!(input[0].get("type").and_then(Value::as_str), Some("message"));
+    assert_eq!(input[0].get("role").and_then(Value::as_str), Some("user"));
+    assert_eq!(
+        input[0].pointer("/content/0/type").and_then(Value::as_str),
+        Some("input_text")
+    );
+    assert_eq!(
+        input[0].pointer("/content/0/text").and_then(Value::as_str),
+        Some("hi"),
+        "scalar input text must be preserved verbatim"
+    );
+    Ok(())
+}
