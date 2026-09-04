@@ -106,10 +106,10 @@ step 1, stop when you reach the result named under the heading.
 You finish with an existing NeMo Relay deployment routing through Switchyard.
 Requires NeMo Relay `>=0.8.1,<0.9.0` and a Rust toolchain to build the plugin.
 
-**1. Build, package, and enable the plugin.** Follow the
-[install steps in the plugin README](crates/switchyard-nemo-relay-plugin/README.md#install).
+**1. Build, package, and register the plugin.** Follow steps 1–3 of the
+[install guide in the plugin README](crates/switchyard-nemo-relay-plugin/README.md#install).
 They build the shared library, package it into a bundle with a digest-bearing
-`relay-plugin.toml`, and register and enable it with `nemo-relay plugins`.
+`relay-plugin.toml`, and register it with `nemo-relay plugins add`.
 
 **2. Write the Switchyard deployment** to `/etc/switchyard/routes.toml` — the
 same version-1 TOML the proxy uses. Copy the file from step 2 of Path 3 below.
@@ -128,8 +128,15 @@ priority = 0
 switchyard_config_path = "/etc/switchyard/routes.toml"
 ```
 
-**4. Restart Relay.** It now runs any algorithm `switchyard-runner` supports,
-while Switchyard owns provider HTTP dispatch.
+**4. Enable, validate, and restart Relay.**
+
+```bash
+nemo-relay plugins enable nvidia.switchyard
+nemo-relay plugins validate nvidia.switchyard
+```
+
+Relay now runs any algorithm `switchyard-runner` supports, while Switchyard
+owns provider HTTP dispatch.
 
 Details: [`switchyard-nemo-relay-plugin`](crates/switchyard-nemo-relay-plugin/README.md)
 and the [TOML schema reference](docs/reference/toml_schema.md).

@@ -28,35 +28,63 @@ manifest with the library name and its SHA-256 digest filled in. Relay verifies
 that digest before it loads the library, so rebuild the bundle after every
 rebuild of the library.
 
+Linux:
+
 ```bash
 python crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
   --library target/release/libswitchyard_nemo_relay_plugin.so \
   --output ./plugins/switchyard
 ```
 
+macOS:
+
+```bash
+python crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
+  --library target/release/libswitchyard_nemo_relay_plugin.dylib \
+  --output ./plugins/switchyard
+```
+
 Pass `--archive switchyard-plugin.tar.gz` (or `.zip`) to also produce an
 archive for distribution.
 
-**3. Register and enable the plugin.** The manifest ships with
-`enabled = false`; Relay validates a disabled plugin but never loads it.
+**3. Register the plugin.**
 
 ```bash
 nemo-relay plugins validate ./plugins/switchyard/relay-plugin.toml
 nemo-relay plugins add --user ./plugins/switchyard/relay-plugin.toml
+```
+
+`add` writes a `[[plugins.dynamic]]` entry to your user `plugins.toml`
+(`~/.config/nemo-relay/plugins.toml` or `$XDG_CONFIG_HOME/nemo-relay/plugins.toml`).
+The plugin is not enabled yet; enabling before the deployment is configured
+fails validation because the plugin requires a Switchyard configuration.
+
+**4. Configure the deployment** as described in [Configure Relay](#configure-relay).
+
+**5. Enable and validate the plugin**, then restart Relay. The manifest ships
+with `enabled = false`; Relay validates a disabled plugin but never loads it.
+
+```bash
 nemo-relay plugins enable nvidia.switchyard
 nemo-relay plugins validate nvidia.switchyard
 ```
 
-`add` writes a `[[plugins.dynamic]]` entry to your `plugins.toml`; `enable`
-marks it active for the next gateway start. The final `validate` evaluates the
-manifest, the artifact digest, and the host trust policy. Native plugins run
-inside the Relay process without a sandbox, and Relay's default policy accepts
-integrity-only manifests. A host that sets
-`attestation = "signature_required"` under `[plugins.policy.defaults]` also
-needs an Ed25519 signature from a trusted key; see Relay's
-[discoverable plugins guide](https://github.com/NVIDIA/NeMo-Relay/blob/main/docs/configure-plugins/discoverable-plugins.mdx).
+`validate` evaluates the manifest, the plugin configuration, the artifact
+digest, and the host trust policy. Native plugins run inside the Relay process
+without a sandbox, so treat the bundle as trusted host code. The generated
+manifest carries an integrity digest but no signature. If `validate` reports
+that the host policy requires a signature, either sign the artifact with an
+Ed25519 key listed in the host's `trusted_public_keys`, or relax the policy for
+this plugin in `plugins.toml`:
 
-**4. Configure the deployment** as shown below, then restart Relay.
+```toml
+[plugins.policy.overrides."nvidia.switchyard"]
+attestation = "integrity_only"
+```
+
+See Relay's
+[discoverable plugins guide](https://github.com/NVIDIA/NeMo-Relay/blob/main/docs/configure-plugins/discoverable-plugins.mdx)
+for the policy keys.
 
 ## Configure Relay
 
