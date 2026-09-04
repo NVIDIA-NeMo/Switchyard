@@ -987,6 +987,7 @@ fn resolve_route(
     Ok((route, request))
 }
 
+/// Resolves and executes an LLM request, attaching route identity when durable logging is enabled.
 async fn handle_llm_request(
     state: ServerState,
     started: RequestStart,
@@ -1000,9 +1001,12 @@ async fn handle_llm_request(
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
-    let route_id = request.llm_request.model.clone().unwrap_or_default();
-    let routing_log_context =
-        routing_log_context.map(|context| context.with_route(route_id, route.algorithm_name()));
+    let routing_log_context = routing_log_context.map(|context| {
+        context.with_route(
+            request.llm_request.model.as_deref().unwrap_or_default(),
+            route.algorithm_name(),
+        )
+    });
     // Only the Codex namespace mapping is needed downstream, not the whole request.
     let request_extensions = request.llm_request.extensions.clone();
     let observer = stats_observer(
@@ -1673,13 +1677,11 @@ mod tests {
     #[test]
     fn stats_observer_logs_judge_calls_to_the_routing_log() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let log_path = dir.path().join("routing.jsonl");
-        let log = SharedRoutingLog::new(log_path.clone()).expect("routing log");
+        let log = SharedRoutingLog::new(dir.path().join("routing.jsonl")).expect("routing log");
         let mut headers = HeaderMap::new();
         headers.insert("proxy_x_session_id", "session-1".parse().expect("header"));
         let metadata = metadata_from_headers(headers);
-        let context = routing_log::RoutingLogContext::from_metadata(&metadata)
-            .with_route("switchyard/classifier", "llm_classifier");
+        let context = routing_log::RoutingLogContext::from_metadata(&metadata);
         let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
 
         let call = |model: &str, answer: bool| {
@@ -1711,18 +1713,6 @@ mod tests {
         assert_eq!(snapshot["models"]["judge-model"]["prompt_tokens"], 100);
         assert_eq!(snapshot["models"]["judge-model"]["completion_tokens"], 7);
         assert!(snapshot["models"].get("routed-model").is_none());
-
-        let record: Value = serde_json::from_str(
-            std::fs::read_to_string(log_path)
-                .expect("read log")
-                .lines()
-                .next()
-                .expect("judge record"),
-        )
-        .expect("valid record");
-        assert_eq!(record["route_id"], "switchyard/classifier");
-        assert_eq!(record["algorithm"], "llm_classifier");
-        assert_eq!(record["tier"], CLASSIFIER_TIER);
     }
 
     #[derive(Clone)]

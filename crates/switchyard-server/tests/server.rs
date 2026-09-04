@@ -2512,7 +2512,7 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
     Ok(())
 }
 
-// Two routes serving one model must remain distinguishable in the durable accounting record.
+/// Two routes serving one model must remain distinguishable in the durable accounting record.
 #[tokio::test]
 async fn routing_log_attributes_shared_models_to_the_requested_route() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -3300,6 +3300,8 @@ async fn advisor_route_routing_log_records_classifier_tier() -> TestResult {
         .find(|record| record["model"] == "model/advisor")
         .ok_or("consult row present")?;
     assert_eq!(consult["tier"], "classifier");
+    assert_eq!(consult["route_id"], "switchyard/advisor");
+    assert_eq!(consult["algorithm"], "advisor_gate");
     assert_eq!(consult["session_id"], "session-1");
     assert_eq!(consult["prompt_tokens"], 40);
     Ok(())
