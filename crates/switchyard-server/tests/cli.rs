@@ -92,6 +92,7 @@ policy = {{ type = "target_selector", selector = "/target" }}
     Ok(())
 }
 
+// Dry-run rejects malformed static header names before binding or routing.
 #[test]
 fn dry_run_rejects_invalid_configured_header() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -129,6 +130,7 @@ target = "invalid"
     Ok(())
 }
 
+// Dry-run rejects malformed credentials without echoing them to stderr.
 #[test]
 fn dry_run_rejects_api_key_that_cannot_form_auth_header() -> TestResult {
     const INVALID_KEY_ENV: &str = "SWITCHYARD_CLI_TEST_INVALID_HEADER_KEY";
