@@ -23,9 +23,8 @@ FROM ghcr.io/astral-sh/uv:0.8.15 AS uv
 FROM ghcr.io/berriai/litellm:v1.97.0
 
 COPY --from=uv /uv /usr/local/bin/uv
-COPY --from=switchyard-builder /wheels /wheels
-RUN uv pip install --python /app/.venv/bin/python --no-deps /wheels/*.whl \
-    && rm -rf /wheels
+RUN --mount=type=bind,from=switchyard-builder,source=/wheels,target=/wheels \
+    uv pip install --python /app/.venv/bin/python --no-deps /wheels/*.whl
 
 COPY examples/litellm/src /app/switchyard-plugin/src
 ENV PYTHONPATH=/app/switchyard-plugin/src
