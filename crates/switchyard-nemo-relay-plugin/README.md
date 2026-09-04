@@ -59,7 +59,8 @@ nemo-relay plugins add --user ./plugins/switchyard/relay-plugin.toml
 The plugin is not enabled yet; enabling before the deployment is configured
 fails validation because the plugin requires a Switchyard configuration.
 
-**4. Configure the deployment** as described in [Configure Relay](#configure-relay).
+**4. Configure the deployment and trust policy** in that `plugins.toml`, as
+described in [Configure Relay](#configure-relay).
 
 **5. Enable and validate the plugin**, then restart Relay. The manifest ships
 with `enabled = false`; Relay validates a disabled plugin but never loads it.
@@ -70,27 +71,14 @@ nemo-relay plugins validate nvidia.switchyard
 ```
 
 `validate` evaluates the manifest, the plugin configuration, the artifact
-digest, and the host trust policy. Native plugins run inside the Relay process
-without a sandbox, so treat the bundle as trusted host code. The generated
-manifest carries an integrity digest but no signature. If `validate` reports
-that the host policy requires a signature, either sign the artifact with an
-Ed25519 key listed in the host's `trusted_public_keys`, or relax the policy for
-this plugin in `plugins.toml`:
-
-```toml
-[plugins.policy.overrides."nvidia.switchyard"]
-attestation = "integrity_only"
-```
-
-See Relay's
-[discoverable plugins guide](https://github.com/NVIDIA/NeMo-Relay/blob/main/docs/configure-plugins/discoverable-plugins.mdx)
-for the policy keys.
+digest, and the host trust policy.
 
 ## Configure Relay
 
-Add the `config` table to the `[[plugins.dynamic]]` entry that `plugins add`
-wrote. Use exactly one Switchyard deployment source. To share an existing
-deployment file with `switchyard-server`, configure its path:
+Add a `config` table to the `[[plugins.dynamic]]` entry that `plugins add`
+wrote, and a policy override for the plugin. Use exactly one Switchyard
+deployment source. To share an existing deployment file with
+`switchyard-server`, configure its path:
 
 ```toml
 [[plugins.dynamic]]
@@ -99,7 +87,22 @@ manifest = "./plugins/switchyard/relay-plugin.toml"
 [plugins.dynamic.config]
 priority = 0
 switchyard_config_path = "/etc/switchyard/routes.toml"
+
+[plugins.policy.overrides."nvidia.switchyard"]
+attestation = "integrity_only"
 ```
+
+The policy override is required. The generated manifest carries a SHA-256
+digest but no signature, and Relay 0.8 refuses to activate an unsigned dynamic
+plugin at gateway start unless its host policy says otherwise; `plugins
+validate` still passes without the override, so the failure only shows up at
+startup as `requires integrity.signature under host policy`. Native plugins
+run inside the Relay process without a sandbox, so only install a bundle you
+built or obtained from a source you trust. To require a signature instead, sign
+the artifact with an Ed25519 key and list it in `trusted_public_keys`; see
+Relay's
+[discoverable plugins guide](https://github.com/NVIDIA/NeMo-Relay/blob/main/docs/configure-plugins/discoverable-plugins.mdx)
+for the policy keys.
 
 `switchyard_config_path` is a Switchyard version-1 TOML deployment, accepted by both
 `switchyard-server` and `switchyard-runner`. See the

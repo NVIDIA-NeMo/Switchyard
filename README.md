@@ -115,7 +115,8 @@ They build the shared library, package it into a bundle with a digest-bearing
 same version-1 TOML the proxy uses. Copy the file from step 2 of Path 3 below.
 
 **3. Point the plugin at the deployment.** Add a `config` table to the
-`[[plugins.dynamic]]` entry that `nemo-relay plugins add` wrote. Use exactly one
+`[[plugins.dynamic]]` entry that `nemo-relay plugins add` wrote, plus the
+policy override that lets Relay load the unsigned bundle. Use exactly one
 deployment source: a path, as here, or the config nested under
 `switchyard_config`.
 
@@ -126,6 +127,9 @@ manifest = "./plugins/switchyard/relay-plugin.toml"
 [plugins.dynamic.config]
 priority = 0
 switchyard_config_path = "/etc/switchyard/routes.toml"
+
+[plugins.policy.overrides."nvidia.switchyard"]
+attestation = "integrity_only"
 ```
 
 **4. Enable, validate, and restart Relay.**
