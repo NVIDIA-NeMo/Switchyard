@@ -25,7 +25,9 @@ use switchyard_llm_client::{
 use switchyard_protocol::ModelId;
 use switchyard_protocol::RoutedLlmClient;
 use switchyard_server::config::load_server_state;
-use switchyard_server::{DEFAULT_MAX_REQUEST_BODY_BYTES, ServerState, build_switchyard_router};
+use switchyard_server::{
+    DEFAULT_MAX_REQUEST_BODY_BYTES, ServerState, build_llm_router, build_switchyard_router,
+};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -526,6 +528,42 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
     let upstream = MockUpstream::start().await?;
     let app = build_switchyard_router(random_state(&upstream.base_url, routes)?);
     Ok((upstream, app))
+}
+
+// Embedders expose only the three primary inference endpoints and own every other route.
+#[tokio::test]
+async fn llm_router_exposes_only_primary_llm_endpoints() -> TestResult {
+    let state = random_state("http://127.0.0.1:1/v1", &[(ROUTE_MODEL, &["model/weak"])])?;
+    let app = build_llm_router(state);
+
+    for path in ["/v1/chat/completions", "/v1/messages", "/v1/responses"] {
+        assert_eq!(
+            send(&app, "GET", path, None).await?.status,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{path} should be registered"
+        );
+    }
+
+    for path in [
+        "/v1/decision",
+        "/v1/messages/count_tokens",
+        "/v1/responses/input_tokens",
+        "/v1/responses/compact",
+        "/v1/models",
+        "/v1/stats",
+        "/v1/stats/reset",
+        "/v1/routing/session-stats",
+        "/metrics",
+        "/health",
+        "/future/provider/endpoint",
+    ] {
+        assert_eq!(
+            send(&app, "POST", path, None).await?.status,
+            StatusCode::NOT_FOUND,
+            "{path} should not be registered"
+        );
+    }
+    Ok(())
 }
 
 fn empty_token_totals() -> Value {
