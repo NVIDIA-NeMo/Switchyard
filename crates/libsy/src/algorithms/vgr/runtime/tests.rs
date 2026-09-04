@@ -984,7 +984,7 @@ async fn a_hung_verifier_cannot_overrun_the_decision_budget() {
 #[cfg(unix)]
 #[tokio::test]
 async fn the_vgr_deadline_cancels_a_pinned_checker_process_tree()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+-> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let marker_owner = TempDir::with_prefix("vgr-runtime-marker-")?;
     let marker = marker_owner.path().join("grandchild-alive");
     let tests = TempDir::with_prefix("vgr-runtime-suite-")?;

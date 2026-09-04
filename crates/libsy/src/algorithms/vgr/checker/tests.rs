@@ -370,10 +370,7 @@ fn the_manifest_is_stable_across_checker_restarts() -> TestResult {
     drop(first);
     let second = PinnedChecker::new(config(&tests, &shell_argv()))?;
     assert_eq!(first_identity, second.manifest().sha);
-    assert_eq!(
-        Checker::manifest_identity(&second),
-        Some(first_identity.as_str())
-    );
+    assert_eq!(second.manifest_identity(), first_identity);
     Ok(())
 }
 

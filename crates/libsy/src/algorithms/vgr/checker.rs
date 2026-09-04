@@ -295,6 +295,23 @@ impl PinnedChecker {
         &self.manifest.sha
     }
 
+    /// Runs the checker through its public request contract in unit tests.
+    #[cfg(test)]
+    async fn check(&self, task_text: &str, attempt: &str) -> Option<bool> {
+        let deadline = std::time::Instant::now() + self.config.timeout;
+        <Self as Checker>::check(
+            self,
+            CheckerRequest {
+                task_text,
+                attempt,
+                deadline,
+                remaining: self.config.timeout,
+                manifest_identity: self.manifest_identity(),
+            },
+        )
+        .await
+    }
+
     /// Runs one admitted checker operation from materialization through teardown.
     async fn check_once(&self, task_text: &str, attempt: &str) -> Option<bool> {
         let permit = match Arc::clone(&self.admission).acquire_owned().await {
