@@ -185,10 +185,12 @@ api_key_env = "OPENROUTER_API_KEY"
 [targets.strong]
 id = "openai/gpt-4o"
 llm_client = "openrouter"
+# system_prompt = "diagnose before you edit"  # optional
 
 [targets.weak]
 id = "openai/gpt-4o-mini"
 llm_client = "openrouter"
+# system_prompt = "follow the settled plan"  # optional
 
 [routes.stage]
 id = "switchyard/stage"
@@ -220,15 +222,6 @@ tier when a settled signal drops the turn there.
 escalation_note = "the previous model was stalling; pick up the diagnosis"
 # deescalation_note = "..."          # optional
 # only_on_wrong_signal_escalation = true  # default; set false to always send
-```
-
-### Optional: per-tier system prompts
-
-```toml
-[routes.stage]
-# ...
-capable_system_prompt = "diagnose before you edit"
-efficient_system_prompt = "follow the settled plan"
 ```
 
 ### Optional: LLM classifier fallback

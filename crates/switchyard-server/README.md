@@ -17,6 +17,7 @@ max_retries = 2
 [targets.model_a]
 id = "model/a"
 llm_client = "example"
+system_prompt = "Use the fast path for routine work."
 extra_body = { service_tier = "priority" }
 
 [targets.model_b]
@@ -84,6 +85,8 @@ client's `base_url` should receive the caller's login. A forwarding route must
 be called through the matching provider API.
 Target-level `extra_body` values are shallow-merged into the upstream request when
 the request does not already contain that key.
+Target-level `system_prompt` values are prepended when that target serves a completion.
+Selected and fallback targets are prepared independently.
 `max_retries` defaults to `2` and applies to transport failures, timeouts, HTTP 408/429, and 5xx
 responses.
 
@@ -167,7 +170,8 @@ target and summarizes its score, confidence, and input-dimension histograms. The
 with `/v1/stats/reset`; the process-lifetime counters on `/metrics` remain cumulative.
 
 Token counting selects an Anthropic-format completion target, preferring target names or model IDs
-containing `opus`, `sonnet`, then `haiku`. Other ties preserve the route's target order.
+containing `opus`, `sonnet`, then `haiku`. Other ties preserve the route's target order. Target
+system prompts are applied to answer calls, not token-count requests.
 
 ## Metrics
 
