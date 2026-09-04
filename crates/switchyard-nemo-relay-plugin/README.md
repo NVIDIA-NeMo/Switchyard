@@ -10,14 +10,59 @@ algorithm construction, retry policy, and route validation.
 
 ## Install
 
-Build the platform bundle with the package script, then configure Relay to load
-the generated `relay-plugin.toml` manifest. The plugin requires NeMo Relay
-`>=0.8.1,<0.9.0`.
+The plugin requires NeMo Relay `>=0.8.1,<0.9.0`, a Rust toolchain, and Python 3
+for the packaging script. Run every command from the repository root.
+
+**1. Build the shared library.**
+
+```bash
+cargo build --release -p switchyard-nemo-relay-plugin
+```
+
+The artifact is `target/release/libswitchyard_nemo_relay_plugin.so` on Linux
+and `target/release/libswitchyard_nemo_relay_plugin.dylib` on macOS.
+
+**2. Package the bundle.** The script copies the library, the config schema,
+and license files into an empty directory and writes a `relay-plugin.toml`
+manifest with the library name and its SHA-256 digest filled in. Relay verifies
+that digest before it loads the library, so rebuild the bundle after every
+rebuild of the library.
+
+```bash
+python crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
+  --library target/release/libswitchyard_nemo_relay_plugin.so \
+  --output ./plugins/switchyard
+```
+
+Pass `--archive switchyard-plugin.tar.gz` (or `.zip`) to also produce an
+archive for distribution.
+
+**3. Register and enable the plugin.** The manifest ships with
+`enabled = false`; Relay validates a disabled plugin but never loads it.
+
+```bash
+nemo-relay plugins validate ./plugins/switchyard/relay-plugin.toml
+nemo-relay plugins add --user ./plugins/switchyard/relay-plugin.toml
+nemo-relay plugins enable nvidia.switchyard
+nemo-relay plugins validate nvidia.switchyard
+```
+
+`add` writes a `[[plugins.dynamic]]` entry to your `plugins.toml`; `enable`
+marks it active for the next gateway start. The final `validate` evaluates the
+manifest, the artifact digest, and the host trust policy. Native plugins run
+inside the Relay process without a sandbox, and Relay's default policy accepts
+integrity-only manifests. A host that sets
+`attestation = "signature_required"` under `[plugins.policy.defaults]` also
+needs an Ed25519 signature from a trusted key; see Relay's
+[discoverable plugins guide](https://github.com/NVIDIA/NeMo-Relay/blob/main/docs/configure-plugins/discoverable-plugins.mdx).
+
+**4. Configure the deployment** as shown below, then restart Relay.
 
 ## Configure Relay
 
-Use exactly one Switchyard deployment source. To share an existing deployment
-file with `switchyard-server`, configure its path:
+Add the `config` table to the `[[plugins.dynamic]]` entry that `plugins add`
+wrote. Use exactly one Switchyard deployment source. To share an existing
+deployment file with `switchyard-server`, configure its path:
 
 ```toml
 [[plugins.dynamic]]
@@ -30,8 +75,9 @@ switchyard_config_path = "/etc/switchyard/routes.toml"
 
 `switchyard_config_path` is a Switchyard version-1 TOML deployment, accepted by both
 `switchyard-server` and `switchyard-runner`. See the
-[server configuration guide](../switchyard-server/CONFIGURATION.md) for the
-deployment schema and routing algorithms.
+[TOML schema reference](../../docs/reference/toml_schema.md) for every key and
+the [routing overview](../../docs/routing_algorithms/overview.md) for the
+algorithms.
 
 To keep the deployment in the Relay configuration, nest the same version-1
 Switchyard configuration under `switchyard_config`:
