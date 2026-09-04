@@ -233,6 +233,159 @@ async fn the_command_tests_materialized_candidate_sources() -> TestResult {
 }
 
 #[tokio::test]
+async fn command_provider_materializes_request_data_only_through_files() -> TestResult {
+    let provider = CommandWorkspaceProvider::new(CommandWorkspaceProviderConfig::new(
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            concat!(
+                "[ -z \"$NVIDIA_API_KEY\" ] || exit 1\n",
+                "[ -z \"${TESTS_DIR+x}\" ] || exit 1\n",
+                "cp \"$ATTEMPT_FILE\" \"$WORKSPACE_DIR/candidate.txt\"\n",
+                "cp \"$TASK_FILE\" \"$WORKSPACE_DIR/task.txt\"\n",
+            )
+            .to_string(),
+        ],
+        Duration::from_secs(10),
+    ))?;
+    let workspace = provider
+        .materialize("trusted task", "untrusted attempt")
+        .await?;
+
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("candidate.txt"))?,
+        "untrusted attempt"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("task.txt"))?,
+        "trusted task"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn command_provider_applies_protected_environment_last() -> TestResult {
+    let mut provider = CommandWorkspaceProvider::new(CommandWorkspaceProviderConfig::new(
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            concat!(
+                "[ \"$HOME\" = \"$WORKSPACE_DIR\" ] || exit 1\n",
+                "[ \"$TMPDIR\" != '/untrusted' ] || exit 1\n",
+                "[ \"$PATH\" != '/untrusted' ] || exit 1\n",
+                "[ \"$LANG\" = 'C.UTF-8' ] || exit 1\n",
+                "[ \"$ATTEMPT_FILE\" != '/untrusted' ] || exit 1\n",
+                "[ \"$TASK_FILE\" != '/untrusted' ] || exit 1\n",
+                "[ \"$WORKSPACE_DIR\" != '/untrusted' ] || exit 1\n",
+                "[ -z \"${TESTS_DIR+x}\" ] || exit 1\n",
+            )
+            .to_string(),
+        ],
+        Duration::from_secs(10),
+    ))?;
+    for key in PROTECTED_ENV {
+        provider
+            .config
+            .env
+            .push((key.to_string(), "/untrusted".to_string()));
+    }
+
+    provider.materialize("task", "attempt").await?;
+    Ok(())
+}
+
+#[test]
+fn command_provider_rejects_empty_argv_and_reserved_environment() -> TestResult {
+    assert!(matches!(
+        CommandWorkspaceProvider::new(CommandWorkspaceProviderConfig::new(
+            Vec::new(),
+            Duration::from_secs(10),
+        )),
+        Err(CommandWorkspaceProviderSetupError::EmptyCommand)
+    ));
+
+    for key in PROTECTED_ENV {
+        let mut config = CommandWorkspaceProviderConfig::new(
+            vec!["/bin/true".to_string()],
+            Duration::from_secs(10),
+        );
+        config.env.push((key.to_string(), "override".to_string()));
+        assert!(matches!(
+            CommandWorkspaceProvider::new(config),
+            Err(CommandWorkspaceProviderSetupError::ReservedEnvironmentKey(rejected))
+                if rejected == key
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn command_provider_identity_covers_only_fixed_configuration() -> TestResult {
+    let base = CommandWorkspaceProvider::new(CommandWorkspaceProviderConfig::new(
+        vec!["/bin/true".to_string()],
+        Duration::from_secs(10),
+    ))?;
+    let command = CommandWorkspaceProvider::new(CommandWorkspaceProviderConfig::new(
+        vec!["/bin/false".to_string()],
+        Duration::from_secs(10),
+    ))?;
+    let timeout = CommandWorkspaceProvider::new(CommandWorkspaceProviderConfig::new(
+        vec!["/bin/true".to_string()],
+        Duration::from_secs(11),
+    ))?;
+    let mut environment_config =
+        CommandWorkspaceProviderConfig::new(vec!["/bin/true".to_string()], Duration::from_secs(10));
+    environment_config
+        .env
+        .push(("MATERIALIZER_FEATURE".to_string(), "enabled".to_string()));
+    let environment = CommandWorkspaceProvider::new(environment_config)?;
+
+    assert_ne!(base.manifest_identity(), command.manifest_identity());
+    assert_ne!(base.manifest_identity(), timeout.manifest_identity());
+    assert_ne!(base.manifest_identity(), environment.manifest_identity());
+    assert!(!base.manifest_identity().contains("request"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_materializer_timeout_kills_its_whole_process_tree() -> TestResult {
+    let marker = TempDir::with_prefix("vgr-materializer-marker-")?;
+    let alive = marker.path().join("still-alive");
+    let provider = CommandWorkspaceProvider::new(CommandWorkspaceProviderConfig::new(
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            format!(
+                "sh -c 'while true; do touch {}; sleep 0.02; done' &\n\
+                 while [ ! -e {} ]; do :; done\n\
+                 sleep 30\n",
+                alive.display(),
+                alive.display()
+            ),
+        ],
+        Duration::from_millis(200),
+    ))?;
+
+    let error = provider
+        .materialize("task", "attempt")
+        .await
+        .err()
+        .ok_or("materializer unexpectedly completed")?;
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert!(alive.exists(), "the materializer grandchild never ran");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let settled = std::fs::metadata(&alive)?.modified()?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let after = std::fs::metadata(&alive)?.modified()?;
+    assert_eq!(
+        settled, after,
+        "the materializer grandchild survived timeout"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn the_command_does_not_inherit_the_router_environment() -> TestResult {
     let tests = suite("[ -z \"$NVIDIA_API_KEY\" ] || exit 1\nexit 0\n")?;
     let checker = PinnedChecker::new(config(&tests, &shell_argv()))?;

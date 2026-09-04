@@ -115,6 +115,172 @@ pub trait WorkspaceProvider: Send + Sync {
     ) -> std::io::Result<CandidateWorkspace>;
 }
 
+/// Fixed operator configuration for [`CommandWorkspaceProvider`].
+#[derive(Clone)]
+pub struct CommandWorkspaceProviderConfig {
+    /// Trusted operator command that populates the candidate workspace.
+    pub command: Vec<String>,
+    /// Maximum time allowed for one materialization command.
+    pub timeout: Duration,
+    /// Extra environment entries applied before protected host values.
+    pub env: Vec<(String, String)>,
+}
+
+impl CommandWorkspaceProviderConfig {
+    /// Configures a materializer argv and its execution timeout.
+    pub fn new(command: Vec<String>, timeout: Duration) -> Self {
+        Self {
+            command,
+            timeout,
+            env: Vec::new(),
+        }
+    }
+}
+
+impl fmt::Debug for CommandWorkspaceProviderConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let env_keys = self
+            .env
+            .iter()
+            .map(|(key, _value)| key.as_str())
+            .collect::<Vec<_>>();
+        formatter
+            .debug_struct("CommandWorkspaceProviderConfig")
+            .field("command", &self.command)
+            .field("timeout", &self.timeout)
+            .field("env_keys", &env_keys)
+            .finish()
+    }
+}
+
+/// Why a command-backed workspace provider could not be built.
+#[derive(Debug, thiserror::Error)]
+pub enum CommandWorkspaceProviderSetupError {
+    /// The materializer command was empty.
+    #[error("candidate materialize command must be a non-empty argv list")]
+    EmptyCommand,
+    /// A protected environment value was supplied by the operator.
+    #[error("candidate materializer environment key {0:?} is reserved for the host")]
+    ReservedEnvironmentKey(String),
+    /// An environment key or value cannot be passed to a process.
+    #[error("candidate materializer environment entry {0:?} is invalid")]
+    InvalidEnvironmentEntry(String),
+}
+
+/// Materializes each candidate with a trusted operator command.
+///
+/// Request content reaches the command only through private control files. The
+/// command receives no inherited environment and never receives the pinned test
+/// directory. Its stable identity covers only fixed operator configuration.
+pub struct CommandWorkspaceProvider {
+    config: CommandWorkspaceProviderConfig,
+    manifest_identity: String,
+    protected_path: String,
+}
+
+impl CommandWorkspaceProvider {
+    /// Validates and builds a command-backed materialization contract.
+    pub fn new(
+        config: CommandWorkspaceProviderConfig,
+    ) -> Result<Self, CommandWorkspaceProviderSetupError> {
+        validate_materializer_config(&config)?;
+        let protected_path = current_path();
+        let manifest_identity = materializer_manifest_identity(&config, &protected_path);
+        Ok(Self {
+            config,
+            manifest_identity,
+            protected_path,
+        })
+    }
+
+    /// Runs one materializer in a fresh, owned candidate workspace.
+    async fn materialize_once(
+        &self,
+        task_text: &str,
+        attempt: &str,
+    ) -> std::io::Result<CandidateWorkspace> {
+        let workspace = TempDir::with_prefix("vgr-candidate-")?;
+        let control = TempDir::with_prefix("vgr-materializer-control-")?;
+        let tmp = control.path().join("tmp");
+        tokio::fs::create_dir(&tmp).await?;
+        let attempt_file = control.path().join(ATTEMPT_FILE);
+        let task_file = control.path().join(TASK_FILE);
+        tokio::fs::write(&attempt_file, attempt).await?;
+        tokio::fs::write(&task_file, task_text).await?;
+
+        let (program, arguments) = self
+            .config
+            .command
+            .split_first()
+            .ok_or_else(|| std::io::Error::other("candidate materialize command is empty"))?;
+        let mut command = tokio::process::Command::new(program);
+        command
+            .args(arguments)
+            .current_dir(workspace.path())
+            .env_clear();
+        for (key, value) in &self.config.env {
+            command.env(key, value);
+        }
+        // These values are intentionally last so only the host can select the
+        // control files and candidate workspace. The pinned tests stay absent.
+        command
+            .env("PATH", &self.protected_path)
+            .env("HOME", workspace.path())
+            .env("TMPDIR", &tmp)
+            .env("LANG", "C.UTF-8")
+            .env("ATTEMPT_FILE", &attempt_file)
+            .env("TASK_FILE", &task_file)
+            .env(WORKSPACE_ENV, workspace.path())
+            .env_remove("TESTS_DIR")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .process_group(0);
+
+        let mut child = command.spawn()?;
+        let _reaper = ProcessGroupReaper(child.id());
+        let status = child.wait().await?;
+        tracing::debug!(
+            target: "libsy",
+            status = status.code(),
+            "vgr candidate materializer run"
+        );
+        if !status.success() {
+            return Err(std::io::Error::other(
+                "candidate materializer exited unsuccessfully",
+            ));
+        }
+        CandidateWorkspace::new(workspace)
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkspaceProvider for CommandWorkspaceProvider {
+    fn manifest_identity(&self) -> &str {
+        &self.manifest_identity
+    }
+
+    async fn materialize(
+        &self,
+        task_text: &str,
+        attempt: &str,
+    ) -> std::io::Result<CandidateWorkspace> {
+        match tokio::time::timeout(
+            self.config.timeout,
+            self.materialize_once(task_text, attempt),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_elapsed) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "candidate materializer timed out",
+            )),
+        }
+    }
+}
+
 /// How an operator configures the checker.
 #[derive(Clone)]
 pub struct CheckerConfig {
@@ -525,11 +691,8 @@ impl Checker for PinnedChecker {
             return None;
         }
         let timeout = self.config.timeout.min(request.remaining);
-        match tokio::time::timeout(
-            timeout,
-            self.check_once(request.task_text, request.attempt),
-        )
-        .await
+        match tokio::time::timeout(timeout, self.check_once(request.task_text, request.attempt))
+            .await
         {
             Ok(verdict) => verdict,
             Err(_elapsed) => {
@@ -673,6 +836,27 @@ fn validate_config(config: &CheckerConfig) -> Result<(), CheckerSetupError> {
         }
         if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
             return Err(CheckerSetupError::InvalidEnvironmentEntry(key.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_materializer_config(
+    config: &CommandWorkspaceProviderConfig,
+) -> Result<(), CommandWorkspaceProviderSetupError> {
+    if config.command.is_empty() {
+        return Err(CommandWorkspaceProviderSetupError::EmptyCommand);
+    }
+    for (key, value) in &config.env {
+        if PROTECTED_ENV.contains(&key.as_str()) {
+            return Err(CommandWorkspaceProviderSetupError::ReservedEnvironmentKey(
+                key.clone(),
+            ));
+        }
+        if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
+            return Err(CommandWorkspaceProviderSetupError::InvalidEnvironmentEntry(
+                key.clone(),
+            ));
         }
     }
     Ok(())
@@ -1077,6 +1261,42 @@ fn manifest_environment(config: &CheckerConfig, protected_path: &str) -> BTreeMa
 
 fn current_path() -> String {
     std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+}
+
+fn materializer_manifest_identity(
+    config: &CommandWorkspaceProviderConfig,
+    protected_path: &str,
+) -> String {
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    digest_field(&mut context, b"vgr-command-workspace-provider-v1");
+    for argument in &config.command {
+        digest_field(&mut context, argument.as_bytes());
+    }
+    digest_field(
+        &mut context,
+        config.timeout.as_nanos().to_string().as_bytes(),
+    );
+    for (key, value) in materializer_manifest_environment(config, protected_path) {
+        digest_field(&mut context, key.as_bytes());
+        digest_field(&mut context, value.as_bytes());
+    }
+    format!("command-workspace-provider-v1:{}", hex(context.finish()))
+}
+
+fn materializer_manifest_environment(
+    config: &CommandWorkspaceProviderConfig,
+    protected_path: &str,
+) -> BTreeMap<String, String> {
+    let mut environment = config.env.iter().cloned().collect::<BTreeMap<_, _>>();
+    environment.remove("TESTS_DIR");
+    environment.insert("PATH".into(), protected_path.to_string());
+    environment.insert("LANG".into(), "C.UTF-8".into());
+    environment.insert("HOME".into(), "{workspace}".into());
+    environment.insert("TMPDIR".into(), "{control}/tmp".into());
+    environment.insert("ATTEMPT_FILE".into(), "{control}/attempt.txt".into());
+    environment.insert("TASK_FILE".into(), "{control}/task.txt".into());
+    environment.insert(WORKSPACE_ENV.into(), "{workspace}".into());
+    environment
 }
 
 fn digest_field(context: &mut ring::digest::Context, value: &[u8]) {
