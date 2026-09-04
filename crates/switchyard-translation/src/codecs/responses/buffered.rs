@@ -1022,10 +1022,14 @@ fn encode_responses_input(
     policy: &TranslationPolicy,
     namespaces: Option<&Map<String, Value>>,
 ) -> Result<Value> {
-    // Strict Responses backends (chatgpt.com Codex endpoint) reject non-list
-    // input; callers of translated chat-completions cannot influence the shape.
-    // Always encode canonical message-item lists instead of the input-string
-    // shorthand.
+    if messages.len() == 1
+        && matches!(messages[0].role, Role::User)
+        && messages[0].content.len() == 1
+        && matches!(messages[0].content[0], ContentBlock::Text { .. })
+        && let ContentBlock::Text { text } = &messages[0].content[0]
+    {
+        return Ok(Value::String(text.clone()));
+    }
     let mut encoded = Vec::new();
     for message in messages {
         // Anthropic-signed thinking cannot be sent as Responses input.

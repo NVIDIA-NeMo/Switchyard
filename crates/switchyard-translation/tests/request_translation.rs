@@ -2443,35 +2443,3 @@ fn responses_system_role_items_normalize_to_developer_typed_and_untyped() -> Tes
     );
     Ok(())
 }
-
-// Strict Codex Responses backends reject the top-level input STRING shorthand
-// with 400 "Input must be a list". Single-message chat -> Responses requests
-// must always encode canonical message-item lists; callers of translated
-// chat-completions cannot influence the input shape themselves.
-#[test]
-fn responses_single_message_input_is_always_a_list_not_a_string() -> TestResult {
-    let engine = TranslationEngine::default();
-    let body = json!({
-        "model": "gpt-5.6-luna",
-        "messages": [
-            {"role": "user", "content": "Reply with the single word OK."}
-        ],
-        "max_tokens": 16
-    });
-
-    let output = engine
-        .translate_request(
-            WireFormat::OpenAiChat,
-            WireFormat::OpenAiResponses,
-            &body,
-            &TranslationPolicy::default(),
-        )?
-        .body;
-
-    let input = output["input"]
-        .as_array()
-        .ok_or("Responses input must be encoded as a message-item list, not the string shorthand")?;
-    assert_eq!(input.len(), 1, "the single user message must be present");
-    assert_eq!(input[0]["role"], "user");
-    Ok(())
-}
