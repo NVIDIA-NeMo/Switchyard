@@ -2550,12 +2550,89 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
     Ok(())
 }
 
+/// Two routes serving one model must remain distinguishable in the durable accounting record.
+#[tokio::test]
+async fn routing_log_attributes_shared_models_to_the_requested_route() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let log_path = temp_dir.path().join("routing.jsonl");
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.shared]
+id = "model/shared"
+llm_client = "upstream"
+
+[targets.capable]
+id = "model/capable"
+llm_client = "upstream"
+
+[routes.passthrough]
+id = "route/passthrough"
+type = "passthrough"
+target = "shared"
+
+[routes.stage]
+id = "route/stage"
+type = "stage_router"
+capable_target = "capable"
+efficient_target = "shared"
+picker = "efficient_first"
+confidence_threshold = 1.0
+"#,
+        base_url = upstream.base_url
+    ))?
+    .with_routing_log(&log_path)?;
+    let app = build_switchyard_router(state);
+
+    for route_id in ["route/passthrough", "route/stage"] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": route_id,
+                "messages": [{"role": "user", "content": "hello"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{route_id}");
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some("model/shared"),
+            "{route_id}"
+        );
+    }
+
+    let records = std::fs::read_to_string(&log_path)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["route_id"], "route/passthrough");
+    assert_eq!(records[0]["algorithm"], "passthrough");
+    assert_eq!(records[0]["model"], "model/shared");
+    assert_eq!(records[1]["route_id"], "route/stage");
+    assert_eq!(records[1]["algorithm"], "stage_router");
+    assert_eq!(records[1]["model"], "model/shared");
+    Ok(())
+}
+
 #[tokio::test]
 async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let temp_dir = tempfile::tempdir()?;
+    let log_path = temp_dir.path().join("routing.jsonl");
     let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
-        .with_routing_log(temp_dir.path().join("routing.jsonl"))?;
+        .with_routing_log(&log_path)?;
     let app = build_switchyard_router(state);
 
     // `send_with_headers` collects the response body, so the stream wrapper reaches
@@ -2589,6 +2666,10 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
     assert_eq!(stats["total_cached_tokens"], 7);
     assert_eq!(stats["total_cache_creation_tokens"], 2);
     assert_eq!(stats["total_completion_tokens"], 5);
+
+    let record: Value = serde_json::from_str(&std::fs::read_to_string(log_path)?)?;
+    assert_eq!(record["route_id"], ROUTE_MODEL);
+    assert_eq!(record["algorithm"], "random");
     Ok(())
 }
 
@@ -3257,6 +3338,8 @@ async fn advisor_route_routing_log_records_classifier_tier() -> TestResult {
         .find(|record| record["model"] == "model/advisor")
         .ok_or("consult row present")?;
     assert_eq!(consult["tier"], "classifier");
+    assert_eq!(consult["route_id"], "switchyard/advisor");
+    assert_eq!(consult["algorithm"], "advisor_gate");
     assert_eq!(consult["session_id"], "session-1");
     assert_eq!(consult["prompt_tokens"], 40);
     Ok(())

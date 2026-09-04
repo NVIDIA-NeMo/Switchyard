@@ -1005,6 +1005,7 @@ fn resolve_route(
     Ok((route, request))
 }
 
+/// Resolves and executes an LLM request, attaching route identity when durable logging is enabled.
 async fn handle_llm_request(
     state: ServerState,
     started: RequestStart,
@@ -1018,6 +1019,12 @@ async fn handle_llm_request(
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
+    let routing_log_context = routing_log_context.map(|context| {
+        context.with_route(
+            request.llm_request.model.as_deref().unwrap_or_default(),
+            route.algorithm_name(),
+        )
+    });
     // Only the Codex namespace mapping is needed downstream, not the whole request.
     let request_extensions = request.llm_request.extensions.clone();
     let observer = stats_observer(
