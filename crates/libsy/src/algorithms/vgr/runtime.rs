@@ -35,7 +35,7 @@ use super::config::{ServingMode, VgrConfig};
 use super::decide::{Decision, Readiness, Route, decide_from_signals};
 use super::rules::{Signals, Tri};
 use super::rungs::{self, Question};
-use super::{Branch, Capabilities, ToolErrorsSource, derive_capabilities, matching, readout};
+use super::{Branch, Capabilities, derive_capabilities, matching, readout};
 use crate::algorithms::util::decisive;
 use crate::algorithms::util::prompts::{append_note, drop_exact_replay};
 use crate::core::algorithm::Driver;
@@ -142,7 +142,6 @@ impl VgrClassifier {
             self.config.checker.is_some(),
             None,
             None,
-            ToolErrorsSource::Host,
         );
         // Operator declarations, which derivation never produces on its own.
         caps.structured_answer = self.config.structured_answer;
