@@ -97,7 +97,7 @@ pub(crate) fn snapshot(
     Ok((snapshot.total_calls > 0).then_some(snapshot))
 }
 
-/// Request fields retained until terminal usage and routing are available.
+/// Holds request metadata until route resolution attaches the durable route identity.
 #[derive(Clone)]
 pub(crate) struct RoutingLogContext {
     route_id: String,
