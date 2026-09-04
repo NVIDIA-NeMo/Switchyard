@@ -18,7 +18,7 @@
 
 use super::policy::Policy;
 use super::rules::{self, Signals, ToolErrorSignal, ToolErrors};
-use super::{Branch, Capabilities, ToolErrorsSource, select_branch};
+use super::{Branch, Capabilities, ToolErrorCount, select_branch};
 
 /// Where a request is served.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,15 +98,15 @@ fn resolve_tool_errors(caps: &Capabilities, sig: &Signals) -> ToolErrors {
     let contradicts_host = match sig.tool_errors {
         ToolErrorSignal::Absent => false,
         ToolErrorSignal::NoCount | ToolErrorSignal::Indeterminate => true,
-        ToolErrorSignal::Count(count) => count != host_count,
+        ToolErrorSignal::Count(count) => count != host_count.count(),
     };
     if contradicts_host {
         return ToolErrors::Indeterminate;
     }
-    if host_count == 0 && caps.tool_errors_source != Some(ToolErrorsSource::Host) {
+    if host_count.count() == 0 && !host_count.is_host() {
         return ToolErrors::NoInformation;
     }
-    ToolErrors::Count(host_count)
+    ToolErrors::Count(host_count.count())
 }
 
 /// Decides whether to commit the local attempt or escalate.
@@ -189,7 +189,7 @@ pub fn readiness_effective(
         // Provenance is the whole gate here: these branches commit on the
         // absence of tool errors, which only the runtime's own log can attest.
         Branch::AgenticVerified | Branch::AgenticRecognized
-            if caps.tool_errors_source != Some(ToolErrorsSource::Host) =>
+            if !matches!(caps.tool_errors, Some(ToolErrorCount::Host(_))) =>
         {
             (
                 Route::Cloud,

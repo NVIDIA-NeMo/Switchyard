@@ -102,6 +102,20 @@ pub(super) enum ToolErrorCount {
     Untrusted(i32),
 }
 
+impl ToolErrorCount {
+    /// Returns the reported number of tool errors.
+    pub(super) fn count(self) -> i32 {
+        match self {
+            Self::Host(count) | Self::Untrusted(count) => count,
+        }
+    }
+
+    /// Whether this count comes from the routing host's execution log.
+    pub(super) fn is_host(self) -> bool {
+        matches!(self, Self::Host(_))
+    }
+}
+
 /// The complete input the decision core sees.
 ///
 /// Every field is derived, never client-declared — see the module-level trust
