@@ -2356,10 +2356,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let extra_body = BTreeMap::from([(
-            "reasoning".to_string(),
-            json!({"effort": "none"}),
-        )]);
+        let extra_body = BTreeMap::from([("reasoning".to_string(), json!({"effort": "none"}))]);
         let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
             &format!("{}/v1", server.uri()),
             extra_body,
@@ -2383,7 +2380,9 @@ mod tests {
 
         let seen_body = seen.lock().unwrap().clone();
         assert_eq!(
-            seen_body.pointer("/reasoning/effort").and_then(Value::as_str),
+            seen_body
+                .pointer("/reasoning/effort")
+                .and_then(Value::as_str),
             Some("none"),
             "target NT pin must replace the caller's nested reasoning object"
         );
@@ -2423,10 +2422,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let extra_body = BTreeMap::from([(
-            "reasoning".to_string(),
-            json!({"enabled": false}),
-        )]);
+        let extra_body = BTreeMap::from([("reasoning".to_string(), json!({"enabled": false}))]);
         let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
             &format!("{}/v1", server.uri()),
             extra_body,
@@ -2522,7 +2518,9 @@ mod tests {
             "flat reasoning_effort must be suppressed when the body pins nested reasoning.effort"
         );
         assert_eq!(
-            seen_body.pointer("/reasoning/effort").and_then(Value::as_str),
+            seen_body
+                .pointer("/reasoning/effort")
+                .and_then(Value::as_str),
             Some("low"),
             "nested reasoning.effort must reach the upstream"
         );
@@ -2581,7 +2579,9 @@ mod tests {
 
         let seen_body = seen.lock().unwrap().clone();
         assert_eq!(
-            seen_body.pointer("/reasoning/effort").and_then(Value::as_str),
+            seen_body
+                .pointer("/reasoning/effort")
+                .and_then(Value::as_str),
             Some("medium"),
             "nested reasoning.effort must reach the upstream"
         );
@@ -2683,10 +2683,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let extra_body = BTreeMap::from([(
-            "reasoning".to_string(),
-            json!({"effort": "none"}),
-        )]);
+        let extra_body = BTreeMap::from([("reasoning".to_string(), json!({"effort": "none"}))]);
         // Responses backend with a reasoning pin; the caller's nested reasoning
         // object arrives via the raw Responses body.
         let mut backend = config(&format!("{}/v1", server.uri()));
@@ -2713,11 +2710,12 @@ mod tests {
 
         let seen_body = seen.lock().unwrap().clone();
         assert_eq!(
-            seen_body.pointer("/reasoning/effort").and_then(Value::as_str),
+            seen_body
+                .pointer("/reasoning/effort")
+                .and_then(Value::as_str),
             Some("none"),
             "Responses-leg target NT pin must replace the caller's nested reasoning"
         );
         Ok(())
     }
-
 }
