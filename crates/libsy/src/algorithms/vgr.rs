@@ -107,16 +107,16 @@ impl Algorithm for Vgr {
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         let mut outcome = self.route.execute(driver, request).await?;
-        if outcome.selected_model_id == self.cloud {
+        let selected = outcome.selected_model_id()?.clone();
+        if selected == self.cloud {
             // A cloud decision is terminal. Falling backward to local would
             // bypass the verification decision that selected cloud.
-            outcome.fallback_models.clear();
-        } else if outcome.selected_model_id == self.local && outcome.response.is_none() {
+            outcome.selected_model_ids.truncate(1);
+        } else if selected == self.local && outcome.response.is_none() {
             // Local may fail forward to cloud on the host's eligible-failure
             // policy. Current local commits carry their buffered response, but
             // retain the directional contract if that implementation changes.
-            outcome.fallback_models.clear();
-            outcome.fallback_models.push(self.cloud.clone());
+            outcome.selected_model_ids = vec![self.local.clone(), self.cloud.clone()];
         }
         Ok(outcome)
     }
