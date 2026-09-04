@@ -131,6 +131,14 @@ impl Backend {
         }
     }
 
+    /// Whether this backend targets the ChatGPT Codex backend
+    /// (`chatgpt.com/backend-api/codex`), which applies stricter wire rules
+    /// than normal OpenAI `/v1/responses` endpoints.
+    pub fn is_codex(&self) -> bool {
+        matches!(self, Backend::OpenAiResponses(_))
+            && self.config().base_url.contains("/backend-api/codex")
+    }
+
     /// The fully resolved upstream URL for this backend's endpoint.
     ///
     /// Tolerates base URLs that already include the provider path (or a bare

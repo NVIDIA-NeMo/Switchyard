@@ -253,6 +253,14 @@ impl TranslatingLlmClient {
             strip_unsigned_thinking_blocks(&mut body);
         }
         merge_extra_body(&mut body, backend.extra_body());
+        // The ChatGPT Codex backend rejects `max_output_tokens` outright (2026-08
+        // API), on every inbound path - chat (`max_tokens`), Responses passthrough,
+        // and preserved same-format bodies alike. Strip AFTER `merge_extra_body`
+        // so no target `extra_body` can reinstate it. Normal OpenAI
+        // `/v1/responses` backends keep the parameter.
+        if backend.is_codex() {
+            strip_codex_incompatible_fields(&mut body);
+        }
         if matches!(backend, Backend::Anthropic(_)) {
             enable_anthropic_prompt_caching(&mut body);
         }
@@ -820,6 +828,13 @@ fn is_unsigned_thinking_block(block: &Value) -> bool {
 }
 
 // Applies target defaults without overriding fields supplied by the caller.
+// Removes fields the ChatGPT Codex Responses backend rejects outright.
+fn strip_codex_incompatible_fields(body: &mut Value) {
+    if let Value::Object(object) = body {
+        object.remove("max_output_tokens");
+    }
+}
+
 fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     let Value::Object(object) = body else {
         return;
