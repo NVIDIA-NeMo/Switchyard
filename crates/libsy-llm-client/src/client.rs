@@ -2328,9 +2328,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&responses_map(
-            &format!("{}/backend-api/codex", server.uri()),
-        ))?;
+        let client = TranslatingLlmClient::new(&responses_map(&format!(
+            "{}/backend-api/codex",
+            server.uri()
+        )))?;
         let raw = json!({
             "model": "client-facing",
             "max_output_tokens": 4096,
@@ -2349,7 +2350,10 @@ mod tests {
         };
         assert_eq!(body["status"], "completed");
         // The parameter never reached the Codex-shaped upstream.
-        assert!(!seen.load(Ordering::SeqCst), "max_output_tokens leaked upstream");
+        assert!(
+            !seen.load(Ordering::SeqCst),
+            "max_output_tokens leaked upstream"
+        );
         Ok(())
     }
 
@@ -2380,9 +2384,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&responses_map(
-            &format!("{}/backend-api/codex", server.uri()),
-        ))?;
+        let client = TranslatingLlmClient::new(&responses_map(&format!(
+            "{}/backend-api/codex",
+            server.uri()
+        )))?;
         let raw = json!({
             "model": "client-facing",
             "max_tokens": 512,
@@ -2402,7 +2407,10 @@ mod tests {
         };
         // Inbound chat -> the raw response comes back chat-shaped.
         assert_eq!(body["choices"][0]["message"]["content"], json!("ok"));
-        assert!(!seen.load(Ordering::SeqCst), "translated max_output_tokens leaked upstream");
+        assert!(
+            !seen.load(Ordering::SeqCst),
+            "translated max_output_tokens leaked upstream"
+        );
         Ok(())
     }
 
@@ -2417,7 +2425,10 @@ mod tests {
             .and(path("/v1/responses"))
             .and(move |request: &wiremock::Request| {
                 let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
-                seen_for_mock.store(body.get("max_output_tokens") == Some(&json!(4096)), Ordering::SeqCst);
+                seen_for_mock.store(
+                    body.get("max_output_tokens") == Some(&json!(4096)),
+                    Ordering::SeqCst,
+                );
                 true
             })
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -2450,7 +2461,10 @@ mod tests {
             panic!("expected a buffered response");
         };
         assert_eq!(body["status"], "completed");
-        assert!(seen.load(Ordering::SeqCst), "non-codex Responses backends keep max_output_tokens");
+        assert!(
+            seen.load(Ordering::SeqCst),
+            "non-codex Responses backends keep max_output_tokens"
+        );
         Ok(())
     }
 
@@ -2472,7 +2486,10 @@ mod tests {
                 .and(path(path_suffix))
                 .and(move |request: &wiremock::Request| {
                     let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
-                    seen_for_mock.store(body.get("max_output_tokens") == Some(&json!(4096)), Ordering::SeqCst);
+                    seen_for_mock.store(
+                        body.get("max_output_tokens") == Some(&json!(4096)),
+                        Ordering::SeqCst,
+                    );
                     true
                 })
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -2506,9 +2523,11 @@ mod tests {
                 panic!("expected a buffered response");
             };
             assert_eq!(body["status"], "completed");
-            assert!(seen.load(Ordering::SeqCst), "near-match URL must not be treated as Codex");
+            assert!(
+                seen.load(Ordering::SeqCst),
+                "near-match URL must not be treated as Codex"
+            );
         }
         Ok(())
     }
-
 }

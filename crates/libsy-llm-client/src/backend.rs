@@ -135,17 +135,16 @@ impl Backend {
     /// (`chatgpt.com/backend-api/codex`), which applies stricter wire rules
     /// than normal OpenAI `/v1/responses` endpoints.
     pub fn is_codex(&self) -> bool {
-        matches!(self, Backend::OpenAiResponses(_))
-            && {
-                // Path-boundary match, not a substring match: the base URL is
-                // normalized ONCE (query and fragment stripped by
-                // `split_base_url`, shared with `url()`) and the path must END
-                // with /backend-api/codex. Near-matches (e.g.
-                // https://proxy.example/backend-api/codex-compat or
-                // https://proxy.example/not-backend-api/codex) are NOT Codex.
-                let (base, _, _) = split_base_url(&self.config().base_url);
-                base.ends_with("/backend-api/codex")
-            }
+        matches!(self, Backend::OpenAiResponses(_)) && {
+            // Path-boundary match, not a substring match: the base URL is
+            // normalized ONCE (query and fragment stripped by
+            // `split_base_url`, shared with `url()`) and the path must END
+            // with /backend-api/codex. Near-matches (e.g.
+            // https://proxy.example/backend-api/codex-compat or
+            // https://proxy.example/not-backend-api/codex) are NOT Codex.
+            let (base, _, _) = split_base_url(&self.config().base_url);
+            base.ends_with("/backend-api/codex")
+        }
     }
 
     /// The fully resolved upstream URL for this backend's endpoint.
@@ -427,14 +426,13 @@ mod tests {
 
     #[test]
     fn codex_near_matches_with_query_remain_non_codex() {
-        assert!(!Backend::OpenAiResponses(
-            config("https://host/backend-api/codex-compat?v=1")
-        )
-        .is_codex());
-        assert!(!Backend::OpenAiResponses(
-            config("https://host/not-backend-api/codex?x=1")
-        )
-        .is_codex());
+        assert!(
+            !Backend::OpenAiResponses(config("https://host/backend-api/codex-compat?v=1"))
+                .is_codex()
+        );
+        assert!(
+            !Backend::OpenAiResponses(config("https://host/not-backend-api/codex?x=1")).is_codex()
+        );
     }
 
     #[test]
