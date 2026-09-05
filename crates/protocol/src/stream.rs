@@ -126,6 +126,16 @@ impl From<LlmResponseChunk> for LlmResponseStreamEvent {
     }
 }
 
+/// Replays previously buffered events as a stream, preserving their provider payloads.
+///
+/// Pair with [`LlmResponse::into_agg_retaining_events`] when a caller had to buffer a
+/// response but must still serve the original bytes downstream. Unlike
+/// [`AggLlmResponse::into_stream`], this is lossless: `preservation` survives, so the
+/// outbound codec can emit a faithful same-format response instead of a synthetic one.
+pub fn replay_stream_events(events: Vec<LlmResponseStreamEvent>) -> LlmResponseStream {
+    Box::pin(futures::stream::iter(events.into_iter().map(Ok)))
+}
+
 /// A model response: either a live [`Stream`](LlmResponse::Stream) of events or a
 /// terminal buffered [`LlmResponse::Agg`] response.
 ///
@@ -155,16 +165,37 @@ impl LlmResponse {
     /// in-band [`LlmResponseChunk::DecodeError`] (as `ResponseTranslation`) or
     /// [`LlmResponseChunk::StreamError`] (as `UpstreamHttp`).
     pub async fn into_agg(self) -> Result<AggLlmResponse, LlmClientError> {
+        let (agg, _) = self.into_agg_retaining_events(false).await?;
+        Ok(agg)
+    }
+
+    /// Reduce to the buffered aggregate, optionally retaining the original provider events.
+    ///
+    /// [`Self::into_agg`] discards each event's `preservation` payload, so rebuilding a stream
+    /// from the aggregate via [`AggLlmResponse::into_stream`] can only emit synthetic chunks.
+    /// A caller that must buffer a response (to judge it) and then still serve it downstream
+    /// should set `retain_events` and replay the returned events with
+    /// [`replay_stream_events`], which preserves the provider payloads the outbound codec
+    /// needs for a faithful same-format response.
+    pub async fn into_agg_retaining_events(
+        self,
+        retain_events: bool,
+    ) -> Result<(AggLlmResponse, Vec<LlmResponseStreamEvent>), LlmClientError> {
         match self {
-            LlmResponse::Agg(agg) => Ok(agg),
+            LlmResponse::Agg(agg) => Ok((agg, Vec::new())),
             LlmResponse::Stream(mut stream) => {
                 let mut accumulator = ResponseAccumulator::new();
+                let mut retained = Vec::new();
                 while let Some(item) = stream.next().await {
-                    for chunk in item?.normalized {
+                    let event = item?;
+                    if retain_events {
+                        retained.push(event.clone());
+                    }
+                    for chunk in event.normalized {
                         push_checked_chunk(&mut accumulator, chunk)?;
                     }
                 }
-                Ok(accumulator.finish())
+                Ok((accumulator.finish(), retained))
             }
         }
     }
@@ -554,6 +585,70 @@ mod tests {
             vec![ContentBlock::Text {
                 text: "hello".to_string()
             }]
+        );
+    }
+
+    #[test]
+    fn retained_events_replay_with_preservation_intact() {
+        let raw = json!({
+            "choices": [{"delta": {"content": "hello"}}],
+            "system_fingerprint": "fp_exact"
+        });
+        let source_event = LlmResponseStreamEvent::preserved(
+            crate::WireFormat::OpenAiChat,
+            raw.clone(),
+            vec![LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "hello".to_string(),
+            }],
+        );
+        let response = LlmResponse::Stream(Box::pin(stream::iter([Ok(source_event)])));
+
+        let (aggregate, retained) = block_on(response.into_agg_retaining_events(true))
+            .expect("stream should aggregate while retaining events");
+
+        // The judge still sees the aggregated reply.
+        assert_eq!(
+            aggregate.outputs[0].content,
+            vec![ContentBlock::Text {
+                text: "hello".to_string()
+            }]
+        );
+
+        // Replaying the retained events keeps the provider payload, which
+        // `AggLlmResponse::into_stream` would have dropped.
+        let replayed: Vec<_> = block_on(replay_stream_events(retained).collect::<Vec<_>>())
+            .into_iter()
+            .map(|item| item.expect("replayed event"))
+            .collect();
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].preservation().expect("preservation kept").raw(), &raw);
+
+        // Contrast: the synthetic path loses it.
+        let synthetic: Vec<_> = block_on(
+            block_on(
+                LlmResponse::Stream(Box::pin(stream::iter([Ok(
+                    LlmResponseStreamEvent::preserved(
+                        crate::WireFormat::OpenAiChat,
+                        raw.clone(),
+                        vec![LlmResponseChunk::TextDelta {
+                            index: 0,
+                            text: "hello".to_string(),
+                        }],
+                    ),
+                )])))
+                .into_agg(),
+            )
+            .expect("aggregate")
+            .into_stream()
+            .collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .map(|item| item.expect("synthetic event"))
+        .collect();
+        assert!(
+            synthetic.iter().all(|event| event.preservation().is_none()),
+            "into_stream is expected to emit synthetic chunks without preservation"
         );
     }
 

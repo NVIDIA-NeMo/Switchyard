@@ -8,6 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, Message, ModelId, Request, Response, Role,
+    replay_stream_events,
 };
 
 use super::util::classifier_contract::ClassifierContractConfig;
@@ -116,8 +117,17 @@ impl Classifier<State> for EscalationClassifier {
         };
         // The call resolves when its stream handle arrives; transport can still fail while
         // buffering. Fall back only for that availability failure and keep other errors typed.
-        let agg = match efficient_response.llm_response.into_agg().await {
-            Ok(agg) => agg,
+        // Retain the provider events: the buffered reply is served downstream when the judge
+        // declines, and replaying the originals keeps `preservation` intact. Rebuilding from the
+        // aggregate instead would emit synthetic chunks and drop the provider payloads the
+        // outbound codec needs, degrading every unlatched turn.
+        let streaming = request.llm_request.stream;
+        let (agg, retained_events) = match efficient_response
+            .llm_response
+            .into_agg_retaining_events(streaming)
+            .await
+        {
+            Ok(pair) => pair,
             Err(LlmClientError::Transport { .. }) => {
                 return Ok((decisive(&self.capable), None));
             }
@@ -132,8 +142,8 @@ impl Classifier<State> for EscalationClassifier {
             .messages
             .push(assistant_message(&agg));
         let efficient_response = Response {
-            llm_response: if request.llm_request.stream {
-                LlmResponse::Stream(agg.into_stream())
+            llm_response: if streaming {
+                LlmResponse::Stream(replay_stream_events(retained_events))
             } else {
                 LlmResponse::Agg(agg)
             },
