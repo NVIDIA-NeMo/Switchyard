@@ -268,6 +268,30 @@ instead. The stage table takes no `picker`: the classifier supplies that tier pe
 classifier cannot reach falls open to the efficient tier. Leaving out
 `classifier` is recommended: that judge runs ahead of the fall-open tier.
 
+### `advisor`
+
+Serves every client-visible turn from the executor and has a stronger advisor
+review terminal turns before the caller sees them: APPROVE releases the
+buffered turn, REDO discards it and sends the executor back to work with the
+advisor's plan. See
+[Advisor-Gate Routing](../routing_algorithms/advisor_gate_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `executor_target` | Yes | — | Serves every client-visible turn. |
+| `advisor_target` | Yes | — | Reviews gated turns. Not a routing destination. |
+| `gate_trigger` | No | `no_tool_call` | What fires a review: `no_tool_call` or `pattern`. |
+| `gate_trigger_pattern` | No | unset | Regex (searched, not anchored) for the `pattern` trigger. That trigger requires a non-empty pattern; setting one under `no_tool_call` is rejected. |
+| `max_reviews` | No | `1` | Reviews allowed per session scope. Must be at least `1`. |
+| `gate_stall_turns` | No | `0` | Reviews one turn as a mid-task checkpoint once the conversation carries this many assistant turns. `0` disables. |
+| `gate_min_tool_results` | No | `0` | Tool results a conversation needs before a `no_tool_call` turn is reviewable. |
+| `advisor_max_tokens` | No | `2048` | Maximum output tokens per review. Must be at least `1`. |
+| `advisor_temperature` | No | unset | Sampling temperature for reviews. Omitted from the request when unset. |
+| `transcript_max_chars` | No | `200000` | Cap on the transcript sent to the advisor; longer transcripts are trimmed from the middle. Must be at least `256`. |
+| `fail_open` | No | `true` | Lets the gated turn through when the advisor fails, instead of returning an error. |
+| `reviewer_system_prompt` | No | packaged prompt | Replaces the APPROVE/REDO reviewer prompt. |
+| `redo_feedback_prefix` | No | packaged prompt | Replaces the text put in front of a REDO plan fed back to the executor. |
+
 ## Validation Errors
 
 `--dry-run` prefixes configuration failures with
