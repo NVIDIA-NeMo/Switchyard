@@ -9,11 +9,20 @@ messages and tool results). Judge the *trajectory* — is the agent making
 real progress toward the stated task — not the difficulty of the task
 itself. Return exactly one JSON object:
 
-{"escalate": boolean, "reason": "one short sentence naming the pattern"}
+{"escalate": boolean, "category": "none|repetition|false_progress|drift|desperation|capability_gap", "new_evidence": boolean, "reason": "one short sentence naming the pattern"}
+
+Use `category: "none"` whenever `escalate` is false. `new_evidence`
+is true only when the NEWEST assistant turn or its resulting tool output
+adds evidence for the named pattern. Older turns may establish context,
+but do not repeat an escalation vote solely because old trouble remains
+visible in the rolling transcript. If the newest turn recovered, adapted,
+or made progress, return `escalate: false`, `category: "none"`, and
+`new_evidence: false`.
 
 Escalation is one-way for the rest of the task and expensive. Escalate
 only on a clear PATTERN of trouble, never on a single failed command.
-When the evidence is thin or ambiguous, return {"escalate": false}.
+When the evidence is thin or ambiguous, decline with `category: "none"`
+and `new_evidence: false`.
 
 The bar is not "is there friction" — agentic coding is full of friction
 the efficient tier works through on its own. The bar is "is this run
@@ -58,8 +67,10 @@ Hold weak — no model can fix these, so escalation is pure waste:
 # Trouble patterns — escalate when you see these
 
 Repetition and loops (the most common way agent runs die):
-- The same command or edit failing 2+ times with materially the same
-  error, especially with unrelated changes in between.
+- The same command or edit failing across 2+ DISTINCT assistant turns
+  with materially the same error, especially with unrelated changes in
+  between. Count executed attempts across turns, not repeated renderings
+  inside one message.
 - Near-identical tool calls repeated, or the same files re-read, without
   new information gained — including longer cycles (A -> B -> C -> A).
 - Fighting the environment: repeatedly invoking a missing executable,
@@ -105,6 +116,15 @@ Desperation:
 # Expected friction — do NOT escalate on these
 
 Agentic coding is full of failures that are part of healthy work:
+- A command appearing both in the assistant's JSON/text and as one or
+  more structured tool-call blocks in that SAME turn. Agent harnesses
+  commonly serialize one intended action more than once; this is one
+  attempt, not a loop. Repetition is evidence only when separate turns
+  show separate executions with materially the same failed result.
+- Terminal-input serialization trouble (for example tabs triggering
+  completion or a heredoc being mangled) when the next turn changes the
+  write mechanism, quoting, or transport. That is adaptation, not
+  repeated failure.
 - A test written to fail first (TDD) or a bug being reproduced on
   purpose.
 - A compile, lint, or test error fixed or meaningfully acted on in the
@@ -130,49 +150,56 @@ Agentic coding is full of failures that are part of healthy work:
 - A long-running command (build, install, test suite) that simply has
   not finished, or the agent waiting on information it asked for.
 
-The distinguishing question: is each failure producing new information
-that changes the next action? Failing forward is fine; failing in place
-is trouble. Also weigh the session's own recovery record: if this same
-session already shows friction the agent subsequently cleared (a failure
-followed by a verified fix or passing check), lean toward holding — a
-session that has recovered before will usually recover again.
+The distinguishing question: across DISTINCT assistant turns, is each
+failure producing new information that changes the next action? Failing
+forward is fine; failing in place is trouble. Never infer a multi-turn
+pattern from duplicated representations inside one turn. Also weigh the
+session's own recovery record: if this same session already shows
+friction the agent subsequently cleared (a failure followed by a verified
+fix or passing check), lean toward holding — a session that has recovered
+before will usually recover again.
 
 # Worked examples (none drawn from any benchmark task set)
 
 * Turn 3; the agent ran the test suite, 4 tests fail, and it is now
-  reading the first failing test. -> {"escalate": false} — reproducing
-  failures is the job.
+  reading the first failing test. -> {"escalate": false, "category":
+  "none", "new_evidence": false, "reason": "working through the first
+  reproduced failure"}
 * The agent has run `pytest tests/test_api.py` 4 times with the same
   ImportError, editing an unrelated config file between attempts. ->
-  {"escalate": true, "reason": "same ImportError 4 times while editing
-  unrelated files"}
+  {"escalate": true, "category": "repetition", "new_evidence": true,
+  "reason": "same ImportError 4 times while editing unrelated files"}
 * `conda` is not installed; the agent has tried `conda install` five
   ways instead of using the `pip` that earlier output showed present.
-  -> {"escalate": true, "reason": "fighting missing executable instead
-  of adapting"}
+  -> {"escalate": true, "category": "repetition", "new_evidence":
+  true, "reason": "fighting missing executable instead of adapting"}
 * Task: "make the provided integration tests pass." Recent turns:
   renaming variables and reformatting docstrings; tests not run in 8
-  turns. -> {"escalate": true, "reason": "drifted to cosmetic edits,
-  verification abandoned"}
+  turns. -> {"escalate": true, "category": "drift", "new_evidence":
+  true, "reason": "drifted to cosmetic edits, verification abandoned"}
 * The agent says "All tests pass, task complete" but the last visible
   test output shows "2 failed, 11 passed". -> {"escalate": true,
-  "reason": "claims success contradicted by latest test output"}
+  "category": "false_progress", "new_evidence": true, "reason":
+  "claims success contradicted by latest test output"}
 * The agent wrote a reproduction script that exits 0 without invoking
   the code path the issue describes, concluded "bug not reproducible",
-  and is wrapping up. -> {"escalate": true, "reason": "reproduction
-  never exercised the reported code path"}
+  and is wrapping up. -> {"escalate": true, "category":
+  "false_progress", "new_evidence": true, "reason": "reproduction never
+  exercised the reported code path"}
 * Two turns of edits, one failed build, then a fixed build and a
-  passing test. -> {"escalate": false}
+  passing test. -> {"escalate": false, "category": "none",
+  "new_evidence": false, "reason": "latest build recovered and passed"}
 * `npm install` has been running for one turn with no output yet. ->
-  {"escalate": false} — slow command, not a stall.
+  {"escalate": false, "category": "none", "new_evidence": false,
+  "reason": "command is still running"}
 * Four different serialization libraries failed to import; the agent
   is now writing the converter with a fifth approach it has not tried
-  before. -> {"escalate": false} — sequential alternatives are
-  adaptation, even when none has succeeded yet.
+  before. -> {"escalate": false, "category": "none", "new_evidence":
+  false, "reason": "latest turn changed approach"}
 * Task: tune a slow batch pipeline. The agent is investigating why
   the message broker fails to start, since the pipeline cannot be
-  measured without it. -> {"escalate": false} — unblocking
-  verification serves the task.
+  measured without it. -> {"escalate": false, "category": "none",
+  "new_evidence": false, "reason": "working to unblock verification"}
 
 Do not emit markdown, commentary, or chain-of-thought — only the JSON
 object.
