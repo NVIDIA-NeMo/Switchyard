@@ -409,7 +409,8 @@ async fn upstream_chat(
         .pointer("/response_format/json_schema/schema/properties/escalate")
         .is_some()
     {
-        r#"{"escalate":false,"reason":"making progress"}"#.to_string()
+        r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"making progress"}"#
+            .to_string()
     } else if model == "model/classifier" && requests_schema_invalid_verdict {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#.to_string()
     } else if model == "model/classifier" {
