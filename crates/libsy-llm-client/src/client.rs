@@ -19,8 +19,9 @@ use switchyard_protocol::{
     Response, RoutedLlmClient,
 };
 use switchyard_translation::{
-    WireFormat, decode_aggregated_response, decode_request, decode_stream,
-    encode_aggregated_response_with_extensions, encode_request, encode_stream_with_extensions,
+    WireFormat, decode_aggregated_response_with_diagnostics, decode_request_with_diagnostics,
+    decode_stream, encode_aggregated_response_with_extensions_and_diagnostics,
+    encode_request_with_diagnostics, encode_stream_with_extensions,
 };
 use tracing::Instrument;
 
@@ -240,8 +241,14 @@ impl TranslatingLlmClient {
         model: &ModelId,
         endpoint: UpstreamEndpoint,
     ) -> Result<EncodedResponse> {
-        let mut body = encode_request(&llm_request, wire_format)
+        let encoded = encode_request_with_diagnostics(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
+        metrics::record_translation_diagnostics(
+            &encoded.diagnostics,
+            metrics::TranslationOperation::RequestEncode,
+            wire_format,
+        );
+        let mut body = encoded.body;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
@@ -498,9 +505,14 @@ impl TranslatingLlmClient {
                 let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
                     LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
                 })?;
-                let agg = decode_aggregated_response(&body, wire_format)
+                let decoded = decode_aggregated_response_with_diagnostics(&body, wire_format)
                     .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
-                LlmResponse::Agg(agg)
+                metrics::record_translation_diagnostics(
+                    &decoded.diagnostics,
+                    metrics::TranslationOperation::ResponseDecode,
+                    wire_format,
+                );
+                LlmResponse::Agg(decoded.response)
             }
         };
 
@@ -531,8 +543,14 @@ impl TranslatingLlmClient {
         model: Option<&ModelId>,
         wire_format: WireFormat,
     ) -> Result<RawResponse> {
-        let llm_request = decode_request(wire_format, &raw_http_request)
+        let decoded = decode_request_with_diagnostics(wire_format, &raw_http_request)
             .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
+        metrics::record_translation_diagnostics(
+            &decoded.diagnostics,
+            metrics::TranslationOperation::RequestDecode,
+            wire_format,
+        );
+        let llm_request = decoded.request;
         let request_extensions = llm_request.extensions.clone();
         // The model that serves the call — the rewrite target when the caller pinned
         // one, else the request's own model. Mirrors `call_rewrite_model`'s own
@@ -559,14 +577,19 @@ impl TranslatingLlmClient {
 
         match response.llm_response {
             LlmResponse::Agg(agg) => {
-                let body = encode_aggregated_response_with_extensions(
+                let encoded = encode_aggregated_response_with_extensions_and_diagnostics(
                     &agg,
                     wire_format,
                     served_model.as_deref(),
                     &request_extensions,
                 )
                 .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
-                Ok(RawResponse::Buffered(body))
+                metrics::record_translation_diagnostics(
+                    &encoded.diagnostics,
+                    metrics::TranslationOperation::ResponseEncode,
+                    wire_format,
+                );
+                Ok(RawResponse::Buffered(encoded.body))
             }
             LlmResponse::Stream(chunks) => {
                 let events = encode_stream_with_extensions(

@@ -38,6 +38,7 @@ use switchyard_libsy::{
     LlmClassifierConfig, LlmTaskClassifier, PickerMode, RoutingOutcome, StageRouter,
     StageRouterConfig, Step, TaskClassifierConfig,
 };
+use switchyard_llm_client::metrics::{TranslationOperation, record_translation_diagnostics};
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::ModelId;
 use switchyard_protocol::{
@@ -48,6 +49,7 @@ use switchyard_protocol::{
     LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, text_request,
     text_response,
 };
+use switchyard_translation::TranslationDiagnostic;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -645,6 +647,95 @@ fn otel_attribute<'a>(span: &'a SpanData, key: &str) -> Option<&'a OtelValue> {
         .iter()
         .find(|attribute| attribute.key.as_str() == key)
         .map(|attribute| &attribute.value)
+}
+
+// Verifies the required metric labels and exactly one structured warning per diagnostic.
+#[tokio::test]
+async fn translation_diagnostics_emit_a_metric_and_structured_warning() {
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, _, _) = telemetry();
+    let attributes = [
+        ("code", "lossy_conversion"),
+        ("format", "anthropic_messages"),
+        ("operation", "request_encode"),
+        ("severity", "warning"),
+    ];
+    let before = u64_counter_value(
+        &flushed_metrics(exporter, provider),
+        "switchyard.translation_diagnostics",
+        &attributes,
+    )
+    .unwrap_or_default();
+    let event_count = store.events().len();
+
+    record_translation_diagnostics(
+        &[TranslationDiagnostic::warning(
+            "lossy_conversion",
+            "Anthropic structured output dropped unsupported JSON Schema constraints",
+        )
+        .at_path("$.response_format")],
+        TranslationOperation::RequestEncode,
+        WireFormat::AnthropicMessages,
+    );
+
+    let snapshots = flushed_metrics(exporter, provider);
+    let after = u64_counter_value(
+        &snapshots,
+        "switchyard.translation_diagnostics",
+        &attributes,
+    );
+    assert_eq!(after, Some(before + 1));
+    let mut metric_attribute_keys = snapshots
+        .iter()
+        .flat_map(|snapshot| snapshot.scope_metrics())
+        .flat_map(|scope| scope.metrics())
+        .filter(|metric| metric.name() == "switchyard.translation_diagnostics")
+        .filter_map(|metric| match metric.data() {
+            AggregatedMetrics::U64(MetricData::Sum(sum)) => sum
+                .data_points()
+                .find(|point| attributes_match(point.attributes(), &attributes))
+                .map(|point| {
+                    point
+                        .attributes()
+                        .map(|attribute| attribute.key.as_str().to_string())
+                        .collect::<Vec<_>>()
+                }),
+            _ => None,
+        })
+        .next()
+        .expect("missing translation diagnostic metric attributes");
+    metric_attribute_keys.sort_unstable();
+    assert_eq!(
+        metric_attribute_keys,
+        ["code", "format", "operation", "severity"]
+    );
+    let events = store.events();
+    let matching_warnings = events[event_count..]
+        .iter()
+        .filter(|event| {
+            event.target == "libsy"
+                && event.level == "WARN"
+                && event
+                    .fields
+                    .get("code")
+                    .is_some_and(|value| value == "lossy_conversion")
+                && event
+                    .fields
+                    .get("format")
+                    .is_some_and(|value| value == "anthropic_messages")
+                && event
+                    .fields
+                    .get("operation")
+                    .is_some_and(|value| value == "request_encode")
+                && event.fields.get("diagnostic").is_some_and(|value| {
+                    value.contains("dropped unsupported JSON Schema constraints")
+                })
+        })
+        .count();
+    assert_eq!(
+        matching_warnings, 1,
+        "expected one structured translation warning"
+    );
 }
 
 #[tokio::test]

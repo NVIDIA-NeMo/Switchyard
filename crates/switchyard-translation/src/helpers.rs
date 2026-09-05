@@ -19,8 +19,9 @@ use crate::codecs::stream::encode_response_stream_event;
 use crate::sse;
 use crate::{
     AggLlmResponse, FormatId, LlmRequest, LlmResponseChunk, LlmResponseStream,
-    LlmResponseStreamEvent, LlmStreamError, Result, StreamCodecRegistry, StreamTranslationState,
-    TranslationEngine, TranslationPolicy, WireFormat,
+    LlmResponseStreamEvent, LlmStreamError, RequestIrOutput, ResponseIrOutput, Result,
+    StreamCodecRegistry, StreamTranslationState, TranslationEngine, TranslationOutput,
+    TranslationPolicy, WireFormat,
 };
 
 static DEFAULT_TRANSLATION_POLICY: LazyLock<TranslationPolicy> =
@@ -30,23 +31,53 @@ static DEFAULT_TRANSLATION_ENGINE: LazyLock<TranslationEngine> =
 
 /// Decodes a `wire_format` request body into the neutral IR.
 pub fn decode_request(wire_format: WireFormat, body: &Value) -> Result<LlmRequest> {
-    Ok(DEFAULT_TRANSLATION_ENGINE
-        .decode_request(wire_format, body, &DEFAULT_TRANSLATION_POLICY)?
-        .request)
+    Ok(decode_request_with_diagnostics(wire_format, body)?.request)
+}
+
+/// Decodes a request and retains any diagnostics emitted by the codec.
+///
+/// # Errors
+///
+/// Returns an error when the request codec cannot decode `body`.
+pub fn decode_request_with_diagnostics(
+    wire_format: WireFormat,
+    body: &Value,
+) -> Result<RequestIrOutput> {
+    DEFAULT_TRANSLATION_ENGINE.decode_request(wire_format, body, &DEFAULT_TRANSLATION_POLICY)
 }
 
 /// Encodes a normalized request into `wire_format`'s JSON body.
 pub fn encode_request(request: &LlmRequest, wire_format: WireFormat) -> Result<Value> {
-    Ok(DEFAULT_TRANSLATION_ENGINE
-        .encode_request(wire_format, request, &DEFAULT_TRANSLATION_POLICY)?
-        .body)
+    Ok(encode_request_with_diagnostics(request, wire_format)?.body)
+}
+
+/// Encodes a request and retains any diagnostics emitted by the codec.
+///
+/// # Errors
+///
+/// Returns an error when the request codec cannot encode `request`.
+pub fn encode_request_with_diagnostics(
+    request: &LlmRequest,
+    wire_format: WireFormat,
+) -> Result<TranslationOutput> {
+    DEFAULT_TRANSLATION_ENGINE.encode_request(wire_format, request, &DEFAULT_TRANSLATION_POLICY)
 }
 
 /// Decodes a buffered `wire_format` response body into the neutral aggregate.
 pub fn decode_aggregated_response(body: &Value, wire_format: WireFormat) -> Result<AggLlmResponse> {
-    Ok(DEFAULT_TRANSLATION_ENGINE
-        .decode_response(wire_format, body, &DEFAULT_TRANSLATION_POLICY)?
-        .response)
+    Ok(decode_aggregated_response_with_diagnostics(body, wire_format)?.response)
+}
+
+/// Decodes a buffered response and retains any diagnostics emitted by the codec.
+///
+/// # Errors
+///
+/// Returns an error when the response codec cannot decode `body`.
+pub fn decode_aggregated_response_with_diagnostics(
+    body: &Value,
+    wire_format: WireFormat,
+) -> Result<ResponseIrOutput> {
+    DEFAULT_TRANSLATION_ENGINE.decode_response(wire_format, body, &DEFAULT_TRANSLATION_POLICY)
 }
 
 /// Encodes a buffered aggregate into `wire_format`'s JSON body, stamping
@@ -57,7 +88,20 @@ pub fn encode_aggregated_response(
     wire_format: WireFormat,
     served_model: Option<&str>,
 ) -> Result<Value> {
-    encode_aggregated_response_with_extensions(
+    Ok(encode_aggregated_response_with_diagnostics(agg, wire_format, served_model)?.body)
+}
+
+/// Encodes a buffered response and retains any diagnostics emitted by the codec.
+///
+/// # Errors
+///
+/// Returns an error when the response codec cannot encode `agg`.
+pub fn encode_aggregated_response_with_diagnostics(
+    agg: &AggLlmResponse,
+    wire_format: WireFormat,
+    served_model: Option<&str>,
+) -> Result<TranslationOutput> {
+    encode_aggregated_response_with_extensions_and_diagnostics(
         agg,
         wire_format,
         served_model,
@@ -75,18 +119,36 @@ pub fn encode_aggregated_response_with_extensions(
     served_model: Option<&str>,
     request_extensions: &switchyard_protocol::ProviderExtensions,
 ) -> Result<Value> {
-    let mut body = DEFAULT_TRANSLATION_ENGINE
-        .encode_response_with_extensions(
-            wire_format,
-            agg,
-            request_extensions,
-            &DEFAULT_TRANSLATION_POLICY,
-        )?
-        .body;
-    if let (Some(model), Value::Object(object)) = (served_model, &mut body) {
+    Ok(encode_aggregated_response_with_extensions_and_diagnostics(
+        agg,
+        wire_format,
+        served_model,
+        request_extensions,
+    )?
+    .body)
+}
+
+/// Encodes a buffered response with request extensions and retains codec diagnostics.
+///
+/// # Errors
+///
+/// Returns an error when the response codec cannot encode `agg`.
+pub fn encode_aggregated_response_with_extensions_and_diagnostics(
+    agg: &AggLlmResponse,
+    wire_format: WireFormat,
+    served_model: Option<&str>,
+    request_extensions: &switchyard_protocol::ProviderExtensions,
+) -> Result<TranslationOutput> {
+    let mut output = DEFAULT_TRANSLATION_ENGINE.encode_response_with_extensions(
+        wire_format,
+        agg,
+        request_extensions,
+        &DEFAULT_TRANSLATION_POLICY,
+    )?;
+    if let (Some(model), Value::Object(object)) = (served_model, &mut output.body) {
         object.insert("model".to_string(), Value::String(model.to_string()));
     }
-    Ok(body)
+    Ok(output)
 }
 
 /// A stream of wire-format event objects in one format — the unframed body of an
