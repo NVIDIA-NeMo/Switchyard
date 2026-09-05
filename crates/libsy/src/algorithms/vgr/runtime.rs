@@ -127,6 +127,7 @@ impl Classifier<State> for VgrClassifier {
             record.short_circuit = Some(reason);
             record.served_route = Some(Route::Cloud);
             record.elapsed = started.elapsed();
+            record.annotate(request);
             record.emit();
             return Ok((decisive(&targets.cloud), None));
         }
@@ -148,6 +149,7 @@ impl Classifier<State> for VgrClassifier {
             record.short_circuit = Some("local_timed_out");
             record.served_route = Some(Route::Cloud);
             record.elapsed = started.elapsed();
+            record.annotate(request);
             record.emit();
             return Ok((decisive(&targets.cloud), None));
         };
@@ -179,6 +181,7 @@ impl Classifier<State> for VgrClassifier {
                 record.short_circuit = Some("local_unavailable");
                 record.served_route = Some(Route::Cloud);
                 record.elapsed = started.elapsed();
+                record.annotate(request);
                 record.emit();
                 let response = complete_cloud(
                     driver,
@@ -205,6 +208,7 @@ impl Classifier<State> for VgrClassifier {
                 record.short_circuit = Some("local_timed_out");
                 record.served_route = Some(Route::Cloud);
                 record.elapsed = started.elapsed();
+                record.annotate(request);
                 record.emit();
                 let local_error = LibsyError::client_call(
                     targets.local.clone(),
@@ -256,6 +260,7 @@ impl Classifier<State> for VgrClassifier {
             });
             record.served_route = Some(served);
             record.elapsed = started.elapsed();
+            record.annotate(request);
             record.emit();
             if served == Route::Local {
                 return Ok((decisive(&targets.local), Some(buffered.into_response())));
@@ -277,6 +282,7 @@ impl Classifier<State> for VgrClassifier {
         let served = super::mode::serve_route(&self.config.mode, &decision);
         record.served_route = Some(served);
         record.elapsed = started.elapsed();
+        record.annotate(request);
         record.emit();
 
         if served == Route::Local {

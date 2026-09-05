@@ -66,6 +66,19 @@ pub async fn run(
     let outcome = outcome?;
     let overhead = run_started.elapsed();
     metrics::record_routing_overhead(&algorithm_name, overhead);
+    let routing_evidence = outcome
+        .request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.extra_metadata.as_ref())
+        .map(|extra| {
+            extra
+                .iter()
+                .filter(|(key, _)| key.starts_with("switchyard.vgr."))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     let selected_model_id = outcome.selected_model_id()?.clone();
     let (result, answer_duration) = if let Some(response) = outcome.response {
@@ -99,7 +112,17 @@ pub async fn run(
     if let Some(observer) = &observer {
         observer(RunObservation::RoutingOverhead(overhead));
     }
-    result.map(|response| (selected_model_id, response))
+    result.map(|mut response| {
+        if !routing_evidence.is_empty() {
+            response
+                .metadata
+                .get_or_insert_default()
+                .extra_metadata
+                .get_or_insert_default()
+                .extend(routing_evidence);
+        }
+        (selected_model_id, response)
+    })
 }
 
 /// Run an algorithm to a routing decision without serving its terminal completion.
@@ -616,6 +639,45 @@ mod tests {
         )
         .await;
         (client, result)
+    }
+
+    #[tokio::test]
+    async fn vgr_evidence_reaches_terminal_response_without_copying_other_request_metadata()
+    -> Result<()> {
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::StreamSuccess,
+        });
+        let mut request = request();
+        request.metadata = Some(switchyard_protocol::Metadata {
+            extra_metadata: Some(BTreeMap::from([
+                ("switchyard.vgr.served".to_string(), "cloud".to_string()),
+                (
+                    "private.request.field".to_string(),
+                    "do-not-copy".to_string(),
+                ),
+            ])),
+            ..Default::default()
+        });
+
+        let (_, response) = run(
+            Arc::new(CandidateAlgorithm {
+                models: vec!["weak".into()],
+            }),
+            ClientRouter::single(client),
+            request,
+            None,
+        )
+        .await?;
+
+        let extra = response
+            .metadata
+            .and_then(|metadata| metadata.extra_metadata)
+            .expect("propagated VGR evidence");
+        assert_eq!(extra["switchyard.vgr.served"], "cloud");
+        assert!(!extra.contains_key("private.request.field"));
+        Ok(())
     }
 
     #[tokio::test]

@@ -27,8 +27,15 @@
 
 use std::time::Duration;
 
+use opentelemetry::KeyValue;
+use switchyard_protocol::Request;
+
+use super::Branch;
 use super::TaskType;
-use super::decide::{Decision, Route};
+use super::decide::{Decision, ReadinessGate, Route};
+use crate::observability::meter;
+
+const VGR_DECISIONS_METRIC: &str = "switchyard.vgr.decisions";
 
 /// Identifies the prompt set the verifiers were called with.
 ///
@@ -163,6 +170,40 @@ impl Record {
         self.stages.push((stage, elapsed));
     }
 
+    /// Carries the bounded decision labels to the terminal response for durable logging.
+    pub(super) fn annotate(&self, request: &mut Request) {
+        let extra = request
+            .metadata
+            .get_or_insert_default()
+            .extra_metadata
+            .get_or_insert_default();
+        for (key, value) in [
+            (
+                "switchyard.vgr.predicted",
+                route_label(self.decision.map(|d| d.route)),
+            ),
+            (
+                "switchyard.vgr.effective",
+                route_label(self.decision.map(|d| d.effective_route)),
+            ),
+            ("switchyard.vgr.served", route_label(self.served_route)),
+            (
+                "switchyard.vgr.branch",
+                branch_label(self.decision.map(|d| d.branch)),
+            ),
+            (
+                "switchyard.vgr.readiness_gate",
+                readiness_gate_label(self.decision.and_then(|d| d.readiness_gate)),
+            ),
+            (
+                "switchyard.vgr.short_circuit",
+                self.short_circuit.unwrap_or("none"),
+            ),
+        ] {
+            extra.insert(key.to_string(), value.to_string());
+        }
+    }
+
     /// Records that a rung produced no usable evidence, and why.
     ///
     /// Budget-related reasons also set [`Record::deadline_exhausted`], so a
@@ -185,6 +226,23 @@ impl Record {
     /// Sequence fields are rendered rather than nested because the tracing field
     /// set is flat; every rendered value is a static label or a number.
     pub(super) fn emit(&self) {
+        meter().u64_counter(VGR_DECISIONS_METRIC).build().add(
+            1,
+            &[
+                KeyValue::new("predicted", route_label(self.decision.map(|d| d.route))),
+                KeyValue::new(
+                    "effective",
+                    route_label(self.decision.map(|d| d.effective_route)),
+                ),
+                KeyValue::new("served", route_label(self.served_route)),
+                KeyValue::new("branch", branch_label(self.decision.map(|d| d.branch))),
+                KeyValue::new(
+                    "readiness_gate",
+                    readiness_gate_label(self.decision.and_then(|d| d.readiness_gate)),
+                ),
+                KeyValue::new("short_circuit", self.short_circuit.unwrap_or("none")),
+            ],
+        );
         let stages = self
             .stages
             .iter()
@@ -221,6 +279,36 @@ impl Record {
             redaction_events = self.redaction_events,
             "vgr decision"
         );
+    }
+}
+
+fn route_label(route: Option<Route>) -> &'static str {
+    match route {
+        Some(Route::Local) => "local",
+        Some(Route::Cloud) => "cloud",
+        None => "none",
+    }
+}
+
+fn branch_label(branch: Option<Branch>) -> &'static str {
+    match branch {
+        Some(Branch::Checks) => "checks",
+        Some(Branch::CodingNoChecks) => "coding_no_checks",
+        Some(Branch::Answer) => "answer",
+        Some(Branch::Chat) => "chat",
+        Some(Branch::AgenticRecognized) => "agentic_recognized",
+        Some(Branch::AgenticVerified) => "agentic_verified",
+        Some(Branch::DefaultVerified) => "default_verified",
+        Some(Branch::Unknown) => "unknown",
+        None => "none",
+    }
+}
+
+fn readiness_gate_label(gate: Option<ReadinessGate>) -> &'static str {
+    match gate {
+        Some(ReadinessGate::SecureCheckerMissing) => "secure_checker_missing",
+        Some(ReadinessGate::ToolEvidenceNotHostAttested) => "tool_evidence_not_host_attested",
+        None => "none",
     }
 }
 
@@ -308,6 +396,28 @@ mod tests {
     }
 
     #[test]
+    fn decision_labels_are_attached_without_request_content() {
+        let mut request = Request::default();
+        let mut record = Record::new();
+        record.served_route = Some(Route::Cloud);
+        record.short_circuit = Some("local_unavailable");
+
+        record.annotate(&mut request);
+
+        let labels = request
+            .metadata
+            .and_then(|metadata| metadata.extra_metadata)
+            .expect("VGR labels");
+        assert_eq!(labels["switchyard.vgr.predicted"], "none");
+        assert_eq!(labels["switchyard.vgr.effective"], "none");
+        assert_eq!(labels["switchyard.vgr.served"], "cloud");
+        assert_eq!(labels["switchyard.vgr.branch"], "none");
+        assert_eq!(labels["switchyard.vgr.readiness_gate"], "none");
+        assert_eq!(labels["switchyard.vgr.short_circuit"], "local_unavailable");
+        assert_eq!(labels.len(), 6);
+    }
+
+    #[test]
     fn checker_manifest_identity_is_emitted_with_the_decision() {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let subscriber = Registry::default().with(CaptureLayer(Arc::clone(&captured)));
@@ -319,7 +429,8 @@ mod tests {
         let fields = captured.lock();
         assert_eq!(
             fields
-                .first()
+                .iter()
+                .find(|event| event.contains_key("checker_manifest"))
                 .and_then(|event| event.get("checker_manifest"))
                 .map(String::as_str),
             Some("stable-checker-digest")

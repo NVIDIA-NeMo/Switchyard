@@ -534,6 +534,7 @@ def test_dry_run_server_config_uses_rust_switchyard_server(tmp_path: Path) -> No
     assert _option_value(server, "--config") == str(profile)
     assert _option_value(server, "--host") == "0.0.0.0"
     assert _option_value(server, "--port") == "4000"
+    assert Path(_option_value(server, "--routing-log-file")).name == "routing_requests.jsonl"
     assert _option_value(harbor, "--model") == "openai/tb-lite-random-routing"
     assert "server_config:" in result.stdout
     assert "route_model:   tb-lite-random-routing" in result.stdout
