@@ -13,6 +13,24 @@ Both paths use the same generated dataset, task proxy, pinned agent versions, an
 layout. Passing `--server-config` starts the Rust server; omitting it disables Switchyard and points
 Harbor directly at the upstream provider.
 
+## Run the complete VGR hold-out suite
+
+The internal hold-out launcher runs all of Terminal-Bench 2.1, AutomationBench `simple`, and
+AppWorld `dev_easy` in sequence. It verifies the pinned external harness revisions, builds the VGR
+server, preserves stable per-task routing sessions, and writes one top-level run manifest.
+
+Place the pinned `AutomationBench` and `appworld-repo` checkouts beside this repository, make the
+Qwen endpoint available at `host.docker.internal:1235`, set `NVIDIA_API_KEY`, and run:
+
+```bash
+python benchmark/run_holdout_suite.py
+```
+
+On Windows, run the same command from Python; the launcher re-enters through WSL so Docker and the
+Linux-only Harbor path have identical behavior. If the harnesses are elsewhere, pass
+`--automationbench-root` and `--appworld-root`. Use `--dry-run` to inspect all three commands
+without starting a benchmark.
+
 ## Prerequisites
 
 From the repo root:
