@@ -72,6 +72,8 @@ pub mod safety;
 mod telemetry;
 mod text;
 
+#[cfg(all(test, unix))]
+mod conformance_tests;
 #[cfg(test)]
 mod decide_tests;
 #[cfg(test)]
