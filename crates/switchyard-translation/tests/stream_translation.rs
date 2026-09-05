@@ -1780,3 +1780,100 @@ fn responses_stream_decodes_reasoning_text_from_added_done_and_completed_once() 
     );
     Ok(())
 }
+
+// Codex records a reasoning item only in the standard Responses shape: text lives in
+// `summary: [{"type": "summary_text", ...}]` and streams as `reasoning_summary_part.added`,
+// `reasoning_summary_text.delta`, `reasoning_summary_text.done`, `reasoning_summary_part.done`.
+// The encoder must emit that shape, not a `content: [reasoning_text]` item, or the client
+// silently drops the reasoning.
+#[test]
+fn responses_stream_encodes_reasoning_as_summary_text() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let mut state = StreamTranslationState::new(format, format);
+    let chunks = vec![
+        LlmResponseChunk::MessageStart {
+            id: Some("resp_1".into()),
+            model: Some(REASONING_MODEL.into()),
+        },
+        LlmResponseChunk::ReasoningDelta {
+            index: 0,
+            text: "Let me ".into(),
+        },
+        LlmResponseChunk::ReasoningDelta {
+            index: 0,
+            text: "think.".into(),
+        },
+        LlmResponseChunk::TextDelta {
+            index: 1,
+            text: "done".into(),
+        },
+        LlmResponseChunk::MessageStop { reason: None },
+    ];
+    let mut events = Vec::new();
+    for chunk in chunks {
+        events.extend(engine.encode_stream_event(
+            &mut state,
+            format,
+            LlmResponseStreamEvent::new(vec![chunk]),
+        )?);
+    }
+    events.extend(engine.finish_stream(&mut state, format)?);
+    let types: Vec<&str> = events.iter().filter_map(|e| e["type"].as_str()).collect();
+
+    assert!(
+        types.contains(&"response.reasoning_summary_part.added"),
+        "{types:?}"
+    );
+    assert_eq!(
+        types
+            .iter()
+            .filter(|t| **t == "response.reasoning_summary_text.delta")
+            .count(),
+        2,
+        "{types:?}"
+    );
+    assert!(
+        types.contains(&"response.reasoning_summary_text.done"),
+        "{types:?}"
+    );
+    assert!(
+        types.contains(&"response.reasoning_summary_part.done"),
+        "{types:?}"
+    );
+    assert!(
+        !types
+            .iter()
+            .any(|t| t.starts_with("response.reasoning_text.")),
+        "legacy reasoning_text events must not be emitted: {types:?}"
+    );
+
+    let done = events
+        .iter()
+        .filter(|e| e["type"] == "response.output_item.done")
+        .map(|e| &e["item"])
+        .find(|i| i["type"] == "reasoning")
+        .ok_or("reasoning output_item.done")?;
+    assert_eq!(
+        done["summary"],
+        json!([{"type": "summary_text", "text": "Let me think."}])
+    );
+    assert!(
+        done.get("content")
+            .is_none_or(|c| c.as_array().is_some_and(Vec::is_empty)),
+        "no content part: {done}"
+    );
+
+    let completed = events
+        .iter()
+        .find(|e| e["type"] == "response.completed")
+        .ok_or("completed")?;
+    let final_reasoning = completed["response"]["output"]
+        .as_array()
+        .ok_or("output")?
+        .iter()
+        .find(|i| i["type"] == "reasoning")
+        .ok_or("final reasoning item")?;
+    assert_eq!(final_reasoning["summary"][0]["text"], "Let me think.");
+    Ok(())
+}

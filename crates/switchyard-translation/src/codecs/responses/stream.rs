@@ -393,27 +393,35 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.response_reasoning_started
         && let Some(output_index) = state.response_reasoning_output_index
     {
-        // Encrypted-only reasoning streamed no text, so it gets no text part; the item
+        // Encrypted-only reasoning streamed no text, so it gets no summary part; the item
         // itself still closes so the client can replay its `encrypted_content`.
-        let mut content = Vec::new();
+        let item_id = format!("rs_{output_index}");
+        let mut summary = Vec::new();
         if !state.response_reasoning_text.is_empty() {
             out.push(json!({
-                "type": "response.reasoning_text.done",
+                "type": "response.reasoning_summary_text.done",
+                "item_id": item_id,
                 "output_index": output_index,
-                "content_index": 0,
+                "summary_index": 0,
                 "text": state.response_reasoning_text,
             }));
-            content.push(json!({
-                "type": "reasoning_text",
+            out.push(json!({
+                "type": "response.reasoning_summary_part.done",
+                "item_id": item_id,
+                "output_index": output_index,
+                "summary_index": 0,
+                "part": {"type": "summary_text", "text": state.response_reasoning_text},
+            }));
+            summary.push(json!({
+                "type": "summary_text",
                 "text": state.response_reasoning_text,
             }));
         }
         let mut item = json!({
             "type": "reasoning",
-            "id": format!("rs_{output_index}"),
+            "id": item_id,
             "status": "completed",
-            "content": content,
-            "summary": [],
+            "summary": summary,
         });
         if let Some(encrypted) = &state.response_reasoning_encrypted {
             item["encrypted_content"] = Value::String(encrypted.clone());
@@ -705,6 +713,8 @@ fn ensure_responses_reasoning_started(state: &mut StreamTranslationState) -> Vec
         let output_index = state.next_response_output_index;
         state.next_response_output_index += 1;
         state.response_reasoning_output_index = Some(output_index);
+        // Standard Responses shape: reasoning text lives in `summary` as `summary_text`
+        // parts. Clients such as Codex record reasoning items only in this shape.
         out.push(json!({
             "type": "response.output_item.added",
             "output_index": output_index,
@@ -712,15 +722,15 @@ fn ensure_responses_reasoning_started(state: &mut StreamTranslationState) -> Vec
                 "type": "reasoning",
                 "id": format!("rs_{output_index}"),
                 "status": "in_progress",
-                "content": [],
                 "summary": [],
             },
         }));
         out.push(json!({
-            "type": "response.reasoning_text.added",
+            "type": "response.reasoning_summary_part.added",
+            "item_id": format!("rs_{output_index}"),
             "output_index": output_index,
-            "content_index": 0,
-            "text": "",
+            "summary_index": 0,
+            "part": {"type": "summary_text", "text": ""},
         }));
     }
     out
@@ -733,10 +743,12 @@ fn encode_responses_reasoning_delta(
 ) -> Vec<Value> {
     let mut out = ensure_responses_reasoning_started(state);
     state.response_reasoning_text.push_str(&text);
+    let output_index = state.response_reasoning_output_index.unwrap_or(0);
     out.push(json!({
-        "type": "response.reasoning_text.delta",
-        "output_index": state.response_reasoning_output_index.unwrap_or(0),
-        "content_index": 0,
+        "type": "response.reasoning_summary_text.delta",
+        "item_id": format!("rs_{output_index}"),
+        "output_index": output_index,
+        "summary_index": 0,
         "delta": text,
     }));
     out

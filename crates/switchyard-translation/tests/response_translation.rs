@@ -327,8 +327,8 @@ fn openai_reasoning_response_translates_to_responses_reasoning_item() -> TestRes
 
     assert_eq!(output["output"][0]["type"], "reasoning");
     assert_eq!(
-        output["output"][0]["content"][0],
-        json!({"type": "reasoning_text", "text": "private reasoning"})
+        output["output"][0]["summary"][0],
+        json!({"type": "summary_text", "text": "private reasoning"})
     );
     assert_eq!(output["output"][1]["type"], "message");
     assert_eq!(output["output"][1]["content"][0]["text"], "Visible answer");
@@ -414,7 +414,7 @@ fn openai_reasoning_only_response_translates_to_responses_reasoning_only() -> Te
         .ok_or("Responses output should be an array")?;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], "reasoning");
-    assert_eq!(items[0]["content"][0]["text"], "private reasoning");
+    assert_eq!(items[0]["summary"][0]["text"], "private reasoning");
     Ok(())
 }
 

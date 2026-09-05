@@ -1370,16 +1370,16 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
 // Encodes private reasoning as a separate Responses output item. An encrypted-only item
 // carries no text part but keeps `encrypted_content` so the client can replay it.
 fn encode_responses_reasoning_output(text: &str, encrypted: Option<&str>) -> Value {
-    let mut content = Vec::new();
+    // Standard Responses shape: text as `summary_text` parts, which is what clients record.
+    let mut summary = Vec::new();
     if !text.is_empty() {
-        content.push(json!({"type": "reasoning_text", "text": text}));
+        summary.push(json!({"type": "summary_text", "text": text}));
     }
     let mut item = json!({
         "type": "reasoning",
         "id": "rs_switchyard",
         "status": "completed",
-        "content": content,
-        "summary": [],
+        "summary": summary,
     });
     if let Some(encrypted) = encrypted {
         item["encrypted_content"] = Value::String(encrypted.to_string());
