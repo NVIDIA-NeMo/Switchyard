@@ -33,6 +33,12 @@ classify_trigger = "user_turn"
 capable_target = "strong"
 efficient_target = "weak"
 confidence_threshold = 0.5
+
+[routes.switchyard.stage.tool_semantics]
+observe = ["lookup_customer"]
+mutate = ["update_inventory"]
+plan = ["create_research_plan"]
+new = ["send_message"]
 ```
 
 `[routes.switchyard.classifier]` takes the `stage_router` classifier fields.
@@ -41,6 +47,8 @@ whenever the user speaks, `new_session` picks once and holds it.
 `[routes.switchyard.stage]` takes the `stage_router` fields except `picker`, whose
 job the classifier does per turn. Leave `classifier` out as well: that judge runs
 ahead of the fall-open tier, so it answers most of the turns this one decided.
+Custom `tool_semantics` remain stage-local and have the same additive behavior as
+on a standalone stage route.
 
 ## Sessions
 

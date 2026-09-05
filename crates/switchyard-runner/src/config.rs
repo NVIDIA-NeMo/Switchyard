@@ -681,6 +681,12 @@ efficient_target = "weak"
 picker = "efficient_first"
 confidence_threshold = 1.0
 
+[routes.stage.tool_semantics]
+observe = ["lookup_customer"]
+mutate = ["send_payment"]
+plan = ["create_workflow"]
+new = ["send_message"]
+
 [routes.stage.classifier]
 target = "stage_judge"
 base_threshold = 0.5
@@ -708,6 +714,9 @@ classify_trigger = "user_turn"
 capable_target = "strong"
 efficient_target = "weak"
 confidence_threshold = 0.5
+
+[routes.composed.stage.tool_semantics]
+new = ["send_message"]
 "#
         )
     }

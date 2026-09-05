@@ -32,7 +32,7 @@ pub use algorithms::util::classifier_contract::{
 pub use algorithms::util::escalation::EscalationJudgeConfig;
 pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
-pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
+pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignals};
 
 // Stage-router scoring and tier selection — the shared signal-driven routing
 // core (scorer, picker, and the `StageClassifier`).

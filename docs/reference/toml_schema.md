@@ -236,6 +236,10 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental, unbenchmarked). Tier used when the signals are not confident. |
 | `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. |
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
+| `tool_semantics.observe` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as read-only investigation. |
+| `tool_semantics.mutate` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as state-changing production. |
+| `tool_semantics.plan` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as planning or task decomposition. |
+| `tool_semantics.new` | No | `[]` | Exact ASCII case-insensitive domain tool names that demonstrate forward activity without favoring either tier. |
 | `capable_system_prompt` | No | unset | System prompt handed to the capable tier. |
 | `efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
 | `classifier.classify_trigger` | No | `every_request` | When the judge runs. See the `llm_classifier` route. `new_session` has no effect here. |
@@ -258,6 +262,10 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | `stage.efficient_target` | Yes | — | Efficient tier. |
 | `stage.confidence_threshold` | Yes | — | Corroboration a decisive signal needs. In `[0, 1]`. |
 | `stage.recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
+| `stage.tool_semantics.observe` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as observation. |
+| `stage.tool_semantics.mutate` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as mutation. |
+| `stage.tool_semantics.plan` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as planning. |
+| `stage.tool_semantics.new` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as neutral forward activity. |
 | `stage.capable_system_prompt` | No | unset | System prompt handed to the capable tier. |
 | `stage.efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
 | `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |

@@ -13,10 +13,11 @@
 #![allow(dead_code)]
 
 use async_trait::async_trait;
+use serde::Deserialize;
 use serde_json::Value;
 use switchyard_protocol::{ContentBlock, Request, Role};
 
-use crate::Result;
+use crate::{LibsyError, Result};
 
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
@@ -203,6 +204,83 @@ static NUMERIC_FAILURE_KEYWORDS: &[&str] = &["failed", "failure", "failures", "e
 /// passing a window to [`ToolSignals::from_request`].
 pub const DEFAULT_RECENT_WINDOW: usize = 3;
 
+/// Exact tool-name semantics added to the stage router's built-in vocabulary.
+///
+/// Matching is ASCII case-insensitive. These lists are additive: built-in tool
+/// names cannot be reclassified.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolSemantics {
+    /// Read-only lookup or inspection tools.
+    pub observe: Vec<String>,
+    /// Tools that change task or external state.
+    pub mutate: Vec<String>,
+    /// Explicit planning or task-decomposition tools.
+    pub plan: Vec<String>,
+    /// Tools that demonstrate new forward activity without favoring either tier.
+    pub new: Vec<String>,
+}
+
+impl ToolSemantics {
+    /// Rejects ambiguous mappings and attempts to reclassify built-in tools.
+    pub fn validate(&self) -> Result<()> {
+        let mut seen: Vec<(String, &'static str)> = Vec::new();
+        for (category, names) in [
+            ("observe", &self.observe),
+            ("mutate", &self.mutate),
+            ("plan", &self.plan),
+            ("new", &self.new),
+        ] {
+            for name in names {
+                if name.trim().is_empty() {
+                    return Err(tool_semantics_error(format!(
+                        "tool_semantics.{category} contains an empty tool name"
+                    )));
+                }
+                let normalized = name.to_ascii_lowercase();
+                if is_builtin_tool_name(&normalized) {
+                    return Err(tool_semantics_error(format!(
+                        "tool {name:?} already has built-in semantics and cannot be reclassified"
+                    )));
+                }
+                if let Some((_, previous)) = seen.iter().find(|(seen, _)| seen == &normalized) {
+                    return Err(tool_semantics_error(format!(
+                        "tool {name:?} appears in both tool_semantics.{previous} and tool_semantics.{category}"
+                    )));
+                }
+                seen.push((normalized, category));
+            }
+        }
+        Ok(())
+    }
+
+    fn classify(&self, name: &str) -> Option<ToolSemantic> {
+        if contains_name(&self.observe, name) {
+            Some(ToolSemantic::Observe)
+        } else if contains_name(&self.mutate, name) {
+            // The stage scorer treats writes and edits identically. Custom
+            // mutations use the write counter to preserve the public signal shape.
+            Some(ToolSemantic::Mutate(MutationKind::Write))
+        } else if contains_name(&self.plan, name) {
+            Some(ToolSemantic::Plan)
+        } else if contains_name(&self.new, name) {
+            Some(ToolSemantic::New)
+        } else {
+            None
+        }
+    }
+}
+
+fn contains_name(names: &[String], candidate: &str) -> bool {
+    names
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(candidate))
+}
+
+fn tool_semantics_error(message: String) -> LibsyError {
+    LibsyError::AlgorithmError { message }
+}
+
 // ─── output type ─────────────────────────────────────────────────────────────
 
 /// Tool-execution signals extracted from a normalized [`Request`].
@@ -237,7 +315,11 @@ pub struct ToolSignals {
     pub recent_read_count: u32,
     /// TodoWrite calls within the configured recent window (default: [`DEFAULT_RECENT_WINDOW`]).
     pub recent_todowrite_count: u32,
-    /// Consecutive trailing tool calls in the `Other` category (no Write/Edit/Read/
+    /// Configured `new` tool calls across the full request history.
+    pub new_count: u32,
+    /// Configured `new` tool calls within the recent window.
+    pub recent_new_count: u32,
+    /// Consecutive trailing tool calls in the `Unknown` category (no Write/Edit/Read/
     /// Plan match). Surfaced in the classifier state summary; not scored directly.
     pub pure_bash_streak: u32,
     /// At least one of the last three tool results matched a test-pass pattern.
@@ -261,12 +343,25 @@ pub struct ToolSignals {
 }
 
 impl ToolSignals {
-    /// Extracts tool and progress signals from `request`.
+    /// Extracts tool and activity signals from `request`.
     ///
     /// `window_size` limits recent counters to the newest tool results. `None`
     /// uses [`DEFAULT_RECENT_WINDOW`].
     pub fn from_request(request: &Request, window_size: Option<usize>) -> Self {
-        extract_tool_signals_with_window(request, window_size.unwrap_or(DEFAULT_RECENT_WINDOW))
+        Self::from_request_with_semantics(request, window_size, &ToolSemantics::default())
+    }
+
+    /// Extracts signals using the built-in vocabulary plus additive semantics.
+    pub fn from_request_with_semantics(
+        request: &Request,
+        window_size: Option<usize>,
+        semantics: &ToolSemantics,
+    ) -> Self {
+        extract_tool_signals_with_window_and_semantics(
+            request,
+            window_size.unwrap_or(DEFAULT_RECENT_WINDOW),
+            semantics,
+        )
     }
 }
 
@@ -278,12 +373,19 @@ struct ObservedToolCall {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ToolCategory {
+enum MutationKind {
     Write,
     Edit,
-    Read,
+}
+
+/// Domain-neutral meaning assigned to an observed tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolSemantic {
+    Mutate(MutationKind),
+    Observe,
     Plan,
-    Other,
+    New,
+    Unknown,
 }
 
 /// Request-side processor that extracts tool-result signals from each request
@@ -293,12 +395,15 @@ pub struct ToolSignalProcessor {
     /// Number of trailing tool results the `recent_*` counts and windowed
     /// severity are computed over.
     pub recent_window: usize,
+    /// Route-scoped additions to the built-in tool vocabulary.
+    pub tool_semantics: ToolSemantics,
 }
 
 impl Default for ToolSignalProcessor {
     fn default() -> Self {
         Self {
             recent_window: DEFAULT_RECENT_WINDOW,
+            tool_semantics: ToolSemantics::default(),
         }
     }
 }
@@ -307,45 +412,66 @@ impl Default for ToolSignalProcessor {
 impl Processor<State> for ToolSignalProcessor {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Request { request: req, .. } = event {
-            let tool_signal = ToolSignals::from_request(req, Some(self.recent_window));
+            let tool_signal = ToolSignals::from_request_with_semantics(
+                req,
+                Some(self.recent_window),
+                &self.tool_semantics,
+            );
             state.tool_signals = Some(tool_signal);
         }
         Ok(())
     }
 }
 
-fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
-    let lower = name.to_lowercase();
+fn classify_tool_call(name: &str, command: Option<&str>) -> ToolSemantic {
+    classify_tool_call_with_semantics(name, command, &ToolSemantics::default())
+}
+
+fn classify_tool_call_with_semantics(
+    name: &str,
+    command: Option<&str>,
+    semantics: &ToolSemantics,
+) -> ToolSemantic {
+    // Built-in names and Bash command inference take precedence over route-scoped mappings.
+    let lower = name.to_ascii_lowercase();
     if WRITE_TOOL_NAMES.contains(&lower.as_str()) {
-        return ToolCategory::Write;
+        return ToolSemantic::Mutate(MutationKind::Write);
     }
     if EDIT_TOOL_NAMES.contains(&lower.as_str()) {
-        return ToolCategory::Edit;
+        return ToolSemantic::Mutate(MutationKind::Edit);
     }
     if READ_TOOL_NAMES.contains(&lower.as_str()) {
-        return ToolCategory::Read;
+        return ToolSemantic::Observe;
     }
     if PLAN_TOOL_NAMES.contains(&lower.as_str()) {
-        return ToolCategory::Plan;
+        return ToolSemantic::Plan;
     }
     if BASH_TOOL_NAMES.contains(&lower.as_str())
         && let Some(cmd) = command
     {
         // Write/edit redirection trumps read-like operands.
         if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
-            return ToolCategory::Write;
+            return ToolSemantic::Mutate(MutationKind::Write);
         }
         if cmd.contains("python") && PYTHON_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
-            return ToolCategory::Write;
+            return ToolSemantic::Mutate(MutationKind::Write);
         }
         if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p)) {
-            return ToolCategory::Edit;
+            return ToolSemantic::Mutate(MutationKind::Edit);
         }
         if BASH_READ_PATTERNS.iter().any(|p| cmd.contains(p)) {
-            return ToolCategory::Read;
+            return ToolSemantic::Observe;
         }
     }
-    ToolCategory::Other
+    semantics.classify(&lower).unwrap_or(ToolSemantic::Unknown)
+}
+
+fn is_builtin_tool_name(lower: &str) -> bool {
+    WRITE_TOOL_NAMES.contains(&lower)
+        || EDIT_TOOL_NAMES.contains(&lower)
+        || READ_TOOL_NAMES.contains(&lower)
+        || PLAN_TOOL_NAMES.contains(&lower)
+        || BASH_TOOL_NAMES.contains(&lower)
 }
 
 // ─── extraction entry point ───────────────────────────────────────────────────
@@ -355,6 +481,18 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
 /// Returns [`ToolSignals::default()`] when the message history contains no tool
 /// activity, so callers can always inspect the signal fields.
 fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> ToolSignals {
+    extract_tool_signals_with_window_and_semantics(
+        request,
+        recent_window,
+        &ToolSemantics::default(),
+    )
+}
+
+fn extract_tool_signals_with_window_and_semantics(
+    request: &Request,
+    recent_window: usize,
+    semantics: &ToolSemantics,
+) -> ToolSignals {
     // Read the decoded conversation, not the raw body: every inbound format lands
     // in the same shape here, so the signals do not depend on knowing which one it
     // arrived as.
@@ -401,7 +539,13 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
         }
     }
 
-    let mut signal = build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window);
+    let mut signal = build_signal(
+        tool_texts,
+        tool_calls,
+        messages.len() as u32,
+        recent_window,
+        semantics,
+    );
     signal.compacted = compacted;
     signal.tool_result_count = u32::try_from(tool_result_count).unwrap_or(u32::MAX);
     signal.assistant_turn_count = u32::try_from(assistant_turn_count).unwrap_or(u32::MAX);
@@ -456,6 +600,7 @@ fn build_signal(
     tool_calls: Vec<ObservedToolCall>,
     turn_depth: u32,
     recent_window: usize,
+    semantics: &ToolSemantics,
 ) -> ToolSignals {
     // Windowed severity: take the MAX severity across the last `recent_window` tool
     // results rather than only the last one. An error's severity then persists for
@@ -474,7 +619,7 @@ fn build_signal(
     let no_error_streak = compute_no_error_streak(&tool_texts);
 
     // Single pass: cumulative + sliding-window counters together. Also tracks
-    // the trailing pure-bash streak (consecutive `Other`-category calls back
+    // the trailing pure-bash streak (consecutive `Unknown` calls back
     // from the end) — the build-pit proxy.
     let recent_start = tool_calls.len().saturating_sub(recent_window);
     let mut write_count = 0u32;
@@ -485,43 +630,51 @@ fn build_signal(
     let mut recent_edit_count = 0u32;
     let mut recent_read_count = 0u32;
     let mut recent_todowrite_count = 0u32;
+    let mut new_count = 0u32;
+    let mut recent_new_count = 0u32;
     let mut pure_bash_streak = 0u32;
     let mut streak_open = true;
     for (i, tc) in tool_calls.iter().enumerate().rev() {
-        let cat = classify_tool_call(&tc.name, tc.command.as_deref());
+        let cat = classify_tool_call_with_semantics(&tc.name, tc.command.as_deref(), semantics);
         if streak_open {
-            if matches!(cat, ToolCategory::Other) {
+            if matches!(cat, ToolSemantic::Unknown) {
                 pure_bash_streak += 1;
             } else {
                 streak_open = false;
             }
         }
         match cat {
-            ToolCategory::Write => {
+            ToolSemantic::Mutate(MutationKind::Write) => {
                 write_count += 1;
                 if i >= recent_start {
                     recent_write_count += 1;
                 }
             }
-            ToolCategory::Edit => {
+            ToolSemantic::Mutate(MutationKind::Edit) => {
                 edit_count += 1;
                 if i >= recent_start {
                     recent_edit_count += 1;
                 }
             }
-            ToolCategory::Read => {
+            ToolSemantic::Observe => {
                 read_count += 1;
                 if i >= recent_start {
                     recent_read_count += 1;
                 }
             }
-            ToolCategory::Plan => {
+            ToolSemantic::Plan => {
                 todowrite_count += 1;
                 if i >= recent_start {
                     recent_todowrite_count += 1;
                 }
             }
-            ToolCategory::Other => {}
+            ToolSemantic::New => {
+                new_count += 1;
+                if i >= recent_start {
+                    recent_new_count += 1;
+                }
+            }
+            ToolSemantic::Unknown => {}
         }
     }
 
@@ -538,6 +691,8 @@ fn build_signal(
         recent_write_count,
         recent_read_count,
         recent_todowrite_count,
+        new_count,
+        recent_new_count,
         pure_bash_streak,
         tests_passed,
         turn_depth,
@@ -1099,13 +1254,13 @@ mod tests {
 
     #[test]
     fn todowrite_classifies_as_plan() {
-        assert_eq!(classify_tool_call("TodoWrite", None), ToolCategory::Plan);
-        assert_eq!(classify_tool_call("todo_write", None), ToolCategory::Plan);
+        assert_eq!(classify_tool_call("TodoWrite", None), ToolSemantic::Plan);
+        assert_eq!(classify_tool_call("todo_write", None), ToolSemantic::Plan);
     }
 
     #[test]
     fn codex_update_plan_classifies_as_plan() {
-        assert_eq!(classify_tool_call("update_plan", None), ToolCategory::Plan);
+        assert_eq!(classify_tool_call("update_plan", None), ToolSemantic::Plan);
     }
 
     #[test]
@@ -1113,46 +1268,55 @@ mod tests {
         // shell_command + heredoc -> Write.
         assert_eq!(
             classify_tool_call("shell_command", Some("cat > /app/foo.py <<'eof'\nx=1\neof")),
-            ToolCategory::Write,
+            ToolSemantic::Mutate(MutationKind::Write),
         );
         // shell_command + read-like inspection -> Read.
         assert_eq!(
             classify_tool_call("shell_command", Some("ls /app")),
-            ToolCategory::Read,
+            ToolSemantic::Observe,
         );
-        // shell_command without matching patterns -> Other.
+        // shell_command without matching patterns -> Unknown.
         assert_eq!(
             classify_tool_call("shell_command", Some("./run_tests.sh")),
-            ToolCategory::Other,
+            ToolSemantic::Unknown,
         );
     }
 
     #[test]
     fn read_tool_classifies_as_read() {
-        assert_eq!(classify_tool_call("Read", None), ToolCategory::Read);
-        assert_eq!(classify_tool_call("View", None), ToolCategory::Read);
+        assert_eq!(classify_tool_call("Read", None), ToolSemantic::Observe);
+        assert_eq!(classify_tool_call("View", None), ToolSemantic::Observe);
     }
 
     #[test]
     fn hermes_tool_names_classify() {
         // Hermes (NousResearch) file tools route by name.
-        assert_eq!(classify_tool_call("write_file", None), ToolCategory::Write);
-        assert_eq!(classify_tool_call("patch", None), ToolCategory::Edit);
-        assert_eq!(classify_tool_call("read_file", None), ToolCategory::Read);
-        assert_eq!(classify_tool_call("search_files", None), ToolCategory::Read);
+        assert_eq!(
+            classify_tool_call("write_file", None),
+            ToolSemantic::Mutate(MutationKind::Write)
+        );
+        assert_eq!(
+            classify_tool_call("patch", None),
+            ToolSemantic::Mutate(MutationKind::Edit)
+        );
+        assert_eq!(classify_tool_call("read_file", None), ToolSemantic::Observe);
+        assert_eq!(
+            classify_tool_call("search_files", None),
+            ToolSemantic::Observe
+        );
         // Hermes runs shell through `terminal`, which carries a `command` arg,
         // so its intent comes from the Bash-pattern match like codex's shell_command.
         assert_eq!(
             classify_tool_call("terminal", Some("sed -i 's/a/b/' /app/x.py")),
-            ToolCategory::Edit,
+            ToolSemantic::Mutate(MutationKind::Edit),
         );
         assert_eq!(
             classify_tool_call("terminal", Some("grep foo /app")),
-            ToolCategory::Read,
+            ToolSemantic::Observe,
         );
         assert_eq!(
             classify_tool_call("terminal", Some("./run_tests.sh")),
-            ToolCategory::Other,
+            ToolSemantic::Unknown,
         );
     }
 
@@ -1167,7 +1331,7 @@ mod tests {
         for cmd in cases {
             assert_eq!(
                 classify_tool_call("Bash", Some(cmd)),
-                ToolCategory::Read,
+                ToolSemantic::Observe,
                 "expected Read for {cmd}"
             );
         }
@@ -1179,7 +1343,7 @@ mod tests {
         // write redirection must win.
         assert_eq!(
             classify_tool_call("Bash", Some("cat /etc/hosts > /tmp/out")),
-            ToolCategory::Write,
+            ToolSemantic::Mutate(MutationKind::Write),
         );
     }
 
@@ -1230,5 +1394,76 @@ mod tests {
         assert_eq!(sig.recent_todowrite_count, 2);
         assert_eq!(sig.read_count, 1);
         assert_eq!(sig.recent_read_count, 1);
+    }
+
+    #[test]
+    fn configured_tool_semantics_extend_the_builtin_vocabulary() {
+        let semantics = ToolSemantics {
+            observe: vec!["KB_search".to_string()],
+            mutate: vec!["send_payment_request".to_string()],
+            plan: vec!["create_research_plan".to_string()],
+            new: vec!["send_message_to_user".to_string()],
+        };
+        semantics.validate().expect("valid additive semantics");
+        let request = with_messages(vec![
+            tc("kb_SEARCH"),
+            tc("send_payment_request"),
+            tc("create_research_plan"),
+            tc("send_message_to_user"),
+        ]);
+
+        let signal = ToolSignals::from_request_with_semantics(&request, None, &semantics);
+
+        assert_eq!(signal.read_count, 1);
+        assert_eq!(signal.write_count, 1);
+        assert_eq!(signal.todowrite_count, 1);
+        assert_eq!(signal.new_count, 1);
+        assert_eq!(signal.recent_new_count, 1);
+        assert_eq!(signal.pure_bash_streak, 0);
+    }
+
+    #[test]
+    fn configured_tool_semantics_only_fold_ascii_case() {
+        let semantics = ToolSemantics {
+            observe: vec!["kb_search".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            classify_tool_call_with_semantics("KB_SEARCH", None, &semantics),
+            ToolSemantic::Observe
+        );
+        assert_eq!(
+            classify_tool_call_with_semantics("KB_SEARCH", None, &semantics),
+            ToolSemantic::Unknown
+        );
+    }
+
+    #[test]
+    fn tool_semantics_reject_duplicates_and_builtin_reclassification() {
+        let duplicate = ToolSemantics {
+            observe: vec!["lookup".to_string()],
+            mutate: vec!["LOOKUP".to_string()],
+            ..Default::default()
+        };
+        assert!(
+            duplicate
+                .validate()
+                .expect_err("duplicate should fail")
+                .to_string()
+                .contains("appears in both")
+        );
+
+        let builtin = ToolSemantics {
+            new: vec!["write_file".to_string()],
+            ..Default::default()
+        };
+        assert!(
+            builtin
+                .validate()
+                .expect_err("built-in should fail")
+                .to_string()
+                .contains("built-in semantics")
+        );
     }
 }

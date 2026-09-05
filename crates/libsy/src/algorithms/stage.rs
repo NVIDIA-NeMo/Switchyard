@@ -24,7 +24,7 @@ use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets, Tier,
     fall_open_tier, record_decision_source, record_routing_decision,
 };
-use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
+use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::State;
@@ -108,6 +108,8 @@ pub struct StageRouterConfig {
     /// Trailing tool results the signals are computed over. `None` uses
     /// [`DEFAULT_RECENT_WINDOW`].
     pub recent_window: Option<usize>,
+    /// Exact tool-name semantics added to the built-in coding vocabulary.
+    pub tool_semantics: ToolSemantics,
     /// Note handed to the model on a signal-driven escalation, and on a
     /// hand-back to the efficient tier when a de-escalation note is configured.
     pub handoff_notes: Option<HandoffNoteConfig>,
@@ -128,6 +130,7 @@ impl StageRouterConfig {
             mode,
             confidence_threshold,
             recent_window: None,
+            tool_semantics: ToolSemantics::default(),
             handoff_notes: None,
             tier_prompts: TargetPrompts::default(),
             llm_fallback: None,
@@ -185,6 +188,7 @@ pub(crate) fn build_stage_route(
             ),
         });
     }
+    config.tool_semantics.validate()?;
     // The tiers are a fixed pair; their targets are whatever the deployment calls
     // them, and the classifier scores onto those names.
     let targets = StageTargets::new(capable.clone(), efficient.clone());
@@ -200,6 +204,7 @@ pub(crate) fn build_stage_route(
     }
     let signals = ToolSignalProcessor {
         recent_window: config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW),
+        tool_semantics: config.tool_semantics,
     };
     let target_set = vec![capable.clone(), efficient.clone()];
     let mut router = FallThrough::<State>::new_with_state(target_set)

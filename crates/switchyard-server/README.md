@@ -51,6 +51,11 @@ capable_target = "model_a"
 efficient_target = "model_b"
 picker = "efficient_first"
 confidence_threshold = 0.5
+
+[routes.stage.tool_semantics]
+observe = ["lookup_customer"]
+mutate = ["update_inventory"]
+new = ["send_message"]
 ```
 
 ```bash
@@ -118,11 +123,14 @@ fallback produced while the judge was unreachable. `message_hash_fallback` keys 
 content rather than a session id, so unrelated callers sending identical text share one
 assignment.
 
-A `stage_router` route scores tool-result and agent-progress signals from recent turns to pick a
-tier per turn, without an extra classifier call on every turn. `capable_target`,
+A `stage_router` route scores tool-result and activity signals from recent turns to pick a
+tier per turn, without an extra classifier call on every turn. Domain-specific exact tool names
+can extend its built-in coding vocabulary through `tool_semantics.observe`,
+`tool_semantics.mutate`, `tool_semantics.plan`, and neutral `tool_semantics.new`. `capable_target`,
 `efficient_target`, `picker` (`efficient_first` or `capable_first`), and `confidence_threshold`
-are required. Optional handoff notes, per-tier system prompts, and a capability-judge fallback are
-documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
+are required. All configured semantic names use exact ASCII case-insensitive matching. Optional
+handoff notes, per-tier system prompts, and a capability-judge fallback are documented in
+[Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
 
 ## Endpoints
 
