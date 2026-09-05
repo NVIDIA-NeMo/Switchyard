@@ -1523,9 +1523,13 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 //
 // Two kinds of fields live here. context_window, tool_calling, and reasoning are model
 // facts a backend can publish; the route declares them in config today. The rest
-// (shell_type, apply_patch_tool_type, base_instructions, the reasoning-level presets,
-// truncation_policy) are Codex client conventions no backend returns, so they stay
-// constant.
+// (shell_type, apply_patch_tool_type, the reasoning-level presets, truncation_policy)
+// are Codex client conventions no backend returns, so they stay constant.
+//
+// `base_instructions` is deliberately absent. Codex prefers a served value over its own
+// bundled prompt, so any stub here silently replaces the agent's system prompt on every
+// routed turn. Omitting the key leaves the client's prompt alone; a proxy has no better
+// value to supply.
 //
 // TODO: source context_window, tool_calling, and reasoning from the backend, not route
 // config. Switchyard is a proxy, so it should re-publish what the backend advertises
@@ -1553,9 +1557,6 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         "additional_speed_tiers": [],
         "availability_nux": null,
         "upgrade": null,
-        // Required `ModelInfo` string. Unlike the launcher, the server cannot read
-        // Codex's bundled prompt, so it sends a minimal stub.
-        "base_instructions": "You are Codex, a coding agent.",
         "supports_reasoning_summaries": reasoning,
         "default_reasoning_summary": "none",
         "support_verbosity": reasoning,
