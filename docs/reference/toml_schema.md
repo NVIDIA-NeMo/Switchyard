@@ -189,6 +189,7 @@ Capability mode classifies before serving. See
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `judge_char_budget` | No | `18000` | Most characters a windowed judge payload may use. The window narrows from the oldest turn until it fits, so one large tool result cannot decide judge cost and latency. Ignored without `recent_turn_window`. |
 | `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
 
 Escalation mode serves the weak target first and judges the completed turn. See
@@ -218,6 +219,7 @@ policy selector, and routes to any configured target label.
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `judge_char_budget` | No | `18000` | Most characters a windowed judge payload may use. The window narrows from the oldest turn until it fits, so one large tool result cannot decide judge cost and latency. Ignored without `recent_turn_window`. |
 
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
 the schema automatically: through the structured-output request in `json_schema`

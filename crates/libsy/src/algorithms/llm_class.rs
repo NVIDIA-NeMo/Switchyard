@@ -13,7 +13,6 @@ use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
 
 use super::escalation;
 use super::fall_through::{DefaultTarget, FallThrough};
-use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
 use super::util::affinity::{AffinityRouter, ClassifyTrigger};
 use super::util::classifier_contract::{
     ClassifierContract, ClassifierContractConfig, ClassifierResponseFormat,
@@ -24,6 +23,7 @@ use super::util::llm_judge::{
     SerdeDecoder, StructuredJudge,
 };
 use super::util::target_selector::TargetSelectorPolicy;
+use super::util::{DEFAULT_JUDGE_CHAR_BUDGET, DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, truncate_middle};
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::State;
@@ -160,9 +160,105 @@ fn task_messages(messages: &[Message]) -> Vec<Message> {
     }
 }
 
+/// Characters one message costs a judge.
+///
+/// Counts tool traffic as well as visible text: in a coding-agent conversation a single
+/// tool result is routinely larger than every text block around it, so measuring text
+/// alone would report a payload as small while the judge is billed for all of it.
+fn message_chars(message: &Message) -> usize {
+    message.content.iter().map(block_chars).sum()
+}
+
+/// Characters one content block costs a judge.
+fn block_chars(block: &ContentBlock) -> usize {
+    match block {
+        ContentBlock::Text { text }
+        | ContentBlock::Refusal { text }
+        | ContentBlock::Reasoning { text, .. } => text.chars().count(),
+        ContentBlock::ToolCall(call) => {
+            call.name.chars().count() + call.arguments.to_string().chars().count()
+        }
+        ContentBlock::ToolResult(result) => result.content.iter().map(block_chars).sum(),
+        // Media and unknown blocks are opaque here; their wire cost is not text.
+        _ => 0,
+    }
+}
+
+/// Whether clipping can shrink this block.
+///
+/// Tool arguments and results are JSON the judge may need to read as a unit, and reasoning
+/// is replayed with provider state, so none of them can be cut down to fit.
+fn is_clippable(block: &ContentBlock) -> bool {
+    matches!(
+        block,
+        ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
+    )
+}
+
+/// Total judge payload size for a selected message list.
+fn payload_chars(messages: &[Message]) -> usize {
+    messages.iter().map(message_chars).sum()
+}
+
+/// Selects the trailing window, narrowing it until the payload fits `budget` characters.
+///
+/// A window is counted in turns, and turn size varies by orders of magnitude: four turns is
+/// a few hundred characters of conversation, or tens of thousands when one turn carries a
+/// large tool result. Judge cost and latency would otherwise be decided by the request
+/// rather than by configuration, and a single large result can crowd out the task being
+/// judged.
+///
+/// Whole turns are dropped from the oldest end rather than clipping individual messages,
+/// because [`trim_messages`] is what keeps tool calls paired with their results; removing
+/// messages by hand would hand the judge a result whose call was never introduced.
+fn window_within_budget(messages: &[Message], window: usize, budget: usize) -> Vec<Message> {
+    let mut window = window;
+    let mut kept = trim_messages(messages, window);
+    while window > 0 && payload_chars(&kept) > budget {
+        window -= 1;
+        kept = trim_messages(messages, window);
+    }
+    // The anchors — client instructions and the opening task — survive an empty window, so
+    // a task statement larger than the whole budget still has to be clipped.
+    if payload_chars(&kept) > budget {
+        clip_to_budget(&mut kept, budget);
+    }
+    kept
+}
+
+/// Clips text blocks so an unwindowable payload still fits `budget`.
+///
+/// The share is per block rather than per message: one message can carry several text
+/// blocks, and a per-message allowance would let each of them spend it in full.
+///
+/// Blocks that cannot be clipped are charged first, so what remains is what the text is
+/// allowed to spend. When they alone exceed the budget every text block collapses to
+/// nothing and the payload still overruns; cutting tool JSON to fit would hand the judge
+/// malformed values, which is worse than an oversized prompt.
+fn clip_to_budget(messages: &mut [Message], budget: usize) {
+    let blocks = || messages.iter().flat_map(|message| &message.content);
+    let clippable = blocks().filter(|block| is_clippable(block)).count();
+    if clippable == 0 {
+        return;
+    }
+    let fixed: usize = blocks()
+        .filter(|block| !is_clippable(block))
+        .map(block_chars)
+        .sum();
+    let per_block = budget.saturating_sub(fixed) / clippable;
+    for block in messages.iter_mut().flat_map(|message| &mut message.content) {
+        if let ContentBlock::Text { text } | ContentBlock::Refusal { text } = block {
+            *text = truncate_middle(text, per_block);
+        }
+    }
+}
+
 /// Selects the task messages shown to capability and custom-schema classifiers.
 struct TaskInput {
     recent_turn_window: Option<usize>,
+    /// Character budget for the windowed payload. Unused without a window, where the
+    /// selection is the opening task and latest follow-up rather than conversation.
+    judge_char_budget: usize,
 }
 
 impl ClassifierInput for TaskInput {
@@ -170,7 +266,14 @@ impl ClassifierInput for TaskInput {
         // The default preserves the whole-task anchor and latest user update. A
         // configured window widens that to the surrounding conversation.
         let mut messages = match self.recent_turn_window {
-            Some(window) => trim_messages(&request.llm_request.messages, window),
+            // The routing instruction appended below is part of what the judge is sent, so
+            // its cost comes out of the budget rather than on top of it.
+            Some(window) => window_within_budget(
+                &request.llm_request.messages,
+                window,
+                self.judge_char_budget
+                    .saturating_sub(TRAILING_ROUTING_INSTRUCTION.chars().count()),
+            ),
             None => task_messages(&request.llm_request.messages),
         };
         // Only the windowed path carries assistant turns and tool traffic for the judge
@@ -264,6 +367,11 @@ pub struct TaskClassifierConfig {
     /// `Some(n)` widens that to the client instructions, the opening task, and
     /// the last `n` turns after it.
     pub recent_turn_window: Option<usize>,
+    /// Character budget for a windowed judge payload.
+    ///
+    /// Bounds what one request can spend on a judge call when `recent_turn_window` is set:
+    /// the window narrows until the selection fits. Ignored without a window.
+    pub judge_char_budget: usize,
     /// Prompt and verdict contract settings for the classifier judge.
     pub contract: ClassifierContractConfig,
     /// Maximum completion tokens available to the classifier verdict.
@@ -283,6 +391,8 @@ struct TaskClassifierConfigWire {
     message_hash_fallback: bool,
     #[serde(default)]
     recent_turn_window: Option<usize>,
+    #[serde(default = "default_judge_char_budget")]
+    judge_char_budget: usize,
     #[serde(default)]
     prompt: Option<String>,
     #[serde(default)]
@@ -308,6 +418,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
             classify_trigger: wire.classify_trigger,
             message_hash_fallback: wire.message_hash_fallback,
             recent_turn_window: wire.recent_turn_window,
+            judge_char_budget: wire.judge_char_budget,
             contract,
             max_output_tokens: wire.max_output_tokens,
         })
@@ -318,6 +429,21 @@ const fn default_judge_max_output_tokens() -> u64 {
     DEFAULT_JUDGE_MAX_OUTPUT_TOKENS
 }
 
+const fn default_judge_char_budget() -> usize {
+    DEFAULT_JUDGE_CHAR_BUDGET
+}
+
+/// A zero budget would clip every message to the trim marker, leaving the judge a payload
+/// it cannot route. Rejecting it at construction beats serving empty verdicts.
+fn validate_judge_char_budget(budget: usize) -> Result<()> {
+    if budget == 0 {
+        return Err(LibsyError::AlgorithmError {
+            message: "judge_char_budget must be at least 1".to_string(),
+        });
+    }
+    Ok(())
+}
+
 impl Default for TaskClassifierConfig {
     fn default() -> Self {
         Self {
@@ -326,6 +452,7 @@ impl Default for TaskClassifierConfig {
             classify_trigger: ClassifyTrigger::default(),
             message_hash_fallback: false,
             recent_turn_window: None,
+            judge_char_budget: DEFAULT_JUDGE_CHAR_BUDGET,
             contract: ClassifierContractConfig::default(),
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         }
@@ -335,6 +462,7 @@ impl Default for TaskClassifierConfig {
 impl TaskClassifierConfig {
     /// Validates routing thresholds before the classifier is constructed.
     fn validate(&self) -> Result<()> {
+        validate_judge_char_budget(self.judge_char_budget)?;
         if !(0.0..=1.0).contains(&self.base_threshold) {
             return Err(LibsyError::AlgorithmError {
                 message: format!(
@@ -408,6 +536,8 @@ pub struct CustomClassifierConfig {
     pub message_hash_fallback: bool,
     /// Trailing conversation turns shown to the classifier judge.
     pub recent_turn_window: Option<usize>,
+    /// Character budget for a windowed judge payload. Ignored without a window.
+    pub judge_char_budget: usize,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
 }
@@ -426,11 +556,13 @@ impl CustomClassifierConfig {
             classify_trigger: ClassifyTrigger::default(),
             message_hash_fallback: false,
             recent_turn_window: None,
+            judge_char_budget: DEFAULT_JUDGE_CHAR_BUDGET,
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         }
     }
 
     fn validate(&self) -> Result<()> {
+        validate_judge_char_budget(self.judge_char_budget)?;
         if self.max_output_tokens == 0 {
             return Err(LibsyError::AlgorithmError {
                 message: "max_output_tokens must be at least 1".to_string(),
@@ -594,6 +726,7 @@ impl LlmTaskClassifier {
                 StructuredJudge::new(
                     TaskInput {
                         recent_turn_window: config.recent_turn_window,
+                        judge_char_budget: config.judge_char_budget,
                     },
                     contract,
                     SerdeDecoder::new(),
@@ -674,6 +807,7 @@ impl LlmTaskClassifier {
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
+            judge_char_budget,
             max_output_tokens,
         } = config;
         let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
@@ -686,7 +820,10 @@ impl LlmTaskClassifier {
         };
         let classifier: Arc<dyn Classifier<State>> = Arc::new(JudgeClassifier::new(
             StructuredJudge::new(
-                TaskInput { recent_turn_window },
+                TaskInput {
+                    recent_turn_window,
+                    judge_char_budget,
+                },
                 contract,
                 JsonSchemaDecoder::new(),
                 JudgeRuntimeConfig::new(max_output_tokens)?,
@@ -1282,8 +1419,19 @@ mod tests {
     /// The text of each message a judge with `recent_turn_window` would be sent.
     /// The no-window case is covered by `capability_judge_builds_a_structured_request`.
     fn capability_judge(recent_turn_window: Option<usize>) -> Result<CapabilityJudge> {
+        capability_judge_with_budget(recent_turn_window, DEFAULT_JUDGE_CHAR_BUDGET)
+    }
+
+    /// A judge whose windowed payload is capped at `judge_char_budget` characters.
+    fn capability_judge_with_budget(
+        recent_turn_window: Option<usize>,
+        judge_char_budget: usize,
+    ) -> Result<CapabilityJudge> {
         Ok(StructuredJudge::new(
-            TaskInput { recent_turn_window },
+            TaskInput {
+                recent_turn_window,
+                judge_char_budget,
+            },
             LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?,
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?,
@@ -1335,6 +1483,184 @@ mod tests {
         assert!(contents.contains(&"initial task".to_string()));
         assert!(!contents.contains(&"recent 2".to_string()));
         Ok(())
+    }
+
+    /// Builds a request whose windowed selection the judge will be handed.
+    fn windowed_request(messages: Vec<Message>) -> Request {
+        Request {
+            llm_request: LlmRequest {
+                messages,
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        }
+    }
+
+    /// The messages a judge with this window and budget is actually sent.
+    fn budgeted_messages(
+        messages: Vec<Message>,
+        window: usize,
+        budget: usize,
+    ) -> Result<Vec<Message>> {
+        let judge = capability_judge_with_budget(Some(window), budget)?;
+        Ok(judge
+            .build_request(&State::default(), &windowed_request(messages))
+            .llm_request
+            .messages)
+    }
+
+    /// A window is counted in turns, so one turn carrying a large tool result would
+    /// otherwise decide the judge's cost for a fixed configuration. The window narrows
+    /// from the oldest end until the payload fits, so the newest evidence survives.
+    #[test]
+    fn an_oversized_turn_narrows_the_window_to_fit_the_budget() -> Result<()> {
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            Message::text(Role::User, "initial task"),
+            Message::text(Role::Assistant, "x".repeat(20_000)),
+            Message::text(Role::User, "recent 1"),
+            Message::text(Role::Assistant, "recent 2"),
+        ];
+        let built = budgeted_messages(messages, 4, 5_000)?;
+        let texts: Vec<String> = built
+            .iter()
+            .filter_map(|message| message.text_content("\n"))
+            .collect();
+
+        assert!(payload_chars(&built) <= 5_000, "{}", payload_chars(&built));
+        // The anchors and the newest turns stay; only the oversized older turn goes.
+        assert!(texts.contains(&"client instructions".to_string()));
+        assert!(texts.contains(&"initial task".to_string()));
+        assert!(texts.contains(&"recent 2".to_string()));
+        assert!(!texts.iter().any(|text| text.len() > 10_000), "{texts:?}");
+        Ok(())
+    }
+
+    /// Narrowing drops whole turns through `trim_messages`, so a surviving tool result
+    /// still has the call that introduced its id. Removing messages directly would not.
+    #[test]
+    fn narrowing_for_the_budget_keeps_tool_pairs_whole() -> Result<()> {
+        let mut bulky = tool_result("call-1");
+        bulky.content = vec![ContentBlock::ToolResult(ToolResult {
+            tool_call_id: "call-1".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "y".repeat(20_000),
+            }],
+            is_error: None,
+        })];
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            Message::text(Role::User, "initial task"),
+            tool_call("call-1"),
+            bulky,
+            tool_call("call-2"),
+            tool_result("call-2"),
+        ];
+        let built = budgeted_messages(messages, 4, 5_000)?;
+
+        assert!(payload_chars(&built) <= 5_000, "{}", payload_chars(&built));
+        let calls: BTreeSet<String> = built
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall(call) => Some(call.id.clone()),
+                _ => None,
+            })
+            .collect();
+        for block in built.iter().flat_map(|message| &message.content) {
+            if let ContentBlock::ToolResult(result) = block {
+                assert!(
+                    calls.contains(&result.tool_call_id),
+                    "orphaned result {:?} in {calls:?}",
+                    result.tool_call_id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The anchors survive an empty window, so a task statement larger than the whole
+    /// budget cannot be dropped and has to be clipped instead.
+    #[test]
+    fn an_oversized_task_is_clipped_once_the_window_cannot_shrink() -> Result<()> {
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            Message::text(Role::User, "z".repeat(40_000)),
+            Message::text(Role::Assistant, "recent"),
+        ];
+        let built = budgeted_messages(messages, 2, 1_000)?;
+        let task = built
+            .iter()
+            .filter_map(|message| message.text_content("\n"))
+            .find(|text| text.starts_with('z'))
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "clipped task missing".to_string(),
+            })?;
+
+        assert!(payload_chars(&built) <= 1_000, "{}", payload_chars(&built));
+        // Clipping is marked, so the judge can tell a trimmed task from a short one.
+        assert!(task.contains("[trimmed]"), "{task}");
+        Ok(())
+    }
+
+    /// The routing instruction is appended after selection, so the budget has to cover it:
+    /// a selection sized to the limit would otherwise ship a payload above the limit.
+    #[test]
+    fn the_budget_covers_the_appended_routing_instruction() -> Result<()> {
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            Message::text(Role::User, "w".repeat(4_000)),
+            Message::text(Role::Assistant, "recent"),
+        ];
+        let built = budgeted_messages(messages, 2, 600)?;
+
+        // `built` includes the trailing instruction, so this measures the whole payload.
+        assert!(
+            built
+                .iter()
+                .any(|message| message.text_content("\n").as_deref()
+                    == Some(TRAILING_ROUTING_INSTRUCTION))
+        );
+        assert!(payload_chars(&built) <= 600, "{}", payload_chars(&built));
+        Ok(())
+    }
+
+    /// One message can carry several text blocks. A per-message allowance would let each
+    /// block spend it in full, so the share is per block.
+    #[test]
+    fn several_text_blocks_in_one_message_share_the_budget() -> Result<()> {
+        let crowded = Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "a".repeat(9_000),
+                },
+                ContentBlock::Text {
+                    text: "b".repeat(9_000),
+                },
+            ],
+        };
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            crowded,
+            Message::text(Role::Assistant, "recent"),
+        ];
+        let built = budgeted_messages(messages, 2, 900)?;
+
+        assert!(payload_chars(&built) <= 900, "{}", payload_chars(&built));
+        Ok(())
+    }
+
+    /// A zero budget would clip every message to the trim marker, so it is rejected at
+    /// construction rather than serving the judge an unroutable payload.
+    #[test]
+    fn a_zero_judge_char_budget_is_rejected() {
+        let config = TaskClassifierConfig {
+            judge_char_budget: 0,
+            ..TaskClassifierConfig::default()
+        };
+        assert!(config.validate().is_err());
     }
 
     fn tool_call(id: &str) -> Message {
@@ -1598,6 +1924,7 @@ mod tests {
         let judge: CapabilityJudge = StructuredJudge::new(
             TaskInput {
                 recent_turn_window: None,
+                judge_char_budget: DEFAULT_JUDGE_CHAR_BUDGET,
             },
             contract,
             SerdeDecoder::new(),

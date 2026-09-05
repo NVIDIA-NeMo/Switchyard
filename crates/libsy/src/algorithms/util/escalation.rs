@@ -15,6 +15,7 @@ use super::llm_judge::{
     ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
     StructuredJudge,
 };
+use super::truncate_middle;
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
@@ -22,9 +23,6 @@ use switchyard_protocol::Request;
 
 const PROMPT_TEMPLATE: &str = include_str!("../../prompts/escalation/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../../prompts/escalation/schema.json");
-
-/// Separator marking where [`truncate_middle`] dropped a message's interior.
-const TRIM_MARKER: &str = " ...[trimmed] ";
 
 /// Suffix marking a transcript cut off by [`MAX_REQUEST_CHARS`].
 const TRUNCATION_SUFFIX: &str = "...<truncated>";
@@ -208,27 +206,6 @@ fn collect_text(content: &[ContentBlock], parts: &mut Vec<String>) {
             _ => {}
         }
     }
-}
-
-/// Keeps the head and tail of `text` within `limit` characters.
-///
-/// The head gets two thirds of the surviving budget: for a trajectory judge the command or
-/// error signature that opens a message carries more signal than its trailing output.
-fn truncate_middle(text: &str, limit: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= limit {
-        return text.to_string();
-    }
-    let keep = limit
-        .saturating_sub(TRIM_MARKER.chars().count())
-        .max(20)
-        .min(chars.len());
-    let head = keep * 2 / 3;
-    let tail = keep - head;
-    let mut out: String = chars[..head].iter().collect();
-    out.push_str(TRIM_MARKER);
-    out.extend(chars[chars.len() - tail..].iter());
-    out
 }
 
 /// Renders a compact role-labelled transcript for the judge.
@@ -460,6 +437,23 @@ mod tests {
 
         // Under the limit the text is returned untouched.
         assert_eq!(truncate_middle("short", 50), "short");
+    }
+
+    /// Callers budget a payload on the promise that clipping never exceeds the limit. Below
+    /// the marker's own width there is no room to mark the cut, so the marker is dropped
+    /// rather than pushing the result over.
+    #[test]
+    fn truncate_middle_never_exceeds_a_limit_narrower_than_the_marker() {
+        use crate::algorithms::util::TRIM_MARKER;
+
+        let text = "a".repeat(100);
+        for limit in 0..=TRIM_MARKER.chars().count() + 2 {
+            let trimmed = truncate_middle(&text, limit);
+            assert!(
+                trimmed.chars().count() <= limit,
+                "limit {limit}: {trimmed:?}"
+            );
+        }
     }
 
     #[test]

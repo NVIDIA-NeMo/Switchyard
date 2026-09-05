@@ -2324,6 +2324,18 @@ target = "shared"
         codex_metadata["declared"]["apply_patch_tool_type"],
         "freeform"
     );
+    // Codex prefers a served `base_instructions` over its own bundled prompt, so the
+    // catalog must omit the key rather than send a stub: a proxy replacing the agent's
+    // system prompt makes a routed run incomparable with a direct one.
+    for (slug, entry) in &codex_metadata {
+        let entry = entry
+            .as_object()
+            .unwrap_or_else(|| panic!("codex entry {slug} is not an object"));
+        assert!(
+            !entry.contains_key("base_instructions"),
+            "{slug}: {entry:?}"
+        );
+    }
     // Constant fields Codex requires: a typo here would fail its decode, so pin them.
     assert_eq!(codex_metadata["declared"]["visibility"], "list");
     assert_eq!(codex_metadata["declared"]["supported_in_api"], json!(true));

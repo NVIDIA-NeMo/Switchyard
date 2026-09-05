@@ -105,6 +105,7 @@ struct CapabilityClassifierRouteConfig {
     classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
+    judge_char_budget: usize,
     prompt: Option<String>,
     response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
@@ -131,6 +132,7 @@ struct CustomClassifierRouteConfig {
     classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
+    judge_char_budget: usize,
     max_output_tokens: u64,
 }
 
@@ -161,6 +163,11 @@ pub struct LlmClassifierRouteConfig {
     /// How many trailing turns the judge sees. Unset shows it the opening task
     /// and the latest user follow-up only.
     pub recent_turn_window: Option<usize>,
+    /// Most characters a windowed judge payload may use. The window narrows from the
+    /// oldest turn until it fits, so one large tool result cannot decide the judge's
+    /// cost. Ignored without `recent_turn_window`.
+    #[serde(default = "default_judge_char_budget")]
+    pub judge_char_budget: usize,
     /// Replaces the packaged judge prompt. Required in custom mode.
     pub prompt: Option<String>,
     /// How the judge is asked for structured output. Use `json_object` when the
@@ -364,6 +371,9 @@ pub struct StageClassifierConfig {
     /// and the latest user follow-up only.
     #[serde(default)]
     pub recent_turn_window: Option<usize>,
+    /// Most characters a windowed judge payload may use. Ignored without a window.
+    #[serde(default = "default_judge_char_budget")]
+    pub judge_char_budget: usize,
     /// Replaces the packaged judge prompt.
     #[serde(default)]
     pub prompt: Option<String>,
@@ -411,6 +421,7 @@ impl StageClassifierConfig {
             classify_trigger: self.classify_trigger,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
+            judge_char_budget: self.judge_char_budget,
             contract: classifier_contract(self.prompt.as_deref())
                 .with_response_format_type(self.response_format_type),
             max_output_tokens: self.max_output_tokens,
@@ -552,6 +563,7 @@ impl LlmClassifierRouteConfig {
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
+            judge_char_budget,
             prompt,
             response_format_type,
             max_output_tokens,
@@ -606,6 +618,7 @@ impl LlmClassifierRouteConfig {
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
+                        judge_char_budget: *judge_char_budget,
                         prompt: prompt.clone(),
                         response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
@@ -686,6 +699,7 @@ impl LlmClassifierRouteConfig {
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
+                        judge_char_budget: *judge_char_budget,
                         max_output_tokens: *max_output_tokens,
                     },
                 ))
@@ -783,6 +797,7 @@ fn build_subagent_router_config(
                 config.policy.into_libsy(),
             );
             classifier_config.recent_turn_window = config.recent_turn_window;
+            classifier_config.judge_char_budget = config.judge_char_budget;
             classifier_config.max_output_tokens = config.max_output_tokens;
             let subagent_targets = resolved_targets
                 .iter()
@@ -881,6 +896,7 @@ fn build_algorithm(
                         classify_trigger: config.classify_trigger,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
+                        judge_char_budget: config.judge_char_budget,
                         contract: classifier_contract(config.prompt.as_deref())
                             .with_response_format_type(config.response_format_type),
                         max_output_tokens: config.max_output_tokens,
@@ -933,6 +949,7 @@ fn build_algorithm(
                     classifier_config.classify_trigger = config.classify_trigger;
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
+                    classifier_config.judge_char_budget = config.judge_char_budget;
                     classifier_config.max_output_tokens = config.max_output_tokens;
                     LlmTaskClassifier::new(LlmClassifierConfig::Custom {
                         judge_target: classifier,
@@ -1157,6 +1174,10 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 
 fn default_classifier_max_output_tokens() -> u64 {
     TaskClassifierConfig::default().max_output_tokens
+}
+
+fn default_judge_char_budget() -> usize {
+    TaskClassifierConfig::default().judge_char_budget
 }
 
 /// Keys each configured system prompt by the target it belongs to.
