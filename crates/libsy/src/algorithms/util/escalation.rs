@@ -46,8 +46,9 @@ const MAX_REQUEST_CHARS: usize = 18_000;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EscalationJudgeConfig {
-    /// Consecutive escalate verdicts required before a turn moves to the capable tier, which
-    /// is also the turn that latches the session. Any decline clears the streak.
+    /// Consecutive fresh-evidence verdicts in the same category required before a turn moves to
+    /// the capable tier, which is also the turn that latches the session. Any decline or stale
+    /// evidence clears the streak.
     /// `1` escalates on the first verdict; the router's main cost dial.
     /// `2` or higher needs a session id, since the streak is retained per session.
     pub confirmations: u32,
@@ -87,12 +88,39 @@ impl Default for EscalationJudgeConfig {
     }
 }
 
-/// The judge's verdict. The schema also requires a `reason`, which makes the judge state its
-/// case and measurably sharpens the verdict — routing reads only the boolean, so it is
-/// deserialized away rather than carried.
+/// Bounded trouble pattern used to correlate escalation confirmations across turns.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum EscalationCategory {
+    None,
+    Repetition,
+    FalseProgress,
+    Drift,
+    Desperation,
+    CapabilityGap,
+}
+
+impl EscalationCategory {
+    /// Stable state and telemetry label.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Repetition => "repetition",
+            Self::FalseProgress => "false_progress",
+            Self::Drift => "drift",
+            Self::Desperation => "desperation",
+            Self::CapabilityGap => "capability_gap",
+        }
+    }
+}
+
+/// The judge's typed verdict, including the evidence needed to confirm a stable pattern.
 #[derive(Deserialize)]
 pub(crate) struct EscalationVerdict {
-    escalate: bool,
+    pub(crate) escalate: bool,
+    pub(crate) category: EscalationCategory,
+    pub(crate) new_evidence: bool,
+    pub(crate) reason: String,
 }
 
 /// Builds the condensed trajectory presented to the escalation judge.
@@ -190,21 +218,89 @@ pub(crate) fn conversation_turn(request: &Request) -> usize {
 /// relies on.
 fn message_text(message: &Message) -> String {
     let mut parts = Vec::new();
-    collect_text(&message.content, &mut parts);
+    let terminus_commands = if message.role == Role::Assistant {
+        message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall(call) if call.name == "bash_command" => call
+                    .arguments
+                    .get("keystrokes")
+                    .and_then(|value| value.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    collect_text(&message.content, &mut parts, &terminus_commands);
     parts.join(" ")
 }
 
+/// Removes a Terminus command batch when a structured bash call carries the same action.
+///
+/// The model-facing request remains untouched. Only the judge's plain-text view is normalized,
+/// so one action cannot look like two attempts while the agent still sees its native history.
+fn without_duplicated_terminus_commands(text: &str, tool_commands: &[&str]) -> String {
+    for (start, character) in text.char_indices() {
+        if character != '{' {
+            continue;
+        }
+
+        let mut values =
+            serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
+        let Some(Ok(mut value)) = values.next() else {
+            continue;
+        };
+        let end = start + values.byte_offset();
+        let Some(commands) = value
+            .get("commands")
+            .and_then(|commands| commands.as_array())
+        else {
+            continue;
+        };
+        let Some(command_batch) = commands
+            .iter()
+            .map(|command| command.get("keystrokes").and_then(|value| value.as_str()))
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let mut unmatched_tool_commands = tool_commands.to_vec();
+        let fully_encoded = command_batch.iter().all(|command| {
+            let Some(index) = unmatched_tool_commands
+                .iter()
+                .position(|candidate| candidate == command)
+            else {
+                return false;
+            };
+            unmatched_tool_commands.swap_remove(index);
+            true
+        });
+        if command_batch.is_empty() || !fully_encoded {
+            continue;
+        }
+
+        value["commands"] = serde_json::Value::Array(Vec::new());
+        let Ok(normalized) = serde_json::to_string(&value) else {
+            continue;
+        };
+        return format!("{}{}{}", &text[..start], normalized, &text[end..]);
+    }
+    text.to_string()
+}
+
 /// Appends the judge-relevant text of each block, descending into tool results.
-fn collect_text(content: &[ContentBlock], parts: &mut Vec<String>) {
+fn collect_text(content: &[ContentBlock], parts: &mut Vec<String>, tool_commands: &[&str]) {
     for block in content {
         match block {
             ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
-                parts.push(text.clone());
+                parts.push(without_duplicated_terminus_commands(text, tool_commands));
             }
             ContentBlock::ToolCall(call) => {
                 parts.push(format!("tool_call {}({})", call.name, call.arguments));
             }
-            ContentBlock::ToolResult(result) => collect_text(&result.content, parts),
+            ContentBlock::ToolResult(result) => collect_text(&result.content, parts, &[]),
             _ => {}
         }
     }
@@ -447,6 +543,147 @@ mod tests {
             })],
         };
         assert_eq!(message_text(&result), "no such file");
+    }
+
+    #[test]
+    fn message_text_deduplicates_terminus_commands_for_the_judge() {
+        let first_command = "grep -n bug app.py\n";
+        let second_command = "sed -n '1,80p' app.py\n";
+        let message = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: format!(
+                        "Before\n```json\n{}\n```\nAfter",
+                        json!({
+                            "analysis": "inspect the reported file",
+                            "commands": [
+                                {"keystrokes": first_command, "duration": 0.1},
+                                {"keystrokes": second_command, "duration": 0.1},
+                            ],
+                        })
+                    ),
+                },
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call-1".to_string(),
+                    name: "bash_command".to_string(),
+                    arguments: json!({"keystrokes": first_command, "duration": 0.1}),
+                }),
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call-2".to_string(),
+                    name: "bash_command".to_string(),
+                    arguments: json!({"keystrokes": second_command, "duration": 0.1}),
+                }),
+            ],
+        };
+
+        let text = message_text(&message);
+
+        assert!(text.contains("inspect the reported file"), "{text}");
+        assert!(text.contains("Before"), "{text}");
+        assert!(text.contains("After"), "{text}");
+        assert!(text.contains(r#""commands":[]"#), "{text}");
+        assert_eq!(text.matches("grep -n bug app.py").count(), 1, "{text}");
+        assert_eq!(text.matches("sed -n '1,80p' app.py").count(), 1, "{text}");
+        assert_eq!(text.matches("tool_call bash_command(").count(), 2, "{text}");
+    }
+
+    #[test]
+    fn message_text_keeps_terminus_commands_without_matching_tool_call() {
+        let command = "grep -n bug app.py\n";
+        let text = json!({
+            "analysis": "inspect the reported file",
+            "commands": [{"keystrokes": command}],
+        })
+        .to_string();
+        let without_tool_call = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: text.clone() }],
+        };
+        let mismatched_tool_call = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text { text },
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call-1".to_string(),
+                    name: "bash_command".to_string(),
+                    arguments: json!({"keystrokes": "sed -n '1,20p' app.py\n", "duration": 0.1}),
+                }),
+            ],
+        };
+
+        assert_eq!(
+            message_text(&without_tool_call)
+                .matches("grep -n bug app.py")
+                .count(),
+            1
+        );
+        assert_eq!(
+            message_text(&mismatched_tool_call)
+                .matches("grep -n bug app.py")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn message_text_keeps_a_partially_encoded_terminus_batch() {
+        let first_command = "grep -n bug app.py\n";
+        let second_command = "sed -n '1,80p' app.py\n";
+        let message = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: json!({
+                        "commands": [
+                            {"keystrokes": first_command},
+                            {"keystrokes": second_command},
+                        ],
+                    })
+                    .to_string(),
+                },
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call-1".to_string(),
+                    name: "bash_command".to_string(),
+                    arguments: json!({"keystrokes": first_command}),
+                }),
+            ],
+        };
+
+        let text = message_text(&message);
+
+        assert_eq!(text.matches("grep -n bug app.py").count(), 2, "{text}");
+        assert_eq!(text.matches("sed -n '1,80p' app.py").count(), 1, "{text}");
+        assert!(!text.contains(r#""commands":[]"#), "{text}");
+    }
+
+    #[test]
+    fn message_text_keeps_duplicate_commands_without_one_tool_call_each() {
+        let command = "grep -n bug app.py\n";
+        let message = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: json!({
+                        "commands": [
+                            {"keystrokes": command},
+                            {"keystrokes": command},
+                        ],
+                    })
+                    .to_string(),
+                },
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call-1".to_string(),
+                    name: "bash_command".to_string(),
+                    arguments: json!({"keystrokes": command}),
+                }),
+            ],
+        };
+
+        let text = message_text(&message);
+
+        assert_eq!(text.matches("grep -n bug app.py").count(), 3, "{text}");
+        assert!(!text.contains(r#""commands":[]"#), "{text}");
     }
 
     #[test]
