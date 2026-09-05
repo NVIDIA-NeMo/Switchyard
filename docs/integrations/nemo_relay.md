@@ -12,14 +12,38 @@ and
 [observability](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/about#shortest-path).
 Switchyard chooses and calls the configured model target.
 
-Use this integration when Relay already handles your agent's model calls and
-you want to:
+## Why Use Switchyard with NeMo Relay?
 
-- present one route name while Switchyard chooses the model;
-- reuse the same Switchyard TOML deployment as `switchyard-server`;
-- inspect routing decisions and model attempts through Relay's existing
-  telemetry; and
+Switchyard decides which model should handle each request. Relay keeps the
+caller-facing request in its normal lifecycle and carries Switchyard's routing
+records with the rest of the agent run. Together, they add routing without
+changing the agent or running a separate Switchyard service.
+
+This lets you:
+
+- with an adaptive route, send routine work to a lower-cost model while keeping
+  a stronger model available for harder turns;
+- compare a routed deployment with a fixed-model baseline on the same workload;
+- see the initial selection, final model when reported, fallbacks, routing time,
+  and failures;
+- separate tokens spent choosing a model from tokens spent generating the
+  answer; and
 - keep Relay's existing handling for models that Switchyard does not manage.
+
+### Measure Routing Cost on Your Workload
+
+The plugin reports provider-supplied token usage separately for routing and
+answer calls, labeled by target model and token type. It also reports routing
+time, the initial selection, the final model when reported, fallbacks, and
+failures. Relay can export those records through its existing telemetry
+pipeline.
+
+Relay can [estimate cost for the caller-facing response](https://docs.nvidia.com/nemo/relay/v0.8.3/nemo-relay-cli/basic-usage#add-model-pricing-for-cost-estimates)
+when model pricing is configured. Internal routing calls do not run as separate
+Relay LLM calls, so include the plugin's routing-token metrics when calculating
+the total cost. Compare the same workload against a fixed-model route to see
+whether the savings outweigh the routing work. Missing provider usage is
+unknown, not zero.
 
 If Relay is not part of the application, run the [standalone server](../getting_started.md#server-path)
 or embed [`switchyard-libsy`](../../crates/libsy/README.md) directly.
