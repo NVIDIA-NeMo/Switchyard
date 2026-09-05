@@ -184,6 +184,53 @@ schema to the provider in a strict structured-output wrapper and validates the
 returned JSON again. `jsonptr` resolves the selector against that verdict. A
 missing, non-string, or unknown target falls back to `default_target`.
 
+### Grading rubrics with `policy.labels`
+
+A rubric that asks for a judgement — difficulty, complexity, risk — rather than
+a target name routes through an optional `labels` map. Several grades may share
+one target, which `targets` cannot express because two entries resolving to one
+model are rejected:
+
+```toml
+[routes.assistant]
+id = "assistant"
+type = "llm_classifier"
+mode = "custom"
+classifier_target = "classifier"
+targets = ["weak", "strong"]
+default_target = "strong"
+prompt = """
+Grade this request's difficulty.
+Return JSON matching the response schema supplied with the request.
+"""
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "recommended_tier": {
+      "type": "string",
+      "enum": ["simple", "medium", "complex", "reasoning"]
+    }
+  },
+  "required": ["recommended_tier"],
+  "additionalProperties": false
+}
+'''
+
+[routes.assistant.policy]
+type = "target_selector"
+selector = "/recommended_tier"
+labels = { simple = "weak", medium = "weak", complex = "strong", reasoning = "strong" }
+```
+
+Every value in `labels` must name a configured target and the table must not be
+empty; both are checked when the deployment loads. One rubric then serves
+several operating points, because only the map changes between them.
+
+With `labels` set, `response_schema` must enumerate the **verdict** values, not
+the target names. Nothing validates that pairing, and getting it wrong makes
+every verdict unroutable, so all traffic silently reaches `default_target`.
+
 This separation applies to every classifier mode. Prompts containing the legacy
 `{{RESPONSE_SCHEMA}}` placeholder are rejected during configuration validation.
 

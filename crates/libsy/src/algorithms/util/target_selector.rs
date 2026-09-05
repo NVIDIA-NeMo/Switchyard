@@ -42,16 +42,20 @@ impl JudgePolicy for TargetSelectorPolicy {
     type Verdict = Value;
 
     fn to_classification(&self, verdict: Option<&Self::Verdict>) -> Classification {
-        let target = verdict
+        let label = verdict
             .and_then(|verdict| self.selector.resolve(verdict).ok())
-            .and_then(Value::as_str)
-            .and_then(|label| self.targets.get(label));
-        match target {
+            .and_then(Value::as_str);
+        match label.and_then(|label| self.targets.get(label)) {
             Some(target) => Classification::Scores(vec![Score {
                 target: target.clone(),
                 confidence: 1.0,
             }]),
-            None => Classification::Ambiguous(vec![]),
+            None => {
+                // Abstaining hands the request to `default_target`. Say which value missed:
+                // a verdict outside a configured `labels` map is the likeliest misconfiguration.
+                tracing::warn!(?label, "verdict is not a configured target or label");
+                Classification::Ambiguous(vec![])
+            }
         }
     }
 }
