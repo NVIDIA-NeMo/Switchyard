@@ -65,6 +65,10 @@ pub enum ClassifierPolicyConfig {
     TargetSelector {
         /// JSON Pointer to the name, such as `/decision/target`.
         selector: String,
+        /// Maps each verdict value onto a configured target name. Omit it and the verdict
+        /// is the target name; set it and several verdicts may share one target.
+        #[serde(default)]
+        labels: Option<BTreeMap<String, String>>,
     },
 }
 
@@ -84,7 +88,9 @@ pub enum ClassifierMode {
 impl ClassifierPolicyConfig {
     fn into_libsy(self) -> CustomClassifierPolicy {
         match self {
-            Self::TargetSelector { selector } => CustomClassifierPolicy::target_selector(selector),
+            Self::TargetSelector { selector, labels } => {
+                CustomClassifierPolicy::TargetSelector { selector, labels }
+            }
         }
     }
 }

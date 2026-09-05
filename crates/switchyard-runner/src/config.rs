@@ -662,6 +662,17 @@ classify_trigger = "new_session""#,
         configured
     }
 
+    /// The subagent custom classifier above, with a graded `policy.labels` map added.
+    fn with_subagent_classifier_labels(labels: &str) -> String {
+        let configured = with_subagent_llm_classifier(VALID_CONFIG, "passthrough", "");
+        let policy = "selector = \"/target\" }";
+        assert!(configured.contains(policy));
+        configured.replace(
+            policy,
+            &format!("selector = \"/target\", labels = {labels} }}"),
+        )
+    }
+
     fn with_subagent_passthrough(config: &str, route: &str) -> String {
         format!("{config}\n[routes.{route}.subagents]\ntype = \"passthrough\"\ntarget = \"strong\"")
     }
@@ -1058,6 +1069,14 @@ classifier_magic = true
                 ),
                 "route random context_window must be greater than zero",
             ),
+            (
+                with_subagent_classifier_labels("{}"),
+                "labels must not be empty",
+            ),
+            (
+                with_subagent_classifier_labels("{ simple = \"nope\" }"),
+                "policy label \"nope\"",
+            ),
         ];
 
         for (toml, expected) in cases {
@@ -1067,6 +1086,15 @@ classifier_magic = true
                 "expected error containing {expected}, got {error}"
             );
         }
+    }
+
+    #[test]
+    fn accepts_graded_classifier_policy_labels() -> RunnerResult<()> {
+        // Two verdict grades may name the same target; only the target list stays unique.
+        runner_from_toml(&with_subagent_classifier_labels(
+            "{ simple = \"weak\", complex = \"strong\" }",
+        ))?;
+        Ok(())
     }
 
     #[test]

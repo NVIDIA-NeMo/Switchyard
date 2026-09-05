@@ -381,6 +381,12 @@ pub enum CustomClassifierPolicy {
     TargetSelector {
         /// JSON Pointer evaluated against each schema-validated verdict.
         selector: String,
+        /// Maps each verdict value the judge may return onto a configured target label.
+        ///
+        /// `None` keeps the direct lookup, where the verdict is itself a target label.
+        /// When set, this map is the whole verdict vocabulary: several verdicts may share
+        /// one target, and a verdict outside the map falls back to `default_target`.
+        labels: Option<BTreeMap<String, String>>,
     },
 }
 
@@ -389,6 +395,7 @@ impl CustomClassifierPolicy {
     pub fn target_selector(selector: impl Into<String>) -> Self {
         Self::TargetSelector {
             selector: selector.into(),
+            labels: None,
         }
     }
 }
@@ -678,9 +685,38 @@ impl LlmTaskClassifier {
         } = config;
         let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
         let policy = match policy {
-            CustomClassifierPolicy::TargetSelector { selector } => {
+            CustomClassifierPolicy::TargetSelector {
+                selector,
+                labels: verdict_labels,
+            } => {
+                // Without `labels` a verdict is a target label. With them, the map is the
+                // whole vocabulary, so several grades may resolve to one target even though
+                // the target list itself still rejects a repeated model.
+                let verdict_map = match verdict_labels {
+                    None => target_map,
+                    Some(verdict_labels) if verdict_labels.is_empty() => {
+                        return Err(LibsyError::AlgorithmError {
+                            message: "custom classifier policy labels must not be empty"
+                                .to_string(),
+                        });
+                    }
+                    Some(verdict_labels) => verdict_labels
+                        .into_iter()
+                        .map(|(verdict, label)| {
+                            let target = target_map.get(&label).cloned().ok_or_else(|| {
+                                LibsyError::AlgorithmError {
+                                    message: format!(
+                                        "custom classifier policy label {label:?} must be one of the configured targets"
+                                    ),
+                                }
+                            })?;
+                            Ok((verdict, target))
+                        })
+                        .collect::<Result<BTreeMap<_, _>>>()?,
+                };
                 CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(
-                    selector, target_map,
+                    selector,
+                    verdict_map,
                 )?)
             }
         };
@@ -1648,5 +1684,66 @@ mod tests {
                 .any(|value| value.as_str() == Some("none"))
         );
         Ok(())
+    }
+
+    fn custom_config_with_labels(labels: Option<BTreeMap<String, String>>) -> LlmClassifierConfig {
+        LlmClassifierConfig::Custom {
+            judge_target: ModelId::from("judge"),
+            targets: vec![
+                ("worker".to_string(), ModelId::from("worker")),
+                ("reviewer".to_string(), ModelId::from("reviewer")),
+            ],
+            default_target: "worker".to_string(),
+            config: CustomClassifierConfig::new(
+                "classify the delegated task",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "grade": {"type": "string", "enum": ["simple", "hard", "brutal"]}
+                    },
+                    "required": ["grade"],
+                    "additionalProperties": false
+                }),
+                CustomClassifierPolicy::TargetSelector {
+                    selector: "/grade".to_string(),
+                    labels,
+                },
+            ),
+        }
+    }
+
+    #[test]
+    fn graded_verdict_labels_may_share_one_routing_target() {
+        // Two grades routing to one target is the whole point of a rubric verdict: the
+        // target list still rejects a repeated model, but the verdict vocabulary must not.
+        let config = custom_config_with_labels(Some(BTreeMap::from([
+            ("simple".to_string(), "worker".to_string()),
+            ("hard".to_string(), "reviewer".to_string()),
+            ("brutal".to_string(), "reviewer".to_string()),
+        ])));
+
+        assert!(LlmTaskClassifier::new(config).is_ok());
+    }
+
+    #[test]
+    fn graded_verdict_labels_are_checked_against_the_configured_targets() {
+        let empty = LlmTaskClassifier::new(custom_config_with_labels(Some(BTreeMap::new())));
+        assert!(
+            matches!(&empty, Err(LibsyError::AlgorithmError { message })
+                if message.contains("labels must not be empty")),
+            "{:?}",
+            empty.err()
+        );
+
+        let unknown = LlmTaskClassifier::new(custom_config_with_labels(Some(BTreeMap::from([(
+            "simple".to_string(),
+            "nope".to_string(),
+        )]))));
+        assert!(
+            matches!(&unknown, Err(LibsyError::AlgorithmError { message })
+                if message.contains("policy label \"nope\"")),
+            "{:?}",
+            unknown.err()
+        );
     }
 }

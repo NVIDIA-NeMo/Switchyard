@@ -1514,6 +1514,119 @@ selector = "/decision/target"
 }
 
 #[tokio::test]
+async fn custom_classifier_maps_graded_verdict_labels_onto_targets() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.middle]
+id = "model/middle"
+llm_client = "upstream"
+
+[targets.premium]
+id = "model/premium"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.custom]
+id = "switchyard/custom"
+type = "llm_classifier"
+mode = "custom"
+classifier_target = "classifier"
+targets = ["weak", "strong"]
+default_target = "weak"
+prompt = "CUSTOM MULTI TARGET"
+response_schema = '''
+{{
+  "type": "object",
+  "properties": {{
+    "decision": {{
+      "type": "object",
+      "properties": {{
+        "target": {{"type": "string", "enum": ["weak", "middle", "strong", "premium"]}}
+      }},
+      "required": ["target"],
+      "additionalProperties": false
+    }}
+  }},
+  "required": ["decision"],
+  "additionalProperties": false
+}}
+'''
+
+[routes.custom.policy]
+type = "target_selector"
+selector = "/decision/target"
+labels = {{ premium = "strong" }}
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    for (task, selected) in [
+        ("route this task", "model/strong"),
+        ("return an invalid verdict", "model/weak"),
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/custom",
+                "messages": [{"role": "user", "content": task}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(selected)
+        );
+    }
+
+    let calls = upstream.calls.lock().await;
+    let judge_call = calls
+        .iter()
+        .find(|call| call["model"] == "model/classifier")
+        .ok_or("custom classifier target was not called")?;
+    let prompt = judge_call["messages"][0]["content"]
+        .as_str()
+        .ok_or("custom classifier prompt was not text")?;
+    assert_eq!(prompt, "CUSTOM MULTI TARGET");
+    assert_eq!(judge_call["response_format"]["type"], "json_schema");
+    assert_eq!(
+        judge_call["response_format"]["json_schema"]["name"],
+        "switchyard_classifier_response"
+    );
+    assert_eq!(judge_call["response_format"]["json_schema"]["strict"], true);
+    assert_eq!(
+        judge_call["response_format"]["json_schema"]["schema"]["properties"]["decision"]["properties"]
+            ["target"]["enum"],
+        json!(["weak", "middle", "strong", "premium"])
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn classifier_contract_overrides_reach_every_server_mode() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
