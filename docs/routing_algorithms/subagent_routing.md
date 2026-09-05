@@ -2,7 +2,8 @@
 
 Sub-agent-aware routing leaves parent-agent traffic with its configured routing
 algorithm while routing delegated sub-agent work separately. It is available on
-`passthrough` and `stage_router` routes through the optional `subagents` table.
+`passthrough`, `llm_classifier`, `stage_router` and `composite` routes through the
+optional `subagents` table.
 
 ```toml
 schema_version = 1

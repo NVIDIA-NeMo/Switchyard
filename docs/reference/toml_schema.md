@@ -176,6 +176,7 @@ Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
 | `classifier_target` | Yes | — | Target the judge is called through. Not a routing destination. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
 | `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
+| `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
 Capability mode classifies before serving. See
 [LLM Classifier Routing](../routing_algorithms/llm_classifier_routing.md).
