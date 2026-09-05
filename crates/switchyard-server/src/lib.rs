@@ -1132,8 +1132,8 @@ impl RequestLogContext {
                     requested_model = self.requested_model.as_deref().unwrap_or(""),
                     selected_model,
                     streaming = self.streaming,
-                    session_id = self.session_id.as_deref().unwrap_or(""),
-                    correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+                    session_id = self.session_id.as_deref(),
+                    correlation_id = self.correlation_id.as_deref(),
                     handling_duration_ms = duration_ms,
                     error,
                     $message
@@ -1160,8 +1160,8 @@ impl RequestLogContext {
             requested_model = self.requested_model.as_deref().unwrap_or(""),
             selected_model = "",
             streaming = self.streaming,
-            session_id = self.session_id.as_deref().unwrap_or(""),
-            correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+            session_id = self.session_id.as_deref(),
+            correlation_id = self.correlation_id.as_deref(),
             handling_duration_ms = self.started.elapsed().as_secs_f64() * 1_000.0,
             error = "client disconnected before a response was written",
             "LLM request cancelled"
@@ -1692,6 +1692,7 @@ mod tests {
     use switchyard_llm_client::LlmCallObservation;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::{Notify, oneshot};
+    use tracing::field::{Field, Visit};
 
     use super::*;
 
@@ -1908,9 +1909,28 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
     }
 
+    // One terminal request event: its level, its message, and every other field it
+    // recorded. A field the event never recorded is a missing key, not an empty value.
+    type CapturedEvent = (Level, String, BTreeMap<String, String>);
+
     // Collects the terminal request events emitted while it is the active subscriber.
     #[derive(Clone, Default)]
-    struct CapturedEvents(Arc<Mutex<Vec<(Level, String)>>>);
+    struct CapturedEvents(Arc<Mutex<Vec<CapturedEvent>>>);
+
+    // Records every field into a string map, so a field the event never recorded is a
+    // missing key rather than an empty value.
+    struct FieldVisitor<'a>(&'a mut BTreeMap<String, String>);
+
+    impl Visit for FieldVisitor<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+    }
 
     impl tracing_subscriber::Layer<tracing_subscriber::Registry> for CapturedEvents {
         fn on_event(
@@ -1921,15 +1941,12 @@ mod tests {
             if event.metadata().target() != "switchyard_server::request" {
                 return;
             }
-            let mut message = String::new();
-            event.record(
-                &mut |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
-                    if field.name() == "message" {
-                        message = format!("{value:?}");
-                    }
-                },
-            );
-            self.0.lock().push((*event.metadata().level(), message));
+            let mut fields = BTreeMap::new();
+            event.record(&mut FieldVisitor(&mut fields));
+            let message = fields.remove("message").unwrap_or_default();
+            self.0
+                .lock()
+                .push((*event.metadata().level(), message, fields));
         }
     }
 
@@ -1944,7 +1961,7 @@ mod tests {
         }
     }
 
-    fn captured_events(run: impl FnOnce()) -> Vec<(Level, String)> {
+    fn captured_events(run: impl FnOnce()) -> Vec<CapturedEvent> {
         use tracing_subscriber::layer::SubscriberExt;
 
         let captured = CapturedEvents::default();
@@ -1978,6 +1995,43 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, Level::INFO);
         assert!(events[0].1.contains("handled"), "{:?}", events[0].1);
+    }
+
+    // An operator has to be able to tell "no session was sent" from "a blank one was
+    // sent": an absent id omits the field, an empty one records an empty value.
+    #[test]
+    fn request_log_distinguishes_absent_ids_from_empty_ones() {
+        let rows = [
+            (None, None),
+            (Some(String::new()), Some("")),
+            (Some("abc".to_string()), Some("abc")),
+        ];
+
+        for (id, expected) in rows {
+            let context = || {
+                let mut context = request_log_context();
+                context.session_id = id.clone();
+                context.correlation_id = id.clone();
+                context
+            };
+
+            let answered = captured_events(|| {
+                let mut guard = RequestLogGuard(Some(context()));
+                guard.emit(&StatusCode::OK.into_response());
+            });
+            let cancelled = captured_events(|| drop(RequestLogGuard(Some(context()))));
+
+            for events in [answered, cancelled] {
+                assert_eq!(events.len(), 1);
+                for field in ["session_id", "correlation_id"] {
+                    assert_eq!(
+                        events[0].2.get(field).map(String::as_str),
+                        expected,
+                        "{field} {id:?}"
+                    );
+                }
+            }
+        }
     }
 
     // Terminal request severity follows HTTP status instead of error-path bookkeeping.

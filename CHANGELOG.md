@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Request log distinguishes an absent id from an empty one** — the terminal
+  request event rendered `session_id` and `correlation_id` with
+  `unwrap_or("")`, so a request that carried no session and one that carried a
+  blank session both logged `session_id=`. An absent id now omits the field.
+
 ### Added
 
 - **NeMo Relay native plugin** — a dynamically loaded integration that loads
