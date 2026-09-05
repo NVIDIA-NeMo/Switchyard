@@ -955,20 +955,6 @@ classifier_magic = true
             (
                 VALID_CONFIG.replace(
                     "targets = [\"strong\", \"weak\"]",
-                    "targets = [\"strong\", \"strong\"]",
-                ),
-                "random targets must be unique",
-            ),
-            (
-                VALID_CONFIG.replace(
-                    "targets = [\"strong\", \"weak\"]",
-                    "targets = [\"strong\", \"weak\"]\nweights = [1]",
-                ),
-                "expected 2 weights, got 1",
-            ),
-            (
-                VALID_CONFIG.replace(
-                    "targets = [\"strong\", \"weak\"]",
                     "targets = [\"strong\", \"weak\"]\nweights = [0, 0]",
                 ),
                 "at least one weight must be positive",

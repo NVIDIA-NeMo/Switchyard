@@ -839,15 +839,8 @@ fn build_algorithm(
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     match config {
         AlgorithmSpec::Noop { .. } => Ok(Arc::new(Noop {})),
-        AlgorithmSpec::Random {
-            targets: names,
-            weights,
-            seed,
-            ..
-        } => {
-            let target_set =
-                resolve_targets(route_name, names.iter().map(String::as_str), targets)?;
-            let algorithm = Random::new(target_set, weights.clone(), *seed).map_err(|error| {
+        AlgorithmSpec::Random { weights, seed, .. } => {
+            let algorithm = Random::new(weights.clone(), *seed).map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("random route {route_name}: {error}"),
                     error,
@@ -855,11 +848,8 @@ fn build_algorithm(
             })?;
             Ok(Arc::new(algorithm))
         }
-        AlgorithmSpec::Passthrough {
-            target, subagents, ..
-        } => {
-            let parent_target = resolve_target_model_id(route_name, target, targets)?;
-            let algorithm = Passthrough::new(parent_target);
+        AlgorithmSpec::Passthrough { subagents, .. } => {
+            let algorithm = Passthrough::default();
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
@@ -1176,6 +1166,7 @@ fn tier_prompts(
     prompts
 }
 
+/*
 fn resolve_targets<'a>(
     route_name: &str,
     names: impl IntoIterator<Item = &'a str>,
@@ -1186,6 +1177,7 @@ fn resolve_targets<'a>(
         .map(|name| resolve_target_model_id(route_name, name, targets))
         .collect()
 }
+*/
 
 fn resolve_target_model_id(
     route_name: &str,

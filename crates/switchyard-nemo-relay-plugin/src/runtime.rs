@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -13,8 +14,8 @@ use nemo_relay_plugin::{
 use serde_json::{Map, json};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
 use switchyard_protocol::{
-    LlmClientError, LlmResponse, LlmResponseChunk, LlmStreamError, Metadata, ProviderExtensions,
-    Request, Response, Usage, WireFormat,
+    Category, LlmClientError, LlmResponse, LlmResponseChunk, LlmStreamError, Metadata, ModelId,
+    ProviderExtensions, Request, Response, Usage, WireFormat,
 };
 use switchyard_runner::{Route, RouteErrorSummary, Runner, stream_error_summary};
 use switchyard_translation::{TranslationEngine, encode_stream_with_extensions};
@@ -189,7 +190,9 @@ impl SwitchyardRuntime {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(observation);
         });
-        match route.execute(request, Some(observer)).await {
+        let models: HashMap<Category, Vec<ModelId>> =
+            [(Category::Any, route.model_ids().cloned().collect())].into();
+        match route.execute(request, models, Some(observer)).await {
             Ok(output) => {
                 self.emit_observations(&mut events, take_observations(&observations), &metadata);
                 events.push(RoutingEvent::Mark(RoutingMark {

@@ -13,11 +13,14 @@
 //! The closure is async so a fake can block on a barrier, wait on a notify, or never
 //! resolve, which is what the concurrency, hedging, and fan-out tests need.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use switchyard_protocol::{LlmClientError, LlmResponse, ModelId, Request, Response, text_response};
+use switchyard_protocol::{
+    Category, LlmClientError, LlmResponse, ModelId, Request, Response, text_response,
+};
 
 use crate::core::algorithm::{Algorithm, CallModel};
 use crate::{LibsyError, Result};
@@ -47,9 +50,19 @@ pub(crate) async fn test_drive(
     request: Request,
     serve: impl Serve,
 ) -> Result<(ModelId, Response)> {
+    test_drive_with_models(algorithm, request, HashMap::new(), serve).await
+}
+
+/// Drive one request with an explicit runtime model set.
+pub(crate) async fn test_drive_with_models(
+    algorithm: Arc<dyn Algorithm>,
+    request: Request,
+    models: HashMap<Category, Vec<ModelId>>,
+    serve: impl Serve,
+) -> Result<(ModelId, Response)> {
     let serve = Arc::new(serve);
     let routing_serve = Arc::clone(&serve);
-    let outcome = crate::drive(algorithm, request, move |call| {
+    let outcome = crate::drive(algorithm, request, models, move |call| {
         fulfill(Arc::clone(&routing_serve), call)
     })
     .await?;

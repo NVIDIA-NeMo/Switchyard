@@ -528,7 +528,7 @@ mod tests {
 
     /// Serves the single offloaded judge call with `reply` through a standalone step receiver.
     async fn score_served_with(reply: Result<Response>) -> Result<ModelId> {
-        let (driver, step_rx) = Driver::new("test");
+        let (driver, step_rx) = Driver::new("test", std::collections::HashMap::new());
         let mut steps = tokio_stream::wrappers::ReceiverStream::new(step_rx);
         let classifier = classifier();
         let mut state = State::default();

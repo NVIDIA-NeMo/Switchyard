@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use switchyard_llm_client::{ClientRouter, RunObservation};
 use switchyard_protocol::{
-    LlmClientError, LlmResponse, ModelId, Request, Response, RoutedLlmClient, text_request,
-    text_response,
+    Category, LlmClientError, LlmResponse, ModelId, Request, Response, RoutedLlmClient,
+    text_request, text_response,
 };
 use switchyard_runner::{AlgorithmSpec, ModelCapabilities, Route};
 
@@ -69,9 +69,9 @@ async fn plugin_shaped_route_executes_without_runner_model_or_toml() {
         llm_request: text_request(Some("arbitrary-upstream-model".to_string()), "hello"),
         ..Request::default()
     };
-
+    let models = [(Category::Any, vec![ModelId::from("semantic-target")])].into();
     let output = route
-        .execute(request, Some(observer))
+        .execute(request, models, Some(observer))
         .await
         .expect("route should execute");
 
@@ -133,8 +133,9 @@ async fn route_returns_stream_without_polling_it() {
         ..Request::default()
     };
 
+    let models = [(Category::Any, vec![ModelId::from("semantic-target")])].into();
     let output = route
-        .execute(request, None)
+        .execute(request, models, None)
         .await
         .expect("stream handle should be returned");
 
@@ -143,25 +144,6 @@ async fn route_returns_stream_without_polling_it() {
         LlmResponse::Stream(_)
     ));
     assert_eq!(polls.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn algorithm_build_reports_unknown_configured_target() {
-    let spec = AlgorithmSpec::Random {
-        targets: vec!["missing".to_string()],
-        weights: None,
-        seed: None,
-    };
-
-    let error = match spec.build("plugin", &BTreeMap::new()) {
-        Ok(_) => panic!("unknown target should fail"),
-        Err(error) => error,
-    };
-
-    assert_eq!(
-        error.to_string(),
-        "route plugin references unknown target missing"
-    );
 }
 
 // Preserve checkpoint target order and explicit TOML overrides.
