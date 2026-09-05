@@ -55,6 +55,8 @@ pub struct StreamTranslationState {
     /// Reasoning text observed while DECODING, per output index, so a completed item
     /// that repeats already-streamed text is not decoded twice.
     pub(crate) decoded_reasoning: BTreeMap<usize, String>,
+    /// Output indexes whose encrypted reasoning payload was already decoded.
+    pub(crate) decoded_reasoning_encrypted: std::collections::BTreeSet<usize>,
 
     pub(crate) response_created: bool,
     pub(crate) response_text_started: bool,

@@ -190,8 +190,72 @@ fn decode_responses_stream(
                 .unwrap_or_default()
         }
         Some("response.output_item.done") => decode_responses_output_item_done(event, state),
+        Some("response.reasoning_text.done") | Some("response.reasoning_summary_text.done") => {
+            let index = event
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            event
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .filter(|_| {
+                    state
+                        .decoded_reasoning
+                        .get(&index)
+                        .is_none_or(String::is_empty)
+                })
+                .map(|text| {
+                    state.decoded_reasoning.insert(index, text.to_string());
+                    vec![LlmResponseChunk::ReasoningDelta {
+                        index,
+                        text: text.to_string(),
+                    }]
+                })
+                .unwrap_or_default()
+        }
+        Some("response.reasoning_summary_part.done") => {
+            let index = event
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            event
+                .get("part")
+                .and_then(|part| part.get("text"))
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .filter(|_| {
+                    state
+                        .decoded_reasoning
+                        .get(&index)
+                        .is_none_or(String::is_empty)
+                })
+                .map(|text| {
+                    state.decoded_reasoning.insert(index, text.to_string());
+                    vec![LlmResponseChunk::ReasoningDelta {
+                        index,
+                        text: text.to_string(),
+                    }]
+                })
+                .unwrap_or_default()
+        }
         Some("response.completed") => {
             let mut out = Vec::new();
+            // Some providers surface reasoning only in the final output array. Position is the
+            // output index; anything already decoded is skipped by the helper.
+            if let Some(items) = event
+                .get("response")
+                .and_then(|response| response.get("output"))
+                .and_then(Value::as_array)
+            {
+                for (position, item) in items.iter().enumerate() {
+                    if let Some(item) = item.as_object()
+                        && item.get("type").and_then(Value::as_str) == Some("reasoning")
+                    {
+                        out.extend(decode_responses_reasoning_item(item, position, state));
+                    }
+                }
+            }
             if let Some(usage) = event
                 .get("response")
                 .and_then(Value::as_object)
@@ -414,6 +478,47 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
 }
 
 // Converts Responses function-call item creation into a neutral tool-call delta.
+// Decodes the reasoning a provider put on a reasoning output item itself: plaintext in
+// `content`, `summary`, or top-level `text`, and/or an opaque `encrypted_content`. Text that was
+// already decoded for this output index (from delta events or an earlier item event) is not
+// repeated, so `added`, `done`, and the final `response.completed` output can all be inspected
+// safely.
+fn decode_responses_reasoning_item(
+    item: &serde_json::Map<String, Value>,
+    index: usize,
+    state: &mut StreamTranslationState,
+) -> Vec<LlmResponseChunk> {
+    let mut out = Vec::new();
+    let mut parts = Vec::new();
+    collect_responses_reasoning_text(item.get("content"), &mut parts);
+    collect_responses_reasoning_text(item.get("summary"), &mut parts);
+    collect_responses_reasoning_text(item.get("text"), &mut parts);
+    let text = parts.join("\n");
+    let already = state
+        .decoded_reasoning
+        .get(&index)
+        .map(String::as_str)
+        .unwrap_or("");
+    if !text.is_empty() && already.is_empty() {
+        state.decoded_reasoning.insert(index, text.clone());
+        out.push(LlmResponseChunk::ReasoningDelta { index, text });
+    }
+    if let Some(data) = item
+        .get("encrypted_content")
+        .and_then(Value::as_str)
+        .filter(|data| !data.is_empty())
+        && !state.decoded_reasoning_encrypted.contains(&index)
+    {
+        state.decoded_reasoning_encrypted.insert(index);
+        out.push(LlmResponseChunk::ReasoningDetailsDelta {
+            index,
+            details: vec![json!({"type": "reasoning.encrypted", "data": data})],
+            text: String::new(),
+        });
+    }
+    out
+}
+
 fn decode_responses_output_item_added(
     event: &Value,
     state: &mut StreamTranslationState,
@@ -421,13 +526,16 @@ fn decode_responses_output_item_added(
     let Some(item) = event.get("item").and_then(Value::as_object) else {
         return Vec::new();
     };
-    if item.get("type").and_then(Value::as_str) != Some("function_call") {
-        return Vec::new();
-    }
     let index = event
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
+    if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+        return decode_responses_reasoning_item(item, index, state);
+    }
+    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+        return Vec::new();
+    }
     let arguments_delta = item
         .get("arguments")
         .and_then(Value::as_str)
@@ -468,39 +576,8 @@ fn decode_responses_output_item_done(
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
-    // A completed reasoning item is the only place some providers put the reasoning at all:
-    // as plaintext in `text`, `content`, or `summary`, with no streamed deltas; or as an
-    // opaque `encrypted_content`. Surface whichever is present so a buffering caller still
-    // holds something the client can replay. Text that already streamed through
-    // `reasoning_text.delta` is not repeated.
     if item.get("type").and_then(Value::as_str) == Some("reasoning") {
-        let mut out = Vec::new();
-        let mut parts = Vec::new();
-        collect_responses_reasoning_text(item.get("content"), &mut parts);
-        collect_responses_reasoning_text(item.get("summary"), &mut parts);
-        collect_responses_reasoning_text(item.get("text"), &mut parts);
-        let text = parts.join("\n");
-        let already = state
-            .decoded_reasoning
-            .get(&index)
-            .map(String::as_str)
-            .unwrap_or("");
-        if !text.is_empty() && already.is_empty() {
-            state.decoded_reasoning.insert(index, text.clone());
-            out.push(LlmResponseChunk::ReasoningDelta { index, text });
-        }
-        if let Some(data) = item
-            .get("encrypted_content")
-            .and_then(Value::as_str)
-            .filter(|data| !data.is_empty())
-        {
-            out.push(LlmResponseChunk::ReasoningDetailsDelta {
-                index,
-                details: vec![json!({"type": "reasoning.encrypted", "data": data})],
-                text: String::new(),
-            });
-        }
-        return out;
+        return decode_responses_reasoning_item(item, index, state);
     }
     if item.get("type").and_then(Value::as_str) != Some("function_call") {
         return Vec::new();

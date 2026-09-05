@@ -1699,3 +1699,84 @@ fn responses_stream_does_not_duplicate_streamed_reasoning_on_done() -> TestResul
     assert_eq!(second.normalized(), &[]);
     Ok(())
 }
+
+// Providers differ in which event carries a reasoning item's text. Each carrier must decode
+// exactly once: `output_item.added` with text, a `reasoning_text.done` with no prior deltas,
+// and a reasoning item that appears only inside `response.completed`'s output array.
+#[test]
+fn responses_stream_decodes_reasoning_text_from_added_done_and_completed_once() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+
+    // (a) only in output_item.added
+    let mut state = StreamTranslationState::new(format, format);
+    let added = json!({"type": "response.output_item.added", "output_index": 0,
+        "item": {"type": "reasoning", "id": "rs_a", "text": "from added"}});
+    let decoded = engine.decode_stream_event(&mut state, format, added)?;
+    assert_eq!(
+        decoded.normalized(),
+        &[LlmResponseChunk::ReasoningDelta {
+            index: 0,
+            text: "from added".into()
+        }]
+    );
+    // the matching done repeats it and must be skipped
+    let done = json!({"type": "response.output_item.done", "output_index": 0,
+        "item": {"type": "reasoning", "id": "rs_a", "text": "from added"}});
+    assert_eq!(
+        engine
+            .decode_stream_event(&mut state, format, done)?
+            .normalized(),
+        &[]
+    );
+
+    // (b) only in reasoning_text.done
+    let mut state = StreamTranslationState::new(format, format);
+    let text_done = json!({"type": "response.reasoning_text.done", "output_index": 1,
+        "content_index": 0, "text": "from text done"});
+    let decoded = engine.decode_stream_event(&mut state, format, text_done)?;
+    assert_eq!(
+        decoded.normalized(),
+        &[LlmResponseChunk::ReasoningDelta {
+            index: 1,
+            text: "from text done".into()
+        }]
+    );
+
+    // (c) only inside response.completed output; emitted before the stop
+    let mut state = StreamTranslationState::new(format, format);
+    let completed = json!({"type": "response.completed", "response": {"id": "resp_1",
+        "output": [{"type": "reasoning", "id": "rs_c", "text": "from completed"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}});
+    let decoded = engine.decode_stream_event(&mut state, format, completed)?;
+    let kinds: Vec<&str> = decoded
+        .normalized()
+        .iter()
+        .map(|c| match c {
+            LlmResponseChunk::ReasoningDelta { text, .. } => {
+                assert_eq!(text, "from completed");
+                "reasoning"
+            }
+            LlmResponseChunk::Usage(_) => "usage",
+            LlmResponseChunk::MessageStop { .. } => "stop",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, vec!["reasoning", "usage", "stop"]);
+
+    // (d) completed output repeating already-streamed reasoning adds nothing
+    let mut state = StreamTranslationState::new(format, format);
+    let delta =
+        json!({"type": "response.reasoning_text.delta", "output_index": 0, "delta": "streamed"});
+    engine.decode_stream_event(&mut state, format, delta)?;
+    let completed = json!({"type": "response.completed", "response": {"id": "resp_2",
+        "output": [{"type": "reasoning", "id": "rs_d", "text": "streamed"}]}});
+    let decoded = engine.decode_stream_event(&mut state, format, completed)?;
+    assert!(
+        decoded
+            .normalized()
+            .iter()
+            .all(|c| !matches!(c, LlmResponseChunk::ReasoningDelta { .. }))
+    );
+    Ok(())
+}
