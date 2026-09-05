@@ -71,6 +71,8 @@ def test_dry_run_contains_all_full_holdout_cohorts(capsys: pytest.CaptureFixture
     preview = json.loads(capsys.readouterr().out)
 
     tb21 = preview["tb21"]
+    assert tb21[:4] == ["uv", "run", "--no-sync", "harbor"]
+    assert "bash" not in tb21
     assert "terminal-bench-2-1-closed-book" in " ".join(tb21)
     assert "--n-tasks" not in tb21
 
@@ -89,3 +91,10 @@ def test_appworld_cohort_and_model_match_the_frozen_holdout() -> None:
     assert len(launcher.APPWORLD_TASK_IDS) == 30
     assert '"model_id": "switchyard/vgr"' in model
     assert '"base_url": "http://127.0.0.1:4001/v1"' in model
+
+
+def test_launcher_has_no_wsl_or_shell_dependency() -> None:
+    source = (ROOT / "benchmark/run_holdout_suite.py").read_text()
+
+    assert "wsl.exe" not in source
+    assert "run-baseline.sh" not in source

@@ -54,19 +54,13 @@ APPWORLD_TASK_IDS = (
     "396c5a2_2",
     "396c5a2_3",
 )
-WINDOWS_PATH_OPTIONS = {
-    "--appworld-root",
-    "--automationbench-root",
-    "--output-dir",
-    "--server-config",
-}
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run full TB 2.1, AutomationBench simple, and AppWorld easy through VGR. "
-            "On Windows the launcher re-enters through WSL."
+            "The same Python and Docker path is used natively on Windows and Linux."
         )
     )
     default_harness_root = REPO_ROOT.parent
@@ -98,34 +92,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--session-proxy-port", type=int, default=4001)
     parser.add_argument("--skip-setup", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--inside-wsl", action="store_true", help=argparse.SUPPRESS)
     return parser
-
-
-def _translate_windows_path(value: str) -> str:
-    resolved = str(Path(value).resolve())
-    result = subprocess.run(
-        ["wsl.exe", "wslpath", "-a", "-u", resolved],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def _relaunch_in_wsl(argv: Sequence[str]) -> int:
-    translated: list[str] = []
-    translate_next = False
-    for argument in argv:
-        if translate_next:
-            translated.append(_translate_windows_path(argument))
-            translate_next = False
-            continue
-        translated.append(argument)
-        translate_next = argument in WINDOWS_PATH_OPTIONS
-    script = _translate_windows_path(str(Path(__file__).resolve()))
-    command = ["wsl.exe", "--exec", "python3", script, "--inside-wsl", *translated]
-    return subprocess.run(command, check=False).returncode
 
 
 def _run(
@@ -185,9 +152,19 @@ def _wait_for_health(url: str, process: subprocess.Popen[bytes] | None = None) -
 
 
 @contextlib.contextmanager
-def _switchyard_server(config: Path, port: int, log_path: Path) -> Iterator[None]:
+def _switchyard_server(
+    config: Path,
+    port: int,
+    network: str,
+    log_path: Path,
+) -> Iterator[None]:
     container = f"switchyard-holdout-{os.getpid()}"
     mount = f"type=bind,src={config.resolve()},dst=/etc/switchyard/config.toml,readonly"
+    _run(
+        ["docker", "network", "create", network],
+        cwd=REPO_ROOT,
+        log_path=log_path.with_name("docker-network.log"),
+    )
     command = [
         "docker",
         "run",
@@ -195,6 +172,10 @@ def _switchyard_server(config: Path, port: int, log_path: Path) -> Iterator[None
         "--detach",
         "--name",
         container,
+        "--network",
+        network,
+        "--network-alias",
+        "switchyard",
         "--add-host",
         "host.docker.internal:host-gateway",
         "--publish",
@@ -211,8 +192,8 @@ def _switchyard_server(config: Path, port: int, log_path: Path) -> Iterator[None
         "--port",
         "4000",
     ]
-    _run(command, cwd=REPO_ROOT, log_path=log_path)
     try:
+        _run(command, cwd=REPO_ROOT, log_path=log_path)
         _wait_for_health(f"http://127.0.0.1:{port}/health")
         yield
     finally:
@@ -225,6 +206,12 @@ def _switchyard_server(config: Path, port: int, log_path: Path) -> Iterator[None
             )
         subprocess.run(
             ["docker", "rm", "--force", container],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        subprocess.run(
+            ["docker", "network", "rm", network],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -314,30 +301,67 @@ def _appworld_model_module(base_url: str) -> str:
 '''
 
 
-def _tb_command(args: argparse.Namespace) -> list[str]:
+def _tb_command(args: argparse.Namespace, run_dir: Path) -> list[str]:
+    job_name = "vgr-holdout-tb21"
     return [
-        "bash",
-        "benchmark/run-baseline.sh",
-        "--harbor-path",
-        "benchmark/datasets/terminal-bench-2-1-closed-book",
-        "--server-config",
-        str(args.server_config),
-        "--model",
-        "switchyard/vgr",
+        "uv",
+        "run",
+        "--no-sync",
+        "harbor",
+        "run",
         "--agent",
         args.tb_agent,
-        "--n-concurrent",
+        "--model",
+        "openai/switchyard/vgr",
+        "--jobs-dir",
+        str(run_dir / "tb21/jobs"),
+        "--job-name",
+        job_name,
+        "-n",
         str(args.tb_concurrency),
         "--max-retries",
         "0",
-        "--harbor-extra",
+        "--agent-timeout-multiplier",
+        "2.0",
+        "--path",
+        str(REPO_ROOT / "benchmark/datasets/terminal-bench-2-1-closed-book"),
+        "--artifact",
+        "/etc/proxy-ca/strip.jsonl",
+        "--ve",
+        "HTTP_PROXY=${SWITCHYARD_VERIFIER_HTTP_PROXY}",
+        "--ve",
+        "HTTPS_PROXY=${SWITCHYARD_VERIFIER_HTTP_PROXY}",
+        "--ve",
+        "http_proxy=${SWITCHYARD_VERIFIER_HTTP_PROXY}",
+        "--ve",
+        "https_proxy=${SWITCHYARD_VERIFIER_HTTP_PROXY}",
+        "--ve",
+        "NO_PROXY=localhost,127.0.0.1,proxy",
+        "--ve",
+        "no_proxy=localhost,127.0.0.1,proxy",
         "--environment-build-timeout-multiplier",
-        "--harbor-extra",
         "3.0",
-        "--mode",
-        "vgr-holdout-tb21",
-        "--foreground",
     ]
+
+
+def _tb_environment(network: str) -> dict[str, str]:
+    environment = os.environ.copy()
+    verifier_token = os.urandom(24).hex()
+    environment.update(
+        {
+            "ALLOWED_HOSTS": "switchyard",
+            "CLOSED_BOOK_MODE": "1",
+            "OPENAI_API_KEY": "switchyard-local",
+            "OPENAI_BASE_URL": "http://switchyard:4000/v1",
+            "SWITCHYARD_BASE_URL": "http://switchyard:4000",
+            "SWITCHYARD_DOCKER_NETWORK": network,
+            "SWITCHYARD_VERIFIER_HTTP_PROXY": (
+                f"http://verifier:{verifier_token}@proxy:3129"
+            ),
+            "SWITCHYARD_VERIFIER_PROXY_TOKEN": verifier_token,
+        }
+    )
+    return environment
 
 
 def _automation_command(args: argparse.Namespace, output: Path) -> list[str]:
@@ -411,7 +435,7 @@ def _ensure_harbor_patch(run_dir: Path) -> None:
     ).stdout.strip()
     patch_file = REPO_ROOT / "benchmark/patches/harbor-agent-patches.diff"
     reverse_check = subprocess.run(
-        ["patch", "--dry-run", "--reverse", "-p1", "--input", str(patch_file)],
+        ["git", "apply", "--reverse", "--check", "-p1", str(patch_file)],
         cwd=purelib,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -420,7 +444,7 @@ def _ensure_harbor_patch(run_dir: Path) -> None:
     if reverse_check.returncode == 0:
         return
     _run(
-        ["patch", "-p1", "--input", str(patch_file)],
+        ["git", "apply", "-p1", str(patch_file)],
         cwd=Path(purelib),
         log_path=run_dir / "setup-harbor-patch.log",
     )
@@ -501,10 +525,6 @@ def run_suite(args: argparse.Namespace) -> Path:
         if not args.skip_setup:
             _prepare(args, run_dir)
 
-        _run(_tb_command(args), cwd=REPO_ROOT, log_path=run_dir / "tb21.log")
-        manifest["suites"]["tb21"] = {"status": "completed"}
-        _write_manifest(manifest_path, manifest)
-
         _run(
             ["docker", "build", "--tag", "switchyard-baseline:local", "."],
             cwd=REPO_ROOT,
@@ -512,7 +532,22 @@ def run_suite(args: argparse.Namespace) -> Path:
         )
         common_env = os.environ.copy()
         common_env["OPENAI_API_KEY"] = "switchyard-local"
-        with _switchyard_server(args.server_config, args.server_port, run_dir / "server.log"):
+        network = f"switchyard-holdout-{os.getpid()}-{timestamp.replace('_', '-')}"
+        with _switchyard_server(
+            args.server_config,
+            args.server_port,
+            network,
+            run_dir / "server.log",
+        ):
+            _run(
+                _tb_command(args, run_dir),
+                cwd=REPO_ROOT,
+                log_path=run_dir / "tb21.log",
+                env=_tb_environment(network),
+            )
+            manifest["suites"]["tb21"] = {"status": "completed"}
+            _write_manifest(manifest_path, manifest)
+
             with _session_proxy(
                 "automationbench",
                 args.session_proxy_port,
@@ -579,13 +614,11 @@ def run_suite(args: argparse.Namespace) -> Path:
 
 def main(argv: Sequence[str] | None = None) -> int:
     raw_args = list(argv if argv is not None else sys.argv[1:])
-    if os.name == "nt" and "--inside-wsl" not in raw_args:
-        return _relaunch_in_wsl(raw_args)
-
     args = _parser().parse_args(raw_args)
     if args.dry_run:
+        preview_dir = args.output_dir / "preview"
         preview = {
-            "tb21": _tb_command(args),
+            "tb21": _tb_command(args, preview_dir),
             "automationbench_simple": _automation_command(
                 args, args.output_dir / "automationbench-simple.json"
             ),

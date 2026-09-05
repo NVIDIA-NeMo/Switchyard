@@ -26,10 +26,10 @@ Qwen endpoint available at `host.docker.internal:1235`, set `NVIDIA_API_KEY`, an
 python benchmark/run_holdout_suite.py
 ```
 
-On Windows, run the same command from Python; the launcher re-enters through WSL so Docker and the
-Linux-only Harbor path have identical behavior. If the harnesses are elsewhere, pass
-`--automationbench-root` and `--appworld-root`. Use `--dry-run` to inspect all three commands
-without starting a benchmark.
+On Windows, run the same command from native Python with Docker Desktop available. The launcher
+calls Harbor, AutomationBench, AppWorld, and Docker directly without Bash or WSL. If the harnesses
+are elsewhere, pass `--automationbench-root` and `--appworld-root`. Use `--dry-run` to inspect all
+three commands without starting a benchmark.
 
 ## Prerequisites
 
