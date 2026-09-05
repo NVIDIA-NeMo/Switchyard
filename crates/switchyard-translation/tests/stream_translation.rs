@@ -1546,3 +1546,99 @@ fn responses_decode_emits_tool_arguments_once() -> TestResult {
     assert_eq!(seen, arguments);
     Ok(())
 }
+
+// A Responses `reasoning` output item may carry only `encrypted_content`, with no
+// plaintext. The stream decoder must surface it as a `reasoning.encrypted` detail so a
+// caller that buffers the stream (the escalation router) still holds something the
+// client can replay; otherwise the reasoning is dropped before it reaches the IR.
+#[test]
+fn responses_stream_decodes_encrypted_reasoning_item_into_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let mut state = StreamTranslationState::new(format, format);
+    let event = json!({
+        "type": "response.output_item.done",
+        "output_index": 0,
+        "item": {
+            "type": "reasoning",
+            "id": "rs_upstream",
+            "status": "completed",
+            "summary": [],
+            "encrypted_content": "opaque-encrypted-reasoning"
+        }
+    });
+
+    let decoded = engine.decode_stream_event(&mut state, format, event)?;
+
+    assert_eq!(
+        decoded.normalized(),
+        &[LlmResponseChunk::ReasoningDetailsDelta {
+            index: 0,
+            details: vec![json!({
+                "type": "reasoning.encrypted",
+                "data": "opaque-encrypted-reasoning"
+            })],
+            text: String::new(),
+        }]
+    );
+    Ok(())
+}
+
+// The synthesized encode path (no preserved provider JSON, as produced by
+// `AggLlmResponse::into_stream`) must emit an encrypted-only reasoning detail as a
+// Responses `reasoning` item carrying `encrypted_content`, not drop it.
+#[test]
+fn responses_stream_encodes_encrypted_reasoning_details_as_reasoning_item() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let mut state = StreamTranslationState::new(format, format);
+    let chunks = vec![
+        LlmResponseChunk::MessageStart {
+            id: Some("resp_1".to_string()),
+            model: Some(REASONING_MODEL.to_string()),
+        },
+        LlmResponseChunk::ReasoningDetailsDelta {
+            index: 0,
+            details: vec![json!({
+                "type": "reasoning.encrypted",
+                "data": "opaque-encrypted-reasoning"
+            })],
+            text: String::new(),
+        },
+        LlmResponseChunk::MessageStop { reason: None },
+    ];
+
+    let mut events = Vec::new();
+    for chunk in chunks {
+        events.extend(engine.encode_stream_event(
+            &mut state,
+            format,
+            LlmResponseStreamEvent::new(vec![chunk]),
+        )?);
+    }
+    events.extend(engine.finish_stream(&mut state, format)?);
+
+    let done_item = events
+        .iter()
+        .filter(|event| event["type"] == "response.output_item.done")
+        .map(|event| &event["item"])
+        .find(|item| item["type"] == "reasoning")
+        .ok_or("expected a completed reasoning output item")?;
+    assert_eq!(done_item["encrypted_content"], "opaque-encrypted-reasoning");
+
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("expected response.completed")?;
+    let final_reasoning = completed["response"]["output"]
+        .as_array()
+        .ok_or("output should be an array")?
+        .iter()
+        .find(|item| item["type"] == "reasoning")
+        .ok_or("final output should include the reasoning item")?;
+    assert_eq!(
+        final_reasoning["encrypted_content"],
+        "opaque-encrypted-reasoning"
+    );
+    Ok(())
+}

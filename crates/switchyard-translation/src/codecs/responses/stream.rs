@@ -7,6 +7,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::LlmResponseChunk;
+use crate::codecs::common::encrypted_reasoning_data;
 use crate::codecs::stream::{
     StreamCodec, StreamTranslationState, record_source_identity,
     target_message_id_or_source_message_id, target_model_or_source_model,
@@ -239,10 +240,18 @@ fn encode_responses_stream(
         LlmResponseChunk::ReasoningDelta { text, .. } => {
             encode_responses_reasoning_delta(state, text)
         }
-        LlmResponseChunk::ReasoningDetailsDelta { text, .. } if !text.is_empty() => {
-            encode_responses_reasoning_delta(state, text)
+        LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
+            // Encrypted reasoning has no streamable text, but the item must still be emitted
+            // so the client can replay it on the next turn.
+            if let Some(data) = encrypted_reasoning_data(&details) {
+                state.response_reasoning_encrypted = Some(data);
+            }
+            let mut out = ensure_responses_reasoning_started(state);
+            if !text.is_empty() {
+                out.extend(encode_responses_reasoning_delta(state, text));
+            }
+            out
         }
-        LlmResponseChunk::ReasoningDetailsDelta { .. } => Vec::new(),
         LlmResponseChunk::ToolCallDelta {
             index,
             id,
@@ -309,22 +318,31 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.response_reasoning_started
         && let Some(output_index) = state.response_reasoning_output_index
     {
-        out.push(json!({
-            "type": "response.reasoning_text.done",
-            "output_index": output_index,
-            "content_index": 0,
-            "text": state.response_reasoning_text,
-        }));
-        let item = json!({
+        // Encrypted-only reasoning streamed no text, so it gets no text part; the item
+        // itself still closes so the client can replay its `encrypted_content`.
+        let mut content = Vec::new();
+        if !state.response_reasoning_text.is_empty() {
+            out.push(json!({
+                "type": "response.reasoning_text.done",
+                "output_index": output_index,
+                "content_index": 0,
+                "text": state.response_reasoning_text,
+            }));
+            content.push(json!({
+                "type": "reasoning_text",
+                "text": state.response_reasoning_text,
+            }));
+        }
+        let mut item = json!({
             "type": "reasoning",
             "id": format!("rs_{output_index}"),
             "status": "completed",
-            "content": [{
-                "type": "reasoning_text",
-                "text": state.response_reasoning_text,
-            }],
+            "content": content,
             "summary": [],
         });
+        if let Some(encrypted) = &state.response_reasoning_encrypted {
+            item["encrypted_content"] = Value::String(encrypted.clone());
+        }
         out.push(json!({
             "type": "response.output_item.done",
             "output_index": output_index,
@@ -438,13 +456,31 @@ fn decode_responses_output_item_done(
     let Some(item) = event.get("item").and_then(Value::as_object) else {
         return Vec::new();
     };
-    if item.get("type").and_then(Value::as_str) != Some("function_call") {
-        return Vec::new();
-    }
     let index = event
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
+    // A reasoning item may carry only `encrypted_content`, with no streamed text. Surface it
+    // as a `reasoning.encrypted` detail so a buffering caller still holds something the
+    // client can replay. Text already arrived through `reasoning_text.delta`, so none is
+    // repeated here.
+    if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+        return item
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .filter(|data| !data.is_empty())
+            .map(|data| {
+                vec![LlmResponseChunk::ReasoningDetailsDelta {
+                    index,
+                    details: vec![json!({"type": "reasoning.encrypted", "data": data})],
+                    text: String::new(),
+                }]
+            })
+            .unwrap_or_default();
+    }
+    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+        return Vec::new();
+    }
     let arguments = item.get("arguments").and_then(Value::as_str);
     if let Some(arguments) = arguments {
         // Compared against what THIS decoder has seen. Reading the encoder's
@@ -557,11 +593,8 @@ fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String)
     out
 }
 
-// Accumulates reasoning text and emits Responses reasoning events.
-fn encode_responses_reasoning_delta(
-    state: &mut StreamTranslationState,
-    text: String,
-) -> Vec<Value> {
+// Opens the Responses reasoning output item once, emitting its `added` events.
+fn ensure_responses_reasoning_started(state: &mut StreamTranslationState) -> Vec<Value> {
     let mut out = ensure_responses_created(state);
     if !state.response_reasoning_started {
         state.response_reasoning_started = true;
@@ -586,6 +619,15 @@ fn encode_responses_reasoning_delta(
             "text": "",
         }));
     }
+    out
+}
+
+// Accumulates reasoning text and emits Responses reasoning events.
+fn encode_responses_reasoning_delta(
+    state: &mut StreamTranslationState,
+    text: String,
+) -> Vec<Value> {
+    let mut out = ensure_responses_reasoning_started(state);
     state.response_reasoning_text.push_str(&text);
     out.push(json!({
         "type": "response.reasoning_text.delta",

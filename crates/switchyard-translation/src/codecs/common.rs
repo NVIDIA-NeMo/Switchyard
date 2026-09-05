@@ -62,6 +62,17 @@ pub(crate) fn reasoning_text_from_details(details: &[Value]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
+/// Returns the opaque payload of the first `reasoning.encrypted` detail, if any.
+pub(crate) fn encrypted_reasoning_data(details: &[Value]) -> Option<String> {
+    details
+        .iter()
+        .filter_map(Value::as_object)
+        .find(|detail| detail.get("type").and_then(Value::as_str) == Some("reasoning.encrypted"))
+        .and_then(|detail| detail.get("data").and_then(Value::as_str))
+        .filter(|data| !data.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 /// Returns the first non-empty string stored under the requested keys.
 pub(crate) fn first_nonempty_string<'a>(
     object: &'a Map<String, Value>,

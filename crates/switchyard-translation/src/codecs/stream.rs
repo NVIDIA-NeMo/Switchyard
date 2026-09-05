@@ -60,6 +60,9 @@ pub struct StreamTranslationState {
     pub(crate) response_reasoning_started: bool,
     pub(crate) response_reasoning_output_index: Option<usize>,
     pub(crate) response_reasoning_text: String,
+    /// Opaque `encrypted_content` carried by a Responses reasoning item. Kept verbatim so
+    /// the emitted item stays replayable by the client even when no plaintext streamed.
+    pub(crate) response_reasoning_encrypted: Option<String>,
     pub(crate) next_response_output_index: usize,
     pub(crate) response_sequence_number: u64,
 
