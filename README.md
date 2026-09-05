@@ -104,19 +104,21 @@ step 1, stop when you reach the result named under the heading.
 ### Path 1 — Load the NeMo Relay Plugin
 
 You finish with an existing NeMo Relay deployment routing through Switchyard.
-Requires NeMo Relay `>=0.8.1,<0.9.0`.
+Requires NeMo Relay `>=0.8.1,<0.9.0` and a Rust toolchain to build the plugin.
 
-**1. Build the plugin bundle.**
-
-```bash
-python crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py
-```
+**1. Build, package, and register the plugin.** Follow steps 1–3 of the
+[install guide in the plugin README](crates/switchyard-nemo-relay-plugin/README.md#install).
+They build the shared library, package it into a bundle with a digest-bearing
+`relay-plugin.toml`, and register it with `nemo-relay plugins add`.
 
 **2. Write the Switchyard deployment** to `/etc/switchyard/routes.toml` — the
 same version-1 TOML the proxy uses. Copy the file from step 2 of Path 3 below.
 
-**3. Point Relay at the generated manifest.** Use exactly one deployment
-source: a path, as here, or the config nested under `switchyard_config`.
+**3. Point the plugin at the deployment.** Add a `config` table to the
+`[[plugins.dynamic]]` entry that `nemo-relay plugins add` wrote, plus the
+policy override that lets Relay load the unsigned bundle. Use exactly one
+deployment source: a path, as here, or the config nested under
+`switchyard_config`.
 
 ```toml
 [[plugins.dynamic]]
@@ -125,33 +127,47 @@ manifest = "./plugins/switchyard/relay-plugin.toml"
 [plugins.dynamic.config]
 priority = 0
 switchyard_config_path = "/etc/switchyard/routes.toml"
+
+[plugins.policy.overrides."nvidia.switchyard"]
+attestation = "integrity_only"
 ```
 
-**4. Restart Relay.** It now runs any algorithm `switchyard-runner` supports,
-while Switchyard owns provider HTTP dispatch.
+**4. Enable, validate, and restart Relay.**
+
+```bash
+nemo-relay plugins enable nvidia.switchyard
+nemo-relay plugins validate nvidia.switchyard
+```
+
+Relay now runs any algorithm `switchyard-runner` supports, while Switchyard
+owns provider HTTP dispatch.
 
 Details: [`switchyard-nemo-relay-plugin`](crates/switchyard-nemo-relay-plugin/README.md)
-and the [server configuration guide](crates/switchyard-server/CONFIGURATION.md).
+and the [TOML schema reference](docs/reference/toml_schema.md).
 
 ### Path 2 — Embed the Library
 
 You finish with your own harness picking a model per request and still making
 every model call itself. Shown in Python; the Rust API has the same shape.
 
-**1. Install.**
+**1. Install.** The `Step` and `LlmResponse` API below is newer than the
+`nemo-switchyard` 0.2.0 release on PyPI, which exposes an older `LlmTarget`
+based interface. Until the next release, build from source (requires a Rust
+toolchain):
 
 ```bash
-pip install nemo-switchyard
+pip install git+https://github.com/NVIDIA-NeMo/Switchyard.git
 ```
 
-For Rust, add the crates to your `Cargo.toml` instead:
+For Rust, the `v0.2.0` tag has the older `run_stream` shape too, so depend on
+the repository's `main` branch and pin the `rev` you tested:
 
 ```toml
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", branch = "main" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", branch = "main" }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
@@ -171,33 +187,51 @@ algorithm = stage_router(
 )
 ```
 
-**3. Drive it.** `run_stream` takes an OpenAI-style request dict and yields
-steps. A `CallModel` step is a classifier or judge call — make it with your own
-client and hand the result back. `Done` carries the pick.
+**3. Drive it.** `run_stream` takes a normalized Switchyard request dict, not
+an OpenAI wire payload: the `Request` shape from
+[`switchyard-protocol`](crates/protocol/README.md), with `messages` whose
+`content` is a list of typed blocks. It yields steps. A `CallModel` step is a
+classifier or judge call — make it with your own client and hand back the
+normalized response wrapped in `LlmResponse.Agg`. `Done` carries the pick.
 
 ```python
-async def route(request: dict, clients: dict) -> tuple[str, dict]:
+async def call_with_fallback(request: dict, models: list[str], clients: dict) -> LlmResponse.Agg:
+    error: Exception | None = None
+    for model in models:
+        try:
+            return LlmResponse.Agg(await clients[model].call({**request, "model": model}))
+        except Exception as exc:
+            error = exc
+    raise error or RuntimeError("no candidate models")
+
+
+async def route(request: dict, clients: dict) -> LlmResponse.Agg | LlmResponse.Stream:
     async for step in algorithm.run_stream(request):
         match step:
             case Step.CallModel(call):
-                target = call.models[0]
                 try:
-                    response = await clients[target].call({**call.request, "model": target})
+                    call.respond(await call_with_fallback(call.request, call.models, clients))
                 except Exception as error:
                     call.fail(error)
-                else:
-                    call.respond(LlmResponse.Agg(response))
             case Step.Done(outcome):
-                return outcome.selected_model_ids[0], outcome.request
+                if outcome.response is not None:
+                    return outcome.response
+                return await call_with_fallback(
+                    outcome.request, outcome.selected_model_ids, clients
+                )
+    raise RuntimeError("algorithm ended without a decision")
 ```
 
-`clients` is your existing per-model client map. `call.models` lists fallbacks
-in order; `outcome.request` is the request to send, which may carry a rewrite
-the algorithm applied.
+`clients` maps each target name to your existing client; each `call` takes a
+normalized request dict and returns a normalized response dict. `call.models`
+and `outcome.selected_model_ids` list candidates in order, so the helper tries
+each one before giving up. `outcome.request` is the request to send, which may
+carry a rewrite the algorithm applied. When `outcome.response` is set, routing
+already produced the answer and no further call is needed.
 
-**4. Make the answer call** with the returned model and request, using your own
-HTTP client, retries, and credentials. If `outcome.response` is set, routing
-already produced the answer and you can return it directly.
+**4. Make the answer call** with your own HTTP client, retries, and
+credentials, as `call_with_fallback` does above. A complete runnable version,
+including streaming responses, is in [`examples/libsy.py`](examples/libsy.py).
 
 Type reference: [`switchyard-libsy`](crates/libsy/README.md) and
 [`switchyard-protocol`](crates/protocol/README.md). In Rust the loop is
@@ -246,8 +280,7 @@ confidence_threshold = 0.5
 TOML
 ```
 
-Every key is documented in the
-[server configuration guide](crates/switchyard-server/CONFIGURATION.md).
+Every key is documented in the [TOML schema reference](docs/reference/toml_schema.md).
 
 **3. Start it.** `--dry-run` loads the config, prints `server OK:` and the model
 IDs it exposes, then exits without starting the server.
