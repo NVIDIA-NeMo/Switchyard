@@ -254,6 +254,7 @@ impl TranslatingLlmClient {
         }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
+            normalize_anthropic_thinking_sampling(&mut body);
             enable_anthropic_prompt_caching(&mut body);
         }
         if matches!(backend, Backend::OpenAiChat(_)) {
@@ -826,6 +827,20 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     };
     for (key, value) in extra_body {
         object.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+}
+
+// Anthropic requires its default sampling temperature while thinking is active.
+fn normalize_anthropic_thinking_sampling(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    let thinking_type = object
+        .get("thinking")
+        .and_then(|thinking| thinking.get("type"))
+        .and_then(Value::as_str);
+    if matches!(thinking_type, Some("adaptive" | "enabled")) {
+        object.remove("temperature");
     }
 }
 
@@ -1565,6 +1580,58 @@ mod tests {
             "context_management": {
                 "edits": [{"type": "clear_thinking_20251015"}]
             }
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("claude")),
+                WireFormat::AnthropicMessages,
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn anthropic_adaptive_thinking_drops_incompatible_temperature()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                body.get("temperature").is_none()
+                    && body["thinking"] == json!({"type": "adaptive"})
+                    && body["output_config"] == json!({"effort": "high"})
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let mut backend = config(&server.uri());
+        backend.extra_body = BTreeMap::from([
+            ("thinking".to_string(), json!({"type": "adaptive"})),
+            ("output_config".to_string(), json!({"effort": "high"})),
+        ]);
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(backend),
+            None,
+        )])?;
+        let raw = json!({
+            "model": "client-facing",
+            "max_tokens": 7,
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.2
         });
 
         client
