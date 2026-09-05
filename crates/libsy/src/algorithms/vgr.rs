@@ -103,6 +103,7 @@ impl Vgr {
         let local = config.targets.local.clone();
         let cloud = config.targets.cloud.clone();
         let targets = vec![local.clone(), cloud.clone()];
+        let turn_affinity = Arc::new(AffinityRouter::new().with_release_on_user_turn());
         let latch = config.latch_escalation.then(|| {
             // Retaining only the capable tier is what makes this an escalation
             // latch rather than plain affinity: a local commit leaves the
@@ -118,6 +119,9 @@ impl Vgr {
         if let Some(latch) = latch {
             route = route.with_processor(latch.clone()).with_classifier(latch);
         }
+        route = route
+            .with_processor(turn_affinity.clone())
+            .with_classifier(turn_affinity);
         Ok(Self {
             route: route.with_classifier(classifier),
             local,

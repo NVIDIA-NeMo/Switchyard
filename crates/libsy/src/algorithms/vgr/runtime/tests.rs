@@ -47,6 +47,41 @@ fn request(text: &str) -> Request {
     }
 }
 
+/// A request keyed to one session for affinity behavior.
+fn session_request(session_id: &str, text: &str) -> Request {
+    Request {
+        metadata: Some(switchyard_protocol::Metadata {
+            session_id: Some(session_id.to_string()),
+            agent_id: Some("agent-a".to_string()),
+            ..Default::default()
+        }),
+        ..request(text)
+    }
+}
+
+/// Extends a user request with one tool call and its result.
+fn tool_continuation(mut request: Request) -> Request {
+    request.llm_request.messages.push(Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolCall(ToolCall {
+            id: "call-1".into(),
+            name: "terminal".into(),
+            arguments: serde_json::json!({"command": "true"}),
+        })],
+    });
+    request.llm_request.messages.push(Message {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult(ToolResult {
+            tool_call_id: "call-1".into(),
+            content: vec![ContentBlock::Text {
+                text: "command succeeded".into(),
+            }],
+            is_error: Some(false),
+        })],
+    });
+    request
+}
+
 /// An active route between the two tiers, with verification enabled.
 fn active() -> VgrConfig {
     VgrConfig {
@@ -1193,9 +1228,194 @@ async fn the_vgr_deadline_cancels_a_pinned_checker_process_tree()
 }
 
 #[tokio::test]
+async fn tool_continuations_retain_the_tier_and_new_user_turns_reenter_vgr() -> Result<()> {
+    let route = Arc::new(super::super::Vgr::new(active())?);
+    let opening = session_request("session-1", "what is the capital?");
+    let seed_calls = CallLog::default();
+    let seen = seed_calls.clone();
+
+    let (target, _) = test_drive(route.clone(), opening.clone(), move |t: ModelId, _r| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&t);
+            if seen.targets().len() == 1 {
+                Ok(reply("Paris."))
+            } else {
+                Ok(reply_with_readout("yes", 0.97))
+            }
+        }
+    })
+    .await?;
+    assert_eq!(target, ModelId::from(LOCAL));
+
+    let continued = tool_continuation(opening);
+    let continuation_calls = CallLog::default();
+    let seen = continuation_calls.clone();
+    let (target, _) = test_drive(route.clone(), continued.clone(), move |t: ModelId, _r| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&t);
+            Ok(reply("tool continuation"))
+        }
+    })
+    .await?;
+    assert_eq!(target, ModelId::from(LOCAL));
+    assert_eq!(continuation_calls.targets(), vec![LOCAL]);
+
+    let mut fresh_turn = continued;
+    fresh_turn
+        .llm_request
+        .messages
+        .push(Message::text(Role::Assistant, "The command completed."));
+    fresh_turn
+        .llm_request
+        .messages
+        .push(Message::text(Role::User, "Now use a different approach."));
+    let fresh_calls = CallLog::default();
+    let seen = fresh_calls.clone();
+    let (target, _) = test_drive(route, fresh_turn, move |t: ModelId, _r| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&t);
+            if t == *LOCAL {
+                Err(LlmClientError::Transport {
+                    source: std::io::Error::other("connection refused").into(),
+                })
+            } else {
+                Ok(reply("cloud answer"))
+            }
+        }
+    })
+    .await?;
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(fresh_calls.targets(), vec![LOCAL, CLOUD]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn requests_without_session_identity_are_reverified() -> Result<()> {
+    let route = Arc::new(super::super::Vgr::new(active())?);
+    let seed_calls = CallLog::default();
+    let seen = seed_calls.clone();
+    let (target, _) = test_drive(
+        route.clone(),
+        request("first turn"),
+        move |t: ModelId, _r| {
+            let seen = seen.clone();
+            async move {
+                seen.record(&t);
+                if seen.targets().len() == 1 {
+                    Ok(reply("local answer"))
+                } else {
+                    Ok(reply_with_readout("yes", 0.97))
+                }
+            }
+        },
+    )
+    .await?;
+    assert_eq!(target, ModelId::from(LOCAL));
+
+    let second_calls = CallLog::default();
+    let seen = second_calls.clone();
+    let (target, _) = test_drive(route, request("second turn"), move |t: ModelId, _r| {
+        let seen = seen.clone();
+        async move {
+            seen.record(&t);
+            if t == *LOCAL {
+                Err(LlmClientError::Transport {
+                    source: std::io::Error::other("connection refused").into(),
+                })
+            } else {
+                Ok(reply("cloud answer"))
+            }
+        }
+    })
+    .await?;
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(second_calls.targets(), vec![LOCAL, CLOUD]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_sessions_retain_independent_turn_tiers() -> Result<()> {
+    let route = Arc::new(super::super::Vgr::new(active())?);
+    let local_opening = session_request("session-local", "solve locally");
+    let cloud_opening = session_request("session-cloud", "solve in cloud");
+
+    let local_seed_calls = CallLog::default();
+    let seen = local_seed_calls.clone();
+    let (target, _) = test_drive(
+        route.clone(),
+        local_opening.clone(),
+        move |t: ModelId, _r| {
+            let seen = seen.clone();
+            async move {
+                seen.record(&t);
+                if seen.targets().len() == 1 {
+                    Ok(reply("local answer"))
+                } else {
+                    Ok(reply_with_readout("yes", 0.97))
+                }
+            }
+        },
+    )
+    .await?;
+    assert_eq!(target, ModelId::from(LOCAL));
+
+    let (target, _) = test_drive(
+        route.clone(),
+        cloud_opening.clone(),
+        |t: ModelId, _r| async move {
+            if t == *LOCAL {
+                Err(LlmClientError::Transport {
+                    source: std::io::Error::other("connection refused").into(),
+                })
+            } else {
+                Ok(reply("cloud answer"))
+            }
+        },
+    )
+    .await?;
+    assert_eq!(target, ModelId::from(CLOUD));
+
+    let local_calls = CallLog::default();
+    let seen_local = local_calls.clone();
+    let cloud_calls = CallLog::default();
+    let seen_cloud = cloud_calls.clone();
+    let local_turn = test_drive(
+        route.clone(),
+        tool_continuation(local_opening),
+        move |t: ModelId, _r| {
+            let seen = seen_local.clone();
+            async move {
+                seen.record(&t);
+                Ok(reply("local continuation"))
+            }
+        },
+    );
+    let cloud_turn = test_drive(
+        route,
+        tool_continuation(cloud_opening),
+        move |t: ModelId, _r| {
+            let seen = seen_cloud.clone();
+            async move {
+                seen.record(&t);
+                Ok(reply("cloud continuation"))
+            }
+        },
+    );
+    let (local_result, cloud_result) = tokio::join!(local_turn, cloud_turn);
+    assert_eq!(local_result?.0, ModelId::from(LOCAL));
+    assert_eq!(cloud_result?.0, ModelId::from(CLOUD));
+    assert_eq!(local_calls.targets(), vec![LOCAL]);
+    assert_eq!(cloud_calls.targets(), vec![CLOUD]);
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_escalated_session_stays_on_the_capable_tier() {
-    // The latch retains only the capable tier, so a session that escalated is
-    // not re-verified — and does not pay for another local attempt.
+    // The whole-session cloud latch runs ahead of per-turn affinity, so a fresh
+    // user message remains cloud and does not pay for another local attempt.
     let log = CallLog::default();
     let config = VgrConfig {
         latch_escalation: true,
