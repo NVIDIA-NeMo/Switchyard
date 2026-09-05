@@ -52,6 +52,9 @@ pub struct StreamTranslationState {
     pub(crate) text_block_started: bool,
     pub(crate) emitted_content_block: bool,
     pub(crate) tool_states: BTreeMap<usize, StreamToolState>,
+    /// Reasoning text observed while DECODING, per output index, so a completed item
+    /// that repeats already-streamed text is not decoded twice.
+    pub(crate) decoded_reasoning: BTreeMap<usize, String>,
 
     pub(crate) response_created: bool,
     pub(crate) response_text_started: bool,

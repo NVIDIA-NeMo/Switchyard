@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    encrypted_reasoning_data, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
-    text_from_blocks,
+    collect_responses_reasoning_text, encrypted_reasoning_data, is_known_role_name,
+    provider_extensions, reasoning_text_from_blocks, text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
@@ -669,30 +669,6 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
 }
 
 // Collects text from the known Responses reasoning content/summary shapes.
-fn collect_responses_reasoning_text(value: Option<&Value>, out: &mut Vec<String>) {
-    match value {
-        Some(Value::String(text)) if !text.is_empty() => out.push(text.clone()),
-        Some(Value::Array(items)) => {
-            for item in items {
-                match item {
-                    Value::String(text) if !text.is_empty() => out.push(text.clone()),
-                    Value::Object(object) => {
-                        if matches!(
-                            object.get("type").and_then(Value::as_str),
-                            Some("reasoning_text" | "summary_text" | "text")
-                        ) && let Some(text) = object.get("text").and_then(Value::as_str)
-                            && !text.is_empty()
-                        {
-                            out.push(text.to_string());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        _ => {}
-    }
-}
 
 // Decodes Responses content arrays or strings into normalized content blocks.
 fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {

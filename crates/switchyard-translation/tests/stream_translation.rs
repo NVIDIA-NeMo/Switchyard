@@ -1642,3 +1642,60 @@ fn responses_stream_encodes_encrypted_reasoning_details_as_reasoning_item() -> T
     );
     Ok(())
 }
+
+// Some providers deliver a reasoning item only in `response.output_item.done`, as
+// plaintext in a top-level `text` field, with no streamed `reasoning_text.delta` events.
+// The decoder must surface that text so a buffering caller can re-emit the item.
+#[test]
+fn responses_stream_decodes_text_only_reasoning_item_from_done() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let mut state = StreamTranslationState::new(format, format);
+    let event = json!({
+        "type": "response.output_item.done",
+        "output_index": 0,
+        "item": {"type": "reasoning", "id": "rs_upstream", "text": "Let me explore the repo first."}
+    });
+
+    let decoded = engine.decode_stream_event(&mut state, format, event)?;
+
+    assert_eq!(
+        decoded.normalized(),
+        &[LlmResponseChunk::ReasoningDelta {
+            index: 0,
+            text: "Let me explore the repo first.".to_string(),
+        }]
+    );
+    Ok(())
+}
+
+// When reasoning text already streamed through `reasoning_text.delta`, the completed item
+// that repeats it must not be decoded a second time.
+#[test]
+fn responses_stream_does_not_duplicate_streamed_reasoning_on_done() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let mut state = StreamTranslationState::new(format, format);
+    let delta = json!({
+        "type": "response.reasoning_text.delta",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "Let me explore"
+    });
+    let done = json!({
+        "type": "response.output_item.done",
+        "output_index": 0,
+        "item": {
+            "type": "reasoning",
+            "id": "rs_upstream",
+            "content": [{"type": "reasoning_text", "text": "Let me explore"}]
+        }
+    });
+
+    let first = engine.decode_stream_event(&mut state, format, delta)?;
+    let second = engine.decode_stream_event(&mut state, format, done)?;
+
+    assert_eq!(first.normalized().len(), 1);
+    assert_eq!(second.normalized(), &[]);
+    Ok(())
+}

@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::LlmResponseChunk;
-use crate::codecs::common::encrypted_reasoning_data;
+use crate::codecs::common::{collect_responses_reasoning_text, encrypted_reasoning_data};
 use crate::codecs::stream::{
     StreamCodec, StreamTranslationState, record_source_identity,
     target_message_id_or_source_message_id, target_model_or_source_model,
@@ -144,11 +144,19 @@ fn decode_responses_stream(
                 .or_else(|| event.get("text"))
                 .and_then(Value::as_str)
                 .map(|text| {
+                    let index = event
+                        .get("output_index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as usize;
+                    // Recorded so `response.output_item.done`, which repeats the full
+                    // text, can tell it is a repeat.
+                    state
+                        .decoded_reasoning
+                        .entry(index)
+                        .or_default()
+                        .push_str(text);
                     vec![LlmResponseChunk::ReasoningDelta {
-                        index: event
-                            .get("output_index")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0) as usize,
+                        index,
                         text: text.to_string(),
                     }]
                 })
@@ -460,23 +468,39 @@ fn decode_responses_output_item_done(
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
-    // A reasoning item may carry only `encrypted_content`, with no streamed text. Surface it
-    // as a `reasoning.encrypted` detail so a buffering caller still holds something the
-    // client can replay. Text already arrived through `reasoning_text.delta`, so none is
-    // repeated here.
+    // A completed reasoning item is the only place some providers put the reasoning at all:
+    // as plaintext in `text`, `content`, or `summary`, with no streamed deltas; or as an
+    // opaque `encrypted_content`. Surface whichever is present so a buffering caller still
+    // holds something the client can replay. Text that already streamed through
+    // `reasoning_text.delta` is not repeated.
     if item.get("type").and_then(Value::as_str) == Some("reasoning") {
-        return item
+        let mut out = Vec::new();
+        let mut parts = Vec::new();
+        collect_responses_reasoning_text(item.get("content"), &mut parts);
+        collect_responses_reasoning_text(item.get("summary"), &mut parts);
+        collect_responses_reasoning_text(item.get("text"), &mut parts);
+        let text = parts.join("\n");
+        let already = state
+            .decoded_reasoning
+            .get(&index)
+            .map(String::as_str)
+            .unwrap_or("");
+        if !text.is_empty() && already.is_empty() {
+            state.decoded_reasoning.insert(index, text.clone());
+            out.push(LlmResponseChunk::ReasoningDelta { index, text });
+        }
+        if let Some(data) = item
             .get("encrypted_content")
             .and_then(Value::as_str)
             .filter(|data| !data.is_empty())
-            .map(|data| {
-                vec![LlmResponseChunk::ReasoningDetailsDelta {
-                    index,
-                    details: vec![json!({"type": "reasoning.encrypted", "data": data})],
-                    text: String::new(),
-                }]
-            })
-            .unwrap_or_default();
+        {
+            out.push(LlmResponseChunk::ReasoningDetailsDelta {
+                index,
+                details: vec![json!({"type": "reasoning.encrypted", "data": data})],
+                text: String::new(),
+            });
+        }
+        return out;
     }
     if item.get("type").and_then(Value::as_str) != Some("function_call") {
         return Vec::new();

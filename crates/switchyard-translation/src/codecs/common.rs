@@ -62,6 +62,33 @@ pub(crate) fn reasoning_text_from_details(details: &[Value]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
+/// Collects reasoning text from a Responses reasoning item's `content` or `summary`
+/// array, or from a bare string, into `out`. Empty strings are skipped.
+pub(crate) fn collect_responses_reasoning_text(value: Option<&Value>, out: &mut Vec<String>) {
+    match value {
+        Some(Value::String(text)) if !text.is_empty() => out.push(text.clone()),
+        Some(Value::Array(items)) => {
+            for item in items {
+                match item {
+                    Value::String(text) if !text.is_empty() => out.push(text.clone()),
+                    Value::Object(object) => {
+                        if matches!(
+                            object.get("type").and_then(Value::as_str),
+                            Some("reasoning_text" | "summary_text" | "text")
+                        ) && let Some(text) = object.get("text").and_then(Value::as_str)
+                            && !text.is_empty()
+                        {
+                            out.push(text.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Returns the opaque payload of the first `reasoning.encrypted` detail, if any.
 pub(crate) fn encrypted_reasoning_data(details: &[Value]) -> Option<String> {
     details
