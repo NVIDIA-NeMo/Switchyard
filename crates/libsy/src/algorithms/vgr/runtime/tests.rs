@@ -16,9 +16,9 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use parking_lot::Mutex;
 use switchyard_protocol::{
-    AggLlmResponse, ContentBlock, FormatId, InstructionBlock, LlmClientError, LlmResponse,
-    LlmResponseChunk, LlmResponseStreamEvent, Message, ModelId, PreservationMetadata, Request,
-    Response, ResponseOutput, Role, StopReason, ToolCall, ToolResult, Usage, WireFormat,
+    AggLlmResponse, ContentBlock, FormatId, ImageSource, InstructionBlock, LlmClientError,
+    LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Message, ModelId, PreservationMetadata,
+    Request, Response, ResponseOutput, Role, StopReason, ToolCall, ToolResult, Usage, WireFormat,
     text_request, text_response,
 };
 
@@ -550,6 +550,42 @@ async fn off_mode_serves_cloud_without_producing_an_attempt() -> Result<()> {
     ))?);
 
     let (target, _) = test_drive(route, request("hello"), move |t: ModelId, _r| {
+        let log = seen.clone();
+        async move {
+            log.record(&t);
+            let result: ServeResult = Ok(reply("cloud answer"));
+            result
+        }
+    })
+    .await?;
+
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(log.targets(), vec![CLOUD]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_in_a_tool_result_bypasses_a_text_only_local_tier() -> Result<()> {
+    // Agent screenshots are nested in tool results, not always top-level user blocks.
+    let mut with_image = request("inspect the screenshot");
+    with_image.llm_request.messages.push(Message {
+        role: Role::Tool,
+        content: vec![ContentBlock::ToolResult(ToolResult {
+            tool_call_id: "call-1".into(),
+            content: vec![ContentBlock::Image {
+                source: ImageSource::Url {
+                    url: "https://example.invalid/screenshot.png".into(),
+                    detail: None,
+                },
+            }],
+            is_error: Some(false),
+        })],
+    });
+    let log = CallLog::default();
+    let seen = log.clone();
+    let route = Arc::new(super::super::Vgr::new(active())?);
+
+    let (target, _) = test_drive(route, with_image, move |t: ModelId, _r| {
         let log = seen.clone();
         async move {
             log.record(&t);

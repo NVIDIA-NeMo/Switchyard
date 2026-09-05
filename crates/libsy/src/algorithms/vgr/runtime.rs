@@ -35,7 +35,8 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use http::StatusCode;
 use switchyard_protocol::{
-    AggLlmResponse, LlmClientError, LlmResponse, LlmResponseStreamEvent, ModelId, Request, Response,
+    AggLlmResponse, ContentBlock, LlmClientError, LlmResponse, LlmResponseStreamEvent, ModelId,
+    Request, Response,
 };
 
 use super::config::{ServingMode, VgrConfig};
@@ -114,6 +115,8 @@ impl Classifier<State> for VgrClassifier {
             Some("breaker_open")
         } else if turn_latched(state) {
             Some("turn_verification_latched")
+        } else if !self.config.local_supports_images && request_has_image(request) {
+            Some("local_image_unsupported")
         } else {
             None
         };
@@ -970,6 +973,29 @@ fn latch_turns(state: &mut State) {
     state
         .extra
         .insert(TURN_LATCHED_KEY.into(), StateValue::Count(1));
+}
+
+/// Whether a request carries image content directly or inside a tool result.
+fn request_has_image(request: &Request) -> bool {
+    request
+        .llm_request
+        .instructions
+        .iter()
+        .any(|instruction| instruction.content.iter().any(block_has_image))
+        || request
+            .llm_request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(block_has_image)
+}
+
+fn block_has_image(block: &ContentBlock) -> bool {
+    match block {
+        ContentBlock::Image { .. } => true,
+        ContentBlock::ToolResult(result) => result.content.iter().any(block_has_image),
+        _ => false,
+    }
 }
 
 /// Carries the rejected attempt forward as reference for the capable tier.

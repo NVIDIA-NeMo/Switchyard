@@ -944,6 +944,7 @@ confidence_threshold = 0.5
             return Err(RunnerError::configuration("vgr route parsed incorrectly"));
         };
         assert!(route_config.task_typing);
+        assert!(!route_config.local_supports_images);
         assert_eq!(route_config.cloud_judge_target, None);
         assert_eq!(
             route.algorithm.callable_target_names(),
@@ -966,6 +967,24 @@ confidence_threshold = 0.5
             return Err(RunnerError::configuration("vgr opt-out route is missing"));
         };
         assert!(!opted_out_config.task_typing);
+
+        let vision = vgr_config().replace(
+            "task_typing = true",
+            "task_typing = true\nlocal_supports_images = true",
+        );
+        let vision_config: DeploymentConfig = toml::from_str(&vision).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse vgr vision config: {error}"))
+        })?;
+        let Some(RouteConfig {
+            algorithm: AlgorithmSpec::Vgr {
+                config: vision_route,
+            },
+            ..
+        }) = vision_config.routes.get("vgr")
+        else {
+            return Err(RunnerError::configuration("vgr vision route is missing"));
+        };
+        assert!(vision_route.local_supports_images);
         Ok(())
     }
 

@@ -175,6 +175,11 @@ pub struct Targets {
 pub struct VgrConfig {
     /// The tiers to route between and consult.
     pub targets: Targets,
+    /// Whether the local tier accepts image content.
+    ///
+    /// False by default because an undeclared local capability must not turn an
+    /// image-bearing request into a failed speculative call.
+    pub local_supports_images: bool,
     /// The decision constants. Defaults to the current policy.
     pub policy: Policy,
     /// How much authority decisions have.
@@ -225,6 +230,7 @@ impl VgrConfig {
                 judge: None,
                 cloud_judge: None,
             },
+            local_supports_images: false,
             policy: Policy::CURRENT,
             mode: ServingMode::Off,
             checker: None,

@@ -352,6 +352,9 @@ pub struct VgrRouteConfig {
     pub local_target: String,
     /// The tier a request escalates to when the attempt is not licensed.
     pub cloud_target: String,
+    /// Whether the local tier accepts image content.
+    #[serde(default)]
+    pub local_supports_images: bool,
     /// Answers the cheap local verification rungs. Defaults to the local tier.
     #[serde(default)]
     pub judge_target: Option<String>,
@@ -1278,6 +1281,7 @@ fn build_vgr(
         )));
     }
     let mut vgr = VgrConfig::new(local, cloud.clone());
+    vgr.local_supports_images = config.local_supports_images;
     vgr.targets = VgrTargets {
         judge: resolve_optional(&config.judge_target)?,
         cloud_judge: resolve_optional(&config.cloud_judge_target)?.or(Some(cloud)),
