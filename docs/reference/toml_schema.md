@@ -199,7 +199,7 @@ Escalation mode serves the weak target first and judges the completed turn. See
 | `strong_target` | Yes | — | Target used after the session latches. |
 | `weak_target` | Yes | — | Target served before the latch. |
 | `prompt` | No | packaged prompt | Replaces the trajectory-judge prompt. |
-| `escalation.confirmations` | No | `2` | Consecutive escalate verdicts required to latch. Above `1` needs a session ID. |
+| `escalation.confirmations` | No | `2` | Consecutive fresh-evidence verdicts for the same failure category required to latch. Above `1` needs a session ID. |
 | `escalation.recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
 | `escalation.window_message_chars` | No | `500` | Per-message cap inside that window. |
 

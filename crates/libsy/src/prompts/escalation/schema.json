@@ -10,12 +10,21 @@
           "type": "boolean",
           "description": "True when the run is likely doomed without escalation to the strong tier."
         },
+        "category": {
+          "type": "string",
+          "enum": ["none", "repetition", "false_progress", "drift", "desperation", "capability_gap"],
+          "description": "The single trouble pattern supporting escalation, or none when escalation is false."
+        },
+        "new_evidence": {
+          "type": "boolean",
+          "description": "True only when the newest assistant turn or its resulting tool output adds evidence for the named trouble pattern."
+        },
         "reason": {
           "type": "string",
           "description": "One short sentence naming the trouble pattern, or stating why the run is progressing."
         }
       },
-      "required": ["escalate", "reason"],
+      "required": ["escalate", "category", "new_evidence", "reason"],
       "additionalProperties": false
     }
   }
