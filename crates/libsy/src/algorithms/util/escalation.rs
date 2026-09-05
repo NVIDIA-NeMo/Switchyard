@@ -439,6 +439,23 @@ mod tests {
         assert_eq!(truncate_middle("short", 50), "short");
     }
 
+    /// Callers budget a payload on the promise that clipping never exceeds the limit. Below
+    /// the marker's own width there is no room to mark the cut, so the marker is dropped
+    /// rather than pushing the result over.
+    #[test]
+    fn truncate_middle_never_exceeds_a_limit_narrower_than_the_marker() {
+        use crate::algorithms::util::TRIM_MARKER;
+
+        let text = "a".repeat(100);
+        for limit in 0..=TRIM_MARKER.chars().count() + 2 {
+            let trimmed = truncate_middle(&text, limit);
+            assert!(
+                trimmed.chars().count() <= limit,
+                "limit {limit}: {trimmed:?}"
+            );
+        }
+    }
+
     #[test]
     fn summary_keeps_anchors_and_the_recent_window() {
         let mut messages = vec![

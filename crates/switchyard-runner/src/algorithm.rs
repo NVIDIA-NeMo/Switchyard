@@ -949,6 +949,7 @@ fn build_algorithm(
                     classifier_config.classify_trigger = config.classify_trigger;
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
+                    classifier_config.judge_char_budget = config.judge_char_budget;
                     classifier_config.max_output_tokens = config.max_output_tokens;
                     LlmTaskClassifier::new(LlmClassifierConfig::Custom {
                         judge_target: classifier,

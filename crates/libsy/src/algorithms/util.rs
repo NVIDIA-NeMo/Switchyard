@@ -47,10 +47,14 @@ pub(crate) fn truncate_middle(text: &str, limit: usize) -> String {
     if chars.len() <= limit {
         return text.to_string();
     }
-    let keep = limit
-        .saturating_sub(TRIM_MARKER.chars().count())
-        .max(20)
-        .min(chars.len());
+    // Below the marker's own width there is no room to say the text was clipped, so keep
+    // what fits and drop the marker. Marking anyway would push the result past `limit`,
+    // which callers budgeting a payload rely on it never doing.
+    let marker = TRIM_MARKER.chars().count();
+    if limit <= marker {
+        return chars[..limit].iter().collect();
+    }
+    let keep = limit - marker;
     let head = keep * 2 / 3;
     let tail = keep - head;
     let mut out: String = chars[..head].iter().collect();

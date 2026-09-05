@@ -166,23 +166,33 @@ fn task_messages(messages: &[Message]) -> Vec<Message> {
 /// tool result is routinely larger than every text block around it, so measuring text
 /// alone would report a payload as small while the judge is billed for all of it.
 fn message_chars(message: &Message) -> usize {
-    fn content_chars(content: &[ContentBlock]) -> usize {
-        content
-            .iter()
-            .map(|block| match block {
-                ContentBlock::Text { text }
-                | ContentBlock::Refusal { text }
-                | ContentBlock::Reasoning { text, .. } => text.chars().count(),
-                ContentBlock::ToolCall(call) => {
-                    call.name.chars().count() + call.arguments.to_string().chars().count()
-                }
-                ContentBlock::ToolResult(result) => content_chars(&result.content),
-                // Media and unknown blocks are opaque here; their wire cost is not text.
-                _ => 0,
-            })
-            .sum()
+    message.content.iter().map(block_chars).sum()
+}
+
+/// Characters one content block costs a judge.
+fn block_chars(block: &ContentBlock) -> usize {
+    match block {
+        ContentBlock::Text { text }
+        | ContentBlock::Refusal { text }
+        | ContentBlock::Reasoning { text, .. } => text.chars().count(),
+        ContentBlock::ToolCall(call) => {
+            call.name.chars().count() + call.arguments.to_string().chars().count()
+        }
+        ContentBlock::ToolResult(result) => result.content.iter().map(block_chars).sum(),
+        // Media and unknown blocks are opaque here; their wire cost is not text.
+        _ => 0,
     }
-    content_chars(&message.content)
+}
+
+/// Whether clipping can shrink this block.
+///
+/// Tool arguments and results are JSON the judge may need to read as a unit, and reasoning
+/// is replayed with provider state, so none of them can be cut down to fit.
+fn is_clippable(block: &ContentBlock) -> bool {
+    matches!(
+        block,
+        ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
+    )
 }
 
 /// Total judge payload size for a selected message list.
@@ -218,18 +228,27 @@ fn window_within_budget(messages: &[Message], window: usize, budget: usize) -> V
 
 /// Clips text blocks so an unwindowable payload still fits `budget`.
 ///
-/// Only text is clipped. Tool arguments are JSON the judge may need to read as a unit, and
-/// truncating them would hand it malformed values rather than a shorter payload.
+/// The share is per block rather than per message: one message can carry several text
+/// blocks, and a per-message allowance would let each of them spend it in full.
+///
+/// Blocks that cannot be clipped are charged first, so what remains is what the text is
+/// allowed to spend. When they alone exceed the budget every text block collapses to
+/// nothing and the payload still overruns; cutting tool JSON to fit would hand the judge
+/// malformed values, which is worse than an oversized prompt.
 fn clip_to_budget(messages: &mut [Message], budget: usize) {
-    if messages.is_empty() {
+    let blocks = || messages.iter().flat_map(|message| &message.content);
+    let clippable = blocks().filter(|block| is_clippable(block)).count();
+    if clippable == 0 {
         return;
     }
-    let per_message = budget / messages.len();
-    for message in messages.iter_mut() {
-        for block in &mut message.content {
-            if let ContentBlock::Text { text } | ContentBlock::Refusal { text } = block {
-                *text = truncate_middle(text, per_message);
-            }
+    let fixed: usize = blocks()
+        .filter(|block| !is_clippable(block))
+        .map(block_chars)
+        .sum();
+    let per_block = budget.saturating_sub(fixed) / clippable;
+    for block in messages.iter_mut().flat_map(|message| &mut message.content) {
+        if let ContentBlock::Text { text } | ContentBlock::Refusal { text } = block {
+            *text = truncate_middle(text, per_block);
         }
     }
 }
@@ -247,10 +266,13 @@ impl ClassifierInput for TaskInput {
         // The default preserves the whole-task anchor and latest user update. A
         // configured window widens that to the surrounding conversation.
         let mut messages = match self.recent_turn_window {
+            // The routing instruction appended below is part of what the judge is sent, so
+            // its cost comes out of the budget rather than on top of it.
             Some(window) => window_within_budget(
                 &request.llm_request.messages,
                 window,
-                self.judge_char_budget,
+                self.judge_char_budget
+                    .saturating_sub(TRAILING_ROUTING_INSTRUCTION.chars().count()),
             ),
             None => task_messages(&request.llm_request.messages),
         };
@@ -1579,6 +1601,54 @@ mod tests {
         assert!(payload_chars(&built) <= 1_000, "{}", payload_chars(&built));
         // Clipping is marked, so the judge can tell a trimmed task from a short one.
         assert!(task.contains("[trimmed]"), "{task}");
+        Ok(())
+    }
+
+    /// The routing instruction is appended after selection, so the budget has to cover it:
+    /// a selection sized to the limit would otherwise ship a payload above the limit.
+    #[test]
+    fn the_budget_covers_the_appended_routing_instruction() -> Result<()> {
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            Message::text(Role::User, "w".repeat(4_000)),
+            Message::text(Role::Assistant, "recent"),
+        ];
+        let built = budgeted_messages(messages, 2, 600)?;
+
+        // `built` includes the trailing instruction, so this measures the whole payload.
+        assert!(
+            built
+                .iter()
+                .any(|message| message.text_content("\n").as_deref()
+                    == Some(TRAILING_ROUTING_INSTRUCTION))
+        );
+        assert!(payload_chars(&built) <= 600, "{}", payload_chars(&built));
+        Ok(())
+    }
+
+    /// One message can carry several text blocks. A per-message allowance would let each
+    /// block spend it in full, so the share is per block.
+    #[test]
+    fn several_text_blocks_in_one_message_share_the_budget() -> Result<()> {
+        let crowded = Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "a".repeat(9_000),
+                },
+                ContentBlock::Text {
+                    text: "b".repeat(9_000),
+                },
+            ],
+        };
+        let messages = vec![
+            Message::text(Role::System, "client instructions"),
+            crowded,
+            Message::text(Role::Assistant, "recent"),
+        ];
+        let built = budgeted_messages(messages, 2, 900)?;
+
+        assert!(payload_chars(&built) <= 900, "{}", payload_chars(&built));
         Ok(())
     }
 
