@@ -54,7 +54,9 @@ the prompt in `json_object` mode.
 
 ## How the decision works
 
-For each turn on an unlatched session, Switchyard:
+When `expected_capable_gain` is set to zero or a negative number, Switchyard
+routes directly to the weak target and skips the judge. Otherwise, for each turn
+on an unlatched session, Switchyard:
 
 1. Calls the weak target and buffers its reply.
 2. Appends that reply to the transcript and asks the judge to rule on the
@@ -74,7 +76,9 @@ A latched session routes straight to the strong target with no judge call:
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
 flowchart LR
-    t["turn"] --> p{"streak >= confirmations?"}
+    t["turn"] --> g{"calibrated gain <= 0?"}
+    g -->|yes| w0["route weak; skip judge"]
+    g -->|no or unset| p{"streak >= confirmations?"}
     p -->|yes| s["route strong; skip judge"]
     p -->|no| c["call weak, buffer reply"]
     c --> j["judge the completed turn"]
@@ -83,7 +87,7 @@ flowchart LR
     j -->|escalate, confirmed| l["discard weak reply; serve strong"]
 
     classDef box font-family:monospace,fill:none,stroke:#9aa0a6,stroke-width:1px;
-    class t,p,s,c,j,w,l box;
+    class t,g,w0,p,s,c,j,w,l box;
 ```
 
 A judge that times out, errors, or returns an unparseable verdict fails open: the
@@ -98,19 +102,32 @@ compatibility guidance as the LLM classifier judge. See
 
 ## Tuning options
 
-The judge exposes three settings. Their defaults are the benchmarked
+Escalation exposes four settings. Their defaults are the benchmarked
 configuration, so a bare `escalation = {}` is a valid, tuned route:
 
 | Key | Default | Meaning |
 |---|---|---|
+| `expected_capable_gain` | unset | Externally calibrated, signed expected-utility gain from switching to the capable target. A positive value enables judging; zero or a negative value keeps the efficient target and skips judge calls. Must be finite. |
 | `confirmations` | `2` | Consecutive escalate verdicts required before the session latches to strong. Must be at least `1`. |
 | `recent_turn_window` | `28` | Trailing messages shown to the judge on top of the anchors. Must be at least `1`. |
 | `window_message_chars` | `500` | Per-message truncation cap inside that trailing window. Must be at least `50`. |
+
+The utility gate controls judge-driven escalation. The route's normal fallback
+to the other target remains available if the weak target is unavailable or
+exceeds its context window.
 
 `confirmations` is the main cost dial. `1` latches sooner and spends more on the
 strong tier. `2` or higher requires a session identity, because the streak is
 retained per session — without one, every turn starts from zero and the route
 never latches. Clients supply it with `x-switchyard-session-id`.
+
+`expected_capable_gain` is a deployment-level calibration input, not a value the
+trajectory judge learns. Define utility for the deployment, estimate the
+capable target's expected utility minus the efficient target's on comparable
+traffic, and set the signed difference. This prevents judge-driven escalation
+when model ordering is reversed or the capable target's quality gain does not
+justify its cost. Omit it when no calibration exists to preserve the normal
+trajectory judge behavior.
 
 Anchor and transcript caps remain fixed. Set the route-level
 `max_output_tokens` key to change the judge's reply budget. Any decline still

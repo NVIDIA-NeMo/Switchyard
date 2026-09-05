@@ -48,6 +48,8 @@ struct EscalationClassifier {
     efficient: ModelId,
     /// Consecutive escalate verdicts required to latch.
     confirmations: u32,
+    /// Signed deployment calibration for the capable target's expected utility gain.
+    expected_capable_gain: Option<f64>,
 }
 
 /// Builds the escalation classifier used by the shared LLM classifier route shell.
@@ -60,6 +62,7 @@ pub(super) fn build_classifier(
     max_output_tokens: u64,
 ) -> Result<Arc<dyn Classifier<State>>> {
     let confirmations = config.confirmations;
+    let expected_capable_gain = config.expected_capable_gain;
     let classifier: Arc<dyn Classifier<State>> = Arc::new(EscalationClassifier {
         judge: escalation::build_judge(
             judge_target,
@@ -72,6 +75,7 @@ pub(super) fn build_classifier(
         capable: capable_target.clone(),
         efficient: efficient_target.clone(),
         confirmations,
+        expected_capable_gain,
     });
     Ok(classifier)
 }
@@ -89,6 +93,20 @@ impl Classifier<State> for EscalationClassifier {
                 message: "escalation classifier requires a driver".into(),
             });
         };
+
+        // Calibration is a workload/model-pool prior. When the proposed rescue target has no
+        // positive expected gain, trajectory trouble is not a reason to spend a judge call or
+        // make a judge-driven switch; the surrounding route serves the efficient target directly.
+        if let Some(gain) = self.expected_capable_gain
+            && gain <= 0.0
+        {
+            tracing::info!(
+                expected_capable_gain = gain,
+                target = %self.efficient,
+                "calibration kept the efficient tier"
+            );
+            return Ok((decisive(&self.efficient), None));
+        }
 
         // A confirmed session stays capable without a judge call.
         if streak(state) >= self.confirmations {
@@ -251,6 +269,12 @@ mod tests {
 
     /// Builds a router with escalation enabled (`confirmations=1` latches immediately).
     fn escalation_router() -> Result<Arc<LlmTaskClassifier>> {
+        escalation_router_with_gain(None)
+    }
+
+    fn escalation_router_with_gain(
+        expected_capable_gain: Option<f64>,
+    ) -> Result<Arc<LlmTaskClassifier>> {
         Ok(Arc::new(LlmTaskClassifier::new(
             LlmClassifierConfig::Escalation {
                 judge_target: ModelId::from("judge"),
@@ -258,12 +282,30 @@ mod tests {
                 capable_target: ModelId::from("capable"),
                 contract: ClassifierContractConfig::default(),
                 config: EscalationJudgeConfig {
+                    expected_capable_gain,
                     confirmations: 1,
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             },
         )?))
+    }
+
+    #[test]
+    fn rejects_nonfinite_expected_capable_gain() {
+        let result = LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+            judge_target: ModelId::from("judge"),
+            efficient_target: ModelId::from("efficient"),
+            capable_target: ModelId::from("capable"),
+            contract: ClassifierContractConfig::default(),
+            config: EscalationJudgeConfig {
+                expected_capable_gain: Some(f64::NAN),
+                ..EscalationJudgeConfig::default()
+            },
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+        });
+
+        assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
     }
 
     #[tokio::test]
@@ -283,6 +325,27 @@ mod tests {
             response.llm_response.as_agg().map(completion_text),
             Some("efficient answer".to_string())
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nonpositive_calibrated_gain_bypasses_judge_and_capable_target() -> Result<()> {
+        let judge = Queue::new([r#"{"escalate":true,"reason":"stuck"}"#]);
+        let model = Queue::new(["efficient answer"]);
+
+        let (selected_model, response) = test_drive(
+            escalation_router_with_gain(Some(0.0))?,
+            classify_request(),
+            queued(model, Arc::clone(&judge)),
+        )
+        .await?;
+
+        assert_eq!(selected_model, "efficient");
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("efficient answer".to_string())
+        );
+        assert_eq!(judge.0.lock().len(), 1, "judge response was not consumed");
         Ok(())
     }
 
@@ -327,12 +390,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upgrades_to_capable_when_judge_escalates() -> Result<()> {
+    async fn positive_calibrated_gain_allows_judge_escalation() -> Result<()> {
         let judge = Queue::new([r#"{"escalate":true,"reason":"stuck in a loop"}"#]);
         let model = Queue::new(["efficient draft", "capable answer"]);
 
         let (selected_model, response) = test_drive(
-            escalation_router()?,
+            escalation_router_with_gain(Some(0.1))?,
             classify_request(),
             queued(model, judge),
         )
