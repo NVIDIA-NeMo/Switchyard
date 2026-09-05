@@ -56,6 +56,15 @@ APPWORLD_TASK_IDS = (
 )
 
 
+def _default_checkout(name: str) -> Path:
+    """Find a sibling harness next to either the checkout or its worktree root."""
+    for parent in tuple(REPO_ROOT.parents)[:3]:
+        candidate = parent / name
+        if candidate.is_dir():
+            return candidate
+    return REPO_ROOT.parent / name
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -63,7 +72,6 @@ def _parser() -> argparse.ArgumentParser:
             "The same Python and Docker path is used natively on Windows and Linux."
         )
     )
-    default_harness_root = REPO_ROOT.parent
     parser.add_argument(
         "--server-config",
         type=Path,
@@ -72,12 +80,22 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--automationbench-root",
         type=Path,
-        default=Path(os.environ.get("AUTOMATIONBENCH_ROOT", default_harness_root / "AutomationBench")),
+        default=Path(
+            os.environ.get(
+                "AUTOMATIONBENCH_ROOT",
+                _default_checkout("AutomationBench"),
+            )
+        ),
     )
     parser.add_argument(
         "--appworld-root",
         type=Path,
-        default=Path(os.environ.get("APPWORLD_ROOT", default_harness_root / "appworld-repo")),
+        default=Path(
+            os.environ.get(
+                "APPWORLD_ROOT",
+                _default_checkout("appworld-repo"),
+            )
+        ),
     )
     parser.add_argument(
         "--output-dir",

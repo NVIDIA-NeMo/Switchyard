@@ -15,12 +15,14 @@ Harbor directly at the upstream provider.
 
 ## Run the complete VGR hold-out suite
 
-The internal hold-out launcher runs all of Terminal-Bench 2.1, AutomationBench `simple`, and
-AppWorld `dev_easy` in sequence. It verifies the pinned external harness revisions, builds the VGR
-server, preserves stable per-task routing sessions, and writes one top-level run manifest.
+The internal hold-out launcher runs all 319 tasks from Terminal-Bench 2.1 (89), AutomationBench
+`simple` (200), and AppWorld `dev_easy` (30) in sequence. It verifies the pinned external harness
+revisions, builds the VGR server, preserves stable per-task routing sessions, and writes one
+top-level run manifest.
 
-Place the pinned `AutomationBench` and `appworld-repo` checkouts beside this repository, make the
-Qwen endpoint available at `host.docker.internal:1235`, set `NVIDIA_API_KEY`, and run:
+Place the pinned `AutomationBench` and `appworld-repo` checkouts beside this repository or at the
+root containing its `review/` worktrees, make the Qwen endpoint available at
+`host.docker.internal:1235`, set `NVIDIA_API_KEY`, and run:
 
 ```bash
 python benchmark/run_holdout_suite.py

@@ -98,3 +98,16 @@ def test_launcher_has_no_wsl_or_shell_dependency() -> None:
 
     assert "wsl.exe" not in source
     assert "run-baseline.sh" not in source
+
+
+def test_default_checkout_finds_harness_above_a_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    repository = workspace / "review" / "switchyard"
+    harness = workspace / "AutomationBench"
+    repository.mkdir(parents=True)
+    harness.mkdir()
+    monkeypatch.setattr(launcher, "REPO_ROOT", repository)
+
+    assert launcher._default_checkout("AutomationBench") == harness
