@@ -472,7 +472,9 @@ def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> di
                 "python",
                 "-c",
                 (
-                    "import socket\n"
+                    "import pathlib, socket\n"
+                    "if not pathlib.Path('/etc/proxy-public/ca-cert.pem').is_file():\n"
+                    "    raise SystemExit('proxy CA is not ready')\n"
                     "for port in (3128, 3129):\n"
                     "    s=socket.create_connection(('127.0.0.1', port), 2)\n"
                     "    s.close()\n"

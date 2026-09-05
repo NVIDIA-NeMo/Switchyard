@@ -265,11 +265,14 @@ def test_generated_compose_contains_closed_book_proxy_topology(tmp_path: Path) -
     proxy_assets = output / "compose-task" / "environment" / "proxy"
     assert (proxy_assets / "Dockerfile").is_file()
     assert (proxy_assets / "entrypoint.sh").is_file()
-    assert (proxy_assets / "rewriter.py").is_file()
+    rewriter = proxy_assets / "rewriter.py"
+    assert rewriter.is_file()
+    assert 'SESSION_ID_HEADER = "x-switchyard-session-id"' in rewriter.read_text()
     assert not (proxy_assets / "verifier_proxy.py").exists()
     healthcheck = "\n".join(compose["services"]["proxy"]["healthcheck"]["test"])
     assert "3128" in healthcheck
     assert "3129" in healthcheck
+    assert "/etc/proxy-public/ca-cert.pem" in healthcheck
 
 
 def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Path) -> None:
