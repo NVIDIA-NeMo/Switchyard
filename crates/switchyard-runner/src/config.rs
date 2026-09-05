@@ -805,6 +805,29 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn escalation_accepts_finite_expected_capable_gain() -> RunnerResult<()> {
+        let calibrated = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { confirmations = 2, expected_capable_gain = -0.1 }",
+        );
+
+        runner_from_toml(&calibrated)?;
+        Ok(())
+    }
+
+    #[test]
+    fn escalation_rejects_nonfinite_expected_capable_gain() {
+        let calibrated = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { confirmations = 2, expected_capable_gain = nan }",
+        );
+
+        assert!(
+            error_message(&calibrated).contains("expected_capable_gain must be finite when set")
+        );
+    }
+
+    #[test]
     fn classifier_judge_completion_caps_are_configurable() -> RunnerResult<()> {
         let capability = VALID_CONFIG.replace(
             "base_threshold = 0.5",

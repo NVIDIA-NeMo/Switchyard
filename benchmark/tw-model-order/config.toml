@@ -1,0 +1,62 @@
+schema_version = 1
+
+[llm_clients.inference_api_chat]
+format = "openai_chat"
+base_url = "https://inference-api.nvidia.com/v1"
+api_key_env = "INFERENCE_API_KEY"
+
+[llm_clients.inference_api_anthropic]
+format = "anthropic_messages"
+base_url = "https://inference-api.nvidia.com"
+api_key_env = "INFERENCE_API_KEY"
+
+[targets.opus]
+id = "aws/anthropic/bedrock-claude-opus-4-8"
+llm_client = "inference_api_anthropic"
+
+[targets.opus.extra_body.output_config]
+effort = "medium"
+
+[targets.glm]
+id = "nvidia/zai-org/glm-5.2"
+llm_client = "inference_api_chat"
+
+[routes.escalation]
+id = "switchyard/escalation"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "glm"
+strong_target = "opus"
+weak_target = "glm"
+max_output_tokens = 32768
+escalation = { confirmations = 2 }
+
+[routes.calibrated_escalation]
+id = "switchyard/calibrated-escalation"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "glm"
+strong_target = "opus"
+weak_target = "glm"
+max_output_tokens = 32768
+escalation = { confirmations = 2, expected_capable_gain = -0.10 }
+
+[routes.always_opus]
+id = "switchyard/always-opus"
+type = "passthrough"
+target = "opus"
+
+[routes.direct_glm]
+id = "switchyard/direct-glm"
+type = "passthrough"
+target = "glm"
+
+[routes.capability]
+id = "switchyard/capability"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "glm"
+strong_target = "opus"
+weak_target = "glm"
+base_threshold = 0.5
+classify_trigger = "new_session"

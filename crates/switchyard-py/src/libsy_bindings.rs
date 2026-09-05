@@ -88,6 +88,7 @@ impl PyEscalationClassifierConfig {
     #[new]
     #[pyo3(signature = (
         *,
+        expected_capable_gain=None,
         confirmations=2,
         recent_turn_window=28,
         window_message_chars=500,
@@ -97,6 +98,7 @@ impl PyEscalationClassifierConfig {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        expected_capable_gain: Option<f64>,
         confirmations: u32,
         recent_turn_window: usize,
         window_message_chars: usize,
@@ -107,6 +109,7 @@ impl PyEscalationClassifierConfig {
         Ok(Self {
             contract: classifier_contract(prompt, response_format_type)?,
             judge: EscalationJudgeConfig {
+                expected_capable_gain,
                 confirmations,
                 recent_turn_window,
                 window_message_chars,

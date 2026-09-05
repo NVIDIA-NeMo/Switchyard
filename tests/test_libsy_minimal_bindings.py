@@ -12,6 +12,7 @@ from switchyard.libsy import (
     Algorithm,
     ContextWindowExceededError,
     CustomClassifierConfig,
+    EscalationClassifierConfig,
     LlmClassifierConfig,
     LlmResponse,
     RoutingOutcome,
@@ -306,6 +307,28 @@ async def test_classifier_config_accepts_json_object_output() -> None:
     assert "JSON Schema" in prompt
     assert '"p_solve"' in prompt
     assert response["model"] == "weak"
+
+
+async def test_escalation_config_nonpositive_gain_bypasses_judge() -> None:
+    """Verify that model-order calibration reaches the native escalation router."""
+
+    weak = EchoClient("weak")
+    algorithm = algorithms.llm_classifier(
+        LlmClassifierConfig.escalation(
+            "judge",
+            "weak",
+            "strong",
+            config=EscalationClassifierConfig(expected_capable_gain=0.0),
+        ),
+    )
+
+    selected_model, response = await run_algorithm(algorithm, {"weak": weak})
+
+    assert selected_model == "weak"
+    assert response["model"] == "weak"
+    assert len(weak.calls) == 1
+    assert weak.calls[0]["model"] == "weak"
+    assert weak.calls[0]["messages"] == request_body()["messages"]
 
 
 def test_classifier_config_rejects_unknown_response_format() -> None:

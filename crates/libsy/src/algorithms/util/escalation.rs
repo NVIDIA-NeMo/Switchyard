@@ -39,13 +39,20 @@ const FIRST_USER_CHARS: usize = 2_000;
 /// Backstop on the assembled transcript; the per-message caps normally bind first.
 const MAX_REQUEST_CHARS: usize = 18_000;
 
-/// The tuning surface for the trajectory judge.
+/// The tuning surface for trajectory escalation.
 ///
 /// The routing settings retain their benchmarked defaults. Everything else is a fixed invariant
 /// (the constants above).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EscalationJudgeConfig {
+    /// Externally calibrated expected utility gain from switching to the capable target.
+    ///
+    /// A positive value enables trajectory judging. Zero or a negative value keeps the
+    /// efficient target for normal serving and avoids judge calls. `None` preserves the legacy
+    /// uncalibrated behavior and enables judging. Transport and context-window fallbacks remain
+    /// available.
+    pub expected_capable_gain: Option<f64>,
     /// Consecutive escalate verdicts required before a turn moves to the capable tier, which
     /// is also the turn that latches the session. Any decline clears the streak.
     /// `1` escalates on the first verdict; the router's main cost dial.
@@ -61,6 +68,12 @@ impl EscalationJudgeConfig {
     /// Rejects settings that would leave the judge with nothing useful to read.
     fn validate(&self) -> Result<()> {
         let reject = |message: String| Err(LibsyError::AlgorithmError { message });
+        if self
+            .expected_capable_gain
+            .is_some_and(|gain| !gain.is_finite())
+        {
+            return reject("expected_capable_gain must be finite when set".to_string());
+        }
         if self.confirmations == 0 {
             return reject("confirmations must be at least 1".to_string());
         }
@@ -80,6 +93,7 @@ impl EscalationJudgeConfig {
 impl Default for EscalationJudgeConfig {
     fn default() -> Self {
         Self {
+            expected_capable_gain: None,
             confirmations: 2,
             recent_turn_window: 28,
             window_message_chars: 500,
