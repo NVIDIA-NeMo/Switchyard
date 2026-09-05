@@ -28,3 +28,33 @@ pub(crate) fn decisive(target: &ModelId) -> Classification {
 
 /// Default completion budget for internal classifier and escalation judge calls.
 pub(crate) const DEFAULT_JUDGE_MAX_OUTPUT_TOKENS: u64 = 4_096;
+
+/// Default character budget for a judge payload, shared by the escalation judge and the
+/// windowed classifier judges so one turn carrying a large tool result cannot decide how
+/// much a judge call costs.
+pub(crate) const DEFAULT_JUDGE_CHAR_BUDGET: usize = 18_000;
+
+/// Separator marking where [`truncate_middle`] dropped a message's interior.
+pub(crate) const TRIM_MARKER: &str = " ...[trimmed] ";
+
+/// Keeps the head and tail of `text` within `limit` characters.
+///
+/// The head gets two thirds of the surviving budget: for a judge reading agent activity the
+/// command or error signature that opens a message carries more signal than its trailing
+/// output. Clipping is marked so the judge can tell a trimmed message from a short one.
+pub(crate) fn truncate_middle(text: &str, limit: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= limit {
+        return text.to_string();
+    }
+    let keep = limit
+        .saturating_sub(TRIM_MARKER.chars().count())
+        .max(20)
+        .min(chars.len());
+    let head = keep * 2 / 3;
+    let tail = keep - head;
+    let mut out: String = chars[..head].iter().collect();
+    out.push_str(TRIM_MARKER);
+    out.extend(chars[chars.len() - tail..].iter());
+    out
+}
