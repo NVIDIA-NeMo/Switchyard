@@ -50,6 +50,22 @@ pub enum LibsyError {
         source: LlmClientError,
     },
 
+    /// A target was skipped because its endpoint circuit is open.
+    #[error("target {target:?} is unavailable because its circuit breaker is open")]
+    CircuitOpen {
+        /// Target whose endpoint is being skipped.
+        target: ModelId,
+    },
+
+    /// Both VGR serving tiers were unavailable for the same request.
+    #[error("both VGR tiers are unavailable: local: {local}; cloud: {cloud}")]
+    VgrTiersUnavailable {
+        /// Failure from the local attempt.
+        local: Box<LibsyError>,
+        /// Failure from the terminal cloud completion.
+        cloud: Box<LibsyError>,
+    },
+
     /// A user extension or other foreign operation failed.
     #[error("{operation} failed: {source}")]
     External {

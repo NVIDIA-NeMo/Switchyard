@@ -87,7 +87,7 @@ struct BreakerState {
     trial_in_flight: bool,
 }
 
-/// Stops calling a local endpoint that has failed repeatedly.
+/// Stops calling an endpoint that has failed repeatedly.
 ///
 /// Counts only *consecutive* failures, so an endpoint that is merely lossy never
 /// trips: one success resets the count. After the cooldown the circuit admits a
@@ -108,7 +108,7 @@ impl CircuitBreaker {
         }
     }
 
-    /// Whether the local tier should be skipped for this turn.
+    /// Whether the endpoint should be skipped for this turn.
     ///
     /// Admitting the half-open trial is a write, so this is not a read-only
     /// predicate: the same call that observes the cooldown expiring claims the
@@ -179,6 +179,7 @@ pub(super) fn indicates_endpoint_failure(error: &LibsyError) -> bool {
 /// strong enough to override that and latch cloud.
 pub(super) fn indicates_transport_unavailability(error: &LibsyError) -> bool {
     match error {
+        LibsyError::CircuitOpen { .. } | LibsyError::VgrTiersUnavailable { .. } => true,
         LibsyError::ClientCall { source, .. } => match source {
             switchyard_protocol::LlmClientError::Transport { .. }
             | switchyard_protocol::LlmClientError::Timeout { .. } => true,

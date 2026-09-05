@@ -1200,10 +1200,22 @@ fn sanitize_routing_header_value(value: &str) -> Option<String> {
 }
 
 fn algorithm_error(error: LibsyError) -> Response {
-    let LibsyError::ClientCall { source, .. } = &error else {
-        return server_error(error.to_string());
-    };
-    client_error(source)
+    match &error {
+        LibsyError::ClientCall { source, .. } => client_error(source),
+        LibsyError::CircuitOpen { .. } => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the selected model endpoint is temporarily unavailable",
+            "upstream_error",
+            "upstream_unavailable",
+        ),
+        LibsyError::VgrTiersUnavailable { .. } => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "both VGR serving tiers are temporarily unavailable",
+            "upstream_error",
+            "upstream_unavailable",
+        ),
+        _ => server_error(error.to_string()),
+    }
 }
 
 fn runner_error(error: RunnerError) -> Response {
@@ -1687,6 +1699,41 @@ mod tests {
     use tokio::sync::{Notify, oneshot};
 
     use super::*;
+
+    #[test]
+    fn vgr_availability_errors_map_to_service_unavailable() {
+        let combined = LibsyError::VgrTiersUnavailable {
+            local: Box::new(LibsyError::CircuitOpen {
+                target: ModelId::from("local"),
+            }),
+            cloud: Box::new(LibsyError::CircuitOpen {
+                target: ModelId::from("cloud"),
+            }),
+        };
+        assert_eq!(
+            algorithm_error(combined).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            algorithm_error(LibsyError::CircuitOpen {
+                target: ModelId::from("cloud"),
+            })
+            .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn terminal_context_overflow_remains_a_client_error() {
+        let error = LibsyError::client_call(
+            "cloud",
+            LlmClientError::ContextWindowExceeded {
+                model: ModelId::from("cloud"),
+                message: "request is too large".to_string(),
+            },
+        );
+        assert_eq!(algorithm_error(error).status(), StatusCode::BAD_REQUEST);
+    }
 
     /// A successful judge call lands in the per-session routing snapshot under its
     /// model id with the classifier tier, while routed calls stay off the observer's

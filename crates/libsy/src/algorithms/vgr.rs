@@ -90,6 +90,7 @@ pub struct Vgr {
     route: FallThrough<State>,
     local: switchyard_protocol::ModelId,
     cloud: switchyard_protocol::ModelId,
+    cloud_breaker: Arc<safety::CircuitBreaker>,
 }
 
 impl Vgr {
@@ -112,8 +113,13 @@ impl Vgr {
             // latched session does not even pay for the local attempt.
             Arc::new(AffinityRouter::new().with_latch_only([config.targets.cloud.clone()]))
         });
-        let breaker = safety::CircuitBreaker::new(config.breaker);
-        let classifier = Arc::new(runtime::VgrClassifier { config, breaker });
+        let local_breaker = Arc::new(safety::CircuitBreaker::new(config.breaker));
+        let cloud_breaker = Arc::new(safety::CircuitBreaker::new(config.breaker));
+        let classifier = Arc::new(runtime::VgrClassifier {
+            config,
+            local_breaker,
+            cloud_breaker: cloud_breaker.clone(),
+        });
 
         let mut route = FallThrough::new_with_state(targets).with_name("vgr");
         if let Some(latch) = latch {
@@ -126,6 +132,7 @@ impl Vgr {
             route: route.with_classifier(classifier),
             local,
             cloud,
+            cloud_breaker,
         })
     }
 }
@@ -137,12 +144,24 @@ impl Algorithm for Vgr {
     }
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
-        let mut outcome = self.route.execute(driver, request).await?;
+        let mut outcome = self.route.execute(driver.clone(), request).await?;
         let selected = outcome.selected_model_id()?.clone();
         if selected == self.cloud {
             // A cloud decision is terminal. Falling backward to local would
             // bypass the verification decision that selected cloud.
             outcome.selected_model_ids.truncate(1);
+            if outcome.response.is_none() {
+                outcome.response = Some(
+                    runtime::complete_cloud(
+                        &driver,
+                        &outcome.request,
+                        &self.cloud,
+                        &self.cloud_breaker,
+                        None,
+                    )
+                    .await?,
+                );
+            }
         } else if selected == self.local && outcome.response.is_none() {
             // Local may fail forward to cloud on the host's eligible-failure
             // policy. Current local commits carry their buffered response, but

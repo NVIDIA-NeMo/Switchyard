@@ -29,6 +29,7 @@
 //! evidence that was not gathered, which is exactly how the rules already treat
 //! a verifier that failed: it never commits.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -78,7 +79,9 @@ enum TurnAction {
 pub(super) struct VgrClassifier {
     pub(super) config: VgrConfig,
     /// Health of the local endpoint, shared across every turn this route serves.
-    pub(super) breaker: CircuitBreaker,
+    pub(super) local_breaker: Arc<CircuitBreaker>,
+    /// Health of the cloud endpoint, including terminal completion calls.
+    pub(super) cloud_breaker: Arc<CircuitBreaker>,
 }
 
 #[async_trait]
@@ -111,7 +114,7 @@ impl Classifier<State> for VgrClassifier {
             .is_some_and(|switch| switch.is_engaged())
         {
             Some("kill_switch")
-        } else if self.breaker.is_open() {
+        } else if self.local_breaker.is_open() {
             Some("breaker_open")
         } else if turn_latched(state) {
             Some("turn_verification_latched")
@@ -165,23 +168,31 @@ impl Classifier<State> for VgrClassifier {
             // call that returns a stream and then fails mid-transport is a
             // failed call, not a healthy one.
             Ok(Ok(attempt)) => {
-                self.breaker.record_success();
+                self.local_breaker.record_success();
                 attempt
             }
             Ok(Err(error)) if fallback_eligible(&error) => {
                 if indicates_endpoint_failure(&error) {
-                    self.breaker.record_failure();
+                    self.local_breaker.record_failure();
                 }
                 record.error(Stage::Attempt, &error);
                 record.short_circuit = Some("local_unavailable");
                 record.served_route = Some(Route::Cloud);
                 record.elapsed = started.elapsed();
                 record.emit();
-                return Ok((decisive(&targets.cloud), None));
+                let response = complete_cloud(
+                    driver,
+                    request,
+                    &targets.cloud,
+                    &self.cloud_breaker,
+                    Some(error),
+                )
+                .await?;
+                return Ok((decisive(&targets.cloud), Some(response)));
             }
             Ok(Err(error)) => {
                 if indicates_endpoint_failure(&error) {
-                    self.breaker.record_failure();
+                    self.local_breaker.record_failure();
                 }
                 record.error(Stage::Attempt, &error);
                 return Err(error);
@@ -189,13 +200,31 @@ impl Classifier<State> for VgrClassifier {
             Err(_elapsed) => {
                 // A tier that does not answer within the budget is unhealthy in
                 // exactly the way the breaker exists to notice.
-                self.breaker.record_failure();
+                self.local_breaker.record_failure();
                 record.unknown(Stage::Attempt, Unknown::TimedOut);
                 record.short_circuit = Some("local_timed_out");
                 record.served_route = Some(Route::Cloud);
                 record.elapsed = started.elapsed();
                 record.emit();
-                return Ok((decisive(&targets.cloud), None));
+                let local_error = LibsyError::client_call(
+                    targets.local.clone(),
+                    LlmClientError::Timeout {
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "VGR local attempt exceeded the decision deadline",
+                        )
+                        .into(),
+                    },
+                );
+                let response = complete_cloud(
+                    driver,
+                    request,
+                    &targets.cloud,
+                    &self.cloud_breaker,
+                    Some(local_error),
+                )
+                .await?;
+                return Ok((decisive(&targets.cloud), Some(response)));
             }
         };
         record.local_tokens += tokens(buffered.aggregate());
@@ -265,6 +294,59 @@ impl Classifier<State> for VgrClassifier {
     }
 }
 
+/// Serves a terminal cloud decision and updates the cloud endpoint breaker.
+pub(super) async fn complete_cloud(
+    driver: &Driver,
+    request: &Request,
+    target: &ModelId,
+    breaker: &CircuitBreaker,
+    local_error: Option<LibsyError>,
+) -> Result<Response> {
+    if breaker.is_open() {
+        return Err(combine_unavailable(
+            local_error,
+            LibsyError::CircuitOpen {
+                target: target.clone(),
+            },
+        ));
+    }
+
+    match driver
+        .call_model(request.clone(), vec![target.clone()])
+        .await
+    {
+        Ok(response) => {
+            breaker.record_success();
+            Ok(response)
+        }
+        Err(cloud_error) => {
+            if indicates_transport_unavailability(&cloud_error) {
+                breaker.record_failure();
+            } else {
+                // A completed request rejection proves the endpoint answered and
+                // releases any admitted half-open trial without tripping it.
+                breaker.record_success();
+            }
+            Err(combine_unavailable(local_error, cloud_error))
+        }
+    }
+}
+
+fn combine_unavailable(local_error: Option<LibsyError>, cloud_error: LibsyError) -> LibsyError {
+    match local_error {
+        Some(local_error)
+            if indicates_transport_unavailability(&local_error)
+                && indicates_transport_unavailability(&cloud_error) =>
+        {
+            LibsyError::VgrTiersUnavailable {
+                local: Box::new(local_error),
+                cloud: Box::new(cloud_error),
+            }
+        }
+        _ => cloud_error,
+    }
+}
+
 impl VgrClassifier {
     /// Judges one proposed tool-bearing assistant turn and advances its
     /// session-local confirmation streak.
@@ -306,7 +388,7 @@ impl VgrClassifier {
                 record.unknown(Stage::TurnVerification, Unknown::CallFailed);
                 if target == self.config.targets.local && indicates_transport_unavailability(&error)
                 {
-                    self.breaker.record_failure();
+                    self.local_breaker.record_failure();
                     latch_turns(state);
                     return TurnAction::Escalate;
                 }
@@ -315,7 +397,7 @@ impl VgrClassifier {
             Err(_elapsed) => {
                 record.unknown(Stage::TurnVerification, Unknown::TimedOut);
                 if target == self.config.targets.local {
-                    self.breaker.record_failure();
+                    self.local_breaker.record_failure();
                     latch_turns(state);
                     return TurnAction::Escalate;
                 }

@@ -34,6 +34,12 @@ pub(crate) fn safe_error_summary(error: &LibsyError) -> String {
         // upstream error, so only the class is reported.
         LibsyError::AlgorithmError { .. } => "algorithm error".to_string(),
         LibsyError::Driver(_) => "algorithm driver failed".to_string(),
+        LibsyError::CircuitOpen { target } => {
+            format!("target {target:?} circuit breaker is open")
+        }
+        LibsyError::VgrTiersUnavailable { .. } => {
+            "both VGR serving tiers are unavailable".to_string()
+        }
         // The operation is a static label, but the boxed source comes from a user
         // extension and is unvetted.
         LibsyError::External { operation, .. } => format!("{operation} failed"),

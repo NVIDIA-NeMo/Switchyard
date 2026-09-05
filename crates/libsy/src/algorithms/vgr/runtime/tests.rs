@@ -1123,6 +1123,153 @@ async fn a_dead_local_endpoint_stops_being_called_once_the_breaker_opens() {
 }
 
 #[tokio::test]
+async fn repeated_cloud_failures_open_the_terminal_breaker() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let config = VgrConfig {
+        breaker: BreakerConfig {
+            threshold: 2,
+            cooldown: Duration::from_secs(60),
+        },
+        ..VgrConfig::new(ModelId::from(LOCAL), ModelId::from(CLOUD))
+    };
+    let route = Arc::new(super::super::Vgr::new(config).expect("builds"));
+
+    for _ in 0..2 {
+        let seen = calls.clone();
+        let error = match test_drive(route.clone(), request("hello"), move |_target, _request| {
+            let seen = seen.clone();
+            async move {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Err(LlmClientError::Transport {
+                    source: std::io::Error::other("cloud unavailable").into(),
+                })
+            }
+        })
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("cloud call should fail"),
+        };
+        assert!(matches!(error, LibsyError::ClientCall { .. }));
+    }
+
+    let seen = calls.clone();
+    let error = match test_drive(route, request("hello"), move |_target, _request| {
+        let seen = seen.clone();
+        async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Ok(reply("must not be called"))
+        }
+    })
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("the open cloud breaker should fail fast"),
+    };
+    assert!(matches!(error, LibsyError::CircuitOpen { .. }));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_successful_cloud_half_open_trial_closes_the_breaker() -> Result<()> {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let config = VgrConfig {
+        breaker: BreakerConfig {
+            threshold: 1,
+            cooldown: Duration::from_millis(20),
+        },
+        ..VgrConfig::new(ModelId::from(LOCAL), ModelId::from(CLOUD))
+    };
+    let route = Arc::new(super::super::Vgr::new(config)?);
+
+    let seen = calls.clone();
+    let _error = match test_drive(route.clone(), request("hello"), move |_target, _request| {
+        let seen = seen.clone();
+        async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Err(LlmClientError::Transport {
+                source: std::io::Error::other("cloud unavailable").into(),
+            })
+        }
+    })
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("first cloud call should fail"),
+    };
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    for _ in 0..2 {
+        let seen = calls.clone();
+        let (target, _) = test_drive(route.clone(), request("hello"), move |_target, _request| {
+            let seen = seen.clone();
+            async move {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Ok(reply("cloud recovered"))
+            }
+        })
+        .await?;
+        assert_eq!(target, ModelId::from(CLOUD));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn dual_endpoint_outage_returns_the_typed_combined_error() {
+    let route = Arc::new(super::super::Vgr::new(active()).expect("builds"));
+    let error = match test_drive(
+        route,
+        request("hello"),
+        |target: ModelId, _request| async move {
+            Err(LlmClientError::Transport {
+                source: std::io::Error::other(format!("{target} unavailable")).into(),
+            })
+        },
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("both tiers should fail"),
+    };
+
+    assert!(matches!(
+        error,
+        LibsyError::VgrTiersUnavailable { local, cloud }
+            if matches!(&*local, LibsyError::ClientCall { target, .. } if target == LOCAL)
+                && matches!(&*cloud, LibsyError::ClientCall { target, .. } if target == CLOUD)
+    ));
+}
+
+#[tokio::test]
+async fn cloud_context_overflow_remains_the_terminal_client_error() {
+    let route = Arc::new(super::super::Vgr::new(active()).expect("builds"));
+    let error = match test_drive(
+        route,
+        request("hello"),
+        |target: ModelId, _request| async move {
+            Err(LlmClientError::ContextWindowExceeded {
+                model: target.clone(),
+                message: format!("{target} context exceeded"),
+            })
+        },
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("both tiers reject the request"),
+    };
+
+    assert!(matches!(
+        error,
+        LibsyError::ClientCall {
+            target,
+            source: LlmClientError::ContextWindowExceeded { .. },
+        } if target == CLOUD
+    ));
+}
+
+#[tokio::test]
 async fn a_hung_verifier_cannot_overrun_the_decision_budget() {
     // The deadline binds each call, not just the gaps between them: a verifier
     // that accepts the request and never answers must not hold the turn open.
