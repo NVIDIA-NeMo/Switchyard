@@ -230,7 +230,7 @@ where
     /// mid-stream, or unparseable reply — is logged and folded into `None` for the policy's
     /// fallback branch. A closed driver stream is folded too; the algorithm's next driver
     /// call surfaces it, so nothing is masked.
-    async fn verdict(
+    pub(crate) async fn verdict(
         &self,
         state: &mut State,
         request: &Request,
