@@ -183,7 +183,7 @@ pub struct LlmClassifierRouteConfig {
 }
 
 /// Routing policy applied only to delegated sub-agent work, nested inside a
-/// `passthrough` or `stage_router` route.
+/// `passthrough`, `llm_classifier`, `stage_router` or `composite` route.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SubagentRouteConfig {
@@ -245,6 +245,9 @@ pub enum AlgorithmSpec {
         /// Judge and tier settings, written directly in the route table.
         #[serde(flatten)]
         config: LlmClassifierRouteConfig,
+        /// Separate policy for delegated sub-agent work.
+        #[serde(default)]
+        subagents: Option<SubagentRouteConfig>,
     },
     /// Picks a tier per turn by scoring signals from recent tool results.
     StageRouter {
@@ -433,31 +436,38 @@ impl AlgorithmSpec {
                 }
                 names
             }
-            Self::LlmClassifier { config, .. } => {
-                match config.mode.unwrap_or(if config.escalation.is_some() {
-                    ClassifierMode::Escalation
-                } else {
-                    ClassifierMode::Capability
-                }) {
-                    ClassifierMode::Capability => config
-                        .weak_target
-                        .iter()
-                        .chain(&config.strong_target)
-                        .map(String::as_str)
-                        .collect(),
-                    ClassifierMode::Escalation => config
-                        .strong_target
-                        .iter()
-                        .chain(&config.weak_target)
-                        .map(String::as_str)
-                        .collect(),
-                    ClassifierMode::Custom => config
-                        .targets
-                        .iter()
-                        .flatten()
-                        .map(String::as_str)
-                        .collect(),
+            Self::LlmClassifier {
+                config, subagents, ..
+            } => {
+                let mut names: Vec<&str> =
+                    match config.mode.unwrap_or(if config.escalation.is_some() {
+                        ClassifierMode::Escalation
+                    } else {
+                        ClassifierMode::Capability
+                    }) {
+                        ClassifierMode::Capability => config
+                            .weak_target
+                            .iter()
+                            .chain(&config.strong_target)
+                            .map(String::as_str)
+                            .collect(),
+                        ClassifierMode::Escalation => config
+                            .strong_target
+                            .iter()
+                            .chain(&config.weak_target)
+                            .map(String::as_str)
+                            .collect(),
+                        ClassifierMode::Custom => config
+                            .targets
+                            .iter()
+                            .flatten()
+                            .map(String::as_str)
+                            .collect(),
+                    };
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.routing_target_names());
                 }
+                names
             }
             Self::StageRouter {
                 tiers, subagents, ..
@@ -499,7 +509,14 @@ impl AlgorithmSpec {
     pub fn callable_target_names(&self) -> Vec<&str> {
         let mut names = self.routing_target_names();
         match self {
-            Self::LlmClassifier { config, .. } => names.push(&config.classifier_target),
+            Self::LlmClassifier {
+                config, subagents, ..
+            } => {
+                names.push(&config.classifier_target);
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.classifier_target_name());
+                }
+            }
             Self::Passthrough {
                 subagents: Some(subagents),
                 ..
@@ -865,6 +882,7 @@ fn build_algorithm(
         }
         AlgorithmSpec::LlmClassifier {
             config: classifier_config,
+            subagents,
             ..
         } => {
             let classifier =
@@ -948,7 +966,8 @@ fn build_algorithm(
                     error,
                 )
             })?;
-            Ok(Arc::new(algorithm))
+            let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
+            attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
         AlgorithmSpec::StageRouter {
             tiers,

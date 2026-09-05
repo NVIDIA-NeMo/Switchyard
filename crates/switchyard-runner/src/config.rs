@@ -743,7 +743,7 @@ confidence_threshold = 0.5
     }
 
     #[test]
-    fn passthrough_and_stage_accept_subagent_routing() -> RunnerResult<()> {
+    fn parent_routes_accept_subagent_routing() -> RunnerResult<()> {
         let stage = stage_config();
         let stage_with_classifier = with_subagent_llm_classifier(&stage, "stage", "");
         let parsed: DeploymentConfig = toml::from_str(&stage_with_classifier).map_err(|error| {
@@ -757,11 +757,41 @@ confidence_threshold = 0.5
             assert!(callable_targets.contains(&expected));
         }
 
+        // An llm_classifier parent ends up with two judges once it nests a sub-agent route:
+        // its own and the child's. Renaming the parent's tells them apart. The exact vector
+        // pins that the child's targets are appended rather than merely present -- the child
+        // reuses the parent's own `strong`/`weak`, so `contains` cannot see the difference.
+        let base = VALID_CONFIG.replace(
+            "classifier_target = \"classifier\"",
+            "classifier_target = \"parent_judge\"",
+        ) + "\n[targets.parent_judge]\nid = \"parent-judge/model\"\nllm_client = \"primary\"\n";
+        let classifier_with_classifier = with_subagent_llm_classifier(&base, "classifier", "");
+        let parsed: DeploymentConfig =
+            toml::from_str(&classifier_with_classifier).map_err(|error| {
+                RunnerError::configuration(format!("failed to parse classifier config: {error}"))
+            })?;
+        let Some(classifier_route) = parsed.routes.get("classifier") else {
+            return Err(RunnerError::configuration("classifier route is missing"));
+        };
+        assert_eq!(
+            classifier_route.callable_target_names(),
+            [
+                "weak",
+                "strong",
+                "strong",
+                "weak",
+                "parent_judge",
+                "classifier"
+            ]
+        );
+
         for configured in [
             with_subagent_llm_classifier(VALID_CONFIG, "passthrough", ""),
             with_subagent_passthrough(VALID_CONFIG, "passthrough"),
             stage_with_classifier,
             with_subagent_passthrough(&stage, "stage"),
+            classifier_with_classifier,
+            with_subagent_passthrough(VALID_CONFIG, "classifier"),
         ] {
             runner_from_toml(&configured)?;
         }
@@ -1027,6 +1057,14 @@ classifier_magic = true
                 with_subagent_llm_classifier(
                     VALID_CONFIG,
                     "passthrough",
+                    "\nmessage_hash_fallback = true",
+                ),
+                "cannot use message_hash_fallback",
+            ),
+            (
+                with_subagent_llm_classifier(
+                    VALID_CONFIG,
+                    "classifier",
                     "\nmessage_hash_fallback = true",
                 ),
                 "cannot use message_hash_fallback",
