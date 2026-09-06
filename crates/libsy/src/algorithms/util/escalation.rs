@@ -33,8 +33,12 @@ const TRUNCATION_SUFFIX: &str = "...<truncated>";
 /// which coding-agent harnesses make very large.
 const SYSTEM_CHARS: usize = 1_000;
 
-/// Cap for the first user message — the task statement, so it gets the widest anchor budget.
-const FIRST_USER_CHARS: usize = 2_000;
+/// Per-message cap for task-framing user messages — every user message that precedes the first
+/// assistant reply. Coding-agent harnesses often send environment boilerplate as the first user
+/// message and the task itself as the second, so anchoring only the first would pin the
+/// boilerplate and let the task scroll out of the window. Feature specifications run to several
+/// thousand characters, so this gets the widest anchor budget.
+const TASK_CHARS: usize = 4_000;
 
 /// Backstop on the assembled transcript; the per-message caps normally bind first.
 const MAX_REQUEST_CHARS: usize = 18_000;
@@ -257,7 +261,7 @@ fn summarize_for_judge(
 ) -> String {
     let mut anchors: Vec<String> = Vec::new();
     let mut window: Vec<String> = Vec::new();
-    let mut first_user_seen = false;
+    let mut assistant_seen = false;
 
     for message in messages {
         let text = message_text(message);
@@ -267,18 +271,23 @@ fn summarize_for_judge(
                 role_label(message.role),
                 truncate_middle(&text, SYSTEM_CHARS)
             )),
-            Role::User if !first_user_seen => {
-                first_user_seen = true;
+            // Everything the user said before the agent first replied is task framing.
+            Role::User if !assistant_seen => {
                 anchors.push(format!(
                     "[user (task)] {}",
-                    truncate_middle(&text, FIRST_USER_CHARS)
+                    truncate_middle(&text, TASK_CHARS)
                 ));
             }
-            role => window.push(format!(
-                "[{}] {}",
-                role_label(role),
-                truncate_middle(&text, config.window_message_chars)
-            )),
+            role => {
+                if role == Role::Assistant {
+                    assistant_seen = true;
+                }
+                window.push(format!(
+                    "[{}] {}",
+                    role_label(role),
+                    truncate_middle(&text, config.window_message_chars)
+                ));
+            }
         }
     }
 
@@ -501,6 +510,49 @@ mod tests {
         assert!(summary.contains("step 9"), "{summary}");
         assert!(summary.contains("step 7"), "{summary}");
         assert!(!summary.contains("step 6"), "{summary}");
+    }
+
+    #[test]
+    fn summary_anchors_every_user_message_before_the_first_reply() {
+        // Codex sends environment boilerplate as the first user message and the task as the
+        // second. Both are framing; the task must stay visible after the window has moved on.
+        let mut messages = vec![
+            Message::text(
+                Role::Developer,
+                "<skills_instructions>...</skills_instructions>",
+            ),
+            Message::text(
+                Role::User,
+                "<environment_context><cwd>/app</cwd></environment_context>",
+            ),
+            Message::text(Role::User, "Implement RFC 5545 timezone interop in rrule."),
+        ];
+        for i in 0..40 {
+            messages.push(Message::text(Role::Assistant, format!("step {i}")));
+            messages.push(Message::text(Role::User, format!("later user note {i}")));
+        }
+        let config = EscalationJudgeConfig {
+            recent_turn_window: 3,
+            ..EscalationJudgeConfig::default()
+        };
+
+        let summary = summarize_for_judge(&messages, 40, &config);
+
+        assert!(
+            summary.contains("[user (task)] <environment_context>"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("[user (task)] Implement RFC 5545 timezone interop in rrule."),
+            "{summary}"
+        );
+        // User messages after the first reply are ordinary window entries, not anchors.
+        assert!(
+            !summary.contains("[user (task)] later user note"),
+            "{summary}"
+        );
+        assert!(summary.contains("[user] later user note 39"), "{summary}");
+        assert!(!summary.contains("later user note 0\n"), "{summary}");
     }
 
     #[test]
