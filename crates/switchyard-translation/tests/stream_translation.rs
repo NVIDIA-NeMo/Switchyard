@@ -1407,12 +1407,13 @@ fn responses_completed_event_is_schema_complete_and_retains_message_id() -> Test
             "missing response field {field}"
         );
     }
-    assert_eq!(response["output"][0]["id"], "msg_0");
+    // Synthesized item ids carry the response id so they stay unique across turns.
+    assert_eq!(response["output"][0]["id"], "msg_chatcmpl-test_0");
     let done = events
         .iter()
         .find(|event| event["type"] == "response.output_item.done")
         .ok_or("expected response.output_item.done")?;
-    assert_eq!(done["item"]["id"], "msg_0");
+    assert_eq!(done["item"]["id"], "msg_chatcmpl-test_0");
     Ok(())
 }
 
@@ -1875,5 +1876,67 @@ fn responses_stream_encodes_reasoning_as_summary_text() -> TestResult {
         .find(|i| i["type"] == "reasoning")
         .ok_or("final reasoning item")?;
     assert_eq!(final_reasoning["summary"][0]["text"], "Let me think.");
+    Ok(())
+}
+
+// Item ids the encoder synthesizes must be unique across responses. A client replays the
+// whole conversation, so two turns whose reasoning items are both `rs_0` (and whose tool
+// calls are both `fc_1`) hand the upstream a history with colliding ids. Passthrough carries
+// the provider's unique ids; the synthesized path must not be worse.
+#[test]
+fn responses_stream_synthesized_item_ids_are_unique_across_responses() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let mut ids = Vec::new();
+    for resp in ["resp_first", "resp_second"] {
+        let mut state = StreamTranslationState::new(format, format);
+        let chunks = vec![
+            LlmResponseChunk::MessageStart {
+                id: Some(resp.into()),
+                model: Some(REASONING_MODEL.into()),
+            },
+            LlmResponseChunk::ReasoningDelta {
+                index: 0,
+                text: "think".into(),
+            },
+            LlmResponseChunk::ToolCallDelta {
+                index: 1,
+                id: Some("call_x".into()),
+                name: Some("exec_command".into()),
+                arguments_delta: Some("{}".into()),
+            },
+            LlmResponseChunk::TextDelta {
+                index: 2,
+                text: "done".into(),
+            },
+            LlmResponseChunk::MessageStop { reason: None },
+        ];
+        let mut events = Vec::new();
+        for chunk in chunks {
+            events.extend(engine.encode_stream_event(
+                &mut state,
+                format,
+                LlmResponseStreamEvent::new(vec![chunk]),
+            )?);
+        }
+        events.extend(engine.finish_stream(&mut state, format)?);
+        for e in events
+            .iter()
+            .filter(|e| e["type"] == "response.output_item.done")
+        {
+            ids.push((
+                e["item"]["type"].as_str().unwrap_or("").to_string(),
+                e["item"]["id"].as_str().unwrap_or("").to_string(),
+            ));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (kind, id) in &ids {
+        assert!(!id.is_empty(), "{kind} item without id");
+        assert!(
+            seen.insert(id.clone()),
+            "item id {id} ({kind}) repeated across responses: {ids:?}"
+        );
+    }
     Ok(())
 }

@@ -381,7 +381,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "output_index": output_index,
             "item": {
                 "type": "message",
-                "id": format!("msg_{output_index}"),
+                "id": responses_item_id(state, "msg", output_index),
                 "role": "assistant",
                 "status": status,
                 "content": [{"type": "output_text", "text": state.response_text}],
@@ -395,7 +395,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     {
         // Encrypted-only reasoning streamed no text, so it gets no summary part; the item
         // itself still closes so the client can replay its `encrypted_content`.
-        let item_id = format!("rs_{output_index}");
+        let item_id = responses_item_id(state, "rs", output_index);
         let mut summary = Vec::new();
         if !state.response_reasoning_text.is_empty() {
             out.push(json!({
@@ -440,7 +440,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             output_index,
             json!({
                 "type": "message",
-                "id": format!("msg_{output_index}"),
+                "id": responses_item_id(state, "msg", output_index),
                 "role": "assistant",
                 "status": status,
                 "content": [{"type": "output_text", "text": state.response_text}],
@@ -460,7 +460,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         }));
         let item = json!({
             "type": "function_call",
-            "id": tool.response_item_id.clone().unwrap_or_else(|| format!("fc_{output_index}")),
+            "id": tool.response_item_id.clone().unwrap_or_else(|| responses_item_id(state, "fc", output_index)),
             "call_id": tool.id.clone().unwrap_or_else(|| format!("call_{output_index}")),
             "name": tool.name.clone().unwrap_or_default(),
             "arguments": tool.arguments,
@@ -682,7 +682,7 @@ fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String)
             "output_index": output_index,
             "item": {
                 "type": "message",
-                "id": format!("msg_{output_index}"),
+                "id": responses_item_id(state, "msg", output_index),
                 "role": "assistant",
                 "status": "in_progress",
                 "content": [],
@@ -720,14 +720,14 @@ fn ensure_responses_reasoning_started(state: &mut StreamTranslationState) -> Vec
             "output_index": output_index,
             "item": {
                 "type": "reasoning",
-                "id": format!("rs_{output_index}"),
+                "id": responses_item_id(state, "rs", output_index),
                 "status": "in_progress",
                 "summary": [],
             },
         }));
         out.push(json!({
             "type": "response.reasoning_summary_part.added",
-            "item_id": format!("rs_{output_index}"),
+            "item_id": responses_item_id(state, "rs", output_index),
             "output_index": output_index,
             "summary_index": 0,
             "part": {"type": "summary_text", "text": ""},
@@ -746,7 +746,7 @@ fn encode_responses_reasoning_delta(
     let output_index = state.response_reasoning_output_index.unwrap_or(0);
     out.push(json!({
         "type": "response.reasoning_summary_text.delta",
-        "item_id": format!("rs_{output_index}"),
+        "item_id": responses_item_id(state, "rs", output_index),
         "output_index": output_index,
         "summary_index": 0,
         "delta": text,
@@ -763,6 +763,7 @@ fn encode_responses_tool_delta(
     arguments_delta: Option<String>,
 ) -> Vec<Value> {
     let mut out = ensure_responses_created(state);
+    let resp_id = responses_id(state);
     let tool = state.tool_states.entry(index).or_default();
     if id.is_some() {
         tool.id = id;
@@ -782,14 +783,14 @@ fn encode_responses_tool_delta(
         let output_index = state.next_response_output_index;
         state.next_response_output_index += 1;
         tool.response_output_index = Some(output_index);
-        tool.response_item_id = Some(format!("fc_{output_index}"));
+        tool.response_item_id = Some(responses_item_id_from(&resp_id, "fc", output_index));
         tool.started = true;
         out.push(json!({
             "type": "response.output_item.added",
             "output_index": output_index,
             "item": {
                 "type": "function_call",
-                "id": tool.response_item_id.clone().unwrap_or_else(|| format!("fc_{output_index}")),
+                "id": tool.response_item_id.clone().unwrap_or_else(|| responses_item_id_from(&resp_id, "fc", output_index)),
                 "call_id": tool.id.clone().unwrap_or_else(|| format!("call_{index}")),
                 "name": name,
                 "arguments": "",
@@ -866,6 +867,22 @@ fn responses_usage_value(usage: &Usage) -> Value {
         "input_tokens_details": {"cached_tokens": usage.cached_input_tokens().unwrap_or(0)},
         "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
     })
+}
+
+// Builds a synthesized output-item id that is unique across responses. Clients replay the
+// whole conversation, so ids must not repeat from one turn to the next; the response id is
+// unique per upstream call and is used as the discriminator.
+fn responses_item_id(state: &StreamTranslationState, prefix: &str, output_index: usize) -> String {
+    let resp = responses_id(state);
+    let resp = resp.strip_prefix("resp_").unwrap_or(&resp);
+    format!("{prefix}_{resp}_{output_index}")
+}
+
+// Same as [`responses_item_id`], for callers that already hold the response id and cannot
+// borrow `state` again (for example while a `tool_states` entry is borrowed mutably).
+fn responses_item_id_from(resp_id: &str, prefix: &str, output_index: usize) -> String {
+    let resp = resp_id.strip_prefix("resp_").unwrap_or(resp_id);
+    format!("{prefix}_{resp}_{output_index}")
 }
 
 // Converts any upstream message ID into a Responses-looking response ID.
