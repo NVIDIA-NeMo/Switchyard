@@ -128,6 +128,46 @@ impl TranslatingLlmClient {
     /// Builds a client over the given [`ModelConfig`]s, with a fresh shared HTTP
     /// client and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
+        Self::new_with_http_client_factory(model_configs, || {
+            build_http_clients(reqwest::Client::builder(), reqwest::Client::builder())
+        })
+    }
+
+    /// Builds a client over `model_configs` using host-configured HTTP client builders.
+    ///
+    /// The ordinary builder retains its redirect policy. Redirects are always disabled on the
+    /// forwarded-credential builder so caller credentials cannot move to another origin.
+    /// Configuration validation is identical to [`Self::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmClientError`] when model configuration is invalid or either builder cannot
+    /// construct its client.
+    pub fn with_http_client_builders(
+        model_configs: &[ModelConfig],
+        client_builder: reqwest::ClientBuilder,
+        forward_auth_client_builder: reqwest::ClientBuilder,
+    ) -> Result<Self> {
+        Self::new_with_http_client_factory(model_configs, || {
+            build_http_clients(client_builder, forward_auth_client_builder)
+        })
+    }
+
+    // Keeps configuration failures ahead of fallible default client construction.
+    fn new_with_http_client_factory(
+        model_configs: &[ModelConfig],
+        build_http_clients: impl FnOnce() -> Result<(reqwest::Client, reqwest::Client)>,
+    ) -> Result<Self> {
+        Self::validate_model_configs(model_configs)?;
+        let (client, forward_auth_client) = build_http_clients()?;
+        Ok(Self::from_validated_configs(
+            model_configs,
+            client,
+            forward_auth_client,
+        ))
+    }
+
+    fn validate_model_configs(model_configs: &[ModelConfig]) -> Result<()> {
         for config in model_configs {
             config
                 .default_backend
@@ -136,26 +176,24 @@ impl TranslatingLlmClient {
                 backend.validate_extra_headers(&config.model_name)?;
             }
         }
-        let build_client = |builder: reqwest::ClientBuilder| {
-            builder.build().map_err(|error| LlmClientError::Transport {
-                source: Box::new(error),
-            })
-        };
-        let client = build_client(reqwest::Client::builder())?;
-        // A redirect could move provider-specific headers to another origin.
-        // Forwarded credentials are sent only to the configured URL.
-        let forward_auth_client =
-            build_client(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()))?;
+        Ok(())
+    }
+
+    fn from_validated_configs(
+        model_configs: &[ModelConfig],
+        client: reqwest::Client,
+        forward_auth_client: reqwest::Client,
+    ) -> Self {
         let model_to_config = model_configs
             .iter()
             .map(|config| (config.model_name.clone(), config.clone()))
             .collect();
 
-        Ok(Self {
+        Self {
             model_to_config,
             client,
             forward_auth_client,
-        })
+        }
     }
 
     /// The backend serving `model` over `format` — the default backend when its
@@ -581,6 +619,22 @@ impl TranslatingLlmClient {
     }
 }
 
+// Forwarded credentials must never follow redirects configured by an embedding host.
+fn build_http_clients(
+    client_builder: reqwest::ClientBuilder,
+    forward_auth_client_builder: reqwest::ClientBuilder,
+) -> Result<(reqwest::Client, reqwest::Client)> {
+    let build_client = |builder: reqwest::ClientBuilder| {
+        builder.build().map_err(|error| LlmClientError::Transport {
+            source: Box::new(error),
+        })
+    };
+    let client = build_client(client_builder)?;
+    let forward_auth_client =
+        build_client(forward_auth_client_builder.redirect(reqwest::redirect::Policy::none()))?;
+    Ok((client, forward_auth_client))
+}
+
 #[async_trait]
 impl RoutedLlmClient for TranslatingLlmClient {
     async fn call(&self, request: Request) -> Result<Response> {
@@ -957,6 +1011,26 @@ mod tests {
         )]
     }
 
+    // Model configuration errors must win before the default HTTP clients are constructed.
+    #[test]
+    fn new_validates_models_before_building_http_clients() {
+        let mut backend = config("https://example.test/v1");
+        backend
+            .extra_headers
+            .insert("authorization".to_string(), "forbidden".to_string());
+        let models = vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)];
+
+        let result = TranslatingLlmClient::new_with_http_client_factory(&models, || {
+            panic!("HTTP clients must not be built for an invalid model configuration")
+        });
+
+        assert!(matches!(
+            result,
+            Err(LlmClientError::Configuration { message })
+                if message.contains("authorization")
+        ));
+    }
+
     fn chat_map_with_extra_body(
         base_url: &str,
         extra_body: BTreeMap<String, Value>,
@@ -980,6 +1054,13 @@ mod tests {
             Backend::OpenAiChat(config_with_retries(base_url, max_retries)),
             None,
         )]
+    }
+
+    fn forward_auth_chat_map(base_url: &str) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.api_key = None;
+        backend.forward_auth = true;
+        vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
     }
 
     fn chat_success_response() -> ResponseTemplate {
@@ -1265,6 +1346,91 @@ mod tests {
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hi there");
 
+        Ok(())
+    }
+
+    // Host-configured builder defaults must reach every upstream request made by the client.
+    #[tokio::test]
+    async fn injected_http_client_builders_are_used_for_upstream_requests()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::header("x-host-client", "shared"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "injected"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-host-client", "shared".parse()?);
+        let client = TranslatingLlmClient::with_http_client_builders(
+            &chat_map(&format!("{}/v1", server.uri())),
+            reqwest::Client::builder().default_headers(headers),
+            reqwest::Client::builder(),
+        )?;
+
+        let response = client
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .await?;
+        assert_eq!(
+            completion_text(&response.llm_response.into_agg().await?),
+            "injected"
+        );
+        Ok(())
+    }
+
+    // Forwarded credentials must never follow redirects, even if the host builder enables them.
+    #[tokio::test]
+    async fn injected_forward_auth_builder_cannot_enable_redirects()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let destination = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&destination)
+            .await;
+
+        let redirector = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/credential-leak", destination.uri())),
+            )
+            .mount(&redirector)
+            .await;
+
+        let client = TranslatingLlmClient::with_http_client_builders(
+            &forward_auth_chat_map(&format!("{}/v1", redirector.uri())),
+            reqwest::Client::builder(),
+            reqwest::Client::builder().redirect(reqwest::redirect::Policy::limited(10)),
+        )?;
+        let mut request = request_for(Some("gpt"), false);
+        request.metadata = Some(Metadata {
+            http_headers: Some(HeaderMap::from_iter([(
+                "authorization".parse()?,
+                "Bearer caller-secret".parse()?,
+            )])),
+            ..Metadata::default()
+        });
+
+        assert!(client.call_rewrite_model(request, None).await.is_err());
+        assert_eq!(
+            destination
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .len(),
+            0
+        );
         Ok(())
     }
 

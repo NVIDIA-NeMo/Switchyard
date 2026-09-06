@@ -50,6 +50,7 @@ Within this workspace:
 switchyard-llm-client = { path = "../libsy-llm-client" }
 switchyard-protocol = { path = "../libsy-protocol" }
 switchyard-translation = { path = "../switchyard-translation" }   # for WireFormat
+reqwest = "0.13"                                                   # for custom ClientBuilder values
 ```
 
 ## Quickstart
@@ -81,6 +82,39 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
     TranslatingLlmClient::new(&models)
 }
 ```
+
+### Configure provider HTTP clients
+
+Embedding hosts can supply `reqwest::ClientBuilder` values to configure DNS, TLS,
+proxy, timeout, and connection-pool policy:
+
+```rust
+use std::time::Duration;
+use switchyard_llm_client::{ModelConfig, TranslatingLlmClient};
+
+fn build_with_host_network_policy(
+    models: &[ModelConfig],
+) -> switchyard_llm_client::Result<TranslatingLlmClient> {
+    TranslatingLlmClient::with_http_client_builders(
+        models,
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .pool_idle_timeout(Duration::from_secs(90)),
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .pool_idle_timeout(Duration::from_secs(90)),
+    )
+}
+```
+
+Switchyard always disables redirects on the forwarded-credential builder, even if
+the host requested another policy. This prevents caller credentials from moving to
+a different origin. `TranslatingLlmClient::new` retains its existing defaults.
+
+This is a programmatic embedding API. A Rust host can build translating clients with
+its network policy, place them behind its own `RoutedLlmClient`, and assemble the route
+graph with `Runner::new`. The standalone `Runner::load` and `Runner::from_toml` paths
+continue to construct their existing default clients.
 
 ### Buffered call
 
