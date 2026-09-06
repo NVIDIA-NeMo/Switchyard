@@ -8,37 +8,71 @@ deployment through Relay's
 
 ## Why Use Switchyard with NeMo Relay?
 
-Relay receives your agent's model request. Switchyard picks and calls the model.
-Relay continues to track the rest of the agent run and can export the routing
-details from Switchyard. Because the plugin runs inside Relay, you do not need
-to change the agent or run a separate Switchyard service.
+Using the strongest model for every request is simple, but routine work may not
+need it. Switchyard can send simpler requests to a lower-cost model and reserve
+a stronger model for harder work.
 
-Together, they let you:
+Relay keeps the model choice, fallback, latency, and token use alongside the
+rest of the agent run. This lets teams answer practical questions:
 
-- send simpler work to a less expensive model and keep a stronger model for
-  harder work;
-- see which model was chosen and, when available, which model answered after a
-  fallback;
-- track routing time, failures, and token use alongside the rest of the agent
-  run; and
-- compare routing with using one model for every request.
+- How often did the lower-cost model handle the work?
+- How often did Switchyard fall back to another model?
+- How much time and token use did routing add?
+- Did the routed workload cost less than using one model for every request?
+
+The plugin runs inside Relay, so the agent does not need to change and
+Switchyard does not need to run as a separate service.
 
 Requests for models that Switchyard does not manage continue through Relay as
 usual.
 
-### Check Whether Routing Saves Money
+### Measure the Cost of Routing
 
-Routing is not free. Some routes call another model to help choose the model
-that will answer. The plugin records the tokens used to make that choice
-separately from the tokens used for the answer. It also records the routing
-time, model choice, fallback, and failures.
+A routed request can spend tokens in two places. Some routes call a judge or
+classifier to choose a model. The selected model, or a fallback, then produces
+the answer. Relay and Switchyard record these parts separately.
 
-Relay can [estimate the cost of the response returned to the agent](https://docs.nvidia.com/nemo/relay/v0.8.3/nemo-relay-cli/basic-usage#add-model-pricing-for-cost-estimates)
-when model pricing is configured. It does not automatically price Switchyard's
-internal routing calls, so include the token counts from those calls when
-calculating the total. Run the same work once with a fixed model and once with
-routing to see whether routing actually saved money. If a provider does not
-report usage, the cost is unknown rather than zero.
+Relay records the caller-facing request and response. In OpenInference traces,
+answer tokens appear as `llm.token_count.prompt`, `llm.token_count.completion`,
+and `llm.token_count.total`. When available, cache use appears as
+`llm.token_count.prompt_details.cache_read` and
+`llm.token_count.prompt_details.cache_write`. Relay also records
+`llm.cost.total` in USD when the provider reports a cost, or when the response
+contains enough model and usage data and a configured Relay pricing catalog
+has all required rates.
+
+Switchyard records token use for its model calls in the
+`switchyard.routing.llm_tokens` metric when the provider reports usage. Each
+measurement identifies:
+
+- `call_role`: `routing` or `answer`
+- `target_model`: the upstream model ID
+- `token_type`: `input`, `cached_input`, `cache_creation_input`, `output`,
+  `reasoning`, or `total`
+
+Switchyard also records the selected and served models, fallback use,
+routing-call latency, routing overhead, and failures.
+
+No single total-cost or savings metric is emitted today. Relay prices the
+caller-facing answer, but it does not automatically price Switchyard's internal
+routing calls. For the common case, calculate the observed routed cost as:
+
+```text
+Relay answer cost + cost of Switchyard tokens where call_role = "routing"
+```
+
+Apply the price of each `target_model` to those routing tokens. Do not add
+`call_role = "answer"` again because it describes the same successful answer
+that Relay recorded. Do not sum every `token_type`; `total` is a rollup, and
+cache or reasoning values may be a more detailed view of another count.
+
+Relay does not ship a canonical price catalog. Follow its
+[model-pricing guide](https://docs.nvidia.com/nemo/relay/v0.8.3/nemo-relay-cli/basic-usage#add-model-pricing-for-cost-estimates)
+to supply and validate model rates. Run the same representative workload once
+with a fixed model and once with routing, then compare observed cost, latency,
+fallbacks, and your task-success measure. Missing usage, failed attempts,
+internal HTTP retries, and incomplete streams can leave some cost unknown. An
+absent value means unknown, not zero.
 
 If Relay is not part of the application, run the [standalone server](../getting_started.md#server-path)
 or embed [`switchyard-libsy`](../../crates/libsy/README.md) directly.
@@ -302,7 +336,7 @@ response is available, the error mark describes the terminal failure instead.
 | `switchyard.routing.llm_calls` | Counter, events | Routing-model calls, labeled by `outcome`. |
 | `switchyard.routing.llm_call.duration` | Histogram, milliseconds | Routing-model call duration, labeled by `outcome`. |
 | `switchyard.routing.overhead` | Histogram, milliseconds | Time spent producing the routing outcome. |
-| `switchyard.routing.llm_tokens` | Counter, tokens | Provider-reported token values, labeled by `call_role`, `target_model`, and `token_type`. |
+| `switchyard.routing.llm_tokens` | Counter, tokens | Normalized token values derived from provider usage, labeled by `call_role`, `target_model`, and `token_type`. |
 | `switchyard.routing.failures` | Counter, events | Terminal failures, labeled by safe failure kind and available classification fields. |
 
 `switchyard.routing.llm_calls` and `switchyard.routing.llm_call.duration` cover
