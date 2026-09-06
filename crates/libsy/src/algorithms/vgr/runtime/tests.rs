@@ -231,15 +231,23 @@ async fn an_eligible_local_failure_escalates_to_cloud() -> Result<()> {
     let step = stream
         .next()
         .await
+        .ok_or_else(|| test_error("missing cloud completion call"))??;
+    let Step::CallModel(call) = step else {
+        return Err(test_error("eligible local failure did not call cloud"));
+    };
+    assert_eq!(call.models, vec![ModelId::from(CLOUD)]);
+    call.respond(Ok(reply("cloud answer")))?;
+
+    let step = stream
+        .next()
+        .await
         .ok_or_else(|| test_error("missing terminal outcome"))??;
     let Step::Done(outcome) = step else {
-        return Err(test_error(
-            "eligible local failure triggered another routing call",
-        ));
+        return Err(test_error("cloud completion was not terminal"));
     };
     assert_eq!(outcome.selected_model_id()?, &ModelId::from(CLOUD));
     assert_eq!(outcome.selected_model_ids, vec![ModelId::from(CLOUD)]);
-    assert!(outcome.response.is_none());
+    assert!(outcome.response.is_some());
     Ok(())
 }
 
@@ -255,12 +263,23 @@ async fn a_cloud_decision_never_falls_back_to_local() -> Result<()> {
     let step = stream
         .next()
         .await
+        .ok_or_else(|| test_error("missing cloud completion call"))??;
+    let Step::CallModel(call) = step else {
+        return Err(test_error("off mode did not call cloud"));
+    };
+    assert_eq!(call.models, vec![ModelId::from(CLOUD)]);
+    call.respond(Ok(reply("cloud answer")))?;
+
+    let step = stream
+        .next()
+        .await
         .ok_or_else(|| test_error("missing terminal outcome"))??;
     let Step::Done(outcome) = step else {
-        return Err(test_error("off mode unexpectedly made a model call"));
+        return Err(test_error("cloud completion was not terminal"));
     };
     assert_eq!(outcome.selected_model_id()?, &ModelId::from(CLOUD));
     assert_eq!(outcome.selected_model_ids, vec![ModelId::from(CLOUD)]);
+    assert!(outcome.response.is_some());
     Ok(())
 }
 
