@@ -148,6 +148,14 @@ impl Algorithm for Vgr {
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         let mut outcome = self.route.execute(driver.clone(), request).await?;
         let selected = outcome.selected_model_id()?.clone();
+        telemetry::annotate_retained_route(
+            &mut outcome.request,
+            if selected == self.local {
+                decide::Route::Local
+            } else {
+                decide::Route::Cloud
+            },
+        );
         if selected == self.cloud {
             // A cloud decision is terminal. Falling backward to local would
             // bypass the verification decision that selected cloud.

@@ -312,6 +312,29 @@ fn readiness_gate_label(gate: Option<ReadinessGate>) -> &'static str {
     }
 }
 
+/// Labels a route retained by a processor that bypassed the VGR classifier.
+pub(super) fn annotate_retained_route(request: &mut Request, route: Route) {
+    let extra = request
+        .metadata
+        .get_or_insert_default()
+        .extra_metadata
+        .get_or_insert_default();
+    if extra.contains_key("switchyard.vgr.served") {
+        return;
+    }
+    let route = route_label(Some(route));
+    for (key, value) in [
+        ("switchyard.vgr.predicted", route),
+        ("switchyard.vgr.effective", route),
+        ("switchyard.vgr.served", route),
+        ("switchyard.vgr.branch", "affinity"),
+        ("switchyard.vgr.readiness_gate", "none"),
+        ("switchyard.vgr.short_circuit", "user_turn_affinity"),
+    ] {
+        extra.insert(key.to_string(), value.to_string());
+    }
+}
+
 /// Counts the spans the baseline scrub replaced in the judged material.
 ///
 /// Counts placeholders in the rendered view rather than instrumenting the
@@ -415,6 +438,23 @@ mod tests {
         assert_eq!(labels["switchyard.vgr.readiness_gate"], "none");
         assert_eq!(labels["switchyard.vgr.short_circuit"], "local_unavailable");
         assert_eq!(labels.len(), 6);
+    }
+
+    #[test]
+    fn retained_route_gets_complete_static_evidence() {
+        let mut request = Request::default();
+
+        annotate_retained_route(&mut request, Route::Local);
+
+        let labels = request
+            .metadata
+            .and_then(|metadata| metadata.extra_metadata)
+            .expect("VGR labels");
+        assert_eq!(labels["switchyard.vgr.predicted"], "local");
+        assert_eq!(labels["switchyard.vgr.effective"], "local");
+        assert_eq!(labels["switchyard.vgr.served"], "local");
+        assert_eq!(labels["switchyard.vgr.branch"], "affinity");
+        assert_eq!(labels["switchyard.vgr.short_circuit"], "user_turn_affinity");
     }
 
     #[test]
