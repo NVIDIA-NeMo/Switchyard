@@ -1,49 +1,44 @@
 # Use Switchyard with NeMo Relay
 
-Use the
-[Switchyard native plugin](../../crates/switchyard-nemo-relay-plugin/README.md)
-to add model routing to an existing
+The [Switchyard native plugin](../../crates/switchyard-nemo-relay-plugin/README.md)
+loads Switchyard into an existing
 [NeMo Relay](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/overview#integrating-with-relay)
-deployment without running a second service. It runs through Relay's
+deployment through Relay's
 [native plugin system](https://docs.nvidia.com/nemo/relay/v0.8.3/build-plugins/native/about).
-Relay receives the application's model request and keeps its normal
-[middleware](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/middleware#what-middleware-is)
-and
-[observability](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/about#shortest-path).
-Switchyard chooses and calls the configured model target.
 
 ## Why Use Switchyard with NeMo Relay?
 
-Switchyard decides which model should handle each request. Relay keeps the
-caller-facing request in its normal lifecycle and carries Switchyard's routing
-records with the rest of the agent run. Together, they add routing without
-changing the agent or running a separate Switchyard service.
+Relay receives your agent's model request. Switchyard picks and calls the model.
+Relay continues to track the rest of the agent run and can export the routing
+details from Switchyard. Because the plugin runs inside Relay, you do not need
+to change the agent or run a separate Switchyard service.
 
-This lets you:
+Together, they let you:
 
-- with an adaptive route, send routine work to a lower-cost model while keeping
-  a stronger model available for harder turns;
-- compare a routed deployment with a fixed-model baseline on the same workload;
-- see the initial selection, final model when reported, fallbacks, routing time,
-  and failures;
-- separate tokens spent choosing a model from tokens spent generating the
-  answer; and
-- keep Relay's existing handling for models that Switchyard does not manage.
+- send simpler work to a less expensive model and keep a stronger model for
+  harder work;
+- see which model was chosen and, when available, which model answered after a
+  fallback;
+- track routing time, failures, and token use alongside the rest of the agent
+  run; and
+- compare routing with using one model for every request.
 
-### Measure Routing Cost on Your Workload
+Requests for models that Switchyard does not manage continue through Relay as
+usual.
 
-The plugin reports provider-supplied token usage separately for routing and
-answer calls, labeled by target model and token type. It also reports routing
-time, the initial selection, the final model when reported, fallbacks, and
-failures. Relay can export those records through its existing telemetry
-pipeline.
+### Check Whether Routing Saves Money
 
-Relay can [estimate cost for the caller-facing response](https://docs.nvidia.com/nemo/relay/v0.8.3/nemo-relay-cli/basic-usage#add-model-pricing-for-cost-estimates)
-when model pricing is configured. Internal routing calls do not run as separate
-Relay LLM calls, so include the plugin's routing-token metrics when calculating
-the total cost. Compare the same workload against a fixed-model route to see
-whether the savings outweigh the routing work. Missing provider usage is
-unknown, not zero.
+Routing is not free. Some routes call another model to help choose the model
+that will answer. The plugin records the tokens used to make that choice
+separately from the tokens used for the answer. It also records the routing
+time, model choice, fallback, and failures.
+
+Relay can [estimate the cost of the response returned to the agent](https://docs.nvidia.com/nemo/relay/v0.8.3/nemo-relay-cli/basic-usage#add-model-pricing-for-cost-estimates)
+when model pricing is configured. It does not automatically price Switchyard's
+internal routing calls, so include the token counts from those calls when
+calculating the total. Run the same work once with a fixed model and once with
+routing to see whether routing actually saved money. If a provider does not
+report usage, the cost is unknown rather than zero.
 
 If Relay is not part of the application, run the [standalone server](../getting_started.md#server-path)
 or embed [`switchyard-libsy`](../../crates/libsy/README.md) directly.
