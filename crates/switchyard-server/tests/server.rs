@@ -2284,6 +2284,7 @@ id = "reasoning"
 type = "passthrough"
 target = "shared"
 reasoning = true
+base_instructions = "You are a coding agent running in the Codex CLI."
 
 [routes.undeclared]
 id = "undeclared"
@@ -2324,18 +2325,27 @@ target = "shared"
         codex_metadata["declared"]["apply_patch_tool_type"],
         "freeform"
     );
-    // Codex prefers a served `base_instructions` over its own bundled prompt, so the
-    // catalog must omit the key rather than send a stub: a proxy replacing the agent's
-    // system prompt makes a routed run incomparable with a direct one.
+    // Codex's catalog decoder rejects an entry supplying neither `base_instructions` nor
+    // `model_messages.instructions_template`, and one rejected entry discards the whole
+    // catalog — `input_modalities` included. Every entry must therefore carry the field.
     for (slug, entry) in &codex_metadata {
-        let entry = entry
-            .as_object()
-            .unwrap_or_else(|| panic!("codex entry {slug} is not an object"));
+        let instructions = entry["base_instructions"].as_str();
         assert!(
-            !entry.contains_key("base_instructions"),
+            instructions.is_some_and(|text| !text.is_empty()),
             "{slug}: {entry:?}"
         );
     }
+    // A route that declares its own instructions serves them verbatim, so an operator can
+    // paste Codex's bundled prompt and keep a routed session comparable with a direct one.
+    assert_eq!(
+        codex_metadata["reasoning"]["base_instructions"],
+        "You are a coding agent running in the Codex CLI."
+    );
+    // An undeclared route still has to answer, so it serves the placeholder.
+    assert_eq!(
+        codex_metadata["declared"]["base_instructions"],
+        "You are Codex, a coding agent."
+    );
     // Constant fields Codex requires: a typo here would fail its decode, so pin them.
     assert_eq!(codex_metadata["declared"]["visibility"], "list");
     assert_eq!(codex_metadata["declared"]["supported_in_api"], json!(true));

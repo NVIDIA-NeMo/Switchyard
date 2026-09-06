@@ -18,7 +18,7 @@ use crate::DecisionTarget;
 ///
 /// An unset capability is undeclared: it serializes as `null` in the OpenAI
 /// `data` entry, and the Codex entry falls back to a safe default for it.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct ModelCapabilities {
     pub context_window: Option<u32>,
     pub tool_calling: Option<bool>,
@@ -36,6 +36,14 @@ pub struct ModelCapabilities {
     /// sending*. An undeclared vision-capable route therefore loses the image in the
     /// client, and the proxy never receives one to forward.
     pub vision: Option<bool>,
+    /// Base instructions this route advertises to Codex.
+    ///
+    /// Codex adopts a served value in place of its own bundled prompt, and its catalog
+    /// decoder rejects an entry that supplies neither `base_instructions` nor
+    /// `model_messages.instructions_template` — one rejected entry discards the whole
+    /// catalog. A proxy therefore cannot decline to answer the question, only choose the
+    /// answer, so the operator supplies it. Unset serves a placeholder and warns.
+    pub base_instructions: Option<String>,
 }
 
 /// Caller credential family required by a forwarded-auth route.
@@ -161,8 +169,8 @@ impl Route {
     }
 
     /// Returns model-list capability metadata.
-    pub fn capabilities(&self) -> ModelCapabilities {
-        self.capabilities
+    pub fn capabilities(&self) -> &ModelCapabilities {
+        &self.capabilities
     }
 
     /// Returns the forwarded caller credential family.

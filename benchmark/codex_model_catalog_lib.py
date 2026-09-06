@@ -27,12 +27,7 @@ CodexModelCatalogEntry: TypeAlias = tuple[str, str, str]
 
 
 def _fallback_codex_model_template() -> dict[str, Any]:
-    """Return the minimum model metadata shape accepted by Codex.
-
-    ``base_instructions`` is omitted on purpose: Codex prefers a served value over
-    its own bundled prompt, so supplying a stub would replace the agent's system
-    prompt and make a routed run incomparable with a direct one.
-    """
+    """Return the minimum model metadata shape accepted by Codex."""
     return {
         "slug": "switchyard",
         "display_name": "Switchyard",
@@ -51,6 +46,7 @@ def _fallback_codex_model_template() -> dict[str, Any]:
         "additional_speed_tiers": [],
         "availability_nux": None,
         "upgrade": None,
+        "base_instructions": "You are Codex, a coding agent.",
         "supports_reasoning_summaries": True,
         "default_reasoning_summary": "none",
         "support_verbosity": True,

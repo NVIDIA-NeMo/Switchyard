@@ -322,6 +322,12 @@ pub struct BoundServer {
 impl BoundServer {
     /// Binds the configured address and prepares the HTTP router.
     pub fn bind(state: ServerState, options: ServerRunOptions) -> ServerResult<Self> {
+        let routes: Vec<(&str, &ModelCapabilities)> = state
+            .runner
+            .models()
+            .map(|model| (model.id.as_str(), model.capabilities))
+            .collect();
+        warn_unconfigured_base_instructions(&routes);
         let listener = bind_tcp_listener(options.addr, options.backlog)?;
         let addr = listener.local_addr().map_err(server_io_error)?;
         Ok(Self {
@@ -1469,7 +1475,7 @@ async fn not_found() -> Response {
 }
 
 fn model_list_payload<'a>(
-    entries: impl IntoIterator<Item = (&'a str, ModelCapabilities)>,
+    entries: impl IntoIterator<Item = (&'a str, &'a ModelCapabilities)>,
 ) -> Value {
     let mut entries = entries.into_iter().collect::<Vec<_>>();
     entries.sort_unstable_by_key(|(model_id, _)| *model_id);
@@ -1478,11 +1484,11 @@ fn model_list_payload<'a>(
     let last_id = model_ids.last().copied();
     json!({
         "object": "list",
-        "data": entries.iter().map(|(model, caps)| model_entry_json(model, *caps)).collect::<Vec<_>>(),
+        "data": entries.iter().map(|(model, caps)| model_entry_json(model, caps)).collect::<Vec<_>>(),
         "models": entries
             .iter()
             .enumerate()
-            .map(|(priority, (model, caps))| codex_model_entry_json(model, *caps, priority))
+            .map(|(priority, (model, caps))| codex_model_entry_json(model, caps, priority))
             .collect::<Vec<_>>(),
         "first_id": first_id,
         "last_id": last_id,
@@ -1492,7 +1498,7 @@ fn model_list_payload<'a>(
     })
 }
 
-fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
+fn model_entry_json(model: &str, capabilities: &ModelCapabilities) -> Value {
     json!({
         "id": model,
         "object": "model",
@@ -1514,6 +1520,36 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
     })
 }
 
+/// Served to Codex when a route declares no `base_instructions`.
+///
+/// Codex adopts whatever the catalog supplies, so this placeholder replaces the agent's
+/// own prompt. It exists because the catalog cannot omit the field, not because it is a
+/// reasonable prompt; a route serving Codex should set `base_instructions` instead.
+const PLACEHOLDER_BASE_INSTRUCTIONS: &str = "You are Codex, a coding agent.";
+
+/// Warns once for every route that will serve [`PLACEHOLDER_BASE_INSTRUCTIONS`].
+///
+/// Codex adopting a six-word prompt changes agent behaviour on every turn and invalidates
+/// any comparison between a routed session and a direct one. That is a measurement problem
+/// rather than a failure, so nothing else surfaces it.
+fn warn_unconfigured_base_instructions(routes: &[(&str, &ModelCapabilities)]) {
+    let unconfigured: Vec<&str> = routes
+        .iter()
+        .filter(|(_, capabilities)| capabilities.base_instructions.is_none())
+        .map(|(model, _)| *model)
+        .collect();
+    if unconfigured.is_empty() {
+        return;
+    }
+    tracing::warn!(
+        target: "switchyard_server",
+        routes = unconfigured.join(", "),
+        "no base_instructions configured, so Codex is served a placeholder prompt and \
+         adopts it in place of its own; set base_instructions on these routes to keep a \
+         routed session comparable with a direct one"
+    );
+}
+
 // Builds the metadata Codex requires when it discovers models from a direct provider.
 //
 // This mirrors Codex's `ModelInfo` card. The benchmark harness builds the same card in
@@ -1523,13 +1559,9 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 //
 // Two kinds of fields live here. context_window, tool_calling, and reasoning are model
 // facts a backend can publish; the route declares them in config today. The rest
-// (shell_type, apply_patch_tool_type, the reasoning-level presets, truncation_policy)
-// are Codex client conventions no backend returns, so they stay constant.
-//
-// `base_instructions` is deliberately absent. Codex prefers a served value over its own
-// bundled prompt, so any stub here silently replaces the agent's system prompt on every
-// routed turn. Omitting the key leaves the client's prompt alone; a proxy has no better
-// value to supply.
+// (shell_type, apply_patch_tool_type, base_instructions, the reasoning-level presets,
+// truncation_policy) are Codex client conventions no backend returns, so they stay
+// constant.
 //
 // TODO: source context_window, tool_calling, and reasoning from the backend, not route
 // config. Switchyard is a proxy, so it should re-publish what the backend advertises
@@ -1537,7 +1569,7 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 // supported_parameters — and fall back to the route's declared value. Some backends
 // publish nothing (the NVIDIA gateway returns id-only models and blocks /model/info),
 // so keep failing closed to config.
-fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority: usize) -> Value {
+fn codex_model_entry_json(model: &str, capabilities: &ModelCapabilities, priority: usize) -> Value {
     // Codex is non-functional without shell and apply_patch, so an undeclared tool
     // capability defaults to enabled here; the OpenAI `data` entry reports the raw
     // Option separately for clients that want the undeclared state.
@@ -1557,6 +1589,17 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         "additional_speed_tiers": [],
         "availability_nux": null,
         "upgrade": null,
+        // Codex adopts this in place of its own prompt, and its catalog decoder rejects
+        // an entry carrying neither `base_instructions` nor
+        // `model_messages.instructions_template` — one rejected entry discards the whole
+        // catalog, taking `input_modalities` and every other advertised capability with it.
+        // Omitting it is therefore not an option; a route says what to serve, and an
+        // unconfigured route gets the placeholder `warn_unconfigured_base_instructions`
+        // reports at startup.
+        "base_instructions": capabilities
+            .base_instructions
+            .as_deref()
+            .unwrap_or(PLACEHOLDER_BASE_INSTRUCTIONS),
         "supports_reasoning_summaries": reasoning,
         "default_reasoning_summary": "none",
         "support_verbosity": reasoning,

@@ -68,6 +68,7 @@ struct RouteConfig {
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
     vision: Option<bool>,
+    base_instructions: Option<String>,
     algorithm: AlgorithmSpec,
 }
 
@@ -82,6 +83,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
         let vision = take_optional(&mut table, "vision")?;
+        let base_instructions = take_optional(&mut table, "base_instructions")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
@@ -90,6 +92,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             tool_calling,
             reasoning,
             vision,
+            base_instructions,
             algorithm,
         })
     }
@@ -122,6 +125,7 @@ impl RouteConfig {
             tool_calling: self.tool_calling,
             reasoning: self.reasoning,
             vision: self.vision,
+            base_instructions: self.base_instructions.clone(),
         }
     }
 

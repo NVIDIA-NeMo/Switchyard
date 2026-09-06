@@ -23,7 +23,7 @@ pub struct Runner {
 pub struct ModelInfo<'a> {
     pub id: &'a ModelId,
     pub algorithm: &'a str,
-    pub capabilities: ModelCapabilities,
+    pub capabilities: &'a ModelCapabilities,
 }
 
 /// Fully resolved routing decision.
