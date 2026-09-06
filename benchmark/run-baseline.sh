@@ -515,7 +515,7 @@ ROUTING_STATS_JSON="${RUN_DIR}/routing_stats_final.json"
 ROUTING_LOG_FILE="${RUN_DIR}/routing_requests.jsonl"
 if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
     SERVER_CMD+=(--routing-log-file "${ROUTING_LOG_FILE}")
-    SERVER_DOCKER_CMD+=(--routing-log-file "${ROUTING_LOG_FILE}")
+    SERVER_DOCKER_CMD+=(--routing-log-file "/artifacts/routing_requests.jsonl")
 fi
 DOCKER_RUN_ID="$(printf '%s-%s' "${TS##*_}" "$$" | tr -c '[:alnum:]_.-' '-')"
 SWITCHYARD_DOCKER_NETWORK="${SWITCHYARD_DOCKER_NETWORK:-switchyard-${DOCKER_RUN_ID}}"

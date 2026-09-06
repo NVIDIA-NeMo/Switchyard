@@ -564,6 +564,7 @@ def test_foreground_server_run_collects_rust_stats_endpoint(tmp_path: Path) -> N
     assert manifest["outcomes"]["routing_stats_json_status"] == "present"
     assert manifest["outcomes"]["server_metrics_prom_status"] == "present"
     assert "--env NVIDIA_API_KEY" in docker_log.read_text()
+    assert "--routing-log-file /artifacts/routing_requests.jsonl" in docker_log.read_text()
 
 
 def test_dry_run_route_model_alias_uses_rust_switchyard_server(tmp_path: Path) -> None:
