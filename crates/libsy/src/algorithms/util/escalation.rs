@@ -88,11 +88,14 @@ impl Default for EscalationJudgeConfig {
 }
 
 /// The judge's verdict. The schema also requires a `reason`, which makes the judge state its
-/// case and measurably sharpens the verdict — routing reads only the boolean, so it is
-/// deserialized away rather than carried.
+/// case and measurably sharpens the verdict. Routing reads only the boolean; the reason is
+/// kept solely so an operator can see why the judge held or escalated when the
+/// `switchyard_libsy::algorithms::util::escalation` target is enabled at `debug`.
 #[derive(Deserialize)]
 pub(crate) struct EscalationVerdict {
     escalate: bool,
+    #[serde(default)]
+    reason: String,
 }
 
 /// Builds the condensed trajectory presented to the escalation judge.
@@ -125,6 +128,13 @@ impl JudgePolicy for EscalationPolicy {
     type Verdict = EscalationVerdict;
 
     fn to_classification(&self, verdict: Option<&EscalationVerdict>) -> Classification {
+        if let Some(verdict) = verdict {
+            tracing::debug!(
+                escalate = verdict.escalate,
+                reason = %verdict.reason,
+                "escalation judge verdict"
+            );
+        }
         match verdict {
             Some(verdict) if verdict.escalate => Classification::Scores(vec![Score {
                 target: self.capable.clone(),
