@@ -1417,6 +1417,58 @@ fn responses_completed_event_is_schema_complete_and_retains_message_id() -> Test
     Ok(())
 }
 
+// Some upstreams issue response ids several hundred characters long. Synthesized item ids
+// embed the response id for uniqueness, but OpenAI rejects item ids over 64 characters, so long
+// discriminators must be digested while staying distinct across responses.
+#[test]
+fn responses_synthesized_item_ids_stay_within_the_openai_length_limit() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut ids = Vec::new();
+    for suffix in ["a", "b"] {
+        let long_id = format!("chatcmpl-{}{suffix}", "x".repeat(360));
+        let mut state =
+            StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+        let chunk = json!({
+            "id": long_id,
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "hello"},
+                "finish_reason": "stop"
+            }]
+        });
+        let mut events = engine.translate_event(
+            &mut state,
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &chunk,
+        )?;
+        events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+        let done = events
+            .iter()
+            .find(|event| event["type"] == "response.output_item.done")
+            .ok_or("expected response.output_item.done")?;
+        let id = done["item"]["id"]
+            .as_str()
+            .ok_or("item id should be a string")?
+            .to_string();
+        assert!(id.starts_with("msg_"), "{id}");
+        assert!(id.ends_with("_0"), "{id}");
+        assert!(
+            id.chars().count() <= 64,
+            "{id} is {} chars",
+            id.chars().count()
+        );
+        ids.push(id);
+    }
+    assert_ne!(
+        ids[0], ids[1],
+        "distinct responses must yield distinct item ids"
+    );
+    Ok(())
+}
+
 // Verifies a streamed token-limit stop terminates with response.incomplete.
 #[test]
 fn openai_chat_length_finish_translates_to_responses_incomplete_event() -> TestResult {

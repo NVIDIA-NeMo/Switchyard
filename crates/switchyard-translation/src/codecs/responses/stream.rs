@@ -869,20 +869,35 @@ fn responses_usage_value(usage: &Usage) -> Value {
     })
 }
 
+// Longest response-id discriminator embedded verbatim in a synthesized item id. OpenAI rejects
+// item ids over 64 characters, and some upstreams issue response ids several hundred characters
+// long, so anything longer is replaced by a fixed-width digest.
+const ITEM_ID_DISCRIMINATOR_CHARS: usize = 40;
+
 // Builds a synthesized output-item id that is unique across responses. Clients replay the
 // whole conversation, so ids must not repeat from one turn to the next; the response id is
 // unique per upstream call and is used as the discriminator.
 fn responses_item_id(state: &StreamTranslationState, prefix: &str, output_index: usize) -> String {
-    let resp = responses_id(state);
-    let resp = resp.strip_prefix("resp_").unwrap_or(&resp);
-    format!("{prefix}_{resp}_{output_index}")
+    responses_item_id_from(&responses_id(state), prefix, output_index)
 }
 
 // Same as [`responses_item_id`], for callers that already hold the response id and cannot
 // borrow `state` again (for example while a `tool_states` entry is borrowed mutably).
 fn responses_item_id_from(resp_id: &str, prefix: &str, output_index: usize) -> String {
     let resp = resp_id.strip_prefix("resp_").unwrap_or(resp_id);
-    format!("{prefix}_{resp}_{output_index}")
+    if resp.chars().count() <= ITEM_ID_DISCRIMINATOR_CHARS {
+        format!("{prefix}_{resp}_{output_index}")
+    } else {
+        format!("{prefix}_{:016x}_{output_index}", fnv1a_64(resp))
+    }
+}
+
+// FNV-1a over the UTF-8 bytes: a stable, dependency-free 64-bit digest. Uniqueness across the
+// handful of responses in one conversation is all that is required of it.
+fn fnv1a_64(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 // Converts any upstream message ID into a Responses-looking response ID.
