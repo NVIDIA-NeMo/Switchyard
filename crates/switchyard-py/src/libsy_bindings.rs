@@ -675,6 +675,7 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 selected_model_ids,
                 request,
                 response,
+                decision: _,
             } = *outcome;
             Python::attach(|py| {
                 Ok(PyStep::Done {

@@ -68,6 +68,8 @@ pub struct RoutingOutcome {
     pub request: Request,
     /// A response produced while routing, or `None` when the client must make the answer call.
     pub response: Option<Response>,
+    /// Optional algorithm-owned explanation of the routing decision.
+    pub decision: Option<crate::DecisionMetadata>,
 }
 
 impl RoutingOutcome {
@@ -93,6 +95,7 @@ impl RoutingOutcome {
             selected_model_ids,
             request,
             response: None,
+            decision: None,
         }
     }
 
@@ -104,6 +107,7 @@ impl RoutingOutcome {
             selected_model_ids: vec![selected_model_id],
             request,
             response: Some(response),
+            decision: None,
         }
     }
 }
@@ -483,6 +487,7 @@ mod tests {
         );
         assert_eq!(outcome.request.model_id().as_deref(), Some("selected"));
         assert!(outcome.response.is_none());
+        assert!(outcome.decision.is_none());
 
         let outcome = RoutingOutcome::route_to("only".into(), Vec::new(), request());
         assert_eq!(outcome.selected_model_ids, target_set(&["only"]));
