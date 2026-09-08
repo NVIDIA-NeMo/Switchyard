@@ -16,7 +16,10 @@ import yaml
 REPO = Path(__file__).resolve().parents[1]
 GENERATOR = REPO / "benchmark" / "prepare_harbor_dataset.py"
 HERMES_INSTALLER_FIXTURE = b"#!/usr/bin/env bash\nset -euo pipefail\n"
-UV_INSTALLER_FIXTURE = b"#!/bin/sh\nset -u\n"
+UV_IMAGE = (
+    "ghcr.io/astral-sh/uv"
+    "@sha256:8b940d3a9d65bed080436972241af2e21c84b5e8c9193f7014ed71479ee795ff"
+)
 
 
 def _load_generator_module() -> ModuleType:
@@ -46,7 +49,6 @@ def _prepare(
 ) -> Path:
     module = _load_generator_module()
     module._fetch_hermes_installer = lambda _pins: HERMES_INSTALLER_FIXTURE
-    module._fetch_uv_installer = lambda _pins: UV_INSTALLER_FIXTURE
     output = tmp_path / "prepared"
     return module.prepare_dataset(
         source_dataset=source_dataset,
@@ -193,7 +195,8 @@ def test_prebuilt_docker_image_task_becomes_derived_dockerfile(tmp_path: Path) -
 
     assert "docker_image" not in (task / "task.toml").read_text()
     dockerfile = (task / "environment" / "Dockerfile").read_text()
-    assert dockerfile.startswith("FROM python:3.12-slim\nUSER root\n")
+    assert dockerfile.startswith(f"FROM --platform=$BUILDPLATFORM {UV_IMAGE} AS switchyard_uv_build\n")
+    assert "\nFROM python:3.12-slim\nUSER root\n" in dockerfile
     assert "@anthropic-ai/claude-code@2.1.211" in dockerfile
     assert "@openai/codex@0.144.5" in dockerfile
     assert "opencode-ai@1.18.3" in dockerfile
@@ -211,12 +214,12 @@ def test_dockerfile_only_task_gets_prebake_layer(tmp_path: Path) -> None:
     output = _prepare(tmp_path, source)
     dockerfile = (output / "dockerfile-task" / "environment" / "Dockerfile").read_text()
 
-    assert dockerfile.startswith("FROM ubuntu:22.04\nRUN echo task\n")
+    assert dockerfile.startswith(f"FROM --platform=$BUILDPLATFORM {UV_IMAGE} AS switchyard_uv_build\n")
+    assert "\nFROM ubuntu:22.04\nRUN echo task\n" in dockerfile
     assert "COPY switchyard-hermes-install.sh /tmp/switchyard-hermes-install.sh" in dockerfile
-    assert "COPY switchyard-uv-install.sh /tmp/switchyard-uv-install.sh" in dockerfile
+    assert "COPY --from=switchyard_uv_build /uv /root/.hermes/bin/uv" in dockerfile
     assert "raw.githubusercontent.com/NousResearch/hermes-agent" not in dockerfile
     assert "astral.sh/uv/install.sh" not in dockerfile
-    assert "UV_UNMANAGED_INSTALL=/root/.hermes/bin sh /tmp/switchyard-uv-install.sh" in dockerfile
     assert r"grep -E '^uv 0\.12\.9($| )'" in dockerfile
     assert "SWITCHYARD_PREBAKED_AGENT_VERSIONS" in dockerfile
     assert "/usr/local/lib/node_modules/npm" in dockerfile
@@ -227,9 +230,26 @@ def test_dockerfile_only_task_gets_prebake_layer(tmp_path: Path) -> None:
         / "environment"
         / "switchyard-hermes-install.sh"
     ).read_bytes() == HERMES_INSTALLER_FIXTURE
-    assert (
-        output / "dockerfile-task" / "environment" / "switchyard-uv-install.sh"
-    ).read_bytes() == UV_INSTALLER_FIXTURE
+
+
+def test_uv_stage_preserves_parser_directives_and_global_args(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_task(
+        source,
+        "dockerfile-task",
+        "[environment]\n",
+        "# syntax=docker/dockerfile:1\nARG BASE=ubuntu:22.04\nFROM ${BASE}\n",
+    )
+
+    output = _prepare(tmp_path, source)
+    dockerfile = (output / "dockerfile-task" / "environment" / "Dockerfile").read_text()
+
+    assert dockerfile.startswith(
+        "# syntax=docker/dockerfile:1\n"
+        "ARG BASE=ubuntu:22.04\n"
+        f"FROM --platform=$BUILDPLATFORM {UV_IMAGE} AS switchyard_uv_build\n"
+        "FROM ${BASE}\n"
+    )
 
 
 def test_prepare_fetches_hermes_installer_once_for_all_tasks(tmp_path: Path) -> None:
@@ -244,7 +264,6 @@ def test_prepare_fetches_hermes_installer_once_for_all_tasks(tmp_path: Path) -> 
         return HERMES_INSTALLER_FIXTURE
 
     module._fetch_hermes_installer = fetch_once
-    module._fetch_uv_installer = lambda _pins: UV_INSTALLER_FIXTURE
     output = module.prepare_dataset(
         source_dataset="openthoughts-tblite@2.0",
         source_dir=source,
@@ -343,9 +362,7 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
         "HERMES_VERSION": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
         "NODE_VERSION": "20.11.1",
         "OPENCODE_VERSION": "1.18.3",
-        "UV_INSTALLER_SHA256": (
-            "222e006c0fe4a0d793031833e469b21df72311f4e3526ffecca0e19e6dfabc32"
-        ),
+        "UV_IMAGE": UV_IMAGE,
         "UV_VERSION": "0.12.9",
     }
     assert manifest["closed_book"]["proxy_asset_digest"].startswith("sha256:")
@@ -360,11 +377,9 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
         ),
         "digest": "sha256:" + hashlib.sha256(HERMES_INSTALLER_FIXTURE).hexdigest(),
     }
-    assert manifest["closed_book"]["uv_installer"] == {
-        "source_url": (
-            "https://github.com/astral-sh/uv/releases/download/0.12.9/uv-installer.sh"
-        ),
-        "digest": "sha256:" + hashlib.sha256(UV_INSTALLER_FIXTURE).hexdigest(),
+    assert manifest["closed_book"]["uv"] == {
+        "image": UV_IMAGE,
+        "version": "0.12.9",
     }
 
 
@@ -396,6 +411,7 @@ def test_a_hermes_ref_that_is_not_a_commit_sha_is_rejected() -> None:
         "OPENCODE_VERSION": "3",
         "NODE_VERSION": "4",
         "UV_VERSION": "0.12.9",
+        "UV_IMAGE": UV_IMAGE,
     }
     rejected = (
         "main",
@@ -421,12 +437,13 @@ def test_the_hermes_install_layer_uses_the_vendored_installer() -> None:
         "NODE_VERSION": "4",
         "HERMES_VERSION": sha,
         "UV_VERSION": "0.12.9",
+        "UV_IMAGE": UV_IMAGE,
     }
 
     layer = _load_generator_module()._install_layer(pins)
 
     assert "bash /tmp/switchyard-hermes-install.sh" in layer
-    assert "sh /tmp/switchyard-uv-install.sh" in layer
+    assert "COPY --from=switchyard_uv_build /uv /root/.hermes/bin/uv" in layer
     assert "raw.githubusercontent.com/NousResearch/hermes-agent" not in layer
 
 
@@ -504,50 +521,14 @@ def test_the_hermes_installer_digest_is_verified(
         )
 
 
-def test_the_uv_installer_is_fetched_at_the_pinned_version(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_generator_module()
-    digest = hashlib.sha256(UV_INSTALLER_FIXTURE).hexdigest()
-    requested_urls: list[str] = []
-
-    def fake_urlopen(request: object, timeout: int) -> io.BytesIO:
-        requested_urls.append(request.full_url)
-        assert timeout == 60
-        return io.BytesIO(UV_INSTALLER_FIXTURE)
-
-    monkeypatch.setattr(module, "urlopen", fake_urlopen)
-
-    content = module._fetch_uv_installer(
-        {"UV_VERSION": "0.12.9", "UV_INSTALLER_SHA256": digest}
-    )
-
-    assert content == UV_INSTALLER_FIXTURE
-    assert requested_urls == [
-        "https://github.com/astral-sh/uv/releases/download/0.12.9/uv-installer.sh"
-    ]
-
-
-def test_the_uv_installer_digest_is_verified(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = _load_generator_module()
-
-    def fake_urlopen(_request: object, timeout: int) -> io.BytesIO:
-        assert timeout == 60
-        return io.BytesIO(UV_INSTALLER_FIXTURE)
-
-    monkeypatch.setattr(module, "urlopen", fake_urlopen)
-
-    with pytest.raises(ValueError, match="uv installer digest mismatch"):
-        module._fetch_uv_installer(
-            {"UV_VERSION": "0.12.9", "UV_INSTALLER_SHA256": "0" * 64}
-        )
-
-
 def test_a_non_numeric_uv_version_is_rejected() -> None:
     with pytest.raises(SystemExit, match="numeric semantic version"):
-        _load_generator_module()._fetch_uv_installer(
-            {"UV_VERSION": "latest", "UV_INSTALLER_SHA256": "0" * 64}
-        )
+        _load_generator_module()._uv_version({"UV_VERSION": "latest"})
+
+
+def test_an_unpinned_uv_image_is_rejected() -> None:
+    with pytest.raises(SystemExit, match="pinned by a SHA-256 digest"):
+        _load_generator_module()._uv_image({"UV_IMAGE": "ghcr.io/astral-sh/uv:latest"})
 
 
 def test_the_hermes_pin_is_applied_by_commit_and_forced() -> None:
@@ -566,6 +547,7 @@ def test_the_hermes_pin_is_applied_by_commit_and_forced() -> None:
         "NODE_VERSION": "4",
         "HERMES_VERSION": sha,
         "UV_VERSION": "0.12.9",
+        "UV_IMAGE": UV_IMAGE,
     }
 
     layer = _load_generator_module()._install_layer(pins)
@@ -584,6 +566,7 @@ def test_the_alpine_branch_installs_the_shell_the_installer_needs() -> None:
         "NODE_VERSION": "4",
         "HERMES_VERSION": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
         "UV_VERSION": "0.12.9",
+        "UV_IMAGE": UV_IMAGE,
     }
 
     layer = _load_generator_module()._install_layer(pins)
@@ -628,7 +611,7 @@ def test_a_missing_uv_pin_is_reported_with_the_other_pins(tmp_path: Path) -> Non
     source = tmp_path / "source"
     _write_task(source, "task-a", "[environment]\n", "FROM ubuntu:22.04\n")
 
-    with pytest.raises(ValueError, match="missing pins.*UV_INSTALLER_SHA256.*UV_VERSION"):
+    with pytest.raises(ValueError, match="missing pins.*UV_IMAGE.*UV_VERSION"):
         module.prepare_dataset(
             source_dataset="openthoughts-tblite@2.0",
             source_dir=source,

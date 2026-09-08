@@ -39,10 +39,11 @@ AGENT_VERSIONS_FILE = SCRIPT_DIR / "agent-versions.env"
 PROXY_ASSET_DIR = SCRIPT_DIR / "closed_book_proxy" / "proxy"
 AGENT_ENTRYPOINT = "switchyard-agent-entrypoint.sh"
 HERMES_INSTALLER = "switchyard-hermes-install.sh"
-UV_INSTALLER = "switchyard-uv-install.sh"
+UV_STAGE = "switchyard_uv_build"
 COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 SEMVER_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+UV_IMAGE_PATTERN = re.compile(r"ghcr\.io/astral-sh/uv@sha256:[0-9a-f]{64}")
 TERMINAL_BENCH_2_SOURCE_DATASET = "terminal-bench/terminal-bench-2"
 TERMINAL_BENCH_2_1_SOURCE_DATASET = "terminal-bench/terminal-bench-2-1"
 # Shared across the TB2 family (2.0 + the 2.1 verified iteration): 2.1 tweaks
@@ -152,8 +153,13 @@ def _uv_version(pins: dict[str, str]) -> str:
     return version
 
 
-def _uv_installer_url(version: str) -> str:
-    return f"https://github.com/astral-sh/uv/releases/download/{version}/uv-installer.sh"
+def _uv_image(pins: dict[str, str]) -> str:
+    image = pins["UV_IMAGE"]
+    if not UV_IMAGE_PATTERN.fullmatch(image):
+        raise SystemExit(
+            "UV_IMAGE must be the ghcr.io/astral-sh/uv image pinned by a SHA-256 digest"
+        )
+    return image
 
 
 def _fetch_pinned_installer(
@@ -204,16 +210,6 @@ def _fetch_hermes_installer(pins: dict[str, str]) -> bytes:
         expected_digest=pins["HERMES_INSTALLER_SHA256"],
         digest_name="HERMES_INSTALLER_SHA256",
         artifact_name="Hermes installer",
-    )
-
-
-def _fetch_uv_installer(pins: dict[str, str]) -> bytes:
-    version = _uv_version(pins)
-    return _fetch_pinned_installer(
-        url=_uv_installer_url(version),
-        expected_digest=pins["UV_INSTALLER_SHA256"],
-        digest_name="UV_INSTALLER_SHA256",
-        artifact_name="uv installer",
     )
 
 
@@ -320,6 +316,7 @@ def _install_layer(pins: dict[str, str]) -> str:
     return f"""
 
 # Switchyard benchmark prebaked coding agents.
+COPY --from={UV_STAGE} /uv /root/.hermes/bin/uv
 ENV SWITCHYARD_PREBAKED_AGENT_VERSIONS="claude-code={claude_version},codex={codex_version},opencode={opencode_version},node={node_version},hermes={hermes_version}"
 RUN set -eux; \\
     if command -v apt-get >/dev/null 2>&1; then \\
@@ -371,8 +368,6 @@ RUN set -eux; \\
     elif command -v apk >/dev/null 2>&1; then \\
         apk add --no-cache bash git ripgrep xz; \\
     fi; \\
-    UV_UNMANAGED_INSTALL=/root/.hermes/bin sh /tmp/{UV_INSTALLER}; \\
-    rm -f /tmp/{UV_INSTALLER}; \\
     /root/.hermes/bin/uv --version | grep -E '^uv {re.escape(uv_version)}($| )'; \\
     bash /tmp/{HERMES_INSTALLER} \\
         --skip-setup --commit {hermes_version} --force-commit; \\
@@ -411,11 +406,20 @@ def _load_task_toml(path: Path) -> dict[str, Any]:
     return tomllib.loads(path.read_text())
 
 
+def _with_uv_build_stage(dockerfile: str, pins: dict[str, str]) -> str:
+    """Insert a native-build-platform uv stage before the task's first image stage."""
+    lines = dockerfile.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*FROM(?:\s|$)", line, flags=re.IGNORECASE):
+            stage = f"FROM --platform=$BUILDPLATFORM {_uv_image(pins)} AS {UV_STAGE}\n"
+            return "".join([*lines[:index], stage, *lines[index:]])
+    raise ValueError("task Dockerfile must contain a FROM instruction")
+
+
 def _rewrite_task_image(
     task_dir: Path,
     pins: dict[str, str],
     hermes_installer: bytes,
-    uv_installer: bytes,
 ) -> dict[str, Any]:
     task_toml = task_dir / "task.toml"
     data = _load_task_toml(task_toml)
@@ -429,20 +433,16 @@ def _rewrite_task_image(
     installer = dockerfile.parent / HERMES_INSTALLER
     installer.write_bytes(hermes_installer)
     installer.chmod(0o755)
-    uv_installer_path = dockerfile.parent / UV_INSTALLER
-    uv_installer_path.write_bytes(uv_installer)
-    uv_installer_path.chmod(0o755)
     layer = _install_layer(pins)
-    layer = (
-        f"COPY {HERMES_INSTALLER} /tmp/{HERMES_INSTALLER}\n"
-        f"COPY {UV_INSTALLER} /tmp/{UV_INSTALLER}\n"
-        f"{layer.lstrip()}"
-    )
+    layer = f"COPY {HERMES_INSTALLER} /tmp/{HERMES_INSTALLER}\n{layer.lstrip()}"
     entrypoint_layer = _entrypoint_layer()
 
     if docker_image:
         dockerfile.write_text(
-            f"FROM {docker_image}\nUSER root\n{layer.lstrip()}{entrypoint_layer}"
+            _with_uv_build_stage(
+                f"FROM {docker_image}\nUSER root\n{layer.lstrip()}{entrypoint_layer}",
+                pins,
+            )
         )
         task_toml.write_text(
             _remove_toml_key_from_table(task_toml.read_text(), "environment", "docker_image")
@@ -452,7 +452,12 @@ def _rewrite_task_image(
     else:
         if not dockerfile.is_file():
             dockerfile.write_text("FROM ubuntu:22.04\n")
-        dockerfile.write_text(dockerfile.read_text().rstrip() + "\n" + layer + entrypoint_layer)
+        dockerfile.write_text(
+            _with_uv_build_stage(
+                dockerfile.read_text().rstrip() + "\n" + layer + entrypoint_layer,
+                pins,
+            )
+        )
         image_source = None
         removed = False
 
@@ -635,7 +640,7 @@ def prepare_dataset(
         "HERMES_INSTALLER_SHA256",
         "NODE_VERSION",
         "OPENCODE_VERSION",
-        "UV_INSTALLER_SHA256",
+        "UV_IMAGE",
         "UV_VERSION",
     }
     missing = sorted(required - pins.keys())
@@ -644,8 +649,8 @@ def prepare_dataset(
 
     hermes_installer = _fetch_hermes_installer(pins)
     hermes_installer_digest = hashlib.sha256(hermes_installer).hexdigest()
-    uv_installer = _fetch_uv_installer(pins)
-    uv_installer_digest = hashlib.sha256(uv_installer).hexdigest()
+    _uv_image(pins)
+    _uv_version(pins)
 
     if source_dir is None:
         download_root = output_dir.parent / "_downloads"
@@ -663,7 +668,7 @@ def prepare_dataset(
     proxy_digest = _path_digest(PROXY_ASSET_DIR)
     proxy_allowlist_hosts = _proxy_allowlist_hosts_for_dataset(source_dataset)
     for task_dir in _task_dirs(output_dir):
-        image = _rewrite_task_image(task_dir, pins, hermes_installer, uv_installer)
+        image = _rewrite_task_image(task_dir, pins, hermes_installer)
         compose = _merge_compose(task_dir, proxy_allowlist_hosts)
         tasks.append(
             {
@@ -694,9 +699,9 @@ def prepare_dataset(
                 "source_url": _hermes_installer_url(_hermes_commit(pins)),
                 "digest": f"sha256:{hermes_installer_digest}",
             },
-            "uv_installer": {
-                "source_url": _uv_installer_url(_uv_version(pins)),
-                "digest": f"sha256:{uv_installer_digest}",
+            "uv": {
+                "image": _uv_image(pins),
+                "version": _uv_version(pins),
             },
         },
         "tasks": tasks,

@@ -157,11 +157,12 @@ uv run --no-sync python benchmark/prepare_harbor_dataset.py \
 The pinned versions live in `benchmark/agent-versions.env`. To prepare a different Harbor dataset,
 see [Benchmark Datasets](DATASETS.md).
 
-Dataset preparation downloads the commit-pinned Hermes installer and version-pinned `uv` installer
-once, verifies both pinned SHA-256 digests, and copies them into every task build context. The
-prebake installs the pinned managed `uv` before invoking Hermes, so Hermes does not resolve the
-mutable latest `uv` release. Task image builds do not fetch the Hermes installer from
-`raw.githubusercontent.com`.
+Dataset preparation downloads the commit-pinned Hermes installer once, verifies its SHA-256 digest,
+and copies it into every task build context. Generated Dockerfiles copy pinned `uv` from a
+digest-pinned multi-architecture image selected for Docker's native build platform. This avoids
+running a Rust `uv` binary through QEMU when an ARM host builds an amd64-only task image. Hermes
+finds that managed `uv` before it can resolve the mutable latest release. Task image builds do not
+fetch the Hermes installer from `raw.githubusercontent.com`.
 
 Terminal-Bench 2.0 is supported through the same generated local proxy dataset path. The
 TB2 export keeps model/tool egress on the closed-book path while allowlisting the package and data
