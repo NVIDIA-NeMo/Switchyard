@@ -3,12 +3,15 @@
 <a href=#3 id=3 data-nosnippet>3</a>
 <a href=#4 id=4 data-nosnippet>4</a></span><span class="doccomment">//! Optional metadata explaining a routing decision.
 <a href=#5 id=5 data-nosnippet>5</a>
-<a href=#6 id=6 data-nosnippet>6</a>/// Algorithm-owned metadata attached to a successful routing outcome.
+<a href=#6 id=6 data-nosnippet>6</a>/// Metadata attached by libsy to a successful routing outcome.
 <a href=#7 id=7 data-nosnippet>7</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq)]
 <a href=#8 id=8 data-nosnippet>8</a></span><span class="kw">pub struct </span>DecisionMetadata {
-<a href=#9 id=9 data-nosnippet>9</a>    <span class="doccomment">/// Stable name of the algorithm that made the decision.
-<a href=#10 id=10 data-nosnippet>10</a>    </span><span class="kw">pub </span>algorithm: String,
-<a href=#11 id=11 data-nosnippet>11</a>    <span class="doccomment">/// Optional bounded, machine-readable evidence produced by the algorithm.
-<a href=#12 id=12 data-nosnippet>12</a>    </span><span class="kw">pub </span>evidence: <span class="prelude-ty">Option</span>&lt;String&gt;,
-<a href=#13 id=13 data-nosnippet>13</a>}
+<a href=#9 id=9 data-nosnippet>9</a>    <span class="doccomment">/// Unique identifier for this invocation of
+<a href=#10 id=10 data-nosnippet>10</a>    /// [`Algorithm::run_stream`](crate::Algorithm::run_stream).
+<a href=#11 id=11 data-nosnippet>11</a>    </span><span class="kw">pub </span>decision_id: String,
+<a href=#12 id=12 data-nosnippet>12</a>    <span class="doccomment">/// Stable name of the algorithm that made the decision.
+<a href=#13 id=13 data-nosnippet>13</a>    </span><span class="kw">pub </span>algorithm: String,
+<a href=#14 id=14 data-nosnippet>14</a>    <span class="doccomment">/// Optional bounded, machine-readable evidence produced by the algorithm.
+<a href=#15 id=15 data-nosnippet>15</a>    </span><span class="kw">pub </span>evidence: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#16 id=16 data-nosnippet>16</a>}
 </code></pre></div></section></main></body></html>
