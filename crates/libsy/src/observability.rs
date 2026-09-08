@@ -65,11 +65,12 @@ pub(crate) fn outcome_value<T>(result: &Result<T>) -> &'static str {
 /// arbitrary host labels ride in via [`switchyard_protocol::Metadata::extra_metadata`], recorded
 /// whole into the `extra_metadata` field. `outcome` and `error` are filled in
 /// by [`record_run`] when the run ends.
-pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
+pub(crate) fn run_span(algorithm: &str, decision_id: &str, request: &Request) -> Span {
     let span = tracing::info_span!(
         target: TRACING_TARGET,
         "libsy.run",
         algorithm,
+        decision_id,
         switchyard.algorithm = algorithm,
         openinference.span.kind = "CHAIN",
         switchyard.route = tracing::field::Empty,

@@ -68,7 +68,10 @@ pub struct RoutingOutcome {
     pub request: Request,
     /// A response produced while routing, or `None` when the client must make the answer call.
     pub response: Option<Response>,
-    /// Optional algorithm-owned explanation of the routing decision.
+    /// Decision identity and optional algorithm evidence.
+    ///
+    /// Constructors leave this empty; [`Algorithm::run_stream`] fills it before publishing a
+    /// successful outcome.
     pub decision: Option<crate::DecisionMetadata>,
 }
 
@@ -116,6 +119,8 @@ impl RoutingOutcome {
 #[derive(Clone)]
 pub struct Driver {
     step_tx: mpsc::Sender<Result<Step>>,
+    /// Identifier shared by this run's outcome and telemetry.
+    decision_id: String,
     /// The owning algorithm's telemetry label, stamped onto every call this driver publishes.
     algorithm: String,
 }
@@ -132,6 +137,7 @@ impl Driver {
         (
             Self {
                 step_tx,
+                decision_id: uuid::Uuid::now_v7().to_string(),
                 algorithm: algorithm.to_string(),
             },
             step_rx,
@@ -200,6 +206,15 @@ impl Driver {
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
+        let result = result.map(|mut outcome| {
+            let evidence = outcome.decision.and_then(|decision| decision.evidence);
+            outcome.decision = Some(crate::DecisionMetadata {
+                decision_id: self.decision_id.clone(),
+                algorithm: self.algorithm.clone(),
+                evidence,
+            });
+            outcome
+        });
         let selected_model = result
             .as_ref()
             .ok()
@@ -380,7 +395,7 @@ pub trait Algorithm: Send + Sync + 'static {
     /// Every invocation owns a separate [`Driver`].
     fn run_stream(self: Arc<Self>, request: Request) -> StepStream {
         let (driver, step_rx) = Driver::new(self.name());
-        let span = observability::run_span(self.name(), &request);
+        let span = observability::run_span(self.name(), &driver.decision_id, &request);
         let handle = tokio::spawn(
             async move {
                 let algorithm = self.name().to_string();
@@ -722,6 +737,18 @@ mod tests {
                     }))?;
                 }
                 Step::Done(outcome) => {
+                    let decision = outcome
+                        .decision
+                        .as_ref()
+                        .expect("run_stream should attach decision metadata");
+                    assert_eq!(decision.algorithm, "test");
+                    assert_eq!(
+                        uuid::Uuid::parse_str(&decision.decision_id)
+                            .expect("decision id should be a UUID")
+                            .get_version_num(),
+                        7
+                    );
+                    assert!(decision.evidence.is_none());
                     let response = outcome
                         .response
                         .ok_or_else(|| test_error("expected an answered outcome"))?;
