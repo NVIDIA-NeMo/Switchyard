@@ -134,6 +134,24 @@ impl FormatCodec for OpenAiResponsesCodec {
             ],
         );
         crate::codex_namespaces::attach_tool_namespaces(&mut request.extensions, tool_namespaces);
+        tracing::debug!(
+            target: "switchyard_translation::responses::tools",
+            tool_types = %body
+                .get("tools")
+                .and_then(serde_json::Value::as_array)
+                .map(|tools| tools
+                    .iter()
+                    .map(|tool| format!(
+                        "{}:{}",
+                        tool.get("type").and_then(serde_json::Value::as_str).unwrap_or("?"),
+                        tool.get("name").and_then(serde_json::Value::as_str).unwrap_or("-")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(","))
+                .unwrap_or_default(),
+            custom_tools = custom_tools.len(),
+            "decoded Responses request tools"
+        );
         crate::codex_custom_tools::attach_custom_tools(&mut request.extensions, custom_tools);
         crate::codex_custom_tools::attach_additional_tools(
             &mut request.extensions,
