@@ -9,6 +9,7 @@ import argparse
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -19,9 +20,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    from benchmark.vgr_holdout_artifacts import finalize_artifacts, path_digest
+except ModuleNotFoundError:
+    from vgr_holdout_artifacts import finalize_artifacts, path_digest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTOMATIONBENCH_PIN = "4a8e1061254004d9dac807054eed33fad7d1ff14"
 APPWORLD_PIN = "a072b7a86e7c1d5b1d7175659d750ebb9b79f10a"
+APPWORLD_EXPERIMENT = (
+    Path("simplified_react_code_agent") / "switchyard_vgr" / "switchyard-vgr" / "dev_easy"
+)
 APPWORLD_TASK_IDS = (
     "4ec8de5_1",
     "4ec8de5_2",
@@ -108,6 +117,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--appworld-processes", type=int, default=1)
     parser.add_argument("--server-port", type=int, default=4000)
     parser.add_argument("--session-proxy-port", type=int, default=4001)
+    parser.add_argument(
+        "--counterfactual-labels",
+        type=Path,
+        help=(
+            "Frozen schema-version-1 request labels from paired controls. "
+            "Without them the summary records that the FPR/FNR gate is blocked."
+        ),
+    )
+    parser.add_argument(
+        "--summarize-run",
+        type=Path,
+        help="Rebuild artifact-only summaries for an existing run without starting services.",
+    )
     parser.add_argument("--skip-setup", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -169,21 +191,30 @@ def _wait_for_health(url: str, process: subprocess.Popen[bytes] | None = None) -
     raise TimeoutError(f"service did not become healthy within 180 seconds: {url}")
 
 
-@contextlib.contextmanager
-def _switchyard_server(
+def _capture_json(url: str, path: Path) -> None:
+    """Capture one bounded JSON endpoint response as a run artifact."""
+    with urllib.request.urlopen(url, timeout=30) as response:
+        payload = response.read(16 * 1024 * 1024 + 1)
+    if len(payload) > 16 * 1024 * 1024:
+        raise ValueError(f"JSON response exceeds 16 MiB: {url}")
+    value = json.loads(payload)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _server_command(
     config: Path,
     port: int,
     network: str,
-    log_path: Path,
-) -> Iterator[None]:
-    container = f"switchyard-holdout-{os.getpid()}"
-    mount = f"type=bind,src={config.resolve()},dst=/etc/switchyard/config.toml,readonly"
-    _run(
-        ["docker", "network", "create", network],
-        cwd=REPO_ROOT,
-        log_path=log_path.with_name("docker-network.log"),
+    container: str,
+    artifacts_dir: Path,
+) -> list[str]:
+    config_mount = (
+        f"type=bind,src={config.resolve()},dst=/etc/switchyard/config.toml,readonly"
     )
-    command = [
+    artifacts_mount = (
+        f"type=bind,src={artifacts_dir.resolve()},dst=/artifacts"
+    )
+    return [
         "docker",
         "run",
         "--rm",
@@ -201,7 +232,9 @@ def _switchyard_server(
         "--env",
         "NVIDIA_API_KEY",
         "--mount",
-        mount,
+        config_mount,
+        "--mount",
+        artifacts_mount,
         "switchyard-baseline:local",
         "--config",
         "/etc/switchyard/config.toml",
@@ -209,7 +242,26 @@ def _switchyard_server(
         "0.0.0.0",
         "--port",
         "4000",
+        "--routing-log-file",
+        "/artifacts/routing_requests.jsonl",
     ]
+
+
+@contextlib.contextmanager
+def _switchyard_server(
+    config: Path,
+    port: int,
+    network: str,
+    log_path: Path,
+    artifacts_dir: Path,
+) -> Iterator[None]:
+    container = f"switchyard-holdout-{os.getpid()}"
+    _run(
+        ["docker", "network", "create", network],
+        cwd=REPO_ROOT,
+        log_path=log_path.with_name("docker-network.log"),
+    )
+    command = _server_command(config, port, network, container, artifacts_dir)
     try:
         _run(command, cwd=REPO_ROOT, log_path=log_path)
         _wait_for_health(f"http://127.0.0.1:{port}/health")
@@ -506,6 +558,43 @@ def _write_manifest(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _snapshot_inputs(args: argparse.Namespace, run_dir: Path) -> dict[str, Any]:
+    inputs_dir = run_dir / "inputs"
+    inputs_dir.mkdir()
+    config_snapshot = inputs_dir / "server-config.toml"
+    shutil.copyfile(args.server_config, config_snapshot)
+    return {
+        "server_config": {
+            "path": config_snapshot.relative_to(run_dir).as_posix(),
+            "digest": path_digest(config_snapshot),
+        },
+        "cohorts": {
+            "tb21": {"task_count": 89},
+            "automationbench_simple": {"task_count": 200},
+            "appworld_easy": {
+                "task_count": len(APPWORLD_TASK_IDS),
+                "task_ids": list(APPWORLD_TASK_IDS),
+            },
+        },
+        "commands": {
+            "tb21": _tb_command(args, run_dir),
+            "automationbench_simple": _automation_command(
+                args, run_dir / "automationbench-simple.json"
+            ),
+            "appworld_easy": _appworld_command(args),
+        },
+    }
+
+
+def _snapshot_appworld_output(args: argparse.Namespace, run_dir: Path) -> Path:
+    source = args.appworld_root / "experiments/outputs" / APPWORLD_EXPERIMENT
+    if not source.is_dir():
+        raise FileNotFoundError(f"AppWorld output not found: {source}")
+    destination = run_dir / "appworld-output"
+    shutil.copytree(source, destination)
+    return destination
+
+
 def run_suite(args: argparse.Namespace) -> Path:
     for value, label in (
         (args.tb_concurrency, "--tb-concurrency"),
@@ -526,16 +615,25 @@ def run_suite(args: argparse.Namespace) -> Path:
     run_dir = args.output_dir.resolve() / f"vgr-holdout-{timestamp}"
     run_dir.mkdir(parents=True)
     manifest_path = run_dir / "run_manifest.json"
+    inputs = _snapshot_inputs(args, run_dir)
     manifest: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "started_at": datetime.now(UTC).isoformat(),
         "status": "running",
         "suites": {},
         "pins": {
+            "switchyard": _git_head(REPO_ROOT),
             "automationbench": AUTOMATIONBENCH_PIN,
             "appworld": APPWORLD_PIN,
         },
-        "server_config": str(args.server_config.resolve()),
+        "inputs": inputs,
+        "artifacts": {
+            "routing_records": "routing_requests.jsonl",
+            "routing_stats": "routing_stats_final.json",
+            "machine_readable_summary": "machine_readable_summary.json",
+            "per_task_routing": "per_task_routing.jsonl",
+            "artifact_index": "artifact_index.json",
+        },
     }
     _write_manifest(manifest_path, manifest)
 
@@ -556,6 +654,7 @@ def run_suite(args: argparse.Namespace) -> Path:
             args.server_port,
             network,
             run_dir / "server.log",
+            run_dir,
         ):
             _run(
                 _tb_command(args, run_dir),
@@ -563,7 +662,10 @@ def run_suite(args: argparse.Namespace) -> Path:
                 log_path=run_dir / "tb21.log",
                 env=_tb_environment(network),
             )
-            manifest["suites"]["tb21"] = {"status": "completed"}
+            manifest["suites"]["tb21"] = {
+                "status": "completed",
+                "output": "tb21/jobs",
+            }
             _write_manifest(manifest_path, manifest)
 
             with _session_proxy(
@@ -581,7 +683,7 @@ def run_suite(args: argparse.Namespace) -> Path:
                 )
                 manifest["suites"]["automationbench_simple"] = {
                     "status": "completed",
-                    "output": str(automation_output),
+                    "output": automation_output.relative_to(run_dir).as_posix(),
                 }
                 _write_manifest(manifest_path, manifest)
 
@@ -612,18 +714,33 @@ def run_suite(args: argparse.Namespace) -> Path:
                 )
                 manifest["suites"]["appworld_easy"] = {
                     "status": "completed",
-                    "output_root": str(
-                        args.appworld_root / "experiments/outputs"
-                    ),
+                    "output": _snapshot_appworld_output(args, run_dir)
+                    .relative_to(run_dir)
+                    .as_posix(),
                 }
                 _write_manifest(manifest_path, manifest)
+            _capture_json(
+                f"http://127.0.0.1:{args.server_port}/v1/stats",
+                run_dir / "routing_stats_final.json",
+            )
     except BaseException as error:
         manifest["status"] = "failed"
         manifest["error"] = f"{type(error).__name__}: {error}"
         manifest["finished_at"] = datetime.now(UTC).isoformat()
+        try:
+            manifest["artifact_summary"] = finalize_artifacts(
+                run_dir, args.counterfactual_labels
+            )
+        except (OSError, ValueError, RuntimeError) as artifact_error:
+            manifest["artifact_error"] = f"{type(artifact_error).__name__}: {artifact_error}"
         _write_manifest(manifest_path, manifest)
         raise
 
+    manifest["artifact_summary"] = finalize_artifacts(
+        run_dir,
+        args.counterfactual_labels,
+        require_complete=True,
+    )
     manifest["status"] = "completed"
     manifest["finished_at"] = datetime.now(UTC).isoformat()
     _write_manifest(manifest_path, manifest)
@@ -633,6 +750,18 @@ def run_suite(args: argparse.Namespace) -> Path:
 def main(argv: Sequence[str] | None = None) -> int:
     raw_args = list(argv if argv is not None else sys.argv[1:])
     args = _parser().parse_args(raw_args)
+    if args.summarize_run:
+        manifest_path = args.summarize_run.resolve() / "run_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError("run manifest must be a JSON object")
+        manifest["artifact_summary"] = finalize_artifacts(
+            args.summarize_run,
+            args.counterfactual_labels,
+        )
+        _write_manifest(manifest_path, manifest)
+        print(f"Hold-out artifacts summarized: {args.summarize_run.resolve()}")
+        return 0
     if args.dry_run:
         preview_dir = args.output_dir / "preview"
         preview = {
@@ -641,6 +770,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args, args.output_dir / "automationbench-simple.json"
             ),
             "appworld_easy": _appworld_command(args),
+            "artifact_contract": {
+                "routing_records": "routing_requests.jsonl",
+                "routing_stats": "routing_stats_final.json",
+                "per_task_routing": "per_task_routing.jsonl",
+                "summary": "machine_readable_summary.json",
+                "counterfactual_gate": (
+                    "computed from --counterfactual-labels"
+                    if args.counterfactual_labels
+                    else "blocked until frozen labels are supplied"
+                ),
+            },
         }
         print(json.dumps(preview, indent=2))
         return 0

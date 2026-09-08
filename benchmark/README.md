@@ -33,6 +33,34 @@ calls Harbor, AutomationBench, AppWorld, and Docker directly without Bash or WSL
 are elsewhere, pass `--automationbench-root` and `--appworld-root`. Use `--dry-run` to inspect all
 three commands without starting a benchmark.
 
+Every run preserves the server configuration, benchmark-native outputs, final `/v1/stats`, full
+`routing_requests.jsonl`, a per-task routing projection, a digest index, and a machine-readable
+summary. Without paired-control labels, the summary records the FPR/FNR gate as blocked.
+
+After TC-EVAL-01/02 produce frozen request labels, supply this schema:
+
+```json
+{
+  "schema_version": 1,
+  "decision_unit": "request",
+  "labels": [{
+    "benchmark": "automationbench_simple",
+    "task": "automationbench-<session-digest>",
+    "required_route": "local_required"
+  }]
+}
+```
+`required_route` is one of `local_required`, `cloud_required`, `both_fail`, or `indeterminate`.
+Rebuild the summary without rerunning models:
+```bash
+python benchmark/run_holdout_suite.py \
+  --summarize-run benchmark/holdout_runs/<run> \
+  --counterfactual-labels frozen-counterfactual-labels.json
+```
+
+The summary computes request-level FPR/FNR from readiness-effective routes with Wilson 95%
+confidence intervals. It does not score acceptance because that rule remains unsettled.
+
 ## Prerequisites
 
 From the repo root:
@@ -306,7 +334,8 @@ version pins, log paths, and final Harbor status.
 final aggregate `/v1/stats` snapshot, including model and tier calls, errors, tokens, and latency.
 Neither artifact provides task or trial attribution. The runner writes them only after Harbor exits
 and while the Rust server is still reachable; otherwise the manifest records them as missing.
-`routing_requests.jsonl` and `routing_stats_by_task.json` are not produced by the Rust server.
+When `--routing-log-file` is enabled, `routing_requests.jsonl` provides per-request task, trial,
+session, route, model, tier, and token attribution.
 
 ## Docker Image Notes
 
