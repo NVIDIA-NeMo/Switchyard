@@ -221,6 +221,13 @@ def test_dockerfile_only_task_gets_prebake_layer(tmp_path: Path) -> None:
     assert "raw.githubusercontent.com/NousResearch/hermes-agent" not in dockerfile
     assert "astral.sh/uv/install.sh" not in dockerfile
     assert r"grep -E '^uv 0\.12\.9($| )'" in dockerfile
+    assert 'x86_64|amd64) python_arch="x86_64"' in dockerfile
+    assert 'aarch64|arm64) python_arch="aarch64"' in dockerfile
+    assert (
+        'SWITCHYARD_HERMES_PYTHON="cpython-3.11-linux-$python_arch-$python_libc"'
+        in dockerfile
+    )
+    assert 'PYTHON_VERSION="${SWITCHYARD_HERMES_PYTHON:-3.11}"' in dockerfile
     assert "SWITCHYARD_PREBAKED_AGENT_VERSIONS" in dockerfile
     assert "/usr/local/lib/node_modules/npm" in dockerfile
     assert "node-v20.11.1-linux-$node_arch.tar.gz" in dockerfile

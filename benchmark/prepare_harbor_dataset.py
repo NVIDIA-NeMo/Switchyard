@@ -369,6 +369,18 @@ RUN set -eux; \\
         apk add --no-cache bash git ripgrep xz; \\
     fi; \\
     /root/.hermes/bin/uv --version | grep -E '^uv {re.escape(uv_version)}($| )'; \\
+    target_arch="$(uname -m)"; \\
+    case "$target_arch" in \\
+        x86_64|amd64) python_arch="x86_64" ;; \\
+        aarch64|arm64) python_arch="aarch64" ;; \\
+        *) echo "Unsupported Hermes Python architecture: $target_arch" >&2; exit 1 ;; \\
+    esac; \\
+    if ldd --version 2>&1 | grep -qi musl; then python_libc="musl"; else python_libc="gnu"; fi; \\
+    export SWITCHYARD_HERMES_PYTHON="cpython-3.11-linux-$python_arch-$python_libc"; \\
+    sed -i 's/^PYTHON_VERSION="3.11"$/PYTHON_VERSION="${{SWITCHYARD_HERMES_PYTHON:-3.11}}"/' \\
+        /tmp/{HERMES_INSTALLER}; \\
+    grep -F 'PYTHON_VERSION="${{SWITCHYARD_HERMES_PYTHON:-3.11}}"' \\
+        /tmp/{HERMES_INSTALLER}; \\
     bash /tmp/{HERMES_INSTALLER} \\
         --skip-setup --commit {hermes_version} --force-commit; \\
     rm -f /tmp/{HERMES_INSTALLER}; \\

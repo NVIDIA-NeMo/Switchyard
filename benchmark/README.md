@@ -160,9 +160,10 @@ see [Benchmark Datasets](DATASETS.md).
 Dataset preparation downloads the commit-pinned Hermes installer once, verifies its SHA-256 digest,
 and copies it into every task build context. Generated Dockerfiles copy pinned `uv` from a
 digest-pinned multi-architecture image selected for Docker's native build platform. This avoids
-running a Rust `uv` binary through QEMU when an ARM host builds an amd64-only task image. Hermes
-finds that managed `uv` before it can resolve the mutable latest release. Task image builds do not
-fetch the Hermes installer from `raw.githubusercontent.com`.
+running a Rust `uv` binary through QEMU when an ARM host builds an amd64-only task image. The
+prebake gives that native `uv` an explicit target-platform Python request, so the managed Python
+still matches the task image. Hermes finds the managed `uv` before it can resolve the mutable latest
+release. Task image builds do not fetch the Hermes installer from `raw.githubusercontent.com`.
 
 Terminal-Bench 2.0 is supported through the same generated local proxy dataset path. The
 TB2 export keeps model/tool egress on the closed-book path while allowlisting the package and data
