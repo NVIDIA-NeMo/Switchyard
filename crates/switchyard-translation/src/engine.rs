@@ -217,6 +217,10 @@ impl TranslationEngine {
             &mut output.body,
             &crate::codex_namespaces::qualified_tool_origins(request_extensions),
         );
+        crate::codex_custom_tools::restore_custom_tool_calls(
+            &mut output.body,
+            &crate::codex_custom_tools::custom_tool_names(request_extensions),
+        );
         Ok(output)
     }
 
