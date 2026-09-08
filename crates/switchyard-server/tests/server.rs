@@ -2485,6 +2485,7 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
         .header("content-type", "application/json")
         .header("x-switchyard-session-id", "canonical-session")
         .header("proxy_x_session_id", "legacy-session")
+        .header("x-switchyard-origin", r#"custom-agent/"quoted"\path"#)
         .body(Body::from(serde_json::to_vec(&json!({
             "model": ROUTE_MODEL,
             "messages": [{"role": "user", "content": "hello"}]
@@ -2542,6 +2543,9 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
     let first: Value =
         serde_json::from_str(records.lines().next().ok_or("routing log was empty")?)?;
     assert_eq!(first["session_id"], "canonical-session");
+    assert_eq!(first["origin"], r#"custom-agent/"quoted"\path"#);
+    let second: Value = serde_json::from_str(records.lines().nth(1).ok_or("missing record")?)?;
+    assert_eq!(second.get("origin"), Some(&Value::Null));
     assert!(
         first["ts"]
             .as_str()
@@ -2646,7 +2650,10 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
             "messages": [{"role": "user", "content": "hello"}],
             "stream": true
         })),
-        &[("x-switchyard-session-id", "streaming-session")],
+        &[
+            ("x-switchyard-session-id", "streaming-session"),
+            ("x-switchyard-origin", "codex-cli"),
+        ],
     )
     .await?;
     assert_eq!(response.status, StatusCode::OK);
@@ -2670,6 +2677,7 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
     let record: Value = serde_json::from_str(&std::fs::read_to_string(log_path)?)?;
     assert_eq!(record["route_id"], ROUTE_MODEL);
     assert_eq!(record["algorithm"], "random");
+    assert_eq!(record["origin"], "codex-cli");
     Ok(())
 }
 
@@ -3320,7 +3328,10 @@ async fn advisor_route_routing_log_records_classifier_tier() -> TestResult {
         "POST",
         "/v1/chat/completions",
         Some(advisor_chat_body("hi")),
-        &[("proxy_x_session_id", "session-1")],
+        &[
+            ("proxy_x_session_id", "session-1"),
+            ("x-switchyard-origin", "custom-agent"),
+        ],
     )
     .await?;
     assert_eq!(response.status, StatusCode::OK);
@@ -3333,6 +3344,11 @@ async fn advisor_route_routing_log_records_classifier_tier() -> TestResult {
     // the terminal answer row. The discarded-turn row does not exist in v1 —
     // its tokens live in the advisor_gate stats block instead.
     assert_eq!(records.len(), 2);
+    assert!(
+        records
+            .iter()
+            .all(|record| record["origin"] == "custom-agent")
+    );
     let consult = records
         .iter()
         .find(|record| record["model"] == "model/advisor")

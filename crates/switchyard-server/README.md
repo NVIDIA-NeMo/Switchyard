@@ -102,6 +102,11 @@ served model. The legacy `proxy_x_session_id` remains a fallback when no normali
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
 
+Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
+`origin` field in each routing record. Missing, empty, or non-text header values produce
+`"origin": null`. The value is supplied by the caller; it is not inferred from `User-Agent`.
+Older records without `origin` remain readable by the session stats endpoint.
+
 An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
 routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only
 `base_threshold` is required, and anything the judge cannot decide routes to `strong_target`:
