@@ -65,12 +65,12 @@
 <a href=#65 id=65 data-nosnippet>65</a>/// arbitrary host labels ride in via [`switchyard_protocol::Metadata::extra_metadata`], recorded
 <a href=#66 id=66 data-nosnippet>66</a>/// whole into the `extra_metadata` field. `outcome` and `error` are filled in
 <a href=#67 id=67 data-nosnippet>67</a>/// by [`record_run`] when the run ends.
-<a href=#68 id=68 data-nosnippet>68</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>run_span(algorithm: <span class="kw-2">&amp;</span>str, decision_id: <span class="kw-2">&amp;</span>str, request: <span class="kw-2">&amp;</span>Request) -&gt; Span {
+<a href=#68 id=68 data-nosnippet>68</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>run_span(algorithm: <span class="kw-2">&amp;</span>str, request: <span class="kw-2">&amp;</span>Request) -&gt; Span {
 <a href=#69 id=69 data-nosnippet>69</a>    <span class="kw">let </span>span = <span class="macro">tracing::info_span!</span>(
 <a href=#70 id=70 data-nosnippet>70</a>        target: TRACING_TARGET,
 <a href=#71 id=71 data-nosnippet>71</a>        <span class="string">"libsy.run"</span>,
 <a href=#72 id=72 data-nosnippet>72</a>        algorithm,
-<a href=#73 id=73 data-nosnippet>73</a>        decision_id,
+<a href=#73 id=73 data-nosnippet>73</a>        outcome_id = tracing::field::Empty,
 <a href=#74 id=74 data-nosnippet>74</a>        switchyard.algorithm = algorithm,
 <a href=#75 id=75 data-nosnippet>75</a>        openinference.span.kind = <span class="string">"CHAIN"</span>,
 <a href=#76 id=76 data-nosnippet>76</a>        switchyard.route = tracing::field::Empty,
