@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 from types import ModuleType
@@ -13,6 +15,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 GENERATOR = REPO / "benchmark" / "prepare_harbor_dataset.py"
+HERMES_INSTALLER_FIXTURE = b"#!/usr/bin/env bash\nset -euo pipefail\n"
 
 
 def _load_generator_module() -> ModuleType:
@@ -41,6 +44,7 @@ def _prepare(
     source_dataset: str = "openthoughts-tblite@2.0",
 ) -> Path:
     module = _load_generator_module()
+    module._fetch_hermes_installer = lambda _pins: HERMES_INSTALLER_FIXTURE
     output = tmp_path / "prepared"
     return module.prepare_dataset(
         source_dataset=source_dataset,
@@ -206,9 +210,44 @@ def test_dockerfile_only_task_gets_prebake_layer(tmp_path: Path) -> None:
     dockerfile = (output / "dockerfile-task" / "environment" / "Dockerfile").read_text()
 
     assert dockerfile.startswith("FROM ubuntu:22.04\nRUN echo task\n")
+    assert "COPY switchyard-hermes-install.sh /tmp/switchyard-hermes-install.sh" in dockerfile
+    assert "raw.githubusercontent.com/NousResearch/hermes-agent" not in dockerfile
     assert "SWITCHYARD_PREBAKED_AGENT_VERSIONS" in dockerfile
     assert "/usr/local/lib/node_modules/npm" in dockerfile
     assert "node-v20.11.1-linux-$node_arch.tar.gz" in dockerfile
+    assert (
+        output
+        / "dockerfile-task"
+        / "environment"
+        / "switchyard-hermes-install.sh"
+    ).read_bytes() == HERMES_INSTALLER_FIXTURE
+
+
+def test_prepare_fetches_hermes_installer_once_for_all_tasks(tmp_path: Path) -> None:
+    module = _load_generator_module()
+    source = tmp_path / "source"
+    _write_task(source, "task-a", "[environment]\n", "FROM ubuntu:22.04\n")
+    _write_task(source, "task-b", "[environment]\n", "FROM ubuntu:22.04\n")
+    fetched_versions: list[str] = []
+
+    def fetch_once(pins: dict[str, str]) -> bytes:
+        fetched_versions.append(pins["HERMES_VERSION"])
+        return HERMES_INSTALLER_FIXTURE
+
+    module._fetch_hermes_installer = fetch_once
+    output = module.prepare_dataset(
+        source_dataset="openthoughts-tblite@2.0",
+        source_dir=source,
+        output_dir=tmp_path / "prepared",
+        harbor_command="harbor",
+        overwrite=False,
+    )
+
+    assert fetched_versions == ["3c27eb6234bf91b8ceee9e9071591b31e9b148cb"]
+    for task in ("task-a", "task-b"):
+        assert (
+            output / task / "environment" / "switchyard-hermes-install.sh"
+        ).read_bytes() == HERMES_INSTALLER_FIXTURE
 
 
 def test_generated_compose_contains_closed_book_proxy_topology(tmp_path: Path) -> None:
@@ -288,6 +327,9 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
     assert manifest["agent_versions"] == {
         "CLAUDE_CODE_VERSION": "2.1.211",
         "CODEX_VERSION": "0.144.5",
+        "HERMES_INSTALLER_SHA256": (
+            "45f589461248c7a6ec3aecd7522a69dd49c5c8dbf4798ba1296af5c0c5e7ccd3"
+        ),
         "HERMES_VERSION": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
         "NODE_VERSION": "20.11.1",
         "OPENCODE_VERSION": "1.18.3",
@@ -297,6 +339,13 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
     assert {task["name"] for task in manifest["tasks"]} == {"task-a", "task-b"}
     assert all(task["dockerfile_digest"].startswith("sha256:") for task in manifest["tasks"])
     assert all(task["compose_digest"].startswith("sha256:") for task in manifest["tasks"])
+    assert manifest["closed_book"]["hermes_installer"] == {
+        "source_url": (
+            "https://raw.githubusercontent.com/NousResearch/hermes-agent/"
+            "3c27eb6234bf91b8ceee9e9071591b31e9b148cb/scripts/install.sh"
+        ),
+        "digest": "sha256:" + hashlib.sha256(HERMES_INSTALLER_FIXTURE).hexdigest(),
+    }
 
 
 def test_generated_compose_bakes_task_id_into_proxy_env(tmp_path: Path) -> None:
@@ -342,8 +391,7 @@ def test_a_hermes_ref_that_is_not_a_commit_sha_is_rejected() -> None:
             _load_generator_module()._install_layer({**base, "HERMES_VERSION": ref})
 
 
-def test_the_hermes_installer_is_fetched_at_the_pinned_commit() -> None:
-    """Pinning the agent but running main's installer reintroduces the same drift."""
+def test_the_hermes_install_layer_uses_the_vendored_installer() -> None:
     sha = "3c27eb6234bf91b8ceee9e9071591b31e9b148cb"
     pins = {
         "CLAUDE_CODE_VERSION": "1",
@@ -355,8 +403,82 @@ def test_the_hermes_installer_is_fetched_at_the_pinned_commit() -> None:
 
     layer = _load_generator_module()._install_layer(pins)
 
-    assert f"hermes-agent/{sha}/scripts/install.sh" in layer
-    assert "hermes-agent/main/" not in layer
+    assert "bash /tmp/switchyard-hermes-install.sh" in layer
+    assert "raw.githubusercontent.com/NousResearch/hermes-agent" not in layer
+
+
+def test_the_hermes_installer_is_fetched_at_the_pinned_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_generator_module()
+    sha = "3c27eb6234bf91b8ceee9e9071591b31e9b148cb"
+    digest = hashlib.sha256(HERMES_INSTALLER_FIXTURE).hexdigest()
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request: object, timeout: int) -> io.BytesIO:
+        requested_urls.append(request.full_url)
+        assert timeout == 60
+        return io.BytesIO(HERMES_INSTALLER_FIXTURE)
+
+    monkeypatch.setattr(module, "urlopen", fake_urlopen)
+
+    content = module._fetch_hermes_installer(
+        {"HERMES_VERSION": sha, "HERMES_INSTALLER_SHA256": digest}
+    )
+
+    assert content == HERMES_INSTALLER_FIXTURE
+    assert requested_urls == [
+        (
+            "https://raw.githubusercontent.com/NousResearch/hermes-agent/"
+            f"{sha}/scripts/install.sh"
+        )
+    ]
+
+
+def test_the_hermes_installer_fetch_retries_a_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_generator_module()
+    sha = "3c27eb6234bf91b8ceee9e9071591b31e9b148cb"
+    digest = hashlib.sha256(HERMES_INSTALLER_FIXTURE).hexdigest()
+    attempts = 0
+
+    def fake_urlopen(request: object, timeout: int) -> io.BytesIO:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise module.HTTPError(request.full_url, 429, "rate limited", {}, None)
+        return io.BytesIO(HERMES_INSTALLER_FIXTURE)
+
+    monkeypatch.setattr(module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(module.time, "sleep", lambda _delay: None)
+
+    content = module._fetch_hermes_installer(
+        {"HERMES_VERSION": sha, "HERMES_INSTALLER_SHA256": digest}
+    )
+
+    assert content == HERMES_INSTALLER_FIXTURE
+    assert attempts == 2
+
+
+def test_the_hermes_installer_digest_is_verified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_generator_module()
+
+    def fake_urlopen(_request: object, timeout: int) -> io.BytesIO:
+        assert timeout == 60
+        return io.BytesIO(HERMES_INSTALLER_FIXTURE)
+
+    monkeypatch.setattr(module, "urlopen", fake_urlopen)
+
+    with pytest.raises(ValueError, match="digest mismatch"):
+        module._fetch_hermes_installer(
+            {
+                "HERMES_VERSION": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
+                "HERMES_INSTALLER_SHA256": "0" * 64,
+            }
+        )
 
 
 def test_the_hermes_pin_is_applied_by_commit_and_forced() -> None:

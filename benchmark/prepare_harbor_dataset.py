@@ -13,9 +13,12 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 try:
     import tomllib
@@ -35,7 +38,9 @@ DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "datasets" / "openthoughts-tblite-closed-book"
 AGENT_VERSIONS_FILE = SCRIPT_DIR / "agent-versions.env"
 PROXY_ASSET_DIR = SCRIPT_DIR / "closed_book_proxy" / "proxy"
 AGENT_ENTRYPOINT = "switchyard-agent-entrypoint.sh"
+HERMES_INSTALLER = "switchyard-hermes-install.sh"
 COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 TERMINAL_BENCH_2_SOURCE_DATASET = "terminal-bench/terminal-bench-2"
 TERMINAL_BENCH_2_1_SOURCE_DATASET = "terminal-bench/terminal-bench-2-1"
 # Shared across the TB2 family (2.0 + the 2.1 verified iteration): 2.1 tweaks
@@ -119,6 +124,61 @@ def _path_digest(path: Path) -> str:
     except OSError:
         return "sha256:unknown"
     return "sha256:missing"
+
+
+def _hermes_commit(pins: dict[str, str]) -> str:
+    commit = pins["HERMES_VERSION"]
+    if not COMMIT_SHA_PATTERN.fullmatch(commit):
+        raise SystemExit(
+            f"HERMES_VERSION={commit!r} is not a full 40-character commit SHA; "
+            "a tag or branch can be repointed and cannot be recorded as a reproducible pin"
+        )
+    return commit
+
+
+def _hermes_installer_url(commit: str) -> str:
+    return (
+        "https://raw.githubusercontent.com/NousResearch/hermes-agent/"
+        f"{commit}/scripts/install.sh"
+    )
+
+
+def _fetch_hermes_installer(pins: dict[str, str]) -> bytes:
+    commit = _hermes_commit(pins)
+    expected_digest = pins["HERMES_INSTALLER_SHA256"]
+    if not SHA256_PATTERN.fullmatch(expected_digest):
+        raise SystemExit(
+            "HERMES_INSTALLER_SHA256 must be a lowercase 64-character SHA-256 digest"
+        )
+
+    url = _hermes_installer_url(commit)
+    request = Request(url, headers={"User-Agent": "switchyard-benchmark-dataset-preparer"})
+    content: bytes | None = None
+    last_error: HTTPError | URLError | None = None
+    for attempt in range(6):
+        try:
+            with urlopen(request, timeout=60) as response:
+                content = response.read()
+            break
+        except HTTPError as error:
+            if error.code != 429 and not 500 <= error.code < 600:
+                raise
+            last_error = error
+        except URLError as error:
+            last_error = error
+        if attempt == 5:
+            raise RuntimeError(f"failed to fetch pinned Hermes installer from {url}") from last_error
+        time.sleep(2**attempt)
+
+    if content is None:
+        raise RuntimeError(f"failed to fetch pinned Hermes installer from {url}")
+    actual_digest = hashlib.sha256(content).hexdigest()
+    if actual_digest != expected_digest:
+        raise ValueError(
+            "pinned Hermes installer digest mismatch: "
+            f"expected sha256:{expected_digest}, got sha256:{actual_digest}"
+        )
+    return content
 
 
 def _task_dirs(dataset_root: Path) -> list[Path]:
@@ -219,12 +279,7 @@ def _install_layer(pins: dict[str, str]) -> str:
     # the commit is an ancestor of the freshly cloned HEAD, logging a warning and
     # silently leaving the image on the tip of main — the drift this pin exists to
     # prevent, arriving as a warning rather than a build failure.
-    hermes_version = pins["HERMES_VERSION"]
-    if not COMMIT_SHA_PATTERN.fullmatch(hermes_version):
-        raise SystemExit(
-            f"HERMES_VERSION={hermes_version!r} is not a full 40-character commit SHA; "
-            "a tag or branch can be repointed and cannot be recorded as a reproducible pin"
-        )
+    hermes_version = _hermes_commit(pins)
     return f"""
 
 # Switchyard benchmark prebaked coding agents.
@@ -279,8 +334,9 @@ RUN set -eux; \\
     elif command -v apk >/dev/null 2>&1; then \\
         apk add --no-cache bash git ripgrep xz; \\
     fi; \\
-    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/{hermes_version}/scripts/install.sh \\
-        | bash -s -- --skip-setup --commit {hermes_version} --force-commit; \\
+    bash /tmp/{HERMES_INSTALLER} \\
+        --skip-setup --commit {hermes_version} --force-commit; \\
+    rm -f /tmp/{HERMES_INSTALLER}; \\
     hermes version
 """
 
@@ -315,7 +371,11 @@ def _load_task_toml(path: Path) -> dict[str, Any]:
     return tomllib.loads(path.read_text())
 
 
-def _rewrite_task_image(task_dir: Path, pins: dict[str, str]) -> dict[str, Any]:
+def _rewrite_task_image(
+    task_dir: Path,
+    pins: dict[str, str],
+    hermes_installer: bytes,
+) -> dict[str, Any]:
     task_toml = task_dir / "task.toml"
     data = _load_task_toml(task_toml)
     environment = data.get("environment") if isinstance(data.get("environment"), dict) else {}
@@ -325,7 +385,11 @@ def _rewrite_task_image(task_dir: Path, pins: dict[str, str]) -> dict[str, Any]:
     entrypoint = dockerfile.parent / AGENT_ENTRYPOINT
     entrypoint.write_text(_agent_entrypoint_script())
     entrypoint.chmod(0o755)
+    installer = dockerfile.parent / HERMES_INSTALLER
+    installer.write_bytes(hermes_installer)
+    installer.chmod(0o755)
     layer = _install_layer(pins)
+    layer = f"COPY {HERMES_INSTALLER} /tmp/{HERMES_INSTALLER}\n{layer.lstrip()}"
     entrypoint_layer = _entrypoint_layer()
 
     if docker_image:
@@ -520,12 +584,16 @@ def prepare_dataset(
         "CLAUDE_CODE_VERSION",
         "CODEX_VERSION",
         "HERMES_VERSION",
+        "HERMES_INSTALLER_SHA256",
         "NODE_VERSION",
         "OPENCODE_VERSION",
     }
     missing = sorted(required - pins.keys())
     if missing:
         raise ValueError(f"missing pins in {AGENT_VERSIONS_FILE}: {', '.join(missing)}")
+
+    hermes_installer = _fetch_hermes_installer(pins)
+    hermes_installer_digest = hashlib.sha256(hermes_installer).hexdigest()
 
     if source_dir is None:
         download_root = output_dir.parent / "_downloads"
@@ -543,7 +611,7 @@ def prepare_dataset(
     proxy_digest = _path_digest(PROXY_ASSET_DIR)
     proxy_allowlist_hosts = _proxy_allowlist_hosts_for_dataset(source_dataset)
     for task_dir in _task_dirs(output_dir):
-        image = _rewrite_task_image(task_dir, pins)
+        image = _rewrite_task_image(task_dir, pins, hermes_installer)
         compose = _merge_compose(task_dir, proxy_allowlist_hosts)
         tasks.append(
             {
@@ -570,6 +638,10 @@ def prepare_dataset(
             "proxy_strip_log_path": "/etc/proxy-public/strip.jsonl",
             "agent_internal_network": "agent-internal",
             "proxy_egress_network": "proxy-egress",
+            "hermes_installer": {
+                "source_url": _hermes_installer_url(_hermes_commit(pins)),
+                "digest": f"sha256:{hermes_installer_digest}",
+            },
         },
         "tasks": tasks,
     }
