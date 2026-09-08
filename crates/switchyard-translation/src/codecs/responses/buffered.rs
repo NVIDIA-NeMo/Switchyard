@@ -94,6 +94,26 @@ impl FormatCodec for OpenAiResponsesCodec {
         let mut custom_tools = Map::new();
         request.tools =
             decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools);
+        // Responses-lite clients (Codex with a GPT-5 model) carry the tool definitions inside
+        // `input` as an `additional_tools` developer item instead of top-level `tools`. Those
+        // definitions are the request's tools; the item itself is kept verbatim so the request
+        // can be re-emitted in the shape the client used.
+        let mut additional_tools = Vec::new();
+        if let Some(items) = body.get("input").and_then(Value::as_array) {
+            for item in items {
+                if let Some(item) = item.as_object()
+                    && item.get("type").and_then(Value::as_str) == Some("additional_tools")
+                    && let Some(tools) = item.get("tools").and_then(Value::as_array)
+                {
+                    request.tools.extend(decode_responses_tools(
+                        Some(&Value::Array(tools.clone())),
+                        &mut tool_namespaces,
+                        &mut custom_tools,
+                    ));
+                    additional_tools.extend(tools.iter().cloned());
+                }
+            }
+        }
         request.tool_choice = body
             .get("tool_choice")
             .and_then(decode_responses_tool_choice);
@@ -115,6 +135,10 @@ impl FormatCodec for OpenAiResponsesCodec {
         );
         crate::codex_namespaces::attach_tool_namespaces(&mut request.extensions, tool_namespaces);
         crate::codex_custom_tools::attach_custom_tools(&mut request.extensions, custom_tools);
+        crate::codex_custom_tools::attach_additional_tools(
+            &mut request.extensions,
+            additional_tools,
+        );
         Ok(DecodedRequest {
             request,
             diagnostics,
@@ -163,7 +187,20 @@ impl FormatCodec for OpenAiResponsesCodec {
                 &crate::codex_custom_tools::custom_tool_names(&request.extensions),
             )?,
         );
-        if !request.tools.is_empty() {
+        if let Some(additional) = crate::codex_custom_tools::additional_tools(&request.extensions) {
+            // A Responses-lite request carried its tools inside `input`; give them back the same
+            // way, verbatim, and leave top-level `tools` absent as the client did.
+            if let Some(Value::Array(input)) = body.get_mut("input") {
+                input.insert(
+                    0,
+                    json!({
+                        "type": "additional_tools",
+                        "role": "developer",
+                        "tools": additional,
+                    }),
+                );
+            }
+        } else if !request.tools.is_empty() {
             body.insert(
                 "tools".to_string(),
                 encode_responses_tools(
@@ -539,6 +576,9 @@ fn decode_responses_input(
                                 .to_string(),
                         });
                     }
+                    // Tool definitions, not conversation; decoded separately by the request
+                    // decoder and re-emitted in place by the request encoder.
+                    Some("additional_tools") => {}
                     _ => {
                         let message = Message {
                             role: Role::User,
