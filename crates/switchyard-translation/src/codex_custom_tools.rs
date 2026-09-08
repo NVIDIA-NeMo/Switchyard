@@ -21,6 +21,31 @@ use switchyard_protocol::ProviderExtensions;
 /// provider fields never forwards it.
 pub const CUSTOM_TOOLS_KEY: &str = "switchyard_codex_custom_tools";
 
+/// Request-extension key holding the verbatim `tools` array of a Responses-lite
+/// `additional_tools` input item, so the request can be re-emitted in the same shape.
+///
+/// Codex sends GPT-5 requests in a "lite" shape: no top-level `tools`, empty `instructions`,
+/// and the tool definitions inside `input[0]` as `{"type": "additional_tools", "role":
+/// "developer", "tools": [...]}`.
+pub const ADDITIONAL_TOOLS_KEY: &str = "switchyard_codex_additional_tools";
+
+/// Stores the verbatim tools array of an `additional_tools` input item.
+pub fn attach_additional_tools(extensions: &mut ProviderExtensions, tools: Vec<Value>) {
+    if !tools.is_empty() {
+        extensions
+            .fields
+            .insert(ADDITIONAL_TOOLS_KEY.to_string(), Value::Array(tools));
+    }
+}
+
+/// Reads the verbatim `additional_tools` array back off a request's extensions.
+pub fn additional_tools(extensions: &ProviderExtensions) -> Option<&Vec<Value>> {
+    extensions
+        .fields
+        .get(ADDITIONAL_TOOLS_KEY)
+        .and_then(Value::as_array)
+}
+
 /// Argument name used to carry a custom tool's freeform input through the IR.
 pub const INPUT_ARGUMENT: &str = "input";
 
