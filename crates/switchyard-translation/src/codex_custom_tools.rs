@@ -127,6 +127,12 @@ fn rewrite_item(item: &mut Value, custom: &HashSet<String>) -> bool {
         Value::String("custom_tool_call".to_string()),
     );
     object.insert("input".to_string(), Value::String(input));
+    // OpenAI validates replayed item ids by prefix: a custom tool call must be `ctc_...`.
+    if let Some(Value::String(id)) = object.get_mut("id")
+        && let Some(rest) = id.strip_prefix("fc_")
+    {
+        *id = format!("ctc_{rest}");
+    }
     true
 }
 
@@ -217,6 +223,17 @@ mod tests {
         assert_eq!(body["output"][0]["input"], "ls");
         assert!(body["output"][0].get("arguments").is_none());
         assert_eq!(body["output"][1]["type"], "function_call");
+    }
+
+    #[test]
+    fn rewritten_custom_tool_calls_take_the_ctc_id_prefix() {
+        let custom: HashSet<String> = ["exec".to_string()].into_iter().collect();
+        let mut body = json!({"output": [
+            {"type": "function_call", "id": "fc_abc_1", "call_id": "c1", "name": "exec", "arguments": "{\"input\":\"ls\"}"}
+        ]});
+        restore_custom_tool_calls(&mut body, &custom);
+        assert_eq!(body["output"][0]["type"], "custom_tool_call");
+        assert_eq!(body["output"][0]["id"], "ctc_abc_1");
     }
 
     #[test]
