@@ -96,7 +96,9 @@ impl FormatCodec for OpenAiResponsesCodec {
         request.messages = messages;
         request.instructions.extend(instructions);
         let mut tool_namespaces = Map::new();
-        request.tools = decode_responses_tools(body.get("tools"), &mut tool_namespaces);
+        let mut custom_tools = Map::new();
+        request.tools =
+            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools);
         request.tool_choice = body
             .get("tool_choice")
             .and_then(decode_responses_tool_choice);
@@ -117,6 +119,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             ],
         );
         crate::codex_namespaces::attach_tool_namespaces(&mut request.extensions, tool_namespaces);
+        crate::codex_custom_tools::attach_custom_tools(&mut request.extensions, custom_tools);
         Ok(DecodedRequest {
             request,
             diagnostics,
@@ -162,6 +165,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 &mut diagnostics,
                 _policy,
                 crate::codex_namespaces::tool_namespaces(&request.extensions),
+                &crate::codex_custom_tools::custom_tool_names(&request.extensions),
             )?,
         );
         if !request.tools.is_empty() {
@@ -170,6 +174,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 encode_responses_tools(
                     &request.tools,
                     crate::codex_namespaces::tool_namespaces(&request.extensions),
+                    crate::codex_custom_tools::custom_tools(&request.extensions),
                 ),
             );
         }
@@ -480,7 +485,7 @@ fn decode_responses_input(
                             arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
                         });
                     }
-                    Some("function_call_output") => {
+                    Some("function_call_output") | Some("custom_tool_call_output") => {
                         let tool_call_id = item
                             .get("call_id")
                             .and_then(Value::as_str)
@@ -491,6 +496,45 @@ fn decode_responses_input(
                             tool_call_id,
                             content: vec![ContentBlock::Text { text: output_text }],
                             is_error: None,
+                        });
+                    }
+                    Some("custom_tool_call") => {
+                        // A freeform call carries a raw `input` string; it rides through the IR
+                        // as the single `input` argument of a function-style call.
+                        if !pending_tool_outputs.is_empty() {
+                            flush_responses_tool_block(
+                                &mut messages,
+                                &mut pending_tool_calls,
+                                &mut pending_tool_outputs,
+                                &mut deferred_messages,
+                                &mut pending_reasoning,
+                            );
+                        }
+                        let id = item
+                            .get("call_id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| match &policy.deterministic_ids {
+                                DeterministicIdPolicy::GenerateStable { prefix } => {
+                                    stable_id(prefix, index + 1)
+                                }
+                                DeterministicIdPolicy::Preserve => String::new(),
+                            });
+                        let name = item
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let input = item
+                            .get("input")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        pending_tool_calls.push(ToolCall {
+                            id,
+                            name,
+                            arguments: json!({crate::codex_custom_tools::INPUT_ARGUMENT: input}),
                         });
                     }
                     None => {
@@ -781,6 +825,7 @@ fn request_role_from_responses(role: Option<&str>, path: &str) -> Result<Role> {
 fn decode_responses_tools(
     value: Option<&Value>,
     namespaces: &mut Map<String, Value>,
+    custom_tools: &mut Map<String, Value>,
 ) -> Vec<ToolDefinition> {
     let Some(tools) = value.and_then(Value::as_array) else {
         return Vec::new();
@@ -797,7 +842,7 @@ fn decode_responses_tools(
                 .get("name")
                 .and_then(Value::as_str)
                 .filter(|name| !name.is_empty());
-            for mut child in decode_responses_tools(tool.get("tools"), namespaces) {
+            for mut child in decode_responses_tools(tool.get("tools"), namespaces, custom_tools) {
                 // A nested container already qualified its own children, and the
                 // innermost name is the one that identifies the tool.
                 let already_qualified = namespaces.contains_key(&child.name);
@@ -812,6 +857,26 @@ fn decode_responses_tools(
                     child.name = qualified;
                 }
                 out.push(child);
+            }
+        } else if tool.get("type").and_then(Value::as_str) == Some("custom") {
+            // A freeform tool takes a raw string, not JSON arguments. The IR sees it as a
+            // function with a single `input` argument; the verbatim definition is kept so a
+            // Responses upstream still receives the freeform tool.
+            if let Some(name) = tool
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+            {
+                custom_tools.insert(name.to_string(), Value::Object(tool.clone()));
+                out.push(ToolDefinition {
+                    name: name.to_string(),
+                    description: tool
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                    parameters: crate::codex_custom_tools::input_schema(),
+                    strict: None,
+                });
             }
         } else if tool.get("type").and_then(Value::as_str) == Some("function") {
             if let Some(function) = tool.get("function").and_then(Value::as_object) {
@@ -1003,7 +1068,9 @@ fn encode_responses_input(
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
     namespaces: Option<&Map<String, Value>>,
+    custom_tools: &std::collections::HashSet<String>,
 ) -> Result<Value> {
+    let mut custom_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     if messages.len() == 1
         && matches!(messages[0].role, Role::User)
         && messages[0].content.len() == 1
@@ -1049,7 +1116,13 @@ fn encode_responses_input(
             )
         }) {
             encoded.extend(content.iter().filter_map(|block| {
-                encode_responses_special_input(block, namespaces, &call_names)
+                encode_responses_special_input(
+                    block,
+                    namespaces,
+                    &call_names,
+                    custom_tools,
+                    &mut custom_call_ids,
+                )
             }));
             continue;
         }
@@ -1057,7 +1130,13 @@ fn encode_responses_input(
         let mut emitted_special = false;
         let mut omitted_reasoning = false;
         for block in &content {
-            if let Some(item) = encode_responses_special_input(block, namespaces, &call_names) {
+            if let Some(item) = encode_responses_special_input(
+                block,
+                namespaces,
+                &call_names,
+                custom_tools,
+                &mut custom_call_ids,
+            ) {
                 encoded.push(item);
                 emitted_special = true;
             } else if !matches!(block, ContentBlock::Reasoning { .. }) {
@@ -1094,14 +1173,21 @@ fn pair_tool_calls_with_outputs(items: &mut Vec<Value>) {
     };
     let mut index = 0;
     while index < items.len() {
-        let Some(id) = call_id(&items[index], "function_call") else {
-            index += 1;
-            continue;
+        // Freeform (`custom`) calls pair with `custom_tool_call_output` the same way.
+        let (id, output_kind) = match call_id(&items[index], "function_call") {
+            Some(id) => (id, "function_call_output"),
+            None => match call_id(&items[index], "custom_tool_call") {
+                Some(id) => (id, "custom_tool_call_output"),
+                None => {
+                    index += 1;
+                    continue;
+                }
+            },
         };
         let output = items
             .iter()
             .skip(index + 1)
-            .position(|item| call_id(item, "function_call_output").as_deref() == Some(&id))
+            .position(|item| call_id(item, output_kind).as_deref() == Some(&id))
             .map(|offset| index + 1 + offset);
         if let Some(output) = output
             && output != index + 1
@@ -1135,6 +1221,8 @@ fn encode_responses_special_input(
     block: &ContentBlock,
     namespaces: Option<&Map<String, Value>>,
     call_names: &HashMap<&str, &str>,
+    custom_tools: &std::collections::HashSet<String>,
+    custom_call_ids: &mut std::collections::HashSet<String>,
 ) -> Option<Value> {
     match block {
         ContentBlock::Reasoning {
@@ -1142,6 +1230,16 @@ fn encode_responses_special_input(
             signature: None,
             details,
         } => encode_responses_reasoning_input(text, details),
+        ContentBlock::ToolCall(call) if custom_tools.contains(&call.name) => {
+            // A freeform tool call replays as `custom_tool_call` with its raw input.
+            custom_call_ids.insert(call.id.clone());
+            Some(json!({
+                "type": "custom_tool_call",
+                "call_id": call.id,
+                "name": call.name,
+                "input": crate::codex_custom_tools::input_from_arguments(&call.arguments),
+            }))
+        }
         ContentBlock::ToolCall(call) => {
             // A Responses client dispatches on name plus namespace, so undo the
             // qualification this request applied for a flat upstream.
@@ -1164,8 +1262,14 @@ fn encode_responses_special_input(
             Some(item)
         }
         ContentBlock::ToolResult(result) => {
+            // A result answering a freeform call replays as `custom_tool_call_output`; anything
+            // else is a `function_call_output`.
             let mut item = json!({
-                "type": "function_call_output",
+                "type": if custom_call_ids.contains(&result.tool_call_id) {
+                    "custom_tool_call_output"
+                } else {
+                    "function_call_output"
+                },
                 "call_id": result.tool_call_id,
                 "output": text_from_blocks(&result.content, " "),
             });
@@ -1304,10 +1408,16 @@ fn encode_responses_content(
 fn encode_responses_tools(
     tools: &[ToolDefinition],
     namespaces: Option<&Map<String, Value>>,
+    custom_tools: Option<&Map<String, Value>>,
 ) -> Value {
     let mut out: Vec<Value> = Vec::new();
     let mut containers: Vec<(String, Vec<Value>)> = Vec::new();
     for tool in tools {
+        // A freeform tool goes back out exactly as the client defined it.
+        if let Some(custom) = custom_tools.and_then(|custom| custom.get(&tool.name)) {
+            out.push(custom.clone());
+            continue;
+        }
         let mut item = json!({
             "type": "function",
             "name": tool.name,
@@ -1402,6 +1512,26 @@ fn decode_responses_output_item(
                     .unwrap_or_default()
                     .to_string(),
                 arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+            })],
+            stop_reason: Some(StopReason::ToolUse),
+        })),
+        Some("custom_tool_call") => Ok(Some(ResponseOutput {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name: item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                arguments: json!({
+                    crate::codex_custom_tools::INPUT_ARGUMENT:
+                        item.get("input").and_then(Value::as_str).unwrap_or_default()
+                }),
             })],
             stop_reason: Some(StopReason::ToolUse),
         })),

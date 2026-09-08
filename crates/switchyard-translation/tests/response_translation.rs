@@ -782,3 +782,76 @@ fn responses_encrypted_reasoning_item_survives_buffered_round_trip() -> TestResu
     assert_eq!(reasoning["id"], "rs_upstream");
     Ok(())
 }
+
+// A freeform tool call returned by the upstream must reach the client as a `custom_tool_call`
+// again once the response is re-encoded with the request's extensions, and as a function-style
+// call with an `input` argument when the client speaks chat.
+#[test]
+fn responses_custom_tool_call_output_round_trips_with_request_extensions() -> TestResult {
+    let engine = TranslationEngine::default();
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": "List files",
+        "tools": [{
+            "type": "custom",
+            "name": "exec",
+            "description": "Runs a shell command.",
+            "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.*/"}
+        }]
+    });
+    let decoded_request = engine.decode_request(
+        WireFormat::OpenAiResponses,
+        &request,
+        &TranslationPolicy::default(),
+    )?;
+    let response = json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "model": "gpt-5.6-luna",
+        "output": [{
+            "type": "custom_tool_call",
+            "id": "ctc_1",
+            "call_id": "call_1",
+            "name": "exec",
+            "input": "ls -la",
+            "status": "completed"
+        }],
+        "usage": {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7}
+    });
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let ir = engine
+        .decode_response(WireFormat::OpenAiResponses, &response, &policy)?
+        .response;
+    let encoded = engine
+        .encode_response_with_extensions(
+            WireFormat::OpenAiResponses,
+            &ir,
+            &decoded_request.request.extensions,
+            &policy,
+        )?
+        .body;
+    let item = encoded["output"]
+        .as_array()
+        .ok_or("output should be an array")?
+        .iter()
+        .find(|item| item["type"] == "custom_tool_call")
+        .ok_or("the call must be re-emitted as custom_tool_call")?;
+    assert_eq!(item["name"], "exec");
+    assert_eq!(item["call_id"], "call_1");
+    assert_eq!(item["input"], "ls -la");
+    assert!(item.get("arguments").is_none(), "{item}");
+
+    // Without the request extensions (e.g. a plain chat client) the call stays function-style.
+    let chat = engine
+        .encode_response(WireFormat::OpenAiChat, &ir, &policy)?
+        .body;
+    let call = &chat["choices"][0]["message"]["tool_calls"][0];
+    assert_eq!(call["function"]["name"], "exec");
+    assert_eq!(call["function"]["arguments"], "{\"input\":\"ls -la\"}");
+    Ok(())
+}
