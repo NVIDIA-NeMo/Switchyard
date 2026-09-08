@@ -31,7 +31,8 @@ id = "switchyard/vgr"
 type = "vgr"
 local_target = "local"
 cloud_target = "cloud"
-mode = "shadow"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
 deadline_seconds = 30
 task_typing = true
 local_supports_images = false
@@ -43,13 +44,10 @@ reasoning = true
 vision = true
 ```
 
-Start in `shadow` mode. VGR makes and records decisions, but the cloud tier
-still serves every request. After validating the decisions, enable routing:
-
-```toml
-mode = "active"
-active_approval = "prospective-validation-and-canary-approved"
-```
+Active mode serves the readiness-gated VGR decision: a verified local answer
+is committed, while missing or failed verification escalates to the cloud
+tier. The exact `active_approval` attestation is required for the server to
+accept active mode.
 
 The TOML file names the environment variable containing the provider key. Do
 not put the key itself in the file. See
