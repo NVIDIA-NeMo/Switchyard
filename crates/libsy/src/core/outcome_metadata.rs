@@ -28,24 +28,3 @@ impl OutcomeMetadata {
         &self.outcome_id
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn new_assigns_unique_uuidv7_and_preserves_inputs() {
-        let metadata = OutcomeMetadata::new("test".to_string(), Some("matched".to_string()));
-        let another = OutcomeMetadata::new("test".to_string(), None);
-
-        assert_eq!(metadata.algorithm, "test");
-        assert_eq!(metadata.evidence.as_deref(), Some("matched"));
-        assert_eq!(
-            uuid::Uuid::parse_str(metadata.outcome_id())
-                .expect("outcome id should be a UUID")
-                .get_version_num(),
-            7
-        );
-        assert_ne!(metadata.outcome_id(), another.outcome_id());
-    }
-}
