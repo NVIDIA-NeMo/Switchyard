@@ -738,24 +738,11 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
     if let Some(text) = item.get("text").and_then(Value::as_str) {
         parts.push(text.to_string());
     }
-    // Keep the opaque payload so an encrypted-only item survives a decode/encode round trip.
-    let details = item
-        .get("encrypted_content")
-        .and_then(Value::as_str)
-        .filter(|data| !data.is_empty())
-        .map(|data| {
-            // The payload only verifies under the id it was issued with, so carry that id.
-            let mut detail = json!({"type": "reasoning.encrypted", "data": data});
-            if let Some(id) = item
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty())
-            {
-                detail["id"] = Value::String(id.to_string());
-            }
-            vec![detail]
-        })
-        .unwrap_or_default();
+    let details = if item.get("encrypted_content").is_some() {
+        vec![Value::Object(item.clone())]
+    } else {
+        Vec::new()
+    };
     vec![ContentBlock::Reasoning {
         text: parts.join("\n"),
         signature: None,
@@ -1201,12 +1188,8 @@ fn encode_responses_special_input(
         ContentBlock::Reasoning {
             text,
             signature: None,
-            ..
-        } => Some(json!({
-            "type": "reasoning",
-            "content": [{"type": "reasoning_text", "text": text}],
-            "summary": [],
-        })),
+            details,
+        } => encode_responses_reasoning_input(text, details),
         ContentBlock::ToolCall(call) if custom_tools.contains(&call.name) => {
             // A freeform tool call replays as `custom_tool_call` with its raw input.
             custom_call_ids.insert(call.id.clone());
@@ -1249,6 +1232,37 @@ fn encode_responses_special_input(
         })),
         _ => None,
     }
+}
+
+// Encodes reasoning in the shape accepted for Responses input history. Response
+// output items may carry `content`, but replayed input items must avoid it.
+fn encode_responses_reasoning_input(text: &str, details: &[Value]) -> Option<Value> {
+    for detail in details {
+        let Some(detail) = detail.as_object() else {
+            continue;
+        };
+        if detail.get("type").and_then(Value::as_str) != Some("reasoning") {
+            continue;
+        }
+        let mut item = Map::new();
+        item.insert("type".to_string(), Value::String("reasoning".to_string()));
+        for field in ["id", "summary", "encrypted_content"] {
+            if let Some(value) = detail.get(field) {
+                item.insert(field.to_string(), value.clone());
+            }
+        }
+        item.entry("summary".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        return Some(Value::Object(item));
+    }
+
+    if text.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": text}],
+    }))
 }
 
 // Maps normalized roles back to Responses role strings.
