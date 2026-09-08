@@ -53,9 +53,9 @@ measurement identifies:
 Switchyard also records the selected and served models, fallback use,
 routing-call latency, routing overhead, and failures.
 
-No single total-cost or savings metric is emitted today. Relay prices the
-caller-facing answer, but it does not automatically price Switchyard's internal
-routing calls. For the common case, calculate the observed routed cost as:
+The current integration does not emit a single total-cost or savings metric.
+Relay prices the caller-facing answer, while Switchyard reports internal routing
+usage separately. To estimate the full routed cost, use:
 
 ```text
 Relay answer cost + cost of Switchyard tokens where call_role = "routing"
