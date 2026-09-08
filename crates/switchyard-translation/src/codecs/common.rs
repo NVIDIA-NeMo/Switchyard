@@ -89,13 +89,20 @@ pub(crate) fn collect_responses_reasoning_text(value: Option<&Value>, out: &mut 
     }
 }
 
-/// Returns the opaque payload of the first `reasoning.encrypted` detail, if any.
+/// Returns the opaque payload of the first encrypted reasoning detail, if any.
+///
+/// Two detail shapes are accepted: the documented `{"type": "reasoning.encrypted", "data"}`
+/// object, and a verbatim Responses `reasoning` item carrying `encrypted_content` (the shape
+/// the buffered request decoder stores when it keeps the provider item whole).
 pub(crate) fn encrypted_reasoning_data(details: &[Value]) -> Option<String> {
     details
         .iter()
         .filter_map(Value::as_object)
-        .find(|detail| detail.get("type").and_then(Value::as_str) == Some("reasoning.encrypted"))
-        .and_then(|detail| detail.get("data").and_then(Value::as_str))
+        .find_map(|detail| match detail.get("type").and_then(Value::as_str) {
+            Some("reasoning.encrypted") => detail.get("data").and_then(Value::as_str),
+            Some("reasoning") => detail.get("encrypted_content").and_then(Value::as_str),
+            _ => None,
+        })
         .filter(|data| !data.is_empty())
         .map(ToOwned::to_owned)
 }
@@ -106,7 +113,12 @@ pub(crate) fn encrypted_reasoning_item_id(details: &[Value]) -> Option<String> {
     details
         .iter()
         .filter_map(Value::as_object)
-        .find(|detail| detail.get("type").and_then(Value::as_str) == Some("reasoning.encrypted"))
+        .find(|detail| {
+            matches!(
+                detail.get("type").and_then(Value::as_str),
+                Some("reasoning.encrypted" | "reasoning")
+            )
+        })
         .and_then(|detail| detail.get("id").and_then(Value::as_str))
         .filter(|id| !id.is_empty())
         .map(ToOwned::to_owned)
@@ -137,4 +149,35 @@ pub(crate) fn provider_extensions(
         }
     }
     extensions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn encrypted_reasoning_helpers_accept_both_detail_shapes() {
+        let documented = vec![json!({"type": "reasoning.encrypted", "data": "blob", "id": "rs_1"})];
+        assert_eq!(
+            encrypted_reasoning_data(&documented).as_deref(),
+            Some("blob")
+        );
+        assert_eq!(
+            encrypted_reasoning_item_id(&documented).as_deref(),
+            Some("rs_1")
+        );
+        let verbatim_item = vec![json!({
+            "type": "reasoning", "id": "rs_2", "summary": [], "encrypted_content": "blob2"
+        })];
+        assert_eq!(
+            encrypted_reasoning_data(&verbatim_item).as_deref(),
+            Some("blob2")
+        );
+        assert_eq!(
+            encrypted_reasoning_item_id(&verbatim_item).as_deref(),
+            Some("rs_2")
+        );
+        assert_eq!(encrypted_reasoning_data(&[json!({"type": "other"})]), None);
+    }
 }
