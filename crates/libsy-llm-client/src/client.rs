@@ -246,6 +246,9 @@ impl TranslatingLlmClient {
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
         set_json_model(&mut body, model);
+        if matches!(backend, Backend::OpenAiResponses(_)) {
+            sanitize_openai_responses_provider_body(&mut body);
+        }
         // Strip before `merge_extra_body` so a target can reinstate either field
         // deliberately via `extra_body`.
         if matches!(backend, Backend::Anthropic(_)) {
@@ -754,6 +757,124 @@ fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
+const CODEX_NAMESPACE_SEPARATOR: &str = "__";
+
+// Codex extends Responses with namespace containers and namespaced function
+// calls. OpenAI-compatible providers expect a flat Responses tool namespace.
+fn sanitize_openai_responses_provider_body(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    sanitize_openai_responses_input_for_provider(object.get_mut("input"));
+    sanitize_openai_responses_tools_for_provider(object.get_mut("tools"));
+    sanitize_openai_responses_tool_choice_for_provider(object.get_mut("tool_choice"));
+}
+
+fn sanitize_openai_responses_input_for_provider(input: Option<&mut Value>) {
+    let Some(Value::Array(items)) = input else {
+        return;
+    };
+    for item in items {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        if object.get("type").and_then(Value::as_str) == Some("function_call") {
+            qualify_responses_function_name(object);
+        }
+    }
+}
+
+fn sanitize_openai_responses_tools_for_provider(tools: Option<&mut Value>) {
+    let Some(Value::Array(tools)) = tools else {
+        return;
+    };
+    let mut flat_tools = Vec::with_capacity(tools.len());
+    for tool in std::mem::take(tools) {
+        push_sanitized_openai_responses_tool(&mut flat_tools, tool);
+    }
+    *tools = flat_tools;
+}
+
+fn push_sanitized_openai_responses_tool(out: &mut Vec<Value>, tool: Value) {
+    let Value::Object(mut object) = tool else {
+        out.push(tool);
+        return;
+    };
+    if object.get("type").and_then(Value::as_str) == Some("namespace") {
+        let namespace = object
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let Some(Value::Array(children)) = object.remove("tools") else {
+            out.push(Value::Object(object));
+            return;
+        };
+        for child in children {
+            push_sanitized_namespaced_tool(out, &namespace, child);
+        }
+        return;
+    }
+    ensure_responses_function_tool_description(&mut object);
+    out.push(Value::Object(object));
+}
+
+fn push_sanitized_namespaced_tool(out: &mut Vec<Value>, namespace: &str, tool: Value) {
+    let Value::Object(mut object) = tool else {
+        out.push(tool);
+        return;
+    };
+    if object.get("type").and_then(Value::as_str) == Some("function") {
+        qualify_responses_function_name_with_namespace(&mut object, namespace);
+        ensure_responses_function_tool_description(&mut object);
+    }
+    out.push(Value::Object(object));
+}
+
+fn sanitize_openai_responses_tool_choice_for_provider(tool_choice: Option<&mut Value>) {
+    let Some(Value::Object(object)) = tool_choice else {
+        return;
+    };
+    if object.get("type").and_then(Value::as_str) == Some("function") {
+        qualify_responses_function_name(object);
+    }
+}
+
+fn qualify_responses_function_name(object: &mut Map<String, Value>) {
+    let namespace = object
+        .remove("namespace")
+        .and_then(|value| value.as_str().map(ToOwned::to_owned));
+    let Some(namespace) = namespace.as_deref() else {
+        return;
+    };
+    qualify_responses_function_name_with_namespace(object, namespace);
+}
+
+fn qualify_responses_function_name_with_namespace(
+    object: &mut Map<String, Value>,
+    namespace: &str,
+) {
+    if namespace.is_empty() {
+        return;
+    }
+    let Some(name) = object.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    let prefix = format!("{namespace}{CODEX_NAMESPACE_SEPARATOR}");
+    if name.starts_with(&prefix) {
+        return;
+    }
+    object.insert("name".to_string(), Value::String(format!("{prefix}{name}")));
+}
+
+fn ensure_responses_function_tool_description(object: &mut Map<String, Value>) {
+    if object.get("type").and_then(Value::as_str) == Some("function")
+        && !matches!(object.get("description"), Some(Value::String(_)))
+    {
+        object.insert("description".to_string(), Value::String(String::new()));
+    }
+}
+
 // Drops fields accepted by OpenAI-like APIs but rejected by Anthropic Messages.
 //
 // A router can serve earlier turns of a session from an OpenAI-format target and
@@ -953,6 +1074,14 @@ mod tests {
         vec![ModelConfig::new(
             "gpt",
             Backend::OpenAiChat(config(base_url)),
+            None,
+        )]
+    }
+
+    fn responses_map(base_url: &str) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(config(base_url)),
             None,
         )]
     }
@@ -2187,6 +2316,99 @@ mod tests {
         assert_eq!(body["output"][0]["namespace"], "mcp__open_websearch");
         // Arguments are parsed and re-serialized, so the spacing is normalized.
         assert_eq!(body["output"][0]["arguments"], "{\"q\": \"rust\"}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn openai_responses_backend_flattens_codex_namespaces_before_upstream()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "model": "gpt",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "output": [{
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "mcp__open_websearch__search",
+                    "arguments": "{\"q\":\"rust\"}"
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&responses_map(&format!("{}/v1", server.uri())))?;
+        let parameters = json!({"type": "object", "properties": {"q": {"type": "string"}}});
+        let raw = json!({
+            "model": "client-facing",
+            "input": [{
+                "type": "function_call",
+                "call_id": "call_0",
+                "name": "search",
+                "namespace": "mcp__open_websearch",
+                "arguments": "{}"
+            }],
+            "tool_choice": {
+                "type": "function",
+                "name": "search",
+                "namespace": "mcp__open_websearch"
+            },
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__open_websearch",
+                "tools": [{
+                    "type": "function",
+                    "name": "search",
+                    "parameters": parameters.clone()
+                }]
+            }]
+        });
+
+        let RawResponse::Buffered(body) = client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?
+        else {
+            panic!("expected a buffered response");
+        };
+
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let request_body: Value = serde_json::from_slice(&received[0].body)?;
+        assert_eq!(request_body["model"], "gpt");
+        assert_eq!(
+            request_body["tools"],
+            json!([{
+                "type": "function",
+                "name": "mcp__open_websearch__search",
+                "description": "",
+                "parameters": parameters
+            }])
+        );
+        assert_eq!(
+            request_body["tool_choice"],
+            json!({"type": "function", "name": "mcp__open_websearch__search"})
+        );
+        assert_eq!(
+            request_body["input"][0]["name"],
+            "mcp__open_websearch__search"
+        );
+        assert!(request_body["input"][0].get("namespace").is_none());
+
+        assert_eq!(body["output"][0]["type"], "function_call");
+        assert_eq!(body["output"][0]["name"], "search");
+        assert_eq!(body["output"][0]["namespace"], "mcp__open_websearch");
         Ok(())
     }
 
