@@ -2389,3 +2389,82 @@ fn responses_flat_file_data_survives_into_chat() -> TestResult {
     assert_eq!(file["file"]["filename"], "report.pdf");
     Ok(())
 }
+
+// Codex drives GPT-5 models with freeform ("custom") tools. Through a Responses upstream the
+// definition must go out verbatim and the replayed history must keep `custom_tool_call` items
+// with their raw `input`; through a chat upstream the tool degrades to a single-argument function.
+#[test]
+fn responses_request_round_trips_custom_tools_and_custom_tool_calls() -> TestResult {
+    let engine = TranslationEngine::default();
+    let custom_tool = json!({
+        "type": "custom",
+        "name": "exec",
+        "description": "Runs a shell command.",
+        "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.*/"}
+    });
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "input": [
+            {"type": "message", "role": "user", "content": "List files"},
+            {"type": "custom_tool_call", "call_id": "call_1", "name": "exec", "input": "ls -la"},
+            {"type": "custom_tool_call_output", "call_id": "call_1", "output": "README.md"}
+        ],
+        "tools": [
+            custom_tool,
+            {"type": "function", "name": "update_plan", "description": "Plan", "parameters": {"type": "object"}}
+        ]
+    });
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let same = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+    let tools = same["tools"].as_array().ok_or("tools should be an array")?;
+    assert!(
+        tools.iter().any(|tool| tool == &custom_tool),
+        "custom tool must be re-emitted verbatim: {tools:?}"
+    );
+    let input = same["input"].as_array().ok_or("input should be an array")?;
+    let call = input
+        .iter()
+        .find(|item| item["type"] == "custom_tool_call")
+        .ok_or("history must keep the custom_tool_call")?;
+    assert_eq!(call["name"], "exec");
+    assert_eq!(call["call_id"], "call_1");
+    assert_eq!(call["input"], "ls -la");
+    assert!(call.get("arguments").is_none(), "{call}");
+    let output = input
+        .iter()
+        .find(|item| item["type"] == "custom_tool_call_output")
+        .ok_or("history must keep the custom_tool_call_output")?;
+    assert_eq!(output["call_id"], "call_1");
+
+    let chat = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    let exec = chat["tools"]
+        .as_array()
+        .ok_or("chat tools should be an array")?
+        .iter()
+        .find(|tool| tool["function"]["name"] == "exec")
+        .ok_or("chat upstream should still see the tool")?;
+    assert_eq!(
+        exec["function"]["parameters"]["required"],
+        json!(["input"]),
+        "{exec}"
+    );
+    Ok(())
+}
