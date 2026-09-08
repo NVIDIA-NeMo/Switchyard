@@ -7,7 +7,7 @@
 mod core;
 pub use core::algorithm::{Algorithm, CallModel, Driver, RoutingOutcome, Step, StepStream, drive};
 pub use core::classifier::{Classification, Classifier, Score};
-pub use core::decision::DecisionMetadata;
+pub use core::outcome_metadata::OutcomeMetadata;
 pub use core::processor::{Event, Processor};
 pub use core::state::{State, StateValue};
 
