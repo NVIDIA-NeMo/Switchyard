@@ -36,10 +36,10 @@ Relay records the caller-facing request and response. In OpenInference traces,
 answer tokens appear as `llm.token_count.prompt`, `llm.token_count.completion`,
 and `llm.token_count.total`. When available, cache use appears as
 `llm.token_count.prompt_details.cache_read` and
-`llm.token_count.prompt_details.cache_write`. Relay also records
-`llm.cost.total` in USD when the provider reports a cost, or when the response
-contains enough model and usage data and a configured Relay pricing catalog
-has all required rates.
+`llm.token_count.prompt_details.cache_write`. Relay records `llm.cost.total`
+when it has a provider-reported USD cost, or when the response contains enough
+model and usage data for Relay to estimate one from a configured pricing
+catalog.
 
 Switchyard records token use for its model calls in the
 `switchyard.routing.llm_tokens` metric when the provider reports usage. Each
@@ -65,6 +65,13 @@ Apply the price of each `target_model` to those routing tokens. Do not add
 `call_role = "answer"` again because it describes the same successful answer
 that Relay recorded. Do not sum every `token_type`; `total` is a rollup, and
 cache or reasoning values may be a more detailed view of another count.
+
+ATIF includes the caller-facing LLM call in its standard steps and, when
+available, cost totals. It does not add Switchyard's routing work to those
+totals. Plugin-managed ATIF files may retain the raw routing records under
+`extra.observed_events`, but ATIF does not interpret or aggregate them. Use
+Relay's OpenTelemetry metrics to estimate routing cost from the usage that
+providers report.
 
 Relay does not ship a canonical price catalog. Follow its
 [model-pricing guide](https://docs.nvidia.com/nemo/relay/v0.8.3/nemo-relay-cli/basic-usage#add-model-pricing-for-cost-estimates)
@@ -245,11 +252,29 @@ when an algorithm must keep the same per-session state across turns.
 
 ## Routing Telemetry
 
-Switchyard sends its routing records into the same Relay telemetry stream as
-the caller-facing LLM call. Existing Relay
+Switchyard emits routing marks and metrics through Relay. This does not turn
+each model call inside Switchyard into another Relay LLM lifecycle. Existing
+Relay
 [subscribers](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/subscribers#how-subscribers-relate-to-events)
-can export both, so a separate Switchyard telemetry pipeline is not required.
-How those records appear in a backend depends on Relay's
+can receive the records, but each output format presents a different view.
+
+### ATIF and OpenTelemetry Show Different Views
+
+| Output | What the current integration shows |
+| --- | --- |
+| ATIF | The caller-facing LLM request and response. Internal judge, classifier, fallback, and retry work is not added as separate steps or included in `final_metrics`. Plugin-managed files may retain the raw routing records under `extra.observed_events`. |
+| OpenTelemetry traces, including the OpenInference projection | Relay's caller-facing LLM span and, when the selected trace projection includes them, Switchyard routing marks. These marks are point-in-time records rather than full model-call spans. |
+| OpenTelemetry metrics | Switchyard request, routing-call, latency, token, and failure measurements. Combine the reported routing usage with Relay's answer cost to estimate the observed routed cost. |
+| OTLP logs | Non-metric Switchyard marks that meet the configured severity threshold. |
+
+The plugin does not currently export Switchyard's internal `libsy.client_call`
+or `libsy.upstream_attempt` tracing spans through Relay. A Relay trace therefore
+does not contain nested duration spans for internal model calls or individual
+HTTP retries, and a dropped internal response stream does not appear as its own
+Relay cancellation lifecycle. Switchyard still performs that work; this is a
+limit of the telemetry currently passed from the plugin to Relay.
+
+How marks appear in a trace depends on Relay's
 [OpenTelemetry trace projection](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#trace-projections)
 and
 [OpenInference projection](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/openinference#plugin-configuration).
