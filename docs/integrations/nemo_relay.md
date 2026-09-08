@@ -12,8 +12,8 @@ Using the strongest model for every request is simple, but routine work may not
 need it. Switchyard can send simpler requests to a lower-cost model and reserve
 a stronger model for harder work.
 
-Relay keeps the model choice, fallback, latency, and token use alongside the
-rest of the agent run. This lets teams answer practical questions:
+The plugin reports the selected and served models, fallback use, routing
+latency, and token use through Relay telemetry. Use it to answer:
 
 - How often did the lower-cost model handle the work?
 - How often did Switchyard fall back to another model?
@@ -26,63 +26,44 @@ Switchyard does not need to run as a separate service.
 Requests for models that Switchyard does not manage continue through Relay as
 usual.
 
+Routing does not require Relay. You can instead run the
+[standalone server](../getting_started.md#server-path) or embed
+[`switchyard-libsy`](../../crates/libsy/README.md) directly.
+
 ### Measure the Cost of Routing
 
-A routed request can spend tokens in two places. Some routes call a judge or
-classifier to choose a model. The selected model, or a fallback, then produces
-the answer. Relay and Switchyard record these parts separately.
+A routed request can spend tokens choosing a model and generating the answer.
+Some routes call a judge or classifier first. The selected model, or a fallback,
+then answers the request.
 
-Relay records the caller-facing request and response. In OpenInference traces,
-answer tokens appear as `llm.token_count.prompt`, `llm.token_count.completion`,
-and `llm.token_count.total`. When available, cache use appears as
-`llm.token_count.prompt_details.cache_read` and
-`llm.token_count.prompt_details.cache_write`. Relay records `llm.cost.total`
-when it has a provider-reported USD cost, or when the response contains enough
-model and usage data for Relay to estimate one from a configured pricing
-catalog.
+Relay records the request and answer seen by the agent. It can record a
+provider-reported cost or estimate one when model pricing is configured.
+Switchyard separately records model calls, available token usage and timing,
+fallbacks, and failures.
 
-Switchyard records token use for its model calls in the
-`switchyard.routing.llm_tokens` metric when the provider reports usage. Each
-measurement identifies:
-
-- `call_role`: `routing` or `answer`
-- `target_model`: the upstream model ID
-- `token_type`: `input`, `cached_input`, `cache_creation_input`, `output`,
-  `reasoning`, or `total`
-
-Switchyard also records the selected and served models, fallback use,
-routing-call latency, routing overhead, and failures.
-
-The current integration does not emit a single total-cost or savings metric.
-Relay prices the caller-facing answer, while Switchyard reports internal routing
-usage separately. To estimate the full routed cost, use:
+The integration does not calculate a combined cost or savings figure. Relay can
+price the answer returned to the agent, while Switchyard reports internal
+routing usage separately. To estimate the observed cost for a workload, use:
 
 ```text
 Relay answer cost + cost of Switchyard tokens where call_role = "routing"
 ```
 
 Apply the price of each `target_model` to those routing tokens. Do not add
-`call_role = "answer"` again because it describes the same successful answer
-that Relay recorded. Do not sum every `token_type`; `total` is a rollup, and
-cache or reasoning values may be a more detailed view of another count.
+`call_role = "answer"` again because Relay already counted that answer. Do not
+sum every `token_type`; `total` is a rollup, and cache or reasoning values may
+already be included in broader counts.
 
-ATIF includes the caller-facing LLM call in its standard steps and, when
-available, cost totals. It does not add Switchyard's routing work to those
-totals. Plugin-managed ATIF files may retain the raw routing records under
-`extra.observed_events`, but ATIF does not interpret or aggregate them. Use
-Relay's OpenTelemetry metrics to estimate routing cost from the usage that
-providers report.
+Relay does not copy request identity into exported metric attributes. Use this
+calculation for a workload or time window, not to reconcile one trace.
 
-Relay does not ship a canonical price catalog. Follow its
+Relay does not include a model-price catalog. Follow its
 [model-pricing guide](https://docs.nvidia.com/nemo/relay/v0.8.3/nemo-relay-cli/basic-usage#add-model-pricing-for-cost-estimates)
 to supply and validate model rates. Run the same representative workload once
-with a fixed model and once with routing, then compare observed cost, latency,
-fallbacks, and your task-success measure. Missing usage, failed attempts,
-internal HTTP retries, and incomplete streams can leave some cost unknown. An
-absent value means unknown, not zero.
-
-If Relay is not part of the application, run the [standalone server](../getting_started.md#server-path)
-or embed [`switchyard-libsy`](../../crates/libsy/README.md) directly.
+with a fixed model and once with routing. Compare cost, latency, fallback rate,
+and task success. Missing usage, failed attempts, internal HTTP retries, and
+incomplete streams can leave some cost unknown. An absent value means unknown,
+not zero.
 
 ## How Requests Flow
 
@@ -121,11 +102,12 @@ well as calls to the selected or fallback answer model, do not run through
 Relay's LLM middleware again. This avoids treating a router's judge call or
 fallback attempt as another application request.
 
-Relay still records the caller-facing
-[LLM call](https://docs.nvidia.com/nemo/relay/v0.8.3/instrument-applications/instrument-llm-call#integration-pattern),
-while Switchyard adds
+Relay records the
+[LLM call](https://docs.nvidia.com/nemo/relay/v0.8.3/instrument-applications/instrument-llm-call#integration-pattern)
+made by the application. Switchyard reports its internal routing work through
+Relay
 [marks](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/events#mark)
-and metrics for the routing work inside it.
+and metrics.
 
 | Owner | Responsibilities |
 | --- | --- |
@@ -149,16 +131,15 @@ and how it
 
 !!! note "Relay compatibility"
 
-    You do not need Relay 0.8.3 specifically. The packaged
+    The plugin supports Relay `>=0.8.1,<0.9.0` and native plugin API `1`. The
+    packaged
     [`relay-plugin.toml`](../../crates/switchyard-nemo-relay-plugin/relay-plugin.toml)
-    is the source of truth: it currently accepts Relay `>=0.8.1,<0.9.0` and
-    native plugin API `1`. Relay checks both before loading the library. Links
-    on this page point to version 0.8.3 so the documentation does not drift to
-    an unsupported Relay release.
+    is the source of truth. Links on this page point to Relay 0.8.3 so they stay
+    within that supported range.
 
-The plugin accepts exactly one Switchyard deployment source: a
-`switchyard_config_path` shared with `switchyard-server`, or the same version-1
-deployment nested under `switchyard_config`. Both use the
+Configure exactly one Switchyard deployment source: either
+`switchyard_config_path`, which points to the TOML used by `switchyard-server`,
+or an inline version-1 deployment under `switchyard_config`. Both use the
 [Switchyard TOML schema](../reference/toml_schema.md).
 
 The plugin reuses the deployment's routes, targets, and LLM clients. It does not
@@ -186,20 +167,28 @@ Switchyard normalizes the request, routes it, and returns the response in the
 caller's original format. If Switchyard forwards the caller's credential, both
 formats must use the same credential family: OpenAI-compatible or Anthropic.
 
-Not every provider-specific field has a lossless equivalent. Switchyard rejects
-a conversion it cannot perform safely instead of silently dropping data.
+Support for provider-specific fields depends on the source and target formats.
+Test any fields that your application relies on before deploying a translated
+route.
+
+### Header Forwarding
+
+Caller headers are forwarded upstream except credentials and headers owned by
+the HTTP client, such as connection and content headers. Authentication and
+configured extra headers follow the selected client's settings in the
+[TOML schema](../reference/toml_schema.md).
 
 ### Streaming
 
-For streaming requests, Switchyard hands Relay a lazy translated stream. Relay
-drives delivery and cancellation and records when the caller-facing stream
-starts and ends. As Relay consumes the stream, Switchyard continues to translate
-chunks and record late usage or errors.
+For streaming requests, Switchyard returns a translated stream that Relay
+consumes lazily. Relay drives delivery and cancellation and records when the
+stream starts and ends. Switchyard continues to translate chunks and record
+late usage or errors as Relay consumes them.
 
 - Initial routing marks are available when the stream opens.
 - An answer-call result of `ok` means the provider opened the stream. It does
   not guarantee that the full stream completed.
-- For an upstream response that remains streamed, answer token metrics appear
+- For a streamed upstream response, answer token metrics appear
   only if the provider reports usage and the stream reaches its final event. A
   canceled or dropped stream may have no answer-token metrics.
 - Later provider failures can emit `switchyard.routing.error`. Some failures
@@ -217,16 +206,15 @@ drops it. The plugin does not store these payloads on disk.
 The plugin creates one Switchyard runner when Relay activates it and shares the
 runner across requests until the plugin is deactivated. Some routing algorithms
 keep in-memory state there, such as session affinity or an escalation decision.
-Each algorithm controls when that state expires. The state is not shared between
-Relay processes and is lost when a process restarts. See Relay's documentation
-on
+State behavior and expiry depend on the algorithm. The state is not shared
+between Relay processes and is lost when a process restarts. See Relay's
+documentation on
 [plugin ownership](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/plugins#ownership-and-scope)
 and
 [runtime state](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/architecture#where-runtime-state-lives).
 
-To associate routing telemetry with the rest of an agent run, the plugin adds
-these fields to every routing mark, including marks that carry metric
-measurements. Missing values are `null`:
+The plugin adds these fields to each routing mark, including metric marks.
+Missing values are `null`:
 
 - `session_id`
 - `agent_id`
@@ -235,7 +223,6 @@ measurements. Missing values are `null`:
 - `turn_id`
 - `correlation_id`
 
-These fields are event metadata used to correlate routing records with a run.
 Subscribers and log or trace exporters can read them, but Relay does not copy
 them into exported metric attributes.
 
@@ -244,50 +231,44 @@ These values come from request headers rather than Relay's active scope. Relay's
 can populate them for correlation. They do not by themselves mark a request as
 delegated work for Switchyard's
 [`subagents` router](../routing_algorithms/subagent_routing.md). For algorithms
-that keep per-session state, reuse a stable session ID across turns. Relay's
-`x-nemo-relay-session-id` header is accepted; `x-switchyard-session-id`
-provides an explicit override. If Relay's gateway has no stable session ID, the
-plugin leaves the Switchyard session ID unset. Send `x-switchyard-session-id`
-when an algorithm must keep the same per-session state across turns.
+that keep per-session state, reuse a stable ID across turns. The plugin accepts
+`x-nemo-relay-session-id`; `x-switchyard-session-id` overrides it. If neither
+provides a value, the Switchyard session ID remains unset.
 
 ## Routing Telemetry
 
-Switchyard emits routing marks and metrics through Relay. This does not turn
-each model call inside Switchyard into another Relay LLM lifecycle. Existing
-Relay
+Relay sees one LLM lifecycle for the request made by the agent. Switchyard
+reports the routing work through Relay marks and metrics. Existing Relay
 [subscribers](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/subscribers#how-subscribers-relate-to-events)
-can receive the records, but each output format presents a different view.
+can receive these records, but each output format presents them differently.
 
 ### ATIF and OpenTelemetry Show Different Views
 
 | Output | What the current integration shows |
 | --- | --- |
-| ATIF | The caller-facing LLM request and response. Internal judge, classifier, fallback, and retry work is not added as separate steps or included in `final_metrics`. Plugin-managed files may retain the raw routing records under `extra.observed_events`. |
-| OpenTelemetry traces, including the OpenInference projection | Relay's caller-facing LLM span and, when the selected trace projection includes them, Switchyard routing marks. These marks are point-in-time records rather than full model-call spans. |
+| ATIF | The request and response seen by the agent. Internal routing is not added as separate steps or included in `final_metrics`. Relay-managed ATIF files may retain the raw records under `extra.observed_events`. |
+| OpenTelemetry traces, including OpenInference | Relay's LLM span plus eligible routing marks, depending on the projection. Marks are point-in-time records, not duration spans. |
 | OpenTelemetry metrics | Switchyard request, routing-call, latency, token, and failure measurements. Combine the reported routing usage with Relay's answer cost to estimate the observed routed cost. |
 | OTLP logs | Non-metric Switchyard marks that meet the configured severity threshold. |
 
-The plugin does not currently export Switchyard's internal `libsy.client_call`
-or `libsy.upstream_attempt` tracing spans through Relay. A Relay trace therefore
-does not contain nested duration spans for internal model calls or individual
-HTTP retries, and a dropped internal response stream does not appear as its own
-Relay cancellation lifecycle. Switchyard still performs that work; this is a
-limit of the telemetry currently passed from the plugin to Relay.
-
-How marks appear in a trace depends on Relay's
-[OpenTelemetry trace projection](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#trace-projections)
-and
-[OpenInference projection](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/openinference#plugin-configuration).
+Switchyard creates `libsy.run`, `libsy.llm_call`, `libsy.client_call`, and
+`libsy.upstream_attempt` spans internally. Together they cover the algorithm
+run, model calls requested by the algorithm, candidate attempts including
+fallbacks, and individual HTTP attempts. They are not one connected hierarchy
+today, and the plugin does not send them to Relay. As a result, Relay traces do
+not show those internal operations as nested duration spans or give an internal
+stream its own cancellation lifecycle.
 
 ### How Routing Appears in Traces
 
-When the caller-facing LLM call uses Relay's active agent scope as its parent,
-the Switchyard marks use that same scope and appear alongside the call.
-Switchyard does not create another nested scope. For Relay's
+In Relay's
 [full and OpenInference trace projections](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#trace-projections),
 [`mark_projection`](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#trace-endpoint-fields)
-controls whether a backend displays each eligible mark as an event on the
-parent or as a visible zero-duration child span. The
+controls how marks appear. With `inherit` or `event`, a routing mark is an event
+on its parent span while that span is open. Otherwise, Relay emits it as a
+zero-duration span and retains its parent when possible. With `tool`, routing
+marks are always visible zero-duration spans. The plugin does not nest these
+marks under the LLM span. The
 [`gen_ai` projection](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#genai-projection)
 omits marks. With `mark_projection = "tool"`, the trace has this shape:
 
@@ -295,11 +276,11 @@ omits marks. With `mark_projection = "tool"`, the trace has this shape:
 flowchart LR
     agent["Relay agent scope"]
     llm["LLM call"]
-    requested["switchyard.routing.requested"]
-    calls["switchyard.routing.llm_call<br/>routing and answer attempts"]
-    overhead["switchyard.routing.overhead"]
-    decision["switchyard.routing.decision"]
-    error["switchyard.routing.error<br/>when execution fails"]
+    requested["mark:switchyard.routing.requested<br/>zero duration"]
+    calls["mark:switchyard.routing.llm_call<br/>zero duration"]
+    overhead["mark:switchyard.routing.overhead<br/>zero duration"]
+    decision["mark:switchyard.routing.decision<br/>zero duration"]
+    error["mark:switchyard.routing.error<br/>zero duration"]
     agent --> llm
     agent --> requested
     agent --> calls
@@ -308,8 +289,9 @@ flowchart LR
     agent -.->|"Failure"| error
 ```
 
-If the application did not create an agent scope, an observability backend can
-display the LLM span and marks as separate roots. The metadata field
+When the LLM call has an agent scope as its parent, the marks use that same scope
+and appear beside the call. Without an agent scope, a backend can display the
+LLM span and marks as separate roots. The metadata field
 `parent_agent_id` is a correlation value; it does not set Relay trace
 parentage. See Relay's
 [scope hierarchy](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/scopes#scope-hierarchy-and-ownership)
@@ -328,7 +310,7 @@ describes the surrounding event envelope.
 | Mark | Severity | Data |
 | --- | --- | --- |
 | `switchyard.routing.requested` | Info | Routing `algorithm` for a managed request. |
-| `switchyard.routing.llm_call` | Debug | `call_index`, model in `selected_model`, `call_role` (`routing` or `answer`), `outcome`, and `latency_ms` for each observed model call. |
+| `switchyard.routing.llm_call` | Debug | `call_index`, `selected_model`, `call_role` (`routing` or `answer`), `outcome`, and `latency_ms` for each observed model call. |
 | `switchyard.routing.overhead` | Info | `latency_ms` spent producing the routing outcome, including routing-model calls. This is not the end-to-end request duration. |
 | `switchyard.routing.decision` | Info | `algorithm`, initial `selected_model`, nullable final `served_model`, and nullable `fallback_used`. |
 | `switchyard.routing.error` | Error | Generic failures contain `failure_kind`. Route-execution failures also contain `category` and `phase`, plus nullable `upstream_status` and `target`. |
@@ -342,11 +324,9 @@ supported trace projections, but Relay's OTLP logs default to Info. Set
 `minimum_severity` to `debug` to include these call records in
 [log export](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#log-export).
 
-Model fields use the target's upstream model ID, not its local TOML key. For
-example, if `[targets.fast].id = "provider/model-a"`, the mark records
-`provider/model-a`, not `fast`. Relay records the model value after its request
-middleware runs, normally the Switchyard route ID. On the response, Relay can
-report the model that actually answered.
+Switchyard marks use the target's upstream model ID, not its local TOML key.
+Relay request telemetry normally uses the Switchyard route ID, while response
+telemetry can report the model that answered.
 
 `fallback_used` is `true` when the final served model differs from the initial
 selection and `false` when they match. It and `served_model` are `null` when the
@@ -378,16 +358,9 @@ Configure delivery through Relay's
 
 ## Data Handling
 
-Switchyard routing telemetry contains a small, defined set of routing fields,
-not request or response content. Its marks do not contain prompts, request or
-response bodies, headers, credentials, raw provider response bodies, or
-free-form provider error messages. Relay's caller-facing LLM events can
-capture request and response data according to Relay's
+Switchyard routing telemetry excludes request and response content. Its marks
+do not contain prompts, bodies, headers, credentials, raw provider responses,
+or free-form provider errors. Relay's LLM events can capture request and
+response data according to Relay's
 [input and output event semantics](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/events#input-and-output-payloads),
 independently of these Switchyard marks.
-
-Header forwarding is part of request execution, not telemetry. Caller headers
-are forwarded upstream except credentials and headers owned by the HTTP client,
-such as connection and content headers. Authentication and configured extra
-headers follow the selected client's settings in the
-[TOML schema](../reference/toml_schema.md).
