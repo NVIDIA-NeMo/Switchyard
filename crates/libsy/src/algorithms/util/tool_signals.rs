@@ -308,6 +308,7 @@ impl Processor<State> for ToolSignalProcessor {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Request { request: req, .. } = event {
             let tool_signal = ToolSignals::from_request(req, Some(self.recent_window));
+            tracing::info!(target: "libsy", ?tool_signal, "deterministic tool signals");
             state.tool_signals = Some(tool_signal);
         }
         Ok(())

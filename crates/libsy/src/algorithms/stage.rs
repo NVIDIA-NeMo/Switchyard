@@ -24,6 +24,7 @@ use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets, Tier,
     fall_open_tier, record_decision_source, record_routing_decision,
 };
+use super::util::tool_signal_discovery::LlmToolSignalProcessor;
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -87,6 +88,47 @@ impl Classifier<State> for FallOpen {
     }
 }
 
+/// Forces the default tier for a session's first `warmup_turns` assistant turns,
+/// regardless of what the signal source reports — long enough for a judge-driven
+/// source to accumulate real signal (vocabulary, windowed counts) before its
+/// output is trusted to decide routing. Abstains once warm-up has elapsed, so
+/// the normal cascade (`StageClassifier`, `llm_fallback`, `FallOpen`) takes over
+/// unchanged. The signal source itself still runs every turn during warm-up —
+/// only the routing *decision* is held back, not signal collection.
+struct WarmupGate {
+    targets: StageTargets,
+    default_tier: Tier,
+    warmup_turns: u32,
+}
+
+#[async_trait]
+impl Classifier<State> for WarmupGate {
+    async fn score(
+        &self,
+        state: &mut State,
+        _request: &mut Request,
+        _driver: Option<&Driver>,
+    ) -> Result<(Classification, Option<Response>)> {
+        let assistant_turn_count = state
+            .tool_signals
+            .as_ref()
+            .map(|signal| signal.assistant_turn_count)
+            .unwrap_or(0);
+        if assistant_turn_count >= self.warmup_turns {
+            return Ok((Classification::Ambiguous(vec![]), None));
+        }
+        let tier = fall_open_tier(state).unwrap_or(self.default_tier);
+        let target = self.targets.name(tier).clone();
+        Ok((
+            Classification::Scores(vec![Score {
+                target,
+                confidence: 0.0,
+            }]),
+            None,
+        ))
+    }
+}
+
 /// The capability judge a stage router falls through to.
 pub struct LlmFallback {
     /// Target the judge model is called through. It is not a routing
@@ -118,6 +160,24 @@ pub struct StageRouterConfig {
     /// judge's own target, plus the same configuration the standalone capability
     /// route takes.
     pub llm_fallback: Option<LlmFallback>,
+    /// What populates `State::tool_signals`: the regex/name-table extractor in
+    /// `tool_signals.rs`, or an LLM judge that discovers its own buckets. Both
+    /// write the same `ToolSignals` shape, so `StageClassifier` is unaffected
+    /// by the choice.
+    pub tool_signal_source: ToolSignalSource,
+    /// Assistant turns to force the default tier for before routing decisions
+    /// are trusted, regardless of `confidence_threshold`. `0` disables warm-up —
+    /// routing decides from the first turn, as before.
+    pub warmup_turns: u32,
+}
+
+/// Chooses what populates `State::tool_signals` for a `stage_router`.
+#[derive(Clone)]
+pub enum ToolSignalSource {
+    /// `tool_signals::ToolSignalProcessor` — fixed regex/name tables.
+    Static,
+    /// `tool_signal_discovery::LlmToolSignalProcessor`, called through this target.
+    Llm(ModelId),
 }
 
 impl StageRouterConfig {
@@ -131,6 +191,8 @@ impl StageRouterConfig {
             handoff_notes: None,
             tier_prompts: TargetPrompts::default(),
             llm_fallback: None,
+            tool_signal_source: ToolSignalSource::Static,
+            warmup_turns: 0,
         }
     }
 }
@@ -198,14 +260,30 @@ pub(crate) fn build_stage_route(
     if let Some(notes) = config.handoff_notes {
         classifier = classifier.with_handoff_notes(notes);
     }
-    let signals = ToolSignalProcessor {
-        recent_window: config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW),
-    };
+    let recent_window = config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW);
     let target_set = vec![capable.clone(), efficient.clone()];
-    let mut router = FallThrough::<State>::new_with_state(target_set)
-        .with_name(STAGE_ROUTER)
-        .with_processor(Arc::new(signals))
-        .with_classifier(Arc::new(classifier));
+    let mut router = FallThrough::<State>::new_with_state(target_set).with_name(STAGE_ROUTER);
+    if config.warmup_turns > 0 {
+        // Ahead of StageClassifier: first classifier to decide wins, so this
+        // holds routing on the default tier until warm-up elapses.
+        router = router.with_classifier(Arc::new(SourceStamp {
+            inner: Arc::new(WarmupGate {
+                targets: StageTargets::new(capable.clone(), efficient.clone()),
+                default_tier,
+                warmup_turns: config.warmup_turns,
+            }),
+            source: DecisionSource::FallOpen,
+        }));
+    }
+    router = router.with_classifier(Arc::new(classifier));
+    router = match config.tool_signal_source {
+        ToolSignalSource::Static => {
+            router.with_processor(Arc::new(ToolSignalProcessor { recent_window }))
+        }
+        ToolSignalSource::Llm(judge_target) => router.with_processor(Arc::new(
+            LlmToolSignalProcessor::new(judge_target, recent_window),
+        )),
+    };
     if let Some(fallback) = config.llm_fallback {
         // The capability judge takes its tiers in the same order the capability
         // route passes them: efficient first, capable second.
@@ -559,6 +637,42 @@ mod tests {
             judged.contains("fix the build"),
             "the judge should see the opening task: {judged}"
         );
+        Ok(())
+    }
+
+    fn state_with_assistant_turns(assistant_turn_count: u32) -> State {
+        let mut state = State::default();
+        state.tool_signals = Some(crate::algorithms::util::tool_signals::ToolSignals {
+            assistant_turn_count,
+            ..Default::default()
+        });
+        state
+    }
+
+    #[tokio::test]
+    async fn warmup_gate_forces_default_tier_before_warmup_elapses() -> Result<()> {
+        let gate = WarmupGate {
+            targets: StageTargets::new("capable", "efficient"),
+            default_tier: Tier::Efficient,
+            warmup_turns: 3,
+        };
+        let mut state = state_with_assistant_turns(1);
+        let (classification, _) = gate.score(&mut state, &mut Request::default(), None).await?;
+        let winner = classification.argmax(false)?.expect("should be decisive");
+        assert_eq!(winner.target, ModelId::from("efficient"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn warmup_gate_abstains_once_warmup_elapses() -> Result<()> {
+        let gate = WarmupGate {
+            targets: StageTargets::new("capable", "efficient"),
+            default_tier: Tier::Efficient,
+            warmup_turns: 3,
+        };
+        let mut state = state_with_assistant_turns(3);
+        let (classification, _) = gate.score(&mut state, &mut Request::default(), None).await?;
+        assert!(classification.argmax(false)?.is_none(), "should abstain");
         Ok(())
     }
 }

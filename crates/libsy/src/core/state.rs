@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::algorithms::util::tool_signal_discovery::LlmToolSignals;
 use crate::algorithms::util::tool_signals::ToolSignals;
 
 /// A value in a session's [`State`].
@@ -29,6 +30,10 @@ pub struct State {
     /// processor. `None` until it runs or when the request has no tool activity,
     /// so routers must treat absence as "no signal yet".
     pub tool_signals: Option<ToolSignals>,
+    /// Judge-discovered analogue of `tool_signals`, accumulated by
+    /// [`crate::algorithms::util::tool_signal_discovery::LlmToolSignalProcessor`].
+    /// Observation-only: no classifier reads this field yet.
+    pub llm_tool_signals: Option<LlmToolSignals>,
     /// Algorithm-specific state keyed by stable internal names.
     pub extra: HashMap<String, StateValue>,
 }

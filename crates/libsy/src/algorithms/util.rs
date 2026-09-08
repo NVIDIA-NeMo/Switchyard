@@ -12,6 +12,7 @@ pub mod subagent;
 pub(crate) mod target_selector;
 #[cfg(test)]
 pub(crate) mod tier_fixtures;
+pub mod tool_signal_discovery;
 pub(crate) mod tool_signals;
 
 use switchyard_protocol::ModelId;
