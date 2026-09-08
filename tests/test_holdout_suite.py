@@ -139,6 +139,7 @@ def _complete_artifact_fixture(run_dir: Path) -> None:
     (run_dir / "inputs/server-config.toml").write_text('schema_version = 1\n')
     (run_dir / "run_manifest.json").write_text('{"schema_version": 2}\n')
     (run_dir / "routing_stats_final.json").write_text('{"total_requests": 2}\n')
+    (run_dir / "server_metrics_final.prom").write_text("switchyard_requests_total 2\n")
     (run_dir / "tb21/jobs/job").mkdir(parents=True)
     (run_dir / "tb21/jobs/job/result.json").write_text('{"stats": {"passed": 1}}\n')
     (run_dir / "automationbench-simple.json").write_text(

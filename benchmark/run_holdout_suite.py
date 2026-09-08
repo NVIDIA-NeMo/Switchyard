@@ -201,6 +201,15 @@ def _capture_json(url: str, path: Path) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _capture_text(url: str, path: Path) -> None:
+    """Capture one bounded UTF-8 endpoint response as a run artifact."""
+    with urllib.request.urlopen(url, timeout=30) as response:
+        payload = response.read(16 * 1024 * 1024 + 1)
+    if len(payload) > 16 * 1024 * 1024:
+        raise ValueError(f"text response exceeds 16 MiB: {url}")
+    path.write_text(payload.decode("utf-8"), encoding="utf-8")
+
+
 def _server_command(
     config: Path,
     port: int,
@@ -630,6 +639,7 @@ def run_suite(args: argparse.Namespace) -> Path:
         "artifacts": {
             "routing_records": "routing_requests.jsonl",
             "routing_stats": "routing_stats_final.json",
+            "server_metrics": "server_metrics_final.prom",
             "machine_readable_summary": "machine_readable_summary.json",
             "per_task_routing": "per_task_routing.jsonl",
             "artifact_index": "artifact_index.json",
@@ -723,6 +733,10 @@ def run_suite(args: argparse.Namespace) -> Path:
                 f"http://127.0.0.1:{args.server_port}/v1/stats",
                 run_dir / "routing_stats_final.json",
             )
+            _capture_text(
+                f"http://127.0.0.1:{args.server_port}/metrics",
+                run_dir / "server_metrics_final.prom",
+            )
     except BaseException as error:
         manifest["status"] = "failed"
         manifest["error"] = f"{type(error).__name__}: {error}"
@@ -773,6 +787,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "artifact_contract": {
                 "routing_records": "routing_requests.jsonl",
                 "routing_stats": "routing_stats_final.json",
+                "server_metrics": "server_metrics_final.prom",
                 "per_task_routing": "per_task_routing.jsonl",
                 "summary": "machine_readable_summary.json",
                 "counterfactual_gate": (

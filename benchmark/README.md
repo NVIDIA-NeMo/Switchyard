@@ -33,9 +33,10 @@ calls Harbor, AutomationBench, AppWorld, and Docker directly without Bash or WSL
 are elsewhere, pass `--automationbench-root` and `--appworld-root`. Use `--dry-run` to inspect all
 three commands without starting a benchmark.
 
-Every run preserves the server configuration, benchmark-native outputs, final `/v1/stats`, full
-`routing_requests.jsonl`, a per-task routing projection, a digest index, and a machine-readable
-summary. Without paired-control labels, the summary records the FPR/FNR gate as blocked.
+Every run preserves the server configuration, benchmark-native outputs, final `/v1/stats` and
+`/metrics`, full `routing_requests.jsonl`, a per-task routing projection, a digest index, and a
+machine-readable summary. Without paired-control labels, the summary records the FPR/FNR gate as
+blocked.
 
 After TC-EVAL-01/02 produce frozen request labels, supply this schema:
 

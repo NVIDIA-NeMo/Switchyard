@@ -355,6 +355,7 @@ def _artifact_index(run_dir: Path, labels_snapshot: Path | None) -> dict[str, An
         "server_config": (run_dir / "inputs/server-config.toml", True),
         "routing_records": (run_dir / "routing_requests.jsonl", True),
         "routing_stats": (run_dir / "routing_stats_final.json", True),
+        "server_metrics": (run_dir / "server_metrics_final.prom", True),
         "tb21_native_outputs": (run_dir / "tb21/jobs", True),
         "automationbench_native_output": (run_dir / "automationbench-simple.json", True),
         "appworld_native_outputs": (run_dir / "appworld-output", True),
