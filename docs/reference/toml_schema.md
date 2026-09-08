@@ -318,9 +318,10 @@ the conversation history can report a clean tool record. Agentic judged views
 include user task text, the bounded assistant/tool trajectory, and the current
 attempt; framework system and developer instructions are omitted.
 
-**The checker is Unix-only.** The `[checker]` table is accepted on every platform
-so a deployment's configuration stays portable, but building one on Windows
-reports that it is unsupported rather than starting without it.
+**The checker runs natively on Unix and Windows.** Unix process groups and
+Windows Job Objects terminate the complete checker process tree on timeout or
+cancellation. Commands remain platform-specific argv lists; use native Windows
+paths and executables in a Windows deployment.
 
 ## Validation Errors
 

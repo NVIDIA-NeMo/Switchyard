@@ -182,8 +182,10 @@ Two constraints follow from that:
 - **The command must not write into `tests_dir`.** A suite that drops
   `__pycache__` there is indistinguishable from one that edited itself, and the
   run reports no verdict. Disable bytecode caching, as above.
-- **The checker is Unix-only.** The table is accepted everywhere so configuration
-  stays portable, but building one on Windows reports it as unsupported.
+- **Use native command paths.** The checker runs on Unix and Windows, but its
+  argv lists are not translated. Configure Windows deployments with native
+  executables and paths. Windows Job Objects preserve whole-process-tree
+  cancellation semantics.
 
 Resource limits, network isolation and filesystem confinement are **not**
 provided here; run the deployment inside a sandbox that enforces them. The

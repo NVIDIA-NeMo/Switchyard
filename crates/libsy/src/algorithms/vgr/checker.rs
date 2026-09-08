@@ -31,10 +31,8 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,7 +40,13 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use self::platform::{
+    MutationStamp, ProcessTreeReaper, configure_process_tree, is_directory, is_regular_file,
+    mutation_stamp_file, mutation_stamp_path, open_regular_file, os_str_bytes,
+};
 use super::config::{Checker, CheckerRequest};
+
+mod platform;
 
 /// Characters of the attempt and task written into private control files.
 ///
@@ -54,6 +58,7 @@ const WORKSPACE_ENV: &str = "WORKSPACE_DIR";
 const HASH_CHUNK_BYTES: usize = 64 * 1024;
 const DEFAULT_MAX_ENTRIES: usize = 100_000;
 const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+#[cfg(unix)]
 const PROTECTED_ENV: [&str; 8] = [
     "TESTS_DIR",
     "ATTEMPT_FILE",
@@ -63,6 +68,27 @@ const PROTECTED_ENV: [&str; 8] = [
     "PATH",
     "LANG",
     WORKSPACE_ENV,
+];
+#[cfg(windows)]
+const WINDOWS_HOST_ENV: [&str; 5] = ["SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "PSMODULEPATH"];
+#[cfg(windows)]
+const PROTECTED_ENV: [&str; 16] = [
+    "TESTS_DIR",
+    "ATTEMPT_FILE",
+    "TASK_FILE",
+    "HOME",
+    "TMPDIR",
+    "PATH",
+    "LANG",
+    WORKSPACE_ENV,
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "PSMODULEPATH",
 ];
 
 /// The operator's attestation that a deployment sandbox confines this checker.
@@ -82,7 +108,7 @@ impl CandidateWorkspace {
     /// Owns a newly materialized workspace until the checker run finishes.
     pub fn new(root: TempDir) -> std::io::Result<Self> {
         let metadata = std::fs::symlink_metadata(root.path())?;
-        if !metadata.file_type().is_dir() {
+        if !is_directory(&metadata) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "candidate workspace root is not a directory",
@@ -235,11 +261,20 @@ impl CommandWorkspaceProvider {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .process_group(0);
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command
+            .env("USERPROFILE", workspace.path())
+            .env("TEMP", &tmp)
+            .env("TMP", &tmp);
+        #[cfg(windows)]
+        for (key, value) in windows_host_environment() {
+            command.env(key, value);
+        }
+        configure_process_tree(&mut command);
 
         let mut child = command.spawn()?;
-        let _reaper = ProcessGroupReaper(child.id());
+        let _reaper = ProcessTreeReaper::attach(&child)?;
         let status = child.wait().await?;
         tracing::debug!(
             target: "libsy",
@@ -665,14 +700,22 @@ impl PinnedChecker {
             // must not reach the router's logs.
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .process_group(0);
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command
+            .env("USERPROFILE", work)
+            .env("TEMP", tmp)
+            .env("TMP", tmp);
+        #[cfg(windows)]
+        for (key, value) in windows_host_environment() {
+            command.env(key, value);
+        }
+        configure_process_tree(&mut command);
 
         let mut child = command.spawn()?;
-        // `process_group(0)` makes the child its own group leader, so its pid is
-        // the process-group id. The reaper is declared after the child so it
-        // signals the group before `kill_on_drop` handles the direct child.
-        let _reaper = ProcessGroupReaper(child.id());
+        // Declared after the child so it terminates descendants before
+        // `kill_on_drop` handles the direct child during cancellation.
+        let _reaper = ProcessTreeReaper::attach(&child)?;
         let status = child.wait().await?;
         tracing::debug!(
             target: "libsy",
@@ -701,45 +744,6 @@ impl Checker for PinnedChecker {
             }
         }
     }
-}
-
-/// Signals a checker run's whole process group when the run goes out of scope.
-struct ProcessGroupReaper(Option<u32>);
-
-impl Drop for ProcessGroupReaper {
-    fn drop(&mut self) {
-        let Some(group) = self.0 else {
-            return;
-        };
-        if let Err(error) = kill_process_group(group) {
-            tracing::warn!(
-                target: "libsy",
-                kind = ?error.kind(),
-                raw_os_error = error.raw_os_error(),
-                "vgr checker could not signal its process group"
-            );
-        }
-    }
-}
-
-/// Sends SIGKILL directly to a positive child process-group id.
-fn kill_process_group(group: u32) -> std::io::Result<()> {
-    let group = i32::try_from(group)
-        .ok()
-        .filter(|group| *group > 0)
-        .ok_or_else(|| std::io::Error::other("invalid checker process group"))?;
-    // SAFETY: `libc::kill` dereferences no pointers. `group` is checked positive,
-    // so negating it is representable and POSIX interprets it as a process-group
-    // id rather than an unrelated single process.
-    let result = unsafe { libc::kill(-group, libc::SIGKILL) };
-    if result == 0 {
-        return Ok(());
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        return Ok(());
-    }
-    Err(error)
 }
 
 /// Holds the private tests used by exactly one run and their mutation baseline.
@@ -831,7 +835,7 @@ fn validate_config(config: &CheckerConfig) -> Result<(), CheckerSetupError> {
         return Err(CheckerSetupError::InvalidWorkspaceIdentity);
     }
     for (key, value) in &config.env {
-        if PROTECTED_ENV.contains(&key.as_str()) {
+        if is_protected_environment_key(key) {
             return Err(CheckerSetupError::ReservedEnvironmentKey(key.clone()));
         }
         if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
@@ -848,7 +852,7 @@ fn validate_materializer_config(
         return Err(CommandWorkspaceProviderSetupError::EmptyCommand);
     }
     for (key, value) in &config.env {
-        if PROTECTED_ENV.contains(&key.as_str()) {
+        if is_protected_environment_key(key) {
             return Err(CommandWorkspaceProviderSetupError::ReservedEnvironmentKey(
                 key.clone(),
             ));
@@ -860,6 +864,19 @@ fn validate_materializer_config(
         }
     }
     Ok(())
+}
+
+fn is_protected_environment_key(key: &str) -> bool {
+    #[cfg(unix)]
+    {
+        PROTECTED_ENV.contains(&key)
+    }
+    #[cfg(windows)]
+    {
+        PROTECTED_ENV
+            .iter()
+            .any(|protected| protected.eq_ignore_ascii_case(key))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -890,27 +907,6 @@ enum StableEntry {
 }
 
 /// Volatile tamper evidence, deliberately excluded from the public manifest.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct MutationStamp {
-    inode: u64,
-    size: u64,
-    ctime: i64,
-    ctime_nsec: i64,
-    mode: u32,
-}
-
-impl MutationStamp {
-    fn from(metadata: &std::fs::Metadata) -> Self {
-        Self {
-            inode: metadata.ino(),
-            size: metadata.size(),
-            ctime: metadata.ctime(),
-            ctime_nsec: metadata.ctime_nsec(),
-            mode: metadata.mode(),
-        }
-    }
-}
-
 #[derive(Debug)]
 enum TreeError {
     Io(std::io::Error),
@@ -1018,7 +1014,7 @@ impl Usage {
 /// Copies a regular-file/directory tree with bounded streaming I/O.
 fn copy_tree(from: &Path, to: &Path, limits: SnapshotLimits) -> Result<(), TreeError> {
     let root_metadata = std::fs::symlink_metadata(from)?;
-    if !root_metadata.file_type().is_dir() {
+    if !is_directory(&root_metadata) {
         return Err(TreeError::Unsupported(from.to_path_buf()));
     }
     std::fs::create_dir(to)?;
@@ -1027,27 +1023,27 @@ fn copy_tree(from: &Path, to: &Path, limits: SnapshotLimits) -> Result<(), TreeE
     let mut directories = vec![(from.to_path_buf(), to.to_path_buf())];
     while let Some((source, target)) = directories.pop() {
         let before = std::fs::symlink_metadata(&source)?;
-        if !before.file_type().is_dir() {
+        if !is_directory(&before) {
             return Err(TreeError::Unsupported(source));
         }
-        let before_stamp = MutationStamp::from(&before);
+        let before_stamp = mutation_stamp_path(&source, &before)?;
         for entry in std::fs::read_dir(&source)? {
             let entry = entry?;
             let source_path = entry.path();
             let target_path = target.join(entry.file_name());
             let metadata = std::fs::symlink_metadata(&source_path)?;
             usage.add_entry()?;
-            if metadata.file_type().is_dir() {
+            if is_directory(&metadata) {
                 std::fs::create_dir(&target_path)?;
                 directories.push((source_path, target_path));
-            } else if metadata.file_type().is_file() {
+            } else if is_regular_file(&metadata) {
                 copy_file(&source_path, &target_path, &metadata, &mut usage)?;
             } else {
                 return Err(TreeError::Unsupported(source_path));
             }
         }
         let after = std::fs::symlink_metadata(&source)?;
-        if MutationStamp::from(&after) != before_stamp {
+        if mutation_stamp_path(&source, &after)? != before_stamp {
             return Err(TreeError::ChangedDuringSnapshot);
         }
     }
@@ -1061,11 +1057,11 @@ fn copy_file(
     usage: &mut Usage,
 ) -> Result<(), TreeError> {
     usage.check_file_size(metadata.len())?;
+    let expected_stamp = mutation_stamp_path(source, metadata)?;
     let mut input = open_regular_file(source)?;
     let opened = input.metadata()?;
-    if !opened.file_type().is_file()
-        || MutationStamp::from(&opened) != MutationStamp::from(metadata)
-    {
+    let opened_stamp = mutation_stamp_file(&input)?;
+    if !is_regular_file(&opened) || opened_stamp != expected_stamp {
         return Err(TreeError::ChangedDuringSnapshot);
     }
     let mut output = OpenOptions::new()
@@ -1082,7 +1078,7 @@ fn copy_file(
         output.write_all(&buffer[..read])?;
     }
     std::fs::set_permissions(target, metadata.permissions())?;
-    if MutationStamp::from(&input.metadata()?) != MutationStamp::from(&opened) {
+    if mutation_stamp_file(&input)? != opened_stamp {
         return Err(TreeError::ChangedDuringSnapshot);
     }
     Ok(())
@@ -1091,7 +1087,7 @@ fn copy_file(
 /// Marks every regular file in the tree read-only and rejects every other kind.
 fn set_read_only(root: &Path) -> Result<(), TreeError> {
     let metadata = std::fs::symlink_metadata(root)?;
-    if !metadata.file_type().is_dir() {
+    if !is_directory(&metadata) {
         return Err(TreeError::Unsupported(root.to_path_buf()));
     }
     let mut directories = vec![root.to_path_buf()];
@@ -1100,9 +1096,9 @@ fn set_read_only(root: &Path) -> Result<(), TreeError> {
             let entry = entry?;
             let path = entry.path();
             let metadata = std::fs::symlink_metadata(&path)?;
-            if metadata.file_type().is_dir() {
+            if is_directory(&metadata) {
                 directories.push(path);
-            } else if metadata.file_type().is_file() {
+            } else if is_regular_file(&metadata) {
                 let mut permissions = metadata.permissions();
                 permissions.set_readonly(true);
                 std::fs::set_permissions(path, permissions)?;
@@ -1117,7 +1113,7 @@ fn set_read_only(root: &Path) -> Result<(), TreeError> {
 /// Hashes the complete namespace and captures separate mutation stamps.
 fn snapshot_tree(root: &Path, limits: SnapshotLimits) -> Result<TreeSnapshot, TreeError> {
     let root_metadata = std::fs::symlink_metadata(root)?;
-    if !root_metadata.file_type().is_dir() {
+    if !is_directory(&root_metadata) {
         return Err(TreeError::Unsupported(root.to_path_buf()));
     }
     let mut usage = Usage::new(limits);
@@ -1127,20 +1123,20 @@ fn snapshot_tree(root: &Path, limits: SnapshotLimits) -> Result<TreeSnapshot, Tr
     while let Some(directory) = directories.pop() {
         let relative = relative_path(root, &directory)?;
         let before = std::fs::symlink_metadata(&directory)?;
-        if !before.file_type().is_dir() {
+        if !is_directory(&before) {
             return Err(TreeError::Unsupported(directory));
         }
         usage.add_entry()?;
         entries.insert(relative.clone(), StableEntry::Directory);
-        stamps.insert(relative, MutationStamp::from(&before));
-        let before_stamp = MutationStamp::from(&before);
+        let before_stamp = mutation_stamp_path(&directory, &before)?;
+        stamps.insert(relative, before_stamp);
         for entry in std::fs::read_dir(&directory)? {
             let entry = entry?;
             let path = entry.path();
             let metadata = std::fs::symlink_metadata(&path)?;
-            if metadata.file_type().is_dir() {
+            if is_directory(&metadata) {
                 directories.push(path);
-            } else if metadata.file_type().is_file() {
+            } else if is_regular_file(&metadata) {
                 usage.add_entry()?;
                 let relative = relative_path(root, &path)?;
                 let (digest, stamp) = hash_file(&path, &metadata, &mut usage)?;
@@ -1151,7 +1147,7 @@ fn snapshot_tree(root: &Path, limits: SnapshotLimits) -> Result<TreeSnapshot, Tr
             }
         }
         let after = std::fs::symlink_metadata(&directory)?;
-        if MutationStamp::from(&after) != before_stamp {
+        if mutation_stamp_path(&directory, &after)? != before_stamp {
             return Err(TreeError::ChangedDuringSnapshot);
         }
     }
@@ -1170,11 +1166,11 @@ fn hash_file(
     usage: &mut Usage,
 ) -> Result<(String, MutationStamp), TreeError> {
     usage.check_file_size(metadata.len())?;
+    let expected_stamp = mutation_stamp_path(path, metadata)?;
     let mut file = open_regular_file(path)?;
     let opened = file.metadata()?;
-    if !opened.file_type().is_file()
-        || MutationStamp::from(&opened) != MutationStamp::from(metadata)
-    {
+    let stamp = mutation_stamp_file(&file)?;
+    if !is_regular_file(&opened) || stamp != expected_stamp {
         return Err(TreeError::ChangedDuringSnapshot);
     }
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
@@ -1187,19 +1183,10 @@ fn hash_file(
         usage.add_bytes(read)?;
         context.update(&buffer[..read]);
     }
-    let after = file.metadata()?;
-    let stamp = MutationStamp::from(&opened);
-    if MutationStamp::from(&after) != stamp {
+    if mutation_stamp_file(&file)? != stamp {
         return Err(TreeError::ChangedDuringSnapshot);
     }
     Ok((hex(context.finish()), stamp))
-}
-
-fn open_regular_file(path: &Path) -> std::io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
 }
 
 /// One stable hash over the suite and complete execution contract.
@@ -1211,7 +1198,7 @@ fn manifest_sha(
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
     digest_field(&mut context, b"vgr-pinned-checker-manifest-v2");
     for (path, entry) in entries {
-        digest_field(&mut context, path.as_os_str().as_bytes());
+        digest_field(&mut context, &os_str_bytes(path.as_os_str()));
         match entry {
             StableEntry::Directory => digest_field(&mut context, b"directory"),
             StableEntry::File(digest) => {
@@ -1256,11 +1243,30 @@ fn manifest_environment(config: &CheckerConfig, protected_path: &str) -> BTreeMa
     environment.insert("ATTEMPT_FILE".into(), "{control}/attempt.txt".into());
     environment.insert("TASK_FILE".into(), "{control}/task.txt".into());
     environment.insert(WORKSPACE_ENV.into(), "{workspace}".into());
+    #[cfg(windows)]
+    {
+        environment.insert("TEMP".into(), "{control}/tmp".into());
+        environment.insert("TMP".into(), "{control}/tmp".into());
+        environment.insert("USERPROFILE".into(), "{workspace}".into());
+        environment.extend(windows_host_environment());
+    }
     environment
 }
 
 fn current_path() -> String {
     std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+}
+
+#[cfg(windows)]
+fn windows_host_environment() -> BTreeMap<String, String> {
+    WINDOWS_HOST_ENV
+        .into_iter()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| (key.to_string(), value))
+        })
+        .collect()
 }
 
 fn materializer_manifest_identity(
@@ -1296,6 +1302,13 @@ fn materializer_manifest_environment(
     environment.insert("ATTEMPT_FILE".into(), "{control}/attempt.txt".into());
     environment.insert("TASK_FILE".into(), "{control}/task.txt".into());
     environment.insert(WORKSPACE_ENV.into(), "{workspace}".into());
+    #[cfg(windows)]
+    {
+        environment.insert("TEMP".into(), "{control}/tmp".into());
+        environment.insert("TMP".into(), "{control}/tmp".into());
+        environment.insert("USERPROFILE".into(), "{workspace}".into());
+        environment.extend(windows_host_environment());
+    }
     environment
 }
 
@@ -1313,5 +1326,8 @@ fn hex(digest: ring::digest::Digest) -> String {
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
+mod tests;
+#[cfg(all(test, windows))]
+#[path = "checker/tests_windows.rs"]
 mod tests;

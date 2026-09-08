@@ -34,7 +34,7 @@ pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
 pub use algorithms::vgr::Vgr;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use algorithms::vgr::checker::{
     CheckerConfig, CheckerSetupError, CommandWorkspaceProvider, CommandWorkspaceProviderConfig,
     CommandWorkspaceProviderSetupError, PinnedChecker, SANDBOX_ATTESTATION,

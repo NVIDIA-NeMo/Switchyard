@@ -413,9 +413,8 @@ pub enum VgrModeConfig {
 
 /// An operator-configured test checker for a verification-gated route.
 ///
-/// The same keys are accepted on every platform so a deployment's configuration
-/// is portable; building one off Unix reports that it is unsupported rather than
-/// the key silently not existing.
+/// Native Unix and Windows runners both enforce process-tree cancellation and
+/// pinned-suite tamper detection.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VgrCheckerConfig {
@@ -1330,8 +1329,8 @@ fn vgr_mode(route_name: &str, config: &VgrRouteConfig) -> AlgorithmResult<libsy:
     })
 }
 
-/// Builds the checker, reporting the platform gap rather than hiding the key.
-#[cfg(unix)]
+/// Builds the native checker on supported host platforms.
+#[cfg(any(unix, windows))]
 fn build_vgr_checker(
     route_name: &str,
     checker: &VgrCheckerConfig,
@@ -1368,14 +1367,14 @@ fn build_vgr_checker(
     })
 }
 
-/// The same key is accepted everywhere; only building it is Unix-only.
-#[cfg(not(unix))]
+/// Keep parsing portable while failing closed on unsupported host targets.
+#[cfg(not(any(unix, windows)))]
 fn build_vgr_checker(
     route_name: &str,
     _checker: &VgrCheckerConfig,
 ) -> AlgorithmResult<libsy::ValidatedChecker> {
     Err(AlgorithmConfigError::new(format!(
-        "vgr route {route_name}: the checker is only supported on unix platforms"
+        "vgr route {route_name}: the checker is only supported on native Unix and Windows platforms"
     )))
 }
 
