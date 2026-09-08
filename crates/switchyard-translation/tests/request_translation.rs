@@ -2652,3 +2652,107 @@ fn responses_request_round_trips_custom_tools_and_custom_tool_calls() -> TestRes
     );
     Ok(())
 }
+
+// Codex sends GPT-5 requests in the Responses-lite shape: no top-level `tools`, empty
+// `instructions`, the tool definitions inside `input[0]` as an `additional_tools` developer
+// item, and the base instructions as a developer message. Those definitions are the request's
+// tools, the item must not leak into the conversation, and a Responses upstream must receive
+// the request in the same shape.
+#[test]
+fn responses_lite_additional_tools_item_is_the_tool_list() -> TestResult {
+    let engine = TranslationEngine::default();
+    let tools = json!([
+        {"type": "custom", "name": "exec", "description": "Run JS.",
+         "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.*/"}},
+        {"type": "function", "name": "update_plan", "description": "Plan",
+         "parameters": {"type": "object", "properties": {}}}
+    ]);
+    let body = json!({
+        "model": "gpt-5.6-luna-switchyard",
+        "instructions": "",
+        "input": [
+            {"type": "additional_tools", "role": "developer", "tools": tools},
+            {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "You are Codex."}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "List files"}]},
+            {"type": "custom_tool_call", "call_id": "call_1", "name": "exec", "input": "ls"},
+            {"type": "custom_tool_call_output", "call_id": "call_1", "output": "README.md"}
+        ],
+        "stream": true
+    });
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let decoded = engine.decode_request(WireFormat::OpenAiResponses, &body, &policy)?;
+    let names = decoded
+        .request
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["exec", "update_plan"]);
+    assert!(
+        !decoded.request.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, switchyard_protocol::ContentBlock::Unknown { .. }))
+        }),
+        "the additional_tools item must not become a conversation message"
+    );
+
+    let same = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+    assert!(same.get("tools").is_none(), "{same}");
+    let input = same["input"].as_array().ok_or("input should be an array")?;
+    assert_eq!(input[0]["type"], "additional_tools");
+    assert_eq!(input[0]["role"], "developer");
+    assert_eq!(input[0]["tools"], tools);
+    assert!(
+        input
+            .iter()
+            .skip(1)
+            .all(|item| item["type"] != "additional_tools"),
+        "{same}"
+    );
+    assert!(
+        input
+            .iter()
+            .any(|item| item["type"] == "custom_tool_call" && item["input"] == "ls"),
+        "{same}"
+    );
+
+    let chat = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    let chat_tools = chat["tools"]
+        .as_array()
+        .ok_or("chat tools should be an array")?;
+    let chat_names = chat_tools
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(chat_names, vec!["exec", "update_plan"]);
+    let messages = chat["messages"]
+        .as_array()
+        .ok_or("messages should be an array")?;
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message["content"].to_string().contains("additional_tools")),
+        "{chat}"
+    );
+    Ok(())
+}
