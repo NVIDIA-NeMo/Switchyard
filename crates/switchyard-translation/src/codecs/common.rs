@@ -100,6 +100,18 @@ pub(crate) fn encrypted_reasoning_data(details: &[Value]) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Returns the provider item id recorded on the first `reasoning.encrypted` detail, if any.
+/// Encrypted reasoning is bound to the item id it was issued under, so a replay must reuse it.
+pub(crate) fn encrypted_reasoning_item_id(details: &[Value]) -> Option<String> {
+    details
+        .iter()
+        .filter_map(Value::as_object)
+        .find(|detail| detail.get("type").and_then(Value::as_str) == Some("reasoning.encrypted"))
+        .and_then(|detail| detail.get("id").and_then(Value::as_str))
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 /// Returns the first non-empty string stored under the requested keys.
 pub(crate) fn first_nonempty_string<'a>(
     object: &'a Map<String, Value>,

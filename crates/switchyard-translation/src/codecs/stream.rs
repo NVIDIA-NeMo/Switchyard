@@ -68,6 +68,9 @@ pub struct StreamTranslationState {
     /// Opaque `encrypted_content` carried by a Responses reasoning item. Kept verbatim so
     /// the emitted item stays replayable by the client even when no plaintext streamed.
     pub(crate) response_reasoning_encrypted: Option<String>,
+    /// Provider item id the encrypted reasoning was issued under. Used as the emitted item id
+    /// so the client's replay verifies upstream; `None` falls back to a synthesized id.
+    pub(crate) response_reasoning_item_id: Option<String>,
     pub(crate) next_response_output_index: usize,
     pub(crate) response_sequence_number: u64,
 

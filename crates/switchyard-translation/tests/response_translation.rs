@@ -778,5 +778,7 @@ fn responses_encrypted_reasoning_item_survives_buffered_round_trip() -> TestResu
         .find(|item| item["type"] == "reasoning")
         .ok_or("output should include the reasoning item")?;
     assert_eq!(reasoning["encrypted_content"], "opaque-encrypted-reasoning");
+    // The payload only verifies upstream under the id it was issued with.
+    assert_eq!(reasoning["id"], "rs_upstream");
     Ok(())
 }

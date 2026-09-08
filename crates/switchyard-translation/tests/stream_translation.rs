@@ -1469,6 +1469,70 @@ fn responses_synthesized_item_ids_stay_within_the_openai_length_limit() -> TestR
     Ok(())
 }
 
+// Encrypted reasoning is bound to the item id the provider issued it under. When a buffered
+// reply is re-streamed to the client, the emitted reasoning item must reuse that id or the
+// client's replay fails verification upstream.
+#[test]
+fn responses_stream_reuses_provider_id_for_encrypted_reasoning() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiResponses);
+    let chunks = vec![
+        LlmResponseChunk::MessageStart {
+            id: Some("resp_upstream".to_string()),
+            model: Some("gpt-5.6-luna".to_string()),
+        },
+        LlmResponseChunk::ReasoningDetailsDelta {
+            index: 0,
+            details: vec![json!({
+                "type": "reasoning.encrypted",
+                "data": "opaque-encrypted-reasoning",
+                "id": "rs_provider_issued"
+            })],
+            text: String::new(),
+        },
+        LlmResponseChunk::ReasoningDelta {
+            index: 0,
+            text: "thinking".to_string(),
+        },
+        LlmResponseChunk::TextDelta {
+            index: 1,
+            text: "done".to_string(),
+        },
+        LlmResponseChunk::MessageStop { reason: None },
+    ];
+    let mut events = Vec::new();
+    for chunk in chunks {
+        events.extend(engine.encode_stream_event(
+            &mut state,
+            WireFormat::OpenAiResponses,
+            LlmResponseStreamEvent::new(vec![chunk]),
+        )?);
+    }
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let reasoning_done = events
+        .iter()
+        .find(|event| {
+            event["type"] == "response.output_item.done" && event["item"]["type"] == "reasoning"
+        })
+        .ok_or("expected a completed reasoning item")?;
+    assert_eq!(reasoning_done["item"]["id"], "rs_provider_issued");
+    assert_eq!(
+        reasoning_done["item"]["encrypted_content"],
+        "opaque-encrypted-reasoning"
+    );
+    // Every reasoning event references the same provider id.
+    for event in events.iter().filter(|event| {
+        event["type"]
+            .as_str()
+            .is_some_and(|kind| kind.starts_with("response.reasoning_summary"))
+    }) {
+        assert_eq!(event["item_id"], "rs_provider_issued", "{event}");
+    }
+    Ok(())
+}
+
 // Verifies a streamed token-limit stop terminates with response.incomplete.
 #[test]
 fn openai_chat_length_finish_translates_to_responses_incomplete_event() -> TestResult {
@@ -1629,7 +1693,8 @@ fn responses_stream_decodes_encrypted_reasoning_item_into_details() -> TestResul
             index: 0,
             details: vec![json!({
                 "type": "reasoning.encrypted",
-                "data": "opaque-encrypted-reasoning"
+                "data": "opaque-encrypted-reasoning",
+                "id": "rs_upstream"
             })],
             text: String::new(),
         }]

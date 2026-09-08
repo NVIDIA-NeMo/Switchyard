@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    collect_responses_reasoning_text, encrypted_reasoning_data, is_known_role_name,
-    provider_extensions, reasoning_text_from_blocks, text_from_blocks,
+    collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
+    is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
@@ -659,7 +659,18 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
         .get("encrypted_content")
         .and_then(Value::as_str)
         .filter(|data| !data.is_empty())
-        .map(|data| vec![json!({"type": "reasoning.encrypted", "data": data})])
+        .map(|data| {
+            // The payload only verifies under the id it was issued with, so carry that id.
+            let mut detail = json!({"type": "reasoning.encrypted", "data": data});
+            if let Some(id) = item
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
+                detail["id"] = Value::String(id.to_string());
+            }
+            vec![detail]
+        })
         .unwrap_or_default();
     vec![ContentBlock::Reasoning {
         text: parts.join("\n"),
@@ -1330,10 +1341,15 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     ContentBlock::Reasoning { details, .. } => encrypted_reasoning_data(details),
                     _ => None,
                 });
+                let encrypted_reasoning_id = output.content.iter().find_map(|block| match block {
+                    ContentBlock::Reasoning { details, .. } => encrypted_reasoning_item_id(details),
+                    _ => None,
+                });
                 if !reasoning.is_empty() || encrypted_reasoning.is_some() {
                     items.push(encode_responses_reasoning_output(
                         &reasoning,
                         encrypted_reasoning.as_deref(),
+                        encrypted_reasoning_id.as_deref(),
                     ));
                 }
 
@@ -1369,15 +1385,20 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
 
 // Encodes private reasoning as a separate Responses output item. An encrypted-only item
 // carries no text part but keeps `encrypted_content` so the client can replay it.
-fn encode_responses_reasoning_output(text: &str, encrypted: Option<&str>) -> Value {
+fn encode_responses_reasoning_output(
+    text: &str,
+    encrypted: Option<&str>,
+    item_id: Option<&str>,
+) -> Value {
     // Standard Responses shape: text as `summary_text` parts, which is what clients record.
     let mut summary = Vec::new();
     if !text.is_empty() {
         summary.push(json!({"type": "summary_text", "text": text}));
     }
+    // Encrypted reasoning verifies only under the id it was issued with, so reuse it.
     let mut item = json!({
         "type": "reasoning",
-        "id": "rs_switchyard",
+        "id": item_id.unwrap_or("rs_switchyard"),
         "status": "completed",
         "summary": summary,
     });
