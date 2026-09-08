@@ -39,7 +39,9 @@ AGENT_VERSIONS_FILE = SCRIPT_DIR / "agent-versions.env"
 PROXY_ASSET_DIR = SCRIPT_DIR / "closed_book_proxy" / "proxy"
 AGENT_ENTRYPOINT = "switchyard-agent-entrypoint.sh"
 HERMES_INSTALLER = "switchyard-hermes-install.sh"
+UV_INSTALLER = "switchyard-uv-install.sh"
 COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+SEMVER_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 TERMINAL_BENCH_2_SOURCE_DATASET = "terminal-bench/terminal-bench-2"
 TERMINAL_BENCH_2_1_SOURCE_DATASET = "terminal-bench/terminal-bench-2-1"
@@ -143,15 +145,27 @@ def _hermes_installer_url(commit: str) -> str:
     )
 
 
-def _fetch_hermes_installer(pins: dict[str, str]) -> bytes:
-    commit = _hermes_commit(pins)
-    expected_digest = pins["HERMES_INSTALLER_SHA256"]
-    if not SHA256_PATTERN.fullmatch(expected_digest):
-        raise SystemExit(
-            "HERMES_INSTALLER_SHA256 must be a lowercase 64-character SHA-256 digest"
-        )
+def _uv_version(pins: dict[str, str]) -> str:
+    version = pins["UV_VERSION"]
+    if not SEMVER_PATTERN.fullmatch(version):
+        raise SystemExit(f"UV_VERSION={version!r} must be a numeric semantic version")
+    return version
 
-    url = _hermes_installer_url(commit)
+
+def _uv_installer_url(version: str) -> str:
+    return f"https://github.com/astral-sh/uv/releases/download/{version}/uv-installer.sh"
+
+
+def _fetch_pinned_installer(
+    *,
+    url: str,
+    expected_digest: str,
+    digest_name: str,
+    artifact_name: str,
+) -> bytes:
+    if not SHA256_PATTERN.fullmatch(expected_digest):
+        raise SystemExit(f"{digest_name} must be a lowercase 64-character SHA-256 digest")
+
     request = Request(url, headers={"User-Agent": "switchyard-benchmark-dataset-preparer"})
     content: bytes | None = None
     last_error: HTTPError | URLError | None = None
@@ -167,18 +181,40 @@ def _fetch_hermes_installer(pins: dict[str, str]) -> bytes:
         except URLError as error:
             last_error = error
         if attempt == 5:
-            raise RuntimeError(f"failed to fetch pinned Hermes installer from {url}") from last_error
+            raise RuntimeError(
+                f"failed to fetch pinned {artifact_name} from {url}"
+            ) from last_error
         time.sleep(2**attempt)
 
     if content is None:
-        raise RuntimeError(f"failed to fetch pinned Hermes installer from {url}")
+        raise RuntimeError(f"failed to fetch pinned {artifact_name} from {url}")
     actual_digest = hashlib.sha256(content).hexdigest()
     if actual_digest != expected_digest:
         raise ValueError(
-            "pinned Hermes installer digest mismatch: "
+            f"pinned {artifact_name} digest mismatch: "
             f"expected sha256:{expected_digest}, got sha256:{actual_digest}"
         )
     return content
+
+
+def _fetch_hermes_installer(pins: dict[str, str]) -> bytes:
+    commit = _hermes_commit(pins)
+    return _fetch_pinned_installer(
+        url=_hermes_installer_url(commit),
+        expected_digest=pins["HERMES_INSTALLER_SHA256"],
+        digest_name="HERMES_INSTALLER_SHA256",
+        artifact_name="Hermes installer",
+    )
+
+
+def _fetch_uv_installer(pins: dict[str, str]) -> bytes:
+    version = _uv_version(pins)
+    return _fetch_pinned_installer(
+        url=_uv_installer_url(version),
+        expected_digest=pins["UV_INSTALLER_SHA256"],
+        digest_name="UV_INSTALLER_SHA256",
+        artifact_name="uv installer",
+    )
 
 
 def _task_dirs(dataset_root: Path) -> list[Path]:
@@ -280,6 +316,7 @@ def _install_layer(pins: dict[str, str]) -> str:
     # silently leaving the image on the tip of main — the drift this pin exists to
     # prevent, arriving as a warning rather than a build failure.
     hermes_version = _hermes_commit(pins)
+    uv_version = _uv_version(pins)
     return f"""
 
 # Switchyard benchmark prebaked coding agents.
@@ -334,6 +371,9 @@ RUN set -eux; \\
     elif command -v apk >/dev/null 2>&1; then \\
         apk add --no-cache bash git ripgrep xz; \\
     fi; \\
+    UV_UNMANAGED_INSTALL=/root/.hermes/bin sh /tmp/{UV_INSTALLER}; \\
+    rm -f /tmp/{UV_INSTALLER}; \\
+    /root/.hermes/bin/uv --version | grep -E '^uv {re.escape(uv_version)}($| )'; \\
     bash /tmp/{HERMES_INSTALLER} \\
         --skip-setup --commit {hermes_version} --force-commit; \\
     rm -f /tmp/{HERMES_INSTALLER}; \\
@@ -375,6 +415,7 @@ def _rewrite_task_image(
     task_dir: Path,
     pins: dict[str, str],
     hermes_installer: bytes,
+    uv_installer: bytes,
 ) -> dict[str, Any]:
     task_toml = task_dir / "task.toml"
     data = _load_task_toml(task_toml)
@@ -388,8 +429,15 @@ def _rewrite_task_image(
     installer = dockerfile.parent / HERMES_INSTALLER
     installer.write_bytes(hermes_installer)
     installer.chmod(0o755)
+    uv_installer_path = dockerfile.parent / UV_INSTALLER
+    uv_installer_path.write_bytes(uv_installer)
+    uv_installer_path.chmod(0o755)
     layer = _install_layer(pins)
-    layer = f"COPY {HERMES_INSTALLER} /tmp/{HERMES_INSTALLER}\n{layer.lstrip()}"
+    layer = (
+        f"COPY {HERMES_INSTALLER} /tmp/{HERMES_INSTALLER}\n"
+        f"COPY {UV_INSTALLER} /tmp/{UV_INSTALLER}\n"
+        f"{layer.lstrip()}"
+    )
     entrypoint_layer = _entrypoint_layer()
 
     if docker_image:
@@ -587,6 +635,8 @@ def prepare_dataset(
         "HERMES_INSTALLER_SHA256",
         "NODE_VERSION",
         "OPENCODE_VERSION",
+        "UV_INSTALLER_SHA256",
+        "UV_VERSION",
     }
     missing = sorted(required - pins.keys())
     if missing:
@@ -594,6 +644,8 @@ def prepare_dataset(
 
     hermes_installer = _fetch_hermes_installer(pins)
     hermes_installer_digest = hashlib.sha256(hermes_installer).hexdigest()
+    uv_installer = _fetch_uv_installer(pins)
+    uv_installer_digest = hashlib.sha256(uv_installer).hexdigest()
 
     if source_dir is None:
         download_root = output_dir.parent / "_downloads"
@@ -611,7 +663,7 @@ def prepare_dataset(
     proxy_digest = _path_digest(PROXY_ASSET_DIR)
     proxy_allowlist_hosts = _proxy_allowlist_hosts_for_dataset(source_dataset)
     for task_dir in _task_dirs(output_dir):
-        image = _rewrite_task_image(task_dir, pins, hermes_installer)
+        image = _rewrite_task_image(task_dir, pins, hermes_installer, uv_installer)
         compose = _merge_compose(task_dir, proxy_allowlist_hosts)
         tasks.append(
             {
@@ -641,6 +693,10 @@ def prepare_dataset(
             "hermes_installer": {
                 "source_url": _hermes_installer_url(_hermes_commit(pins)),
                 "digest": f"sha256:{hermes_installer_digest}",
+            },
+            "uv_installer": {
+                "source_url": _uv_installer_url(_uv_version(pins)),
+                "digest": f"sha256:{uv_installer_digest}",
             },
         },
         "tasks": tasks,
