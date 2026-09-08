@@ -3686,6 +3686,78 @@ validated = true
     )
 }
 
+#[cfg(windows)]
+fn vgr_checker_config(
+    base_url: &str,
+    tests_dir: &std::path::Path,
+    marker: &std::path::Path,
+    mode: &str,
+    behavior: &str,
+) -> String {
+    let marker = marker.to_string_lossy().replace('\'', "''");
+    let script = match behavior {
+        "tamper" => format!(
+            "if ((Get-Content -Raw -LiteralPath 'candidate.txt').Trim() -ne 'ok') {{ exit 1 }}; \
+             [IO.File]::WriteAllText('{marker}', 'ran'); \
+             $test = Join-Path $env:TESTS_DIR 'case.txt'; \
+             (Get-Item -LiteralPath $test).IsReadOnly = $false; \
+             Add-Content -LiteralPath $test -Value 'tampered'; \
+             exit 0"
+        ),
+        _ => format!(
+            "if ((Get-Content -Raw -LiteralPath 'candidate.txt').Trim() -ne 'ok') {{ exit 1 }}; \
+             [IO.File]::WriteAllText('{marker}', 'ran'); \
+             exit 0"
+        ),
+    };
+    let command = if behavior == "indeterminate" {
+        serde_json::json!(["Z:\\definitely-missing\\vgr-checker.exe"]).to_string()
+    } else {
+        serde_json::json!([
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script
+        ])
+        .to_string()
+    };
+    let materialize_command = serde_json::json!([
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Copy-Item -LiteralPath $env:ATTEMPT_FILE -Destination \
+         (Join-Path $env:WORKSPACE_DIR 'candidate.txt')"
+    ])
+    .to_string();
+    let tests_dir = serde_json::json!(tests_dir.to_string_lossy()).to_string();
+    let mode_config = if mode == "active" {
+        "mode = \"active\"\nactive_approval = \"prospective-validation-and-canary-approved\""
+            .to_string()
+    } else {
+        format!("mode = \"{mode}\"")
+    };
+    format!(
+        r#"{}
+
+[routes.vgr.checker]
+tests_dir = {}
+materialize_command = {}
+command = {}
+sandbox_attestation = "vgr-checker-runs-in-deployment-sandbox"
+validated = true
+"#,
+        vgr_config(base_url, "model/vgr-verified-local")
+            .replace("mode = \"evaluate\"", &mode_config),
+        tests_dir,
+        materialize_command,
+        command,
+    )
+}
+
 #[tokio::test]
 async fn native_vgr_active_mode_serves_a_licensed_local_decision() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -3861,7 +3933,7 @@ async fn vgr_route_in_shadow_mode_decides_but_serves_the_capable_tier() -> TestR
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn vgr_checker_table_runs_real_pass_shadow_and_tamper_paths() -> TestResult {
     // These TOML-driven cases prove the native runner builds and executes the

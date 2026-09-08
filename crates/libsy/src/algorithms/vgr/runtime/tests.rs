@@ -22,7 +22,7 @@ use switchyard_protocol::{
     text_request, text_response,
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::super::checker::{
     CandidateWorkspace, CheckerConfig, CommandWorkspaceProvider, CommandWorkspaceProviderConfig,
     PinnedChecker, SANDBOX_ATTESTATION, WorkspaceProvider,
@@ -32,7 +32,7 @@ use super::super::mode::ACTIVE_APPROVAL;
 use super::super::safety::{BreakerConfig, KillSwitch};
 use crate::core::testing::{ServeResult, test_drive};
 use crate::{Algorithm, LibsyError, Result, Step};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tempfile::TempDir;
 
 const LOCAL: &str = "local-tier";
@@ -877,10 +877,10 @@ impl Checker for HangingChecker {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct EmptyWorkspaceProvider;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[async_trait::async_trait]
 impl WorkspaceProvider for EmptyWorkspaceProvider {
     fn manifest_identity(&self) -> &str {
@@ -1385,6 +1385,80 @@ async fn the_vgr_deadline_cancels_a_pinned_checker_process_tree()
     tokio::time::sleep(Duration::from_millis(200)).await;
     let settled = std::fs::metadata(&marker)?.modified()?;
     tokio::time::sleep(Duration::from_millis(200)).await;
+    let after = std::fs::metadata(&marker)?.modified()?;
+    assert_eq!(
+        settled, after,
+        "the checker grandchild survived the outer VGR deadline"
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn the_vgr_deadline_cancels_a_pinned_checker_process_tree()
+-> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let marker_owner = TempDir::with_prefix("vgr-runtime-marker-")?;
+    let marker = marker_owner.path().join("grandchild-alive");
+    let marker_literal = marker.to_string_lossy().replace('\'', "''");
+    let tests = TempDir::with_prefix("vgr-runtime-suite-")?;
+    std::fs::write(
+        tests.path().join("run.ps1"),
+        format!(
+            "$childScript = \"while (`$true) {{ \
+                 [IO.File]::WriteAllText('{marker_literal}', 'alive'); \
+                 Start-Sleep -Milliseconds 20 \
+             }}\"\r\n\
+             Start-Process powershell.exe -ArgumentList @('-NoLogo', '-NoProfile', \
+                 '-NonInteractive', '-Command', $childScript) | Out-Null\r\n\
+             while (!(Test-Path -LiteralPath '{marker_literal}')) {{ }}\r\n\
+             Start-Sleep -Seconds 30\r\n"
+        ),
+    )?;
+    let checker = PinnedChecker::new(CheckerConfig {
+        timeout: Duration::from_secs(10),
+        sandbox_attestation: SANDBOX_ATTESTATION.to_string(),
+        ..CheckerConfig::new(
+            tests.path(),
+            vec![
+                "powershell.exe".to_string(),
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-Command".to_string(),
+                "& (Join-Path $env:TESTS_DIR 'run.ps1')".to_string(),
+            ],
+            Arc::new(EmptyWorkspaceProvider),
+        )
+    })?;
+    let manifest_identity = checker.manifest_identity().to_owned();
+    let config = VgrConfig {
+        checker: Some(ValidatedChecker::new(Arc::new(checker), manifest_identity)?),
+        deadline: Duration::from_secs(3),
+        ..active()
+    };
+    let route = Arc::new(super::super::Vgr::new(config)?);
+
+    let (target, _) = test_drive(
+        route,
+        request("fix the build"),
+        |t: ModelId, _r| async move {
+            let result: ServeResult = if t == *LOCAL {
+                Ok(reply("candidate patch"))
+            } else {
+                Ok(reply("cloud answer"))
+            };
+            result
+        },
+    )
+    .await?;
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert!(marker.exists(), "the checker grandchild never started");
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let settled = std::fs::metadata(&marker)?.modified()?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let after = std::fs::metadata(&marker)?.modified()?;
     assert_eq!(
         settled, after,
@@ -2009,6 +2083,43 @@ fn real_checker(
     Ok(ValidatedChecker::new(Arc::new(checker), manifest_identity)?)
 }
 
+#[cfg(windows)]
+fn real_checker(
+    script: &str,
+) -> std::result::Result<ValidatedChecker, Box<dyn std::error::Error + Send + Sync>> {
+    let suite = tempfile::tempdir()?;
+    std::fs::write(suite.path().join("case.txt"), "pinned")?;
+    let workspace_provider = CommandWorkspaceProvider::new(CommandWorkspaceProviderConfig::new(
+        vec![
+            "powershell.exe".to_string(),
+            "-NoLogo".to_string(),
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            "Copy-Item -LiteralPath $env:ATTEMPT_FILE \
+             -Destination (Join-Path $env:WORKSPACE_DIR 'candidate.txt')"
+                .to_string(),
+        ],
+        Duration::from_secs(10),
+    ))?;
+    let mut config = CheckerConfig::new(
+        suite.path(),
+        vec![
+            "powershell.exe".into(),
+            "-NoLogo".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            script.into(),
+        ],
+        Arc::new(workspace_provider),
+    );
+    config.sandbox_attestation = SANDBOX_ATTESTATION.into();
+    let checker = PinnedChecker::new(config)?;
+    let manifest_identity = checker.manifest_identity().to_owned();
+    Ok(ValidatedChecker::new(Arc::new(checker), manifest_identity)?)
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn active_mode_applies_real_checker_readiness_and_tamper_results()
@@ -2020,6 +2131,51 @@ async fn active_mode_applies_real_checker_readiness_and_tamper_results()
         ("exit 0", false, ModelId::from(CLOUD)),
         (
             "chmod u+w {tests}/case.txt; printf tampered >> {tests}/case.txt; exit 0",
+            true,
+            ModelId::from(CLOUD),
+        ),
+    ] {
+        let checker = if validated {
+            Some(real_checker(script)?)
+        } else {
+            None
+        };
+        let config = VgrConfig {
+            checker,
+            ..active()
+        };
+        let route = Arc::new(super::super::Vgr::new(config)?);
+        let (target, _) = test_drive(
+            route,
+            request("fix the build"),
+            |t: ModelId, _r| async move {
+                if t == *LOCAL {
+                    Ok(reply("a patch"))
+                } else {
+                    Ok(reply("cloud"))
+                }
+            },
+        )
+        .await?;
+        assert_eq!(target, expected, "{script} validated={validated}");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn active_mode_applies_real_checker_readiness_and_tamper_results()
+-> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // The Windows path applies the same validated-pass and tamper gates using
+    // native PowerShell commands and handle-based mutation stamps.
+    for (script, validated, expected) in [
+        ("exit 0", true, ModelId::from(LOCAL)),
+        ("exit 0", false, ModelId::from(CLOUD)),
+        (
+            "$path = Join-Path $env:TESTS_DIR 'case.txt'; \
+             (Get-Item -LiteralPath $path).IsReadOnly = $false; \
+             Add-Content -LiteralPath $path -Value 'tampered'; \
+             exit 0",
             true,
             ModelId::from(CLOUD),
         ),
