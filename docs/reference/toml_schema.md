@@ -281,7 +281,7 @@ to the capable tier. See [Verification-Gated Routing](../routing_algorithms/vgr_
 | `cloud_target` | Yes | — | Tier a request escalates to when the attempt is not licensed. |
 | `local_supports_images` | No | `false` | Set `true` only when the local tier accepts image content. Otherwise image-bearing requests, including images nested in tool results, go directly to the capable tier. |
 | `judge_target` | No | local tier | Answers the cheap local verification rungs. Not a routing destination. |
-| `cloud_judge_target` | No | cloud tier | Answers the cloud confirmation rungs. An explicit target overrides the capable tier. Not a routing destination. |
+| `cloud_judge_target` | No | unset | Answers the cloud confirmation rungs. Unset removes them, which the rules read as evidence never gathered rather than as indeterminate. Not a routing destination. |
 | `mode` | No | `off` | Serving authority: `off`, `evaluate`, `shadow`, or `active`. See below. |
 | `active_approval` | With `active` | — | Approval attestation validated verbatim as `prospective-validation-and-canary-approved`. |
 | `deadline_seconds` | No | `30` | Budget for the whole decision, verification included. Exceeding it ends evidence gathering, and what was not established escalates. |

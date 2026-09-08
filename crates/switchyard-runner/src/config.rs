@@ -927,7 +927,7 @@ confidence_threshold = 0.5
     }
 
     #[test]
-    fn vgr_defaults_task_typing_and_cloud_judging() -> RunnerResult<()> {
+    fn vgr_defaults_task_typing_without_cloud_judging() -> RunnerResult<()> {
         let config = vgr_config()
             .replace("cloud_judge_target = \"vgr_cloud_judge\"\n", "")
             .replace("task_typing = true\n", "");
@@ -949,7 +949,7 @@ confidence_threshold = 0.5
         assert_eq!(
             route.algorithm.callable_target_names(),
             ["weak", "strong"],
-            "the default cloud judge reuses the cloud target's callable client"
+            "omitting a cloud judge must not add an implicit verifier target"
         );
         runner_from_toml(&config)?;
 

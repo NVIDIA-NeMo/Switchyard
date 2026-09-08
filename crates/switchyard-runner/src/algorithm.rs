@@ -1279,11 +1279,11 @@ fn build_vgr(
             config.local_target, config.cloud_target
         )));
     }
-    let mut vgr = VgrConfig::new(local, cloud.clone());
+    let mut vgr = VgrConfig::new(local, cloud);
     vgr.local_supports_images = config.local_supports_images;
     vgr.targets = VgrTargets {
         judge: resolve_optional(&config.judge_target)?,
-        cloud_judge: resolve_optional(&config.cloud_judge_target)?.or(Some(cloud)),
+        cloud_judge: resolve_optional(&config.cloud_judge_target)?,
         ..vgr.targets
     };
     vgr.mode = vgr_mode(route_name, config)?;

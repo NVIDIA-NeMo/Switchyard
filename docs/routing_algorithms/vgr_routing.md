@@ -108,7 +108,7 @@ keyed only by model ID.
 | Key | Default | Meaning |
 |---|---|---|
 | `judge_target` | local tier | Answers the cheap local rungs. Never routed to. |
-| `cloud_judge_target` | cloud tier | Answers the cloud confirmation rungs. An explicit target overrides the capable tier. Never routed to. |
+| `cloud_judge_target` | unset | Answers the cloud confirmation rungs. Unset removes them. Never routed to. |
 | `deadline_seconds` | `30` | Budget for the whole decision. What is not established in time escalates. |
 | `task_typing` | `true` | One cheap local call that types the request. Set `false` to opt out; without it the answer and conversational regimes are unreachable. |
 | `latch_escalation` | `false` | Once a session escalates, later turns skip verification and stay on the capable tier. |

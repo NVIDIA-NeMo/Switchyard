@@ -291,6 +291,8 @@ async fn upstream_chat(
     if body["logprobs"].as_bool() == Some(true) {
         let p_yes: f64 = if model.contains("vgr-verified") {
             0.97
+        } else if model.contains("vgr-ambiguous") {
+            0.5
         } else {
             0.01
         };
@@ -312,7 +314,9 @@ async fn upstream_chat(
         .into_response();
     }
 
-    let content = if model == "model/classifier" && custom_target_schema {
+    let content = if model == "model/vgr-ambiguous-local" {
+        "coding"
+    } else if model == "model/classifier" && custom_target_schema {
         if requests_invalid_verdict {
             r#"{"decision":{"target":"unknown"}}"#
         } else {
@@ -3881,6 +3885,41 @@ async fn vgr_route_evaluate_exposes_an_unlicensed_cloud_decision() -> TestResult
             .and_then(|value| value.to_str().ok()),
         Some("model/vgr-cloud"),
         "an unsupported attempt should escalate"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_route_without_a_cloud_judge_skips_cloud_confirmation() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&vgr_config(&upstream.base_url, "model/vgr-ambiguous-local"))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "what is the capital of France?"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let calls = upstream.calls.lock().await.clone();
+    let cloud_calls = calls
+        .iter()
+        .filter(|call| call["model"] == "model/vgr-cloud")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cloud_calls.len(),
+        1,
+        "an omitted cloud judge must not make verifier calls before escalation: {calls:?}"
+    );
+    assert_eq!(
+        cloud_calls[0]["messages"][0]["content"], "what is the capital of France?",
+        "the only cloud call must be the client-visible escalation"
     );
     Ok(())
 }
