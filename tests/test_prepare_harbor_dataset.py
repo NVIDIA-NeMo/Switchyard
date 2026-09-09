@@ -46,6 +46,7 @@ def _prepare(
     source: Path,
     *,
     source_dataset: str = "openthoughts-tblite@2.0",
+    prefer_source_dockerfiles: bool = False,
 ) -> Path:
     module = _load_generator_module()
     module._fetch_hermes_installer = lambda _pins: HERMES_INSTALLER_FIXTURE
@@ -56,6 +57,7 @@ def _prepare(
         output_dir=output,
         harbor_command="harbor",
         overwrite=False,
+        prefer_source_dockerfiles=prefer_source_dockerfiles,
     )
 
 
@@ -202,6 +204,63 @@ def test_prebuilt_docker_image_task_becomes_derived_dockerfile(tmp_path: Path) -
     assert "opencode-ai@1.18.3" in dockerfile
 
 
+def test_arm_policy_rebuilds_prebuilt_task_from_source_dockerfile(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_task(
+        source,
+        "prebuilt-task",
+        '[environment]\ndocker_image = "amd64-only/task:latest"\n',
+        "FROM ubuntu:24.04\nRUN echo source-environment\n",
+    )
+
+    output = _prepare(tmp_path, source, prefer_source_dockerfiles=True)
+    task = output / "prebuilt-task"
+    dockerfile = (task / "environment" / "Dockerfile").read_text()
+    manifest = json.loads((output / "switchyard_dataset_manifest.json").read_text())
+
+    assert "docker_image" not in (task / "task.toml").read_text()
+    assert "\nFROM ubuntu:24.04\nRUN echo source-environment\n" in dockerfile
+    assert "FROM amd64-only/task:latest" not in dockerfile
+    assert manifest["closed_book"]["prefer_source_dockerfiles"] is True
+    assert manifest["tasks"][0]["docker_image_source"] == "amd64-only/task:latest"
+    assert manifest["tasks"][0]["docker_image_removed"] is True
+    assert manifest["tasks"][0]["task_image_build_source"] == "source-dockerfile"
+
+
+def test_arm_policy_keeps_prebuilt_image_when_source_dockerfile_is_missing(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    _write_task(
+        source,
+        "prebuilt-task",
+        '[environment]\ndocker_image = "amd64-only/task:latest"\n',
+    )
+
+    output = _prepare(tmp_path, source, prefer_source_dockerfiles=True)
+    task = output / "prebuilt-task"
+    dockerfile = (task / "environment" / "Dockerfile").read_text()
+    manifest = json.loads((output / "switchyard_dataset_manifest.json").read_text())
+
+    assert "\nFROM amd64-only/task:latest\nUSER root\n" in dockerfile
+    assert manifest["tasks"][0]["task_image_build_source"] == "prebuilt-image"
+
+
+@pytest.mark.parametrize(
+    ("architecture", "expected"),
+    (("aarch64", True), ("arm64", True), ("x86_64", False), ("AMD64", False)),
+)
+def test_source_dockerfile_policy_defaults_on_arm(
+    monkeypatch: pytest.MonkeyPatch,
+    architecture: str,
+    expected: bool,
+) -> None:
+    module = _load_generator_module()
+    monkeypatch.setattr(module.platform, "machine", lambda: architecture)
+
+    assert module._prefer_source_dockerfiles() is expected
+
+
 def test_dockerfile_only_task_gets_prebake_layer(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _write_task(
@@ -221,13 +280,8 @@ def test_dockerfile_only_task_gets_prebake_layer(tmp_path: Path) -> None:
     assert "raw.githubusercontent.com/NousResearch/hermes-agent" not in dockerfile
     assert "astral.sh/uv/install.sh" not in dockerfile
     assert r"grep -E '^uv 0\.12\.9($| )'" in dockerfile
-    assert 'x86_64|amd64) python_arch="x86_64"' in dockerfile
-    assert 'aarch64|arm64) python_arch="aarch64"' in dockerfile
-    assert (
-        'SWITCHYARD_HERMES_PYTHON="cpython-3.11-linux-$python_arch-$python_libc"'
-        in dockerfile
-    )
-    assert 'PYTHON_VERSION="${SWITCHYARD_HERMES_PYTHON:-3.11}"' in dockerfile
+    assert "Hermes prebake requires native task images" in dockerfile
+    assert "SWITCHYARD_HERMES_PYTHON" not in dockerfile
     assert "SWITCHYARD_PREBAKED_AGENT_VERSIONS" in dockerfile
     assert "/usr/local/lib/node_modules/npm" in dockerfile
     assert "node-v20.11.1-linux-$node_arch.tar.gz" in dockerfile

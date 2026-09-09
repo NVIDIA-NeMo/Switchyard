@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -40,6 +41,7 @@ PROXY_ASSET_DIR = SCRIPT_DIR / "closed_book_proxy" / "proxy"
 AGENT_ENTRYPOINT = "switchyard-agent-entrypoint.sh"
 HERMES_INSTALLER = "switchyard-hermes-install.sh"
 UV_STAGE = "switchyard_uv_build"
+ARM_ARCHITECTURES = frozenset({"aarch64", "arm64"})
 COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 SEMVER_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -287,6 +289,11 @@ def _remove_toml_key_from_table(text: str, table: str, key: str) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def _prefer_source_dockerfiles() -> bool:
+    """Use task Dockerfiles when prebuilt snapshots cannot run natively."""
+    return platform.machine().lower() in ARM_ARCHITECTURES
+
+
 def _install_layer(pins: dict[str, str]) -> str:
     node_version = pins["NODE_VERSION"]
     claude_version = pins["CLAUDE_CODE_VERSION"]
@@ -368,19 +375,17 @@ RUN set -eux; \\
     elif command -v apk >/dev/null 2>&1; then \\
         apk add --no-cache bash git ripgrep xz; \\
     fi; \\
-    /root/.hermes/bin/uv --version | grep -E '^uv {re.escape(uv_version)}($| )'; \\
+    uv_info="$(/root/.hermes/bin/uv --version)"; \\
+    printf '%s\\n' "$uv_info" | grep -E '^uv {re.escape(uv_version)}($| )'; \\
     target_arch="$(uname -m)"; \\
-    case "$target_arch" in \\
-        x86_64|amd64) python_arch="x86_64" ;; \\
-        aarch64|arm64) python_arch="aarch64" ;; \\
-        *) echo "Unsupported Hermes Python architecture: $target_arch" >&2; exit 1 ;; \\
+    case "$target_arch:$uv_info" in \\
+        x86_64:*x86_64-*|amd64:*x86_64-*|aarch64:*aarch64-*|arm64:*aarch64-*) ;; \\
+        *) \\
+            echo "Hermes prebake requires native task images; uv is '$uv_info' but the task is '$target_arch'." >&2; \\
+            echo "On ARM, rebuild the task's source Dockerfile instead of its x86 snapshot image." >&2; \\
+            exit 1 \\
+            ;; \\
     esac; \\
-    if ldd --version 2>&1 | grep -qi musl; then python_libc="musl"; else python_libc="gnu"; fi; \\
-    export SWITCHYARD_HERMES_PYTHON="cpython-3.11-linux-$python_arch-$python_libc"; \\
-    sed -i 's/^PYTHON_VERSION="3.11"$/PYTHON_VERSION="${{SWITCHYARD_HERMES_PYTHON:-3.11}}"/' \\
-        /tmp/{HERMES_INSTALLER}; \\
-    grep -F 'PYTHON_VERSION="${{SWITCHYARD_HERMES_PYTHON:-3.11}}"' \\
-        /tmp/{HERMES_INSTALLER}; \\
     bash /tmp/{HERMES_INSTALLER} \\
         --skip-setup --commit {hermes_version} --force-commit; \\
     rm -f /tmp/{HERMES_INSTALLER}; \\
@@ -432,6 +437,8 @@ def _rewrite_task_image(
     task_dir: Path,
     pins: dict[str, str],
     hermes_installer: bytes,
+    *,
+    prefer_source_dockerfile: bool,
 ) -> dict[str, Any]:
     task_toml = task_dir / "task.toml"
     data = _load_task_toml(task_toml)
@@ -448,8 +455,9 @@ def _rewrite_task_image(
     layer = _install_layer(pins)
     layer = f"COPY {HERMES_INSTALLER} /tmp/{HERMES_INSTALLER}\n{layer.lstrip()}"
     entrypoint_layer = _entrypoint_layer()
+    has_source_dockerfile = dockerfile.is_file()
 
-    if docker_image:
+    if docker_image and not (prefer_source_dockerfile and has_source_dockerfile):
         dockerfile.write_text(
             _with_uv_build_stage(
                 f"FROM {docker_image}\nUSER root\n{layer.lstrip()}{entrypoint_layer}",
@@ -461,6 +469,7 @@ def _rewrite_task_image(
         )
         image_source = docker_image
         removed = True
+        build_source = "prebuilt-image"
     else:
         if not dockerfile.is_file():
             dockerfile.write_text("FROM ubuntu:22.04\n")
@@ -470,12 +479,21 @@ def _rewrite_task_image(
                 pins,
             )
         )
-        image_source = None
-        removed = False
+        if docker_image:
+            task_toml.write_text(
+                _remove_toml_key_from_table(task_toml.read_text(), "environment", "docker_image")
+            )
+            image_source = docker_image
+            removed = True
+        else:
+            image_source = None
+            removed = False
+        build_source = "source-dockerfile" if has_source_dockerfile else "generated-default"
 
     return {
         "docker_image_source": image_source,
         "docker_image_removed": removed,
+        "task_image_build_source": build_source,
         "dockerfile_digest": _path_digest(dockerfile),
     }
 
@@ -643,6 +661,7 @@ def prepare_dataset(
     output_dir: Path,
     harbor_command: str,
     overwrite: bool,
+    prefer_source_dockerfiles: bool | None = None,
 ) -> Path:
     pins = _read_env_file(AGENT_VERSIONS_FILE)
     required = {
@@ -670,6 +689,8 @@ def prepare_dataset(
 
     source_dir = source_dir.resolve()
     output_dir = output_dir.resolve()
+    if prefer_source_dockerfiles is None:
+        prefer_source_dockerfiles = _prefer_source_dockerfiles()
     if output_dir.exists():
         if not overwrite:
             raise FileExistsError(f"{output_dir} exists; pass --overwrite to replace it")
@@ -680,7 +701,12 @@ def prepare_dataset(
     proxy_digest = _path_digest(PROXY_ASSET_DIR)
     proxy_allowlist_hosts = _proxy_allowlist_hosts_for_dataset(source_dataset)
     for task_dir in _task_dirs(output_dir):
-        image = _rewrite_task_image(task_dir, pins, hermes_installer)
+        image = _rewrite_task_image(
+            task_dir,
+            pins,
+            hermes_installer,
+            prefer_source_dockerfile=prefer_source_dockerfiles,
+        )
         compose = _merge_compose(task_dir, proxy_allowlist_hosts)
         tasks.append(
             {
@@ -715,6 +741,7 @@ def prepare_dataset(
                 "image": _uv_image(pins),
                 "version": _uv_version(pins),
             },
+            "prefer_source_dockerfiles": prefer_source_dockerfiles,
         },
         "tasks": tasks,
     }
@@ -731,6 +758,12 @@ def _cli_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--harbor-command", default=os.environ.get("HARBOR_COMMAND", "uv run --no-sync harbor"))
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--prefer-source-dockerfiles",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="rebuild source Dockerfiles instead of prebuilt task images (default: enabled on ARM)",
+    )
     ns = parser.parse_args(argv)
 
     prepared = prepare_dataset(
@@ -739,6 +772,7 @@ def _cli_main(argv: list[str] | None = None) -> int:
         output_dir=ns.output_dir,
         harbor_command=ns.harbor_command,
         overwrite=ns.overwrite,
+        prefer_source_dockerfiles=ns.prefer_source_dockerfiles,
     )
     print(f"Prepared closed-book Harbor dataset: {prepared}")
     print(f"Manifest: {prepared / 'switchyard_dataset_manifest.json'}")
