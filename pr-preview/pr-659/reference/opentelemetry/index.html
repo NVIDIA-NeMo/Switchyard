@@ -1097,23 +1097,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Collection and export">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#enable-server-export" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Enable server export
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -1190,10 +1173,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#server-usage-and-http-metrics" class="md-nav__link">
+  <a href="#querying-metrics" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Server usage and HTTP metrics
+        Querying metrics
       
     </span>
   </a>
@@ -1308,23 +1291,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Collection and export">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#enable-server-export" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Enable server export
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -1401,10 +1367,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#server-usage-and-http-metrics" class="md-nav__link">
+  <a href="#querying-metrics" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Server usage and HTTP metrics
+        Querying metrics
       
     </span>
   </a>
@@ -1459,14 +1425,14 @@
 
 
 <h1 id="opentelemetry">OpenTelemetry<a class="headerlink" href="#opentelemetry" title="Permanent link">&para;</a></h1>
-<p>Switchyard emits routing spans, model-call spans, and operational metrics.
+<p>Libsy and its LLM client emit routing spans, model-call spans, and operational metrics.
 Use traces to inspect one request and metrics to monitor traffic over time.
 This page describes the current implementation, not a separate NVIDIA telemetry service.</p>
 <h2 id="collection-and-export">Collection and export<a class="headerlink" href="#collection-and-export" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Host</th>
+<th>Library</th>
 <th>Behavior</th>
 </tr>
 </thead>
@@ -1479,71 +1445,20 @@ This page describes the current implementation, not a separate NVIDIA telemetry 
 <td><code>libsy-llm-client</code></td>
 <td>Adds model-call spans and metrics when driving an algorithm. Uses the same host-owned providers.</td>
 </tr>
-<tr>
-<td><code>switchyard-server</code></td>
-<td>Installs process-wide providers, exposes Prometheus metrics at <code>/metrics</code>, and optionally exports traces and metrics through OTLP/HTTP.</td>
-</tr>
 </tbody>
 </table>
 <p>Without a meter provider, library metrics are no-ops. Without a tracing subscriber,
 spans are not collected. A logging-only subscriber does not export OTel traces.</p>
-<h3 id="enable-server-export">Enable server export<a class="headerlink" href="#enable-server-export" title="Permanent link">&para;</a></h3>
-<p>With an OTLP/HTTP collector listening on port 4318 and an existing
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/switchyard-server/README.md">server configuration</a>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OTEL_EXPORTER_OTLP_TRACES_ENDPOINT</span><span class="o">=</span>http://localhost:4318/v1/traces
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OTEL_EXPORTER_OTLP_TRACES_PROTOCOL</span><span class="o">=</span>http/protobuf
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OTEL_EXPORTER_OTLP_METRICS_ENDPOINT</span><span class="o">=</span>http://localhost:4318/v1/metrics
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OTEL_EXPORTER_OTLP_METRICS_PROTOCOL</span><span class="o">=</span>http/protobuf
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OTEL_SERVICE_NAME</span><span class="o">=</span>switchyard-server
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml
-</span></code></pre></div>
-<table>
-<thead>
-<tr>
-<th>Setting</th>
-<th>Effect</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT</code></td>
-<td>Enables trace export to the full signal URL.</td>
-</tr>
-<tr>
-<td><code>OTEL_EXPORTER_OTLP_METRICS_ENDPOINT</code></td>
-<td>Enables metric export to the full signal URL.</td>
-</tr>
-<tr>
-<td><code>OTEL_EXPORTER_OTLP_ENDPOINT</code></td>
-<td>Shared base endpoint for both signals, instead of separate signal URLs.</td>
-</tr>
-<tr>
-<td><code>OTEL_TRACES_EXPORTER=none</code> / <code>OTEL_METRICS_EXPORTER=none</code></td>
-<td>Disables OTLP export for that signal. Selecting <code>otlp</code> still requires an endpoint.</td>
-</tr>
-<tr>
-<td><code>OTEL_SDK_DISABLED=true</code></td>
-<td>Disables the server's OTLP export paths. Local <code>/metrics</code> remains available.</td>
-</tr>
-<tr>
-<td><code>OTEL_SERVICE_NAME</code></td>
-<td>Resource service name; defaults to <code>switchyard-server</code>.</td>
-</tr>
-<tr>
-<td><code>RUST_LOG</code></td>
-<td>Filters both console logs and exported tracing spans/events. Defaults to <code>info,opentelemetry=warn</code>.</td>
-</tr>
-</tbody>
-</table>
-<p>Set these before starting the process. Server initialization runs once. With no
-OTLP endpoint configured, the server does not enable OTLP export. It still serves
-<code>/metrics</code>. No <code>SWITCHYARD_TELEMETRY</code> opt-in gate is implemented.</p>
-<p>For exporter authentication and shared versus signal-specific endpoints, see the
+<p>Your application connects <code>tracing</code> to OTel through <code>tracing-opentelemetry</code> and
+installs a global meter provider with its chosen metric readers/exporters.
+Configure these before running algorithms. The host also owns filtering, sampling,
+trace-context propagation, and flushing on shutdown.</p>
+<p>Setting OTel environment variables alone does not install providers or exporters
+in an embedded application. For an installed OTLP exporter, see the
 <a href="https://opentelemetry.io/docs/specs/otel/protocol/exporter/">OTLP exporter configuration</a>.
 Keep exporter credentials out of checked-in configuration.</p>
 <h2 id="traces">Traces<a class="headerlink" href="#traces" title="Permanent link">&para;</a></h2>
-<p>The server continues incoming W3C <code>traceparent</code> and <code>tracestate</code> context.
-An algorithm run and the final model response have different lifetimes:
+<p>An algorithm run and the final model response have different lifetimes:
 <code>libsy.run</code> can finish before the host makes the answer call.</p>
 <table>
 <thead>
@@ -1554,11 +1469,6 @@ An algorithm run and the final model response have different lifetimes:
 </tr>
 </thead>
 <tbody>
-<tr>
-<td><code>switchyard.request</code></td>
-<td>Server</td>
-<td>Routed HTTP request span. OTel kind <code>SERVER</code>; OpenInference kind <code>CHAIN</code>.</td>
-</tr>
 <tr>
 <td><code>libsy.run</code></td>
 <td>Libsy</td>
@@ -1643,7 +1553,7 @@ types. Unknown keys and wrong types are omitted. No evidence is valid for simple
 decisions. Scores and confidence are algorithm-specific, not interchangeable.</p>
 <p>Failed runs return typed errors and do not produce successful outcome metadata.
 A successful fail-open decision can still carry a fixed <code>reason_code</code>.
-Nested algorithm runs have their own run spans; one HTTP request need not mean
+Nested algorithm runs have their own run spans; one application request need not mean
 one algorithm span.</p>
 <h3 id="model-call-fields">Model-call fields<a class="headerlink" href="#model-call-fields" title="Permanent link">&para;</a></h3>
 <p>The LLM client driver records these on <code>libsy.client_call</code>:</p>
@@ -1759,9 +1669,10 @@ Its <code>input_tokens</code>, <code>output_tokens</code>, <code>total_tokens</c
 are recorded only for buffered responses. Its duration is not full streaming latency.</p>
 <h2 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h2>
 <p>Metrics use the <code>switchyard</code> meter scope. The tables use OTel instrument names.
-The server's Prometheus exporter replaces dots with underscores and adds <code>_total</code>
-to counters: <code>switchyard.runs</code> becomes <code>switchyard_runs_total</code>.
-Histograms expose <code>_bucket</code>, <code>_sum</code>, and <code>_count</code> series.</p>
+With the default OTel Prometheus exporter naming, dots become underscores and
+counters gain <code>_total</code>: <code>switchyard.runs</code> becomes <code>switchyard_runs_total</code>.
+Histograms expose <code>_bucket</code>, <code>_sum</code>, and <code>_count</code> series. Your host chooses how
+to expose or export the collected metrics.</p>
 <h3 id="routing-and-client-metrics">Routing and client metrics<a class="headerlink" href="#routing-and-client-metrics" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -1901,7 +1812,7 @@ during routing is not counted again as a new terminal model call.</p>
 </table>
 <p>These histograms contain unitless values from 0 to 1. They are recorded when tool
 signals reach the scorer, including when it defers to a classifier. They are not
-one sample per HTTP request and are not split by route or session.</p>
+one sample per application request and are not split by route or session.</p>
 <p>Advisor Gate instruments use the prefix <code>switchyard.advisor_gate.</code>:</p>
 <table>
 <thead>
@@ -1941,20 +1852,13 @@ one sample per HTTP request and are not split by route or session.</p>
 </table>
 <p>Algorithms can use OTel instruments directly. Use configured model/algorithm names
 and fixed categories as metric labels, not request IDs, session IDs, or user text.</p>
-<h3 id="server-usage-and-http-metrics">Server usage and HTTP metrics<a class="headerlink" href="#server-usage-and-http-metrics" title="Permanent link">&para;</a></h3>
-<p>The server also exposes per-model usage, request/error counts, full-response latency,
-HTTP response outcomes, and build information. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/switchyard-server/README.md#metrics">server metric table</a> for their
-Prometheus names and labels. Token metrics require upstream usage data.</p>
-<p><code>/metrics</code> is process-wide and cumulative. <code>/v1/stats</code> is a resettable JSON view
-with separate request accounting and curated algorithm summaries, not a dump of
-every OTel instrument. <code>/v1/stats/reset</code> does not reset <code>/metrics</code>.</p>
+<h3 id="querying-metrics">Querying metrics<a class="headerlink" href="#querying-metrics" title="Permanent link">&para;</a></h3>
 <p>For example, inspect routing rate and latency with PromQL:</p>
-<div class="language-promql highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">algorithm</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">switchyard_runs_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.95</span><span class="p">,</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">le</span><span class="p">,</span><span class="w"> </span><span class="nv">algorithm</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">switchyard_run_duration_ms_bucket</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="o">)</span>
+<div class="language-promql highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">algorithm</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">switchyard_runs_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.95</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">le</span><span class="p">,</span><span class="w"> </span><span class="nv">algorithm</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">switchyard_run_duration_ms_bucket</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="o">)</span>
 </span></code></pre></div>
 <p>Histogram percentiles are estimates from buckets, not exact per-request percentiles.</p>
 <h2 id="data-boundaries">Data boundaries<a class="headerlink" href="#data-boundaries" title="Permanent link">&para;</a></h2>
@@ -1970,11 +1874,10 @@ exporting it outside your deployment.</p>
 <p>These names describe the current source; they are not a separately versioned
 telemetry schema. Check changes when upgrading.</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/libsy/src/observability.rs">Libsy spans, outcome projection, and metrics</a></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/libsy-llm-client/src/run.rs">Client span fields</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/libsy-llm-client/src/observability.rs">stream/usage observation</a></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/libsy-llm-client/src/metrics.rs">Client metrics</a></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/libsy/src/algorithms/util/stage.rs">Stage Router metrics</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/libsy/src/algorithms/advisor_gate/telemetry.rs">Advisor Gate metrics</a></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/switchyard-server/src/observability.rs">Server exporters</a>, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/switchyard-server/src/metrics.rs">metric setup</a>, and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4a35bec26e79599d8fe3f07172026c20b64a1865/crates/switchyard-server/src/usage_metrics.rs">usage recording</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1d2e502e33324c97550876d16763f442752beb3c/crates/libsy/src/observability.rs">Libsy spans, outcome projection, and metrics</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1d2e502e33324c97550876d16763f442752beb3c/crates/libsy-llm-client/src/run.rs">Client span fields</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1d2e502e33324c97550876d16763f442752beb3c/crates/libsy-llm-client/src/observability.rs">stream/usage observation</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1d2e502e33324c97550876d16763f442752beb3c/crates/libsy-llm-client/src/metrics.rs">Client metrics</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1d2e502e33324c97550876d16763f442752beb3c/crates/libsy/src/algorithms/util/stage.rs">Stage Router metrics</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1d2e502e33324c97550876d16763f442752beb3c/crates/libsy/src/algorithms/advisor_gate/telemetry.rs">Advisor Gate metrics</a></li>
 </ul>
 
 
