@@ -1803,7 +1803,7 @@ dependencies available in the active virtual environment.</p>
 </span></code></pre></div>
 <h3 id="llm_classifier"><code>llm_classifier</code><a class="headerlink" href="#llm_classifier" title="Permanent link">&para;</a></h3>
 <p>Runs one of three judge-backed modes: <code>capability</code>, <code>escalation</code>, or <code>custom</code>.
-<code>classifier_target</code> and <code>max_output_tokens</code> apply to all three.</p>
+<code>max_output_tokens</code> applies to all three.</p>
 <table>
 <thead>
 <tr>
@@ -1822,9 +1822,9 @@ dependencies available in the active virtual environment.</p>
 </tr>
 <tr>
 <td><code>classifier_target</code></td>
-<td style="text-align: center;">Yes</td>
+<td style="text-align: center;">Capability, escalation</td>
 <td>—</td>
-<td>Target the judge is called through. Not a routing destination.</td>
+<td>Target the judge is called through. Not a routing destination. Custom mode uses <code>models.judge</code>.</td>
 </tr>
 <tr>
 <td><code>max_output_tokens</code></td>
@@ -1954,7 +1954,7 @@ dependencies available in the active virtual environment.</p>
 </table>
 <p>Existing configurations that contain <code>escalation</code> but omit <code>mode</code> remain valid.</p>
 <p>Custom mode validates the judge's JSON against <code>response_schema</code>, resolves the
-policy selector, and routes to any configured target label.</p>
+policy selector, and routes to a runtime model category.</p>
 <table>
 <thead>
 <tr>
@@ -1966,16 +1966,34 @@ policy selector, and routes to any configured target label.</p>
 </thead>
 <tbody>
 <tr>
-<td><code>targets</code></td>
+<td><code>models.any</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>Two or more target names available to the policy.</td>
+<td>All completion targets in fallback order.</td>
+</tr>
+<tr>
+<td><code>models.judge</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Ordered judge candidates.</td>
+</tr>
+<tr>
+<td><code>models.capable</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Ordered capable candidates. The first is selected.</td>
+</tr>
+<tr>
+<td><code>models.efficient</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Ordered efficient candidates. The first is selected.</td>
 </tr>
 <tr>
 <td><code>default_target</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>Target used when the judge fails or its verdict cannot be routed.</td>
+<td>Category used when the judge fails or its verdict cannot be routed. Must be <code>any</code>, <code>judge</code>, <code>capable</code>, or <code>efficient</code>.</td>
 </tr>
 <tr>
 <td><code>prompt</code></td>
@@ -2015,6 +2033,7 @@ policy selector, and routes to any configured target label.</p>
 </tr>
 </tbody>
 </table>
+<p>The selected JSON label must be <code>any</code>, <code>judge</code>, <code>capable</code>, or <code>efficient</code>.</p>
 <p>Classifier prompts must not contain <code>{{RESPONSE_SCHEMA}}</code>. Switchyard supplies
 the schema automatically: through the structured-output request in <code>json_schema</code>
 mode, or in the prompt in <code>json_object</code> mode.</p>
