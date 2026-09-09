@@ -8,6 +8,7 @@
 //! lives with the assembled algorithm in [`crate::algorithms::escalation`].
 
 use serde::Deserialize;
+use serde_json::Value;
 use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
 
 use super::classifier_contract::{ClassifierContract, ClassifierContractConfig};
@@ -139,6 +140,18 @@ impl JudgePolicy for EscalationPolicy {
     }
 }
 
+fn escalation_evidence(
+    _policy: &EscalationPolicy,
+    verdict: Option<&EscalationVerdict>,
+) -> Option<Value> {
+    verdict.map(|verdict| {
+        serde_json::json!({
+            "source": "escalation",
+            "verdict": if verdict.escalate { "escalate" } else { "continue" },
+        })
+    })
+}
+
 /// Builds the trajectory judge over `judge_target`, scoring `capable` when it escalates.
 ///
 /// Loads the packaged prompt and schema, so an unusable asset or an unusable `config` value
@@ -163,7 +176,8 @@ pub(crate) fn build_judge(
         ),
         judge_target,
         EscalationPolicy { capable, efficient },
-    ))
+    )
+    .with_evidence(escalation_evidence))
 }
 
 /// The 1-indexed model invocation the transcript ends on: one per assistant reply.

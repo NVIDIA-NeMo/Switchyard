@@ -270,14 +270,34 @@ impl AdvisorGate {
             .consult(driver, &request, review_tail.as_deref(), trigger_label)
             .await
         {
-            Ok(ConsultOutcome::Approve) => Ok(RoutingOutcome::answered(
-                self.executor.clone(),
-                request,
-                turn.into_response(),
-            )),
-            Ok(ConsultOutcome::Redo { plan }) => Ok(self.redo(request, turn, &plan)),
-            Ok(ConsultOutcome::Failed) => {
+            Ok(ConsultOutcome::Approve) => {
+                driver.set_evidence(serde_json::json!({
+                    "source": "advisor",
+                    "verdict": "approve",
+                    "trigger": trigger_label,
+                }));
+                Ok(RoutingOutcome::answered(
+                    self.executor.clone(),
+                    request,
+                    turn.into_response(),
+                ))
+            }
+            Ok(ConsultOutcome::Redo { plan }) => {
+                driver.set_evidence(serde_json::json!({
+                    "source": "advisor",
+                    "verdict": "redo",
+                    "trigger": trigger_label,
+                }));
+                Ok(self.redo(request, turn, &plan))
+            }
+            Ok(ConsultOutcome::Failed { reason }) => {
                 self.budget.refund_failure(scope);
+                driver.set_evidence(serde_json::json!({
+                    "source": "advisor",
+                    "verdict": "fail_open",
+                    "trigger": trigger_label,
+                    "reason_code": reason,
+                }));
                 Ok(RoutingOutcome::answered(
                     self.executor.clone(),
                     request,
@@ -361,9 +381,8 @@ impl AdvisorGate {
         let agg = match reply {
             Ok(agg) => agg,
             Err(error) => {
-                record_consult_failure(crate::algorithms::util::llm_judge::libsy_error_reason(
-                    &error,
-                ));
+                let reason = crate::algorithms::util::llm_judge::libsy_error_reason(&error);
+                record_consult_failure(reason);
                 if !self.config.fail_open {
                     // Surface as an algorithm failure (5xx), never as the
                     // advisor's own client error: a typed ContextWindowExceeded
@@ -386,7 +405,7 @@ impl AdvisorGate {
                     reply_head: None,
                     usage: None,
                 });
-                return Ok(ConsultOutcome::Failed);
+                return Ok(ConsultOutcome::Failed { reason });
             }
         };
         let reply_text = advisor_reply_text(&agg);
@@ -426,7 +445,9 @@ impl AdvisorGate {
                     reply_head: Some(reply_head),
                     usage: Some(&agg.usage),
                 });
-                Ok(ConsultOutcome::Failed)
+                Ok(ConsultOutcome::Failed {
+                    reason: "parse_error",
+                })
             }
         }
     }
@@ -485,7 +506,7 @@ impl Algorithm for AdvisorGate {
 enum ConsultOutcome {
     Approve,
     Redo { plan: String },
-    Failed,
+    Failed { reason: &'static str },
 }
 
 fn algorithm_error(message: impl Into<String>) -> LibsyError {

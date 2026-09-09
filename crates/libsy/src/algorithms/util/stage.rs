@@ -604,7 +604,7 @@ impl Classifier<State> for StageClassifier {
         &self,
         state: &mut State,
         request: &mut Request,
-        _driver: Option<&Driver>,
+        driver: Option<&Driver>,
     ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
         let tool_signals = &state.tool_signals;
         let Some(signal) = tool_signals else {
@@ -629,6 +629,17 @@ impl Classifier<State> for StageClassifier {
                 // is the only branch whose tier the signals actually chose — an
                 // ambiguous turn is decided further down the cascade.
                 self.apply_handoff_note(request, tier, source);
+                if let Some(driver) = driver {
+                    let evidence = match (source, confidence) {
+                        (DecisionSource::Dimensions, Some(confidence)) => serde_json::json!({
+                            "source": source.as_str(),
+                            "confidence": confidence,
+                            "threshold": self.confidence_threshold,
+                        }),
+                        _ => serde_json::json!({"source": source.as_str()}),
+                    };
+                    driver.set_evidence(evidence);
+                }
                 // Prefer pick_tier's own confidence (e.g. 1.0 for an Override)
                 // over re-deriving it from the neutral 0.5 placeholder.
                 let conf = confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs());

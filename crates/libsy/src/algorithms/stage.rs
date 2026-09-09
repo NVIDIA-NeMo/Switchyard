@@ -56,6 +56,15 @@ impl Classifier<State> for SourceStamp {
         if let Some(winner) = classification.argmax(false)? {
             record_decision_source(state, self.source);
             record_routing_decision(self.source, &winner.target);
+            if let Some(driver) = driver {
+                let source = match self.source {
+                    DecisionSource::LlmClassifier => "llm_classifier",
+                    source => source.as_str(),
+                };
+                driver.set_evidence_if_empty(serde_json::json!({
+                    "source": source,
+                }));
+            }
         }
         Ok((classification, served))
     }
@@ -73,10 +82,13 @@ impl Classifier<State> for FallOpen {
         &self,
         state: &mut State,
         _request: &mut Request,
-        _driver: Option<&Driver>,
+        driver: Option<&Driver>,
     ) -> Result<(Classification, Option<Response>)> {
         let tier = fall_open_tier(state).unwrap_or(self.default_tier);
         let target = self.targets.name(tier).clone();
+        if let Some(driver) = driver {
+            driver.set_evidence_if_empty(serde_json::json!({"source": "fall_open"}));
+        }
         Ok((
             Classification::Scores(vec![Score {
                 target,
