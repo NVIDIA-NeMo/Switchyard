@@ -5,8 +5,10 @@ successful responses, and asks a synthesizer target to produce one final answer.
 It is response-level fusion: Switchyard does not merge model weights or logits.
 
 Use it when answer quality can justify several candidate calls plus synthesis.
-Compared with ordinary routing, every request costs at least three model calls
-and waits for every candidate call to finish before synthesis begins.
+Requests that reach synthesis make at least three model calls and wait for every
+candidate call to finish before synthesis begins. If fewer than
+`minimum_successful_candidates` candidates produce usable output, the request
+fails after the candidate calls without calling the synthesizer.
 
 ## Configure an ensemble
 
