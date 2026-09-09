@@ -237,11 +237,11 @@ where
         self
     }
 
-    /// Replaces run evidence only for judges that opted into structured evidence.
+    /// Adds fail-open evidence only for evidence-enabled judges and preserves an earlier decision.
     fn report_fail_open(&self, driver: &Driver, error: String, reason: &'static str) {
         report_fail_open(self.target.as_str(), error, reason);
         if self.evidence.is_some() {
-            driver.set_evidence(serde_json::json!({
+            driver.set_evidence_if_empty(serde_json::json!({
                 "source": "fail_open",
                 "reason_code": reason,
             }));
@@ -350,14 +350,20 @@ where
             });
         };
         let verdict = self.verdict(state, request, driver).await;
+        let classification = self.policy.to_classification(verdict.as_ref());
         if let Some(evidence) = self
             .evidence
             .and_then(|evidence| evidence(&self.policy, verdict.as_ref()))
         {
-            driver.set_evidence(evidence);
+            match &classification {
+                Classification::Scores(scores) if !scores.is_empty() => {
+                    driver.set_evidence(evidence);
+                }
+                _ => driver.set_evidence_if_empty(evidence),
+            }
         }
         // A judge consultation is a side call, never the turn's answer.
-        Ok((self.policy.to_classification(verdict.as_ref()), None))
+        Ok((classification, None))
     }
 }
 

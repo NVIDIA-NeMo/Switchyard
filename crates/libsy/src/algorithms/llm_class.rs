@@ -260,7 +260,7 @@ fn capability_evidence(
         }));
     };
     Some(serde_json::json!({
-        "source": "llm_classifier",
+        "source": "llm-classifier",
         "score": verdict.p_solve,
         "threshold": threshold,
     }))

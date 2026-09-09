@@ -11,7 +11,11 @@ pub struct OutcomeMetadata {
     outcome_id: String,
     /// Stable name of the algorithm that produced the outcome.
     pub algorithm: String,
-    /// Optional bounded, machine-readable evidence produced by the algorithm.
+    /// Optional algorithm-defined JSON evidence.
+    ///
+    /// Built-in algorithms emit an object with a stable `source` string and only the
+    /// relevant `score`, `confidence`, `threshold`, `verdict`, `trigger`, or `reason_code`
+    /// fields. Not every algorithm or decision produces evidence.
     pub evidence: Option<Value>,
 }
 
