@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`subagents` on an `llm_classifier` route** — the nested sub-agent policy
+  already available on `passthrough`, `stage_router` and `composite` now also
+  parses and builds under `llm_classifier`, in all three of its modes. Wrapping
+  diverts delegated work before the parent judge runs, so the parent's session
+  affinity no longer sees it — the same trade the other three variants make.
+  `AlgorithmSpec::LlmClassifier` gains a field, which source-breaks a downstream
+  struct literal that does not end in `..`.
+
 - **NeMo Relay native plugin** — a dynamically loaded integration that loads
   Switchyard's standard TOML deployment and executes its `switchyard-runner`-
   supported configured routes in process. Managed calls require NeMo Relay
