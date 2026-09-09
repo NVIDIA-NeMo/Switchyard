@@ -81,11 +81,6 @@ async def run_algorithm(
             case Step.Done(outcome):
                 assert isinstance(outcome.metadata, OutcomeMetadata)
                 assert UUID(outcome.metadata.outcome_id).version == 7
-                evidence = outcome.metadata.evidence
-                assert evidence is None or isinstance(evidence, dict)
-                if evidence is not None and evidence.get("source") == "llm-classifier":
-                    assert evidence["score"] == pytest.approx(0.9)
-                    assert evidence["threshold"] == pytest.approx(0.5)
                 if outcome.response is not None:
                     match outcome.response:
                         case LlmResponse.Agg(response):
@@ -211,14 +206,23 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
         ),
     )
 
-    _, response = await run_algorithm(
-        algorithm,
-        {
-            "judge": judge,
-            "weak": weak,
-            "strong": EchoClient("strong"),
-        },
-    )
+    outcome: RoutingOutcome | None = None
+    async for step in algorithm.run_stream(request_body()):
+        match step:
+            case Step.CallModel(call):
+                call.respond(LlmResponse.Agg(await judge.call(call.request)))
+            case Step.Done(done):
+                outcome = done
+
+    assert outcome is not None
+    assert outcome.selected_model_ids[0] == "weak"
+    assert outcome.metadata is not None
+    assert outcome.metadata.evidence == {
+        "source": "llm-classifier",
+        "score": pytest.approx(0.9),
+        "threshold": pytest.approx(0.5),
+    }
+    response = await weak.call(outcome.request)
 
     prompt = judge.calls[0]["instructions"][0]["content"][0]["text"]
     assert prompt == "Custom capability rubric."

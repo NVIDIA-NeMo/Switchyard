@@ -508,6 +508,7 @@ impl Algorithm for SingleCallAlgo {
             .ok_or(LibsyError::NoTargets)?
             .clone();
         tracing::info!("picked '{target}'");
+        // Include configured fallbacks so the exported model order can be checked.
         let mut outcome = RoutingOutcome::route_to(
             target.into(),
             self.target_set

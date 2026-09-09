@@ -383,16 +383,18 @@ impl RoutingIdentity {
 ///
 /// [`run_stream`](Self::run_stream) creates a `libsy.run` span, and each offloaded model
 /// call creates a nested `libsy.llm_call` span. Successful outcomes record their
-/// [`OutcomeMetadata`](crate::OutcomeMetadata) on `libsy.run`: `outcome_id`, `algorithm`,
-/// `switchyard.algorithm`, and `selected_model_ids` (an ordered OpenTelemetry string array).
+/// [`OutcomeMetadata::outcome_id`](crate::OutcomeMetadata::outcome_id) on `libsy.run`,
+/// alongside `selected_model_ids` (an ordered OpenTelemetry string array).
+/// `algorithm` and `switchyard.algorithm` retain the run's [`Algorithm::name`].
 /// Optional `evidence.source`, `evidence.verdict`, `evidence.trigger`, and
 /// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`, and
 /// `evidence.threshold` are numbers. Unknown evidence fields are not exported.
 /// These fields are span attributes, never metric labels.
 ///
-/// Runs and calls retain their `outcome` status and operational metrics, but do not
-/// export error details or arbitrary request extra metadata. Errors still reach the
-/// caller unchanged. The host controls the tracing subscriber and global OpenTelemetry
+/// The run/call observability helpers retain `outcome` status and operational metrics,
+/// but omit error details and arbitrary request extra metadata. Algorithms and hosts
+/// may emit their own logs. Errors still reach the caller unchanged.
+/// The host controls the tracing subscriber and global OpenTelemetry
 /// meter provider; libsy installs no exporter and performs no telemetry network I/O.
 #[async_trait]
 pub trait Algorithm: Send + Sync + 'static {

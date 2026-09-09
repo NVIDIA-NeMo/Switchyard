@@ -119,8 +119,6 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
 pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
     let span = Span::current();
     span.record("outcome_id", metadata.outcome_id());
-    span.record("algorithm", metadata.algorithm.as_str());
-    span.record("switchyard.algorithm", metadata.algorithm.as_str());
     span.set_attribute(
         "selected_model_ids",
         opentelemetry::Value::Array(opentelemetry::Array::String(
