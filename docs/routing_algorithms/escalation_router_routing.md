@@ -98,7 +98,7 @@ compatibility guidance as the LLM classifier judge. See
 
 ## Tuning options
 
-The judge exposes three settings. Their defaults are the benchmarked
+The judge exposes four settings. Their defaults are the benchmarked
 configuration, so a bare `escalation = {}` is a valid, tuned route:
 
 | Key | Default | Meaning |
@@ -106,6 +106,7 @@ configuration, so a bare `escalation = {}` is a valid, tuned route:
 | `confirmations` | `2` | Consecutive escalate verdicts required before the session latches to strong. Must be at least `1`. |
 | `recent_turn_window` | `28` | Trailing messages shown to the judge on top of the anchors. Must be at least `1`. |
 | `window_message_chars` | `500` | Per-message truncation cap inside that trailing window. Must be at least `50`. |
+| `handoff_note` | none | Text handed to the strong tier on every turn the judge sent there: the latching turn and each turn after it. Must not be blank when set. |
 
 `confirmations` is the main cost dial. `1` latches sooner and spends more on the
 strong tier. `2` or higher requires a session identity, because the streak is
@@ -115,6 +116,20 @@ never latches. Clients supply it with `x-switchyard-session-id`.
 Anchor and transcript caps remain fixed. Set the route-level
 `max_output_tokens` key to change the judge's reply budget. Any decline still
 resets the streak to zero.
+
+`handoff_note` tells the strong model that it is taking over a session another
+model started, so it can re-check the task and the work so far instead of
+trusting it. The note is appended to the last user message of the forwarded
+request (or added as a user message when the turn ends on a tool result), on the
+latching turn and on every strong-tier turn after it. It travels in the forwarded
+request only, never in the caller's conversation, so it cannot accumulate. Turns
+that reach the strong tier without a verdict, such as a context-window overflow
+on the weak tier, carry no note. Keep the wording general: it describes the
+handoff, not the task.
+
+```toml
+escalation = { confirmations = 2, handoff_note = "You are taking over this task from another model mid-session. Re-read the task, restate its acceptance criteria, and verify the current state against them end to end before continuing." }
+```
 
 ## Run the route
 

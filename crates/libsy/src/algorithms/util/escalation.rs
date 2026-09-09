@@ -60,6 +60,12 @@ pub struct EscalationJudgeConfig {
     pub recent_turn_window: usize,
     /// Per-message cap inside the trailing window.
     pub window_message_chars: usize,
+    /// Note appended to the request on every turn the judge has sent to the capable tier: the
+    /// latching turn and each confirmed turn after it. Turns that reach the capable tier by
+    /// fallback (context overflow, transport failure) carry no note, since the judge did not
+    /// speak. The note rides in the forwarded request only, never in the caller's conversation,
+    /// so it cannot accumulate across turns. `None` sends nothing.
+    pub handoff_note: Option<String>,
 }
 
 impl EscalationJudgeConfig {
@@ -78,6 +84,13 @@ impl EscalationJudgeConfig {
                 self.window_message_chars
             ));
         }
+        if self
+            .handoff_note
+            .as_deref()
+            .is_some_and(|note| note.trim().is_empty())
+        {
+            return reject("handoff_note must not be blank".to_string());
+        }
         Ok(())
     }
 }
@@ -88,6 +101,7 @@ impl Default for EscalationJudgeConfig {
             confirmations: 2,
             recent_turn_window: 28,
             window_message_chars: 500,
+            handoff_note: None,
         }
     }
 }

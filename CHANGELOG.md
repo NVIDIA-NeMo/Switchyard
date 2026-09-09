@@ -18,6 +18,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   address one provider model with different settings (effort, headers,
   endpoint). Previously the runner kept a single target per model id and
   dropped the rest.
+- **Escalation handoff note** — an optional `handoff_note` in the escalation
+  block is handed to the strong tier on the latching turn and every strong-tier
+  turn after it, the same mechanism as the stage router's handoff notes, so the
+  strong model knows it is taking over a session and re-checks the work rather
+  than trusting it.
 - **Raw Responses stream trace** — an opt-in trace of every upstream Responses
   event as received, under `RUST_LOG=switchyard_translation::responses::raw=trace`,
   for diagnosing provider-specific event shapes. (#646)

@@ -1060,6 +1060,18 @@ new = ["send_message"]
 
         let blank = VALID_CONFIG.replace(strong, &format!("{strong}\nmodel = \" \""));
         assert!(error_message(&blank).contains("model must not be empty"));
+    fn an_escalation_handoff_note_parses_and_must_not_be_blank() -> RunnerResult<()> {
+        let noted = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { confirmations = 2, handoff_note = \"You are taking over this task mid-session; verify before continuing.\" }",
+        );
+        runner_from_toml(&noted)?;
+
+        let blank = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { confirmations = 2, handoff_note = \"  \" }",
+        );
+        assert!(error_message(&blank).contains("handoff_note must not be blank"));
         Ok(())
     }
 
