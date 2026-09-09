@@ -983,6 +983,14 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn auto_builds_the_same_route_as_stage_router() -> RunnerResult<()> {
+        let config = stage_config().replace("type = \"stage_router\"", "type = \"auto\"");
+        let runner = runner_from_toml(&config)?;
+        assert!(runner.route("switchyard/stage").is_some());
+        Ok(())
+    }
+
+    #[test]
     fn composite_stage_block_rejects_an_unknown_field() {
         let config = composite_config().replace(
             "confidence_threshold = 0.5",

@@ -258,6 +258,18 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// Picks a routing strategy automatically. Currently resolves to the same
+    /// behavior as `stage_router`; change the merged match arms below to
+    /// repoint it at a different algorithm.
+    Auto {
+        #[serde(flatten)]
+        tiers: StageTierConfig,
+        picker: PickerMode,
+        #[serde(default)]
+        classifier: Option<StageClassifierConfig>,
+        #[serde(default)]
+        subagents: Option<SubagentRouteConfig>,
+    },
     /// A judge picks the tier at each user turn; a stage router runs the turns within it.
     Composite {
         /// Judge that picks the tier. Called through its own target.
@@ -454,6 +466,9 @@ impl AlgorithmSpec {
             }
             Self::StageRouter {
                 tiers, subagents, ..
+            }
+            | Self::Auto {
+                tiers, subagents, ..
             } => {
                 let mut names = vec![
                     tiers.capable_target.as_str(),
@@ -498,6 +513,11 @@ impl AlgorithmSpec {
                 ..
             } => names.extend(subagents.classifier_target_name()),
             Self::StageRouter {
+                classifier,
+                subagents,
+                ..
+            }
+            | Self::Auto {
                 classifier,
                 subagents,
                 ..
@@ -553,6 +573,7 @@ impl AlgorithmSpec {
             | Self::Passthrough { .. }
             | Self::LlmClassifier { .. }
             | Self::StageRouter { .. }
+            | Self::Auto { .. }
             | Self::Composite { .. }
             | Self::PrefillRouter { .. } => None,
         }
@@ -978,6 +999,13 @@ fn build_algorithm(
             Ok(Arc::new(algorithm))
         }
         AlgorithmSpec::StageRouter {
+            tiers,
+            picker,
+            classifier,
+            subagents,
+            ..
+        }
+        | AlgorithmSpec::Auto {
             tiers,
             picker,
             classifier,
