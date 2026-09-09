@@ -539,6 +539,18 @@ def _append_proxy_allowlist(proxy_assets: Path, hosts: tuple[str, ...]) -> None:
     allowlist_path.write_text(f"{base}\n\n# Dataset-required package and data sources.\n{additions}\n")
 
 
+def _copy_proxy_assets(destination: Path) -> None:
+    """Copy proxy text assets with Linux line endings for container execution."""
+    shutil.copytree(PROXY_ASSET_DIR, destination)
+    text_suffixes = {".json", ".py", ".sh", ".txt", ".yaml", ".yml"}
+    for asset in destination.rglob("*"):
+        if not asset.is_file() or (asset.name != "Dockerfile" and asset.suffix not in text_suffixes):
+            continue
+        content = asset.read_bytes()
+        if b"\r\n" in content:
+            asset.write_bytes(content.replace(b"\r\n", b"\n"))
+
+
 def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> dict[str, Any]:
     if yaml is None:
         raise RuntimeError("PyYAML is required to generate closed-book docker-compose overrides")
@@ -560,7 +572,7 @@ def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> di
     proxy_assets = env_dir / "proxy"
     if proxy_assets.exists():
         shutil.rmtree(proxy_assets)
-    shutil.copytree(PROXY_ASSET_DIR, proxy_assets)
+    _copy_proxy_assets(proxy_assets)
     _append_proxy_allowlist(proxy_assets, proxy_allowlist_hosts)
 
     main = services.setdefault("main", {})

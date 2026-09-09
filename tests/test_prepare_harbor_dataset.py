@@ -404,6 +404,25 @@ def test_generated_compose_contains_closed_book_proxy_topology(tmp_path: Path) -
     assert "/etc/proxy-public/ca-cert.pem" in healthcheck
 
 
+def test_generated_proxy_assets_normalize_windows_line_endings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_generator_module()
+    proxy_source = tmp_path / "proxy-source"
+    proxy_source.mkdir()
+    for name in ("Dockerfile", "allowlist-base.txt", "entrypoint.sh", "rewriter.py"):
+        (proxy_source / name).write_bytes(b"first\r\nsecond\r\n")
+    monkeypatch.setattr(module, "PROXY_ASSET_DIR", proxy_source)
+
+    task = tmp_path / "task"
+    (task / "environment").mkdir(parents=True)
+    module._merge_compose(task, ())
+
+    for name in ("Dockerfile", "allowlist-base.txt", "entrypoint.sh", "rewriter.py"):
+        assert b"\r" not in (task / "environment" / "proxy" / name).read_bytes()
+
+
 def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _write_task(source, "task-a", "[environment]\n", "FROM ubuntu:22.04\n")
