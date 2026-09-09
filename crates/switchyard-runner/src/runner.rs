@@ -86,6 +86,11 @@ impl Runner {
         })
     }
 
+    /// Iterates over configured model IDs and their routes.
+    pub fn model_routes(&self) -> impl Iterator<Item = (&ModelId, &Route)> {
+        self.routes.iter().map(|(id, route)| (id, route))
+    }
+
     /// Returns the validated API root used for unmatched HTTP requests.
     pub fn fallback_base_url(&self) -> Option<&str> {
         self.fallback_base_url.as_deref()

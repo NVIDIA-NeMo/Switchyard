@@ -67,6 +67,7 @@ struct RouteConfig {
     context_window: Option<u32>,
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
+    reasoning_summaries: Option<bool>,
     vision: Option<bool>,
     algorithm: AlgorithmSpec,
 }
@@ -86,6 +87,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let context_window = take_optional(&mut table, "context_window")?;
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
+        let reasoning_summaries = take_optional(&mut table, "reasoning_summaries")?;
         let vision = take_optional(&mut table, "vision")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
@@ -94,6 +96,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             context_window,
             tool_calling,
             reasoning,
+            reasoning_summaries,
             vision,
             algorithm,
         })
@@ -216,7 +219,8 @@ impl DeploymentConfig {
                 anthropic_auxiliary_target,
                 responses_auxiliary_target,
                 decision_targets,
-            );
+            )
+            .with_reasoning_summaries(config.reasoning_summaries);
             routes.push((config.id.clone(), route));
         }
         let runner = Runner::new(routes).with_fallback_url(fallback_base_url);
@@ -590,13 +594,16 @@ mod tests {
 
     #[test]
     fn route_presentation_fields_are_split_from_the_algorithm() {
+        // `reasoning` and `reasoning_summaries` are independent route settings: a route
+        // can advertise reasoning while declining `reasoning.summary`.
         let route: RouteConfig = toml::from_str(
             r#"
 type = "random"
 id = "switchyard/random"
 context_window = 128000
 tool_calling = true
-reasoning = false
+reasoning = true
+reasoning_summaries = false
 targets = ["fast", "strong"]
 weights = [1.0, 2.0]
 seed = 7
@@ -607,7 +614,8 @@ seed = 7
         assert_eq!(route.id, "switchyard/random");
         assert_eq!(route.context_window, Some(128_000));
         assert_eq!(route.tool_calling, Some(true));
-        assert_eq!(route.reasoning, Some(false));
+        assert_eq!(route.reasoning, Some(true));
+        assert_eq!(route.reasoning_summaries, Some(false));
         assert_eq!(route.algorithm.routing_target_names(), ["fast", "strong"]);
     }
 
