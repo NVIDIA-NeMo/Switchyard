@@ -221,8 +221,8 @@ algorithms without evidence return `None`.
 
 With a host-installed OpenTelemetry subscriber, the existing `libsy.run` span records
 the same identity, selected models, and supported evidence fields. See
-the `Algorithm` observability section in the [Rust API reference](reference/rust_api.md)
-for the field names. libsy does not install an exporter or send telemetry itself.
+the [OpenTelemetry reference](reference/opentelemetry.md) for field names, metrics,
+and export setup. libsy does not install an exporter or send telemetry itself.
 
 For the request, response, and streaming types the steps carry, see
 [`switchyard-protocol`](../crates/protocol/README.md).
