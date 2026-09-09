@@ -830,7 +830,7 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     }
 }
 
-// Anthropic requires its default sampling temperature while thinking is active.
+// Anthropic requires default sampling while thinking is active.
 fn normalize_anthropic_thinking_sampling(body: &mut Value) {
     let Value::Object(object) = body else {
         return;
@@ -841,6 +841,8 @@ fn normalize_anthropic_thinking_sampling(body: &mut Value) {
         .and_then(Value::as_str);
     if matches!(thinking_type, Some("adaptive" | "enabled")) {
         object.remove("temperature");
+        object.remove("top_p");
+        object.remove("top_k");
     }
 }
 
@@ -1594,7 +1596,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn anthropic_adaptive_thinking_drops_incompatible_temperature()
+    async fn anthropic_adaptive_thinking_drops_incompatible_sampling()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1602,6 +1604,8 @@ mod tests {
             .and(|request: &wiremock::Request| {
                 let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
                 body.get("temperature").is_none()
+                    && body.get("top_p").is_none()
+                    && body.get("top_k").is_none()
                     && body["thinking"] == json!({"type": "adaptive"})
                     && body["output_config"] == json!({"effort": "high"})
             })
@@ -1631,7 +1635,9 @@ mod tests {
             "model": "client-facing",
             "max_tokens": 7,
             "messages": [{"role": "user", "content": "hi"}],
-            "temperature": 0.2
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "top_k": 40
         });
 
         client
