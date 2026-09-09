@@ -1012,6 +1012,11 @@ fn build_algorithm(
             subagents,
             ..
         } => {
+            let type_name = if matches!(config, AlgorithmSpec::Auto { .. }) {
+                "auto"
+            } else {
+                "stage_router"
+            };
             let StageTierConfig {
                 capable_target,
                 efficient_target,
@@ -1021,7 +1026,7 @@ fn build_algorithm(
             } = tiers;
             if matches!(picker, PickerMode::CapableFirst) {
                 tracing::warn!(
-                    "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
+                    "{type_name} route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
                 );
             }
             let capable = resolve_target_model_id(route_name, capable_target, targets)?;
@@ -1044,7 +1049,7 @@ fn build_algorithm(
                 .transpose()?;
             let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
                 AlgorithmConfigError::with_source(
-                    format!("stage_router route {route_name}: {error}"),
+                    format!("{type_name} route {route_name}: {error}"),
                     error,
                 )
             })?;
