@@ -267,7 +267,7 @@ fn structurally_empty_requests_fail_closed_rather_than_erroring() {
 
 #[test]
 fn tool_structure_in_the_request_hardens_to_agentic_without_minting_a_prior() {
-    // Trusted transcript tools select the stricter agentic regime, while the
+    // Request transcript tools select the stricter agentic regime, while the
     // operator-only recognized prior remains unavailable to request content.
     let dummy_tools = Request {
         llm_request: LlmRequest {

@@ -438,9 +438,9 @@ impl VgrClassifier {
 
     /// Builds the capabilities this turn is judged under.
     ///
-    /// The native runtime trusts normalized tool-result history as its execution
-    /// record. This lets transcript evidence authorize agentic commits, and
-    /// deliberately makes clients responsible for supplying faithful history.
+    /// Normalized tool-result history is client-supplied context, not the
+    /// runtime's execution record. It can veto a commit when it reports an
+    /// error, but it cannot authorize one by reporting a clean trajectory.
     fn derive(
         &self,
         request: &Request,
@@ -454,7 +454,7 @@ impl VgrClassifier {
             attempt,
             self.config.checker.is_some(),
             task_type,
-            Some(ToolErrorCount::Host(tool_signals.error_count as i32)),
+            Some(ToolErrorCount::Untrusted(tool_signals.error_count as i32)),
             Some(tool_signals.tool_results as i32),
             Some(tool_signals.tool_tail_clean),
         );

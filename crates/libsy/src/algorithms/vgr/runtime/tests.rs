@@ -1784,10 +1784,10 @@ async fn a_reported_tool_error_vetoes_a_commit_the_evidence_would_otherwise_lice
 }
 
 #[tokio::test]
-async fn a_clean_transcript_tool_result_authorizes_an_agentic_commit() {
-    // The native runtime deliberately treats normalized transcript tool results
-    // as its trusted execution record and excludes framework instructions from
-    // the agentic judged view.
+async fn a_clean_transcript_tool_result_cannot_authorize_an_agentic_commit() {
+    // Conversation history comes from the request and therefore cannot stand in
+    // for the runtime's own execution record, even when it reports a clean tool
+    // trajectory. The route must escalate rather than serve it locally.
     let log = CallLog::default();
     let seen = log.clone();
     let route = Arc::new(super::super::Vgr::new(active()).expect("builds"));
@@ -1816,8 +1816,8 @@ async fn a_clean_transcript_tool_result_authorizes_an_agentic_commit() {
     .await
     .expect("routes");
 
-    assert_eq!(target, ModelId::from(LOCAL));
-    assert_eq!(log.targets(), vec![LOCAL, LOCAL]);
+    assert_eq!(target, ModelId::from(CLOUD));
+    assert_eq!(log.targets(), vec![LOCAL, CLOUD]);
 }
 
 // ─── task typing and the agreement rung ──────────────────────────────────────
