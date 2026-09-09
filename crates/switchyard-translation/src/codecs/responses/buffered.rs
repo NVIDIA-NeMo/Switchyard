@@ -653,10 +653,17 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
     if let Some(text) = item.get("text").and_then(Value::as_str) {
         parts.push(text.to_string());
     }
+    // Encrypted reasoning must be replayed under the provider-issued item id;
+    // retain the original item only when it carries that opaque payload.
+    let details = if item.get("encrypted_content").is_some() {
+        vec![Value::Object(item.clone())]
+    } else {
+        Vec::new()
+    };
     vec![ContentBlock::Reasoning {
         text: parts.join("\n"),
         signature: None,
-        details: Vec::new(),
+        details,
     }]
 }
 
@@ -1060,15 +1067,18 @@ fn encode_responses_input(
         }
         let mut visible_content = Vec::new();
         let mut emitted_special = false;
+        let mut omitted_reasoning = false;
         for block in &content {
             if let Some(item) = encode_responses_special_input(block, namespaces) {
                 encoded.push(item);
                 emitted_special = true;
-            } else {
+            } else if !matches!(block, ContentBlock::Reasoning { .. }) {
                 visible_content.push(block.clone());
+            } else {
+                omitted_reasoning = true;
             }
         }
-        if !visible_content.is_empty() || !emitted_special {
+        if !visible_content.is_empty() || (!emitted_special && !omitted_reasoning) {
             let content = encode_responses_content(&visible_content, diagnostics, policy)?;
             encoded.push(json!({
                 "type": "message",
@@ -1089,12 +1099,8 @@ fn encode_responses_special_input(
         ContentBlock::Reasoning {
             text,
             signature: None,
-            ..
-        } => Some(json!({
-            "type": "reasoning",
-            "content": [{"type": "reasoning_text", "text": text}],
-            "summary": [],
-        })),
+            details,
+        } => encode_responses_reasoning_input(text, details),
         ContentBlock::ToolCall(call) => {
             // A Responses client dispatches on name plus namespace, so undo the
             // qualification this request applied for a flat upstream.
@@ -1123,6 +1129,37 @@ fn encode_responses_special_input(
         })),
         _ => None,
     }
+}
+
+// Encodes reasoning in the shape accepted for Responses input history. Response
+// output items may carry `content`, but replayed input items must avoid it.
+fn encode_responses_reasoning_input(text: &str, details: &[Value]) -> Option<Value> {
+    for detail in details {
+        let Some(detail) = detail.as_object() else {
+            continue;
+        };
+        if detail.get("type").and_then(Value::as_str) != Some("reasoning") {
+            continue;
+        }
+        let mut item = Map::new();
+        item.insert("type".to_string(), Value::String("reasoning".to_string()));
+        for field in ["id", "summary", "encrypted_content"] {
+            if let Some(value) = detail.get(field) {
+                item.insert(field.to_string(), value.clone());
+            }
+        }
+        item.entry("summary".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        return Some(Value::Object(item));
+    }
+
+    if text.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": text}],
+    }))
 }
 
 // Maps normalized roles back to Responses role strings.

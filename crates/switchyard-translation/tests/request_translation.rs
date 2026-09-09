@@ -1436,10 +1436,105 @@ fn responses_reasoning_items_round_trip_through_decode_and_encode() -> TestResul
         ]
     );
     assert_eq!(
-        input[1]["content"],
-        json!([{"type": "reasoning_text", "text": "Simple ls."}])
+        input[1]["summary"],
+        json!([{"type": "summary_text", "text": "Simple ls."}])
     );
+    assert!(input[1].get("content").is_none());
     assert_eq!(input[2]["call_id"], "call-ls");
+    Ok(())
+}
+
+// Verifies Codex-style encrypted reasoning remains replayable after a prompt
+// mutation drops exact replay, without synthesizing invalid reasoning content.
+#[test]
+fn responses_encrypted_reasoning_replays_without_input_content() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "switchyard",
+        "input": [
+            {"type": "message", "role": "user", "content": "Inspect"},
+            {
+                "type": "reasoning",
+                "id": "rs_prior",
+                "summary": [],
+                "encrypted_content": "opaque-encrypted-reasoning"
+            },
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call-1",
+                "arguments": "{\"cmd\":\"pwd\"}"
+            },
+            {"type": "function_call_output", "call_id": "call-1", "output": "/app"}
+        ]
+    });
+
+    let policy = TranslationPolicy::default();
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+    prepare_request_for_target(
+        &mut request,
+        &"openai/openai/gpt-5.6-sol".into(),
+        Some("[router-guidance] Continue from the current state."),
+    );
+
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+
+    assert_eq!(output["model"], "openai/openai/gpt-5.6-sol");
+    assert_eq!(
+        output["instructions"],
+        "[router-guidance] Continue from the current state."
+    );
+    let input = output["input"].as_array().ok_or("input is not an array")?;
+    let reasoning = input
+        .iter()
+        .find(|item| item["type"] == "reasoning")
+        .ok_or("reasoning item was not replayed")?;
+    assert_eq!(reasoning["id"], "rs_prior");
+    assert_eq!(reasoning["summary"], json!([]));
+    assert_eq!(reasoning["encrypted_content"], "opaque-encrypted-reasoning");
+    assert!(reasoning.get("content").is_none());
+    Ok(())
+}
+
+// Verifies an empty non-encrypted reasoning item is omitted instead of being
+// replayed as an empty assistant message.
+#[test]
+fn responses_empty_reasoning_without_encrypted_content_is_omitted() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5",
+        "input": [
+            {"type": "message", "role": "user", "content": "Inspect"},
+            {"type": "reasoning", "summary": []},
+            {"type": "message", "role": "user", "content": "Continue"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let input = output["input"].as_array().ok_or("input is not an array")?;
+    let item_types = input
+        .iter()
+        .map(|item| item["type"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(item_types, vec!["message", "message"]);
+    assert_eq!(input[0]["role"], "user");
+    assert_eq!(input[1]["role"], "user");
     Ok(())
 }
 
