@@ -62,20 +62,32 @@ pub struct StreamTranslationState {
     pub(crate) response_text_started: bool,
     pub(crate) response_text_output_index: Option<usize>,
     pub(crate) response_text: String,
-    pub(crate) response_reasoning_started: bool,
-    pub(crate) response_reasoning_output_index: Option<usize>,
-    pub(crate) response_reasoning_text: String,
-    /// Opaque `encrypted_content` carried by a Responses reasoning item. Kept verbatim so
-    /// the emitted item stays replayable by the client even when no plaintext streamed.
-    pub(crate) response_reasoning_encrypted: Option<String>,
-    /// Provider item id the encrypted reasoning was issued under. Used as the emitted item id
-    /// so the client's replay verifies upstream; `None` falls back to a synthesized id.
-    pub(crate) response_reasoning_item_id: Option<String>,
+    /// Reasoning items being ENCODED, keyed by source content index. A response can carry
+    /// several reasoning items (GPT-5 emits one ahead of each tool call); each becomes its
+    /// own output item so none of their encrypted payloads is lost.
+    pub(crate) response_reasoning: BTreeMap<usize, ResponseReasoningState>,
+    /// Source indexes whose provider reasoning item id was already announced while DECODING.
+    pub(crate) decoded_reasoning_ids: std::collections::BTreeSet<usize>,
     pub(crate) next_response_output_index: usize,
     pub(crate) response_sequence_number: u64,
 
     pub(crate) reasoning_block_index: Option<usize>,
     pub(crate) reasoning_block_started: bool,
+}
+
+// One Responses reasoning output item under construction by the encoder.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ResponseReasoningState {
+    /// Set once the item's `added` events were emitted.
+    pub(crate) started: bool,
+    pub(crate) output_index: Option<usize>,
+    /// Provider item id the encrypted reasoning was issued under. Used as the emitted item id
+    /// so the client's replay verifies upstream; `None` falls back to a synthesized id.
+    pub(crate) item_id: Option<String>,
+    pub(crate) text: String,
+    /// Opaque `encrypted_content` carried by a Responses reasoning item. Kept verbatim so
+    /// the emitted item stays replayable by the client even when no plaintext streamed.
+    pub(crate) encrypted: Option<String>,
 }
 
 // Tracks an in-progress streamed tool call across provider-specific deltas.

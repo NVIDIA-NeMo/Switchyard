@@ -1779,10 +1779,17 @@ fn responses_stream_decodes_text_only_reasoning_item_from_done() -> TestResult {
 
     assert_eq!(
         decoded.normalized(),
-        &[LlmResponseChunk::ReasoningDelta {
-            index: 0,
-            text: "Let me explore the repo first.".to_string(),
-        }]
+        &[
+            LlmResponseChunk::ReasoningDetailsDelta {
+                index: 0,
+                details: vec![json!({"type": "reasoning.encrypted", "id": "rs_upstream"})],
+                text: String::new(),
+            },
+            LlmResponseChunk::ReasoningDelta {
+                index: 0,
+                text: "Let me explore the repo first.".to_string(),
+            }
+        ]
     );
     Ok(())
 }
@@ -1814,7 +1821,15 @@ fn responses_stream_does_not_duplicate_streamed_reasoning_on_done() -> TestResul
     let second = engine.decode_stream_event(&mut state, format, done)?;
 
     assert_eq!(first.normalized().len(), 1);
-    assert_eq!(second.normalized(), &[]);
+    // The done item contributes only its provider id, never the text again.
+    assert_eq!(
+        second.normalized(),
+        &[LlmResponseChunk::ReasoningDetailsDelta {
+            index: 0,
+            details: vec![json!({"type": "reasoning.encrypted", "id": "rs_upstream"})],
+            text: String::new(),
+        }]
+    );
     Ok(())
 }
 
@@ -1833,10 +1848,17 @@ fn responses_stream_decodes_reasoning_text_from_added_done_and_completed_once() 
     let decoded = engine.decode_stream_event(&mut state, format, added)?;
     assert_eq!(
         decoded.normalized(),
-        &[LlmResponseChunk::ReasoningDelta {
-            index: 0,
-            text: "from added".into()
-        }]
+        &[
+            LlmResponseChunk::ReasoningDetailsDelta {
+                index: 0,
+                details: vec![json!({"type": "reasoning.encrypted", "id": "rs_a"})],
+                text: String::new(),
+            },
+            LlmResponseChunk::ReasoningDelta {
+                index: 0,
+                text: "from added".into()
+            }
+        ]
     );
     // the matching done repeats it and must be skipped
     let done = json!({"type": "response.output_item.done", "output_index": 0,
@@ -1875,12 +1897,13 @@ fn responses_stream_decodes_reasoning_text_from_added_done_and_completed_once() 
                 assert_eq!(text, "from completed");
                 "reasoning"
             }
+            LlmResponseChunk::ReasoningDetailsDelta { .. } => "id",
             LlmResponseChunk::Usage(_) => "usage",
             LlmResponseChunk::MessageStop { .. } => "stop",
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, vec!["reasoning", "usage", "stop"]);
+    assert_eq!(kinds, vec!["id", "reasoning", "usage", "stop"]);
 
     // (d) completed output repeating already-streamed reasoning adds nothing
     let mut state = StreamTranslationState::new(format, format);
@@ -2055,5 +2078,119 @@ fn responses_stream_synthesized_item_ids_are_unique_across_responses() -> TestRe
             "item id {id} ({kind}) repeated across responses: {ids:?}"
         );
     }
+    Ok(())
+}
+
+// Decodes a provider Responses stream and re-encodes it the way the buffered/escalation path
+// does: from normalized chunks, with no preserved provider JSON.
+fn reencode_responses_events(
+    events: Vec<Value>,
+) -> Result<Vec<Value>, Box<dyn std::error::Error + Send + Sync>> {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let mut decode_state = StreamTranslationState::new(format, format);
+    let mut encode_state = StreamTranslationState::new(format, format);
+    let mut out = Vec::new();
+    for event in events {
+        let decoded = engine.decode_stream_event(&mut decode_state, format, event)?;
+        for chunk in decoded.normalized() {
+            out.extend(engine.encode_stream_event(
+                &mut encode_state,
+                format,
+                LlmResponseStreamEvent::new(vec![chunk.clone()]),
+            )?);
+        }
+    }
+    out.extend(engine.finish_stream(&mut encode_state, format)?);
+    Ok(out)
+}
+
+// GPT-5 emits a reasoning item ahead of each tool call. Every one of them must reach the
+// client under its provider id with its encrypted payload, in the provider's order.
+#[test]
+fn responses_stream_keeps_every_reasoning_item_of_a_response() -> TestResult {
+    let events = vec![
+        json!({"type": "response.created", "response": {"id": "resp_up", "model": "gpt-5.6-luna"}}),
+        json!({"type": "response.output_item.added", "output_index": 0,
+               "item": {"type": "reasoning", "id": "rs_a", "summary": []}}),
+        json!({"type": "response.output_item.done", "output_index": 0,
+               "item": {"type": "reasoning", "id": "rs_a", "summary": [], "encrypted_content": "enc-a"}}),
+        json!({"type": "response.output_item.added", "output_index": 1,
+               "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "exec", "arguments": ""}}),
+        json!({"type": "response.output_item.done", "output_index": 1,
+               "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "exec", "arguments": "{\"cmd\":\"ls\"}"}}),
+        json!({"type": "response.output_item.added", "output_index": 2,
+               "item": {"type": "reasoning", "id": "rs_b", "summary": []}}),
+        json!({"type": "response.output_item.done", "output_index": 2,
+               "item": {"type": "reasoning", "id": "rs_b", "summary": [], "encrypted_content": "enc-b"}}),
+        json!({"type": "response.output_item.added", "output_index": 3,
+               "item": {"type": "function_call", "id": "fc_3", "call_id": "call_3", "name": "exec", "arguments": ""}}),
+        json!({"type": "response.output_item.done", "output_index": 3,
+               "item": {"type": "function_call", "id": "fc_3", "call_id": "call_3", "name": "exec", "arguments": "{\"cmd\":\"pwd\"}"}}),
+    ];
+    let events = reencode_responses_events(events)?;
+
+    let reasoning_done: Vec<&Value> = events
+        .iter()
+        .filter(|event| {
+            event["type"] == "response.output_item.done" && event["item"]["type"] == "reasoning"
+        })
+        .collect();
+    assert_eq!(reasoning_done.len(), 2, "both reasoning items must close");
+    assert_eq!(reasoning_done[0]["item"]["id"], "rs_a");
+    assert_eq!(reasoning_done[0]["item"]["encrypted_content"], "enc-a");
+    assert_eq!(reasoning_done[1]["item"]["id"], "rs_b");
+    assert_eq!(reasoning_done[1]["item"]["encrypted_content"], "enc-b");
+
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("expected response.completed")?;
+    let kinds: Vec<&str> = completed["response"]["output"]
+        .as_array()
+        .ok_or("output array")?
+        .iter()
+        .filter_map(|item| item["type"].as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["reasoning", "function_call", "reasoning", "function_call"]
+    );
+    Ok(())
+}
+
+// Summary text streams before the encrypted payload arrives on `done`. The item must open
+// under the provider id announced by `added`, not a synthesized one, so the payload is kept.
+#[test]
+fn responses_stream_opens_reasoning_under_provider_id_before_payload_arrives() -> TestResult {
+    let events = vec![
+        json!({"type": "response.created", "response": {"id": "resp_up", "model": "gpt-5.6-luna"}}),
+        json!({"type": "response.output_item.added", "output_index": 0,
+               "item": {"type": "reasoning", "id": "rs_a", "summary": []}}),
+        json!({"type": "response.reasoning_summary_text.delta", "output_index": 0, "item_id": "rs_a",
+               "summary_index": 0, "delta": "plan"}),
+        json!({"type": "response.output_item.done", "output_index": 0,
+               "item": {"type": "reasoning", "id": "rs_a", "summary": [{"type": "summary_text", "text": "plan"}],
+                        "encrypted_content": "enc-a"}}),
+    ];
+    let events = reencode_responses_events(events)?;
+
+    let added: Vec<&Value> = events
+        .iter()
+        .filter(|event| {
+            event["type"] == "response.output_item.added" && event["item"]["type"] == "reasoning"
+        })
+        .collect();
+    assert_eq!(added.len(), 1, "one reasoning item opens");
+    assert_eq!(added[0]["item"]["id"], "rs_a");
+    let done = events
+        .iter()
+        .find(|event| {
+            event["type"] == "response.output_item.done" && event["item"]["type"] == "reasoning"
+        })
+        .ok_or("expected a completed reasoning item")?;
+    assert_eq!(done["item"]["id"], "rs_a");
+    assert_eq!(done["item"]["encrypted_content"], "enc-a");
+    assert_eq!(done["item"]["summary"][0]["text"], "plan");
     Ok(())
 }
