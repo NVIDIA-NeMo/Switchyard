@@ -128,6 +128,13 @@ static BASH_WRITE_PATTERNS: &[&str] = &[
 /// interpreter is running them rather than a search looking for them.
 static PYTHON_WRITE_PATTERNS: &[&str] = &["write_text(", "writelines(", ".write("];
 
+static JAVASCRIPT_WRITE_PATTERNS: &[&str] = &[
+    "writefilesync(",
+    "writefile(",
+    "appendfilesync(",
+    "appendfile(",
+];
+
 static BASH_EDIT_PATTERNS: &[&str] = &[
     "sed -i",
     "sed --in-place",
@@ -145,6 +152,31 @@ static BASH_EDIT_PATTERNS: &[&str] = &[
 static BASH_READ_PATTERNS: &[&str] = &[
     "cat /", "cat ./", "cat ../", "grep ", "ls ", "ls -", "find ", "head ", "tail ", "wc ",
     "diff ", "which ", "ps ", "df ", "du ", "stat ", "file ", "less ", "more ",
+];
+
+/// Read-only shell programs seen in Codex trajectories. Matching is limited to
+/// command-segment starts so prose and arguments do not masquerade as actions.
+static BASH_READ_COMMANDS: &[&str] = &[
+    "cat", "rg", "nl", "jq", "pwd", "tree", "sed", "grep", "ls", "find", "head", "tail", "wc",
+    "diff", "which", "ps", "df", "du", "stat", "file", "less", "more", "readlink", "realpath",
+    "basename", "dirname", "printenv",
+];
+
+static GIT_READ_SUBCOMMANDS: &[&str] = &[
+    "status",
+    "diff",
+    "log",
+    "show",
+    "show-ref",
+    "rev-parse",
+    "ls-files",
+    "ls-remote",
+    "ls-tree",
+    "grep",
+    "blame",
+    "merge-base",
+    "check-ignore",
+    "tag",
 ];
 
 static READ_TOOL_NAMES: &[&str] = &["read", "view", "read_file", "search_files"];
@@ -329,20 +361,164 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
         && let Some(cmd) = command
     {
         // Write/edit redirection trumps read-like operands.
-        if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
+        if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_write(cmd) {
             return ToolCategory::Write;
         }
         if cmd.contains("python") && PYTHON_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
             return ToolCategory::Write;
         }
-        if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p)) {
+        if shell_invokes_program(cmd, "node")
+            && JAVASCRIPT_WRITE_PATTERNS
+                .iter()
+                .any(|pattern| cmd.contains(pattern))
+        {
+            return ToolCategory::Write;
+        }
+        if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_edit(cmd) {
             return ToolCategory::Edit;
         }
-        if BASH_READ_PATTERNS.iter().any(|p| cmd.contains(p)) {
+        if BASH_READ_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_read(cmd) {
             return ToolCategory::Read;
         }
     }
     ToolCategory::Other
+}
+
+/// Split a shell line at common command separators. This intentionally avoids
+/// pretending to be a full shell parser; only the leading program and flags of
+/// each segment are inspected below.
+fn shell_segments(command: &str) -> impl Iterator<Item = &str> {
+    command
+        .split(['\n', ';', '|', '&'])
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+}
+
+fn shell_words(segment: &str) -> Vec<&str> {
+    let words: Vec<&str> = segment.split_ascii_whitespace().collect();
+    let mut start = 0usize;
+
+    if words.first().is_some_and(|word| *word == "env") {
+        start += 1;
+        while words.get(start).is_some_and(|word| word.starts_with('-')) {
+            start += 1;
+        }
+    }
+    while words
+        .get(start)
+        .is_some_and(|word| word.contains('=') && !word.starts_with('='))
+    {
+        start += 1;
+    }
+
+    words[start..].to_vec()
+}
+
+fn program_name(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
+}
+
+fn shell_invokes_program(command: &str, expected: &str) -> bool {
+    shell_segments(command).any(|segment| {
+        shell_words(segment)
+            .first()
+            .is_some_and(|word| program_name(word) == expected)
+    })
+}
+
+fn shell_command_is_write(command: &str) -> bool {
+    shell_segments(command).any(|segment| {
+        let words = shell_words(segment);
+        let Some(program) = words.first().map(|word| program_name(word)) else {
+            return false;
+        };
+        if matches!(program, "cp" | "mkdir" | "touch" | "install") {
+            return true;
+        }
+
+        let redirects_output = words.iter().skip(1).any(|word| matches!(*word, ">" | ">>"));
+        redirects_output
+            && (matches!(program, "echo" | "printf" | "git")
+                || BASH_READ_COMMANDS.contains(&program))
+    })
+}
+
+fn shell_command_is_edit(command: &str) -> bool {
+    shell_segments(command).any(|segment| {
+        let words = shell_words(segment);
+        let Some(program) = words.first().map(|word| program_name(word)) else {
+            return false;
+        };
+        let has_arg = |arg: &str| words.iter().skip(1).any(|word| *word == arg);
+
+        match program {
+            "mv" | "rm" => true,
+            "perl" => words
+                .iter()
+                .skip(1)
+                .take_while(|word| word.starts_with('-'))
+                .any(|option| {
+                    option
+                        .trim_start_matches('-')
+                        .chars()
+                        .any(|flag| flag == 'i')
+                }),
+            "git" => words
+                .get(1)
+                .is_some_and(|subcommand| matches!(*subcommand, "apply" | "am" | "restore")),
+            "gofmt" => has_arg("-w"),
+            "cargo" => words.get(1) == Some(&"fmt") && !has_arg("--check"),
+            "ruff" => {
+                (words.get(1) == Some(&"format") && !has_arg("--check"))
+                    || (words.get(1) == Some(&"check") && has_arg("--fix"))
+            }
+            "prettier" => has_arg("--write"),
+            "black" => !has_arg("--check"),
+            _ => {
+                (words.iter().any(|word| program_name(word) == "prettier") && has_arg("--write"))
+                    || (words.iter().any(|word| program_name(word) == "ruff")
+                        && ((words.contains(&"format") && !has_arg("--check"))
+                            || (words.contains(&"check") && has_arg("--fix"))))
+            }
+        }
+    })
+}
+
+fn shell_command_is_read(command: &str) -> bool {
+    shell_segments(command).any(|segment| {
+        if segment == "env" {
+            return true;
+        }
+        let words = shell_words(segment);
+        let Some(program) = words.first().map(|word| program_name(word)) else {
+            return false;
+        };
+
+        if BASH_READ_COMMANDS.contains(&program) {
+            return true;
+        }
+        if program == "command" && words.get(1) == Some(&"-v") {
+            return true;
+        }
+        if program == "type" {
+            return true;
+        }
+        if program != "git" {
+            return false;
+        }
+
+        match words.get(1).copied() {
+            Some("branch") => words.get(2).is_none_or(|arg| arg.starts_with('-')),
+            Some("remote") => words
+                .get(2)
+                .is_none_or(|arg| arg.starts_with('-') || *arg == "get-url"),
+            Some("config") => words
+                .get(2)
+                .is_some_and(|arg| matches!(*arg, "--get" | "--get-all" | "--list" | "-l")),
+            Some(subcommand) => GIT_READ_SUBCOMMANDS.contains(&subcommand),
+            None => false,
+        }
+    })
 }
 
 // ─── extraction entry point ───────────────────────────────────────────────────
@@ -590,7 +766,73 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
         patterns.push("exit_nonzero".to_string());
         severity = severity.max(SOFT);
     }
+    for (name, matched) in [
+        ("compile_error", has_compiler_diagnostic(&lower)),
+        ("runtime_exception", has_runtime_exception(&lower)),
+        ("runtime_panic", has_runtime_panic(&lower)),
+        ("patch_error", has_patch_failure(&lower)),
+    ] {
+        if matched && !patterns.iter().any(|pattern| pattern == name) {
+            patterns.push(name.to_string());
+            severity = severity.max(HARD);
+        }
+    }
     (severity, patterns)
+}
+
+fn has_compiler_diagnostic(lower: &str) -> bool {
+    lower.lines().any(|line| {
+        let line = line.trim_start();
+        if matches!(
+            line,
+            "compilation failed" | "error: compilation failed" | "error: could not compile"
+        ) || line.starts_with("error: could not compile ")
+        {
+            return true;
+        }
+
+        let Some(rest) = line.strip_prefix("error[e") else {
+            return false;
+        };
+        let Some((code, _)) = rest.split_once("]:") else {
+            return false;
+        };
+        !code.is_empty() && code.chars().all(|character| character.is_ascii_digit())
+    })
+}
+
+fn has_runtime_exception(lower: &str) -> bool {
+    let has_exception_line = lower.lines().any(|line| {
+        let line = line.trim_start();
+        [
+            "typeerror:",
+            "referenceerror:",
+            "rangeerror:",
+            "runtimeerror:",
+            "keyerror:",
+            "attributeerror:",
+        ]
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
+    });
+    has_exception_line && (lower.contains("\n    at ") || lower.contains("\n  at "))
+}
+
+fn has_runtime_panic(lower: &str) -> bool {
+    lower
+        .lines()
+        .any(|line| line.trim_start().starts_with("panic: runtime error:"))
+        && (lower.contains("\ngoroutine ") || lower.contains("[signal sig"))
+}
+
+fn has_patch_failure(lower: &str) -> bool {
+    lower.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("error: patch failed:")
+            || line.starts_with("patch failed:")
+            || line.contains(": patch does not apply")
+            || line.starts_with("invalid context")
+    })
 }
 
 /// Detects `exit_nonzero` only when a supported exit phrase is followed by a
@@ -784,6 +1026,40 @@ mod tests {
             assert_eq!(sev, SOFT, "expected soft severity for {case}");
             assert!(patterns.contains(&"exit_nonzero".to_string()));
         }
+    }
+
+    #[test]
+    fn partial_process_failures_are_hard_errors() {
+        let cases = [
+            (
+                "Process running with session ID 12\nOutput:\nerror[E0509]: cannot move out",
+                "compile_error",
+            ),
+            (
+                "Process exited with code 0\nOutput:\nTypeError: value is undefined\n    at main.js:1:2",
+                "runtime_exception",
+            ),
+            (
+                "Process running with session ID 13\nOutput:\npanic: runtime error: index out of range\n\ngoroutine 6 [running]:",
+                "runtime_panic",
+            ),
+            (
+                "Process exited with code 0\nOutput:\nerror: patch failed: src/lib.rs:4\nerror: src/lib.rs: patch does not apply",
+                "patch_error",
+            ),
+        ];
+        for (text, expected_pattern) in cases {
+            let (severity, patterns) = classify_text(text);
+            assert_eq!(severity, HARD, "expected hard severity for {text}");
+            assert!(patterns.iter().any(|pattern| pattern == expected_pattern));
+        }
+    }
+
+    #[test]
+    fn source_text_that_names_exceptions_stays_clean() {
+        let text =
+            "pub enum TypeError: this is documentation\nlet sample = 'panic: runtime error:';";
+        assert_eq!(classify_text(text).0, 0.0);
     }
 
     #[test]
@@ -1224,6 +1500,91 @@ mod tests {
                 "expected Read for {cmd}"
             );
         }
+    }
+
+    #[test]
+    fn codex_inspection_commands_classify_as_read() {
+        let cases = [
+            "sed -n '1,80p' src/lib.rs",
+            "rg -n 'needle' src",
+            "nl -ba src/lib.rs",
+            "cat package.json",
+            "jq '.scripts' package.json",
+            "git status --short",
+            "git log --oneline -5",
+            "git show HEAD:src/lib.rs",
+            "git branch --show-current",
+            "git remote -v",
+            "git config --get remote.origin.url",
+        ];
+        for command in cases {
+            assert_eq!(
+                classify_tool_call("exec_command", Some(command)),
+                ToolCategory::Read,
+                "expected Read for {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_shell_mutations_classify_as_production() {
+        let writes = [
+            "cp source.rs destination.rs",
+            "mkdir -p src/generated",
+            "touch src/generated/mod.rs",
+            "git show HEAD:file.rs > file.rs",
+            "node <<'node'\nfs.writefilesync('file.js', text)\nnode",
+        ];
+        for command in writes {
+            assert_eq!(
+                classify_tool_call("exec_command", Some(command)),
+                ToolCategory::Write,
+                "expected Write for {command}"
+            );
+        }
+
+        let edits = [
+            "mv old.rs new.rs",
+            "rm obsolete.rs",
+            "gofmt -w main.go",
+            "cargo fmt",
+            "ruff check --fix src",
+            "perl -0pi -e 's/old/new/' src/lib.rs",
+            "npx prettier --write src/lib.ts",
+            "uv run ruff format src",
+            "git apply fix.patch",
+        ];
+        for command in edits {
+            assert_eq!(
+                classify_tool_call("exec_command", Some(command)),
+                ToolCategory::Edit,
+                "expected Edit for {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn formatter_checks_are_not_edits() {
+        for command in [
+            "cargo fmt --check",
+            "ruff format --check src",
+            "black --check src",
+        ] {
+            assert_ne!(
+                classify_tool_call("exec_command", Some(command)),
+                ToolCategory::Edit,
+                "read-only formatter check must not be Edit: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn embedded_comparison_is_not_a_shell_write() {
+        let command = "node <<'node'\nif (index > 0) console.log(index)\nnode";
+        assert_eq!(
+            classify_tool_call("exec_command", Some(command)),
+            ToolCategory::Other
+        );
     }
 
     #[test]
