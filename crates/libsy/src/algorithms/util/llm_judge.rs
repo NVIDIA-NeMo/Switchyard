@@ -237,6 +237,7 @@ where
         self
     }
 
+    /// Replaces run evidence only for judges that opted into structured evidence.
     fn report_fail_open(&self, driver: &Driver, error: String, reason: &'static str) {
         report_fail_open(self.target.as_str(), error, reason);
         if self.evidence.is_some() {

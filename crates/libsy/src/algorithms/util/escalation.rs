@@ -140,6 +140,7 @@ impl JudgePolicy for EscalationPolicy {
     }
 }
 
+/// Maps present verdicts to stable `escalate` or `continue` values; absent verdicts add nothing.
 fn escalation_evidence(
     _policy: &EscalationPolicy,
     verdict: Option<&EscalationVerdict>,

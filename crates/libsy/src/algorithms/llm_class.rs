@@ -243,6 +243,7 @@ impl JudgePolicy for TaskClassifierPolicy {
     }
 }
 
+/// Maps valid verdicts to scores, invalid verdicts to a reason, and leaves absent verdicts alone.
 fn capability_evidence(
     policy: &TaskClassifierPolicy,
     verdict: Option<&TaskClassifierVerdict>,
