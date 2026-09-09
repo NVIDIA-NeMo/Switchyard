@@ -2105,8 +2105,10 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 </tbody>
 </table>
 <h3 id="auto"><code>auto</code><a class="headerlink" href="#auto" title="Permanent link">&para;</a></h3>
-<p>Picks a routing strategy automatically. Currently resolves to <code>stage_router</code>
-and takes the same fields; the resolution may change in a future release.</p>
+<p>Uses Switchyard's recommended default routing strategy instead of one you pick
+yourself. See <a href="../../routing_algorithms/stage_router_routing/">Stage-Router Routing</a>
+for a deeper dive on the current default, or the <a href="../../routing_algorithms/overview/#choose-a-strategy">strategy table</a>
+to pick one manually.</p>
 <h3 id="composite"><code>composite</code><a class="headerlink" href="#composite" title="Permanent link">&para;</a></h3>
 <p>Composes other algorithms, letting one set another's
 configuration. Today a classifier sets the tier a stage router falls open to when its own signals are not confident, leaving its scoring and escalation logic untouched. See
