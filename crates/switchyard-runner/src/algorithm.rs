@@ -407,7 +407,7 @@ pub enum VgrModeConfig {
     Evaluate,
     /// Decisions are made and recorded, but the capable tier is always served.
     Shadow,
-    /// Reserved for library embedders; rejected by the public runner.
+    /// Serves only readiness-gated local decisions after explicit operator approval.
     Active,
 }
 
