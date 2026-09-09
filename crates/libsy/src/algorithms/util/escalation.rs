@@ -9,13 +9,14 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
+use switchyard_protocol::{Category, ContentBlock, Message, Role};
 
 use super::classifier_contract::{ClassifierContract, ClassifierContractConfig};
 use super::llm_judge::{
     ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
     StructuredJudge,
 };
+use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
@@ -124,15 +125,16 @@ pub(crate) type EscalationJudge = StructuredJudge<EscalationInput, SerdeDecoder<
 /// [`Classification::Ambiguous`] carries the unavailable case, which names no tier: both a
 /// decline and an outage stay efficient, but only a decline is evidence, so only a decline
 /// clears the streak.
-pub(crate) struct EscalationPolicy {
-    capable: ModelId,
-    efficient: ModelId,
-}
+pub(crate) struct EscalationPolicy;
 
 impl JudgePolicy for EscalationPolicy {
     type Verdict = EscalationVerdict;
 
-    fn to_classification(&self, verdict: Option<&EscalationVerdict>) -> Classification {
+    fn to_classification(
+        &self,
+        verdict: Option<&EscalationVerdict>,
+        driver: &Driver,
+    ) -> Result<Classification> {
         if let Some(verdict) = verdict {
             tracing::debug!(
                 escalate = verdict.escalate,
@@ -141,15 +143,17 @@ impl JudgePolicy for EscalationPolicy {
             );
         }
         match verdict {
-            Some(verdict) if verdict.escalate => Classification::Scores(vec![Score {
-                target: self.capable.clone(),
+            Some(verdict) if verdict.escalate => Ok(Classification::Scores(vec![Score {
+                target: driver.first_model_for(Category::Capable)?.clone(),
                 confidence: 1.0,
-            }]),
-            Some(_) => Classification::Scores(vec![Score {
-                target: self.efficient.clone(),
+                category: Some(Category::Capable),
+            }])),
+            Some(_) => Ok(Classification::Scores(vec![Score {
+                target: driver.first_model_for(Category::Efficient)?.clone(),
                 confidence: 1.0,
-            }]),
-            None => Classification::Ambiguous(Vec::new()),
+                category: Some(Category::Efficient),
+            }])),
+            None => Ok(Classification::Ambiguous(Vec::new())),
         }
     }
 }
@@ -167,14 +171,11 @@ fn escalation_evidence(
     })
 }
 
-/// Builds the trajectory judge over `judge_target`, scoring `capable` when it escalates.
+/// Builds the trajectory judge, scoring the runtime capable category when it escalates.
 ///
 /// Loads the packaged prompt and schema, so an unusable asset or an unusable `config` value
 /// fails here rather than on the first request.
 pub(crate) fn build_judge(
-    judge_target: ModelId,
-    capable: ModelId,
-    efficient: ModelId,
     contract_config: &ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
@@ -189,8 +190,7 @@ pub(crate) fn build_judge(
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(max_output_tokens)?,
         ),
-        judge_target,
-        EscalationPolicy { capable, efficient },
+        EscalationPolicy,
     )
     .with_evidence(escalation_evidence))
 }

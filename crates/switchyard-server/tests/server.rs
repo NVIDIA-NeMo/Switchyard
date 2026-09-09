@@ -22,8 +22,9 @@ use serde_json::{Value, json};
 use switchyard_llm_client::{
     Backend, ClientRouter, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
-use switchyard_protocol::ModelId;
 use switchyard_protocol::RoutedLlmClient;
+use switchyard_protocol::{Category, ModelId, WireFormat};
+use switchyard_runner::{DecisionTarget, ModelCapabilities, Route, Runner, RuntimeModels};
 use switchyard_server::config::load_server_state;
 use switchyard_server::{
     DEFAULT_MAX_REQUEST_BODY_BYTES, ServerState, build_llm_router, build_switchyard_router,
@@ -305,7 +306,7 @@ async fn upstream_chat(
         if requests_invalid_verdict {
             r#"{"decision":{"target":"unknown"}}"#
         } else {
-            r#"{"decision":{"target":"premium"}}"#
+            r#"{"decision":{"target":"efficient"}}"#
         }
     } else if body
         .pointer("/response_format/json_schema/schema/properties/escalate")
@@ -528,16 +529,39 @@ fn random_state_with_retries(
     let entries = routes
         .iter()
         .map(|(route_model, targets)| {
-            let target_set = targets.iter().map(|model| ModelId::from(*model)).collect();
-            let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
+            let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(None, None)?);
+            let decision_targets = targets
+                .iter()
+                .map(|model| DecisionTarget {
+                    target: (*model).to_string(),
+                    model: ModelId::from(*model),
+                    format: WireFormat::OpenAiChat,
+                    base_url: base_url.to_string(),
+                    extra_body: BTreeMap::new(),
+                })
+                .collect();
             Ok((
                 ModelId::from(*route_model),
-                algorithm,
-                ClientRouter::single(Arc::clone(&client)),
+                Route::new(
+                    algorithm,
+                    ClientRouter::single(Arc::clone(&client)),
+                    None,
+                    ModelCapabilities::default(),
+                    None,
+                    None,
+                    decision_targets,
+                    RuntimeModels::new(
+                        [(
+                            Category::Any,
+                            targets.iter().map(|model| ModelId::from(*model)).collect(),
+                        )]
+                        .into(),
+                    ),
+                ),
             ))
         })
         .collect::<TestResult<Vec<_>>>()?;
-    Ok(ServerState::new(entries)?)
+    ServerState::from_runner(Runner::new(entries)).map_err(Into::into)
 }
 
 async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Router)> {
@@ -1583,8 +1607,7 @@ new = ["send_message_to_user"]
 }
 
 #[tokio::test]
-async fn custom_classifier_routes_four_targets_and_falls_back_on_an_invalid_verdict() -> TestResult
-{
+async fn custom_classifier_uses_categories_and_falls_back_on_an_invalid_verdict() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
         r#"
@@ -1618,9 +1641,8 @@ llm_client = "upstream"
 id = "switchyard/custom"
 type = "llm_classifier"
 mode = "custom"
-classifier_target = "classifier"
-targets = ["weak", "middle", "strong", "premium"]
-default_target = "strong"
+models = {{ judge = ["classifier"], capable = ["strong", "premium"], efficient = ["middle", "weak"], any = ["weak", "middle", "strong", "premium"] }}
+default_target = "capable"
 prompt = "CUSTOM MULTI TARGET"
 response_schema = '''
 {{
@@ -1629,7 +1651,7 @@ response_schema = '''
     "decision": {{
       "type": "object",
       "properties": {{
-        "target": {{"type": "string", "enum": ["weak", "middle", "strong", "premium"]}}
+        "target": {{"type": "string", "enum": ["any", "judge", "capable", "efficient"]}}
       }},
       "required": ["target"],
       "additionalProperties": false
@@ -1649,7 +1671,7 @@ selector = "/decision/target"
     let app = build_switchyard_router(state);
 
     for (task, selected) in [
-        ("route this task", "model/premium"),
+        ("route this task", "model/middle"),
         ("return an invalid verdict", "model/strong"),
     ] {
         let response = send(
@@ -1690,7 +1712,7 @@ selector = "/decision/target"
     assert_eq!(
         judge_call["response_format"]["json_schema"]["schema"]["properties"]["decision"]["properties"]
             ["target"]["enum"],
-        json!(["weak", "middle", "strong", "premium"])
+        json!(["any", "judge", "capable", "efficient"])
     );
     Ok(())
 }

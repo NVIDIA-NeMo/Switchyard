@@ -34,8 +34,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use switchyard_protocol::{
-    ContentBlock, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Request, Role,
-    SamplingParams,
+    Category, ContentBlock, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Request,
+    Role, SamplingParams,
 };
 
 use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
@@ -153,8 +153,6 @@ impl Default for AdvisorGateConfig {
 /// turn, which a stronger advisor reviews once per scope budget (APPROVE
 /// releases it, REDO feeds the plan back and re-invokes the executor).
 pub struct AdvisorGate {
-    executor: ModelId,
-    advisor: ModelId,
     config: AdvisorGateConfig,
     /// Folds request- and response-side facts into the per-turn [`GateSignals`].
     signals: GateSignalProcessor,
@@ -166,8 +164,8 @@ pub struct AdvisorGate {
 }
 
 impl AdvisorGate {
-    /// Validates ranges and compiles the trigger and verdict patterns.
-    pub fn new(executor: ModelId, advisor: ModelId, config: AdvisorGateConfig) -> Result<Self> {
+    /// Validates the config. Models are supplied when each request runs.
+    pub fn new(config: AdvisorGateConfig) -> Result<Self> {
         if config.max_reviews < 1 {
             return Err(algorithm_error("max_reviews must be at least 1"));
         }
@@ -183,8 +181,6 @@ impl AdvisorGate {
         })?;
         let budget = ReviewBudget::new(config.max_reviews);
         Ok(Self {
-            executor,
-            advisor,
             config,
             signals: GateSignalProcessor,
             trigger,
@@ -201,13 +197,15 @@ impl AdvisorGate {
         request: Request,
         scope: &ScopeKey,
     ) -> Result<RoutingOutcome> {
+        let executor = driver.first_model_for(Category::Any)?;
+
         // Spent budget (or failure cap): pure passthrough — live stream,
         // verbatim preserved-body replay, zero buffering. Executor errors
         // (including ContextWindowExceeded) propagate for the host's
         // client-visible mapping.
         if self.budget.check_exhausted(scope) {
             return Ok(RoutingOutcome::route_to(
-                self.executor.clone(),
+                executor.clone(),
                 Vec::new(),
                 request,
             ));
@@ -221,7 +219,7 @@ impl AdvisorGate {
                 &mut signals,
                 Event::Request {
                     request: &mut request,
-                    driver: Some(driver),
+                    driver,
                 },
             )
             .await?;
@@ -229,9 +227,9 @@ impl AdvisorGate {
         // Gated phase: generate the turn once, fully buffered, so the gate
         // can inspect it before the client sees anything.
         let response = driver
-            .call_model(request.clone(), vec![self.executor.clone()])
+            .call_model(request.clone(), vec![executor.clone()])
             .await?;
-        let turn = buffer_turn(self.executor.as_str(), response).await?;
+        let turn = buffer_turn(executor.as_str(), response).await?;
 
         // Response-side signals fold in after it: the terminal turn never
         // appears on a later request, so the trigger runs on this event.
@@ -249,14 +247,14 @@ impl AdvisorGate {
             && self.budget.try_mark_stall_fired(stall_key(&request));
         if decision.fired.is_none() && !stall {
             return Ok(RoutingOutcome::answered(
-                self.executor.clone(),
+                executor.clone(),
                 request,
                 turn.into_response(),
             ));
         }
         if !self.budget.try_reserve(scope) {
             return Ok(RoutingOutcome::answered(
-                self.executor.clone(),
+                executor.clone(),
                 request,
                 turn.into_response(),
             ));
@@ -277,7 +275,7 @@ impl AdvisorGate {
                     "trigger": trigger_label,
                 }));
                 Ok(RoutingOutcome::answered(
-                    self.executor.clone(),
+                    executor.clone(),
                     request,
                     turn.into_response(),
                 ))
@@ -288,7 +286,7 @@ impl AdvisorGate {
                     "verdict": "redo",
                     "trigger": trigger_label,
                 }));
-                Ok(self.redo(request, turn, &plan))
+                Ok(self.redo(executor, request, turn, &plan))
             }
             Ok(ConsultOutcome::Failed { reason }) => {
                 self.budget.refund_failure(scope);
@@ -299,7 +297,7 @@ impl AdvisorGate {
                     "reason_code": reason,
                 }));
                 Ok(RoutingOutcome::answered(
-                    self.executor.clone(),
+                    executor.clone(),
                     request,
                     turn.into_response(),
                 ))
@@ -314,9 +312,15 @@ impl AdvisorGate {
     /// REDO: the client never sees the gated turn. Its text (or reasoning) is
     /// echoed as an assistant message, the advisor's plan follows as user
     /// feedback, and the executor continues as a pure passthrough call.
-    fn redo(&self, request: Request, turn: GatedTurn, plan: &str) -> RoutingOutcome {
+    fn redo(
+        &self,
+        executor: &ModelId,
+        request: Request,
+        turn: GatedTurn,
+        plan: &str,
+    ) -> RoutingOutcome {
         record_discarded(&turn.agg.usage);
-        emit_discarded_audit(self.executor.as_str(), &turn.agg.usage);
+        emit_discarded_audit(executor.as_str(), &turn.agg.usage);
         let echo = visible_text(&turn.agg)
             .or_else(|| reasoning_text(&turn.agg))
             .unwrap_or_else(|| EMPTY_ECHO_PLACEHOLDER.to_string());
@@ -332,7 +336,7 @@ impl AdvisorGate {
         // preserved pre-surgery body verbatim and the feedback never reaches
         // the executor.
         crate::algorithms::util::prompts::drop_exact_replay(&mut redo);
-        RoutingOutcome::route_to(self.executor.clone(), Vec::new(), redo)
+        RoutingOutcome::route_to(executor.clone(), Vec::new(), redo)
     }
 
     /// Consults the advisor over the buffered transcript and parses the
@@ -345,6 +349,7 @@ impl AdvisorGate {
         review_tail: Option<&str>,
         trigger: &'static str,
     ) -> Result<ConsultOutcome> {
+        let advisor = driver.first_model_for(Category::Judge)?;
         // The advisor reviews the FULL transcript: system/developer content is
         // normalized out of `messages` into `instructions`, so prepend it back
         // as leading messages (identical {role, content} shape) — the task
@@ -367,14 +372,14 @@ impl AdvisorGate {
         let consult_request = self.build_consult_request(base, transcript);
         let started = Instant::now();
         let reply = match driver
-            .call_model(consult_request, vec![self.advisor.clone()])
+            .call_model(consult_request, vec![advisor.clone()])
             .await
         {
             Ok(response) => response
                 .llm_response
                 .into_agg()
                 .await
-                .map_err(|source| LibsyError::client_call(self.advisor.clone(), source)),
+                .map_err(|source| LibsyError::client_call(advisor.clone(), source)),
             Err(error) => Err(error),
         };
         let latency_ms = started.elapsed().as_secs_f64() * 1000.0;

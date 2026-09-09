@@ -139,18 +139,16 @@ packaged `crux`, `primary_rule`, `capability_boundary`, and `p_solve` fields.
 ## Custom multi-target routing
 
 Custom mode accepts an inner JSON Schema and a policy that reads the validated
-verdict. This example routes across four configured targets:
+verdict. The policy selects one of four runtime categories.
 
 ```toml
 [routes.smart]
 id = "smart"
 type = "llm_classifier"
 mode = "custom"
-classifier_target = "classifier"
-targets = ["fast", "balanced", "reasoning", "premium"]
-default_target = "premium"
+default_target = "capable"
 prompt = """
-Choose the best configured target for this request.
+Choose the capable or efficient category for this request.
 Return JSON matching the response schema supplied with the request.
 """
 response_schema = '''
@@ -162,7 +160,7 @@ response_schema = '''
       "properties": {
         "target": {
           "type": "string",
-          "enum": ["fast", "balanced", "reasoning", "premium"]
+          "enum": ["capable", "efficient"]
         }
       },
       "required": ["target"],
@@ -174,15 +172,31 @@ response_schema = '''
 }
 '''
 
+[routes.smart.models]
+judge = ["classifier"]
+capable = ["premium", "reasoning"]
+efficient = ["fast", "balanced"]
+any = ["fast", "balanced", "reasoning", "premium"]
+
 [routes.smart.policy]
 type = "target_selector"
 selector = "/decision/target"
 ```
 
-The names in `targets` reference existing target tables. Switchyard passes the
+The names in `models` reference existing target tables. Switchyard passes the
 schema to the provider in a strict structured-output wrapper and validates the
-returned JSON again. `jsonptr` resolves the selector against that verdict. A
-missing, non-string, or unknown target falls back to `default_target`.
+returned JSON again. `jsonptr` resolves the selector against that verdict. The
+only valid labels are `any`, `judge`, `capable`, and `efficient`. A missing,
+non-string, or unknown label falls back to `default_target`.
+
+A verdict names a category, and the **first** model in that category serves the
+turn: `capable` selects `premium` above, `efficient` selects `fast`. Later
+entries are that category's fallbacks. If the serving call fails, the client
+falls through the rest of the chosen category first — `capable` retries on
+`reasoning` — and then through whatever `models.any` adds, so a single-model
+category still fails over to the other tier. Every selectable target must also
+appear in `models.any`; a target missing from it is rejected at routing time.
+`models.judge` supplies the judge call's own candidates in order.
 
 This separation applies to every classifier mode. Prompts containing the legacy
 `{{RESPONSE_SCHEMA}}` placeholder are rejected during configuration validation.

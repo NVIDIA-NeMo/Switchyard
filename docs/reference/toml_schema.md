@@ -181,12 +181,12 @@ checkpoint = "/models/router.pt"
 ### `llm_classifier`
 
 Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
-`classifier_target` and `max_output_tokens` apply to all three.
+`max_output_tokens` applies to all three.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
-| `classifier_target` | Yes | — | Target the judge is called through. Not a routing destination. |
+| `classifier_target` | Capability, escalation | — | Target the judge is called through. Not a routing destination. Custom mode uses `models.judge`. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
 | `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
 
@@ -219,18 +219,26 @@ Escalation mode serves the weak target first and judges the completed turn. See
 Existing configurations that contain `escalation` but omit `mode` remain valid.
 
 Custom mode validates the judge's JSON against `response_schema`, resolves the
-policy selector, and routes to any configured target label.
+policy selector, and routes to a runtime model category. A verdict names a
+category and the first model in it serves the turn; if that call fails the client
+falls through the rest of that category, then through whatever `models.any` adds.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `targets` | Yes | — | Two or more target names available to the policy. |
-| `default_target` | Yes | — | Target used when the judge fails or its verdict cannot be routed. |
+| `models.any` | Yes | — | Every selectable completion target, in last-resort fallback order. A target missing from this list is rejected at routing time. |
+| `models.judge` | Yes | — | One or more ordered judge candidates. |
+| `models.capable` | When used | — | Ordered capable-tier models. A `capable` verdict selects the first and falls through the rest in order. May be omitted when neither the policy nor `default_target` selects `capable`. |
+| `models.efficient` | When used | — | Ordered efficient-tier models. An `efficient` verdict selects the first and falls through the rest in order. May be omitted when neither the policy nor `default_target` selects `efficient`. |
+| `default_target` | Yes | — | Category used when the judge fails or its verdict cannot be routed. Must be `any`, `capable`, or `efficient`, and that category must contain at least one target. |
 | `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
 | `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+
+The selected JSON label must be `any`, `judge`, `capable`, or `efficient`. A
+label naming a target rather than one of those falls back to `default_target`.
 
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
 the schema automatically: through the structured-output request in `json_schema`

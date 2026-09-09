@@ -159,16 +159,35 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
     selected deployment by the object's LiteLLM callback role.
     """
 
-    def __init__(self, algorithm: Algorithm) -> None:
+    def __init__(
+        self,
+        algorithm: Algorithm,
+        models: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
         super().__init__()
         self._algorithm = algorithm
+        self._models = (
+            {category: list(names) for category, names in models.items()}
+            if models is not None
+            else None
+        )
 
     async def run(self, context: RoutingContext) -> RoutingContext:
         """Run Switchyard and retain only its selected LiteLLM candidate."""
         candidates = list(context.candidate_models)
         request = _request(context.structured_messages)
 
-        async for step in self._algorithm.run_stream(request):
+        models = (
+            self._models
+            if self._models is not None
+            else {
+                "any": candidates,
+                "judge": candidates,
+                "capable": candidates,
+                "efficient": candidates,
+            }
+        )
+        async for step in self._algorithm.run_stream(request, models):
             match step:
                 case Step.CallModel(_):
                     raise ValueError(

@@ -3,6 +3,7 @@
 
 //! Behavior tests for the advisor review gate.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use switchyard_protocol::{ResponseOutput, ToolCall, ToolResult, completion_text};
@@ -15,7 +16,7 @@ use switchyard_protocol::{
 
 use super::transcript::{NO_TEXT_PLACEHOLDER, TRUNCATION_MARKER, middle_drop};
 use super::*;
-use crate::core::testing::{reply, test_drive};
+use crate::core::testing::{Serve, reply, test_drive_with_models};
 
 const EXECUTOR: &str = "executor";
 const ADVISOR: &str = "advisor";
@@ -25,9 +26,23 @@ fn target(name: &str) -> ModelId {
 }
 
 fn gate(config: AdvisorGateConfig) -> Arc<dyn Algorithm> {
-    Arc::new(
-        AdvisorGate::new(target(EXECUTOR), target(ADVISOR), config).expect("test config is valid"),
-    )
+    Arc::new(AdvisorGate::new(config).expect("test config is valid"))
+}
+
+fn runtime_models() -> HashMap<Category, Vec<ModelId>> {
+    [
+        (Category::Any, vec![target(EXECUTOR)]),
+        (Category::Judge, vec![target(ADVISOR)]),
+    ]
+    .into()
+}
+
+async fn test_drive(
+    algorithm: Arc<dyn Algorithm>,
+    request: Request,
+    serve: impl Serve,
+) -> Result<(ModelId, Response)> {
+    test_drive_with_models(algorithm, request, runtime_models(), serve).await
 }
 
 fn request(messages: Vec<Message>) -> Request {
@@ -1153,9 +1168,7 @@ fn transcript_middle_drop() {
 #[test]
 fn new_validation_errors() {
     let invalid = |config: AdvisorGateConfig, needle: &str| {
-        let error = AdvisorGate::new(target(EXECUTOR), target(ADVISOR), config)
-            .err()
-            .expect("config rejected");
+        let error = AdvisorGate::new(config).err().expect("config rejected");
         assert!(error.to_string().contains(needle), "{error}");
     };
     invalid(

@@ -13,8 +13,9 @@
 //! private state value across turns with the same session ID. Requests without a session ID use
 //! unretained per-run state.
 //!
-//! The selected target is offered first, followed by every other configured target. The consumer
-//! may fall through that ordered candidate list when a model call fails.
+//! The selected target is offered first, then the rest of the category it was drawn from, then
+//! every other runtime target. The consumer may fall through that ordered candidate list when a
+//! model call fails.
 
 use std::{
     collections::HashMap,
@@ -27,10 +28,10 @@ use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::core::algorithm::{self, Algorithm, Driver};
-use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::classifier::{Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result, RoutingOutcome};
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{Category, ModelId, Request, Response};
 
 struct SessionState<S> {
     state: Arc<AsyncMutex<S>>,
@@ -48,47 +49,6 @@ const SESSION_STATE_TTL: Duration = Duration::from_secs(60 * 60);
 /// Run the expired session cleanup code this often.
 const SESSION_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// Terminal classifier for a cascade whose classifiers may all abstain.
-///
-/// A classifier abstains when it cannot decide, which lets the next one try. The
-/// last has no next, so a cascade that could abstain all the way through needs a
-/// decider that never does. Which target that is belongs to whoever assembles the
-/// cascade, not to the classifiers in it.
-pub struct DefaultTarget {
-    target: ModelId,
-}
-
-impl DefaultTarget {
-    /// Close a cascade with `target`.
-    pub fn new(target: impl Into<ModelId>) -> Self {
-        Self {
-            target: target.into(),
-        }
-    }
-}
-
-#[async_trait]
-impl<S: Send> Classifier<S> for DefaultTarget {
-    async fn score(
-        &self,
-        _state: &mut S,
-        _request: &mut Request,
-        driver: Option<&Driver>,
-    ) -> Result<(Classification, Option<Response>)> {
-        // Zero confidence: this is a fallback, not a judgement.
-        if let Some(driver) = driver {
-            driver.set_evidence_if_empty(serde_json::json!({"source": "fall_open"}));
-        }
-        Ok((
-            Classification::Scores(vec![Score {
-                target: self.target.clone(),
-                confidence: 0.0,
-            }]),
-            None,
-        ))
-    }
-}
-
 /// Processor chain → classifier cascade → routed model call. See the module docs.
 ///
 /// The generic state type is shared by every processor and classifier in the composition.
@@ -96,19 +56,17 @@ pub struct FallThrough<S = ()> {
     name: String,
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
-    targets: Vec<ModelId>,
     session_states: Option<Arc<SessionStates<S>>>,
     cleanup_started: Once,
 }
 
 impl FallThrough<()> {
     /// Creates an empty stateless router.
-    pub fn new(targets: Vec<ModelId>) -> Self {
+    pub fn new() -> Self {
         Self {
             name: "fall_through".to_string(),
             processors: Vec::new(),
             classifiers: Vec::new(),
-            targets,
             session_states: None,
             cleanup_started: Once::new(),
         }
@@ -120,12 +78,11 @@ where
     S: Default + Send + 'static,
 {
     /// Creates a router that retains one private `S` per session.
-    pub fn new_with_state(targets: Vec<ModelId>) -> Self {
+    pub fn new_with_state() -> Self {
         Self {
             name: "fall_through".to_string(),
             processors: Vec::new(),
             classifiers: Vec::new(),
-            targets,
             session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
             cleanup_started: Once::new(),
         }
@@ -180,7 +137,7 @@ where
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
         let session_state = self.session_state(&request);
-        let (target, served) = match session_state {
+        let (score, served) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
                 self.route(&mut state, &driver, &mut request).await?
@@ -196,10 +153,21 @@ where
         // for twice.
         // Nothing reads it on the way out: streamed or buffered, it reaches the caller
         // untouched.
+        let target = score.target;
         match served {
             Some(response) => Ok(RoutingOutcome::answered(target, request, response)),
             None => {
-                let fallback_models = self.fallbacks(&target);
+                // The rest of the category the decision came from leads: those are the
+                // alternatives to the model the classifier picked, in the order it ranked
+                // them. Every other runtime target follows as a last resort, so a route
+                // whose category holds one model still fails over to the other tier.
+                let chosen = driver.models_for(score.category.unwrap_or(Category::Any));
+                let mut fallback_models: Vec<ModelId> = Vec::new();
+                for candidate in chosen.iter().chain(driver.models_for(Category::Any)) {
+                    if *candidate != target && !fallback_models.contains(candidate) {
+                        fallback_models.push(candidate.clone());
+                    }
+                }
                 Ok(RoutingOutcome::route_to(target, fallback_models, request))
             }
         }
@@ -210,15 +178,6 @@ where
         if let Some(states) = &self.session_states {
             states.lock().remove(session);
         }
-    }
-
-    /// Every configured target other than the selection, in fallback order.
-    fn fallbacks(&self, target: &ModelId) -> Vec<ModelId> {
-        self.targets
-            .iter()
-            .filter(|candidate| *candidate != target)
-            .cloned()
-            .collect()
     }
 
     /// Returns this request's retained state without holding the registry lock.
@@ -240,14 +199,11 @@ where
         state: &mut S,
         driver: &Driver,
         request: &mut Request,
-    ) -> Result<(ModelId, Option<Response>)> {
+    ) -> Result<(Score, Option<Response>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
         //    The driver is offered here so a processor may consult a model first.
         for processor in &self.processors {
-            let event = Event::Request {
-                request,
-                driver: Some(driver),
-            };
+            let event = Event::Request { request, driver };
             processor.process(state, event).await?;
         }
 
@@ -255,7 +211,7 @@ where
         //    per-request driver is offered to each — driver-backed classifiers use it.
         let mut routed = None;
         for classifier in &self.classifiers {
-            let (scores, response) = classifier.score(state, request, Some(driver)).await?;
+            let (scores, response) = classifier.score(state, request, driver).await?;
             if let Some(score) = scores.argmax(false)? {
                 // Only the deciding classifier's response answers the turn; an abstaining
                 // classifier selected nothing for it to be the answer to.
@@ -270,7 +226,7 @@ where
         };
 
         // 3. Resolve the target and log the choice.
-        algorithm::ensure_model_is_target(&self.targets, &score.target)?;
+        algorithm::ensure_model_is_target(driver.models_for(Category::Any), &score.target)?;
         let target = score.target.clone();
         tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
 
@@ -280,11 +236,13 @@ where
             let event = Event::Decision {
                 request,
                 selected_model_id: &target,
+                category: score.category,
+                driver,
             };
             processor.process(state, event).await?;
         }
 
-        Ok((target, served))
+        Ok((score, served))
     }
 }
 
@@ -339,11 +297,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Classification;
+    use crate::algorithms::llm_class::DefaultCategoryClassifier;
     use crate::algorithms::util::prompts;
-    use crate::core::classifier::Classification;
-    use crate::{SystemPromptProcessor, TargetPrompts};
-
-    use crate::core::testing::{Serve, echo, reply, test_drive};
+    use crate::core::testing::{Serve, category_models, echo, reply, test_drive_with_models};
     use switchyard_protocol::{LlmRequest, Message, Metadata, Role, completion_text, text_request};
 
     #[derive(Debug, thiserror::Error)]
@@ -368,93 +325,10 @@ mod tests {
         }
     }
 
-    const CAPABLE_PROMPT: &str = "diagnose before you edit";
-    const EFFICIENT_PROMPT: &str = "follow the settled plan";
     const NOTE: &str = "the previous model was stalling";
-
-    /// One model call as the prompt and note tests observe it.
-    #[derive(Clone, Debug, Default)]
-    struct RecordedCall {
-        target: String,
-        messages: Vec<String>,
-        instructions: Vec<String>,
-    }
-
-    /// Captures the prompt-bearing request that reached the selected target.
-    #[derive(Default)]
-    struct PromptRecorder(Mutex<Option<RecordedCall>>);
-
-    impl PromptRecorder {
-        fn serve(self: &Arc<Self>) -> impl Serve {
-            let recorder = Arc::clone(self);
-            move |target: ModelId, request: Request| {
-                let recorder = Arc::clone(&recorder);
-                async move {
-                    *recorder.0.lock() = Some(RecordedCall {
-                        target: target.to_string(),
-                        messages: request
-                            .llm_request
-                            .messages
-                            .iter()
-                            .filter_map(|message| message.text_content("|"))
-                            .collect(),
-                        instructions: request
-                            .llm_request
-                            .instructions
-                            .iter()
-                            .filter_map(|block| block.content.iter().find_map(text_of))
-                            .collect(),
-                    });
-                    Ok(reply(target))
-                }
-            }
-        }
-    }
-
-    fn text_of(block: &switchyard_protocol::ContentBlock) -> Option<String> {
-        match block {
-            switchyard_protocol::ContentBlock::Text { text } => Some(text.clone()),
-            _ => None,
-        }
-    }
 
     fn target_set(names: &[&str]) -> Vec<ModelId> {
         names.iter().map(|name| ModelId::from(*name)).collect()
-    }
-
-    fn target_prompts() -> TargetPrompts {
-        TargetPrompts::default()
-            .with("capable", CAPABLE_PROMPT)
-            .with("efficient", EFFICIENT_PROMPT)
-    }
-
-    /// Routes one turn on a prompt test cascade and returns the recorded model call.
-    async fn routed_prompt_call(
-        recorder: &Arc<PromptRecorder>,
-        router: FallThrough,
-    ) -> Result<RecordedCall> {
-        test_drive(
-            Arc::new(router),
-            Request {
-                llm_request: text_request(Some("auto".to_string()), "fix the build"),
-                raw_request: None,
-                metadata: None,
-            },
-            recorder.serve(),
-        )
-        .await?;
-        let call = recorder.0.lock().take();
-        match call {
-            Some(call) => Ok(call),
-            None => panic!("the model was never called"),
-        }
-    }
-
-    /// A prompt cascade that always routes to `target`.
-    fn prompt_router(target: &str, prompts: TargetPrompts) -> FallThrough {
-        FallThrough::new(target_set(&["capable", "efficient"]))
-            .with_processor(Arc::new(SystemPromptProcessor::new(prompts)))
-            .with_classifier(Arc::new(DefaultTarget::new(target)))
     }
 
     /// A classifier that emits fixed scores (empty = abstain).
@@ -466,7 +340,7 @@ mod tests {
             &self,
             _state: &mut (),
             _request: &mut Request,
-            _driver: Option<&Driver>,
+            _driver: &Driver,
         ) -> Result<(Classification, Option<Response>)> {
             Ok((
                 Classification::Scores(
@@ -475,6 +349,7 @@ mod tests {
                         .map(|s| Score {
                             confidence: s.confidence,
                             target: s.target.clone(),
+                            category: None,
                         })
                         .collect(),
                 ),
@@ -487,6 +362,7 @@ mod tests {
         Score {
             confidence,
             target: ModelId::from(target),
+            category: None,
         }
     }
 
@@ -518,7 +394,13 @@ mod tests {
     where
         S: Default + Send + 'static,
     {
-        let (selected_model, response) = test_drive(router.clone(), request, serve).await?;
+        let (selected_model, response) = test_drive_with_models(
+            router.clone(),
+            request,
+            category_models(Category::Any, &["strong", "weak"]),
+            serve,
+        )
+        .await?;
         let text = response
             .llm_response
             .into_agg()
@@ -547,64 +429,6 @@ mod tests {
     // --- tests -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn each_target_gets_its_own_prompt() -> Result<()> {
-        for (target, expected) in [("capable", CAPABLE_PROMPT), ("efficient", EFFICIENT_PROMPT)] {
-            let recorder = Arc::new(PromptRecorder::default());
-            let call =
-                routed_prompt_call(&recorder, prompt_router(target, target_prompts())).await?;
-            assert_eq!(call.target, target);
-            assert_eq!(call.instructions, vec![expected.to_string()]);
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_target_with_no_prompt_is_left_untouched() -> Result<()> {
-        let recorder = Arc::new(PromptRecorder::default());
-        let only_capable = TargetPrompts::default().with("capable", CAPABLE_PROMPT);
-
-        let call = routed_prompt_call(&recorder, prompt_router("efficient", only_capable)).await?;
-
-        assert!(
-            call.instructions.is_empty(),
-            "one target's prompt must not leak onto another: {:?}",
-            call.instructions
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn the_prompt_follows_the_target_whichever_classifier_picked_it() -> Result<()> {
-        // The first classifier abstains, so the second decides; the prompt follows the
-        // target the cascade settled on rather than the classifier that named it.
-        struct Abstains;
-
-        #[async_trait]
-        impl Classifier for Abstains {
-            async fn score(
-                &self,
-                _state: &mut (),
-                _request: &mut Request,
-                _driver: Option<&Driver>,
-            ) -> Result<(Classification, Option<Response>)> {
-                Ok((Classification::Ambiguous(Vec::new()), None))
-            }
-        }
-
-        let recorder = Arc::new(PromptRecorder::default());
-        let router = FallThrough::new(target_set(&["capable", "efficient"]))
-            .with_processor(Arc::new(SystemPromptProcessor::new(target_prompts())))
-            .with_classifier(Arc::new(Abstains))
-            .with_classifier(Arc::new(DefaultTarget::new("capable")));
-
-        let call = routed_prompt_call(&recorder, router).await?;
-
-        assert_eq!(call.target, "capable");
-        assert_eq!(call.instructions, vec![CAPABLE_PROMPT.to_string()]);
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn a_note_reaches_the_model_in_the_conversation() -> Result<()> {
         // Appends a note to every outbound request, the way a router would on a turn it
         // wants to explain.
@@ -620,27 +444,82 @@ mod tests {
             }
         }
 
-        let recorder = Arc::new(PromptRecorder::default());
-        let router = FallThrough::new(target_set(&["capable", "efficient"]))
+        let captured = Arc::new(Mutex::new(None));
+        let router = FallThrough::new()
             .with_processor(Arc::new(Noting))
-            .with_classifier(Arc::new(DefaultTarget::new("capable")));
+            .with_classifier(Arc::new(DefaultCategoryClassifier(Category::Any)));
 
-        let call = routed_prompt_call(&recorder, router).await?;
+        test_drive_with_models(
+            Arc::new(router),
+            Request {
+                llm_request: text_request(Some("auto".to_string()), "fix the build"),
+                raw_request: None,
+                metadata: None,
+            },
+            category_models(Category::Any, &["capable", "efficient"]),
+            capturing(Arc::clone(&captured)),
+        )
+        .await?;
+        let request = captured
+            .lock()
+            .take()
+            .ok_or_else(|| LibsyError::external("test", TestError("the model was never called")))?;
+        let messages: Vec<String> = request
+            .llm_request
+            .messages
+            .iter()
+            .filter_map(|message| message.text_content("|"))
+            .collect();
 
-        assert_eq!(call.messages, vec![format!("fix the build|{NOTE}")]);
-        assert!(call.instructions.is_empty(), "a note is not an instruction");
+        assert_eq!(messages, vec![format!("fix the build|{NOTE}")]);
+        assert!(
+            request.llm_request.instructions.is_empty(),
+            "a note is not an instruction"
+        );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_selected_category_leads_the_candidate_list() -> Result<()> {
+        use futures::StreamExt;
+
+        // The decision came from `capable`, so the rest of that category is tried before
+        // the models it does not contain.
+        let router = Arc::new(
+            FallThrough::<()>::new()
+                .with_classifier(Arc::new(DefaultCategoryClassifier(Category::Capable))),
+        );
+        let models = crate::RuntimeModels::new(
+            [
+                (Category::Capable, target_set(&["premium", "reasoning"])),
+                (Category::Any, target_set(&["fast", "premium", "reasoning"])),
+            ]
+            .into(),
+        );
+
+        let stream = router.run_stream(request(), Arc::new(models));
+        tokio::pin!(stream);
+        while let Some(step) = stream.next().await {
+            if let crate::Step::Done(outcome) = step? {
+                assert_eq!(
+                    outcome.selected_model_ids,
+                    target_set(&["premium", "reasoning", "fast"])
+                );
+                return Ok(());
+            }
+        }
+        Err(test_error("expected a Done step"))
     }
 
     #[tokio::test]
     async fn selected_target_leads_the_ordered_candidate_list() -> Result<()> {
         use futures::StreamExt;
 
-        let router = Arc::new(
-            FallThrough::<()>::new(target_set(&["weak", "mid", "strong"]))
-                .with_classifier(fixed(vec![score("mid", 0.9)])),
-        );
-        let stream = router.run_stream(request());
+        let router =
+            Arc::new(FallThrough::<()>::new().with_classifier(fixed(vec![score("mid", 0.9)])));
+
+        let models = category_models(Category::Any, &["weak", "mid", "strong"]);
+        let stream = router.run_stream(request(), Arc::new(models.into()));
         tokio::pin!(stream);
         while let Some(step) = stream.next().await {
             if let crate::Step::Done(outcome) = step? {
@@ -658,7 +537,7 @@ mod tests {
 
     #[tokio::test]
     async fn argmax_picks_the_highest_confidence_target() -> Result<()> {
-        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
+        let router = FallThrough::<()>::new()
             .with_classifier(fixed(vec![score("weak", 0.2), score("strong", 0.9)]));
         let (model, selected_model) = run_with(router, echo()).await?;
         assert_eq!(model, "strong");
@@ -669,7 +548,7 @@ mod tests {
     #[tokio::test]
     async fn falls_through_the_first_abstaining_classifier() -> Result<()> {
         // First classifier abstains (empty); the second decides.
-        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
+        let router = FallThrough::<()>::new()
             .with_classifier(fixed(vec![]))
             .with_classifier(fixed(vec![score("weak", 1.0)]));
         let (model, _) = run_with(router, echo()).await?;
@@ -680,7 +559,7 @@ mod tests {
     #[tokio::test]
     async fn first_deciding_classifier_wins_the_cascade() -> Result<()> {
         // The first classifier decides; the second is never consulted.
-        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
+        let router = FallThrough::<()>::new()
             .with_classifier(fixed(vec![score("strong", 0.6)]))
             .with_classifier(fixed(vec![score("weak", 1.0)]));
         let (model, _) = run_with(router, echo()).await?;
@@ -690,8 +569,7 @@ mod tests {
 
     #[tokio::test]
     async fn all_abstaining_is_an_error() -> Result<()> {
-        let router =
-            FallThrough::<()>::new(target_set(&["strong", "weak"])).with_classifier(fixed(vec![]));
+        let router = FallThrough::<()>::new().with_classifier(fixed(vec![]));
         let error = run_with(router, echo())
             .await
             .err()
@@ -700,34 +578,6 @@ mod tests {
             error,
             LibsyError::AlgorithmError { message } if message == "every classifier abstained"
         ));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn classifiers_receive_the_per_request_driver() -> Result<()> {
-        // A classifier that only decides when handed a driver — proving the cascade offers
-        // the per-request driver to every classifier (driver-backed ones need it).
-        struct NeedsDriver;
-
-        #[async_trait]
-        impl Classifier for NeedsDriver {
-            async fn score(
-                &self,
-                _state: &mut (),
-                _request: &mut Request,
-                driver: Option<&Driver>,
-            ) -> Result<(Classification, Option<Response>)> {
-                match driver {
-                    Some(_) => Ok((Classification::Scores(vec![score("strong", 1.0)]), None)),
-                    None => Err(test_error("expected a driver")),
-                }
-            }
-        }
-
-        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
-            .with_classifier(Arc::new(NeedsDriver));
-        let (model, _) = run_with(router, echo()).await?;
-        assert_eq!(model, "strong");
         Ok(())
     }
 
@@ -753,7 +603,7 @@ mod tests {
         }
 
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
+        let router = FallThrough::<()>::new()
             .with_processor(Arc::new(RecordingProcessor(seen.clone())))
             .with_classifier(fixed(vec![score("strong", 1.0)]));
         run_with(router, echo()).await?;
@@ -792,7 +642,7 @@ mod tests {
                 &self,
                 _state: &mut (),
                 request: &mut Request,
-                _driver: Option<&Driver>,
+                _driver: &Driver,
             ) -> Result<(Classification, Option<Response>)> {
                 *self.0.lock() = request
                     .llm_request
@@ -810,8 +660,7 @@ mod tests {
 
         let seen_by_classifier = Arc::new(Mutex::new(Vec::new()));
         let seen_by_model = Arc::new(Mutex::new(None));
-        let targets = target_set(&["strong"]);
-        let router = FallThrough::new(targets)
+        let router = FallThrough::new()
             .with_processor(Arc::new(Appender("first")))
             .with_processor(Arc::new(Appender("second")))
             .with_classifier(Arc::new(TrailClassifier(seen_by_classifier.clone())));
@@ -865,7 +714,7 @@ mod tests {
                 &self,
                 state: &mut TurnState,
                 _request: &mut Request,
-                _driver: Option<&Driver>,
+                _driver: &Driver,
             ) -> Result<(Classification, Option<Response>)> {
                 let target = if state.count >= 2 { "strong" } else { "weak" };
                 Ok((Classification::Scores(vec![score(target, 1.0)]), None))
@@ -873,7 +722,7 @@ mod tests {
         }
 
         let router = Arc::new(
-            FallThrough::<TurnState>::new_with_state(target_set(&["strong", "weak"]))
+            FallThrough::<TurnState>::new_with_state()
                 .with_processor(Arc::new(CountingProcessor))
                 .with_classifier(Arc::new(ThresholdClassifier)),
         );
@@ -921,7 +770,7 @@ mod tests {
 
     #[tokio::test]
     async fn final_session_is_removed_when_routing_fails() {
-        let router = Arc::new(FallThrough::<u32>::new_with_state(target_set(&["strong"])));
+        let router = Arc::new(FallThrough::<u32>::new_with_state());
         let final_request = Request {
             metadata: Some(Metadata {
                 session_id: Some("session-1".to_string()),
@@ -931,7 +780,13 @@ mod tests {
             ..request()
         };
 
-        let result = test_drive(router.clone(), final_request, echo()).await;
+        let result = test_drive_with_models(
+            router.clone(),
+            final_request,
+            category_models(Category::Any, &["strong"]),
+            echo(),
+        )
+        .await;
 
         assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
         let states = router
@@ -944,7 +799,7 @@ mod tests {
 
     #[test]
     fn cleanup_removes_only_inactive_idle_sessions() {
-        let router = FallThrough::<u32>::new_with_state(target_set(&["strong"]));
+        let router = FallThrough::<u32>::new_with_state();
         let _active_state = router
             .session_state(&request()) // session-1
             .expect("session state was inserted");
