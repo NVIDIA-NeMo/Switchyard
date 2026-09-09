@@ -653,6 +653,8 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
     if let Some(text) = item.get("text").and_then(Value::as_str) {
         parts.push(text.to_string());
     }
+    // Encrypted reasoning must be replayed under the provider-issued item id;
+    // retain the original item only when it carries that opaque payload.
     let details = if item.get("encrypted_content").is_some() {
         vec![Value::Object(item.clone())]
     } else {
@@ -1065,15 +1067,18 @@ fn encode_responses_input(
         }
         let mut visible_content = Vec::new();
         let mut emitted_special = false;
+        let mut omitted_reasoning = false;
         for block in &content {
             if let Some(item) = encode_responses_special_input(block, namespaces) {
                 encoded.push(item);
                 emitted_special = true;
-            } else {
+            } else if !matches!(block, ContentBlock::Reasoning { .. }) {
                 visible_content.push(block.clone());
+            } else {
+                omitted_reasoning = true;
             }
         }
-        if !visible_content.is_empty() || !emitted_special {
+        if !visible_content.is_empty() || (!emitted_special && !omitted_reasoning) {
             let content = encode_responses_content(&visible_content, diagnostics, policy)?;
             encoded.push(json!({
                 "type": "message",

@@ -1500,6 +1500,44 @@ fn responses_encrypted_reasoning_replays_without_input_content() -> TestResult {
     Ok(())
 }
 
+// Verifies an empty non-encrypted reasoning item is omitted instead of being
+// replayed as an empty assistant message.
+#[test]
+fn responses_empty_reasoning_without_encrypted_content_is_omitted() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5",
+        "input": [
+            {"type": "message", "role": "user", "content": "Inspect"},
+            {"type": "reasoning", "summary": []},
+            {"type": "message", "role": "user", "content": "Continue"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let input = output["input"].as_array().ok_or("input is not an array")?;
+    let item_types = input
+        .iter()
+        .map(|item| item["type"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(item_types, vec!["message", "message"]);
+    assert_eq!(input[0]["role"], "user");
+    assert_eq!(input[1]["role"], "user");
+    Ok(())
+}
+
 // Verifies Responses JSON schema text format maps to Chat response_format shape.
 #[test]
 fn responses_json_schema_text_format_maps_to_chat_response_format() -> TestResult {
