@@ -1997,6 +1997,60 @@ target = "weak"
 }
 
 #[tokio::test]
+async fn transport_errors_hide_credential_bearing_upstream_urls() -> TestResult {
+    const CANARY: &str = "CANARY_ADMIN_QUERY_KEY";
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}/v1?key={CANARY}", listener.local_addr()?);
+    drop(listener);
+
+    let routed = build_switchyard_router(random_state(&base_url, &[(ROUTE_MODEL, &["model/a"])])?);
+    let routed_response = send(
+        &routed,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+    )
+    .await?;
+
+    let fallback = load_test_config(&format!(
+        r#"
+schema_version = 1
+fallback_client = "upstream"
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.model]
+id = "model/a"
+llm_client = "upstream"
+
+[routes.model]
+id = "switchyard/model"
+type = "passthrough"
+target = "model"
+"#
+    ))?;
+    let fallback = build_switchyard_router(fallback);
+    let fallback_response = send(&fallback, "POST", "/unmatched", None).await?;
+
+    for response in [routed_response, fallback_response] {
+        assert_eq!(response.status, StatusCode::BAD_GATEWAY);
+        let body = response.json()?;
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            !message.contains(CANARY),
+            "credential leaked in {message:?}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn anthropic_client_forwards_oauth_when_configured() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
