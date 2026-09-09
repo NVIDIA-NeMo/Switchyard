@@ -220,7 +220,10 @@ name, and optional JSON evidence. In Python, read `outcome.metadata.outcome_id`,
 algorithms without evidence return `None`.
 
 With a host-installed OpenTelemetry subscriber, the existing `libsy.run` span records
-the same identity, selected models, and supported evidence fields. See
+the same identity and selected models, plus optional `evidence` as a JSON string.
+Deserialize that string to read all algorithm-defined evidence fields. Evidence is
+exported without filtering or redaction; keep it small and free of private data.
+Host or backend string limits can truncate the JSON. See
 the `Algorithm` observability section in the [Rust API reference](reference/rust_api.md)
 for the field names. libsy does not install an exporter or send telemetry itself.
 

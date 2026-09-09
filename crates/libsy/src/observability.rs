@@ -71,13 +71,7 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
         "libsy.run",
         algorithm,
         outcome_id = tracing::field::Empty,
-        evidence.source = tracing::field::Empty,
-        evidence.score = tracing::field::Empty,
-        evidence.confidence = tracing::field::Empty,
-        evidence.threshold = tracing::field::Empty,
-        evidence.verdict = tracing::field::Empty,
-        evidence.trigger = tracing::field::Empty,
-        evidence.reason_code = tracing::field::Empty,
+        evidence = tracing::field::Empty,
         switchyard.algorithm = algorithm,
         openinference.span.kind = "CHAIN",
         switchyard.route = tracing::field::Empty,
@@ -114,8 +108,7 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
 }
 
 /// Projects a successful outcome onto the existing run span. Model IDs are an
-/// ordered OpenTelemetry string array, preserving fallback order. Evidence uses typed fields;
-/// unknown keys and values of the wrong type are omitted.
+/// ordered OpenTelemetry string array, preserving fallback order. Evidence is a JSON string.
 pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
     let span = Span::current();
     span.record("outcome_id", metadata.outcome_id());
@@ -129,25 +122,7 @@ pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
         )),
     );
     if let Some(evidence) = &metadata.evidence {
-        for (key, field) in [
-            ("source", "evidence.source"),
-            ("verdict", "evidence.verdict"),
-            ("trigger", "evidence.trigger"),
-            ("reason_code", "evidence.reason_code"),
-        ] {
-            if let Some(value) = evidence.get(key).and_then(serde_json::Value::as_str) {
-                span.record(field, value);
-            }
-        }
-        for (key, field) in [
-            ("score", "evidence.score"),
-            ("confidence", "evidence.confidence"),
-            ("threshold", "evidence.threshold"),
-        ] {
-            if let Some(value) = evidence.get(key).and_then(serde_json::Value::as_f64) {
-                span.record(field, value);
-            }
-        }
+        span.record("evidence", tracing::field::display(evidence));
     }
 }
 

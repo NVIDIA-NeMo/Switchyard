@@ -795,7 +795,10 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
         Some(json!({
             "source": "llm-classifier", "score": 0.9, "threshold": 0.5,
             "verdict": "continue", "trigger": "turn", "reason_code": "test",
-            "confidence": "wrong type", "unknown": LEAKED_CONTENT,
+            "confidence": "algorithm-defined", "custom": {
+                "candidates": ["fast", "quality"], "accepted": true, "optional": null,
+                "note": "quoted \"value\"\nnext line",
+            },
         })),
     );
     let algorithm = Arc::new(SingleCallAlgo {
@@ -879,22 +882,22 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
             .count(),
         1
     );
-    for (field, expected) in [
-        ("outcome_id", metadata.outcome_id()),
-        ("evidence.source", "llm-classifier"),
-        ("evidence.score", "0.9"),
-        ("evidence.threshold", "0.5"),
-        ("evidence.verdict", "continue"),
-        ("evidence.trigger", "turn"),
-        ("evidence.reason_code", "test"),
-    ] {
-        assert_eq!(
-            run_span.fields.get(field).map(String::as_str),
-            Some(expected),
-            "{field}"
-        );
-    }
-    assert!(!run_span.fields.contains_key("evidence.confidence"));
+    assert_eq!(
+        run_span.fields.get("outcome_id").map(String::as_str),
+        Some(metadata.outcome_id())
+    );
+    let evidence = metadata.evidence.as_ref().expect("outcome evidence");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&run_span.fields["evidence"])
+            .expect("JSON evidence"),
+        *evidence
+    );
+    assert!(
+        !run_span
+            .fields
+            .keys()
+            .any(|key| key.starts_with("evidence."))
+    );
     assert!(!format!("{run_span:?}").contains(LEAKED_CONTENT));
     let exported = span_exporter.get_finished_spans().expect("exported spans");
     let exported_run = exported
@@ -906,8 +909,14 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
         })
         .expect("outcome span exported");
     assert_eq!(
-        otel_attribute(exported_run, "evidence.score"),
-        Some(&OtelValue::F64(0.9))
+        otel_attribute(exported_run, "evidence"),
+        Some(&OtelValue::String(evidence.to_string().into()))
+    );
+    assert!(
+        !exported_run
+            .attributes
+            .iter()
+            .any(|attr| attr.key.as_str().starts_with("evidence."))
     );
     assert_eq!(
         otel_attribute(exported_run, "selected_model_ids"),
@@ -1213,6 +1222,11 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
 
     let spans = store.spans();
     let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    assert!(
+        !find_span(&spans, "libsy.run", "algorithm", ALGO)
+            .fields
+            .contains_key("evidence")
+    );
     for (field, value) in [
         ("otel.name", "chat obs-stream-model"),
         ("gen_ai.request.stream", "true"),
