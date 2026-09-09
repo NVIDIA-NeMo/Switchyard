@@ -1182,6 +1182,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#advisor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        advisor
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1403,6 +1414,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#advisor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        advisor
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1579,6 +1601,12 @@ calls an upstream.</p>
 <td>Key under <code>[llm_clients]</code>.</td>
 </tr>
 <tr>
+<td><code>system_prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>System prompt prepended when this target serves a completion.</td>
+</tr>
+<tr>
 <td><code>extra_body</code></td>
 <td style="text-align: center;">No</td>
 <td><code>{}</code></td>
@@ -1586,6 +1614,15 @@ calls an upstream.</p>
 </tr>
 </tbody>
 </table>
+<p>Each selected or fallback target is prepared from the routed request independently. A prompt
+configured for one target is therefore not carried into another target's fallback request.
+Judge-only, classifier-only, and reviewer-only targets are not completion destinations and do not
+receive this prompt.</p>
+<p>Escalation's weak target and Advisor's executor produce a candidate response while routing, so
+their target prompt is applied to that call. A prompted target in either role cannot use the same
+model ID as that route's judge or reviewer because those calls would otherwise be indistinguishable
+at the client boundary; Switchyard rejects that configuration when it loads.
+Token-count requests do not apply target system prompts.</p>
 <h2 id="routesname"><code>[routes.&lt;name&gt;]</code><a class="headerlink" href="#routesname" title="Permanent link">&para;</a></h2>
 <p>Every route takes the common keys below, plus the keys for its type.</p>
 <table>
@@ -2026,18 +2063,6 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 <td>Trailing tool results the signals are computed over.</td>
 </tr>
 <tr>
-<td><code>capable_system_prompt</code></td>
-<td style="text-align: center;">No</td>
-<td>unset</td>
-<td>System prompt handed to the capable tier.</td>
-</tr>
-<tr>
-<td><code>efficient_system_prompt</code></td>
-<td style="text-align: center;">No</td>
-<td>unset</td>
-<td>System prompt handed to the efficient tier.</td>
-</tr>
-<tr>
 <td><code>classifier.classify_trigger</code></td>
 <td style="text-align: center;">No</td>
 <td><code>every_request</code></td>
@@ -2120,18 +2145,6 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td>Trailing tool results the signals are computed over.</td>
 </tr>
 <tr>
-<td><code>stage.capable_system_prompt</code></td>
-<td style="text-align: center;">No</td>
-<td>unset</td>
-<td>System prompt handed to the capable tier.</td>
-</tr>
-<tr>
-<td><code>stage.efficient_system_prompt</code></td>
-<td style="text-align: center;">No</td>
-<td>unset</td>
-<td>System prompt handed to the efficient tier.</td>
-</tr>
-<tr>
 <td><code>subagents</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
@@ -2144,6 +2157,102 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 instead. The stage table takes no <code>picker</code>: the classifier supplies that tier per turn. A turn the
 classifier cannot reach falls open to the efficient tier. Leaving out
 <code>classifier</code> is recommended: that judge runs ahead of the fall-open tier.</p>
+<h3 id="advisor"><code>advisor</code><a class="headerlink" href="#advisor" title="Permanent link">&para;</a></h3>
+<p>Serves every client-visible turn from the executor and has a stronger advisor
+review terminal turns before the caller sees them: APPROVE releases the
+buffered turn, REDO discards it and sends the executor back to work with the
+advisor's plan. See
+<a href="../../routing_algorithms/advisor_gate_routing/">Advisor-Gate Routing</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th style="text-align: center;">Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>executor_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Serves every client-visible turn.</td>
+</tr>
+<tr>
+<td><code>advisor_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Reviews gated turns. Not a routing destination.</td>
+</tr>
+<tr>
+<td><code>gate_trigger</code></td>
+<td style="text-align: center;">No</td>
+<td><code>no_tool_call</code></td>
+<td>What fires a review: <code>no_tool_call</code> or <code>pattern</code>.</td>
+</tr>
+<tr>
+<td><code>gate_trigger_pattern</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Regex (searched, not anchored) for the <code>pattern</code> trigger. That trigger requires a non-empty pattern; setting one under <code>no_tool_call</code> is rejected.</td>
+</tr>
+<tr>
+<td><code>max_reviews</code></td>
+<td style="text-align: center;">No</td>
+<td><code>1</code></td>
+<td>Reviews allowed per session scope. Must be at least <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>gate_stall_turns</code></td>
+<td style="text-align: center;">No</td>
+<td><code>0</code></td>
+<td>Reviews one turn as a mid-task checkpoint once the conversation carries this many assistant turns. <code>0</code> disables.</td>
+</tr>
+<tr>
+<td><code>gate_min_tool_results</code></td>
+<td style="text-align: center;">No</td>
+<td><code>0</code></td>
+<td>Tool results a conversation needs before a <code>no_tool_call</code> turn is reviewable.</td>
+</tr>
+<tr>
+<td><code>advisor_max_tokens</code></td>
+<td style="text-align: center;">No</td>
+<td><code>2048</code></td>
+<td>Maximum output tokens per review. Must be at least <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>advisor_temperature</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Sampling temperature for reviews. Omitted from the request when unset.</td>
+</tr>
+<tr>
+<td><code>transcript_max_chars</code></td>
+<td style="text-align: center;">No</td>
+<td><code>200000</code></td>
+<td>Cap on the transcript sent to the advisor; longer transcripts are trimmed from the middle. Must be at least <code>256</code>.</td>
+</tr>
+<tr>
+<td><code>fail_open</code></td>
+<td style="text-align: center;">No</td>
+<td><code>true</code></td>
+<td>Lets the gated turn through when the advisor fails, instead of returning an error.</td>
+</tr>
+<tr>
+<td><code>reviewer_system_prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>packaged prompt</td>
+<td>Replaces the APPROVE/REDO reviewer prompt.</td>
+</tr>
+<tr>
+<td><code>redo_feedback_prefix</code></td>
+<td style="text-align: center;">No</td>
+<td>packaged prompt</td>
+<td>Replaces the text put in front of a REDO plan fed back to the executor.</td>
+</tr>
+</tbody>
+</table>
 <h2 id="validation-errors">Validation Errors<a class="headerlink" href="#validation-errors" title="Permanent link">&para;</a></h2>
 <p><code>--dry-run</code> prefixes configuration failures with
 <code>invalid server config &lt;path&gt;:</code>. Within that wrapper, TOML deserialization
