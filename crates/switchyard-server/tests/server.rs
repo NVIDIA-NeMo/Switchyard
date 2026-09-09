@@ -301,7 +301,18 @@ async fn upstream_chat(
                 .is_some_and(|content| content.contains("schema-invalid verdict"))
         })
     });
-    let content = if model == "model/classifier" && custom_target_schema {
+    let content = if model == "model/ensemble-a" {
+        "draft A"
+    } else if model == "model/ensemble-b" {
+        "draft B"
+    } else if model == "model/ensemble-synthesizer" {
+        let messages = body["messages"].to_string();
+        if messages.contains("draft A") && messages.contains("draft B") {
+            "fused answer"
+        } else {
+            "missing candidate"
+        }
+    } else if model == "model/classifier" && custom_target_schema {
         if requests_invalid_verdict {
             r#"{"decision":{"target":"unknown"}}"#
         } else {
@@ -1316,6 +1327,85 @@ confidence_threshold = 0.5
         stats["algorithm_stats"]["stage_router"]["routing_decisions"]["override"]["targets"]["model/stats-strong"],
         1
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn ensemble_route_fans_out_and_synthesizes_through_the_public_api() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.candidate_a]
+id = "model/ensemble-a"
+llm_client = "upstream"
+
+[targets.candidate_b]
+id = "model/ensemble-b"
+llm_client = "upstream"
+
+[targets.synthesizer]
+id = "model/ensemble-synthesizer"
+llm_client = "upstream"
+
+[routes.ensemble]
+id = "switchyard/ensemble"
+type = "ensemble"
+candidates = ["candidate_a", "candidate_b"]
+synthesizer_target = "synthesizer"
+minimum_successful_candidates = 2
+candidate_max_output_tokens = 64
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/ensemble",
+            "messages": [{"role": "user", "content": "solve this"}],
+            "max_completion_tokens": 32
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.json()?["choices"][0]["message"]["content"],
+        "fused answer"
+    );
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/ensemble-synthesizer")
+    );
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 3);
+    let mut candidate_models = calls[..2]
+        .iter()
+        .filter_map(|call| call["model"].as_str())
+        .collect::<Vec<_>>();
+    candidate_models.sort_unstable();
+    assert_eq!(candidate_models, ["model/ensemble-a", "model/ensemble-b"]);
+    for candidate in &calls[..2] {
+        assert!(!candidate["stream"].as_bool().unwrap_or(false));
+        assert_eq!(candidate["max_completion_tokens"], 64);
+    }
+    assert_eq!(calls[2]["model"], "model/ensemble-synthesizer");
+    assert_eq!(calls[2]["max_completion_tokens"], 32);
+    assert!(calls[2]["messages"].to_string().contains("draft A"));
+    assert!(calls[2]["messages"].to_string().contains("draft B"));
     Ok(())
 }
 

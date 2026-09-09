@@ -77,6 +77,7 @@ route types:
 |---|---|
 | `passthrough` | Sends every request to one target. |
 | `random` | Selects among targets using optional relative weights. |
+| `ensemble` | Calls several targets concurrently and synthesizes their responses. |
 | `llm_classifier` | Uses a classifier target to choose between weak and strong targets. |
 | `stage_router` | Uses tool-result and progress signals to choose an efficient or capable target. |
 

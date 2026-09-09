@@ -154,6 +154,20 @@ Splits traffic across targets. See
 | `weights` | No | equal | Finite, non-negative relative weights in `targets` order, with at least one positive value. Invalid weights are rejected at load time. |
 | `seed` | No | unset | Reproduces the selection sequence. |
 
+### `ensemble`
+
+Calls several targets concurrently, then asks a synthesizer target to combine
+their successful responses. See
+[Ensemble Routing](../routing_algorithms/ensemble_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `candidates` | Yes | — | Two to four target names called concurrently. |
+| `synthesizer_target` | Yes | — | Target that receives the original conversation and successful candidate outputs, then produces the final response. |
+| `synthesizer_system_prompt` | No | packaged prompt | Replaces the synthesis instruction. Must be non-empty. |
+| `minimum_successful_candidates` | No | `1` | Usable candidate responses required before synthesis, from one through the configured candidate count. |
+| `candidate_max_output_tokens` | No | caller's cap | Positive output-token budget applied independently to each candidate. |
+
 ### `prefill_router`
 
 Routes the latest non-empty user message with a checkpoint-backed prefill classifier. Build

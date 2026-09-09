@@ -778,6 +778,76 @@ confidence_threshold = 0.5
         )
     }
 
+    fn ensemble_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+[routes.ensemble]
+id = "switchyard/ensemble"
+type = "ensemble"
+candidates = ["strong", "weak"]
+synthesizer_target = "classifier"
+"#
+        )
+    }
+
+    #[test]
+    fn ensemble_route_builds_with_candidates_and_synthesizer() -> RunnerResult<()> {
+        let runner = runner_from_toml(&ensemble_config())?;
+        assert!(
+            runner
+                .models()
+                .any(|model| model.id.as_str() == "switchyard/ensemble")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ensemble_route_requires_two_to_four_candidates() {
+        for candidates in [
+            "[]",
+            "[\"strong\"]",
+            "[\"strong\", \"weak\", \"strong\", \"weak\", \"strong\"]",
+        ] {
+            let config = ensemble_config().replace(
+                "candidates = [\"strong\", \"weak\"]",
+                &format!("candidates = {candidates}"),
+            );
+            assert!(
+                error_message(&config).contains("requires between 2 and 4 candidates"),
+                "{candidates}"
+            );
+        }
+    }
+
+    #[test]
+    fn ensemble_route_accepts_synthesis_settings() -> RunnerResult<()> {
+        let config = ensemble_config().replace(
+            "synthesizer_target = \"classifier\"",
+            "synthesizer_target = \"classifier\"\n\
+             synthesizer_system_prompt = \"Reconcile the drafts concisely.\"\n\
+             minimum_successful_candidates = 2\n\
+             candidate_max_output_tokens = 512",
+        );
+        runner_from_toml(&config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn ensemble_route_rejects_invalid_synthesis_settings() {
+        for setting in [
+            "synthesizer_system_prompt = \" \"",
+            "minimum_successful_candidates = 0",
+            "minimum_successful_candidates = 3",
+            "candidate_max_output_tokens = 0",
+        ] {
+            let config = ensemble_config().replace(
+                "synthesizer_target = \"classifier\"",
+                &format!("synthesizer_target = \"classifier\"\n{setting}"),
+            );
+            assert!(error_message(&config).contains("ensemble"), "{setting}");
+        }
+    }
+
     #[test]
     fn composite_route_builds_and_claims_both_tiers_and_its_judge() -> RunnerResult<()> {
         let runner = runner_from_toml(&composite_config())?;

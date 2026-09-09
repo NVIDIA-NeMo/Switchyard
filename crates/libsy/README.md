@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 |---|---|
 | [`Passthrough`] | Always select one configured target. |
 | [`Random`] | Select among any number of targets using uniform or weighted routing. |
+| [`Ensemble`] | Generate candidates concurrently and synthesize them into one response. |
 | [`LlmTaskClassifier`] | Ask a judge model to choose an efficient or capable target. |
 | [`StageRouter`] | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
 
