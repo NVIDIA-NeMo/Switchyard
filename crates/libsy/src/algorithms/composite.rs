@@ -90,6 +90,9 @@ impl Processor<State> for TierSetter {
         if let Some(tier) = identity.and_then(|identity| self.tiers.lock().get(&identity).copied())
         {
             set_fall_open(state, tier);
+            if let Some(driver) = driver {
+                driver.set_evidence_if_empty(serde_json::json!({"source": "retained"}));
+            }
         }
         Ok(())
     }

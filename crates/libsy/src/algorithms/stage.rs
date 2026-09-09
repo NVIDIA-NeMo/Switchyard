@@ -56,6 +56,11 @@ impl Classifier<State> for SourceStamp {
         if let Some(winner) = classification.argmax(false)? {
             record_decision_source(state, self.source);
             record_routing_decision(self.source, &winner.target);
+            if let Some(driver) = driver {
+                driver.set_evidence_if_empty(serde_json::json!({
+                    "source": self.source.as_str(),
+                }));
+            }
         }
         Ok((classification, served))
     }

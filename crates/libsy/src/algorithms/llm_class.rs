@@ -243,6 +243,29 @@ impl JudgePolicy for TaskClassifierPolicy {
     }
 }
 
+/// Maps valid verdicts to scores, invalid verdicts to a reason, and leaves absent verdicts alone.
+fn capability_evidence(
+    policy: &TaskClassifierPolicy,
+    verdict: Option<&TaskClassifierVerdict>,
+) -> Option<Value> {
+    let verdict = verdict?;
+    let Some(threshold) = verdict
+        .is_valid()
+        .then(|| policy.threshold(verdict))
+        .flatten()
+    else {
+        return Some(serde_json::json!({
+            "source": "fail_open",
+            "reason_code": "invalid_verdict",
+        }));
+    };
+    Some(serde_json::json!({
+        "source": "llm-classifier",
+        "score": verdict.p_solve,
+        "threshold": threshold,
+    }))
+}
+
 #[derive(Clone, Debug)]
 /// Settings that control capability classifier prompting and routing.
 pub struct TaskClassifierConfig {
@@ -605,7 +628,8 @@ impl LlmTaskClassifier {
                     capable_target.clone(),
                     &config,
                 ),
-            ),
+            )
+            .with_evidence(capability_evidence),
             capable_target: capable_target.clone(),
         });
         let inner: Arc<dyn Classifier<State>> = classifier.clone();
