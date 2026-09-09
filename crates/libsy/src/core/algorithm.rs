@@ -68,6 +68,11 @@ pub struct RoutingOutcome {
     pub request: Request,
     /// A response produced while routing, or `None` when the client must make the answer call.
     pub response: Option<Response>,
+    /// Outcome identity and optional algorithm evidence.
+    ///
+    /// Constructors leave this empty; [`Algorithm::run_stream`] fills it before publishing a
+    /// successful outcome.
+    pub metadata: Option<crate::OutcomeMetadata>,
 }
 
 impl RoutingOutcome {
@@ -93,6 +98,7 @@ impl RoutingOutcome {
             selected_model_ids,
             request,
             response: None,
+            metadata: None,
         }
     }
 
@@ -104,6 +110,7 @@ impl RoutingOutcome {
             selected_model_ids: vec![selected_model_id],
             request,
             response: Some(response),
+            metadata: None,
         }
     }
 }
@@ -196,6 +203,13 @@ impl Driver {
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
+        let result = result.map(|mut outcome| {
+            let metadata = outcome
+                .metadata
+                .get_or_insert_with(|| crate::OutcomeMetadata::new(self.algorithm.clone(), None));
+            tracing::Span::current().record("outcome_id", metadata.outcome_id());
+            outcome
+        });
         let selected_model = result
             .as_ref()
             .ok()
@@ -483,6 +497,7 @@ mod tests {
         );
         assert_eq!(outcome.request.model_id().as_deref(), Some("selected"));
         assert!(outcome.response.is_none());
+        assert!(outcome.metadata.is_none());
 
         let outcome = RoutingOutcome::route_to("only".into(), Vec::new(), request());
         assert_eq!(outcome.selected_model_ids, target_set(&["only"]));
@@ -717,6 +732,18 @@ mod tests {
                     }))?;
                 }
                 Step::Done(outcome) => {
+                    let metadata = outcome
+                        .metadata
+                        .as_ref()
+                        .expect("run_stream should attach outcome metadata");
+                    assert_eq!(metadata.algorithm, "test");
+                    assert_eq!(
+                        uuid::Uuid::parse_str(metadata.outcome_id())
+                            .expect("outcome id should be a UUID")
+                            .get_version_num(),
+                        7
+                    );
+                    assert!(metadata.evidence.is_none());
                     let response = outcome
                         .response
                         .ok_or_else(|| test_error("expected an answered outcome"))?;

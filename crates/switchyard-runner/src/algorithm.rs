@@ -14,8 +14,7 @@ use libsy::{
     ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
     CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TargetPrompts,
-    TaskClassifierConfig,
+    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -405,12 +404,6 @@ pub struct StageTierConfig {
     /// Notes handed to a tier when the router switches to it.
     #[serde(default)]
     pub handoff_notes: Option<HandoffNoteConfig>,
-    /// System prompt handed to the capable tier.
-    #[serde(default)]
-    pub capable_system_prompt: Option<String>,
-    /// System prompt handed to the efficient tier.
-    #[serde(default)]
-    pub efficient_system_prompt: Option<String>,
 }
 
 impl StageClassifierConfig {
@@ -542,6 +535,40 @@ impl AlgorithmSpec {
         }
         names
     }
+
+    /// Response target and routing-only dependency for routers that answer while routing.
+    pub(crate) fn routing_response_and_dependency(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::LlmClassifier { config, .. }
+                if matches!(
+                    config.mode.unwrap_or(if config.escalation.is_some() {
+                        ClassifierMode::Escalation
+                    } else {
+                        ClassifierMode::Capability
+                    }),
+                    ClassifierMode::Escalation
+                ) =>
+            {
+                Some((
+                    config.weak_target.as_deref()?,
+                    config.classifier_target.as_str(),
+                ))
+            }
+            Self::Advisor {
+                executor_target,
+                advisor_target,
+                ..
+            } => Some((executor_target, advisor_target)),
+            Self::Noop { .. }
+            | Self::Random { .. }
+            | Self::Passthrough { .. }
+            | Self::LlmClassifier { .. }
+            | Self::StageRouter { .. }
+            | Self::Composite { .. }
+            | Self::PrefillRouter { .. } => None,
+        }
+    }
+
     /// Builds this algorithm after resolving configured target names.
     pub fn build(
         &self,
@@ -980,8 +1007,6 @@ fn build_algorithm(
                 confidence_threshold,
                 recent_turn_window,
                 handoff_notes,
-                capable_system_prompt,
-                efficient_system_prompt,
             } = tiers;
             if matches!(picker, PickerMode::CapableFirst) {
                 tracing::warn!(
@@ -993,12 +1018,6 @@ fn build_algorithm(
             let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
             config.recent_window = *recent_turn_window;
             config.handoff_notes = handoff_notes.clone();
-            config.tier_prompts = tier_prompts(
-                &capable,
-                capable_system_prompt.as_deref(),
-                &efficient,
-                efficient_system_prompt.as_deref(),
-            );
             // The judge is called through its own target, so it is not a routing
             // destination and stays out of the tier pair.
             config.llm_fallback = classifier
@@ -1033,12 +1052,6 @@ fn build_algorithm(
                 StageRouterConfig::new(PickerMode::EfficientFirst, stage.confidence_threshold);
             stage_config.recent_window = stage.recent_turn_window;
             stage_config.handoff_notes = stage.handoff_notes.clone();
-            stage_config.tier_prompts = tier_prompts(
-                &capable,
-                stage.capable_system_prompt.as_deref(),
-                &efficient,
-                stage.efficient_system_prompt.as_deref(),
-            );
             let config = CompositeRouterConfig {
                 judge_target,
                 judge: classifier.task_classifier_config(),
@@ -1178,23 +1191,6 @@ fn default_classifier_max_output_tokens() -> u64 {
 
 fn default_judge_char_budget() -> usize {
     TaskClassifierConfig::default().judge_char_budget
-}
-
-/// Keys each configured system prompt by the target it belongs to.
-fn tier_prompts(
-    capable: &str,
-    capable_prompt: Option<&str>,
-    efficient: &str,
-    efficient_prompt: Option<&str>,
-) -> TargetPrompts {
-    let mut prompts = TargetPrompts::default();
-    if let Some(prompt) = capable_prompt {
-        prompts = prompts.with(capable, prompt);
-    }
-    if let Some(prompt) = efficient_prompt {
-        prompts = prompts.with(efficient, prompt);
-    }
-    prompts
 }
 
 fn resolve_targets<'a>(
