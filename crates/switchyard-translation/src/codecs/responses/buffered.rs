@@ -668,8 +668,6 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
     }]
 }
 
-// Collects text from the known Responses reasoning content/summary shapes.
-
 // Decodes Responses content arrays or strings into normalized content blocks.
 fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
     match value {
