@@ -386,9 +386,8 @@ impl RoutingIdentity {
 /// [`OutcomeMetadata::outcome_id`](crate::OutcomeMetadata::outcome_id) on `libsy.run`,
 /// alongside `selected_model_ids` (an ordered OpenTelemetry string array).
 /// `algorithm` and `switchyard.algorithm` retain the run's [`Algorithm::name`].
-/// Optional `evidence.source`, `evidence.verdict`, `evidence.trigger`, and
-/// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`, and
-/// `evidence.threshold` are numbers. Unknown evidence fields are not exported.
+/// Optional `evidence` is the full JSON serialized as a string for consumers to parse.
+/// Keep it small and free of private data; nothing is filtered or redacted.
 /// These fields are span attributes, never metric labels.
 ///
 /// The run/call observability helpers retain `outcome` status and operational metrics,
