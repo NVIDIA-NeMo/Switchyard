@@ -1601,6 +1601,12 @@ calls an upstream.</p>
 <td>Key under <code>[llm_clients]</code>.</td>
 </tr>
 <tr>
+<td><code>system_prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>System prompt prepended when this target serves a completion.</td>
+</tr>
+<tr>
 <td><code>extra_body</code></td>
 <td style="text-align: center;">No</td>
 <td><code>{}</code></td>
@@ -1608,6 +1614,15 @@ calls an upstream.</p>
 </tr>
 </tbody>
 </table>
+<p>Each selected or fallback target is prepared from the routed request independently. A prompt
+configured for one target is therefore not carried into another target's fallback request.
+Judge-only, classifier-only, and reviewer-only targets are not completion destinations and do not
+receive this prompt.</p>
+<p>Escalation's weak target and Advisor's executor produce a candidate response while routing, so
+their target prompt is applied to that call. A prompted target in either role cannot use the same
+model ID as that route's judge or reviewer because those calls would otherwise be indistinguishable
+at the client boundary; Switchyard rejects that configuration when it loads.
+Token-count requests do not apply target system prompts.</p>
 <h2 id="routesname"><code>[routes.&lt;name&gt;]</code><a class="headerlink" href="#routesname" title="Permanent link">&para;</a></h2>
 <p>Every route takes the common keys below, plus the keys for its type.</p>
 <table>
@@ -2048,18 +2063,6 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 <td>Trailing tool results the signals are computed over.</td>
 </tr>
 <tr>
-<td><code>capable_system_prompt</code></td>
-<td style="text-align: center;">No</td>
-<td>unset</td>
-<td>System prompt handed to the capable tier.</td>
-</tr>
-<tr>
-<td><code>efficient_system_prompt</code></td>
-<td style="text-align: center;">No</td>
-<td>unset</td>
-<td>System prompt handed to the efficient tier.</td>
-</tr>
-<tr>
 <td><code>classifier.classify_trigger</code></td>
 <td style="text-align: center;">No</td>
 <td><code>every_request</code></td>
@@ -2140,18 +2143,6 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td style="text-align: center;">No</td>
 <td><code>3</code></td>
 <td>Trailing tool results the signals are computed over.</td>
-</tr>
-<tr>
-<td><code>stage.capable_system_prompt</code></td>
-<td style="text-align: center;">No</td>
-<td>unset</td>
-<td>System prompt handed to the capable tier.</td>
-</tr>
-<tr>
-<td><code>stage.efficient_system_prompt</code></td>
-<td style="text-align: center;">No</td>
-<td>unset</td>
-<td>System prompt handed to the efficient tier.</td>
 </tr>
 <tr>
 <td><code>subagents</code></td>
