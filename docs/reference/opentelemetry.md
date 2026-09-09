@@ -1,61 +1,36 @@
 # OpenTelemetry
 
-Switchyard emits routing spans, model-call spans, and operational metrics.
+Libsy and its LLM client emit routing spans, model-call spans, and operational metrics.
 Use traces to inspect one request and metrics to monitor traffic over time.
 This page describes the current implementation, not a separate NVIDIA telemetry service.
 
 ## Collection and export
 
-| Host | Behavior |
+| Library | Behavior |
 |---|---|
 | `libsy` embedded in your application | Uses `tracing` and the global OTel meter provider. Your application installs the subscriber, provider, and exporters. Libsy installs no exporter and sends no telemetry itself. |
 | `libsy-llm-client` | Adds model-call spans and metrics when driving an algorithm. Uses the same host-owned providers. |
-| `switchyard-server` | Installs process-wide providers, exposes Prometheus metrics at `/metrics`, and optionally exports traces and metrics through OTLP/HTTP. |
 
 Without a meter provider, library metrics are no-ops. Without a tracing subscriber,
 spans are not collected. A logging-only subscriber does not export OTel traces.
 
-### Enable server export
+Your application connects `tracing` to OTel through `tracing-opentelemetry` and
+installs a global meter provider with its chosen metric readers/exporters.
+Configure these before running algorithms. The host also owns filtering, sampling,
+trace-context propagation, and flushing on shutdown.
 
-With an OTLP/HTTP collector listening on port 4318 and an existing
-[server configuration](../../crates/switchyard-server/README.md):
-
-```bash
-export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
-export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
-export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics
-export OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/protobuf
-export OTEL_SERVICE_NAME=switchyard-server
-switchyard-server --config routes.toml
-```
-
-| Setting | Effect |
-|---|---|
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Enables trace export to the full signal URL. |
-| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Enables metric export to the full signal URL. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Shared base endpoint for both signals, instead of separate signal URLs. |
-| `OTEL_TRACES_EXPORTER=none` / `OTEL_METRICS_EXPORTER=none` | Disables OTLP export for that signal. Selecting `otlp` still requires an endpoint. |
-| `OTEL_SDK_DISABLED=true` | Disables the server's OTLP export paths. Local `/metrics` remains available. |
-| `OTEL_SERVICE_NAME` | Resource service name; defaults to `switchyard-server`. |
-| `RUST_LOG` | Filters both console logs and exported tracing spans/events. Defaults to `info,opentelemetry=warn`. |
-
-Set these before starting the process. Server initialization runs once. With no
-OTLP endpoint configured, the server does not enable OTLP export. It still serves
-`/metrics`. No `SWITCHYARD_TELEMETRY` opt-in gate is implemented.
-
-For exporter authentication and shared versus signal-specific endpoints, see the
+Setting OTel environment variables alone does not install providers or exporters
+in an embedded application. For an installed OTLP exporter, see the
 [OTLP exporter configuration](https://opentelemetry.io/docs/specs/otel/protocol/exporter/).
 Keep exporter credentials out of checked-in configuration.
 
 ## Traces
 
-The server continues incoming W3C `traceparent` and `tracestate` context.
 An algorithm run and the final model response have different lifetimes:
 `libsy.run` can finish before the host makes the answer call.
 
 | Span | Emitted by | Meaning |
 |---|---|---|
-| `switchyard.request` | Server | Routed HTTP request span. OTel kind `SERVER`; OpenInference kind `CHAIN`. |
 | `libsy.run` | Libsy | One algorithm run, including routing-time work. OpenInference kind `CHAIN`. |
 | `libsy.llm_call` | Libsy driver | Waiting for the host to fulfill an offloaded call. Includes host queueing. OpenInference kind `CHAIN`. |
 | `libsy.client_call`, exported as `chat <model_id>` | LLM client driver | One candidate model call, including that candidate's retries. OTel kind `CLIENT`; OpenInference kind `LLM`. |
@@ -87,7 +62,7 @@ decisions. Scores and confidence are algorithm-specific, not interchangeable.
 
 Failed runs return typed errors and do not produce successful outcome metadata.
 A successful fail-open decision can still carry a fixed `reason_code`.
-Nested algorithm runs have their own run spans; one HTTP request need not mean
+Nested algorithm runs have their own run spans; one application request need not mean
 one algorithm span.
 
 ### Model-call fields
@@ -130,9 +105,10 @@ are recorded only for buffered responses. Its duration is not full streaming lat
 ## Metrics
 
 Metrics use the `switchyard` meter scope. The tables use OTel instrument names.
-The server's Prometheus exporter replaces dots with underscores and adds `_total`
-to counters: `switchyard.runs` becomes `switchyard_runs_total`.
-Histograms expose `_bucket`, `_sum`, and `_count` series.
+With the default OTel Prometheus exporter naming, dots become underscores and
+counters gain `_total`: `switchyard.runs` becomes `switchyard_runs_total`.
+Histograms expose `_bucket`, `_sum`, and `_count` series. Your host chooses how
+to expose or export the collected metrics.
 
 ### Routing and client metrics
 
@@ -175,7 +151,7 @@ Stage Router instruments use the prefix `switchyard.stage_router.`:
 
 These histograms contain unitless values from 0 to 1. They are recorded when tool
 signals reach the scorer, including when it defers to a classifier. They are not
-one sample per HTTP request and are not split by route or session.
+one sample per application request and are not split by route or session.
 
 Advisor Gate instruments use the prefix `switchyard.advisor_gate.`:
 
@@ -189,16 +165,7 @@ Advisor Gate instruments use the prefix `switchyard.advisor_gate.`:
 Algorithms can use OTel instruments directly. Use configured model/algorithm names
 and fixed categories as metric labels, not request IDs, session IDs, or user text.
 
-### Server usage and HTTP metrics
-
-The server also exposes per-model usage, request/error counts, full-response latency,
-HTTP response outcomes, and build information. See the
-[server metric table](../../crates/switchyard-server/README.md#metrics) for their
-Prometheus names and labels. Token metrics require upstream usage data.
-
-`/metrics` is process-wide and cumulative. `/v1/stats` is a resettable JSON view
-with separate request accounting and curated algorithm summaries, not a dump of
-every OTel instrument. `/v1/stats/reset` does not reset `/metrics`.
+### Querying metrics
 
 For example, inspect routing rate and latency with PromQL:
 
@@ -233,4 +200,3 @@ telemetry schema. Check changes when upgrading.
 - [Client span fields](../../crates/libsy-llm-client/src/run.rs) and [stream/usage observation](../../crates/libsy-llm-client/src/observability.rs)
 - [Client metrics](../../crates/libsy-llm-client/src/metrics.rs)
 - [Stage Router metrics](../../crates/libsy/src/algorithms/util/stage.rs) and [Advisor Gate metrics](../../crates/libsy/src/algorithms/advisor_gate/telemetry.rs)
-- [Server exporters](../../crates/switchyard-server/src/observability.rs), [metric setup](../../crates/switchyard-server/src/metrics.rs), and [usage recording](../../crates/switchyard-server/src/usage_metrics.rs)
