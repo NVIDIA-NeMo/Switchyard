@@ -258,17 +258,15 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
-    /// Picks a routing strategy automatically. Currently resolves to the same
-    /// behavior as `stage_router`; change the merged match arms below to
-    /// repoint it at a different algorithm.
+    /// Picks a routing strategy automatically, preset with recommended knobs.
+    /// Currently a `stage_router` with `picker = "efficient_first"` and
+    /// `confidence_threshold = 0.5`; change `build_algorithm`'s `Auto` arm to
+    /// repoint it at a different algorithm or preset.
     Auto {
-        #[serde(flatten)]
-        tiers: StageTierConfig,
-        picker: PickerMode,
-        #[serde(default)]
-        classifier: Option<StageClassifierConfig>,
-        #[serde(default)]
-        subagents: Option<SubagentRouteConfig>,
+        /// The capable tier.
+        capable_target: String,
+        /// The efficient tier.
+        efficient_target: String,
     },
     /// A judge picks the tier at each user turn; a stage router runs the turns within it.
     Composite {
@@ -466,9 +464,6 @@ impl AlgorithmSpec {
             }
             Self::StageRouter {
                 tiers, subagents, ..
-            }
-            | Self::Auto {
-                tiers, subagents, ..
             } => {
                 let mut names = vec![
                     tiers.capable_target.as_str(),
@@ -479,6 +474,10 @@ impl AlgorithmSpec {
                 }
                 names
             }
+            Self::Auto {
+                capable_target,
+                efficient_target,
+            } => vec![capable_target.as_str(), efficient_target.as_str()],
             Self::Composite {
                 stage, subagents, ..
             } => {
@@ -513,11 +512,6 @@ impl AlgorithmSpec {
                 ..
             } => names.extend(subagents.classifier_target_name()),
             Self::StageRouter {
-                classifier,
-                subagents,
-                ..
-            }
-            | Self::Auto {
                 classifier,
                 subagents,
                 ..
@@ -1004,19 +998,7 @@ fn build_algorithm(
             classifier,
             subagents,
             ..
-        }
-        | AlgorithmSpec::Auto {
-            tiers,
-            picker,
-            classifier,
-            subagents,
-            ..
         } => {
-            let type_name = if matches!(config, AlgorithmSpec::Auto { .. }) {
-                "auto"
-            } else {
-                "stage_router"
-            };
             let StageTierConfig {
                 capable_target,
                 efficient_target,
@@ -1026,7 +1008,7 @@ fn build_algorithm(
             } = tiers;
             if matches!(picker, PickerMode::CapableFirst) {
                 tracing::warn!(
-                    "{type_name} route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
+                    "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
                 );
             }
             let capable = resolve_target_model_id(route_name, capable_target, targets)?;
@@ -1049,12 +1031,27 @@ fn build_algorithm(
                 .transpose()?;
             let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
                 AlgorithmConfigError::with_source(
-                    format!("{type_name} route {route_name}: {error}"),
+                    format!("stage_router route {route_name}: {error}"),
                     error,
                 )
             })?;
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
+        }
+        AlgorithmSpec::Auto {
+            capable_target,
+            efficient_target,
+        } => {
+            let capable = resolve_target_model_id(route_name, capable_target, targets)?;
+            let efficient = resolve_target_model_id(route_name, efficient_target, targets)?;
+            let config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
+            let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("auto route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
         }
         AlgorithmSpec::Composite {
             classifier,

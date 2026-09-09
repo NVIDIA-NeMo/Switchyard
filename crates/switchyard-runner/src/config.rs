@@ -983,10 +983,18 @@ confidence_threshold = 0.5
     }
 
     #[test]
-    fn auto_builds_the_same_route_as_stage_router() -> RunnerResult<()> {
-        let config = stage_config().replace("type = \"stage_router\"", "type = \"auto\"");
+    fn auto_route_builds_a_stage_router_with_no_extra_fields() -> RunnerResult<()> {
+        let config = format!(
+            r#"{VALID_CONFIG}
+[routes.auto]
+id = "switchyard/auto"
+type = "auto"
+capable_target = "strong"
+efficient_target = "weak"
+"#
+        );
         let runner = runner_from_toml(&config)?;
-        assert!(runner.route("switchyard/stage").is_some());
+        assert!(runner.route("switchyard/auto").is_some());
         Ok(())
     }
 

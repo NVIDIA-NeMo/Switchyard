@@ -255,9 +255,17 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 ### `auto`
 
 Uses Switchyard's recommended default routing strategy instead of one you pick
-yourself. See [Stage-Router Routing](../routing_algorithms/stage_router_routing.md)
-for a deeper dive on the current default, or the [strategy table](../routing_algorithms/overview.md#choose-a-strategy)
-to pick one manually.
+yourself: a `stage_router` preset with `picker = "efficient_first"` and
+`confidence_threshold = 0.5`, no classifier. See
+[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for a
+deeper dive on the current default, or the
+[strategy table](../routing_algorithms/overview.md#choose-a-strategy) to pick
+one manually.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `capable_target` | Yes | — | Capable tier. |
+| `efficient_target` | Yes | — | Efficient tier. |
 
 ### `composite`
 
