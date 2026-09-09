@@ -254,8 +254,10 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 
 ### `auto`
 
-Picks a routing strategy automatically. Currently resolves to `stage_router`
-and takes the same fields; the resolution may change in a future release.
+Uses Switchyard's recommended default routing strategy instead of one you pick
+yourself. See [Stage-Router Routing](../routing_algorithms/stage_router_routing.md)
+for a deeper dive on the current default, or the [strategy table](../routing_algorithms/overview.md#choose-a-strategy)
+to pick one manually.
 
 ### `composite`
 
