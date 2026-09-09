@@ -904,16 +904,12 @@ target = "anthropic"
         ("operation", "request_encode"),
         ("severity", "warning"),
     ];
-    let before = send(&app, "GET", "/metrics", None)
-        .await?
-        .text()?
-        .to_string();
-
-    let lossless_response = send(
-        &app,
-        "POST",
-        "/v1/chat/completions",
-        Some(json!({
+    let request = |min_length| {
+        let answer = match min_length {
+            Some(min_length) => json!({"type": "string", "minLength": min_length}),
+            None => json!({"type": "string"}),
+        };
+        json!({
             "model": "switchyard/diagnostics",
             "messages": [{"role": "user", "content": "Return JSON"}],
             "response_format": {
@@ -923,90 +919,58 @@ target = "anthropic"
                     "strict": true,
                     "schema": {
                         "type": "object",
-                        "properties": {"answer": {"type": "string"}},
+                        "properties": {"answer": answer},
                         "required": ["answer"]
                     }
                 }
             }
-        })),
-    )
-    .await?;
-    assert_eq!(lossless_response.status, StatusCode::OK);
-    assert_eq!(
-        lossless_response.json()?["choices"][0]["message"]["content"],
-        "ok"
-    );
+        })
+    };
+    let mut metrics = send(&app, "GET", "/metrics", None)
+        .await?
+        .text()?
+        .to_string();
+
+    for (min_length, expected_delta) in [(None, 0.0), (Some(5), 1.0)] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(request(min_length)),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
+        let after = send(&app, "GET", "/metrics", None)
+            .await?
+            .text()?
+            .to_string();
+        assert_eq!(
+            metric_delta(
+                &metrics,
+                &after,
+                "switchyard_translation_diagnostics_total",
+                &diagnostic_labels,
+            )
+            .unwrap_or_default(),
+            expected_delta
+        );
+        metrics = after;
+    }
+
     let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 1);
+    assert_eq!(calls.len(), 2);
     assert_eq!(
         calls[0].pointer("/output_config/format/schema/properties/answer"),
         Some(&json!({"type": "string"}))
     );
-    drop(calls);
-
-    let after_lossless = send(&app, "GET", "/metrics", None)
-        .await?
-        .text()?
-        .to_string();
-    assert_eq!(
-        metric_delta(
-            &before,
-            &after_lossless,
-            "switchyard_translation_diagnostics_total",
-            &diagnostic_labels,
-        )
-        .unwrap_or_default(),
-        0.0
-    );
-
-    let response = send(
-        &app,
-        "POST",
-        "/v1/chat/completions",
-        Some(json!({
-            "model": "switchyard/diagnostics",
-            "messages": [{"role": "user", "content": "Return constrained JSON"}],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "answer",
-                    "strict": true,
-                    "schema": {
-                        "type": "object",
-                        "properties": {"answer": {"type": "string", "minLength": 5}},
-                        "required": ["answer"]
-                    }
-                }
-            }
-        })),
-    )
-    .await?;
-    assert_eq!(response.status, StatusCode::OK);
-    assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
-    let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 2);
     assert!(
         calls[1]
             .pointer("/output_config/format/schema/properties/answer/minLength")
             .is_none()
     );
-    drop(calls);
-
-    let after_lossy = send(&app, "GET", "/metrics", None)
-        .await?
-        .text()?
-        .to_string();
-    assert_eq!(
-        metric_delta(
-            &after_lossless,
-            &after_lossy,
-            "switchyard_translation_diagnostics_total",
-            &diagnostic_labels,
-        ),
-        Some(1.0)
-    );
     let diagnostic_line = metric_line(
-        &after_lossy,
+        &metrics,
         "switchyard_translation_diagnostics_total",
         &diagnostic_labels,
     )
