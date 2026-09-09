@@ -7,7 +7,9 @@ pub mod common;
 
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+};
 
 use common::{
     REASONING_MODEL, normalized_policy, shell_tool_call, text_and_encrypted_reasoning_details,
@@ -325,8 +327,8 @@ fn openai_reasoning_response_translates_to_responses_reasoning_item() -> TestRes
 
     assert_eq!(output["output"][0]["type"], "reasoning");
     assert_eq!(
-        output["output"][0]["content"][0],
-        json!({"type": "reasoning_text", "text": "private reasoning"})
+        output["output"][0]["summary"][0],
+        json!({"type": "summary_text", "text": "private reasoning"})
     );
     assert_eq!(output["output"][1]["type"], "message");
     assert_eq!(output["output"][1]["content"][0]["text"], "Visible answer");
@@ -412,7 +414,7 @@ fn openai_reasoning_only_response_translates_to_responses_reasoning_only() -> Te
         .ok_or("Responses output should be an array")?;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], "reasoning");
-    assert_eq!(items[0]["content"][0]["text"], "private reasoning");
+    assert_eq!(items[0]["summary"][0]["text"], "private reasoning");
     Ok(())
 }
 
@@ -722,5 +724,61 @@ fn content_filter_and_refusal_translate_across_formats() -> TestResult {
         .body;
     assert_eq!(output["stop_reason"], "refusal");
     assert_eq!(output["stop_details"]["category"], "cyber");
+    Ok(())
+}
+
+// A Responses reasoning item that carries only `encrypted_content` must survive a
+// buffered decode/encode through the codec (preservation disabled so the same-format
+// shortcut cannot mask a lossy codec), or a buffering caller loses the client's only
+// replayable reasoning payload.
+#[test]
+fn responses_encrypted_reasoning_item_survives_buffered_round_trip() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "model": "kimi-k3",
+        "output": [
+            {
+                "type": "reasoning",
+                "id": "rs_upstream",
+                "status": "completed",
+                "summary": [],
+                "encrypted_content": "opaque-encrypted-reasoning"
+            },
+            {
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done", "annotations": []}]
+            }
+        ],
+        "usage": {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7}
+    });
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let reasoning = output["output"]
+        .as_array()
+        .ok_or("Responses output should be an array")?
+        .iter()
+        .find(|item| item["type"] == "reasoning")
+        .ok_or("output should include the reasoning item")?;
+    assert_eq!(reasoning["encrypted_content"], "opaque-encrypted-reasoning");
+    // The payload only verifies upstream under the id it was issued with.
+    assert_eq!(reasoning["id"], "rs_upstream");
     Ok(())
 }

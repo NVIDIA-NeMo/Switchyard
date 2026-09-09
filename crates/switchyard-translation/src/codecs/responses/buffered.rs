@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
+    collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
     is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
@@ -665,32 +666,6 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
         signature: None,
         details,
     }]
-}
-
-// Collects text from the known Responses reasoning content/summary shapes.
-fn collect_responses_reasoning_text(value: Option<&Value>, out: &mut Vec<String>) {
-    match value {
-        Some(Value::String(text)) if !text.is_empty() => out.push(text.clone()),
-        Some(Value::Array(items)) => {
-            for item in items {
-                match item {
-                    Value::String(text) if !text.is_empty() => out.push(text.clone()),
-                    Value::Object(object) => {
-                        if matches!(
-                            object.get("type").and_then(Value::as_str),
-                            Some("reasoning_text" | "summary_text" | "text")
-                        ) && let Some(text) = object.get("text").and_then(Value::as_str)
-                            && !text.is_empty()
-                        {
-                            out.push(text.to_string());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        _ => {}
-    }
 }
 
 // Decodes Responses content arrays or strings into normalized content blocks.
@@ -1379,8 +1354,20 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                 };
                 let mut items = Vec::new();
 
-                if !reasoning.is_empty() {
-                    items.push(encode_responses_reasoning_output(&reasoning));
+                let encrypted_reasoning = output.content.iter().find_map(|block| match block {
+                    ContentBlock::Reasoning { details, .. } => encrypted_reasoning_data(details),
+                    _ => None,
+                });
+                let encrypted_reasoning_id = output.content.iter().find_map(|block| match block {
+                    ContentBlock::Reasoning { details, .. } => encrypted_reasoning_item_id(details),
+                    _ => None,
+                });
+                if !reasoning.is_empty() || encrypted_reasoning.is_some() {
+                    items.push(encode_responses_reasoning_output(
+                        &reasoning,
+                        encrypted_reasoning.as_deref(),
+                        encrypted_reasoning_id.as_deref(),
+                    ));
                 }
 
                 if !text.is_empty() || (!has_tool_calls && reasoning.is_empty()) {
@@ -1413,18 +1400,29 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
     )
 }
 
-// Encodes private reasoning as a separate Responses output item.
-fn encode_responses_reasoning_output(text: &str) -> Value {
-    json!({
+// Encodes private reasoning as a separate Responses output item. An encrypted-only item
+// carries no text part but keeps `encrypted_content` so the client can replay it.
+fn encode_responses_reasoning_output(
+    text: &str,
+    encrypted: Option<&str>,
+    item_id: Option<&str>,
+) -> Value {
+    // Standard Responses shape: text as `summary_text` parts, which is what clients record.
+    let mut summary = Vec::new();
+    if !text.is_empty() {
+        summary.push(json!({"type": "summary_text", "text": text}));
+    }
+    // Encrypted reasoning verifies only under the id it was issued with, so reuse it.
+    let mut item = json!({
         "type": "reasoning",
-        "id": "rs_switchyard",
+        "id": item_id.unwrap_or("rs_switchyard"),
         "status": "completed",
-        "content": [{
-            "type": "reasoning_text",
-            "text": text,
-        }],
-        "summary": [],
-    })
+        "summary": summary,
+    });
+    if let Some(encrypted) = encrypted {
+        item["encrypted_content"] = Value::String(encrypted.to_string());
+    }
+    item
 }
 
 // Serializes JSON with Python-like spacing to match legacy converter behavior.
