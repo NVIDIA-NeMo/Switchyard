@@ -29,6 +29,7 @@ mod observation;
 pub mod raw;
 pub mod run;
 mod system_one;
+mod translation;
 
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
 pub use client::{AuxiliaryOperation, ModelConfig, TranslatingLlmClient};
