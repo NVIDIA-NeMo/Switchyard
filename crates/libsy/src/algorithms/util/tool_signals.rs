@@ -82,17 +82,14 @@ static ERROR_PATTERNS: &[(&str, f32, &[&str])] = &[
         ],
     ),
     // SOFT: plain non-zero exit without a recognisable exception traceback.
-    (
-        "exit_nonzero",
-        SOFT,
-        &[
-            "exit code 1",
-            "exit code 2",
-            "exit status 1",
-            "returned non-zero",
-            "exited with code",
-        ],
-    ),
+    ("exit_nonzero", SOFT, &["returned non-zero"]),
+];
+
+static NONZERO_EXIT_PHRASES: &[&str] = &[
+    "exit code",
+    "exit status",
+    "exited with code",
+    "exited with status",
 ];
 
 static EDIT_TOOL_NAMES: &[&str] = &[
@@ -589,7 +586,39 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
             severity = severity.max(*sev);
         }
     }
+    if has_nonzero_exit_status(&lower) && !patterns.iter().any(|p| p == "exit_nonzero") {
+        patterns.push("exit_nonzero".to_string());
+        severity = severity.max(SOFT);
+    }
     (severity, patterns)
+}
+
+/// Detects `exit_nonzero` only when a supported exit phrase is followed by a
+/// nonzero decimal status.
+///
+/// Codex includes "Process exited with code 0" on clean tool results, so exit
+/// phrases must parse their numeric status instead of matching the phrase alone.
+fn has_nonzero_exit_status(lower: &str) -> bool {
+    NONZERO_EXIT_PHRASES
+        .iter()
+        .any(|phrase| phrase_followed_by_nonzero_integer(lower, phrase))
+}
+
+/// Matches common "exit code/status N" spellings after optional separators.
+fn phrase_followed_by_nonzero_integer(lower: &str, phrase: &str) -> bool {
+    let mut cursor = 0usize;
+    while let Some(rel) = lower[cursor..].find(phrase) {
+        let value_start = cursor + rel + phrase.len();
+        let rest = lower[value_start..].trim_start_matches(|c: char| {
+            c.is_ascii_whitespace() || matches!(c, ':' | '=' | '\'' | '"' | '`')
+        });
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() && digits.chars().any(|d| d != '0') {
+            return true;
+        }
+        cursor = value_start;
+    }
+    false
 }
 
 fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
@@ -731,6 +760,30 @@ mod tests {
         // exit_nonzero (SOFT) + traceback (HARD) → HARD.
         let (sev, _) = classify_text("exit code 1\nTraceback (most recent call last):");
         assert_eq!(sev, HARD);
+    }
+
+    #[test]
+    fn codex_process_exit_zero_stays_clean() {
+        let (sev, patterns) =
+            classify_text("Chunk ID: abc\nProcess exited with code 0\nOutput:\nok");
+        assert_eq!(sev, 0.0);
+        assert!(!patterns.contains(&"exit_nonzero".to_string()));
+    }
+
+    #[test]
+    fn nonzero_exit_codes_are_soft_errors() {
+        let cases = [
+            "Process exited with code 1",
+            "Process exited with code 127",
+            "exit code: 2",
+            "exit status 3",
+            "exited with status 9",
+        ];
+        for case in cases {
+            let (sev, patterns) = classify_text(case);
+            assert_eq!(sev, SOFT, "expected soft severity for {case}");
+            assert!(patterns.contains(&"exit_nonzero".to_string()));
+        }
     }
 
     #[test]
