@@ -38,6 +38,7 @@ nav:
   - Reference:
       - Server CLI Reference: cli_reference.md
       - TOML Schema: reference/toml_schema.md
+      - OpenTelemetry: reference/opentelemetry.md
       - Rust API: reference/rust_api.md
 
 exclude_docs: |
