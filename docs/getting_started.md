@@ -213,6 +213,17 @@ response when routing already produced the answer. Otherwise the host makes the 
 call from that outcome. Serving these calls yourself is what lets libsy embed in a host that
 already owns its HTTP stack, retries, and credentials.
 
+Successful runs also include `OutcomeMetadata`: a unique `outcome_id`, the algorithm
+name, and optional JSON evidence. In Python, read `outcome.metadata.outcome_id`,
+`outcome.metadata.algorithm`, and `outcome.metadata.evidence` after checking that
+`outcome.metadata` is present. Evidence is a normal Python value, usually a dictionary;
+algorithms without evidence return `None`.
+
+With a host-installed OpenTelemetry subscriber, the existing `libsy.run` span records
+the same identity, selected models, and supported evidence fields. See
+the `Algorithm` observability section in the [Rust API reference](reference/rust_api.md)
+for the field names. libsy does not install an exporter or send telemetry itself.
+
 For the request, response, and streaming types the steps carry, see
 [`switchyard-protocol`](../crates/protocol/README.md).
 
