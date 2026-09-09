@@ -18,3 +18,39 @@ Integrations:
 - `examples/litellm/`: Integrate with LiteLLM.
 
 Write for a high-school level in short, simple sentences. Avoid jargon, analogies and metaphors. Be direct.
+
+## Engineering guidance
+
+- Prefer the smallest direct solution.
+- Avoid abstractions, configurability, and defensive code for hypothetical needs.
+- If the implementation grows unexpectedly large, reconsider and simplify it.
+- For bugs, reproduce the failure before fixing it; for refactors, establish a behavioral baseline first.
+- Make reasonable, reversible assumptions when consequences are small. Ask only when ambiguity would materially change the result, expand scope, or risk an irreversible acti
+
+## Git guidance
+
+1. Comments Explain Code, Not Project Management
+
+Source comments are about the code. Tracking lives in the tracker.
+
+- No issue/PLAN/step references in code (`TODO(step-6)`, "lands in step 4",
+  "tracked as ISSUE-001", links to `docs/issues/`). These rot the moment the
+  plan changes and leak project-management state into source.
+- A plain `// TODO:` describing a concrete code gap is fine; a `// TODO`
+  pointing at a tracker step is not.
+- Comment what isn't obvious from the code: why a thing is done this way,
+  invariants, non-obvious edge cases. Don't narrate what the code already says.
+- Module doc comments should state what the module is *for*, not its build
+  schedule or its "empty for now" status.
+
+2. Commit Discipline
+
+One step, one reviewed, one-line commit.
+
+- One focused commit per step; every changed line traces to that step.
+- Single-line commit message in Conventional Commits form
+  (`type(scope): summary`). No body, no `Co-Authored-By` trailer.
+- Pull request titles use the same Conventional Commits form.
+- Use `git commit -s` so every commit carries the required DCO sign-off.
+- Never commit unprompted. Show the diff, get approval, then commit.
+
