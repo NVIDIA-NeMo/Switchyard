@@ -17,3 +17,4 @@ Integrations:
 - `crates/switchyard-nemo-relay-plugin/`: Integrate with NeMo Relay.
 - `examples/litellm/`: Integrate with LiteLLM.
 
+Write for a high-school level in short, simple sentences. Avoid jargon, analogies and metaphors. Be direct.
