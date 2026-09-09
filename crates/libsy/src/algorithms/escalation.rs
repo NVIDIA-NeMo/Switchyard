@@ -14,6 +14,7 @@ use super::util::classifier_contract::ClassifierContractConfig;
 use super::util::decisive;
 use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
 use super::util::llm_judge::JudgeClassifier;
+use super::util::prompts;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::{State, StateValue};
@@ -48,6 +49,18 @@ struct EscalationClassifier {
     efficient: ModelId,
     /// Consecutive escalate verdicts required to latch.
     confirmations: u32,
+    /// Note spliced into every turn the judge has sent to the capable tier.
+    handoff_note: Option<String>,
+}
+
+impl EscalationClassifier {
+    /// Hands the capable tier the configured note. Only judge-driven turns call this; a
+    /// fallback to capable is not a verdict and must not tell the model the other tier failed.
+    fn apply_handoff_note(&self, request: &mut Request) {
+        if let Some(note) = &self.handoff_note {
+            prompts::append_note(request, note);
+        }
+    }
 }
 
 /// Builds the escalation classifier used by the shared LLM classifier route shell.
@@ -60,6 +73,7 @@ pub(super) fn build_classifier(
     max_output_tokens: u64,
 ) -> Result<Arc<dyn Classifier<State>>> {
     let confirmations = config.confirmations;
+    let handoff_note = config.handoff_note.clone();
     let classifier: Arc<dyn Classifier<State>> = Arc::new(EscalationClassifier {
         judge: escalation::build_judge(
             judge_target,
@@ -72,6 +86,7 @@ pub(super) fn build_classifier(
         capable: capable_target.clone(),
         efficient: efficient_target.clone(),
         confirmations,
+        handoff_note,
     });
     Ok(classifier)
 }
@@ -92,6 +107,7 @@ impl Classifier<State> for EscalationClassifier {
 
         // A confirmed session stays capable without a judge call.
         if streak(state) >= self.confirmations {
+            self.apply_handoff_note(request);
             return Ok((decisive(&self.capable), None));
         }
 
@@ -158,6 +174,7 @@ impl Classifier<State> for EscalationClassifier {
 
         if escalate && pending >= self.confirmations {
             // Streak confirmed: drop the efficient response, caller will serve capable.
+            self.apply_handoff_note(request);
             return Ok((decisive(&self.capable), None));
         }
 
@@ -251,19 +268,73 @@ mod tests {
 
     /// Builds a router with escalation enabled (`confirmations=1` latches immediately).
     fn escalation_router() -> Result<Arc<LlmTaskClassifier>> {
+        escalation_router_with(EscalationJudgeConfig {
+            confirmations: 1,
+            ..EscalationJudgeConfig::default()
+        })
+    }
+
+    fn escalation_router_with(config: EscalationJudgeConfig) -> Result<Arc<LlmTaskClassifier>> {
         Ok(Arc::new(LlmTaskClassifier::new(
             LlmClassifierConfig::Escalation {
                 judge_target: ModelId::from("judge"),
                 efficient_target: ModelId::from("efficient"),
                 capable_target: ModelId::from("capable"),
                 contract: ClassifierContractConfig::default(),
-                config: EscalationJudgeConfig {
-                    confirmations: 1,
-                    ..EscalationJudgeConfig::default()
-                },
+                config,
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             },
         )?))
+    }
+
+    /// The handoff note reaches the capable tier on the latching turn and on every confirmed
+    /// turn after it, and never reaches the efficient tier or the judge.
+    #[tokio::test]
+    async fn handoff_note_reaches_only_the_capable_tier() -> Result<()> {
+        const NOTE: &str = "You are taking over mid-task; verify before continuing.";
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let serve = {
+            let seen = Arc::clone(&seen);
+            move |model: ModelId, request: Request| {
+                let seen = Arc::clone(&seen);
+                async move {
+                    let noted = request.llm_request.messages.iter().any(|message| {
+                        message.role == switchyard_protocol::Role::User
+                            && message.content.iter().any(|block| {
+                                matches!(block, ContentBlock::Text { text } if text.contains(NOTE))
+                            })
+                    });
+                    let model = model.to_string();
+                    seen.lock().push((model.clone(), noted));
+                    Ok(match model.as_str() {
+                        "judge" => reply(r#"{"escalate":true,"reason":"stuck"}"#),
+                        "efficient" => reply("efficient draft"),
+                        _ => reply("capable answer"),
+                    })
+                }
+            }
+        };
+        let router = escalation_router_with(EscalationJudgeConfig {
+            confirmations: 1,
+            handoff_note: Some(NOTE.to_string()),
+            ..EscalationJudgeConfig::default()
+        })?;
+        let request = classify_session_request();
+
+        test_drive(router.clone(), request.clone(), serve.clone()).await?;
+        let (selected_model, _) = test_drive(router, request, serve).await?;
+
+        assert_eq!(selected_model, "capable");
+        assert_eq!(
+            &*seen.lock(),
+            &[
+                ("efficient".to_string(), false),
+                ("judge".to_string(), false),
+                ("capable".to_string(), true),
+                ("capable".to_string(), true),
+            ]
+        );
+        Ok(())
     }
 
     #[tokio::test]
