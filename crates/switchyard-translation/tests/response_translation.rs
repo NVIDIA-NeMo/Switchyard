@@ -7,7 +7,9 @@ pub mod common;
 
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    ContentBlock, StopReason, TranslationEngine, TranslationPolicy, WireFormat,
+};
 
 use common::{
     REASONING_MODEL, normalized_policy, shell_tool_call, text_and_encrypted_reasoning_details,
@@ -50,6 +52,55 @@ fn openai_chat_response_translates_to_anthropic_message() -> TestResult {
     assert_eq!(
         output["usage"],
         json!({"input_tokens": 10, "output_tokens": 5})
+    );
+    Ok(())
+}
+
+// Verifies a Chat Completions refusal survives both neutral decoding and Anthropic encoding.
+#[test]
+fn openai_chat_refusal_decodes_and_translates_to_anthropic() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-refusal",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "refusal": "I cannot help with that request."
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    });
+
+    let decoded =
+        engine.decode_response(WireFormat::OpenAiChat, &body, &TranslationPolicy::default())?;
+    let output = decoded.response.first_output().ok_or("missing output")?;
+    assert_eq!(
+        output.content,
+        vec![ContentBlock::Refusal {
+            text: "I cannot help with that request.".to_string()
+        }]
+    );
+    assert_eq!(output.stop_reason, Some(StopReason::ContentFilter));
+
+    let translated = engine
+        .encode_response(
+            WireFormat::AnthropicMessages,
+            &decoded.response,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(
+        translated["content"],
+        json!([{"type": "text", "text": "I cannot help with that request."}])
+    );
+    assert_eq!(translated["stop_reason"], "refusal");
+    assert_eq!(
+        translated["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
     );
     Ok(())
 }

@@ -134,6 +134,15 @@ fn decode_openai_chat_stream(
                     text: text.to_string(),
                 });
             }
+            if let Some(text) = delta.get("refusal").and_then(Value::as_str)
+                && !text.is_empty()
+            {
+                state.stop_reason = Some("content_filter".to_string());
+                out.push(LlmResponseChunk::TextDelta {
+                    index: 0,
+                    text: text.to_string(),
+                });
+            }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tool_call in tool_calls {
                     if let Some(tool_call) = tool_call.as_object() {
@@ -159,6 +168,12 @@ fn decode_openai_chat_stream(
             }
         }
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            let reason =
+                if reason == "stop" && state.stop_reason.as_deref() == Some("content_filter") {
+                    "content_filter"
+                } else {
+                    reason
+                };
             out.push(LlmResponseChunk::MessageStop {
                 reason: Some(reason.to_string()),
             });

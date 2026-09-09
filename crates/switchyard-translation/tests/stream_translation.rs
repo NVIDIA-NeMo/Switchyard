@@ -400,6 +400,63 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
     Ok(())
 }
 
+// Verifies Chat Completions refusal deltas remain visible and terminate as refusals.
+#[test]
+fn openai_chat_refusal_stream_translates_to_anthropic() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let refusal = json!({
+        "id": "chatcmpl-refusal",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "delta": {"refusal": "I cannot help with that request."},
+            "finish_reason": null
+        }]
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &refusal,
+    )?;
+    let text_delta = events
+        .iter()
+        .find(|event| event["type"] == "content_block_delta")
+        .ok_or("missing refusal text delta")?;
+    assert_eq!(
+        text_delta["delta"]["text"],
+        "I cannot help with that request."
+    );
+
+    let terminal = json!({
+        "id": "chatcmpl-refusal",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    });
+    events.extend(engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &terminal,
+    )?);
+    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+    let message_delta = events
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+        .ok_or("missing Anthropic terminal delta")?;
+    assert_eq!(message_delta["delta"]["stop_reason"], "refusal");
+    assert_eq!(
+        message_delta["delta"]["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
+    );
+    Ok(())
+}
+
 // Restores Anthropic-safe IDs before emitting OpenAI tool-call deltas.
 #[test]
 fn anthropic_stream_tool_id_is_restored_for_openai_chat() -> TestResult {
