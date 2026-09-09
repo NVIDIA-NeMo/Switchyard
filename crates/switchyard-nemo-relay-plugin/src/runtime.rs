@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use futures_util::{Stream, StreamExt};
 use http::StatusCode;
 use nemo_relay_plugin::{
-    Json, LlmRequest as RelayRequest, LogSeverity, MetricKind, MetricMeasurement, MetricValueType,
-    PluginRuntime,
+    DataSchema, Json, LlmRequest as RelayRequest, LogSeverity, MetricKind, MetricMeasurement,
+    MetricValueType, PluginRuntime,
 };
 use serde_json::{Map, json};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
@@ -22,12 +22,23 @@ use switchyard_translation::{TranslationEngine, encode_stream_with_extensions};
 use crate::config::SwitchyardConfig;
 use crate::translation;
 
+const ROUTING_MARK_SCHEMA_VERSION: &str = "1";
+
 #[derive(Debug)]
 pub(crate) struct RoutingMark {
     pub(crate) name: String,
     pub(crate) data: Json,
     pub(crate) metadata: Json,
     pub(crate) severity: Option<LogSeverity>,
+}
+
+impl RoutingMark {
+    fn data_schema(&self) -> DataSchema {
+        DataSchema {
+            name: self.name.clone(),
+            version: ROUTING_MARK_SCHEMA_VERSION.into(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -324,15 +335,18 @@ pub(crate) fn emit_events(runtime: &PluginRuntime, events: Vec<RoutingEvent>) {
 
 pub(crate) fn emit_event(runtime: &PluginRuntime, event: RoutingEvent) {
     let result = match event {
-        RoutingEvent::Mark(mark) => runtime
-            .emit_mark_with_options(
-                &mark.name,
-                Some(&mark.data),
-                Some(&mark.metadata),
-                None,
-                mark.severity,
-            )
-            .map_err(|error| ("routing mark", mark.name, error)),
+        RoutingEvent::Mark(mark) => {
+            let data_schema = mark.data_schema();
+            runtime
+                .emit_mark_with_options(
+                    &mark.name,
+                    Some(&mark.data),
+                    Some(&mark.metadata),
+                    Some(&data_schema),
+                    mark.severity,
+                )
+                .map_err(|error| ("routing mark", mark.name, error))
+        }
         RoutingEvent::Metric(metric) => runtime
             .emit_metric(&metric.name, metric.measurements, Some(&metric.metadata))
             .map_err(|error| ("routing metric", metric.name, error)),
@@ -980,6 +994,8 @@ mod tests {
         assert_eq!(mark.data["target"], "weak");
         assert_eq!(mark.data["upstream_status"], Json::Null);
         assert_eq!(mark.severity, Some(LogSeverity::Error));
+        assert_eq!(mark.data_schema().name, "switchyard.routing.error");
+        assert_eq!(mark.data_schema().version, "1");
         assert!(!mark.data.to_string().contains(secret));
     }
 
