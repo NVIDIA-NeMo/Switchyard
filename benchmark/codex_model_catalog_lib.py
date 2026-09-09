@@ -108,6 +108,7 @@ def _build_codex_model_catalog(
     """Build Codex catalog JSON for Switchyard route ids."""
     template = _load_codex_model_template(codex_bin)
     template.setdefault("supports_reasoning_summaries", True)
+    template.setdefault("supports_parallel_tool_calls", True)
     models: list[dict[str, Any]] = []
     for priority, (model_id, display_name, description) in enumerate(entries):
         model = copy.deepcopy(template)

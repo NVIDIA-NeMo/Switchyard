@@ -16,7 +16,7 @@ use switchyard_libsy::{
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
     PickerMode, Random, RoutingOutcome, StageRouter, StageRouterConfig, Step as RustStep,
-    StepStream, TaskClassifierConfig,
+    StepStream, TaskClassifierConfig, ToolSignalSource,
 };
 use switchyard_protocol::{
     LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId,
@@ -779,7 +779,9 @@ fn build_llm_classifier(config: LlmClassifierConfig) -> PyResult<PyAlgorithm> {
     only_on_wrong_signal_escalation=true,
     capable_system_prompt=None,
     efficient_system_prompt=None,
-    classifier=None
+    classifier=None,
+    signal_discovery_judge_target=None,
+    warmup_turns=0
 ))]
 #[allow(clippy::too_many_arguments)]
 fn stage_router_algorithm(
@@ -795,6 +797,8 @@ fn stage_router_algorithm(
     capable_system_prompt: Option<String>,
     efficient_system_prompt: Option<String>,
     classifier: Option<Py<PyLlmFallback>>,
+    signal_discovery_judge_target: Option<String>,
+    warmup_turns: u32,
 ) -> PyResult<PyAlgorithm> {
     let mode = match picker {
         "capable_first" => PickerMode::CapableFirst,
@@ -831,6 +835,11 @@ fn stage_router_algorithm(
     config.llm_fallback = classifier
         .map(|classifier| classifier.bind(py).try_borrow()?.clone_core(py))
         .transpose()?;
+    config.tool_signal_source = match signal_discovery_judge_target {
+        Some(target) => ToolSignalSource::Llm(ModelId::new(target)),
+        None => ToolSignalSource::Static,
+    };
+    config.warmup_turns = warmup_turns;
 
     let algorithm = StageRouter::new(capable, efficient, config)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;

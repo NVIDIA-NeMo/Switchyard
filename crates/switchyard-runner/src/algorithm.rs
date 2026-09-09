@@ -15,7 +15,7 @@ use libsy::{
     CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
     StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TargetPrompts,
-    TaskClassifierConfig,
+    TaskClassifierConfig, ToolSignalSource,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -255,6 +255,17 @@ pub enum AlgorithmSpec {
         /// Judge consulted for turns the tool signals cannot decide.
         #[serde(default)]
         classifier: Option<StageClassifierConfig>,
+        /// When set, an LLM judge discovers its own severity/category buckets from
+        /// tool activity and drives routing instead of the fixed regex/name tables —
+        /// target name to call the judge through. Unset keeps the static extractor.
+        #[serde(default)]
+        signal_discovery_judge_target: Option<String>,
+        /// Assistant turns to force the default tier for before routing decisions
+        /// are trusted, regardless of `confidence_threshold` — lets a judge-driven
+        /// signal source accumulate real signal before it can affect routing. `0`
+        /// (default) disables warm-up.
+        #[serde(default)]
+        warmup_turns: u32,
         /// Separate policy for delegated sub-agent work.
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
@@ -506,11 +517,15 @@ impl AlgorithmSpec {
             } => names.extend(subagents.classifier_target_name()),
             Self::StageRouter {
                 classifier,
+                signal_discovery_judge_target,
                 subagents,
                 ..
             } => {
                 if let Some(classifier) = classifier {
                     names.push(&classifier.target);
+                }
+                if let Some(target) = signal_discovery_judge_target {
+                    names.push(target);
                 }
                 if let Some(subagents) = subagents {
                     names.extend(subagents.classifier_target_name());
@@ -954,6 +969,8 @@ fn build_algorithm(
             tiers,
             picker,
             classifier,
+            signal_discovery_judge_target,
+            warmup_turns,
             subagents,
             ..
         } => {
@@ -995,6 +1012,13 @@ fn build_algorithm(
                     )
                 })
                 .transpose()?;
+            config.tool_signal_source = match signal_discovery_judge_target.as_ref() {
+                Some(target) => {
+                    ToolSignalSource::Llm(resolve_target_model_id(route_name, target, targets)?)
+                }
+                None => ToolSignalSource::Static,
+            };
+            config.warmup_turns = *warmup_turns;
             let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("stage_router route {route_name}: {error}"),
