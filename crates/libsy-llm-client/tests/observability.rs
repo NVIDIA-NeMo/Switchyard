@@ -488,6 +488,7 @@ impl RoutedLlmClient for UsageClient {
 struct SingleCallAlgo {
     name: String,
     target_set: Vec<String>,
+    metadata: Option<switchyard_libsy::OutcomeMetadata>,
 }
 
 #[async_trait]
@@ -507,7 +508,18 @@ impl Algorithm for SingleCallAlgo {
             .ok_or(LibsyError::NoTargets)?
             .clone();
         tracing::info!("picked '{target}'");
-        Ok(RoutingOutcome::route_to(target.into(), Vec::new(), request))
+        let mut outcome = RoutingOutcome::route_to(
+            target.into(),
+            self.target_set
+                .iter()
+                .skip(1)
+                .cloned()
+                .map(ModelId::from)
+                .collect(),
+            request,
+        );
+        outcome.metadata = self.metadata.clone();
+        Ok(outcome)
     }
 }
 
@@ -561,6 +573,7 @@ fn algo(name: &str, model: &str) -> Arc<dyn Algorithm> {
     Arc::new(SingleCallAlgo {
         name: name.to_string(),
         target_set: vec![model.to_string()],
+        metadata: None,
     })
 }
 
@@ -748,7 +761,8 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
 }
 
 #[tokio::test]
-async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_libsy::Result<()> {
+async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchyard_libsy::Result<()>
+{
     let _guard = serialize_test().lock().await;
     let (store, exporter, provider, span_exporter, _) = telemetry();
     const ALGO: &str = "obs-success-algo";
@@ -775,7 +789,20 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     request.llm_request.output.max_output_tokens = Some(512);
     request.llm_request.output.response_format = Some(json!({"type": "json_schema"}));
     request.llm_request.reasoning.effort = Some("high".to_string());
-    let (selected_model, _response) = run(algo(ALGO, MODEL), client, request).await?;
+    let metadata = switchyard_libsy::OutcomeMetadata::new(
+        ALGO.to_string(),
+        Some(json!({
+            "source": "llm-classifier", "score": 0.9, "threshold": 0.5,
+            "verdict": "continue", "trigger": "turn", "reason_code": "test",
+            "confidence": "wrong type", "unknown": LEAKED_CONTENT,
+        })),
+    );
+    let algorithm = Arc::new(SingleCallAlgo {
+        name: ALGO.to_string(),
+        target_set: vec![MODEL.to_string(), "obs-fallback-model".to_string()],
+        metadata: Some(metadata.clone()),
+    });
+    let (selected_model, _response) = run(algorithm, client, request).await?;
     assert_eq!(selected_model, MODEL);
 
     // Metrics: run/call counters and latency histograms keyed by algorithm,
@@ -843,6 +870,51 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     // llm_call span carrying the selection, outcome, and token counts.
     let spans = store.spans();
     let run_span = find_span(&spans, "libsy.run", "algorithm", ALGO);
+    assert_eq!(
+        spans
+            .iter()
+            .filter(|span| span.name == "libsy.run"
+                && span.fields.get("algorithm").map(String::as_str) == Some(ALGO))
+            .count(),
+        1
+    );
+    for (field, expected) in [
+        ("outcome_id", metadata.outcome_id()),
+        ("evidence.source", "llm-classifier"),
+        ("evidence.score", "0.9"),
+        ("evidence.threshold", "0.5"),
+        ("evidence.verdict", "continue"),
+        ("evidence.trigger", "turn"),
+        ("evidence.reason_code", "test"),
+    ] {
+        assert_eq!(
+            run_span.fields.get(field).map(String::as_str),
+            Some(expected),
+            "{field}"
+        );
+    }
+    assert!(!run_span.fields.contains_key("evidence.confidence"));
+    assert!(!format!("{run_span:?}").contains(LEAKED_CONTENT));
+    let exported = span_exporter.get_finished_spans().expect("exported spans");
+    let exported_run = exported
+        .iter()
+        .find(|span| {
+            span.name == "libsy.run"
+                && otel_attribute(span, "outcome_id")
+                    .is_some_and(|id| id.as_str() == metadata.outcome_id())
+        })
+        .expect("outcome span exported");
+    assert_eq!(
+        otel_attribute(exported_run, "evidence.score"),
+        Some(&OtelValue::F64(0.9))
+    );
+    assert_eq!(
+        otel_attribute(exported_run, "selected_model_ids"),
+        Some(&OtelValue::Array(OtelArray::String(vec![
+            MODEL.into(),
+            "obs-fallback-model".into()
+        ]),))
+    );
     assert_eq!(run_span.parent, None);
     assert_eq!(
         run_span.fields.get("session_id").map(String::as_str),
@@ -880,13 +952,7 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         run_span.fields.get("agent_role").map(String::as_str),
         Some("reviewer")
     );
-    // Host-defined labels ride in generically via Metadata.extra_metadata.
-    assert!(
-        run_span
-            .fields
-            .get("extra_metadata")
-            .is_some_and(|extra| extra.contains("tenant") && extra.contains("obs-tenant-1"))
-    );
+    assert!(!run_span.fields.contains_key("extra_metadata"));
 
     // The default-client serve inside `run` gets its own client-call span.
     let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
@@ -950,6 +1016,12 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
 
     // The algorithm logs why it made the decision.
     let events = store.events();
+    assert!(
+        !events.iter().any(
+            |event| event.fields.get("algorithm").map(String::as_str) == Some(ALGO)
+                && event.fields.get("message").map(String::as_str) == Some("routing decision")
+        )
+    );
     assert!(
         events.iter().any(|event| {
             event.level == "INFO"
@@ -1250,7 +1322,7 @@ async fn upstream_body_is_redacted_from_the_client_call_span() -> switchyard_lib
 }
 
 #[tokio::test]
-async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::Result<()> {
+async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (store, exporter, provider, _, _) = telemetry();
     const ALGO: &str = "obs-failure-algo";
@@ -1272,7 +1344,10 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
             Ok(Step::Done(_)) => {
                 return Err(test_error("expected the failed call to fail the run"));
             }
-            Err(_) => saw_error_step = true,
+            Err(error) => {
+                assert!(error.to_string().contains("synthetic upstream failure"));
+                saw_error_step = true;
+            }
         }
     }
     assert!(
@@ -1307,51 +1382,27 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
         None
     );
 
-    // Spans: both spans carry outcome=error and the propagated error text.
+    // Error details remain with the caller, while operational status is preserved.
     let spans = store.spans();
     let run_span = find_span(&spans, "libsy.run", "algorithm", ALGO);
     assert_eq!(
         run_span.fields.get("outcome").map(String::as_str),
         Some("error")
     );
-    assert!(
-        run_span
-            .fields
-            .get("error")
-            .is_some_and(|error| error.contains("synthetic upstream failure"))
-    );
+    assert!(!run_span.fields.contains_key("error"));
+    assert!(!run_span.fields.contains_key("outcome_id"));
     let call_span = find_span(&spans, "libsy.llm_call", "selected_model", MODEL);
     assert_eq!(
         call_span.fields.get("outcome").map(String::as_str),
         Some("error")
     );
 
-    // Structured logs warn once for the failed call and failed run.
+    assert_eq!(call_span.parent.as_deref(), Some("libsy.run"));
+    assert!(!call_span.fields.contains_key("error"));
+
     let events = store.events();
-    assert!(
-        events.iter().any(|event| {
-            event.target == "libsy"
-                && event.level == "WARN"
-                && event.fields.get("selected_model").map(String::as_str) == Some(MODEL)
-                && event
-                    .fields
-                    .get("message")
-                    .is_some_and(|message| message.contains("model call failed"))
-        }),
-        "no call-failure log for {MODEL} in {events:?}"
-    );
-    assert!(
-        events.iter().any(|event| {
-            event.target == "libsy"
-                && event.level == "WARN"
-                && event.fields.get("algorithm").map(String::as_str) == Some(ALGO)
-                && event
-                    .fields
-                    .get("message")
-                    .is_some_and(|message| message.contains("algorithm run failed"))
-        }),
-        "no run-failure log for {ALGO} in {events:?}"
-    );
+    assert!(!events.iter().any(|event| event.target == "libsy"
+        && event.fields.get("algorithm").map(String::as_str) == Some(ALGO)));
     Ok(())
 }
 

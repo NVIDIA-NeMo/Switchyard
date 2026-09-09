@@ -5,6 +5,7 @@
 
 from collections.abc import AsyncIterator
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -14,6 +15,7 @@ from switchyard.libsy import (
     CustomClassifierConfig,
     LlmClassifierConfig,
     LlmResponse,
+    OutcomeMetadata,
     RoutingOutcome,
     Step,
     TaskClassifierConfig,
@@ -77,6 +79,13 @@ async def run_algorithm(
                         call.respond(LlmResponse.Agg(response))
                         break
             case Step.Done(outcome):
+                assert isinstance(outcome.metadata, OutcomeMetadata)
+                assert UUID(outcome.metadata.outcome_id).version == 7
+                evidence = outcome.metadata.evidence
+                assert evidence is None or isinstance(evidence, dict)
+                if evidence is not None and evidence.get("source") == "llm-classifier":
+                    assert evidence["score"] == pytest.approx(0.9)
+                    assert evidence["threshold"] == pytest.approx(0.5)
                 if outcome.response is not None:
                     match outcome.response:
                         case LlmResponse.Agg(response):
@@ -113,6 +122,10 @@ async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() 
     assert outcome is not None
     assert outcome.selected_model_ids == ["fast"]
     assert outcome.response is None
+    assert outcome.metadata is not None
+    assert UUID(outcome.metadata.outcome_id).version == 7
+    assert outcome.metadata.algorithm == "random"
+    assert outcome.metadata.evidence is None
     response = await client.call(outcome.request)
     assert client.calls[0]["model"] == "fast"
     assert client.calls[0]["messages"][0]["content"] == [

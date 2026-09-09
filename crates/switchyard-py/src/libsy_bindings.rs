@@ -514,12 +514,45 @@ impl PyModelCall {
     }
 }
 
-/// The terminal routing selection, rewritten request, and optional existing response.
+/// Identity and optional JSON evidence from the Rust routing outcome.
+#[pyclass(name = "OutcomeMetadata", module = "switchyard.libsy", frozen)]
+struct PyOutcomeMetadata {
+    inner: switchyard_libsy::OutcomeMetadata,
+}
+
+#[pymethods]
+impl PyOutcomeMetadata {
+    /// UUIDv7 generated for this outcome.
+    #[getter]
+    fn outcome_id(&self) -> &str {
+        self.inner.outcome_id()
+    }
+
+    /// Name of the algorithm that produced this outcome.
+    #[getter]
+    fn algorithm(&self) -> &str {
+        &self.inner.algorithm
+    }
+
+    /// Optional evidence converted to ordinary Python JSON values.
+    #[getter]
+    fn evidence(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.inner
+            .evidence
+            .as_ref()
+            .map(|value| to_python(py, value))
+            .transpose()
+    }
+}
+
+/// The terminal routing selection, rewritten request, optional response, and metadata.
 #[pyclass(name = "RoutingOutcome", module = "switchyard.libsy", frozen)]
 struct PyRoutingOutcome {
     selected_model_ids: Vec<String>,
     request: Py<PyAny>,
     response: Option<Py<PyAny>>,
+    #[pyo3(get)]
+    metadata: Option<Py<PyOutcomeMetadata>>,
 }
 
 #[pymethods]
@@ -675,13 +708,16 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 selected_model_ids,
                 request,
                 response,
-                metadata: _,
+                metadata,
             } = *outcome;
             Python::attach(|py| {
                 Ok(PyStep::Done {
                     outcome: Py::new(
                         py,
                         PyRoutingOutcome {
+                            metadata: metadata
+                                .map(|inner| Py::new(py, PyOutcomeMetadata { inner }))
+                                .transpose()?,
                             selected_model_ids: selected_model_ids
                                 .iter()
                                 .map(ToString::to_string)
@@ -849,6 +885,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     libsy_module.add_class::<PyLlmResponse>()?;
     libsy_module.add_class::<PyLlmResponseStream>()?;
     libsy_module.add_class::<PyModelCall>()?;
+    libsy_module.add_class::<PyOutcomeMetadata>()?;
     libsy_module.add_class::<PyRunStream>()?;
     libsy_module.add_class::<PyRoutingOutcome>()?;
     libsy_module.add_class::<PyStep>()?;
