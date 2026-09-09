@@ -2,7 +2,7 @@ schema_version = 1
 
 [llm_clients.inference]
 format = "openai_responses"
-base_url = "https://inference-api.nvidia.com/v1"
+base_url = "https://api.example.com/v1" # Replace with your OpenAI-compatible gateway.
 api_key_env = "NVIDIA_API_KEY"
 max_retries = 0
 

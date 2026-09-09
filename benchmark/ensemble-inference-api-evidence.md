@@ -8,7 +8,7 @@ production endpoints and records the behavior that informed the initial defaults
 
 ## Setup
 
-- API: NVIDIA Inference API through OpenAI Responses format
+- API: OpenAI Responses through an authenticated model gateway (endpoint omitted)
 - Baseline: `azure/openai/gpt-6-astra`
 - Ensemble candidates: `azure/openai/gpt-5.6-sol` and
   `azure/anthropic/claude-opus-5`
