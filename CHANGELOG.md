@@ -13,6 +13,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   turn after it, the same mechanism as the stage router's handoff notes, so the
   strong model knows it is taking over a session and re-checks the work rather
   than trusting it.
+- **Per-target `reasoning_effort`** — a target can force the reasoning effort
+  of every request it serves, replacing the caller's value (`reasoning.effort`
+  on the Responses wire, `reasoning_effort` on Chat Completions), so a strong
+  tier can run at `max` behind a client that sends `high`. `extra_body` only
+  fills absent keys and could not do this. Rejected on Anthropic clients.
 - **Raw Responses stream trace** — an opt-in trace of every upstream Responses
   event as received, under `RUST_LOG=switchyard_translation::responses::raw=trace`,
   for diagnosing provider-specific event shapes. (#646)
