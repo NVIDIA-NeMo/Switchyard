@@ -159,17 +159,12 @@ impl CircuitBreaker {
 
 /// Whether a failed local call says anything about the endpoint's health.
 ///
-/// A context-window overflow is a property of the request, not of the tier: the
-/// endpoint answered correctly that this request does not fit. Counting it would
-/// let a run of oversized requests open the circuit on a healthy endpoint.
+/// Only transport failures, timeouts, and gateway-unavailable responses count.
+/// Request, capability, configuration, and other completed client failures prove
+/// that the endpoint answered; cancellation drops the call future before this
+/// predicate can record an outcome.
 pub(super) fn indicates_endpoint_failure(error: &LibsyError) -> bool {
-    !matches!(
-        error,
-        LibsyError::ClientCall {
-            source: switchyard_protocol::LlmClientError::ContextWindowExceeded { .. },
-            ..
-        }
-    )
+    indicates_transport_unavailability(error)
 }
 
 /// Whether a turn-judge failure proves that its local endpoint is unavailable.
@@ -199,6 +194,13 @@ pub(super) fn indicates_transport_unavailability(error: &LibsyError) -> bool {
 mod tests {
     use super::*;
     use switchyard_protocol::{LlmClientError, ModelId};
+
+    fn client_call(source: LlmClientError) -> LibsyError {
+        LibsyError::ClientCall {
+            target: ModelId::new("local"),
+            source,
+        }
+    }
 
     /// A breaker that opens on two failures, with a cooldown short enough to wait out.
     fn breaker() -> CircuitBreaker {
@@ -283,16 +285,85 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_request_is_not_evidence_about_the_endpoint() {
-        let overflow = LibsyError::ClientCall {
-            target: ModelId::new("local"),
-            source: LlmClientError::ContextWindowExceeded {
+    fn request_and_configuration_failures_are_not_endpoint_failures() {
+        let failures = [
+            client_call(LlmClientError::ContextWindowExceeded {
                 model: ModelId::new("local"),
                 message: "too long".to_string(),
-            },
-        };
-        assert!(!indicates_endpoint_failure(&overflow));
-        assert!(indicates_endpoint_failure(&LibsyError::NoTargets));
+            }),
+            client_call(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::BAD_REQUEST,
+                body: "invalid client request".to_string(),
+            }),
+            client_call(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::UNAUTHORIZED,
+                body: "invalid credential".to_string(),
+            }),
+            client_call(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::FORBIDDEN,
+                body: "request forbidden".to_string(),
+            }),
+            client_call(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::REQUEST_TIMEOUT,
+                body: "client request timeout".to_string(),
+            }),
+            client_call(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::TOO_MANY_REQUESTS,
+                body: "rate limited".to_string(),
+            }),
+            client_call(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::BAD_REQUEST,
+                body: "image input is not supported by this model".to_string(),
+            }),
+            client_call(LlmClientError::InvalidRequest {
+                message: "unsupported request".to_string(),
+            }),
+            client_call(LlmClientError::RequestEncoding(
+                "unsupported capability".to_string(),
+            )),
+            client_call(LlmClientError::Configuration {
+                message: "missing target configuration".to_string(),
+            }),
+            LibsyError::NoTargets,
+        ];
+
+        for failure in failures {
+            assert!(
+                !indicates_endpoint_failure(&failure),
+                "{failure} must not affect endpoint health"
+            );
+        }
+    }
+
+    #[test]
+    fn transport_failures_are_endpoint_failures() {
+        let failures = [
+            client_call(LlmClientError::Transport {
+                source: std::io::Error::other("connection refused").into(),
+            }),
+            client_call(LlmClientError::Timeout {
+                source: std::io::Error::other("request timed out").into(),
+            }),
+            client_call(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::BAD_GATEWAY,
+                body: "bad gateway".to_string(),
+            }),
+            client_call(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::SERVICE_UNAVAILABLE,
+                body: "unavailable".to_string(),
+            }),
+            client_call(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::GATEWAY_TIMEOUT,
+                body: "gateway timeout".to_string(),
+            }),
+        ];
+
+        for failure in failures {
+            assert!(
+                indicates_endpoint_failure(&failure),
+                "{failure} must affect endpoint health"
+            );
+        }
     }
 
     #[test]
