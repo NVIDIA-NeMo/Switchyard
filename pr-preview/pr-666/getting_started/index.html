@@ -1548,7 +1548,7 @@ continuing. Verify the tools:</p>
 <p>Cargo builds the release binary and installs it into <code>~/.cargo/bin</code> by default.</p>
 <h3 id="configure">Configure<a class="headerlink" href="#configure" title="Permanent link">&para;</a></h3>
 <p>The Rust server reads an explicit TOML file.</p>
-<p>Create <code>routes.toml</code> with an LLM-classifier route:</p>
+<p>Create <code>routes.toml</code> with an auto route:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
 </span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="k">[llm_clients.openrouter]</span>
@@ -1566,12 +1566,9 @@ continuing. Verify the tools:</p>
 </span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>
 </span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="k">[routes.smart]</span>
 </span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
-</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
-</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;capability&quot;</span>
-</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
-</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
-</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
-</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span>
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
 </span></code></pre></div>
 <p><code>format</code> selects the upstream protocol and must be <code>openai_chat</code>,
 <code>openai_responses</code>, or <code>anthropic_messages</code>. <code>api_key_env</code> names the environment
@@ -1601,8 +1598,8 @@ Responses API can connect. The route <code>id</code> is the model name clients u
 </span></code></pre></div>
 <h3 id="routing-algorithms">Routing algorithms<a class="headerlink" href="#routing-algorithms" title="Permanent link">&para;</a></h3>
 <h4 id="choose-a-route-type">Choose a route type<a class="headerlink" href="#choose-a-route-type" title="Permanent link">&para;</a></h4>
-<p>This guide uses <code>llm_classifier</code>, which asks a classifier target whether each
-request should use the weak or strong target. The Rust server also supports:</p>
+<p>This guide uses <code>auto</code>, which routes with Switchyard's recommended default
+settings. The Rust server also supports:</p>
 <table>
 <thead>
 <tr>
@@ -1612,6 +1609,11 @@ request should use the weak or strong target. The Rust server also supports:</p>
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>Auto</td>
+<td>You want a recommended default instead of picking a strategy yourself.</td>
+<td><code>auto</code></td>
+</tr>
 <tr>
 <td><a href="../routing_algorithms/random_routing/">Random</a></td>
 <td>You need a weighted split for A/B tests or baselines.</td>
@@ -1633,7 +1635,7 @@ request should use the weak or strong target. The Rust server also supports:</p>
 <code>routes.smart</code>, is a local configuration name; each route's <code>id</code> is exposed as a
 model on <code>GET /v1/models</code>.</p>
 <p>See <a href="../routing_algorithms/overview/">Routing Overview</a> to compare strategies,
-and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/181838694dec4ace441089a1e77608ccb43863cc/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
+and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/350dad225785dd7b115ae4349a868fbdc434fa01/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
 the complete TOML schema, route options, TLS, and metrics.</p>
 <h3 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h3>
 <p><strong>No API key / auth error</strong></p>
@@ -1710,16 +1712,16 @@ the same identity, selected models, and supported evidence fields. See
 the <a href="../reference/opentelemetry/">OpenTelemetry reference</a> for field names, metrics,
 and export setup. libsy does not install an exporter or send telemetry itself.</p>
 <p>For the request, response, and streaming types the steps carry, see
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/181838694dec4ace441089a1e77608ccb43863cc/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/350dad225785dd7b115ae4349a868fbdc434fa01/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
 <hr />
 <h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../core_concepts/">Core Concepts</a>: LLM clients, targets, and routes</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/181838694dec4ace441089a1e77608ccb43863cc/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/350dad225785dd7b115ae4349a868fbdc434fa01/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
   routing algorithms, TLS, and metrics</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol
   documentation, crate setup, and API boundaries</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/181838694dec4ace441089a1e77608ccb43863cc/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/350dad225785dd7b115ae4349a868fbdc434fa01/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
   request, response, and stream translation</li>
 </ul>
 
