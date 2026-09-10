@@ -52,9 +52,9 @@ jobs:
           python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv sync --locked
+      - run: uv sync --locked --no-install-project
       - name: ruff check
-        run: uv run ruff check .
+        run: uv run --no-sync ruff check .
 
   # SPDX headers are a hard gate — every Python file must carry the exact
   # NVIDIA OSRB-required two-line form (SPDX-FileCopyrightText with the
@@ -128,9 +128,9 @@ jobs:
           python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv sync --locked
+      - run: uv sync --locked --no-install-project
       - name: mypy
-        run: uv run mypy switchyard
+        run: uv run --no-sync mypy switchyard
 
   # Unit tests on supported Python versions. Integration/e2e tests are
   # intentionally deselected here because they may need Docker, live provider
