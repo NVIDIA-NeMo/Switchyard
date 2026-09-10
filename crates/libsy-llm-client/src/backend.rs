@@ -27,6 +27,7 @@ const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
     "please reduce the length of the input",
     "exceeds the maximum allowed input length",
     "exceeds the maximum allowed length",
+    "exceeds the available context size",
     "is longer than the model's context length",
 ];
 
