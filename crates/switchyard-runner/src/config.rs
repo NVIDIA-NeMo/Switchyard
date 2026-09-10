@@ -3,7 +3,7 @@
 
 //! Version-1 TOML deployment loading for the shared runner.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -160,16 +160,35 @@ impl DeploymentConfig {
             )));
         }
 
-        let mut seen_client_model_ids = HashSet::new();
+        // The LLM client keeps one backend per model id, so two targets naming the same model on
+        // the same client share it. That is harmless when their request settings agree (an alias
+        // for a different system prompt, say) and silently wrong when they do not: the second
+        // target's reasoning_effort or extra_body would never reach the wire.
+        let mut seen_client_model_ids: HashMap<(&str, &str), (&String, &TargetConfig)> =
+            HashMap::new();
         for (target_name, target) in &self.targets {
             validate_value("target name", target_name)?;
             validate_value(&format!("target {target_name} id"), &target.id)?;
-            if !seen_client_model_ids.insert((target.llm_client.as_str(), target.id.as_str())) {
-                tracing::warn!(
-                    "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
-                    target.id,
-                    target.llm_client
-                );
+            match seen_client_model_ids.entry((target.llm_client.as_str(), target.id.as_str())) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert((target_name, target));
+                }
+                std::collections::hash_map::Entry::Occupied(slot) => {
+                    let (first_name, first) = slot.get();
+                    if first.reasoning_effort != target.reasoning_effort
+                        || first.extra_body != target.extra_body
+                    {
+                        return Err(RunnerError::configuration(format!(
+                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort or extra_body; one target per model id is kept, so give each its own model id or llm client",
+                            target.id, target.llm_client
+                        )));
+                    }
+                    tracing::warn!(
+                        "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
+                        target.id,
+                        target.llm_client
+                    );
+                }
             }
         }
 
@@ -988,6 +1007,31 @@ new = ["send_message"]
             error_message(&anthropic)
                 .contains("only supported on openai_chat and openai_responses")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_targets_with_conflicting_settings_are_rejected() -> RunnerResult<()> {
+        let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        assert!(VALID_CONFIG.contains(strong));
+        // Same model, same client, different effort: the second target could never take effect.
+        let conflicting = VALID_CONFIG.replace(
+            strong,
+            &format!(
+                "{strong}\n\n[targets.strong_max]\nid = \"strong/model\"\nllm_client = \"responses\"\nreasoning_effort = \"max\""
+            ),
+        );
+        assert!(
+            error_message(&conflicting).contains("different reasoning_effort or extra_body"),
+            "{}",
+            error_message(&conflicting)
+        );
+        // An alias with identical settings is still allowed (it only warns).
+        let alias = VALID_CONFIG.replace(
+            strong,
+            &format!("{strong}\n\n[targets.strong_alias]\nid = \"strong/model\"\nllm_client = \"responses\""),
+        );
+        runner_from_toml(&alias)?;
         Ok(())
     }
 
