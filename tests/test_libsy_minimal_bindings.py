@@ -3,6 +3,7 @@
 
 """Tests for the dictionary-based libsy Python API."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
@@ -13,13 +14,17 @@ from switchyard.libsy import (
     Algorithm,
     ContextWindowExceededError,
     CustomClassifierConfig,
+    EscalationClassifierConfig,
+    LibsyError,
     LlmClassifierConfig,
     LlmResponse,
+    ModelCall,
     OutcomeMetadata,
     RoutingOutcome,
     Step,
     TaskClassifierConfig,
     algorithms,
+    drive,
 )
 
 
@@ -436,3 +441,147 @@ async def test_context_window_failure_falls_back_to_the_next_model() -> None:
 
     assert selected_model == "fast"
     assert response["model"] == "strong"
+
+
+def escalation() -> Algorithm:
+    return algorithms.llm_classifier(
+        LlmClassifierConfig.escalation(
+            "judge", "efficient", "capable", config=EscalationClassifierConfig(confirmations=1)
+        )
+    )
+
+
+def answer(text: str) -> Any:
+    return LlmResponse.Agg(
+        {
+            "model": "provider-model",
+            "outputs": [{"role": "assistant", "content": [{"type": "text", "text": text}]}],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "picker,expected", [("efficient_first", "efficient"), ("capable_first", "capable")]
+)
+async def test_drive_stage_routes_without_calling_host(picker: str, expected: str) -> None:
+    async def serve(call: ModelCall) -> None:
+        pytest.fail("Stage must not call the host")
+
+    outcome = await drive(
+        algorithms.stage_router("capable", "efficient", picker=picker, confidence_threshold=0.5),
+        request_body(),
+        serve,
+    )
+    assert outcome.selected_model_ids[0] == expected
+    assert outcome.response is outcome.served_model is outcome.source_id is None
+
+
+@pytest.mark.parametrize("reject", [False, True])
+async def test_drive_escalation_response_source(reject: bool) -> None:
+    calls = []
+
+    async def serve(call: ModelCall) -> None:
+        model = call.models[0]
+        calls.append(model)
+        verdict = (
+            '{"escalate":true,"reason":"stuck"}'
+            if reject
+            else '{"escalate":false,"reason":"progressing"}'
+        )
+        call.respond(
+            answer(verdict if model == "judge" else "accepted answer"),
+            served_model=model + "-deployment",
+            source_id=model + "-receipt",
+        )
+
+    outcome = await drive(escalation(), request_body(), serve)
+    assert calls == ["efficient", "judge"]
+    if reject:
+        assert outcome.selected_model_ids == ["capable", "efficient"]
+        assert outcome.response is outcome.served_model is outcome.source_id is None
+    else:
+        assert outcome.selected_model_ids == ["efficient"]
+        assert outcome.served_model == "efficient-deployment"
+        assert outcome.source_id == "efficient-receipt"
+        assert outcome.response.response["model"] == "provider-model"
+        assert outcome.response.response["outputs"][0]["content"][0]["text"] == "accepted answer"
+
+
+async def test_drive_callback_failure_and_retained_incomplete_call() -> None:
+    retained = []
+    original = ValueError("host failed")
+
+    async def failing(call: ModelCall) -> None:
+        raise original
+
+    with pytest.raises(LibsyError) as caught:
+        await drive(escalation(), request_body(), failing)
+    assert caught.value.__cause__ is original
+
+    async def incomplete(call: ModelCall) -> None:
+        retained.append(call)
+
+    with pytest.raises(LibsyError, match="without completing"):
+        await asyncio.wait_for(drive(escalation(), request_body(), incomplete), 2)
+    assert len(retained) == 1
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_drive_cancellation_joins_owned_cleanup(streaming: bool) -> None:
+    started, cleaning, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    cleaned = []
+
+    async def pending() -> None:
+        try:
+            started.set()
+            await asyncio.Future()
+        finally:
+            cleaning.set()
+            await finish.wait()
+            cleaned.append(True)
+
+    async def events() -> AsyncIterator[dict[str, object]]:
+        await pending()
+        yield {}
+
+    async def serve(call: ModelCall) -> None:
+        if streaming:
+            call.respond(LlmResponse.Stream(events()))
+        else:
+            await pending()
+
+    task = asyncio.create_task(drive(escalation(), request_body(), serve))
+    await asyncio.wait_for(started.wait(), 2)
+    task.cancel()
+    await asyncio.wait_for(cleaning.wait(), 2)
+    task.cancel()
+    await asyncio.sleep(0)
+    finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cleaned == [True]
+
+
+async def test_drive_accepted_stream_survives_callback_cleanup() -> None:
+    cleaned = []
+
+    async def serve(call: ModelCall) -> None:
+        try:
+            text = (
+                "accepted answer"
+                if call.models == ["efficient"]
+                else '{"escalate":false,"reason":"progressing"}'
+            )
+            call.respond(answer(text), source_id=call.models[0])
+        finally:
+            await asyncio.sleep(0.01)
+            cleaned.append(call.models[0])
+
+    outcome = await drive(escalation(), {**request_body(), "stream": True}, serve)
+    assert sorted(cleaned) == ["efficient", "judge"]
+    assert outcome.source_id == "efficient"
+    stream = outcome.response.stream
+    assert await anext(stream)
+    await stream.aclose()
+    await stream.aclose()
+    assert [event async for event in stream] == []
