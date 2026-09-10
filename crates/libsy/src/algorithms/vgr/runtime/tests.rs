@@ -1468,7 +1468,7 @@ async fn the_vgr_deadline_cancels_a_pinned_checker_process_tree()
 }
 
 #[tokio::test]
-async fn tool_continuations_retain_the_tier_and_new_user_turns_reenter_vgr() -> Result<()> {
+async fn local_tool_continuations_and_new_user_turns_reenter_vgr() -> Result<()> {
     let route = Arc::new(super::super::Vgr::new(active())?);
     let opening = session_request("session-1", "what is the capital?");
     let seed_calls = CallLog::default();
@@ -1491,16 +1491,20 @@ async fn tool_continuations_retain_the_tier_and_new_user_turns_reenter_vgr() -> 
     let continued = tool_continuation(opening);
     let continuation_calls = CallLog::default();
     let seen = continuation_calls.clone();
-    let (target, _) = test_drive(route.clone(), continued.clone(), move |t: ModelId, _r| {
+    let (target, _) = test_drive(route.clone(), continued.clone(), move |t: ModelId, r| {
         let seen = seen.clone();
         async move {
             seen.record(&t);
-            Ok(reply("tool continuation"))
+            if is_turn_verification(&r) {
+                Ok(reply_with_readout("no", 0.2))
+            } else {
+                Ok(tool_reply("read_file"))
+            }
         }
     })
     .await?;
     assert_eq!(target, ModelId::from(LOCAL));
-    assert_eq!(continuation_calls.targets(), vec![LOCAL]);
+    assert_eq!(continuation_calls.targets(), vec![LOCAL, LOCAL]);
 
     let mut fresh_turn = continued;
     fresh_turn
@@ -1625,11 +1629,15 @@ async fn concurrent_sessions_retain_independent_turn_tiers() -> Result<()> {
     let local_turn = test_drive(
         route.clone(),
         tool_continuation(local_opening),
-        move |t: ModelId, _r| {
+        move |t: ModelId, r| {
             let seen = seen_local.clone();
             async move {
                 seen.record(&t);
-                Ok(reply("local continuation"))
+                if is_turn_verification(&r) {
+                    Ok(reply_with_readout("no", 0.2))
+                } else {
+                    Ok(tool_reply("read_file"))
+                }
             }
         },
     );
@@ -1647,7 +1655,7 @@ async fn concurrent_sessions_retain_independent_turn_tiers() -> Result<()> {
     let (local_result, cloud_result) = tokio::join!(local_turn, cloud_turn);
     assert_eq!(local_result?.0, ModelId::from(LOCAL));
     assert_eq!(cloud_result?.0, ModelId::from(CLOUD));
-    assert_eq!(local_calls.targets(), vec![LOCAL]);
+    assert_eq!(local_calls.targets(), vec![LOCAL, LOCAL]);
     assert_eq!(cloud_calls.targets(), vec![CLOUD]);
     Ok(())
 }
@@ -2239,23 +2247,23 @@ async fn no_tool_turn_skips_in_flight_verification() -> crate::Result<()> {
 async fn two_tool_turn_votes_latch_the_session_without_more_local_calls() -> crate::Result<()> {
     let route = Arc::new(super::super::Vgr::new(active())?);
     let log = CallLog::default();
-    let session = || Request {
-        metadata: Some(switchyard_protocol::Metadata {
-            session_id: Some("turn-session".into()),
-            ..Default::default()
-        }),
-        ..request("inspect the files")
-    };
+    let opening = session_request("turn-session", "inspect the files");
+    let turns = [
+        (opening.clone(), ModelId::from(LOCAL)),
+        (tool_continuation(opening), ModelId::from(CLOUD)),
+    ];
 
-    for expected in [ModelId::from(LOCAL), ModelId::from(CLOUD)] {
+    for (request, expected) in turns {
         let seen = log.clone();
-        let (target, _) = test_drive(route.clone(), session(), move |t: ModelId, r| {
+        let (target, _) = test_drive(route.clone(), request, move |t: ModelId, r| {
             let seen = seen.clone();
             async move {
                 seen.record(&t);
                 if is_turn_verification(&r) {
+                    assert_eq!(r.llm_request.reasoning.effort.as_deref(), Some("none"));
                     Ok(reply_with_readout("yes", 0.8))
                 } else if t == *LOCAL {
+                    assert_eq!(r.llm_request.reasoning.effort, None);
                     Ok(tool_reply("read_file"))
                 } else {
                     Ok(reply("cloud"))
@@ -2268,13 +2276,17 @@ async fn two_tool_turn_votes_latch_the_session_without_more_local_calls() -> cra
 
     let local_calls_at_latch = log.targets().iter().filter(|t| *t == LOCAL).count();
     let seen = log.clone();
-    let (target, _) = test_drive(route, session(), move |t: ModelId, _r| {
-        let seen = seen.clone();
-        async move {
-            seen.record(&t);
-            Ok(reply("cloud"))
-        }
-    })
+    let (target, _) = test_drive(
+        route,
+        session_request("turn-session", "inspect the files"),
+        move |t: ModelId, _r| {
+            let seen = seen.clone();
+            async move {
+                seen.record(&t);
+                Ok(reply("cloud"))
+            }
+        },
+    )
     .await?;
     assert_eq!(target, ModelId::from(CLOUD));
     assert_eq!(

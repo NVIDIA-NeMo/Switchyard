@@ -102,7 +102,13 @@ impl Vgr {
         let local = config.targets.local.clone();
         let cloud = config.targets.cloud.clone();
         let targets = vec![local.clone(), cloud.clone()];
-        let turn_affinity = Arc::new(AffinityRouter::new().with_release_on_user_turn());
+        // A local turn must re-enter VGR so every proposed tool call is verified.
+        // Retain only cloud to keep an escalation stable through the current user turn.
+        let turn_affinity = Arc::new(
+            AffinityRouter::new()
+                .with_release_on_user_turn()
+                .with_latch_only([cloud.clone()]),
+        );
         let latch = config.latch_escalation.then(|| {
             // Retaining only the capable tier is what makes this an escalation
             // latch rather than plain affinity: a local commit leaves the
