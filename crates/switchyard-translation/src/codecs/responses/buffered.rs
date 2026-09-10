@@ -3,7 +3,7 @@
 
 //! Buffered codec for OpenAI Responses request and response JSON.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value, json};
 
@@ -1008,6 +1008,16 @@ fn encode_responses_input(
         return Ok(Value::String(text.clone()));
     }
     let mut encoded = Vec::new();
+    // Some upstream translators (Kimi K3) resolve a tool output by an explicit
+    // `name`, so pair every output with the name of the call it answers.
+    let mut call_names: HashMap<&str, &str> = HashMap::new();
+    for message in messages {
+        for block in &message.content {
+            if let ContentBlock::ToolCall(call) = block {
+                call_names.insert(call.id.as_str(), call.name.as_str());
+            }
+        }
+    }
     for message in messages {
         // Anthropic-signed thinking cannot be sent as Responses input.
         let content = message
@@ -1033,18 +1043,16 @@ fn encode_responses_input(
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
-            encoded.extend(
-                content
-                    .iter()
-                    .filter_map(|block| encode_responses_special_input(block, namespaces)),
-            );
+            encoded.extend(content.iter().filter_map(|block| {
+                encode_responses_special_input(block, namespaces, &call_names)
+            }));
             continue;
         }
         let mut visible_content = Vec::new();
         let mut emitted_special = false;
         let mut omitted_reasoning = false;
         for block in &content {
-            if let Some(item) = encode_responses_special_input(block, namespaces) {
+            if let Some(item) = encode_responses_special_input(block, namespaces, &call_names) {
                 encoded.push(item);
                 emitted_special = true;
             } else if !matches!(block, ContentBlock::Reasoning { .. }) {
@@ -1069,6 +1077,7 @@ fn encode_responses_input(
 fn encode_responses_special_input(
     block: &ContentBlock,
     namespaces: Option<&Map<String, Value>>,
+    call_names: &HashMap<&str, &str>,
 ) -> Option<Value> {
     match block {
         ContentBlock::Reasoning {
@@ -1097,11 +1106,24 @@ fn encode_responses_special_input(
             }
             Some(item)
         }
-        ContentBlock::ToolResult(result) => Some(json!({
-            "type": "function_call_output",
-            "call_id": result.tool_call_id,
-            "output": text_from_blocks(&result.content, " "),
-        })),
+        ContentBlock::ToolResult(result) => {
+            let mut item = json!({
+                "type": "function_call_output",
+                "call_id": result.tool_call_id,
+                "output": text_from_blocks(&result.content, " "),
+            });
+            // Carry the paired call's name, un-qualified to match the emitted
+            // function_call, for upstreams that resolve outputs by name.
+            if let Some(name) = call_names.get(result.tool_call_id.as_str()) {
+                let name = namespaces
+                    .and_then(|namespaces| {
+                        crate::codex_namespaces::split_qualified_name(namespaces, name)
+                    })
+                    .map_or_else(|| (*name).to_string(), |(name, _)| name);
+                item["name"] = Value::String(name);
+            }
+            Some(item)
+        }
         _ => None,
     }
 }

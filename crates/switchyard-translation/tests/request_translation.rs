@@ -1441,6 +1441,9 @@ fn responses_reasoning_items_round_trip_through_decode_and_encode() -> TestResul
     );
     assert!(input[1].get("content").is_none());
     assert_eq!(input[2]["call_id"], "call-ls");
+    // Outputs carry the paired call's name for upstreams (Kimi K3) that
+    // resolve tool results by name rather than by call order.
+    assert_eq!(input[3]["name"], "shell");
     Ok(())
 }
 
