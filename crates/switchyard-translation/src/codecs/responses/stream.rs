@@ -604,14 +604,20 @@ fn decode_responses_output_item_added(
     if item.get("type").and_then(Value::as_str) == Some("reasoning") {
         return decode_responses_reasoning_item(item, index, state);
     }
-    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+    let item_type = item.get("type").and_then(Value::as_str);
+    if item_type != Some("function_call") && item_type != Some("custom_tool_call") {
         return Vec::new();
     }
-    let arguments_delta = item
-        .get("arguments")
-        .and_then(Value::as_str)
-        .filter(|arguments| !arguments.is_empty())
-        .map(ToOwned::to_owned);
+    // A freeform call's `input` becomes the single `input` argument; it is only complete on
+    // the done event, so nothing is emitted for it here beyond id and name.
+    let arguments_delta = if item_type == Some("custom_tool_call") {
+        None
+    } else {
+        item.get("arguments")
+            .and_then(Value::as_str)
+            .filter(|arguments| !arguments.is_empty())
+            .map(ToOwned::to_owned)
+    };
     if let Some(arguments) = arguments_delta.as_deref() {
         state
             .tool_states
@@ -650,10 +656,20 @@ fn decode_responses_output_item_done(
     if item.get("type").and_then(Value::as_str) == Some("reasoning") {
         return decode_responses_reasoning_item(item, index, state);
     }
-    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+    let item_type = item.get("type").and_then(Value::as_str);
+    if item_type != Some("function_call") && item_type != Some("custom_tool_call") {
         return Vec::new();
     }
-    let arguments = item.get("arguments").and_then(Value::as_str);
+    let custom_arguments = (item_type == Some("custom_tool_call")).then(|| {
+        json!({
+            crate::codex_custom_tools::INPUT_ARGUMENT:
+                item.get("input").and_then(Value::as_str).unwrap_or_default()
+        })
+        .to_string()
+    });
+    let arguments = custom_arguments
+        .as_deref()
+        .or_else(|| item.get("arguments").and_then(Value::as_str));
     if let Some(arguments) = arguments {
         // Compared against what THIS decoder has seen. Reading the encoder's
         // `arguments` instead only deduplicates when a single state performs

@@ -2573,3 +2573,276 @@ fn responses_codex_compaction_markers_are_stripped() -> TestResult {
     );
     Ok(())
 }
+
+// Codex drives GPT-5 models with freeform ("custom") tools. Through a Responses upstream the
+// definition must go out verbatim and the replayed history must keep `custom_tool_call` items
+// with their raw `input`; through a chat upstream the tool degrades to a single-argument function.
+#[test]
+fn responses_request_round_trips_custom_tools_and_custom_tool_calls() -> TestResult {
+    let engine = TranslationEngine::default();
+    let custom_tool = json!({
+        "type": "custom",
+        "name": "exec",
+        "description": "Runs a shell command.",
+        "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.*/"}
+    });
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "input": [
+            {"type": "message", "role": "user", "content": "List files"},
+            {"type": "custom_tool_call", "call_id": "call_1", "name": "exec", "input": "ls -la"},
+            {"type": "custom_tool_call_output", "call_id": "call_1", "output": "README.md"}
+        ],
+        "tools": [
+            custom_tool,
+            {"type": "function", "name": "update_plan", "description": "Plan", "parameters": {"type": "object"}}
+        ]
+    });
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let same = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+    let tools = same["tools"].as_array().ok_or("tools should be an array")?;
+    assert!(
+        tools.iter().any(|tool| tool == &custom_tool),
+        "custom tool must be re-emitted verbatim: {tools:?}"
+    );
+    let input = same["input"].as_array().ok_or("input should be an array")?;
+    let call = input
+        .iter()
+        .find(|item| item["type"] == "custom_tool_call")
+        .ok_or("history must keep the custom_tool_call")?;
+    assert_eq!(call["name"], "exec");
+    assert_eq!(call["call_id"], "call_1");
+    assert_eq!(call["input"], "ls -la");
+    assert!(call.get("arguments").is_none(), "{call}");
+    let output = input
+        .iter()
+        .find(|item| item["type"] == "custom_tool_call_output")
+        .ok_or("history must keep the custom_tool_call_output")?;
+    assert_eq!(output["call_id"], "call_1");
+
+    let chat = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    let exec = chat["tools"]
+        .as_array()
+        .ok_or("chat tools should be an array")?
+        .iter()
+        .find(|tool| tool["function"]["name"] == "exec")
+        .ok_or("chat upstream should still see the tool")?;
+    assert_eq!(
+        exec["function"]["parameters"]["required"],
+        json!(["input"]),
+        "{exec}"
+    );
+    Ok(())
+}
+
+// Codex sends GPT-5 requests in the Responses-lite shape: no top-level `tools`, empty
+// `instructions`, the tool definitions inside `input[0]` as an `additional_tools` developer
+// item, and the base instructions as a developer message. Those definitions are the request's
+// tools, the item must not leak into the conversation, and a Responses upstream must receive
+// the request in the same shape.
+#[test]
+fn responses_lite_additional_tools_item_is_the_tool_list() -> TestResult {
+    let engine = TranslationEngine::default();
+    let tools = json!([
+        {"type": "custom", "name": "exec", "description": "Run JS.",
+         "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.*/"}},
+        {"type": "function", "name": "update_plan", "description": "Plan",
+         "parameters": {"type": "object", "properties": {}}}
+    ]);
+    let body = json!({
+        "model": "gpt-5.6-luna-switchyard",
+        "instructions": "",
+        "input": [
+            {"type": "additional_tools", "role": "developer", "tools": tools},
+            {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "You are Codex."}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "List files"}]},
+            {"type": "custom_tool_call", "call_id": "call_1", "name": "exec", "input": "ls"},
+            {"type": "custom_tool_call_output", "call_id": "call_1", "output": "README.md"}
+        ],
+        "stream": true
+    });
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let decoded = engine.decode_request(WireFormat::OpenAiResponses, &body, &policy)?;
+    let names = decoded
+        .request
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["exec", "update_plan"]);
+    assert!(
+        !decoded.request.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, switchyard_protocol::ContentBlock::Unknown { .. }))
+        }),
+        "the additional_tools item must not become a conversation message"
+    );
+
+    let same = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+    assert!(same.get("tools").is_none(), "{same}");
+    let input = same["input"].as_array().ok_or("input should be an array")?;
+    assert_eq!(input[0]["type"], "additional_tools");
+    assert_eq!(input[0]["role"], "developer");
+    assert_eq!(input[0]["tools"], tools);
+    assert!(
+        input
+            .iter()
+            .skip(1)
+            .all(|item| item["type"] != "additional_tools"),
+        "{same}"
+    );
+    assert!(
+        input
+            .iter()
+            .any(|item| item["type"] == "custom_tool_call" && item["input"] == "ls"),
+        "{same}"
+    );
+
+    let chat = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    let chat_tools = chat["tools"]
+        .as_array()
+        .ok_or("chat tools should be an array")?;
+    let chat_names = chat_tools
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(chat_names, vec!["exec", "update_plan"]);
+    let messages = chat["messages"]
+        .as_array()
+        .ok_or("messages should be an array")?;
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message["content"].to_string().contains("additional_tools")),
+        "{chat}"
+    );
+    Ok(())
+}
+
+/// A lite request whose whole conversation is one user text still carries its tools: the
+/// encoder widens the string `input` to an array so the `additional_tools` item has a place.
+#[test]
+fn responses_lite_additional_tools_survive_a_single_text_input() -> TestResult {
+    let engine = TranslationEngine::default();
+    let tools = json!([
+        {"type": "custom", "name": "exec", "description": "Run a shell command.",
+         "format": {"type": "text"}}
+    ]);
+    let body = json!({
+        "model": "gpt-5.6-luna-switchyard",
+        "instructions": "",
+        "input": [
+            {"type": "additional_tools", "role": "developer", "tools": tools},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "List files"}]}
+        ]
+    });
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let same = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+    assert!(same.get("tools").is_none(), "{same}");
+    let input = same["input"]
+        .as_array()
+        .ok_or("input must be an array when tools ride inside it")?;
+    assert_eq!(input[0]["type"], "additional_tools");
+    assert_eq!(input[0]["tools"], tools);
+    assert_eq!(input.len(), 2, "{same}");
+    assert_eq!(input[1]["role"], "user");
+    assert_eq!(input[1]["content"], "List files");
+    Ok(())
+}
+
+// Parallel freeform calls must pair with their `custom_tool_call_output` items the same way
+// function calls do (#664), so upstreams that resolve outputs by adjacency see call, output,
+// call, output.
+#[test]
+fn responses_parallel_custom_tool_calls_pair_with_their_outputs() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "tools": [{"type": "custom", "name": "exec", "description": "Run.", "format": {"type": "text"}}],
+        "input": [
+            {"type": "message", "role": "user", "content": "Inspect"},
+            {"type": "custom_tool_call", "name": "exec", "call_id": "call-a", "input": "ls"},
+            {"type": "custom_tool_call", "name": "exec", "call_id": "call-b", "input": "pwd"},
+            {"type": "custom_tool_call_output", "call_id": "call-a", "output": "a"},
+            {"type": "custom_tool_call_output", "call_id": "call-b", "output": "b"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let input = output["input"].as_array().ok_or("input is not an array")?;
+    let pairs = input
+        .iter()
+        .filter_map(|item| Some((item["type"].as_str()?, item["call_id"].as_str()?)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pairs,
+        vec![
+            ("custom_tool_call", "call-a"),
+            ("custom_tool_call_output", "call-a"),
+            ("custom_tool_call", "call-b"),
+            ("custom_tool_call_output", "call-b"),
+        ]
+    );
+    Ok(())
+}
