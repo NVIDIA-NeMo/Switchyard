@@ -19,9 +19,9 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    AggLlmResponse, ContentBlock, InstructionBlock, LlmRequest, MediaSource, Message, OutputParams,
-    ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
-    ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    AggLlmResponse, ContentBlock, ImageSource, InstructionBlock, LlmRequest, MediaSource, Message,
+    OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams,
+    StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -1137,6 +1137,53 @@ fn encode_responses_reasoning_input(text: &str, details: &[Value]) -> Option<Val
     }))
 }
 
+// Maps a normalized image source to the scalar URL required by OpenAI Responses.
+fn response_image_url(source: &ImageSource) -> Option<String> {
+    match source {
+        ImageSource::Url { url, .. } => Some(url.clone()),
+        ImageSource::Base64 { media_type, data } => Some(format!(
+            "data:{};base64,{}",
+            media_type.as_deref().unwrap_or("application/octet-stream"),
+            data
+        )),
+        ImageSource::Raw(raw) => {
+            let object = raw.as_object();
+            let object = if object
+                .and_then(|object| object.get("type"))
+                .and_then(Value::as_str)
+                == Some("image")
+            {
+                object
+                    .and_then(|object| object.get("source"))
+                    .and_then(Value::as_object)
+            } else {
+                object
+            };
+            let object = object?;
+            if let Some(url) = object.get("url").and_then(Value::as_str) {
+                return Some(url.to_string());
+            }
+            if let Some(url) = object.get("image_url").and_then(Value::as_str) {
+                return Some(url.to_string());
+            }
+            if let Some(url) = object
+                .get("image_url")
+                .and_then(Value::as_object)
+                .and_then(|image_url| image_url.get("url"))
+                .and_then(Value::as_str)
+            {
+                return Some(url.to_string());
+            }
+            let data = object.get("data").and_then(Value::as_str)?;
+            let media_type = object
+                .get("media_type")
+                .and_then(Value::as_str)
+                .unwrap_or("application/octet-stream");
+            Some(format!("data:{media_type};base64,{data}"))
+        }
+    }
+}
+
 // Maps normalized roles back to Responses role strings.
 fn role_to_responses(role: Role) -> &'static str {
     match role {
@@ -1172,7 +1219,15 @@ fn encode_responses_content(
                 blocks.push(json!({"type": "refusal", "refusal": text}));
             }
             ContentBlock::Image { source } => {
-                blocks.push(json!({"type": "input_image", "image_url": source}));
+                if let Some(image_url) = response_image_url(source) {
+                    blocks.push(json!({"type": "input_image", "image_url": image_url}));
+                } else {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "Responses codec could not map image content",
+                    )?;
+                }
             }
             ContentBlock::Audio { source } => blocks.push(match source {
                 MediaSource::Raw(raw) => json!({"type": "input_text", "text": json_string(raw)}),

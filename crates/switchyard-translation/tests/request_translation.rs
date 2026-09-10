@@ -355,6 +355,89 @@ fn anthropic_unknown_content_does_not_leak_into_responses_request_blocks() -> Te
     Ok(())
 }
 
+// Verifies Anthropic base64 images become the scalar data URL Responses requires.
+#[test]
+fn anthropic_base64_image_becomes_responses_data_url() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this image."},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "aGVsbG8="
+                    }
+                }
+            ]
+        }],
+        "max_tokens": 1024
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["input"][0]["content"][1],
+        json!({
+            "type": "input_image",
+            "image_url": "data:image/png;base64,aGVsbG8="
+        })
+    );
+    Ok(())
+}
+
+// Verifies Anthropic URL images become the scalar URL Responses requires.
+#[test]
+fn anthropic_url_image_becomes_responses_image_url() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this image."},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": "https://example.test/image.png"
+                    }
+                }
+            ]
+        }],
+        "max_tokens": 1024
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["input"][0]["content"][1],
+        json!({
+            "type": "input_image",
+            "image_url": "https://example.test/image.png"
+        })
+    );
+    Ok(())
+}
+
 // Verifies Anthropic mixed tool-result and text content splits into valid OpenAI messages.
 #[test]
 fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult {
