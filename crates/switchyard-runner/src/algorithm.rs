@@ -258,6 +258,16 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// Picks a routing strategy automatically, preset with recommended knobs.
+    /// Currently a `stage_router` with `picker = "efficient_first"` and
+    /// `confidence_threshold = 0.5`; change `build_algorithm`'s `Auto` arm to
+    /// repoint it at a different algorithm or preset.
+    Auto {
+        /// The capable tier.
+        capable_target: String,
+        /// The efficient tier.
+        efficient_target: String,
+    },
     /// A judge picks the tier at each user turn; a stage router runs the turns within it.
     Composite {
         /// Judge that picks the tier. Called through its own target.
@@ -464,6 +474,10 @@ impl AlgorithmSpec {
                 }
                 names
             }
+            Self::Auto {
+                capable_target,
+                efficient_target,
+            } => vec![capable_target.as_str(), efficient_target.as_str()],
             Self::Composite {
                 stage, subagents, ..
             } => {
@@ -553,6 +567,7 @@ impl AlgorithmSpec {
             | Self::Passthrough { .. }
             | Self::LlmClassifier { .. }
             | Self::StageRouter { .. }
+            | Self::Auto { .. }
             | Self::Composite { .. }
             | Self::PrefillRouter { .. } => None,
         }
@@ -1022,6 +1037,21 @@ fn build_algorithm(
             })?;
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
+        }
+        AlgorithmSpec::Auto {
+            capable_target,
+            efficient_target,
+        } => {
+            let capable = resolve_target_model_id(route_name, capable_target, targets)?;
+            let efficient = resolve_target_model_id(route_name, efficient_target, targets)?;
+            let config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
+            let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("auto route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
         }
         AlgorithmSpec::Composite {
             classifier,

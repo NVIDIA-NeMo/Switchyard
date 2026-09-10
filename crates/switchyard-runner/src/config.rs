@@ -983,6 +983,22 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn auto_route_builds_a_stage_router_with_no_extra_fields() -> RunnerResult<()> {
+        let config = format!(
+            r#"{VALID_CONFIG}
+[routes.auto]
+id = "switchyard/auto"
+type = "auto"
+capable_target = "strong"
+efficient_target = "weak"
+"#
+        );
+        let runner = runner_from_toml(&config)?;
+        assert!(runner.route("switchyard/auto").is_some());
+        Ok(())
+    }
+
+    #[test]
     fn composite_stage_block_rejects_an_unknown_field() {
         let config = composite_config().replace(
             "confidence_threshold = 0.5",

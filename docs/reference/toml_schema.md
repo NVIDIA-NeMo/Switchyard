@@ -252,6 +252,21 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
+### `auto`
+
+Uses Switchyard's recommended default routing strategy instead of one you pick
+yourself: a `stage_router` preset with `picker = "efficient_first"` and
+`confidence_threshold = 0.5`, no classifier. See
+[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for a
+deeper dive on the current default, or the
+[strategy table](../routing_algorithms/overview.md#choose-a-strategy) to pick
+one manually.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `capable_target` | Yes | — | Capable tier. |
+| `efficient_target` | Yes | — | Efficient tier. |
+
 ### `composite`
 
 Composes other algorithms, letting one set another's
