@@ -2756,3 +2756,45 @@ fn responses_lite_additional_tools_item_is_the_tool_list() -> TestResult {
     );
     Ok(())
 }
+
+/// A lite request whose whole conversation is one user text still carries its tools: the
+/// encoder widens the string `input` to an array so the `additional_tools` item has a place.
+#[test]
+fn responses_lite_additional_tools_survive_a_single_text_input() -> TestResult {
+    let engine = TranslationEngine::default();
+    let tools = json!([
+        {"type": "custom", "name": "exec", "description": "Run a shell command.",
+         "format": {"type": "text"}}
+    ]);
+    let body = json!({
+        "model": "gpt-5.6-luna-switchyard",
+        "instructions": "",
+        "input": [
+            {"type": "additional_tools", "role": "developer", "tools": tools},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "List files"}]}
+        ]
+    });
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let same = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+    assert!(same.get("tools").is_none(), "{same}");
+    let input = same["input"]
+        .as_array()
+        .ok_or("input must be an array when tools ride inside it")?;
+    assert_eq!(input[0]["type"], "additional_tools");
+    assert_eq!(input[0]["tools"], tools);
+    assert_eq!(input.len(), 2, "{same}");
+    assert_eq!(input[1]["role"], "user");
+    assert_eq!(input[1]["content"], "List files");
+    Ok(())
+}

@@ -194,16 +194,23 @@ impl FormatCodec for OpenAiResponsesCodec {
         );
         if let Some(additional) = crate::codex_custom_tools::additional_tools(&request.extensions) {
             // A Responses-lite request carried its tools inside `input`; give them back the same
-            // way, verbatim, and leave top-level `tools` absent as the client did.
-            if let Some(Value::Array(input)) = body.get_mut("input") {
-                input.insert(
-                    0,
-                    json!({
-                        "type": "additional_tools",
-                        "role": "developer",
-                        "tools": additional,
-                    }),
-                );
+            // way, verbatim, and leave top-level `tools` absent as the client did. A request that
+            // reduced to a single user text encodes `input` as a plain string, which has no
+            // room for an item, so it is widened to the equivalent one-message array first.
+            let item = json!({
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": additional,
+            });
+            match body.get_mut("input") {
+                Some(Value::Array(input)) => input.insert(0, item),
+                Some(input @ Value::String(_)) => {
+                    let text = input.take();
+                    *input = Value::Array(vec![item, json!({"role": "user", "content": text})]);
+                }
+                _ => body
+                    .insert("input".to_string(), Value::Array(vec![item]))
+                    .map_or((), |_| ()),
             }
         } else if !request.tools.is_empty() {
             body.insert(
