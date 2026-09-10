@@ -111,9 +111,13 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all --check
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: cargo clippy (prefill-router)
+        run: cargo clippy -p switchyard-server --all-targets --features prefill-router --locked -- -D warnings
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
+      - name: cargo test (prefill-router)
+        run: cargo test -p switchyard-runner --features prefill-router --locked
 
   typecheck:
     name: Typecheck (mypy)
