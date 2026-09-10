@@ -747,6 +747,12 @@ efficient_target = "weak"
 picker = "efficient_first"
 confidence_threshold = 1.0
 
+[routes.stage.tool_semantics]
+observe = ["lookup_customer"]
+mutate = ["send_payment"]
+plan = ["create_workflow"]
+new = ["send_message"]
+
 [routes.stage.classifier]
 target = "stage_judge"
 base_threshold = 0.5
@@ -774,6 +780,9 @@ classify_trigger = "user_turn"
 capable_target = "strong"
 efficient_target = "weak"
 confidence_threshold = 0.5
+
+[routes.composed.stage.tool_semantics]
+new = ["send_message"]
 "#
         )
     }
@@ -806,6 +815,33 @@ confidence_threshold = 0.5
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn stage_rejects_ambiguous_or_non_additive_tool_semantics() {
+        for (configured, expected) in [
+            (
+                stage_config().replace(
+                    "mutate = [\"send_payment\"]",
+                    "mutate = [\"LOOKUP_CUSTOMER\"]",
+                ),
+                "appears in both tool_semantics.observe and tool_semantics.mutate",
+            ),
+            (
+                stage_config().replace("new = [\"send_message\"]", "new = [\"Read\"]"),
+                "already has built-in semantics and cannot be reclassified",
+            ),
+            (
+                stage_config().replace("observe = [\"lookup_customer\"]", "observe = [\" \"]"),
+                "contains an empty tool name",
+            ),
+        ] {
+            let message = error_message(&configured);
+            assert!(
+                message.contains(expected),
+                "expected {expected:?} in error, got: {message}"
+            );
+        }
     }
 
     #[test]
@@ -980,6 +1016,22 @@ confidence_threshold = 0.5
             "picker = \"efficient_first\"\nmagic = true",
         );
         assert!(error_message(&config).contains("unknown field"));
+    }
+
+    #[test]
+    fn auto_route_builds_a_stage_router_with_no_extra_fields() -> RunnerResult<()> {
+        let config = format!(
+            r#"{VALID_CONFIG}
+[routes.auto]
+id = "switchyard/auto"
+type = "auto"
+capable_target = "strong"
+efficient_target = "weak"
+"#
+        );
+        let runner = runner_from_toml(&config)?;
+        assert!(runner.route("switchyard/auto").is_some());
+        Ok(())
     }
 
     #[test]

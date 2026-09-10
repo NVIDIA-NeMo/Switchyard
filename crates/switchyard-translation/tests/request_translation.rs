@@ -1441,6 +1441,9 @@ fn responses_reasoning_items_round_trip_through_decode_and_encode() -> TestResul
     );
     assert!(input[1].get("content").is_none());
     assert_eq!(input[2]["call_id"], "call-ls");
+    // Outputs carry the paired call's name for upstreams (Kimi K3) that
+    // resolve tool results by name rather than by call order.
+    assert_eq!(input[3]["name"], "shell");
     Ok(())
 }
 
@@ -2482,5 +2485,91 @@ fn responses_flat_file_data_survives_into_chat() -> TestResult {
         .ok_or("the file must survive into Chat, not be dropped as unmappable raw")?;
     assert_eq!(file["file"]["file_data"], "JVBERi0xLjQK");
     assert_eq!(file["file"]["filename"], "report.pdf");
+    Ok(())
+}
+
+// Verifies parallel tool calls serialize as adjacent call/output pairs so
+// upstreams that resolve tool outputs by adjacency match the right call.
+#[test]
+fn responses_parallel_tool_calls_pair_with_their_outputs() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5",
+        "input": [
+            {"type": "message", "role": "user", "content": "Inspect"},
+            {"type": "function_call", "name": "shell", "call_id": "call-a", "arguments": "{}"},
+            {"type": "function_call", "name": "shell", "call_id": "call-b", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call-a", "output": "a"},
+            {"type": "function_call_output", "call_id": "call-b", "output": "b"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let input = output["input"].as_array().ok_or("input is not an array")?;
+    let pairs = input
+        .iter()
+        .filter_map(|item| Some((item["type"].as_str()?, item["call_id"].as_str()?)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pairs,
+        vec![
+            ("function_call", "call-a"),
+            ("function_call_output", "call-a"),
+            ("function_call", "call-b"),
+            ("function_call_output", "call-b"),
+        ]
+    );
+    Ok(())
+}
+
+// Verifies Codex `compaction_trigger` marker items never reach the upstream.
+#[test]
+fn responses_codex_compaction_markers_are_stripped() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5",
+        "input": [
+            {"type": "message", "role": "user", "content": "Continue"},
+            {"type": "compaction_trigger"},
+            {"type": "function_call", "name": "shell", "call_id": "call-a", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call-a", "output": "ok"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let types = output["input"]
+        .as_array()
+        .ok_or("input is not an array")?
+        .iter()
+        .filter_map(|item| item["type"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        types,
+        vec!["message", "function_call", "function_call_output"]
+    );
     Ok(())
 }

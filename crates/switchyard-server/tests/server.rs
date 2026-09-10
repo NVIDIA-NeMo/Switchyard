@@ -1425,6 +1425,162 @@ base_threshold = 0.5
     Ok(())
 }
 
+// A configured mutation must select the efficient tier through the HTTP configuration path.
+#[tokio::test]
+async fn stage_router_uses_configured_tool_semantics() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "capable_first"
+confidence_threshold = 0.3
+
+[routes.stage.tool_semantics]
+mutate = ["send_payment_request"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/stage",
+            "messages": [
+                {"role": "user", "content": "pay the balance"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_payment_request",
+                        "arguments": "{}"
+                    }
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "payment sent"}
+            ]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/weak")
+    );
+    Ok(())
+}
+
+// Composite TOML must pass custom stage semantics through to the nested stage router.
+#[tokio::test]
+async fn composite_router_uses_configured_tool_semantics() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.composite]
+id = "switchyard/composite"
+type = "composite"
+
+[routes.composite.classifier]
+target = "classifier"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[routes.composite.stage]
+capable_target = "strong"
+efficient_target = "weak"
+confidence_threshold = 0.3
+
+[routes.composite.stage.tool_semantics]
+new = ["send_message_to_user"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/composite",
+            "messages": [
+                {"role": "user", "content": "help the customer"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "working"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_message_to_user",
+                        "arguments": "{}"
+                    }
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "message sent"}
+            ]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/weak")
+    );
+    assert_eq!(
+        upstream.models().await,
+        ["model/weak"],
+        "configured new activity must suppress the deep-turn stall without consulting the judge"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn custom_classifier_routes_four_targets_and_falls_back_on_an_invalid_verdict() -> TestResult
 {
@@ -2026,6 +2182,60 @@ target = "weak"
     let app = build_switchyard_router(state);
     let response = send(&app, "POST", "/future/provider/endpoint", None).await?;
     assert_eq!(response.status, StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+#[tokio::test]
+async fn transport_errors_hide_credential_bearing_upstream_urls() -> TestResult {
+    const CANARY: &str = "CANARY_ADMIN_QUERY_KEY";
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}/v1?key={CANARY}", listener.local_addr()?);
+    drop(listener);
+
+    let routed = build_switchyard_router(random_state(&base_url, &[(ROUTE_MODEL, &["model/a"])])?);
+    let routed_response = send(
+        &routed,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+    )
+    .await?;
+
+    let fallback = load_test_config(&format!(
+        r#"
+schema_version = 1
+fallback_client = "upstream"
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.model]
+id = "model/a"
+llm_client = "upstream"
+
+[routes.model]
+id = "switchyard/model"
+type = "passthrough"
+target = "model"
+"#
+    ))?;
+    let fallback = build_switchyard_router(fallback);
+    let fallback_response = send(&fallback, "POST", "/unmatched", None).await?;
+
+    for response in [routed_response, fallback_response] {
+        assert_eq!(response.status, StatusCode::BAD_GATEWAY);
+        let body = response.json()?;
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            !message.contains(CANARY),
+            "credential leaked in {message:?}"
+        );
+    }
     Ok(())
 }
 

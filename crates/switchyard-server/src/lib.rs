@@ -610,7 +610,7 @@ async fn proxy_unmatched(State(state): State<ServerState>, request: HttpRequest)
         }
         Err(error) => error_response(
             StatusCode::BAD_GATEWAY,
-            error.to_string(),
+            error.without_url().to_string(),
             "upstream_error",
             "upstream_error",
         ),

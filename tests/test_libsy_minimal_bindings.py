@@ -585,3 +585,69 @@ async def test_drive_accepted_stream_survives_callback_cleanup() -> None:
     await stream.aclose()
     await stream.aclose()
     assert [event async for event in stream] == []
+
+
+async def test_stage_router_applies_additive_tool_semantics() -> None:
+    """Verify that configured mutation semantics reach stage-router scoring."""
+
+    algorithm = algorithms.stage_router(
+        "strong",
+        "fast",
+        picker="capable_first",
+        confidence_threshold=0.3,
+        tool_semantics={
+            "observe": ["KB_search"],
+            "mutate": ["send_payment_request"],
+            "plan": ["create_research_plan"],
+            "new": ["send_message_to_user"],
+        },
+    )
+
+    selected_model, _ = await run_algorithm(
+        algorithm,
+        {"strong": EchoClient("strong"), "fast": EchoClient("fast")},
+        request={
+            "model": "auto",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "pay the balance"}],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_call",
+                            "id": "call_1",
+                            "name": "send_payment_request",
+                            "arguments": {},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_call_id": "call_1",
+                            "content": [{"type": "text", "text": "payment sent"}],
+                            "is_error": None,
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert selected_model == "fast"
+
+
+def test_stage_router_rejects_unknown_tool_semantics_category() -> None:
+    with pytest.raises(ValueError, match="unknown tool_semantics category"):
+        algorithms.stage_router(
+            "strong",
+            "fast",
+            picker="efficient_first",
+            confidence_threshold=0.5,
+            tool_semantics={"complete": ["end_conversation"]},
+        )

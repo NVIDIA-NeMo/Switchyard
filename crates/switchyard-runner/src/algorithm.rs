@@ -15,6 +15,7 @@ use libsy::{
     CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
     StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
+    ToolSemantics,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -258,6 +259,16 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// Picks a routing strategy automatically, preset with recommended knobs.
+    /// Currently a `stage_router` with `picker = "efficient_first"` and
+    /// `confidence_threshold = 0.5`; change `build_algorithm`'s `Auto` arm to
+    /// repoint it at a different algorithm or preset.
+    Auto {
+        /// The capable tier.
+        capable_target: String,
+        /// The efficient tier.
+        efficient_target: String,
+    },
     /// A judge picks the tier at each user turn; a stage router runs the turns within it.
     Composite {
         /// Judge that picks the tier. Called through its own target.
@@ -391,6 +402,9 @@ pub struct StageTierConfig {
     /// How many trailing tool results the signals are scored over.
     #[serde(default)]
     pub recent_turn_window: Option<usize>,
+    /// Exact tool-name semantics added to the built-in stage vocabulary.
+    #[serde(default)]
+    pub tool_semantics: ToolSemantics,
     /// Notes handed to a tier when the router switches to it.
     #[serde(default)]
     pub handoff_notes: Option<HandoffNoteConfig>,
@@ -464,6 +478,10 @@ impl AlgorithmSpec {
                 }
                 names
             }
+            Self::Auto {
+                capable_target,
+                efficient_target,
+            } => vec![capable_target.as_str(), efficient_target.as_str()],
             Self::Composite {
                 stage, subagents, ..
             } => {
@@ -553,6 +571,7 @@ impl AlgorithmSpec {
             | Self::Passthrough { .. }
             | Self::LlmClassifier { .. }
             | Self::StageRouter { .. }
+            | Self::Auto { .. }
             | Self::Composite { .. }
             | Self::PrefillRouter { .. } => None,
         }
@@ -989,6 +1008,7 @@ fn build_algorithm(
                 efficient_target,
                 confidence_threshold,
                 recent_turn_window,
+                tool_semantics,
                 handoff_notes,
             } = tiers;
             if matches!(picker, PickerMode::CapableFirst) {
@@ -1000,6 +1020,7 @@ fn build_algorithm(
             let efficient = resolve_target_model_id(route_name, efficient_target, targets)?;
             let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
             config.recent_window = *recent_turn_window;
+            config.tool_semantics = tool_semantics.clone();
             config.handoff_notes = handoff_notes.clone();
             // The judge is called through its own target, so it is not a routing
             // destination and stays out of the tier pair.
@@ -1023,6 +1044,21 @@ fn build_algorithm(
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
+        AlgorithmSpec::Auto {
+            capable_target,
+            efficient_target,
+        } => {
+            let capable = resolve_target_model_id(route_name, capable_target, targets)?;
+            let efficient = resolve_target_model_id(route_name, efficient_target, targets)?;
+            let config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
+            let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("auto route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
+        }
         AlgorithmSpec::Composite {
             classifier,
             stage,
@@ -1034,6 +1070,7 @@ fn build_algorithm(
             let mut stage_config =
                 StageRouterConfig::new(PickerMode::EfficientFirst, stage.confidence_threshold);
             stage_config.recent_window = stage.recent_turn_window;
+            stage_config.tool_semantics = stage.tool_semantics.clone();
             stage_config.handoff_notes = stage.handoff_notes.clone();
             let config = CompositeRouterConfig {
                 judge_target,
