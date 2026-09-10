@@ -1048,6 +1048,8 @@ new = ["send_message"]
         Ok(())
     }
 
+    /// A configured `handoff_note` loads with the deployment, and a blank note is rejected at
+    /// load time rather than being sent to the strong tier as empty text.
     #[test]
     fn two_targets_can_share_an_upstream_model_under_distinct_ids() -> RunnerResult<()> {
         let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
