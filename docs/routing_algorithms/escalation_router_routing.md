@@ -133,9 +133,11 @@ weak_cooldown_calls = 8
 
 With this table present, Switchyard marks judge input as either
 `EFFICIENT_EVALUATION` or `STRONG_EVALUATION`. In the strong phase,
-`escalate: true` keeps the strong tier, while consecutive `escalate: false`
-verdicts release the next request to weak. Omitting the table preserves the
-permanent latch and does not add phase markers to judge input.
+`escalate: true` keeps the strong tier. An `escalate: false` verdict can release
+the next request only after `strong_min_calls` is reached and the configured
+confirmation streak is complete. A timeout, error, or unparseable verdict
+retains the strong tier. Omitting the table preserves the permanent latch and
+does not add phase markers to judge input.
 
 When `strong_max_calls` is set, the request after that many strong-tier turns returns
 to weak even if the judge has not released it. `weak_cooldown_calls` then
@@ -143,7 +145,8 @@ prevents immediate re-escalation and avoids turn-by-turn bouncing.
 
 If the strong target is unavailable during a review, the normal candidate
 fallback may serve the weak target. Switchyard does not judge that fallback as a
-strong answer, and retries the strong phase on the next turn.
+strong answer, clears any partial release streak, and retries the strong phase
+on the next turn.
 
 `confirmations` is the main cost dial. `1` latches sooner and spends more on the
 strong tier. `2` or higher requires a session identity, because the streak is
