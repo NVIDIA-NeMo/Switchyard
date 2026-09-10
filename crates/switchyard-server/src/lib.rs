@@ -1391,9 +1391,60 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(state.runner.models().map(|model| {
-        (model.id.as_str(), model.algorithm, model.capabilities)
-    })))
+    let models = state
+        .runner
+        .models()
+        .map(|model| {
+            (
+                model.id.clone(),
+                model.algorithm.to_string(),
+                model.capabilities,
+                model.routing_targets.first().cloned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut entries = Vec::with_capacity(models.len());
+    for (id, algorithm, mut capabilities, local_target) in models {
+        if algorithm == "vgr"
+            && let Some(discovered) =
+                discover_context_window(&state.fallback_http, local_target.as_ref()).await
+        {
+            capabilities.context_window = Some(discovered);
+        }
+        entries.push((id, algorithm, capabilities));
+    }
+    Json(model_list_payload(entries.iter().map(
+        |(id, algorithm, capabilities)| (id.as_str(), algorithm.as_str(), *capabilities),
+    )))
+}
+
+async fn discover_context_window(
+    client: &reqwest::Client,
+    target: Option<&DecisionTarget>,
+) -> Option<u32> {
+    let mut url = reqwest::Url::parse(&target?.base_url).ok()?;
+    let root = url
+        .path()
+        .trim_end_matches('/')
+        .strip_suffix("/v1")
+        .unwrap_or_else(|| url.path().trim_end_matches('/'))
+        .to_string();
+    url.set_path(&format!("{}/props", root.trim_end_matches('/')));
+    url.set_query(None);
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    let body: Value = response.json().await.ok()?;
+    let context = body
+        .get("default_generation_settings")?
+        .get("n_ctx")?
+        .as_u64()?;
+    u32::try_from(context).ok().filter(|context| *context > 0)
 }
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
