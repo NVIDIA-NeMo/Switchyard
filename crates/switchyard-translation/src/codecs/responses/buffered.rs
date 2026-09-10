@@ -40,6 +40,11 @@ impl FormatCodec for OpenAiResponsesCodec {
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
+        // Codex marks remote-compact requests with a `compaction_trigger` input
+        // item. It is codex-internal protocol that strict upstream parsers
+        // reject, so drop it before preservation capture and normalization.
+        let sanitized = strip_codex_compaction_markers(body);
+        let body = sanitized.as_ref().unwrap_or(body);
         let mut diagnostics = Vec::new();
         let mut request = LlmRequest {
             model: body
@@ -1106,6 +1111,23 @@ fn pair_tool_calls_with_outputs(items: &mut Vec<Value>) {
         }
         index += 1;
     }
+}
+
+// Returns the body without Codex `compaction_trigger` input items, or `None`
+// when there are none (the common case, sparing the clone).
+fn strip_codex_compaction_markers(body: &Map<String, Value>) -> Option<Map<String, Value>> {
+    fn is_marker(item: &Value) -> bool {
+        item.get("type").and_then(Value::as_str) == Some("compaction_trigger")
+    }
+    let input = body.get("input")?.as_array()?;
+    if !input.iter().any(is_marker) {
+        return None;
+    }
+    let mut sanitized = body.clone();
+    if let Some(Value::Array(items)) = sanitized.get_mut("input") {
+        items.retain(|item| !is_marker(item));
+    }
+    Some(sanitized)
 }
 
 // Encodes IR blocks that Responses represents as top-level input items.
