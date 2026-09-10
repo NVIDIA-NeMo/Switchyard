@@ -14,6 +14,7 @@ configuration and tuning. For the vocabulary these pages use, see
 |---|---|---|
 | [Sub-Agent-Aware Routing](subagent_routing.md) | Delegated sub-agents should use a separate routing policy from the parent agent. | `passthrough` or `stage_router` with `subagents` |
 | [Random Routing](random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
+| [Ensemble Routing](ensemble_routing.md) | Several independent answers should be combined into one model-generated response. | `ensemble` |
 | [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
 | [Stage-Router Routing](stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
 | Auto Routing | You want a recommended default instead of picking a strategy yourself. For a deeper dive on the current default, see [Stage-Router Routing](stage_router_routing.md); for full control, pick one of the strategies above instead. | `auto` |

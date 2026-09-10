@@ -12,9 +12,10 @@ use std::sync::Arc;
 use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
     ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
-    CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
+    CustomClassifierPolicy, Ensemble, EnsembleConfig, EscalationJudgeConfig, GateTrigger,
+    HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, Random, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
+    TaskClassifierConfig,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -278,6 +279,22 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// Generates independent candidate answers and synthesizes them into one response.
+    Ensemble {
+        /// Targets called concurrently to produce candidate answers.
+        candidates: Vec<String>,
+        /// Target that synthesizes the successful candidate answers.
+        synthesizer_target: String,
+        /// Replaces the built-in synthesis instruction.
+        #[serde(default)]
+        synthesizer_system_prompt: Option<String>,
+        /// Minimum number of usable candidate responses required before synthesis.
+        #[serde(default = "default_minimum_successful_candidates")]
+        minimum_successful_candidates: usize,
+        /// Optional output-token cap for each candidate call.
+        #[serde(default)]
+        candidate_max_output_tokens: Option<u64>,
+    },
     /// Serves every turn from one target, and has a second model review some of
     /// those turns before the caller sees them.
     Advisor {
@@ -490,6 +507,15 @@ impl AlgorithmSpec {
                 }
                 names
             }
+            Self::Ensemble {
+                candidates,
+                synthesizer_target,
+                ..
+            } => candidates
+                .iter()
+                .map(String::as_str)
+                .chain(std::iter::once(synthesizer_target.as_str()))
+                .collect(),
             // The advisor is judge-only: reviews go through its own client,
             // so it is not a completion (or count_tokens) destination.
             Self::Advisor {
@@ -564,6 +590,7 @@ impl AlgorithmSpec {
             } => Some((executor_target, advisor_target)),
             Self::Noop { .. }
             | Self::Random { .. }
+            | Self::Ensemble { .. }
             | Self::Passthrough { .. }
             | Self::LlmClassifier { .. }
             | Self::StageRouter { .. }
@@ -1079,6 +1106,31 @@ fn build_algorithm(
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
+        AlgorithmSpec::Ensemble {
+            candidates,
+            synthesizer_target,
+            synthesizer_system_prompt,
+            minimum_successful_candidates,
+            candidate_max_output_tokens,
+        } => {
+            let candidates =
+                resolve_targets(route_name, candidates.iter().map(String::as_str), targets)?;
+            let synthesizer = resolve_target_model_id(route_name, synthesizer_target, targets)?;
+            let mut config = EnsembleConfig::default();
+            if let Some(prompt) = synthesizer_system_prompt {
+                config.synthesizer_system_prompt = prompt.clone();
+            }
+            config.minimum_successful_candidates = *minimum_successful_candidates;
+            config.candidate_max_output_tokens = *candidate_max_output_tokens;
+            let algorithm =
+                Ensemble::with_config(candidates, synthesizer, config).map_err(|error| {
+                    AlgorithmConfigError::with_source(
+                        format!("ensemble route {route_name}: {error}"),
+                        error,
+                    )
+                })?;
+            Ok(Arc::new(algorithm))
+        }
         AlgorithmSpec::Advisor {
             executor_target,
             advisor_target,
@@ -1200,6 +1252,10 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 
 fn default_classifier_max_output_tokens() -> u64 {
     TaskClassifierConfig::default().max_output_tokens
+}
+
+const fn default_minimum_successful_candidates() -> usize {
+    1
 }
 
 fn resolve_targets<'a>(

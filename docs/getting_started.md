@@ -135,6 +135,7 @@ settings. The Rust server also supports:
 |---|---|---|
 | Auto | You want a recommended default instead of picking a strategy yourself. | `auto` |
 | [Random](routing_algorithms/random_routing.md) | You need a weighted split for A/B tests or baselines. | `random` |
+| [Ensemble](routing_algorithms/ensemble_routing.md) | Several independent answers should be synthesized into one response. | `ensemble` |
 | [LLM classifier](routing_algorithms/llm_classifier_routing.md) | Request content should decide whether to use the weak or strong target. | `llm_classifier` |
 | [Stage router](routing_algorithms/stage_router_routing.md) | Tool-result and progress signals should select an efficient or capable target. | `stage_router` |
 
@@ -197,6 +198,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 | `StageRouter` | Route from signals already in the conversation, such as tool results and errors, with an optional judge fallback. |
 | `LlmTaskClassifier` with escalation | Every turn runs on the efficient target first, and a judge reads that answer to decide whether to send the same request to the capable target. |
 | `Random` | Select among any number of targets, uniform or weighted. |
+| `Ensemble` | Generate two to four candidates concurrently and synthesize their responses. |
 
 These are the same strategies the server exposes as route types, so a deployment
 can move between the server and library paths without changing routing

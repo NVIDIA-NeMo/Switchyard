@@ -190,9 +190,9 @@ def test_cli_write_records_direct_upstream_mode_without_routing_stats(tmp_path: 
             "--server-config-json",
             '{"mode":"direct","upstream_api_key_env":"NVIDIA_API_KEY"}',
             "--harbor-base-url",
-            "https://inference-api.nvidia.com/v1",
+            "https://api.example.com/v1",
             "--upstream-base-url",
-            "https://inference-api.nvidia.com/v1",
+            "https://api.example.com/v1",
             "--upstream-api-key-env",
             "NVIDIA_API_KEY",
             "--harbor-path",
@@ -224,7 +224,7 @@ def test_cli_write_records_direct_upstream_mode_without_routing_stats(tmp_path: 
     manifest = json.loads(out.read_text())
     assert manifest["server"]["preset"] == "direct"
     assert manifest["server"]["mode"] == "direct"
-    assert manifest["server"]["upstream_base_url"] == "https://inference-api.nvidia.com/v1"
+    assert manifest["server"]["upstream_base_url"] == "https://api.example.com/v1"
     assert manifest["server"]["upstream_api_key_env"] == "NVIDIA_API_KEY"
     assert manifest["server"]["server_config"] is None
     assert manifest["outcomes"]["routing_stats_json_status"] == "not-requested"
