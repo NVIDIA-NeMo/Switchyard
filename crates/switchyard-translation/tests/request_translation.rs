@@ -2487,3 +2487,49 @@ fn responses_flat_file_data_survives_into_chat() -> TestResult {
     assert_eq!(file["file"]["filename"], "report.pdf");
     Ok(())
 }
+
+// Verifies parallel tool calls serialize as adjacent call/output pairs so
+// upstreams that resolve tool outputs by adjacency match the right call.
+#[test]
+fn responses_parallel_tool_calls_pair_with_their_outputs() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5",
+        "input": [
+            {"type": "message", "role": "user", "content": "Inspect"},
+            {"type": "function_call", "name": "shell", "call_id": "call-a", "arguments": "{}"},
+            {"type": "function_call", "name": "shell", "call_id": "call-b", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call-a", "output": "a"},
+            {"type": "function_call_output", "call_id": "call-b", "output": "b"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let input = output["input"].as_array().ok_or("input is not an array")?;
+    let pairs = input
+        .iter()
+        .filter_map(|item| Some((item["type"].as_str()?, item["call_id"].as_str()?)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pairs,
+        vec![
+            ("function_call", "call-a"),
+            ("function_call_output", "call-a"),
+            ("function_call", "call-b"),
+            ("function_call_output", "call-b"),
+        ]
+    );
+    Ok(())
+}

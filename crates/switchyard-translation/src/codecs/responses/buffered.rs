@@ -1070,7 +1070,42 @@ fn encode_responses_input(
             }));
         }
     }
+    pair_tool_calls_with_outputs(&mut encoded);
     Ok(Value::Array(encoded))
+}
+
+// Moves each tool output directly behind the call it answers. A turn with
+// parallel tool calls otherwise serializes as call,call,output,output, which
+// upstreams that pair by adjacency (Kimi K3) resolve to the wrong call.
+fn pair_tool_calls_with_outputs(items: &mut Vec<Value>) {
+    let call_id = |item: &Value, kind: &str| {
+        (item.get("type").and_then(Value::as_str) == Some(kind))
+            .then(|| {
+                item.get("call_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .flatten()
+    };
+    let mut index = 0;
+    while index < items.len() {
+        let Some(id) = call_id(&items[index], "function_call") else {
+            index += 1;
+            continue;
+        };
+        let output = items
+            .iter()
+            .skip(index + 1)
+            .position(|item| call_id(item, "function_call_output").as_deref() == Some(&id))
+            .map(|offset| index + 1 + offset);
+        if let Some(output) = output
+            && output != index + 1
+        {
+            let item = items.remove(output);
+            items.insert(index + 1, item);
+        }
+        index += 1;
+    }
 }
 
 // Encodes IR blocks that Responses represents as top-level input items.
