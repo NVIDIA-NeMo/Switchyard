@@ -1484,7 +1484,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5a5141ecd8b1bfed05c9262a2b5afcdff4854970/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f8f51ef9010018c81b17624e9151840925c2798c/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1592,9 +1592,9 @@ verdict. The policy selects one of four runtime categories.</p>
 </span><span id="__span-3-30"><a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a>
 </span><span id="__span-3-31"><a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a><span class="k">[routes.smart.models]</span>
 </span><span id="__span-3-32"><a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a><span class="n">judge</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;classifier&quot;</span><span class="p">]</span>
-</span><span id="__span-3-33"><a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a><span class="n">capable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span><span class="p">]</span>
-</span><span id="__span-3-34"><a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a><span class="n">efficient</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;balanced&quot;</span><span class="p">]</span>
-</span><span id="__span-3-35"><a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a><span class="n">any</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;balanced&quot;</span><span class="p">]</span>
+</span><span id="__span-3-33"><a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a><span class="n">capable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;premium&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;reasoning&quot;</span><span class="p">]</span>
+</span><span id="__span-3-34"><a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a><span class="n">efficient</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;balanced&quot;</span><span class="p">]</span>
+</span><span id="__span-3-35"><a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a><span class="n">any</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;balanced&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;reasoning&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span><span class="p">]</span>
 </span><span id="__span-3-36"><a id="__codelineno-3-36" name="__codelineno-3-36" href="#__codelineno-3-36"></a>
 </span><span id="__span-3-37"><a id="__codelineno-3-37" name="__codelineno-3-37" href="#__codelineno-3-37"></a><span class="k">[routes.smart.policy]</span>
 </span><span id="__span-3-38"><a id="__codelineno-3-38" name="__codelineno-3-38" href="#__codelineno-3-38"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;target_selector&quot;</span>
@@ -1605,6 +1605,14 @@ schema to the provider in a strict structured-output wrapper and validates the
 returned JSON again. <code>jsonptr</code> resolves the selector against that verdict. The
 only valid labels are <code>any</code>, <code>judge</code>, <code>capable</code>, and <code>efficient</code>. A missing,
 non-string, or unknown label falls back to <code>default_target</code>.</p>
+<p>A verdict names a category, and the <strong>first</strong> model in that category serves the
+turn: <code>capable</code> selects <code>premium</code> above, <code>efficient</code> selects <code>fast</code>. Later
+entries are that category's fallbacks. If the serving call fails, the client
+falls through the rest of the chosen category first — <code>capable</code> retries on
+<code>reasoning</code> — and then through whatever <code>models.any</code> adds, so a single-model
+category still fails over to the other tier. Every selectable target must also
+appear in <code>models.any</code>; a target missing from it is rejected at routing time.
+<code>models.judge</code> supplies the judge call's own candidates in order.</p>
 <p>This separation applies to every classifier mode. Prompts containing the legacy
 <code>{{RESPONSE_SCHEMA}}</code> placeholder are rejected during configuration validation.</p>
 <h3 id="forecast-and-policy-assumptions">Forecast and policy assumptions<a class="headerlink" href="#forecast-and-policy-assumptions" title="Permanent link">&para;</a></h3>

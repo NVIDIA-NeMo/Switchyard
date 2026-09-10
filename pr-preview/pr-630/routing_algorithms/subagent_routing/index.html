@@ -1201,6 +1201,10 @@ before starting the server:</p>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
+<p>The <code>subagents</code> table has its own model groups, separate from the parent
+route's. A category name in the sub-agent table always means the sub-agent's own
+models, even when the parent route uses that category too, and the parent never
+falls back onto a model only the sub-agents were given.</p>
 <p>The parent always uses <code>parent</code>. For a delegated request, the classifier sees
 the prompt supplied by the parent and selects one configured target. With
 <code>classify_trigger = "new_session"</code>, Switchyard reuses that decision for later

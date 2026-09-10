@@ -2010,7 +2010,9 @@ dependencies available in the active virtual environment.</p>
 </table>
 <p>Existing configurations that contain <code>escalation</code> but omit <code>mode</code> remain valid.</p>
 <p>Custom mode validates the judge's JSON against <code>response_schema</code>, resolves the
-policy selector, and routes to a runtime model category.</p>
+policy selector, and routes to a runtime model category. A verdict names a
+category and the first model in it serves the turn; if that call fails the client
+falls through the rest of that category, then through whatever <code>models.any</code> adds.</p>
 <table>
 <thead>
 <tr>
@@ -2025,7 +2027,7 @@ policy selector, and routes to a runtime model category.</p>
 <td><code>models.any</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>One or more completion targets in fallback order.</td>
+<td>Every selectable completion target, in last-resort fallback order. A target missing from this list is rejected at routing time.</td>
 </tr>
 <tr>
 <td><code>models.judge</code></td>
@@ -2037,13 +2039,13 @@ policy selector, and routes to a runtime model category.</p>
 <td><code>models.capable</code></td>
 <td style="text-align: center;">When used</td>
 <td>—</td>
-<td>Ordered capable candidates. The first is selected. May be omitted when the policy and <code>default_target</code> do not select <code>capable</code>.</td>
+<td>Ordered capable-tier models. A <code>capable</code> verdict selects the first and falls through the rest in order. May be omitted when neither the policy nor <code>default_target</code> selects <code>capable</code>.</td>
 </tr>
 <tr>
 <td><code>models.efficient</code></td>
 <td style="text-align: center;">When used</td>
 <td>—</td>
-<td>Ordered efficient candidates. The first is selected. May be omitted when the policy and <code>default_target</code> do not select <code>efficient</code>.</td>
+<td>Ordered efficient-tier models. An <code>efficient</code> verdict selects the first and falls through the rest in order. May be omitted when neither the policy nor <code>default_target</code> selects <code>efficient</code>.</td>
 </tr>
 <tr>
 <td><code>default_target</code></td>
@@ -2089,7 +2091,8 @@ policy selector, and routes to a runtime model category.</p>
 </tr>
 </tbody>
 </table>
-<p>The selected JSON label must be <code>any</code>, <code>judge</code>, <code>capable</code>, or <code>efficient</code>.</p>
+<p>The selected JSON label must be <code>any</code>, <code>judge</code>, <code>capable</code>, or <code>efficient</code>. A
+label naming a target rather than one of those falls back to <code>default_target</code>.</p>
 <p>Classifier prompts must not contain <code>{{RESPONSE_SCHEMA}}</code>. Switchyard supplies
 the schema automatically: through the structured-output request in <code>json_schema</code>
 mode, or in the prompt in <code>json_object</code> mode.</p>
