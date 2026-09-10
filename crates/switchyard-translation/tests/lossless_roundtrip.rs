@@ -236,6 +236,35 @@ fn in_memory_preservation_replays_exact_original_when_encoding_from_the_same_ir(
     let decoded = engine.decode_request(WireFormat::OpenAiResponses, &original, &policy)?;
     let encoded = engine.encode_request(WireFormat::OpenAiResponses, &decoded.request, &policy)?;
 
+    // Preserved replay is exact except for the always-list wire normalization:
+    // the scalar string `input` is converted to the canonical single user
+    // message-item list (strict Responses backends reject the scalar form).
+    let mut expected = original.clone();
+    expected["input"] = json!([{
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "Hello"}],
+    }]);
+    assert_eq!(encoded.body, expected);
+    Ok(())
+}
+
+// An already-canonical list `input` replays byte-exact: the preserved-path
+// normalizations only touch wire-illegal shapes (scalar input, system roles).
+#[test]
+fn in_memory_preservation_replays_exact_original_with_list_input() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let original = json!({
+        "model": "gpt-4o",
+        "input": [{"type": "message", "role": "user", "content": "Hello"}],
+        "metadata": {"trace": "keep-me"},
+        "store": false
+    });
+
+    let decoded = engine.decode_request(WireFormat::OpenAiResponses, &original, &policy)?;
+    let encoded = engine.encode_request(WireFormat::OpenAiResponses, &decoded.request, &policy)?;
+
     assert_eq!(encoded.body, original);
     Ok(())
 }
