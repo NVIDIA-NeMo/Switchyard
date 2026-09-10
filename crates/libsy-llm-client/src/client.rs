@@ -57,8 +57,13 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
-/// How one model is served: the `default_backend` used when the request does not
-/// pin a wire format, plus any `other_backends` reachable over additional formats.
+/// How one routed model is served.
+///
+/// `model_name` is the routing identity a route or target refers to, and the key the client
+/// resolves a call by; `upstream_model`, when set, is the name the provider receives instead.
+/// Requests go to `default_backend` unless they pin a wire format served by one of
+/// `other_backends`. Several configs may point at one provider model under distinct routing
+/// ids, each with its own backend settings.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
     model_name: ModelId,
@@ -1720,7 +1725,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .and(wiremock::matchers::body_partial_json(json!({"model": "gpt"})))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"model": "gpt"}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": "1",
                 "model": "gpt",
