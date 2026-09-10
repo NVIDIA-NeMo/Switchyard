@@ -86,7 +86,7 @@ calls an upstream.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `id` | Yes | — | Exact model ID sent upstream. |
+| `id` | Yes | — | Routing identifier of the target, unique per `llm_client`. Also the model ID sent upstream unless `model` is set. |
 | `llm_client` | Yes | — | Key under `[llm_clients]`. |
 | `model` | No | same as `id` | Provider model name sent upstream when it differs from `id`. Lets several targets address one provider model with different settings, for example one target per reasoning effort; the routing id stays unique. |
 | `system_prompt` | No | unset | System prompt prepended when this target serves a completion. |
