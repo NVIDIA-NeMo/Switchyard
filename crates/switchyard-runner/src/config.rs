@@ -644,6 +644,38 @@ target = "weak"
         }
     }
 
+    fn vgr_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "weak"
+cloud_target = "strong"
+judge_target = "classifier"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+"#
+        )
+    }
+
+    #[test]
+    fn vgr_route_builds_and_rejects_unsafe_configuration() -> RunnerResult<()> {
+        let runner = runner_from_toml(&vgr_config())?;
+        assert!(runner.route("switchyard/vgr").is_some());
+
+        let bad_approval =
+            vgr_config().replace("prospective-validation-and-canary-approved", "approved");
+        assert!(error_message(&bad_approval).contains("approval attestation"));
+
+        let missing_target =
+            vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
+        assert!(error_message(&missing_target).contains("unknown target missing"));
+        Ok(())
+    }
+
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
         let mut configured = config.to_string();
         configured.push_str(&format!("\n[routes.{route}.subagents]\n"));

@@ -301,6 +301,10 @@ async fn upstream_chat(
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#
     } else if model == "model/classifier" {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
+    } else if model == "model/vgr-judge" {
+        "yes"
+    } else if model == "model/vgr-reject" {
+        "no"
     } else {
         "ok"
     };
@@ -983,6 +987,95 @@ impl Response {
     fn text(&self) -> TestResult<&str> {
         Ok(std::str::from_utf8(&self.bytes)?)
     }
+}
+
+fn vgr_state(base_url: &str, judge_model: &str) -> TestResult<ServerState> {
+    load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.local]
+id = "model/vgr-local"
+llm_client = "primary"
+
+[targets.cloud]
+id = "model/vgr-cloud"
+llm_client = "primary"
+
+[targets.judge]
+id = "{judge_model}"
+llm_client = "primary"
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+judge_target = "judge"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+"#
+    ))
+}
+
+#[tokio::test]
+async fn vgr_serves_a_verified_local_attempt() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(vgr_state(&upstream.base_url, "model/vgr-judge")?);
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "local case"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.headers.get("x-model-router-selected-model"),
+        Some(&HeaderValue::from_static("model/vgr-local"))
+    );
+    assert_eq!(
+        response.headers.get("x-switchyard-route-type"),
+        Some(&HeaderValue::from_static("vgr"))
+    );
+
+    let models = send(&app, "GET", "/v1/models", None).await?.json()?;
+    assert_eq!(models["data"][0]["route_type"], "vgr");
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_escalates_a_rejected_attempt() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(vgr_state(&upstream.base_url, "model/vgr-reject")?);
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "cloud case"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.headers.get("x-model-router-selected-model"),
+        Some(&HeaderValue::from_static("model/vgr-cloud"))
+    );
+    assert_eq!(
+        response.headers.get("x-switchyard-route-type"),
+        Some(&HeaderValue::from_static("vgr"))
+    );
+    Ok(())
 }
 
 fn metric_line<'a>(metrics: &'a str, name: &str, labels: &[(&str, &str)]) -> Option<&'a str> {

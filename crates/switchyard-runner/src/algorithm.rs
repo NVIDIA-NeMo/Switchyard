@@ -10,12 +10,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use libsy::{
-    AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
-    ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
-    CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TargetPrompts,
-    TaskClassifierConfig,
+    AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, ClassifierContractConfig,
+    ClassifierResponseFormat, ClassifyTrigger, CompositeRouter, CompositeRouterConfig,
+    CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger,
+    HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, Random, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
+    TargetPrompts, TaskClassifierConfig, Vgr, VgrConfig, VgrTargets,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -312,6 +312,11 @@ pub enum AlgorithmSpec {
         #[serde(default = "default_fail_open")]
         fail_open: bool,
     },
+    /// Generates locally, verifies the attempt, and escalates unless it is licensed.
+    Vgr {
+        #[serde(flatten)]
+        config: VgrRouteConfig,
+    },
     /// Routes using a checkpoint-backed prefill classifier.
     PrefillRouter {
         /// Target names in checkpoint output order.
@@ -328,6 +333,55 @@ pub enum AlgorithmSpec {
         /// Maximum prompts per encoder forward pass.
         batch_size: Option<usize>,
     },
+}
+
+/// TOML surface for a verification-gated route.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VgrRouteConfig {
+    /// Tier producing the candidate attempt.
+    pub local_target: String,
+    /// Tier serving requests that do not receive a local license.
+    pub cloud_target: String,
+    /// Local verifier; defaults to `local_target`.
+    #[serde(default)]
+    pub judge_target: Option<String>,
+    /// Optional capable-tier confirmation verifier.
+    #[serde(default)]
+    pub cloud_judge_target: Option<String>,
+    /// Authority granted to VGR decisions.
+    #[serde(default)]
+    pub mode: VgrModeConfig,
+    /// Exact attestation required for active mode.
+    #[serde(default)]
+    pub active_approval: Option<String>,
+    /// End-to-end decision budget.
+    #[serde(default = "default_vgr_deadline")]
+    pub deadline_seconds: f64,
+    /// Whether to classify the task before verification.
+    #[serde(default = "default_true")]
+    pub task_typing: bool,
+    /// Consecutive local endpoint failures required to open the breaker.
+    #[serde(default = "default_vgr_breaker_threshold")]
+    pub breaker_threshold: u32,
+    /// Seconds before a half-open local endpoint trial.
+    #[serde(default = "default_vgr_breaker_cooldown")]
+    pub breaker_cooldown_seconds: f64,
+}
+
+/// Authority granted to decisions from a configured VGR route.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum VgrModeConfig {
+    /// Skip VGR and serve cloud.
+    #[default]
+    Off,
+    /// Serve decisions for isolated evaluation.
+    Evaluate,
+    /// Compute decisions but serve cloud.
+    Shadow,
+    /// Serve decisions after explicit approval.
+    Active,
 }
 
 /// What fires an advisor route's review.
@@ -488,6 +542,9 @@ impl AlgorithmSpec {
             Self::Advisor {
                 executor_target, ..
             } => vec![executor_target],
+            Self::Vgr { config } => {
+                vec![config.local_target.as_str(), config.cloud_target.as_str()]
+            }
             Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
         }
     }
@@ -527,6 +584,10 @@ impl AlgorithmSpec {
                 }
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
+            Self::Vgr { config } => {
+                names.extend(config.judge_target.as_deref());
+                names.extend(config.cloud_judge_target.as_deref());
+            }
             _ => {}
         }
         names
@@ -1090,6 +1151,7 @@ fn build_algorithm(
             })?;
             Ok(Arc::new(algorithm))
         }
+        AlgorithmSpec::Vgr { config } => build_vgr(route_name, config, targets),
         AlgorithmSpec::PrefillRouter {
             targets: names,
             checkpoint,
@@ -1133,6 +1195,63 @@ fn build_algorithm(
     }
 }
 
+fn build_vgr(
+    route_name: &str,
+    config: &VgrRouteConfig,
+    targets: &BTreeMap<String, ModelId>,
+) -> AlgorithmResult<Arc<dyn Algorithm>> {
+    let local = resolve_target_model_id(route_name, &config.local_target, targets)?;
+    let cloud = resolve_target_model_id(route_name, &config.cloud_target, targets)?;
+    if local == cloud {
+        return Err(AlgorithmConfigError::new(format!(
+            "vgr route {route_name} requires distinct local and cloud model IDs"
+        )));
+    }
+    let optional = |name: &Option<String>| {
+        name.as_deref()
+            .map(|name| resolve_target_model_id(route_name, name, targets))
+            .transpose()
+    };
+    let mut runtime = VgrConfig::new(local, cloud);
+    runtime.targets = VgrTargets {
+        judge: optional(&config.judge_target)?,
+        cloud_judge: optional(&config.cloud_judge_target)?,
+        ..runtime.targets
+    };
+    runtime.mode = match config.mode {
+        VgrModeConfig::Off => libsy::ServingMode::Off,
+        VgrModeConfig::Evaluate => libsy::ServingMode::Evaluate,
+        VgrModeConfig::Shadow => libsy::ServingMode::Shadow,
+        VgrModeConfig::Active => libsy::ServingMode::Active {
+            approval: config.active_approval.clone().unwrap_or_default(),
+        },
+    };
+    runtime.deadline = duration(route_name, "deadline_seconds", config.deadline_seconds)?;
+    runtime.task_typing = config.task_typing;
+    runtime.breaker = BreakerConfig {
+        threshold: config.breaker_threshold,
+        cooldown: duration(
+            route_name,
+            "breaker_cooldown_seconds",
+            config.breaker_cooldown_seconds,
+        )?,
+    };
+    Vgr::new(runtime)
+        .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
+        .map_err(|error| {
+            AlgorithmConfigError::with_source(format!("vgr route {route_name}: {error}"), error)
+        })
+}
+
+fn duration(route: &str, field: &str, seconds: f64) -> AlgorithmResult<std::time::Duration> {
+    std::time::Duration::try_from_secs_f64(seconds).map_err(|error| {
+        AlgorithmConfigError::with_source(
+            format!("vgr route {route}: {field} must be a non-negative number"),
+            error,
+        )
+    })
+}
+
 const fn default_max_reviews() -> u32 {
     1
 }
@@ -1157,6 +1276,22 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 
 fn default_classifier_max_output_tokens() -> u64 {
     TaskClassifierConfig::default().max_output_tokens
+}
+
+const fn default_vgr_deadline() -> f64 {
+    30.0
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_vgr_breaker_threshold() -> u32 {
+    5
+}
+
+const fn default_vgr_breaker_cooldown() -> f64 {
+    30.0
 }
 
 /// Keys each configured system prompt by the target it belongs to.

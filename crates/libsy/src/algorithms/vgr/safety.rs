@@ -18,18 +18,22 @@ use crate::LibsyError;
 pub struct KillSwitch(Arc<AtomicBool>);
 
 impl KillSwitch {
+    /// Creates a released switch.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Stops local attempts for subsequent requests.
     pub fn engage(&self) {
         self.0.store(true, Ordering::Relaxed);
     }
 
+    /// Allows local attempts again.
     pub fn release(&self) {
         self.0.store(false, Ordering::Relaxed);
     }
 
+    /// Reports whether local attempts are stopped.
     pub fn is_engaged(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
@@ -38,7 +42,9 @@ impl KillSwitch {
 /// Consecutive-failure breaker tuning.
 #[derive(Clone, Copy, Debug)]
 pub struct BreakerConfig {
+    /// Consecutive endpoint failures required to open.
     pub threshold: u32,
+    /// Delay before one half-open trial is admitted.
     pub cooldown: Duration,
 }
 
