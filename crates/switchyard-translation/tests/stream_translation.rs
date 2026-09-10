@@ -2245,3 +2245,45 @@ fn responses_stream_encrypted_only_reasoning_opens_no_summary_part() -> TestResu
     assert_eq!(done["item"]["summary"], json!([]));
     Ok(())
 }
+
+// An empty reasoning delta opens the item but not a summary part, so a provider that sends a
+// blank first delta does not leave the client with an unclosed part.
+#[test]
+fn responses_stream_empty_reasoning_delta_opens_no_summary_part() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let mut state = StreamTranslationState::new(format, format);
+    let chunks = vec![
+        LlmResponseChunk::MessageStart {
+            id: Some("resp_1".into()),
+            model: Some(REASONING_MODEL.into()),
+        },
+        LlmResponseChunk::ReasoningDelta {
+            index: 0,
+            text: String::new(),
+        },
+        LlmResponseChunk::TextDelta {
+            index: 1,
+            text: "done".into(),
+        },
+        LlmResponseChunk::MessageStop { reason: None },
+    ];
+    let mut events = Vec::new();
+    for chunk in chunks {
+        events.extend(engine.encode_stream_event(
+            &mut state,
+            format,
+            LlmResponseStreamEvent::new(vec![chunk]),
+        )?);
+    }
+    events.extend(engine.finish_stream(&mut state, format)?);
+    let types: Vec<&str> = events.iter().filter_map(|e| e["type"].as_str()).collect();
+    assert!(
+        !types
+            .iter()
+            .any(|t| t.starts_with("response.reasoning_summary")),
+        "{types:?}"
+    );
+    assert!(types.contains(&"response.output_item.added"), "{types:?}");
+    Ok(())
+}

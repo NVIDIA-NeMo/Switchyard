@@ -856,6 +856,10 @@ fn encode_responses_reasoning_delta(
     index: usize,
     text: String,
 ) -> Vec<Value> {
+    // An empty delta carries nothing to show and must not open a part that would never close.
+    if text.is_empty() {
+        return ensure_responses_reasoning_started(state, index);
+    }
     let mut out = ensure_responses_reasoning_summary_started(state, index);
     let item = state.response_reasoning.entry(index).or_default();
     item.text.push_str(&text);
