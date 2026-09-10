@@ -18,29 +18,15 @@
 
 use switchyard_protocol::{ContentBlock, Request, Role};
 
-use super::text::{Turn, char_len, clip_mid, redact};
+use super::text::{Turn, clip_mid, redact};
 
-/// Per-section character budgets for the session view.
-pub(super) const EARLIER_TURN_BUDGET: usize = 1200;
-pub(super) const INSTRUCTION_BUDGET: usize = 48_000;
-pub(super) const LATEST_USER_BUDGET: usize = 8000;
+/// Evidence-only character budgets for judged views.
+const ASSISTANT_TURN_BUDGET: usize = 1200;
 pub(super) const ATTEMPT_BUDGET: usize = 2200;
-
-/// Whole-session budget: a rendered session longer than this would overflow the
-/// verifier window and silently drop requirement content.
-const SESSION_WINDOW: usize = 64_000;
-
-/// Coding-view completeness limits, all measured post-redaction.
-const CODING_MAX_EARLIER_USER_TURNS: usize = 4;
-const CODING_EARLIER_TURN_MAX: usize = 1000;
-const CODING_LATEST_MAX: usize = 12_000;
-const CODING_MAX_SYSTEM_TURNS: usize = 1;
-const CODING_SYSTEM_TURN_MAX: usize = 2000;
 
 /// Agentic-view budgets.
 ///
 /// User requirements render in full; trajectory evidence may clip.
-const AGENTIC_REQUIREMENTS_BUDGET: usize = 8000;
 const AGENTIC_TRAJECTORY_BUDGET: usize = 12_000;
 const AGENTIC_EVENT_BUDGET: usize = 1400;
 
@@ -126,19 +112,16 @@ pub(super) fn render_session(turns: &[Turn], attempt: &str) -> String {
         .enumerate()
         .filter(|(index, _)| Some(*index) != rendered.latest_user)
         .map(|(_, (role, text))| {
-            let budget = if is_instruction(*role) {
-                INSTRUCTION_BUDGET
+            let text = if *role == Role::User || is_instruction(*role) {
+                text.clone()
             } else {
-                EARLIER_TURN_BUDGET
+                clip_mid(text, ASSISTANT_TURN_BUDGET, 0.5)
             };
-            format!("[{}] {}", role_label(*role), clip_mid(text, budget, 0.5))
+            format!("[{}] {text}", role_label(*role))
         })
         .collect();
     if rendered.latest_user.is_some() {
-        lines.push(format!(
-            "[user (latest)] {}",
-            clip_mid(rendered.latest_user_text(), LATEST_USER_BUDGET, 0.5)
-        ));
+        lines.push(format!("[user (latest)] {}", rendered.latest_user_text()));
     }
     lines.push(format!(
         "[assistant attempt] {}",
@@ -147,28 +130,13 @@ pub(super) fn render_session(turns: &[Turn], attempt: &str) -> String {
     lines.join("\n")
 }
 
-/// True when every requirement-bearing turn fits its budget unclipped and the
-/// whole rendered session fits the verifier window.
+/// True when the session has a user task to verify.
 ///
-/// Assistant turns are the model's own words and may clip; the attempt is
-/// evidence, tail-weighted by design, not a requirement.
-pub(super) fn session_context_complete(turns: &[Turn], attempt: &str) -> bool {
+/// Requirement-bearing turns are rendered in full. The verifier model itself
+/// decides whether that complete view fits its live context window.
+pub(super) fn session_context_complete(turns: &[Turn], _attempt: &str) -> bool {
     let rendered = RenderedTurns::new(turns);
-    for (index, (role, text)) in rendered.turns.iter().enumerate() {
-        let budget = if Some(index) == rendered.latest_user {
-            LATEST_USER_BUDGET
-        } else if is_instruction(*role) {
-            INSTRUCTION_BUDGET
-        } else if *role == Role::User {
-            EARLIER_TURN_BUDGET
-        } else {
-            continue;
-        };
-        if char_len(text) > budget {
-            return false;
-        }
-    }
-    char_len(&render_session(turns, attempt)) <= SESSION_WINDOW
+    rendered.latest_user.is_some()
 }
 
 /// Whether all user-authored requirements fit the agentic view without clipping.
@@ -178,15 +146,7 @@ pub(super) fn session_context_complete(turns: &[Turn], attempt: &str) -> bool {
 /// reference experiments.
 pub(super) fn agentic_context_complete(turns: &[Turn]) -> bool {
     let rendered = RenderedTurns::new(turns);
-    let user_turns = rendered
-        .turns
-        .iter()
-        .filter(|(role, _)| *role == Role::User)
-        .map(|(_, text)| text);
-    let (count, characters) = user_turns.fold((0usize, 0usize), |(count, characters), text| {
-        (count + 1, characters.saturating_add(char_len(text)))
-    });
-    count > 0 && characters <= AGENTIC_REQUIREMENTS_BUDGET
+    rendered.latest_user.is_some()
 }
 
 /// Renders the user task, prior tool trajectory, and current local attempt.
@@ -277,28 +237,12 @@ fn agentic_trajectory(request: &Request) -> Vec<String> {
     events
 }
 
-/// True when every task-bearing turn of a coding conversation is representable
-/// in full, the latest request included.
+/// True when a coding conversation has a user task to verify.
 ///
-/// Lengths are measured post-redaction with the router's own redactor, so an
-/// expanding redactor cannot smuggle a turn past the gate. A turn that would
-/// need clipping may carry a mid-turn requirement a verifier would never see, so
-/// this fails closed rather than judging against partial constraints.
+/// Requirement-bearing turns are rendered in full and the verifier model's
+/// live context limit decides whether they are representable.
 pub(super) fn coding_context_complete(turns: &[Turn]) -> bool {
-    let rendered = RenderedTurns::new(turns);
-    if rendered.latest_user.is_none() || char_len(rendered.latest_user_text()) > CODING_LATEST_MAX {
-        return false;
-    }
-    let earlier = rendered.earlier_user();
-    let system = rendered.instructions();
-    earlier.len() <= CODING_MAX_EARLIER_USER_TURNS
-        && earlier
-            .iter()
-            .all(|text| char_len(text) <= CODING_EARLIER_TURN_MAX)
-        && system.len() <= CODING_MAX_SYSTEM_TURNS
-        && system
-            .iter()
-            .all(|text| char_len(text) <= CODING_SYSTEM_TURN_MAX)
+    RenderedTurns::new(turns).latest_user.is_some()
 }
 
 /// Renders the coding judged view: the requirement turns in full, plus evidence
@@ -330,7 +274,6 @@ pub(super) fn render_coding_view(turns: &[Turn], attempt: &str) -> String {
 
     let mut parts = vec![format!("LATEST REQUEST:\n{}", rendered.latest_user_text())];
     let system = rendered.instructions();
-    let system = &system[..system.len().min(CODING_MAX_SYSTEM_TURNS)];
     if !system.is_empty() {
         parts.push(format!(
             "SYSTEM INSTRUCTIONS (in full):\n{}",
@@ -338,7 +281,6 @@ pub(super) fn render_coding_view(turns: &[Turn], attempt: &str) -> String {
         ));
     }
     let earlier = rendered.earlier_user();
-    let earlier = &earlier[..earlier.len().min(CODING_MAX_EARLIER_USER_TURNS)];
     if !earlier.is_empty() {
         let listed = earlier
             .iter()

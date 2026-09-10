@@ -451,15 +451,15 @@ fn unrecognized_provider_blocks_fail_derivation_closed() {
 #[test]
 fn realistic_framework_instructions_remain_verifiable() {
     // This crate separates instructions from messages where the reference
-    // carries system turns in band. Real agent frameworks use large system
-    // prompts, which must not fail a much smaller earlier-user-turn budget.
-    let framework = "s".repeat(30_551);
-    let realistic = request(&[(Role::System, &framework), (Role::User, "Do the thing")]);
-    assert_eq!(branch_of(&realistic, PLAIN, None), Branch::DefaultVerified);
-
-    let too_large = "s".repeat(48_001);
-    let unrepresentable = request(&[(Role::System, &too_large), (Role::User, "Do the thing")]);
-    assert_eq!(branch_of(&unrepresentable, PLAIN, None), Branch::Unknown);
+    // carries system turns in band. Their size must be judged by the running
+    // verifier model rather than an unrelated character threshold.
+    for role in [Role::System, Role::Developer] {
+        for size in [1_000, 1_500, 30_551] {
+            let framework = "s".repeat(size);
+            let realistic = request(&[(role, &framework), (Role::User, "Do the thing")]);
+            assert_eq!(branch_of(&realistic, PLAIN, None), Branch::DefaultVerified);
+        }
+    }
 }
 
 #[test]
@@ -494,28 +494,17 @@ fn agentic_view_omits_framework_instructions_and_keeps_the_tool_trajectory() {
 }
 
 #[test]
-fn an_over_budget_coding_conversation_is_not_judged_at_all() {
-    // A requirement turn that cannot be represented in full means the judged
-    // view would drop a constraint, so the request takes no local regime.
-    let long_turn = "c".repeat(1001);
-    let over_budget = request(&[
+fn coding_requirements_are_not_clipped_by_a_model_agnostic_budget() {
+    let long_turn = "c".repeat(30_551);
+    let realistic = request(&[
         (Role::User, &long_turn),
         (Role::Assistant, "ok"),
         (Role::User, "now finish it"),
     ]);
     assert_eq!(
-        branch_of(&over_budget, CODED, Some(TaskType::Coding)),
-        Branch::Unknown
+        branch_of(&realistic, CODED, Some(TaskType::Coding)),
+        Branch::CodingNoChecks
     );
-}
-
-#[test]
-fn budgets_are_measured_in_characters_not_bytes() {
-    // A multi-byte conversation must be budgeted like an ASCII one; measuring
-    // bytes would fail this request closed at a third of its real length.
-    let multibyte = "私".repeat(48_000);
-    let request = request(&[(Role::System, &multibyte), (Role::User, "Do the thing")]);
-    assert_eq!(branch_of(&request, PLAIN, None), Branch::DefaultVerified);
 }
 
 #[test]
