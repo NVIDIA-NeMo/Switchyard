@@ -3,7 +3,7 @@
 
 //! Buffered codec for OpenAI Responses request and response JSON.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value, json};
 
@@ -40,6 +40,11 @@ impl FormatCodec for OpenAiResponsesCodec {
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
+        // Codex marks remote-compact requests with a `compaction_trigger` input
+        // item. It is codex-internal protocol that strict upstream parsers
+        // reject, so drop it before preservation capture and normalization.
+        let sanitized = strip_codex_compaction_markers(body);
+        let body = sanitized.as_ref().unwrap_or(body);
         let mut diagnostics = Vec::new();
         let mut request = LlmRequest {
             model: body
@@ -1008,6 +1013,16 @@ fn encode_responses_input(
         return Ok(Value::String(text.clone()));
     }
     let mut encoded = Vec::new();
+    // Some upstream translators (Kimi K3) resolve a tool output by an explicit
+    // `name`, so pair every output with the name of the call it answers.
+    let mut call_names: HashMap<&str, &str> = HashMap::new();
+    for message in messages {
+        for block in &message.content {
+            if let ContentBlock::ToolCall(call) = block {
+                call_names.insert(call.id.as_str(), call.name.as_str());
+            }
+        }
+    }
     for message in messages {
         // Anthropic-signed thinking cannot be sent as Responses input.
         let content = message
@@ -1033,18 +1048,16 @@ fn encode_responses_input(
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
-            encoded.extend(
-                content
-                    .iter()
-                    .filter_map(|block| encode_responses_special_input(block, namespaces)),
-            );
+            encoded.extend(content.iter().filter_map(|block| {
+                encode_responses_special_input(block, namespaces, &call_names)
+            }));
             continue;
         }
         let mut visible_content = Vec::new();
         let mut emitted_special = false;
         let mut omitted_reasoning = false;
         for block in &content {
-            if let Some(item) = encode_responses_special_input(block, namespaces) {
+            if let Some(item) = encode_responses_special_input(block, namespaces, &call_names) {
                 encoded.push(item);
                 emitted_special = true;
             } else if !matches!(block, ContentBlock::Reasoning { .. }) {
@@ -1062,13 +1075,66 @@ fn encode_responses_input(
             }));
         }
     }
+    pair_tool_calls_with_outputs(&mut encoded);
     Ok(Value::Array(encoded))
+}
+
+// Moves each tool output directly behind the call it answers. A turn with
+// parallel tool calls otherwise serializes as call,call,output,output, which
+// upstreams that pair by adjacency (Kimi K3) resolve to the wrong call.
+fn pair_tool_calls_with_outputs(items: &mut Vec<Value>) {
+    let call_id = |item: &Value, kind: &str| {
+        (item.get("type").and_then(Value::as_str) == Some(kind))
+            .then(|| {
+                item.get("call_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .flatten()
+    };
+    let mut index = 0;
+    while index < items.len() {
+        let Some(id) = call_id(&items[index], "function_call") else {
+            index += 1;
+            continue;
+        };
+        let output = items
+            .iter()
+            .skip(index + 1)
+            .position(|item| call_id(item, "function_call_output").as_deref() == Some(&id))
+            .map(|offset| index + 1 + offset);
+        if let Some(output) = output
+            && output != index + 1
+        {
+            let item = items.remove(output);
+            items.insert(index + 1, item);
+        }
+        index += 1;
+    }
+}
+
+// Returns the body without Codex `compaction_trigger` input items, or `None`
+// when there are none (the common case, sparing the clone).
+fn strip_codex_compaction_markers(body: &Map<String, Value>) -> Option<Map<String, Value>> {
+    fn is_marker(item: &Value) -> bool {
+        item.get("type").and_then(Value::as_str) == Some("compaction_trigger")
+    }
+    let input = body.get("input")?.as_array()?;
+    if !input.iter().any(is_marker) {
+        return None;
+    }
+    let mut sanitized = body.clone();
+    if let Some(Value::Array(items)) = sanitized.get_mut("input") {
+        items.retain(|item| !is_marker(item));
+    }
+    Some(sanitized)
 }
 
 // Encodes IR blocks that Responses represents as top-level input items.
 fn encode_responses_special_input(
     block: &ContentBlock,
     namespaces: Option<&Map<String, Value>>,
+    call_names: &HashMap<&str, &str>,
 ) -> Option<Value> {
     match block {
         ContentBlock::Reasoning {
@@ -1097,11 +1163,24 @@ fn encode_responses_special_input(
             }
             Some(item)
         }
-        ContentBlock::ToolResult(result) => Some(json!({
-            "type": "function_call_output",
-            "call_id": result.tool_call_id,
-            "output": text_from_blocks(&result.content, " "),
-        })),
+        ContentBlock::ToolResult(result) => {
+            let mut item = json!({
+                "type": "function_call_output",
+                "call_id": result.tool_call_id,
+                "output": text_from_blocks(&result.content, " "),
+            });
+            // Carry the paired call's name, un-qualified to match the emitted
+            // function_call, for upstreams that resolve outputs by name.
+            if let Some(name) = call_names.get(result.tool_call_id.as_str()) {
+                let name = namespaces
+                    .and_then(|namespaces| {
+                        crate::codex_namespaces::split_qualified_name(namespaces, name)
+                    })
+                    .map_or_else(|| (*name).to_string(), |(name, _)| name);
+                item["name"] = Value::String(name);
+            }
+            Some(item)
+        }
         _ => None,
     }
 }
