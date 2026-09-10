@@ -81,7 +81,13 @@ if TYPE_CHECKING:
 
     @final
     class DeescalationConfig:
-        """Configure when an escalated session may return to the efficient tier."""
+        """Configure when an escalated session may return to the efficient tier.
+
+        ``strong_min_calls`` and ``confirmations`` must be positive.
+        ``strong_max_calls``, when set, must not be lower than
+        ``strong_min_calls``. Values are validated when the classifier is built,
+        and invalid values raise ``ValueError``.
+        """
 
         def __init__(
             self,
