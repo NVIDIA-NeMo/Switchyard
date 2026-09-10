@@ -894,6 +894,7 @@ mod tests {
                 forward_auth: false,
                 extra_headers: BTreeMap::new(),
                 extra_body: BTreeMap::new(),
+                reasoning_effort: None,
                 max_retries: 2,
             })
         };
@@ -985,6 +986,7 @@ mod tests {
                 forward_auth: false,
                 extra_headers: BTreeMap::new(),
                 extra_body: BTreeMap::new(),
+                reasoning_effort: None,
                 max_retries: 0,
             })
         };

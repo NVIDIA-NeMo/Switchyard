@@ -232,7 +232,7 @@ impl DeploymentConfig {
 
         for (name, client_config) in &self.llm_clients {
             validate_value("llm client name", name)?;
-            build_backend(name, client_config, &BTreeMap::new())?;
+            build_backend(name, client_config, &BTreeMap::new(), None)?;
         }
         for (target_name, target) in &self.targets {
             let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
@@ -246,9 +246,26 @@ impl DeploymentConfig {
                 .ok_or_else(|| {
                     RunnerError::configuration("validated llm client was not initialized")
                 })?;
+            if let Some(effort) = &target.reasoning_effort {
+                if effort.trim().is_empty() {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} reasoning_effort must not be empty"
+                    )));
+                }
+                if matches!(client_config.format, ClientFormat::AnthropicMessages) {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} reasoning_effort is only supported on openai_chat and openai_responses clients"
+                    )));
+                }
+            }
             model_configs.push(ModelConfig::new(
                 target.id.clone(),
-                build_backend(&target.llm_client, client_config, &target.extra_body)?,
+                build_backend(
+                    &target.llm_client,
+                    client_config,
+                    &target.extra_body,
+                    target.reasoning_effort.clone(),
+                )?,
                 None,
             ));
         }
@@ -489,6 +506,9 @@ struct TargetConfig {
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
     system_prompt: Option<String>,
+    /// Reasoning effort forced on every request to this target, replacing the caller's value.
+    /// Only meaningful on `openai_chat` and `openai_responses` clients.
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -521,6 +541,7 @@ fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
     extra_body: &BTreeMap<String, Value>,
+    reasoning_effort: Option<String>,
 ) -> RunnerResult<Backend> {
     if config.max_retries > MAX_CONFIGURED_RETRIES {
         return Err(RunnerError::configuration(format!(
@@ -560,6 +581,7 @@ fn build_backend(
         forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
+        reasoning_effort,
         max_retries: config.max_retries,
     };
     let backend = match config.format {
@@ -946,6 +968,26 @@ new = ["send_message"]
             "base_threshold = 0.5\nescalation = { confirmations = 0 }",
         );
         assert!(error_message(&starved).contains("confirmations must be at least 1"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_target_reasoning_effort_parses_and_is_rejected_where_unsupported() -> RunnerResult<()> {
+        let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        let weak = "[targets.weak]\nid = \"weak/model\"\nllm_client = \"anthropic\"";
+        assert!(VALID_CONFIG.contains(strong) && VALID_CONFIG.contains(weak));
+
+        let forced = VALID_CONFIG.replace(strong, &format!("{strong}\nreasoning_effort = \"max\""));
+        runner_from_toml(&forced)?;
+
+        let blank = VALID_CONFIG.replace(strong, &format!("{strong}\nreasoning_effort = \" \""));
+        assert!(error_message(&blank).contains("reasoning_effort must not be empty"));
+
+        let anthropic = VALID_CONFIG.replace(weak, &format!("{weak}\nreasoning_effort = \"high\""));
+        assert!(
+            error_message(&anthropic)
+                .contains("only supported on openai_chat and openai_responses")
+        );
         Ok(())
     }
 
@@ -1348,7 +1390,7 @@ target = "azure"
         let Some(client) = config.llm_clients.get("primary") else {
             return Err(RunnerError::configuration("primary llm client is missing"));
         };
-        let backend = build_backend("primary", client, &target.extra_body)?;
+        let backend = build_backend("primary", client, &target.extra_body, None)?;
 
         assert_eq!(
             backend.extra_body().get("service_tier"),
