@@ -21,9 +21,14 @@ pub struct Runner {
 
 /// Borrowed model metadata returned while listing routes.
 pub struct ModelInfo<'a> {
+    /// Synthetic route model identifier.
     pub id: &'a ModelId,
+    /// Algorithm implementing the route.
     pub algorithm: &'a str,
+    /// Statically declared route capabilities.
     pub capabilities: ModelCapabilities,
+    /// Completion targets in algorithm routing order.
+    pub routing_targets: &'a [DecisionTarget],
 }
 
 /// Fully resolved routing decision.
@@ -83,6 +88,7 @@ impl Runner {
             id,
             algorithm: route.algorithm_name(),
             capabilities: route.capabilities(),
+            routing_targets: route.decision_targets(),
         })
     }
 

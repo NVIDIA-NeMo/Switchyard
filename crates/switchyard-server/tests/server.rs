@@ -14,7 +14,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::{Algorithm, Random};
@@ -49,6 +49,7 @@ impl MockUpstream {
     async fn start() -> TestResult<Self> {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
+            .route("/props", get(upstream_props))
             .route("/v1/chat/completions", post(upstream_chat))
             .route(
                 "/v1/messages",
@@ -97,6 +98,14 @@ impl Drop for MockUpstream {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+async fn upstream_props() -> Json<Value> {
+    Json(json!({
+        "default_generation_settings": {
+            "n_ctx": 98_304
+        }
+    }))
 }
 
 async fn upstream_chat(
@@ -3664,6 +3673,22 @@ target = "local"
     let app = build_switchyard_router(load_test_config(&config)?);
 
     let models = send(&app, "GET", "/v1/models", None).await?.json()?;
+    let vgr_data = models["data"]
+        .as_array()
+        .and_then(|entries| entries.iter().find(|entry| entry["id"] == "switchyard/vgr"));
+    let vgr_codex = models["models"].as_array().and_then(|entries| {
+        entries
+            .iter()
+            .find(|entry| entry["slug"] == "switchyard/vgr")
+    });
+    assert_eq!(
+        vgr_data.map(|entry| &entry["capabilities"]["context_window"]),
+        Some(&json!(98_304))
+    );
+    assert_eq!(
+        vgr_codex.map(|entry| &entry["context_window"]),
+        Some(&json!(98_304))
+    );
     let route_types = models["data"]
         .as_array()
         .cloned()

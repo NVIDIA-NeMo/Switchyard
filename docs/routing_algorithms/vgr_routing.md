@@ -103,6 +103,9 @@ active_approval = "prospective-validation-and-canary-approved"
 names and client names do not distinguish them: the runtime client router is
 keyed only by model ID.
 
+When the local backend reports its live context capacity, VGR republishes it
+through `/v1/models`.
+
 ## Tuning options
 
 | Key | Default | Meaning |
