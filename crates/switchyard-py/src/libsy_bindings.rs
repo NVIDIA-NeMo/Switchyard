@@ -70,6 +70,10 @@ impl PyTaskClassifierConfig {
 }
 
 /// Settings for returning an escalated session to the efficient tier.
+///
+/// `strong_min_calls` and `confirmations` must be positive; `strong_max_calls`, when set,
+/// must not be lower than `strong_min_calls`. Classifier construction reports invalid values
+/// as `ValueError`.
 #[pyclass(
     name = "DeescalationConfig",
     module = "switchyard.libsy",
