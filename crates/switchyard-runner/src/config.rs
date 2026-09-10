@@ -3,7 +3,7 @@
 
 //! Version-1 TOML deployment loading for the shared runner.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -160,16 +160,35 @@ impl DeploymentConfig {
             )));
         }
 
-        let mut seen_client_model_ids = HashSet::new();
+        // The LLM client keeps one backend per model id, so two targets naming the same model on
+        // the same client share it. That is harmless when their request settings agree (an alias
+        // for a different system prompt, say) and silently wrong when they do not: the second
+        // target's reasoning_effort or extra_body would never reach the wire.
+        let mut seen_client_model_ids: HashMap<(&str, &str), (&String, &TargetConfig)> =
+            HashMap::new();
         for (target_name, target) in &self.targets {
             validate_value("target name", target_name)?;
             validate_value(&format!("target {target_name} id"), &target.id)?;
-            if !seen_client_model_ids.insert((target.llm_client.as_str(), target.id.as_str())) {
-                tracing::warn!(
-                    "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
-                    target.id,
-                    target.llm_client
-                );
+            match seen_client_model_ids.entry((target.llm_client.as_str(), target.id.as_str())) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert((target_name, target));
+                }
+                std::collections::hash_map::Entry::Occupied(slot) => {
+                    let (first_name, first) = slot.get();
+                    if first.reasoning_effort != target.reasoning_effort
+                        || first.extra_body != target.extra_body
+                    {
+                        return Err(RunnerError::configuration(format!(
+                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort or extra_body; one target per model id is kept, so give each its own model id or llm client",
+                            target.id, target.llm_client
+                        )));
+                    }
+                    tracing::warn!(
+                        "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
+                        target.id,
+                        target.llm_client
+                    );
+                }
             }
         }
 
@@ -232,7 +251,7 @@ impl DeploymentConfig {
 
         for (name, client_config) in &self.llm_clients {
             validate_value("llm client name", name)?;
-            build_backend(name, client_config, &BTreeMap::new())?;
+            build_backend(name, client_config, &BTreeMap::new(), None)?;
         }
         for (target_name, target) in &self.targets {
             let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
@@ -246,9 +265,26 @@ impl DeploymentConfig {
                 .ok_or_else(|| {
                     RunnerError::configuration("validated llm client was not initialized")
                 })?;
+            if let Some(effort) = &target.reasoning_effort {
+                if effort.trim().is_empty() {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} reasoning_effort must not be empty"
+                    )));
+                }
+                if matches!(client_config.format, ClientFormat::AnthropicMessages) {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} reasoning_effort is only supported on openai_chat and openai_responses clients"
+                    )));
+                }
+            }
             model_configs.push(ModelConfig::new(
                 target.id.clone(),
-                build_backend(&target.llm_client, client_config, &target.extra_body)?,
+                build_backend(
+                    &target.llm_client,
+                    client_config,
+                    &target.extra_body,
+                    target.reasoning_effort.clone(),
+                )?,
                 None,
             ));
         }
@@ -489,6 +525,9 @@ struct TargetConfig {
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
     system_prompt: Option<String>,
+    /// Reasoning effort forced on every request to this target, replacing the caller's value.
+    /// Only meaningful on `openai_chat` and `openai_responses` clients.
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -521,6 +560,7 @@ fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
     extra_body: &BTreeMap<String, Value>,
+    reasoning_effort: Option<String>,
 ) -> RunnerResult<Backend> {
     if config.max_retries > MAX_CONFIGURED_RETRIES {
         return Err(RunnerError::configuration(format!(
@@ -560,6 +600,7 @@ fn build_backend(
         forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
+        reasoning_effort,
         max_retries: config.max_retries,
     };
     let backend = match config.format {
@@ -946,6 +987,51 @@ new = ["send_message"]
             "base_threshold = 0.5\nescalation = { confirmations = 0 }",
         );
         assert!(error_message(&starved).contains("confirmations must be at least 1"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_target_reasoning_effort_parses_and_is_rejected_where_unsupported() -> RunnerResult<()> {
+        let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        let weak = "[targets.weak]\nid = \"weak/model\"\nllm_client = \"anthropic\"";
+        assert!(VALID_CONFIG.contains(strong) && VALID_CONFIG.contains(weak));
+
+        let forced = VALID_CONFIG.replace(strong, &format!("{strong}\nreasoning_effort = \"max\""));
+        runner_from_toml(&forced)?;
+
+        let blank = VALID_CONFIG.replace(strong, &format!("{strong}\nreasoning_effort = \" \""));
+        assert!(error_message(&blank).contains("reasoning_effort must not be empty"));
+
+        let anthropic = VALID_CONFIG.replace(weak, &format!("{weak}\nreasoning_effort = \"high\""));
+        assert!(
+            error_message(&anthropic)
+                .contains("only supported on openai_chat and openai_responses")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_targets_with_conflicting_settings_are_rejected() -> RunnerResult<()> {
+        let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        assert!(VALID_CONFIG.contains(strong));
+        // Same model, same client, different effort: the second target could never take effect.
+        let conflicting = VALID_CONFIG.replace(
+            strong,
+            &format!(
+                "{strong}\n\n[targets.strong_max]\nid = \"strong/model\"\nllm_client = \"responses\"\nreasoning_effort = \"max\""
+            ),
+        );
+        assert!(
+            error_message(&conflicting).contains("different reasoning_effort or extra_body"),
+            "{}",
+            error_message(&conflicting)
+        );
+        // An alias with identical settings is still allowed (it only warns).
+        let alias = VALID_CONFIG.replace(
+            strong,
+            &format!("{strong}\n\n[targets.strong_alias]\nid = \"strong/model\"\nllm_client = \"responses\""),
+        );
+        runner_from_toml(&alias)?;
         Ok(())
     }
 
@@ -1348,7 +1434,7 @@ target = "azure"
         let Some(client) = config.llm_clients.get("primary") else {
             return Err(RunnerError::configuration("primary llm client is missing"));
         };
-        let backend = build_backend("primary", client, &target.extra_body)?;
+        let backend = build_backend("primary", client, &target.extra_body, None)?;
 
         assert_eq!(
             backend.extra_body().get("service_tier"),

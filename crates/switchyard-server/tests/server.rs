@@ -513,6 +513,7 @@ fn random_state_with_retries(
         forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        reasoning_effort: None,
         max_retries,
     });
     let target_models = routes
