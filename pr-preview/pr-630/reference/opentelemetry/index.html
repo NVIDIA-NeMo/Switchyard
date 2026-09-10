@@ -11,8 +11,10 @@
       
       
       
-        <link rel="prev" href="../opentelemetry/">
+        <link rel="prev" href="../toml_schema/">
       
+      
+        <link rel="next" href="../rust_api/">
       
       
         
@@ -23,7 +25,7 @@
     
     
       
-        <title>Rust API - Switchyard</title>
+        <title>OpenTelemetry - Switchyard</title>
       
     
     
@@ -76,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#rust-api" class="md-skip">
+        <a href="#opentelemetry" class="md-skip">
           Skip to content
         </a>
       
@@ -112,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Rust API
+              OpenTelemetry
             
           </span>
         </div>
@@ -1022,34 +1024,6 @@
                 
   
   
-  
-  
-    <li class="md-nav__item">
-      <a href="../opentelemetry/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    OpenTelemetry
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
     
   
   
@@ -1069,7 +1043,7 @@
   <span class="md-ellipsis">
     
   
-    Rust API
+    OpenTelemetry
   
 
     
@@ -1087,7 +1061,7 @@
   <span class="md-ellipsis">
     
   
-    Rust API
+    OpenTelemetry
   
 
     
@@ -1115,10 +1089,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#switchyard-libsy" class="md-nav__link">
+  <a href="#host-setup" class="md-nav__link">
     <span class="md-ellipsis">
       
-        switchyard-libsy
+        Host setup
       
     </span>
   </a>
@@ -1126,35 +1100,130 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#switchyard-protocol" class="md-nav__link">
+  <a href="#spans-and-attributes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        switchyard-protocol
+        Spans and attributes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Spans and attributes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#routing-outcome-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Routing outcome fields
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#crate-boundary" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#model-call-fields" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Crate boundary
+        Model-call fields
       
     </span>
   </a>
   
 </li>
+        
+      </ul>
+    </nav>
+  
+</li>
       
         <li class="md-nav__item">
-  <a href="#ci-previews" class="md-nav__link">
+  <a href="#metrics" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CI previews
+        Metrics
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Metrics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#routing-and-client-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Routing and client metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#algorithm-specific-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Algorithm-specific metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limits
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Limits">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#timing-and-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timing and streaming
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#data-exposure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data exposure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#source-and-stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source and stability
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1162,6 +1231,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust_api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1203,10 +1300,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#switchyard-libsy" class="md-nav__link">
+  <a href="#host-setup" class="md-nav__link">
     <span class="md-ellipsis">
       
-        switchyard-libsy
+        Host setup
       
     </span>
   </a>
@@ -1214,35 +1311,130 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#switchyard-protocol" class="md-nav__link">
+  <a href="#spans-and-attributes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        switchyard-protocol
+        Spans and attributes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Spans and attributes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#routing-outcome-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Routing outcome fields
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#crate-boundary" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#model-call-fields" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Crate boundary
+        Model-call fields
       
     </span>
   </a>
   
 </li>
+        
+      </ul>
+    </nav>
+  
+</li>
       
         <li class="md-nav__item">
-  <a href="#ci-previews" class="md-nav__link">
+  <a href="#metrics" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CI previews
+        Metrics
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Metrics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#routing-and-client-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Routing and client metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#algorithm-specific-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Algorithm-specific metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limits
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Limits">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#timing-and-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timing and streaming
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#data-exposure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data exposure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#source-and-stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source and stability
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1266,31 +1458,414 @@
   
 
 
-<h1 id="rust-api">Rust API<a class="headerlink" href="#rust-api" title="Permanent link">&para;</a></h1>
-<p>Switchyard publishes generated API documentation for its embeddable routing
-library and provider-neutral protocol types.</p>
-<h2 id="switchyard-libsy"><code>switchyard-libsy</code><a class="headerlink" href="#switchyard-libsy" title="Permanent link">&para;</a></h2>
-<p>Use libsy to construct targets, run built-in routing algorithms, implement a
-custom algorithm, or drive model calls through the host-facing step stream.</p>
-<p><a href="../../rust/switchyard_libsy/">Open the generated libsy API documentation</a></p>
-<h2 id="switchyard-protocol"><code>switchyard-protocol</code><a class="headerlink" href="#switchyard-protocol" title="Permanent link">&para;</a></h2>
-<p>Use protocol types for normalized conversations, response streams, routed LLM
-clients, decisions, metadata, and wire-format identifiers.</p>
-<p><a href="../../rust/switchyard_protocol/">Open the generated protocol API documentation</a></p>
-<h2 id="crate-boundary">Crate boundary<a class="headerlink" href="#crate-boundary" title="Permanent link">&para;</a></h2>
-<p>Applications embedding libsy normally depend on both crates:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[dependencies]</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">switchyard-libsy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">tag</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;v0.2.0&quot;</span><span class="w"> </span><span class="p">}</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">switchyard-protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">tag</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;v0.2.0&quot;</span><span class="w"> </span><span class="p">}</span>
-</span></code></pre></div>
-<p>Import algorithms and orchestration types from <code>switchyard_libsy</code>. Import
-requests, responses, metadata, decisions, and LLM client traits from
-<code>switchyard_protocol</code>. Keep both dependencies on compatible versions.</p>
-<h2 id="ci-previews">CI previews<a class="headerlink" href="#ci-previews" title="Permanent link">&para;</a></h2>
-<p>The Documentation workflow publishes a preview for same-repository pull
-requests. Open the workflow's <strong>Deploy PR preview</strong> summary to find its preview
-URL, then use the Rust API links above. The <strong>docs-site</strong> build artifact contains
-the same MkDocs and rustdoc output for one day.</p>
+<h1 id="opentelemetry">OpenTelemetry<a class="headerlink" href="#opentelemetry" title="Permanent link">&para;</a></h1>
+<p>Reference for the spans, attributes, and metrics emitted by libsy and its LLM client.</p>
+<h2 id="host-setup">Host setup<a class="headerlink" href="#host-setup" title="Permanent link">&para;</a></h2>
+<p>Your application installs a <code>tracing-opentelemetry</code> subscriber and global OTel meter
+provider, and owns exporters, filtering, sampling, context propagation, and flushing.
+Libsy installs none of these and sends no telemetry itself. Environment variables
+alone do not enable collection. See <a href="https://opentelemetry.io/docs/languages/rust/">OTel Rust setup</a>
+and <a href="https://opentelemetry.io/docs/specs/otel/protocol/exporter/">OTLP configuration</a>.</p>
+<h2 id="spans-and-attributes">Spans and attributes<a class="headerlink" href="#spans-and-attributes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Span</th>
+<th>Emitted by</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>libsy.run</code></td>
+<td>Libsy</td>
+<td>One algorithm run, including routing-time work. OpenInference kind <code>CHAIN</code>.</td>
+</tr>
+<tr>
+<td><code>libsy.llm_call</code></td>
+<td>Libsy driver</td>
+<td>Waiting for the host to fulfill an offloaded call. Includes host queueing. OpenInference kind <code>CHAIN</code>.</td>
+</tr>
+<tr>
+<td><code>libsy.client_call</code>, exported as <code>chat &lt;model_id&gt;</code></td>
+<td>LLM client driver</td>
+<td>One candidate model call, including that candidate's retries. OTel kind <code>CLIENT</code>; OpenInference kind <code>LLM</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Hosts driving <code>run_stream</code> without the LLM client driver instrument their own model I/O.</p>
+<h3 id="routing-outcome-fields">Routing outcome fields<a class="headerlink" href="#routing-outcome-fields" title="Permanent link">&para;</a></h3>
+<p>On <code>libsy.run</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Type</th>
+<th>Meaning / presence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>algorithm</code>, <code>switchyard.algorithm</code></td>
+<td>string</td>
+<td>Name from <code>Algorithm::name()</code>.</td>
+</tr>
+<tr>
+<td><code>switchyard.route</code></td>
+<td>string</td>
+<td>Inbound request model/route, when present.</td>
+</tr>
+<tr>
+<td><code>outcome</code></td>
+<td>string</td>
+<td><code>ok</code> or <code>error</code> when the algorithm task resolves.</td>
+</tr>
+<tr>
+<td><code>outcome_id</code></td>
+<td>string</td>
+<td>Successful outcome's ID. <code>OutcomeMetadata::new</code> generates a UUIDv7.</td>
+</tr>
+<tr>
+<td><code>selected_model_ids</code></td>
+<td>string array</td>
+<td>Successful outcome's selected model followed by ordered fallbacks. This is a plan, not proof that every model was called.</td>
+</tr>
+<tr>
+<td><code>session_id</code>, <code>session.id</code></td>
+<td>string</td>
+<td>Request session ID, when supplied. Both names carry the same value.</td>
+</tr>
+<tr>
+<td><code>agent_id</code>, <code>task_id</code>, <code>task_kind</code>, <code>agent_role</code>, <code>correlation_id</code></td>
+<td>string</td>
+<td>Corresponding request metadata, when supplied.</td>
+</tr>
+<tr>
+<td><code>evidence.source</code>, <code>evidence.verdict</code>, <code>evidence.trigger</code>, <code>evidence.reason_code</code></td>
+<td>string</td>
+<td>Known string fields from outcome evidence, when present.</td>
+</tr>
+<tr>
+<td><code>evidence.score</code>, <code>evidence.confidence</code>, <code>evidence.threshold</code></td>
+<td>number</td>
+<td>Known numeric fields from outcome evidence, when present.</td>
+</tr>
+</tbody>
+</table>
+<p><code>RoutingOutcome.metadata</code> is available in Rust and Python. Its optional JSON evidence
+exports only the listed keys with matching types; unknown keys and wrong types are
+omitted. Evidence may be absent. Scores and confidence have algorithm-specific meanings.
+Failed runs return typed errors, not outcome metadata; successful fail-open decisions
+may carry a fixed <code>reason_code</code>.</p>
+<h3 id="model-call-fields">Model-call fields<a class="headerlink" href="#model-call-fields" title="Permanent link">&para;</a></h3>
+<p>The LLM client driver records these on <code>libsy.client_call</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Type</th>
+<th>Meaning / presence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>algorithm</code>, <code>switchyard.algorithm</code>, <code>selected_model</code></td>
+<td>string</td>
+<td>Algorithm and candidate model ID.</td>
+</tr>
+<tr>
+<td><code>switchyard.candidate</code>, <code>switchyard.candidate_count</code></td>
+<td>integer</td>
+<td>One-based candidate position and number of candidates.</td>
+</tr>
+<tr>
+<td><code>gen_ai.operation.name</code></td>
+<td>string</td>
+<td><code>chat</code>.</td>
+</tr>
+<tr>
+<td><code>gen_ai.request.model</code></td>
+<td>string</td>
+<td>Requested model; the translating client records the upstream model name.</td>
+</tr>
+<tr>
+<td><code>gen_ai.request.stream</code></td>
+<td>boolean</td>
+<td>Recorded as <code>true</code> for streaming requests; otherwise omitted.</td>
+</tr>
+<tr>
+<td><code>gen_ai.request.temperature</code>, <code>gen_ai.request.top_p</code></td>
+<td>number</td>
+<td>Sampling values represented in the request IR, when set.</td>
+</tr>
+<tr>
+<td><code>gen_ai.request.top_k</code>, <code>gen_ai.request.max_tokens</code></td>
+<td>integer</td>
+<td>Sampling/output limits, when set.</td>
+</tr>
+<tr>
+<td><code>gen_ai.request.reasoning.level</code>, <code>gen_ai.output.type</code></td>
+<td>string</td>
+<td>Reasoning effort and recognized output type (<code>text</code> or <code>json</code>), when set.</td>
+</tr>
+<tr>
+<td><code>gen_ai.conversation.id</code></td>
+<td>string</td>
+<td>Request session ID, when supplied.</td>
+</tr>
+<tr>
+<td><code>server.address</code>, <code>server.port</code></td>
+<td>string, integer</td>
+<td>Upstream host and port, recorded by the translating client.</td>
+</tr>
+<tr>
+<td><code>gen_ai.response.id</code>, <code>gen_ai.response.model</code></td>
+<td>string</td>
+<td>Values supplied by the upstream response.</td>
+</tr>
+<tr>
+<td><code>gen_ai.response.finish_reasons</code></td>
+<td>string array</td>
+<td>Available normalized stop reasons.</td>
+</tr>
+<tr>
+<td><code>gen_ai.usage.input_tokens</code></td>
+<td>integer</td>
+<td>Input tokens including cache reads and cache creation.</td>
+</tr>
+<tr>
+<td><code>gen_ai.usage.output_tokens</code></td>
+<td>integer</td>
+<td>Output tokens.</td>
+</tr>
+<tr>
+<td><code>gen_ai.usage.cache_read.input_tokens</code>, <code>gen_ai.usage.cache_creation.input_tokens</code></td>
+<td>integer</td>
+<td>Cache-read and cache-creation input tokens.</td>
+</tr>
+<tr>
+<td><code>gen_ai.usage.reasoning.output_tokens</code></td>
+<td>integer</td>
+<td>Reasoning output tokens.</td>
+</tr>
+<tr>
+<td><code>outcome</code></td>
+<td>string</td>
+<td><code>ok</code>, <code>error</code>, or <code>cancelled</code>.</td>
+</tr>
+<tr>
+<td><code>error.type</code>, <code>error</code></td>
+<td>string</td>
+<td>Failure category/status and error description on this client span.</td>
+</tr>
+</tbody>
+</table>
+<p><code>gen_ai.provider.name</code> is intentionally unset: an endpoint or model name does not
+reliably identify the provider. Usage fields are omitted when unavailable, not
+invented as zero. Available counts are capped at OTel's signed integer maximum.</p>
+<h2 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h2>
+<p>Metrics use the <code>switchyard</code> meter scope. The tables use OTel instrument names.</p>
+<h3 id="routing-and-client-metrics">Routing and client metrics<a class="headerlink" href="#routing-and-client-metrics" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Instrument</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>switchyard.runs</code></td>
+<td>Counter</td>
+<td><code>algorithm</code>, <code>outcome</code></td>
+<td>Completed algorithm tasks, including failures.</td>
+</tr>
+<tr>
+<td><code>switchyard.run_duration_ms</code></td>
+<td>Histogram</td>
+<td><code>algorithm</code>, <code>outcome</code></td>
+<td>Algorithm-task duration in milliseconds.</td>
+</tr>
+<tr>
+<td><code>switchyard.algorithms_in_flight</code></td>
+<td>UpDownCounter</td>
+<td><code>algorithm</code></td>
+<td>Active algorithm tasks; exported as a Prometheus gauge.</td>
+</tr>
+<tr>
+<td><code>switchyard.decisions</code></td>
+<td>Counter</td>
+<td><code>algorithm</code>, <code>selected_model</code></td>
+<td>Published routing decisions.</td>
+</tr>
+<tr>
+<td><code>switchyard.llm_calls</code></td>
+<td>Counter</td>
+<td><code>algorithm</code>, <code>selected_model</code>, <code>outcome</code></td>
+<td>Logical offloaded and terminal model calls.</td>
+</tr>
+<tr>
+<td><code>switchyard.llm_call_duration_ms</code></td>
+<td>Histogram</td>
+<td><code>algorithm</code>, <code>selected_model</code>, <code>outcome</code></td>
+<td>Logical call duration in milliseconds; see streaming limits below.</td>
+</tr>
+<tr>
+<td><code>switchyard.routing_overhead_ms</code></td>
+<td>Histogram</td>
+<td><code>algorithm</code></td>
+<td>LLM client driver's time to obtain a successful routing outcome, including judge calls but excluding any subsequent answer call.</td>
+</tr>
+<tr>
+<td><code>switchyard.classifier_fail_open</code></td>
+<td>Counter</td>
+<td><code>judge_model</code>, <code>reason</code></td>
+<td>Judge failures that caused classification to proceed without a verdict.</td>
+</tr>
+<tr>
+<td><code>switchyard.upstream_attempts</code></td>
+<td>Counter</td>
+<td><code>outcome</code>, <code>code</code></td>
+<td>HTTP attempts, including retries, made by the translating client.</td>
+</tr>
+<tr>
+<td><code>switchyard.router_retry_recovered</code></td>
+<td>Counter</td>
+<td>none</td>
+<td>Upstream operations that succeeded after a retry.</td>
+</tr>
+</tbody>
+</table>
+<p>Algorithm/call <code>outcome</code> is <code>ok</code> or <code>error</code>. HTTP attempt <code>outcome</code> is <code>ok</code> for
+2xx, <code>retryable_error</code> for 408/429/5xx or failures without a status, and
+<code>other_error</code> otherwise. <code>code</code> is an allowlisted status, a status-class bucket,
+or <code>none</code>. Classifier <code>reason</code> is <code>timeout</code>, <code>transport</code>, <code>upstream_5xx</code>,
+<code>upstream_non_5xx</code>, <code>invalid_response</code>, <code>parse_error</code>, <code>client_error</code>, or <code>call_error</code>.</p>
+<p>Logical calls, candidate calls, and HTTP attempts are different counts. Candidate
+fallbacks and HTTP retries remain within one logical call. A response produced
+during routing is not counted again as a new terminal model call.</p>
+<h3 id="algorithm-specific-metrics">Algorithm-specific metrics<a class="headerlink" href="#algorithm-specific-metrics" title="Permanent link">&para;</a></h3>
+<p>Stage Router instruments use the prefix <code>switchyard.stage_router.</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Suffix</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>routing_decisions</code></td>
+<td>Counter</td>
+<td><code>decision_source</code>, <code>target_name</code></td>
+<td>Choices by decision source and semantic target name.</td>
+</tr>
+<tr>
+<td><code>probability</code></td>
+<td>Histogram</td>
+<td>none</td>
+<td>Scorer's capable-model probability.</td>
+</tr>
+<tr>
+<td><code>confidence</code></td>
+<td>Histogram</td>
+<td>none</td>
+<td>Confidence used to resolve or defer a turn.</td>
+</tr>
+<tr>
+<td><code>severity</code></td>
+<td>Histogram</td>
+<td>none</td>
+<td>Tool-failure severity.</td>
+</tr>
+<tr>
+<td><code>spinning</code></td>
+<td>Histogram</td>
+<td>none</td>
+<td>Repeated unproductive tool activity.</td>
+</tr>
+<tr>
+<td><code>exploring</code></td>
+<td>Histogram</td>
+<td>none</td>
+<td>Exploratory tool activity.</td>
+</tr>
+<tr>
+<td><code>production_intensity</code></td>
+<td>Histogram</td>
+<td>none</td>
+<td>Production-oriented tool activity.</td>
+</tr>
+</tbody>
+</table>
+<p>These histograms contain unitless values from 0 to 1. They are recorded when tool
+signals reach the scorer, including when it defers to a classifier. They are not
+one sample per application request and are not split by route or session.</p>
+<p>Advisor Gate instruments use the prefix <code>switchyard.advisor_gate.</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Suffix</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reviews</code></td>
+<td>Counter</td>
+<td><code>verdict</code>, <code>trigger</code></td>
+<td>Review outcomes and what triggered them.</td>
+</tr>
+<tr>
+<td><code>consult_failures</code></td>
+<td>Counter</td>
+<td><code>reason</code></td>
+<td>Failed advisor consultations.</td>
+</tr>
+<tr>
+<td><code>discarded_turns</code></td>
+<td>Counter</td>
+<td>none</td>
+<td>Executor turns discarded after a redo verdict.</td>
+</tr>
+<tr>
+<td><code>discarded_tokens</code></td>
+<td>Counter</td>
+<td><code>kind</code></td>
+<td>Tokens in discarded turns; <code>kind</code> is <code>input</code>, <code>cached</code>, <code>cache_creation</code>, or <code>output</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="limits">Limits<a class="headerlink" href="#limits" title="Permanent link">&para;</a></h2>
+<h3 id="timing-and-streaming">Timing and streaming<a class="headerlink" href="#timing-and-streaming" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>libsy.run</code> may finish before the answer call. Nested algorithms have separate run spans.</li>
+<li><code>libsy.llm_call</code> and logical call-duration metrics end at response-handle availability, not stream completion. The span's <code>input_tokens</code>, <code>output_tokens</code>, <code>total_tokens</code>, and <code>reasoning_tokens</code> fields are buffered-response only.</li>
+<li><code>libsy.client_call</code> remains open while its stream is consumed. IDs, usage, and finish reasons update from normalized events. An unfinished stream dropped by its consumer records <code>cancelled</code>; a stream error records <code>error</code>.</li>
+</ul>
+<h3 id="data-exposure">Data exposure<a class="headerlink" href="#data-exposure" title="Permanent link">&para;</a></h3>
+<p>Built-in evidence excludes prompts, responses, and raw errors. Custom evidence is
+checked for field names and types, not string contents or lengths. Client spans may
+include error descriptions and upstream addresses; algorithm logs may include content
+such as Advisor Gate's <code>reply_head</code>. Supplied session/correlation IDs are included.
+Review collected data before exporting it outside your deployment.</p>
+<p>Custom algorithms can record OTel instruments directly. Keep metric labels to
+configured names and fixed categories, not request/session IDs or user text.</p>
+<h3 id="source-and-stability">Source and stability<a class="headerlink" href="#source-and-stability" title="Permanent link">&para;</a></h3>
+<p>These are current implementation names, not a separately versioned telemetry schema.
+Debug spans and log events are not a stable field contract.</p>
+<ul>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7acedf8bb951c79205b6005b5214b31638c0d4fe/crates/libsy/src/observability.rs">Libsy spans, outcome projection, and metrics</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7acedf8bb951c79205b6005b5214b31638c0d4fe/crates/libsy-llm-client/src/run.rs">Client span fields</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7acedf8bb951c79205b6005b5214b31638c0d4fe/crates/libsy-llm-client/src/observability.rs">stream/usage observation</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7acedf8bb951c79205b6005b5214b31638c0d4fe/crates/libsy-llm-client/src/metrics.rs">Client metrics</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7acedf8bb951c79205b6005b5214b31638c0d4fe/crates/libsy/src/algorithms/util/stage.rs">Stage Router metrics</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7acedf8bb951c79205b6005b5214b31638c0d4fe/crates/libsy/src/algorithms/advisor_gate/telemetry.rs">Advisor Gate metrics</a></li>
+</ul>
 
 
 
