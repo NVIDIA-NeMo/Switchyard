@@ -238,7 +238,7 @@ impl ToolSemantics {
                     )));
                 }
                 let normalized = name.to_ascii_lowercase();
-                if is_builtin_tool_name(&normalized) {
+                if is_builtin_tool_name(&name.to_lowercase()) {
                     return Err(tool_semantics_error(format!(
                         "tool {name:?} already has built-in semantics and cannot be reclassified"
                     )));
@@ -433,7 +433,7 @@ fn classify_tool_call_with_semantics(
     semantics: &ToolSemantics,
 ) -> ToolSemantic {
     // Built-in names and Bash command inference take precedence over route-scoped mappings.
-    let lower = name.to_ascii_lowercase();
+    let lower = name.to_lowercase();
     if WRITE_TOOL_NAMES.contains(&lower.as_str()) {
         return ToolSemantic::Mutate(MutationKind::Write);
     }
@@ -463,7 +463,7 @@ fn classify_tool_call_with_semantics(
             return ToolSemantic::Observe;
         }
     }
-    semantics.classify(&lower).unwrap_or(ToolSemantic::Unknown)
+    semantics.classify(name).unwrap_or(ToolSemantic::Unknown)
 }
 
 fn is_builtin_tool_name(lower: &str) -> bool {
@@ -1406,20 +1406,24 @@ mod tests {
         };
         semantics.validate().expect("valid additive semantics");
         let request = with_messages(vec![
+            tc("Read"),
+            tc("Write"),
+            tc("TodoWrite"),
             tc("kb_SEARCH"),
             tc("send_payment_request"),
             tc("create_research_plan"),
             tc("send_message_to_user"),
+            tc("unlisted_tool"),
         ]);
 
         let signal = ToolSignals::from_request_with_semantics(&request, None, &semantics);
 
-        assert_eq!(signal.read_count, 1);
-        assert_eq!(signal.write_count, 1);
-        assert_eq!(signal.todowrite_count, 1);
+        assert_eq!(signal.read_count, 2);
+        assert_eq!(signal.write_count, 2);
+        assert_eq!(signal.todowrite_count, 2);
         assert_eq!(signal.new_count, 1);
         assert_eq!(signal.recent_new_count, 1);
-        assert_eq!(signal.pure_bash_streak, 0);
+        assert_eq!(signal.pure_bash_streak, 1);
     }
 
     #[test]
@@ -1433,10 +1437,84 @@ mod tests {
             classify_tool_call_with_semantics("KB_SEARCH", None, &semantics),
             ToolSemantic::Observe
         );
+        // U+212A lowercases to ASCII `k` under Unicode rules, but custom names
+        // intentionally ignore only ASCII case.
         assert_eq!(
             classify_tool_call_with_semantics("KB_SEARCH", None, &semantics),
             ToolSemantic::Unknown
         );
+    }
+
+    #[test]
+    fn custom_semantics_preserve_builtin_unicode_lowercasing() {
+        let semantics = ToolSemantics {
+            observe: vec!["lookup_customer".to_string()],
+            ..Default::default()
+        };
+
+        // This matched the built-in `notebookedit` before custom semantics existed.
+        assert_eq!(
+            classify_tool_call_with_semantics("notebooKedit", None, &semantics),
+            ToolSemantic::Mutate(MutationKind::Edit)
+        );
+    }
+
+    #[test]
+    fn configured_semantics_never_replace_builtin_classifications() {
+        let semantics = ToolSemantics {
+            observe: vec!["lookup_customer".to_string()],
+            mutate: vec!["send_payment".to_string()],
+            plan: vec!["create_workflow".to_string()],
+            new: vec!["send_message".to_string()],
+        };
+
+        for name in WRITE_TOOL_NAMES {
+            assert_eq!(
+                classify_tool_call_with_semantics(name, None, &semantics),
+                ToolSemantic::Mutate(MutationKind::Write),
+                "write tool {name:?} changed classification"
+            );
+        }
+        for name in EDIT_TOOL_NAMES {
+            assert_eq!(
+                classify_tool_call_with_semantics(name, None, &semantics),
+                ToolSemantic::Mutate(MutationKind::Edit),
+                "edit tool {name:?} changed classification"
+            );
+        }
+        for name in READ_TOOL_NAMES {
+            assert_eq!(
+                classify_tool_call_with_semantics(name, None, &semantics),
+                ToolSemantic::Observe,
+                "read tool {name:?} changed classification"
+            );
+        }
+        for name in PLAN_TOOL_NAMES {
+            assert_eq!(
+                classify_tool_call_with_semantics(name, None, &semantics),
+                ToolSemantic::Plan,
+                "plan tool {name:?} changed classification"
+            );
+        }
+
+        for (command, expected) in [
+            ("cat /tmp/input", ToolSemantic::Observe),
+            (
+                "cat /tmp/input > /tmp/output",
+                ToolSemantic::Mutate(MutationKind::Write),
+            ),
+            (
+                "sed -i 's/a/b/' /tmp/file",
+                ToolSemantic::Mutate(MutationKind::Edit),
+            ),
+            ("./run_tests.sh", ToolSemantic::Unknown),
+        ] {
+            assert_eq!(
+                classify_tool_call_with_semantics("BASH", Some(command), &semantics),
+                expected,
+                "bash command {command:?} changed classification"
+            );
+        }
     }
 
     #[test]
@@ -1464,6 +1542,18 @@ mod tests {
                 .expect_err("built-in should fail")
                 .to_string()
                 .contains("built-in semantics")
+        );
+
+        let empty = ToolSemantics {
+            observe: vec![" \t".to_string()],
+            ..Default::default()
+        };
+        assert!(
+            empty
+                .validate()
+                .expect_err("empty name should fail")
+                .to_string()
+                .contains("empty tool name")
         );
     }
 }

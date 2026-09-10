@@ -762,6 +762,42 @@ mod tests {
         assert_eq!(score_signal(&signal).score, 0.0);
     }
 
+    #[test]
+    fn old_new_activity_does_not_suppress_a_current_stall() {
+        let signal = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            new_count: 1,
+            recent_new_count: 0,
+            ..Default::default()
+        };
+
+        let dimensions = dimensions_from_signal(&signal);
+
+        assert_eq!(dimensions.spinning, 1.0);
+        assert_eq!(dimensions.exploring, 0.0);
+        assert!(score_signal(&signal).score > 0.0);
+    }
+
+    #[test]
+    fn new_activity_does_not_dilute_existing_production() {
+        let baseline = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            recent_write_count: 1,
+            ..Default::default()
+        };
+        let with_new = ToolSignals {
+            recent_new_count: 2,
+            new_count: 2,
+            ..baseline.clone()
+        };
+
+        assert_eq!(
+            dimensions_from_signal(&with_new).production_intensity,
+            dimensions_from_signal(&baseline).production_intensity
+        );
+        assert_eq!(score_signal(&with_new), score_signal(&baseline));
+    }
+
     // ─── StageClassifier ─────────────────────────────────────────────────
 
     /// Tiers named the way a deployment would name them.

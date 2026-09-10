@@ -818,6 +818,33 @@ new = ["send_message"]
     }
 
     #[test]
+    fn stage_rejects_ambiguous_or_non_additive_tool_semantics() {
+        for (configured, expected) in [
+            (
+                stage_config().replace(
+                    "mutate = [\"send_payment\"]",
+                    "mutate = [\"LOOKUP_CUSTOMER\"]",
+                ),
+                "appears in both tool_semantics.observe and tool_semantics.mutate",
+            ),
+            (
+                stage_config().replace("new = [\"send_message\"]", "new = [\"Read\"]"),
+                "already has built-in semantics and cannot be reclassified",
+            ),
+            (
+                stage_config().replace("observe = [\"lookup_customer\"]", "observe = [\" \"]"),
+                "contains an empty tool name",
+            ),
+        ] {
+            let message = error_message(&configured);
+            assert!(
+                message.contains(expected),
+                "expected {expected:?} in error, got: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn passthrough_and_stage_accept_subagent_routing() -> RunnerResult<()> {
         let stage = stage_config();
         let stage_with_classifier = with_subagent_llm_classifier(&stage, "stage", "");
