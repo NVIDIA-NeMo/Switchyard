@@ -901,7 +901,10 @@ fn decode_responses_tools(
         } else if tool.get("type").and_then(Value::as_str) == Some("custom") {
             // A freeform tool takes a raw string, not JSON arguments. The IR sees it as a
             // function with a single `input` argument; the verbatim definition is kept so a
-            // Responses upstream still receives the freeform tool.
+            // Responses upstream still receives the freeform tool. The definition is keyed by
+            // the tool's own name: Codex defines its freeform tools at the top level, so a
+            // custom tool nested in a namespace container (which would be renamed above) is
+            // not restored verbatim and goes upstream as the equivalent function tool.
             if let Some(name) = tool
                 .get("name")
                 .and_then(Value::as_str)
@@ -1110,6 +1113,9 @@ fn encode_responses_input(
     namespaces: Option<&Map<String, Value>>,
     custom_tools: &std::collections::HashSet<String>,
 ) -> Result<Value> {
+    // Call ids of freeform tool calls emitted by this pass. A tool result is typed by the call it
+    // answers, and Responses history always lists the call before its output, so recording ids
+    // as calls are encoded is enough to type the outputs that follow.
     let mut custom_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     if messages.len() == 1
         && matches!(messages[0].role, Role::User)
