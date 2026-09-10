@@ -14,7 +14,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::{Algorithm, Random};
@@ -49,6 +49,7 @@ impl MockUpstream {
     async fn start() -> TestResult<Self> {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
+            .route("/props", get(upstream_props))
             .route("/v1/chat/completions", post(upstream_chat))
             .route(
                 "/v1/messages",
@@ -97,6 +98,14 @@ impl Drop for MockUpstream {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+async fn upstream_props() -> Json<Value> {
+    Json(json!({
+        "default_generation_settings": {
+            "n_ctx": 98_304
+        }
+    }))
 }
 
 async fn upstream_chat(
@@ -1049,6 +1058,8 @@ async fn vgr_serves_a_verified_local_attempt() -> TestResult {
 
     let models = send(&app, "GET", "/v1/models", None).await?.json()?;
     assert_eq!(models["data"][0]["route_type"], "vgr");
+    assert_eq!(models["data"][0]["capabilities"]["context_window"], 98_304);
+    assert_eq!(models["models"][0]["context_window"], 98_304);
     Ok(())
 }
 

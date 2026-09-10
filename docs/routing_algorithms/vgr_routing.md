@@ -29,7 +29,9 @@ breaker_cooldown_seconds = 30
 ```
 
 `judge_target` defaults to `local_target`. `cloud_judge_target` is optional.
-The local and cloud targets must resolve to distinct model IDs.
+The local and cloud targets must resolve to distinct model IDs. When the local
+backend reports its live context capacity, VGR republishes it through
+`/v1/models`.
 
 ## Serving modes
 
