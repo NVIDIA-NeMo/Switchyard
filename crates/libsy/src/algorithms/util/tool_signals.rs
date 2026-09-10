@@ -809,6 +809,7 @@ fn has_nonzero_failure_count(lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::algorithms::util::stage::score_signal;
     use serde_json::json;
     use switchyard_protocol::{ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult};
 
@@ -1513,6 +1514,57 @@ mod tests {
                 classify_tool_call_with_semantics("BASH", Some(command), &semantics),
                 expected,
                 "bash command {command:?} changed classification"
+            );
+        }
+    }
+
+    #[test]
+    fn configured_semantics_score_like_their_builtin_equivalents() {
+        let semantics = ToolSemantics {
+            observe: vec!["lookup_customer".to_string()],
+            mutate: vec!["send_payment".to_string()],
+            plan: vec!["create_workflow".to_string()],
+            ..Default::default()
+        };
+
+        for (builtin, configured) in [
+            ("Read", "lookup_customer"),
+            ("Write", "send_payment"),
+            ("TodoWrite", "create_workflow"),
+        ] {
+            let messages_before_tool = || {
+                vec![
+                    Message::text(Role::User, "start"),
+                    Message::text(Role::Assistant, "working"),
+                    Message::text(Role::User, "continue"),
+                    Message::text(Role::Assistant, "working"),
+                    Message::text(Role::User, "continue"),
+                    Message::text(Role::Assistant, "working"),
+                    Message::text(Role::User, "continue"),
+                ]
+            };
+            let mut builtin_messages = messages_before_tool();
+            builtin_messages.push(tc(builtin));
+            let mut configured_messages = messages_before_tool();
+            configured_messages.push(tc(configured));
+
+            let builtin_score = score_signal(&ToolSignals::from_request(
+                &with_messages(builtin_messages),
+                None,
+            ));
+            let configured_score = score_signal(&ToolSignals::from_request_with_semantics(
+                &with_messages(configured_messages),
+                None,
+                &semantics,
+            ));
+
+            assert_ne!(
+                builtin_score.score, 0.0,
+                "the {builtin:?} control must exercise a scoring dimension"
+            );
+            assert_eq!(
+                configured_score, builtin_score,
+                "configured tool {configured:?} must score exactly like {builtin:?}"
             );
         }
     }

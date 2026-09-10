@@ -1493,6 +1493,94 @@ mutate = ["send_payment_request"]
     Ok(())
 }
 
+// Composite TOML must pass custom stage semantics through to the nested stage router.
+#[tokio::test]
+async fn composite_router_uses_configured_tool_semantics() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.composite]
+id = "switchyard/composite"
+type = "composite"
+
+[routes.composite.classifier]
+target = "classifier"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[routes.composite.stage]
+capable_target = "strong"
+efficient_target = "weak"
+confidence_threshold = 0.3
+
+[routes.composite.stage.tool_semantics]
+new = ["send_message_to_user"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/composite",
+            "messages": [
+                {"role": "user", "content": "help the customer"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "working"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_message_to_user",
+                        "arguments": "{}"
+                    }
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "message sent"}
+            ]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/weak")
+    );
+    assert_eq!(
+        upstream.models().await,
+        ["model/weak"],
+        "configured new activity must suppress the deep-turn stall without consulting the judge"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn custom_classifier_routes_four_targets_and_falls_back_on_an_invalid_verdict() -> TestResult
 {
