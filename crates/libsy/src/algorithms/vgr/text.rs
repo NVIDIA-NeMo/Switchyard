@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use switchyard_protocol::{ContentBlock, Request, Role};
 
-const MAX_TRANSCRIPT_CHARS: usize = 24_000;
+const MAX_TRANSCRIPT_CHARS: usize = 64_000;
 
 static REDACT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use switchyard_protocol::{
-    ContentBlock, ImageSource, LlmRequest, Message, Request, Role, text_request,
+    ContentBlock, ImageSource, InstructionBlock, LlmRequest, Message, Request, Role, text_request,
 };
 
 use super::{Branch, TaskType, derive_capabilities, select_branch};
@@ -76,7 +76,20 @@ fn judged_transcript_is_redacted_and_bounded() {
     assert!(transcript.contains("[REDACTED]"));
     assert!(!transcript.contains("sk-abcdefghijklmnopqrstuvwx"));
 
-    let oversized = request(&"x".repeat(24_000));
+    let mut framework_request = request("Reply with ready.");
+    framework_request
+        .llm_request
+        .instructions
+        .push(InstructionBlock {
+            role: Role::System,
+            content: vec![ContentBlock::Text {
+                text: "s".repeat(30_551),
+            }],
+        });
+    let caps = derive_capabilities(&framework_request, "ready", None, None);
+    assert_eq!(select_branch(&caps), Branch::DefaultVerified);
+
+    let oversized = request(&"x".repeat(64_000));
     let caps = derive_capabilities(&oversized, "completed", None, None);
     assert_eq!(select_branch(&caps), Branch::Unknown);
 }
