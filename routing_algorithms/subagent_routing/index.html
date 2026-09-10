@@ -1222,6 +1222,8 @@ unchanged.</p>
 </span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">tool_calling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">reasoning</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span></code></pre></div>
+<p>The parent stage route may also declare <code>[routes.agent.tool_semantics]</code> to map
+domain-specific tools; delegated sub-agent policy configuration is unaffected.</p>
 <p>Clients must still request the route ID (<code>agent</code> above). An explicit model name
 that is not registered as a route is rejected before sub-agent classification.
 <code>message_hash_fallback</code> is not supported for sub-agent routing because affinity
