@@ -11,6 +11,7 @@
 
 use switchyard_protocol::Request;
 
+mod decide;
 mod text;
 
 #[cfg(test)]
