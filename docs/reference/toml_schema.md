@@ -88,6 +88,7 @@ calls an upstream.
 |---|:---:|---|---|
 | `id` | Yes | — | Exact model ID sent upstream. |
 | `llm_client` | Yes | — | Key under `[llm_clients]`. |
+| `model` | No | same as `id` | Provider model name sent upstream when it differs from `id`. Lets several targets address one provider model with different settings, for example one target per reasoning effort; the routing id stays unique. |
 | `system_prompt` | No | unset | System prompt prepended when this target serves a completion. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
 | `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`). Rejected on `anthropic_messages` clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. |
