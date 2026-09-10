@@ -256,6 +256,8 @@ impl TranslatingLlmClient {
             strip_unsigned_thinking_blocks(&mut body);
         }
         merge_extra_body(&mut body, backend.extra_body());
+        // After the merge on purpose: the effort override must win over both the caller's
+        // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
         if matches!(backend, Backend::Anthropic(_)) {
             enable_anthropic_prompt_caching(&mut body);
@@ -946,6 +948,9 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
     };
     match backend {
         Backend::OpenAiResponses(_) => {
+            // Responses nests effort under `reasoning` next to fields the caller may have set
+            // (`summary`, for example), so only the `effort` key is replaced. A `reasoning`
+            // value that is not an object is malformed and is replaced whole.
             let reasoning = object
                 .entry("reasoning".to_string())
                 .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -957,11 +962,14 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
             }
         }
         Backend::OpenAiChat(_) => {
+            // Chat Completions takes effort as a top-level field.
             object.insert(
                 "reasoning_effort".to_string(),
                 Value::String(effort.to_string()),
             );
         }
+        // Anthropic has no effort field (thinking is a token budget); the runner rejects the
+        // setting on Anthropic clients at load time, so this arm is unreachable in practice.
         Backend::Anthropic(_) => {}
     }
 }
