@@ -13,6 +13,7 @@ use std::time::SystemTime;
 use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::{Metadata, ModelId, Usage};
+use switchyard_runner::RouteErrorSummary;
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
@@ -47,12 +48,21 @@ impl RoutingLog {
         model: &str,
         tier: Option<&str>,
         usage: &Usage,
+        failure: Option<(&str, &RouteErrorSummary)>,
     ) -> std::io::Result<()> {
         let usage = token_usage(usage);
         let terminal_tier = tier
             .map(str::to_string)
             .or_else(|| context.vgr_served.clone())
             .unwrap_or_default();
+        let (route, failure_kind, upstream_status) =
+            failure.map_or((None, None, None), |(route, failure)| {
+                (
+                    Some(route),
+                    Some(failure.kind.as_str()),
+                    failure.upstream_status,
+                )
+            });
         let record = RoutingRecord {
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             task: context.task.map(Cow::Owned),
@@ -64,8 +74,11 @@ impl RoutingLog {
             vgr_branch: context.vgr_branch.map(Cow::Owned),
             vgr_readiness_gate: context.vgr_readiness_gate.map(Cow::Owned),
             vgr_short_circuit: context.vgr_short_circuit.map(Cow::Owned),
+            route: route.map(Cow::Borrowed),
             model: model.into(),
             tier: terminal_tier.into(),
+            failure_kind: failure_kind.map(Cow::Borrowed),
+            upstream_status,
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
@@ -181,8 +194,14 @@ struct RoutingRecord<'a> {
     vgr_readiness_gate: Option<Cow<'a, str>>,
     #[serde(borrow)]
     vgr_short_circuit: Option<Cow<'a, str>>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    route: Option<Cow<'a, str>>,
     model: Cow<'a, str>,
     tier: Cow<'a, str>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    failure_kind: Option<Cow<'a, str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream_status: Option<u16>,
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,
