@@ -147,6 +147,8 @@ content to fit without clipping.
 Tool-bearing assistant turns also use in-flight trajectory verification. Two
 consecutive escalation votes latch the session to the capable tier; a definite
 decline clears the streak, while an ambiguous or failed judgment stays fail-open.
+The four-token readout requests `reasoning_effort = "none"` for that verifier call
+only; ordinary agent calls keep the reasoning mode of the same loaded model.
 Turns without tool calls pay nothing for this in-flight check, and a latched
 session makes no further local or judge calls.
 
