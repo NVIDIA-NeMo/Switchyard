@@ -1035,6 +1035,8 @@ new = ["send_message"]
         Ok(())
     }
 
+    /// A configured `handoff_note` loads with the deployment, and a blank note is rejected at
+    /// load time rather than being sent to the strong tier as empty text.
     #[test]
     fn an_escalation_handoff_note_parses_and_must_not_be_blank() -> RunnerResult<()> {
         let noted = VALID_CONFIG.replace(
