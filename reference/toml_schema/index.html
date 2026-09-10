@@ -1172,6 +1172,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#auto" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        auto
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#composite" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1425,6 +1436,17 @@
     <span class="md-ellipsis">
       
         stage_router
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#auto" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        auto
       
     </span>
   </a>
@@ -2107,6 +2129,38 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 <td style="text-align: center;">No</td>
 <td>unset</td>
 <td>Nested <code>passthrough</code> or custom <code>llm_classifier</code> policy used only for delegated sub-agent work. See <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing</a>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="auto"><code>auto</code><a class="headerlink" href="#auto" title="Permanent link">&para;</a></h3>
+<p>Uses Switchyard's recommended default routing strategy instead of one you pick
+yourself: a <code>stage_router</code> preset with <code>picker = "efficient_first"</code> and
+<code>confidence_threshold = 0.5</code>, no classifier. See
+<a href="../../routing_algorithms/stage_router_routing/">Stage-Router Routing</a> for a
+deeper dive on the current default, or the
+<a href="../../routing_algorithms/overview/#choose-a-strategy">strategy table</a> to pick
+one manually.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th style="text-align: center;">Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>capable_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Capable tier.</td>
+</tr>
+<tr>
+<td><code>efficient_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Efficient tier.</td>
 </tr>
 </tbody>
 </table>
