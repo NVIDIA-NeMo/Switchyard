@@ -40,11 +40,13 @@ const TOP_ALTERNATIVES: u64 = 8;
 /// space or a stray punctuation mark without paying for a sentence.
 pub(super) const MAX_OUTPUT_TOKENS: u64 = 4;
 
-/// Asks the provider to report token probabilities for this request.
+/// Asks the provider for a direct verdict and its token probabilities.
 ///
-/// Both fields are required together: the wire format gates the alternatives
-/// list behind the enabling flag, so setting only one asks for nothing.
+/// Disabling reasoning is request-local: the serving model remains free to
+/// think on ordinary agent calls, while the four-token verifier budget reaches
+/// `yes` or `no`. Both logprob fields are required together.
 pub(super) fn request_logprobs(request: &mut Request) {
+    request.llm_request.reasoning.effort = Some("none".to_string());
     let extensions = &mut request.llm_request.extensions.fields;
     extensions.insert("logprobs".to_string(), json!(true));
     extensions.insert("top_logprobs".to_string(), json!(TOP_ALTERNATIVES));
@@ -190,15 +192,19 @@ mod tests {
     }
 
     #[test]
-    fn both_logprob_fields_are_requested_together() {
-        // Chat gates the alternatives list behind the enabling flag, so asking
-        // for one without the other silently returns no probabilities at all.
+    fn readout_requests_direct_verdict_logprobs() {
+        // Thinking can consume the four-token budget before the verdict. Keep
+        // ordinary model calls unchanged while making this request answer directly.
         let mut request = Request {
             llm_request: LlmRequest::default(),
             raw_request: None,
             metadata: None,
         };
         request_logprobs(&mut request);
+        assert_eq!(
+            request.llm_request.reasoning.effort.as_deref(),
+            Some("none")
+        );
         let fields = &request.llm_request.extensions.fields;
         assert_eq!(fields.get("logprobs"), Some(&json!(true)));
         assert_eq!(fields.get("top_logprobs"), Some(&json!(TOP_ALTERNATIVES)));
