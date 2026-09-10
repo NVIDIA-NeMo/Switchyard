@@ -37,6 +37,8 @@ pub enum RouteErrorKind {
     InvalidRequest,
     /// The configured route or client cannot serve the request.
     Configuration,
+    /// A route skipped or exhausted all serving endpoints.
+    Unavailable,
     /// The routing algorithm or driver could not produce an outcome.
     Algorithm,
     /// A failure without a safe, more specific kind.
@@ -102,6 +104,14 @@ impl RunnerError {
             | Self::IncompatibleCallerFormat(_)
             | Self::AuxiliaryUnsupported => summary(
                 RouteErrorKind::InvalidRequest,
+                RouteErrorPhase::BeforeResponse,
+                None,
+                None,
+            ),
+            Self::Algorithm(
+                LibsyError::CircuitOpen { .. } | LibsyError::VgrTiersUnavailable { .. },
+            ) => summary(
+                RouteErrorKind::Unavailable,
                 RouteErrorPhase::BeforeResponse,
                 None,
                 None,

@@ -19,6 +19,7 @@ nav:
   - Home: index.md
   - Get Started:
       - Getting Started: getting_started.md
+      - Use VGR from an Agent: vgr_agent_setup.md
       - Known Issues: known_issues.md
   - Concepts:
       - Core Concepts: core_concepts.md

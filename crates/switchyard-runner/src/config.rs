@@ -644,38 +644,6 @@ target = "weak"
         }
     }
 
-    fn vgr_config() -> String {
-        format!(
-            r#"{VALID_CONFIG}
-
-[routes.vgr]
-id = "switchyard/vgr"
-type = "vgr"
-local_target = "weak"
-cloud_target = "strong"
-judge_target = "classifier"
-mode = "active"
-active_approval = "prospective-validation-and-canary-approved"
-task_typing = false
-"#
-        )
-    }
-
-    #[test]
-    fn vgr_route_builds_and_rejects_unsafe_configuration() -> RunnerResult<()> {
-        let runner = runner_from_toml(&vgr_config())?;
-        assert!(runner.route("switchyard/vgr").is_some());
-
-        let bad_approval =
-            vgr_config().replace("prospective-validation-and-canary-approved", "approved");
-        assert!(error_message(&bad_approval).contains("approval attestation"));
-
-        let missing_target =
-            vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
-        assert!(error_message(&missing_target).contains("unknown target missing"));
-        Ok(())
-    }
-
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
         let mut configured = config.to_string();
         configured.push_str(&format!("\n[routes.{route}.subagents]\n"));
@@ -716,6 +684,25 @@ confidence_threshold = 1.0
 [routes.stage.classifier]
 target = "stage_judge"
 base_threshold = 0.5
+"#
+        )
+    }
+
+    fn vgr_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+[targets.vgr_cloud_judge]
+id = "vgr-cloud-judge/model"
+llm_client = "primary"
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "weak"
+cloud_target = "strong"
+cloud_judge_target = "vgr_cloud_judge"
+mode = "shadow"
+task_typing = true
 "#
         )
     }
@@ -903,6 +890,213 @@ confidence_threshold = 0.5
             "picker = \"efficient_first\"\nmagic = true",
         );
         assert!(error_message(&config).contains("unknown field"));
+    }
+
+    #[test]
+    fn vgr_route_builds_from_toml() -> RunnerResult<()> {
+        let state = runner_from_toml(&vgr_config())?;
+        assert!(
+            state
+                .models()
+                .any(|model| model.id.as_str() == "switchyard/vgr"),
+            "the vgr route is served"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn vgr_judge_targets_are_callable_even_though_they_are_not_routed_to() {
+        // The judges answer verification rungs and are never routing
+        // destinations. If they are missing from `callable_target_names` no HTTP
+        // client is built for them, which compiles, passes --dry-run, and then
+        // fails at the first rung.
+        let parsed: DeploymentConfig = toml::from_str(&vgr_config()).expect("parses");
+        let route = parsed.routes.get("vgr").expect("vgr route");
+        let routed = route.algorithm.routing_target_names();
+        let callable = route.algorithm.callable_target_names();
+
+        assert_eq!(routed, ["weak", "strong"]);
+        assert!(
+            callable.contains(&"vgr_cloud_judge"),
+            "cloud judge must get a client: {callable:?}"
+        );
+        assert!(
+            !routed.contains(&"vgr_cloud_judge"),
+            "a judge is not a routing destination: {routed:?}"
+        );
+    }
+
+    #[test]
+    fn vgr_defaults_task_typing_without_cloud_judging() -> RunnerResult<()> {
+        let config = vgr_config()
+            .replace("cloud_judge_target = \"vgr_cloud_judge\"\n", "")
+            .replace("task_typing = true\n", "");
+        let parsed: DeploymentConfig = toml::from_str(&config).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse vgr config: {error}"))
+        })?;
+        let Some(route) = parsed.routes.get("vgr") else {
+            return Err(RunnerError::configuration("vgr route is missing"));
+        };
+        let AlgorithmSpec::Vgr {
+            config: route_config,
+        } = &route.algorithm
+        else {
+            return Err(RunnerError::configuration("vgr route parsed incorrectly"));
+        };
+        assert!(route_config.task_typing);
+        assert!(!route_config.local_supports_images);
+        assert_eq!(route_config.cloud_judge_target, None);
+        assert_eq!(
+            route.algorithm.callable_target_names(),
+            ["weak", "strong"],
+            "omitting a cloud judge must not add an implicit verifier target"
+        );
+        runner_from_toml(&config)?;
+
+        let opt_out = vgr_config().replace("task_typing = true", "task_typing = false");
+        let opted_out: DeploymentConfig = toml::from_str(&opt_out).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse vgr opt-out: {error}"))
+        })?;
+        let Some(RouteConfig {
+            algorithm: AlgorithmSpec::Vgr {
+                config: opted_out_config,
+            },
+            ..
+        }) = opted_out.routes.get("vgr")
+        else {
+            return Err(RunnerError::configuration("vgr opt-out route is missing"));
+        };
+        assert!(!opted_out_config.task_typing);
+
+        let vision = vgr_config().replace(
+            "task_typing = true",
+            "task_typing = true\nlocal_supports_images = true",
+        );
+        let vision_config: DeploymentConfig = toml::from_str(&vision).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse vgr vision config: {error}"))
+        })?;
+        let Some(RouteConfig {
+            algorithm: AlgorithmSpec::Vgr {
+                config: vision_route,
+            },
+            ..
+        }) = vision_config.routes.get("vgr")
+        else {
+            return Err(RunnerError::configuration("vgr vision route is missing"));
+        };
+        assert!(vision_route.local_supports_images);
+        Ok(())
+    }
+
+    #[test]
+    fn vgr_rejects_an_unknown_field() {
+        // The enum's own deny_unknown_fields does not reach through the flatten,
+        // so VgrRouteConfig carries its own; without it a typo is discarded.
+        let config = vgr_config().replace("task_typing = true", "task_typng = true");
+        assert!(error_message(&config).contains("unknown field"));
+    }
+
+    #[test]
+    fn vgr_rejects_an_unknown_target() {
+        let config = vgr_config().replace("local_target = \"weak\"", "local_target = \"absent\"");
+        assert!(error_message(&config).contains("unknown target absent"));
+    }
+
+    #[test]
+    fn vgr_rejects_duplicate_tier_model_ids_even_across_clients() {
+        let duplicate = vgr_config().replace(
+            "local_target = \"weak\"",
+            "local_target = \"vgr_duplicate\"",
+        ) + "\n[targets.vgr_duplicate]\nid = \"strong/model\"\nllm_client = \"anthropic\"\n";
+        let message = error_message(&duplicate);
+        for expected in [
+            "vgr route vgr",
+            "local_target \"vgr_duplicate\"",
+            "cloud_target \"strong\"",
+            "strong/model",
+            "ClientRouter is keyed only by ModelId",
+        ] {
+            assert!(message.contains(expected), "{message}");
+        }
+
+        let same_client = duplicate.replace(
+            "[targets.vgr_duplicate]\nid = \"strong/model\"\nllm_client = \"anthropic\"",
+            "[targets.vgr_duplicate]\nid = \"strong/model\"\nllm_client = \"responses\"",
+        );
+        let same_client_message = error_message(&same_client);
+        assert!(
+            same_client_message.contains("both resolve to model ID"),
+            "{same_client_message}"
+        );
+    }
+
+    #[test]
+    fn vgr_active_mode_requires_current_approval() {
+        let config = vgr_config().replace("mode = \"shadow\"", "mode = \"active\"");
+        let message = error_message(&config);
+        assert!(message.contains("active_approval"), "{message}");
+
+        let retired = config.replace(
+            "mode = \"active\"",
+            "mode = \"active\"\nactive_approval = \"vgr-active-serving-approved\"",
+        );
+        let retired_message = error_message(&retired);
+        assert!(
+            retired_message.contains("prospective-validation-and-canary-approved"),
+            "{retired_message}"
+        );
+
+        let approved = config.replace(
+            "mode = \"active\"",
+            "mode = \"active\"\nactive_approval = \"prospective-validation-and-canary-approved\"",
+        );
+        assert!(
+            runner_from_toml(&approved).is_ok(),
+            "the current approval must enable active mode"
+        );
+    }
+
+    #[test]
+    fn vgr_rejects_a_deadline_that_is_not_a_duration() {
+        let config = vgr_config().replace("task_typing = true", "deadline_seconds = -1.0");
+        assert!(error_message(&config).contains("deadline_seconds"));
+    }
+
+    #[test]
+    fn vgr_checker_requires_materialization_and_validation() {
+        let checker = format!(
+            "{}\n\
+             [routes.vgr.checker]\n\
+             tests_dir = \"/definitely/missing/vgr-tests\"\n\
+             command = [\"/bin/true\"]\n\
+             sandbox_attestation = \"vgr-checker-runs-in-deployment-sandbox\"\n\
+             validated = true\n",
+            vgr_config()
+        );
+        let missing = error_message(&checker);
+        assert!(missing.contains("materialize_command"), "{missing}");
+
+        let empty = checker.replace(
+            "tests_dir = \"/definitely/missing/vgr-tests\"",
+            "tests_dir = \"/definitely/missing/vgr-tests\"\nmaterialize_command = []",
+        );
+        let empty_message = error_message(&empty);
+        assert!(
+            empty_message.contains("materialize command"),
+            "{empty_message}"
+        );
+
+        let unvalidated = empty
+            .replace(
+                "materialize_command = []",
+                "materialize_command = [\"/bin/true\"]",
+            )
+            .replace("validated = true", "validated = false");
+        let unvalidated_message = error_message(&unvalidated);
+        assert!(
+            unvalidated_message.contains("checker.validated must be true"),
+            "{unvalidated_message}"
+        );
     }
 
     #[test]

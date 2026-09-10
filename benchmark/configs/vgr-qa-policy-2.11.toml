@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Credential-free POLICY 2.11 QA contract. Override the loopback endpoints in a
+# deployment-specific copy; never add credentials to this file.
+schema_version = 1
+
+[llm_clients.local]
+format = "openai_chat"
+base_url = "http://127.0.0.1:8001/v1"
+max_retries = 0
+
+[llm_clients.cloud]
+format = "openai_chat"
+base_url = "http://127.0.0.1:8002/v1"
+max_retries = 0
+
+[targets.local]
+id = "qa/local-text"
+llm_client = "local"
+
+[targets.cloud]
+id = "qa/cloud-capable"
+llm_client = "cloud"
+
+[routes.vgr]
+id = "vgr-policy-2.11"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+deadline_seconds = 30
+task_typing = true
+latch_escalation = false
+speculation_carry = false
+structured_answer = false
+local_supports_images = false
+breaker_threshold = 5
+breaker_cooldown_seconds = 30
+context_window = 200000
+tool_calling = true
+reasoning = true
+vision = true

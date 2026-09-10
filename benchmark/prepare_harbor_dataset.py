@@ -9,13 +9,17 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 try:
     import tomllib
@@ -35,7 +39,13 @@ DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "datasets" / "openthoughts-tblite-closed-book"
 AGENT_VERSIONS_FILE = SCRIPT_DIR / "agent-versions.env"
 PROXY_ASSET_DIR = SCRIPT_DIR / "closed_book_proxy" / "proxy"
 AGENT_ENTRYPOINT = "switchyard-agent-entrypoint.sh"
+HERMES_INSTALLER = "switchyard-hermes-install.sh"
+UV_STAGE = "switchyard_uv_build"
+ARM_ARCHITECTURES = frozenset({"aarch64", "arm64"})
 COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+SEMVER_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+UV_IMAGE_PATTERN = re.compile(r"ghcr\.io/astral-sh/uv@sha256:[0-9a-f]{64}")
 TERMINAL_BENCH_2_SOURCE_DATASET = "terminal-bench/terminal-bench-2"
 TERMINAL_BENCH_2_1_SOURCE_DATASET = "terminal-bench/terminal-bench-2-1"
 # Shared across the TB2 family (2.0 + the 2.1 verified iteration): 2.1 tweaks
@@ -121,6 +131,90 @@ def _path_digest(path: Path) -> str:
     return "sha256:missing"
 
 
+def _hermes_commit(pins: dict[str, str]) -> str:
+    commit = pins["HERMES_VERSION"]
+    if not COMMIT_SHA_PATTERN.fullmatch(commit):
+        raise SystemExit(
+            f"HERMES_VERSION={commit!r} is not a full 40-character commit SHA; "
+            "a tag or branch can be repointed and cannot be recorded as a reproducible pin"
+        )
+    return commit
+
+
+def _hermes_installer_url(commit: str) -> str:
+    return (
+        "https://raw.githubusercontent.com/NousResearch/hermes-agent/"
+        f"{commit}/scripts/install.sh"
+    )
+
+
+def _uv_version(pins: dict[str, str]) -> str:
+    version = pins["UV_VERSION"]
+    if not SEMVER_PATTERN.fullmatch(version):
+        raise SystemExit(f"UV_VERSION={version!r} must be a numeric semantic version")
+    return version
+
+
+def _uv_image(pins: dict[str, str]) -> str:
+    image = pins["UV_IMAGE"]
+    if not UV_IMAGE_PATTERN.fullmatch(image):
+        raise SystemExit(
+            "UV_IMAGE must be the ghcr.io/astral-sh/uv image pinned by a SHA-256 digest"
+        )
+    return image
+
+
+def _fetch_pinned_installer(
+    *,
+    url: str,
+    expected_digest: str,
+    digest_name: str,
+    artifact_name: str,
+) -> bytes:
+    if not SHA256_PATTERN.fullmatch(expected_digest):
+        raise SystemExit(f"{digest_name} must be a lowercase 64-character SHA-256 digest")
+
+    request = Request(url, headers={"User-Agent": "switchyard-benchmark-dataset-preparer"})
+    content: bytes | None = None
+    last_error: HTTPError | URLError | None = None
+    for attempt in range(6):
+        try:
+            with urlopen(request, timeout=60) as response:
+                content = response.read()
+            break
+        except HTTPError as error:
+            if error.code != 429 and not 500 <= error.code < 600:
+                raise
+            last_error = error
+        except URLError as error:
+            last_error = error
+        if attempt == 5:
+            raise RuntimeError(
+                f"failed to fetch pinned {artifact_name} from {url}"
+            ) from last_error
+        time.sleep(2**attempt)
+
+    if content is None:
+        raise RuntimeError(f"failed to fetch pinned {artifact_name} from {url}")
+    actual_digest = hashlib.sha256(content).hexdigest()
+    if actual_digest != expected_digest:
+        raise ValueError(
+            f"pinned {artifact_name} digest mismatch: "
+            f"expected sha256:{expected_digest}, got sha256:{actual_digest}"
+        )
+    return content
+
+
+def _fetch_hermes_installer(pins: dict[str, str]) -> bytes:
+    commit = _hermes_commit(pins)
+    return _fetch_pinned_installer(
+        url=_hermes_installer_url(commit),
+        expected_digest=pins["HERMES_INSTALLER_SHA256"],
+        digest_name="HERMES_INSTALLER_SHA256",
+        artifact_name="Hermes installer",
+    )
+
+
 def _task_dirs(dataset_root: Path) -> list[Path]:
     if (dataset_root / "task.toml").is_file():
         return [dataset_root]
@@ -195,6 +289,11 @@ def _remove_toml_key_from_table(text: str, table: str, key: str) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def _prefer_source_dockerfiles() -> bool:
+    """Use task Dockerfiles when prebuilt snapshots cannot run natively."""
+    return platform.machine().lower() in ARM_ARCHITECTURES
+
+
 def _install_layer(pins: dict[str, str]) -> str:
     node_version = pins["NODE_VERSION"]
     claude_version = pins["CLAUDE_CODE_VERSION"]
@@ -219,15 +318,12 @@ def _install_layer(pins: dict[str, str]) -> str:
     # the commit is an ancestor of the freshly cloned HEAD, logging a warning and
     # silently leaving the image on the tip of main — the drift this pin exists to
     # prevent, arriving as a warning rather than a build failure.
-    hermes_version = pins["HERMES_VERSION"]
-    if not COMMIT_SHA_PATTERN.fullmatch(hermes_version):
-        raise SystemExit(
-            f"HERMES_VERSION={hermes_version!r} is not a full 40-character commit SHA; "
-            "a tag or branch can be repointed and cannot be recorded as a reproducible pin"
-        )
+    hermes_version = _hermes_commit(pins)
+    uv_version = _uv_version(pins)
     return f"""
 
 # Switchyard benchmark prebaked coding agents.
+COPY --from={UV_STAGE} /uv /root/.hermes/bin/uv
 ENV SWITCHYARD_PREBAKED_AGENT_VERSIONS="claude-code={claude_version},codex={codex_version},opencode={opencode_version},node={node_version},hermes={hermes_version}"
 RUN set -eux; \\
     if command -v apt-get >/dev/null 2>&1; then \\
@@ -279,8 +375,20 @@ RUN set -eux; \\
     elif command -v apk >/dev/null 2>&1; then \\
         apk add --no-cache bash git ripgrep xz; \\
     fi; \\
-    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/{hermes_version}/scripts/install.sh \\
-        | bash -s -- --skip-setup --commit {hermes_version} --force-commit; \\
+    uv_info="$(/root/.hermes/bin/uv --version)"; \\
+    printf '%s\\n' "$uv_info" | grep -E '^uv {re.escape(uv_version)}($| )'; \\
+    target_arch="$(uname -m)"; \\
+    case "$target_arch:$uv_info" in \\
+        x86_64:*x86_64-*|amd64:*x86_64-*|aarch64:*aarch64-*|arm64:*aarch64-*) ;; \\
+        *) \\
+            echo "Hermes prebake requires native task images; uv is '$uv_info' but the task is '$target_arch'." >&2; \\
+            echo "On ARM, rebuild the task's source Dockerfile instead of its x86 snapshot image." >&2; \\
+            exit 1 \\
+            ;; \\
+    esac; \\
+    bash /tmp/{HERMES_INSTALLER} \\
+        --skip-setup --commit {hermes_version} --force-commit; \\
+    rm -f /tmp/{HERMES_INSTALLER}; \\
     hermes version
 """
 
@@ -315,7 +423,23 @@ def _load_task_toml(path: Path) -> dict[str, Any]:
     return tomllib.loads(path.read_text())
 
 
-def _rewrite_task_image(task_dir: Path, pins: dict[str, str]) -> dict[str, Any]:
+def _with_uv_build_stage(dockerfile: str, pins: dict[str, str]) -> str:
+    """Insert a native-build-platform uv stage before the task's first image stage."""
+    lines = dockerfile.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*FROM(?:\s|$)", line, flags=re.IGNORECASE):
+            stage = f"FROM --platform=$BUILDPLATFORM {_uv_image(pins)} AS {UV_STAGE}\n"
+            return "".join([*lines[:index], stage, *lines[index:]])
+    raise ValueError("task Dockerfile must contain a FROM instruction")
+
+
+def _rewrite_task_image(
+    task_dir: Path,
+    pins: dict[str, str],
+    hermes_installer: bytes,
+    *,
+    prefer_source_dockerfile: bool,
+) -> dict[str, Any]:
     task_toml = task_dir / "task.toml"
     data = _load_task_toml(task_toml)
     environment = data.get("environment") if isinstance(data.get("environment"), dict) else {}
@@ -325,28 +449,51 @@ def _rewrite_task_image(task_dir: Path, pins: dict[str, str]) -> dict[str, Any]:
     entrypoint = dockerfile.parent / AGENT_ENTRYPOINT
     entrypoint.write_text(_agent_entrypoint_script())
     entrypoint.chmod(0o755)
+    installer = dockerfile.parent / HERMES_INSTALLER
+    installer.write_bytes(hermes_installer)
+    installer.chmod(0o755)
     layer = _install_layer(pins)
+    layer = f"COPY {HERMES_INSTALLER} /tmp/{HERMES_INSTALLER}\n{layer.lstrip()}"
     entrypoint_layer = _entrypoint_layer()
+    has_source_dockerfile = dockerfile.is_file()
 
-    if docker_image:
+    if docker_image and not (prefer_source_dockerfile and has_source_dockerfile):
         dockerfile.write_text(
-            f"FROM {docker_image}\nUSER root\n{layer.lstrip()}{entrypoint_layer}"
+            _with_uv_build_stage(
+                f"FROM {docker_image}\nUSER root\n{layer.lstrip()}{entrypoint_layer}",
+                pins,
+            )
         )
         task_toml.write_text(
             _remove_toml_key_from_table(task_toml.read_text(), "environment", "docker_image")
         )
         image_source = docker_image
         removed = True
+        build_source = "prebuilt-image"
     else:
         if not dockerfile.is_file():
             dockerfile.write_text("FROM ubuntu:22.04\n")
-        dockerfile.write_text(dockerfile.read_text().rstrip() + "\n" + layer + entrypoint_layer)
-        image_source = None
-        removed = False
+        dockerfile.write_text(
+            _with_uv_build_stage(
+                dockerfile.read_text().rstrip() + "\n" + layer + entrypoint_layer,
+                pins,
+            )
+        )
+        if docker_image:
+            task_toml.write_text(
+                _remove_toml_key_from_table(task_toml.read_text(), "environment", "docker_image")
+            )
+            image_source = docker_image
+            removed = True
+        else:
+            image_source = None
+            removed = False
+        build_source = "source-dockerfile" if has_source_dockerfile else "generated-default"
 
     return {
         "docker_image_source": image_source,
         "docker_image_removed": removed,
+        "task_image_build_source": build_source,
         "dockerfile_digest": _path_digest(dockerfile),
     }
 
@@ -392,6 +539,18 @@ def _append_proxy_allowlist(proxy_assets: Path, hosts: tuple[str, ...]) -> None:
     allowlist_path.write_text(f"{base}\n\n# Dataset-required package and data sources.\n{additions}\n")
 
 
+def _copy_proxy_assets(destination: Path) -> None:
+    """Copy proxy text assets with Linux line endings for container execution."""
+    shutil.copytree(PROXY_ASSET_DIR, destination)
+    text_suffixes = {".json", ".py", ".sh", ".txt", ".yaml", ".yml"}
+    for asset in destination.rglob("*"):
+        if not asset.is_file() or (asset.name != "Dockerfile" and asset.suffix not in text_suffixes):
+            continue
+        content = asset.read_bytes()
+        if b"\r\n" in content:
+            asset.write_bytes(content.replace(b"\r\n", b"\n"))
+
+
 def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> dict[str, Any]:
     if yaml is None:
         raise RuntimeError("PyYAML is required to generate closed-book docker-compose overrides")
@@ -413,7 +572,7 @@ def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> di
     proxy_assets = env_dir / "proxy"
     if proxy_assets.exists():
         shutil.rmtree(proxy_assets)
-    shutil.copytree(PROXY_ASSET_DIR, proxy_assets)
+    _copy_proxy_assets(proxy_assets)
     _append_proxy_allowlist(proxy_assets, proxy_allowlist_hosts)
 
     main = services.setdefault("main", {})
@@ -472,7 +631,9 @@ def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> di
                 "python",
                 "-c",
                 (
-                    "import socket\n"
+                    "import pathlib, socket\n"
+                    "if not pathlib.Path('/etc/proxy-public/ca-cert.pem').is_file():\n"
+                    "    raise SystemExit('proxy CA is not ready')\n"
                     "for port in (3128, 3129):\n"
                     "    s=socket.create_connection(('127.0.0.1', port), 2)\n"
                     "    s.close()\n"
@@ -512,18 +673,27 @@ def prepare_dataset(
     output_dir: Path,
     harbor_command: str,
     overwrite: bool,
+    prefer_source_dockerfiles: bool | None = None,
 ) -> Path:
     pins = _read_env_file(AGENT_VERSIONS_FILE)
     required = {
         "CLAUDE_CODE_VERSION",
         "CODEX_VERSION",
         "HERMES_VERSION",
+        "HERMES_INSTALLER_SHA256",
         "NODE_VERSION",
         "OPENCODE_VERSION",
+        "UV_IMAGE",
+        "UV_VERSION",
     }
     missing = sorted(required - pins.keys())
     if missing:
         raise ValueError(f"missing pins in {AGENT_VERSIONS_FILE}: {', '.join(missing)}")
+
+    hermes_installer = _fetch_hermes_installer(pins)
+    hermes_installer_digest = hashlib.sha256(hermes_installer).hexdigest()
+    _uv_image(pins)
+    _uv_version(pins)
 
     if source_dir is None:
         download_root = output_dir.parent / "_downloads"
@@ -531,6 +701,8 @@ def prepare_dataset(
 
     source_dir = source_dir.resolve()
     output_dir = output_dir.resolve()
+    if prefer_source_dockerfiles is None:
+        prefer_source_dockerfiles = _prefer_source_dockerfiles()
     if output_dir.exists():
         if not overwrite:
             raise FileExistsError(f"{output_dir} exists; pass --overwrite to replace it")
@@ -541,7 +713,12 @@ def prepare_dataset(
     proxy_digest = _path_digest(PROXY_ASSET_DIR)
     proxy_allowlist_hosts = _proxy_allowlist_hosts_for_dataset(source_dataset)
     for task_dir in _task_dirs(output_dir):
-        image = _rewrite_task_image(task_dir, pins)
+        image = _rewrite_task_image(
+            task_dir,
+            pins,
+            hermes_installer,
+            prefer_source_dockerfile=prefer_source_dockerfiles,
+        )
         compose = _merge_compose(task_dir, proxy_allowlist_hosts)
         tasks.append(
             {
@@ -568,6 +745,15 @@ def prepare_dataset(
             "proxy_strip_log_path": "/etc/proxy-public/strip.jsonl",
             "agent_internal_network": "agent-internal",
             "proxy_egress_network": "proxy-egress",
+            "hermes_installer": {
+                "source_url": _hermes_installer_url(_hermes_commit(pins)),
+                "digest": f"sha256:{hermes_installer_digest}",
+            },
+            "uv": {
+                "image": _uv_image(pins),
+                "version": _uv_version(pins),
+            },
+            "prefer_source_dockerfiles": prefer_source_dockerfiles,
         },
         "tasks": tasks,
     }
@@ -584,6 +770,12 @@ def _cli_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--harbor-command", default=os.environ.get("HARBOR_COMMAND", "uv run --no-sync harbor"))
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--prefer-source-dockerfiles",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="rebuild source Dockerfiles instead of prebuilt task images (default: enabled on ARM)",
+    )
     ns = parser.parse_args(argv)
 
     prepared = prepare_dataset(
@@ -592,6 +784,7 @@ def _cli_main(argv: list[str] | None = None) -> int:
         output_dir=ns.output_dir,
         harbor_command=ns.harbor_command,
         overwrite=ns.overwrite,
+        prefer_source_dockerfiles=ns.prefer_source_dockerfiles,
     )
     print(f"Prepared closed-book Harbor dataset: {prepared}")
     print(f"Manifest: {prepared / 'switchyard_dataset_manifest.json'}")
