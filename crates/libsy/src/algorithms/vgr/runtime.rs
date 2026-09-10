@@ -233,6 +233,16 @@ impl Classifier<State> for VgrClassifier {
         };
         record.local_tokens += tokens(buffered.aggregate());
 
+        if rungs::has_tool_call(buffered.aggregate()) && !tool_use_is_complete(buffered.aggregate())
+        {
+            record.short_circuit = Some("malformed_tool_call");
+            record.served_route = Some(Route::Cloud);
+            record.elapsed = started.elapsed();
+            record.annotate(request);
+            record.emit();
+            return Ok((decisive(&targets.cloud), None));
+        }
+
         if self.config.policy.turn_verification.enabled
             && rungs::has_tool_call(buffered.aggregate())
         {
@@ -951,6 +961,18 @@ impl VgrClassifier {
 /// Tokens a response reported, or zero when the provider reported none.
 fn tokens(agg: &AggLlmResponse) -> u64 {
     agg.usage.total_tokens.unwrap_or(0)
+}
+
+fn tool_use_is_complete(response: &AggLlmResponse) -> bool {
+    response.outputs.iter().all(|output| {
+        output.stop_reason != Some(switchyard_protocol::StopReason::MaxTokens)
+            && output.content.iter().all(|block| {
+                !matches!(
+                    block,
+                    ContentBlock::ToolCall(call) if call.arguments.is_string()
+                )
+            })
+    })
 }
 
 /// A response buffered for inspection while retaining its original return shape.

@@ -144,6 +144,19 @@ fn tool_reply(name: &str) -> Response {
     }
 }
 
+fn shaped_tool_reply(arguments: serde_json::Value, stop_reason: StopReason) -> Response {
+    let mut aggregate = tool_aggregate("write_file");
+    aggregate.outputs[0].stop_reason = Some(stop_reason);
+    let ContentBlock::ToolCall(call) = &mut aggregate.outputs[0].content[0] else {
+        unreachable!()
+    };
+    call.arguments = arguments;
+    Response {
+        llm_response: LlmResponse::Agg(aggregate),
+        metadata: None,
+    }
+}
+
 fn is_turn_verification(request: &Request) -> bool {
     request
         .llm_request
@@ -2240,6 +2253,39 @@ async fn no_tool_turn_skips_in_flight_verification() -> crate::Result<()> {
 
     assert_eq!(target, ModelId::from(LOCAL));
     assert_eq!(turn_judges.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn incomplete_tool_turns_escalate_without_verification() -> crate::Result<()> {
+    for (arguments, stop_reason) in [
+        (
+            serde_json::json!({"path": "out.txt"}),
+            StopReason::MaxTokens,
+        ),
+        (
+            serde_json::Value::String(r#"{"path":"out.txt"#.into()),
+            StopReason::ToolUse,
+        ),
+    ] {
+        let (target, _) = test_drive(
+            Arc::new(super::super::Vgr::new(active())?),
+            request("write the file"),
+            move |target: ModelId, request| {
+                let arguments = arguments.clone();
+                async move {
+                    assert!(!is_turn_verification(&request));
+                    Ok(if target == *LOCAL {
+                        shaped_tool_reply(arguments, stop_reason)
+                    } else {
+                        reply("cloud")
+                    })
+                }
+            },
+        )
+        .await?;
+        assert_eq!(target, ModelId::from(CLOUD));
+    }
     Ok(())
 }
 
