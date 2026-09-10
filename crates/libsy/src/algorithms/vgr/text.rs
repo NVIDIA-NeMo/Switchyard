@@ -8,8 +8,6 @@ use std::sync::LazyLock;
 use regex::Regex;
 use switchyard_protocol::{ContentBlock, Request, Role};
 
-const MAX_TRANSCRIPT_CHARS: usize = 64_000;
-
 static REDACT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"\b(sk|rk|pk)-[A-Za-z0-9_\-]{16,}\b",
@@ -37,7 +35,7 @@ pub(super) struct RequestView {
     pub(super) transcript: String,
 }
 
-/// Extracts a complete judged view, rejecting unsupported or oversized input.
+/// Extracts a complete judged view, rejecting unsupported input.
 pub(super) fn request_view(request: &Request, attempt: &str) -> Option<RequestView> {
     if attempt.trim().is_empty() {
         return None;
@@ -66,10 +64,9 @@ pub(super) fn request_view(request: &Request, attempt: &str) -> Option<RequestVi
     }
     let task_text = latest_user?;
     lines.push(format!("[assistant attempt] {}", redact(attempt)));
-    let transcript = lines.join("\n");
-    (transcript.chars().count() <= MAX_TRANSCRIPT_CHARS).then_some(RequestView {
+    Some(RequestView {
         task_text,
-        transcript,
+        transcript: lines.join("\n"),
     })
 }
 

@@ -69,7 +69,7 @@ fn only_router_typing_and_local_attempts_can_select_stronger_branches() {
 }
 
 #[test]
-fn judged_transcript_is_redacted_and_bounded() {
+fn judged_transcript_is_redacted_without_a_model_agnostic_size_gate() {
     let secret_request = request("use token sk-abcdefghijklmnopqrstuvwx");
     let caps = derive_capabilities(&secret_request, "completed", None, None);
     let transcript = caps.transcript.as_deref().unwrap_or_default();
@@ -89,7 +89,7 @@ fn judged_transcript_is_redacted_and_bounded() {
     let caps = derive_capabilities(&framework_request, "ready", None, None);
     assert_eq!(select_branch(&caps), Branch::DefaultVerified);
 
-    let oversized = request(&"x".repeat(64_000));
+    let oversized = request(&"x".repeat(128_000));
     let caps = derive_capabilities(&oversized, "completed", None, None);
-    assert_eq!(select_branch(&caps), Branch::Unknown);
+    assert_eq!(select_branch(&caps), Branch::DefaultVerified);
 }
