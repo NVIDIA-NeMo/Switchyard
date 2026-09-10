@@ -449,19 +449,17 @@ fn unrecognized_provider_blocks_fail_derivation_closed() {
 }
 
 #[test]
-fn instruction_blocks_are_derived_as_in_band_system_turns() {
+fn realistic_framework_instructions_remain_verifiable() {
     // This crate separates instructions from messages where the reference
-    // carries system turns in band; an over-budget system instruction must
-    // still fail the completeness gate.
-    let long_system = "s".repeat(super::render::EARLIER_TURN_BUDGET + 1);
-    let over_budget = request(&[(Role::System, &long_system), (Role::User, "Do the thing")]);
-    assert_eq!(branch_of(&over_budget, PLAIN, None), Branch::Unknown);
+    // carries system turns in band. Real agent frameworks use large system
+    // prompts, which must not fail a much smaller earlier-user-turn budget.
+    let framework = "s".repeat(30_551);
+    let realistic = request(&[(Role::System, &framework), (Role::User, "Do the thing")]);
+    assert_eq!(branch_of(&realistic, PLAIN, None), Branch::DefaultVerified);
 
-    let within_budget = request(&[(Role::System, "Be terse."), (Role::User, "Do the thing")]);
-    assert_eq!(
-        branch_of(&within_budget, PLAIN, None),
-        Branch::DefaultVerified
-    );
+    let too_large = "s".repeat(48_001);
+    let unrepresentable = request(&[(Role::System, &too_large), (Role::User, "Do the thing")]);
+    assert_eq!(branch_of(&unrepresentable, PLAIN, None), Branch::Unknown);
 }
 
 #[test]
@@ -515,7 +513,7 @@ fn an_over_budget_coding_conversation_is_not_judged_at_all() {
 fn budgets_are_measured_in_characters_not_bytes() {
     // A multi-byte conversation must be budgeted like an ASCII one; measuring
     // bytes would fail this request closed at a third of its real length.
-    let multibyte = "私".repeat(super::render::EARLIER_TURN_BUDGET);
+    let multibyte = "私".repeat(48_000);
     let request = request(&[(Role::System, &multibyte), (Role::User, "Do the thing")]);
     assert_eq!(branch_of(&request, PLAIN, None), Branch::DefaultVerified);
 }

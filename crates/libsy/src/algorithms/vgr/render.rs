@@ -22,12 +22,13 @@ use super::text::{Turn, char_len, clip_mid, redact};
 
 /// Per-section character budgets for the session view.
 pub(super) const EARLIER_TURN_BUDGET: usize = 1200;
+pub(super) const INSTRUCTION_BUDGET: usize = 48_000;
 pub(super) const LATEST_USER_BUDGET: usize = 8000;
 pub(super) const ATTEMPT_BUDGET: usize = 2200;
 
 /// Whole-session budget: a rendered session longer than this would overflow the
 /// verifier window and silently drop requirement content.
-const SESSION_WINDOW: usize = 24_000;
+const SESSION_WINDOW: usize = 64_000;
 
 /// Coding-view completeness limits, all measured post-redaction.
 const CODING_MAX_EARLIER_USER_TURNS: usize = 4;
@@ -125,11 +126,12 @@ pub(super) fn render_session(turns: &[Turn], attempt: &str) -> String {
         .enumerate()
         .filter(|(index, _)| Some(*index) != rendered.latest_user)
         .map(|(_, (role, text))| {
-            format!(
-                "[{}] {}",
-                role_label(*role),
-                clip_mid(text, EARLIER_TURN_BUDGET, 0.5)
-            )
+            let budget = if is_instruction(*role) {
+                INSTRUCTION_BUDGET
+            } else {
+                EARLIER_TURN_BUDGET
+            };
+            format!("[{}] {}", role_label(*role), clip_mid(text, budget, 0.5))
         })
         .collect();
     if rendered.latest_user.is_some() {
@@ -155,7 +157,9 @@ pub(super) fn session_context_complete(turns: &[Turn], attempt: &str) -> bool {
     for (index, (role, text)) in rendered.turns.iter().enumerate() {
         let budget = if Some(index) == rendered.latest_user {
             LATEST_USER_BUDGET
-        } else if *role == Role::User || is_instruction(*role) {
+        } else if is_instruction(*role) {
+            INSTRUCTION_BUDGET
+        } else if *role == Role::User {
             EARLIER_TURN_BUDGET
         } else {
             continue;
