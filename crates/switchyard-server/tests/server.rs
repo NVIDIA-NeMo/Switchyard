@@ -127,6 +127,13 @@ async fn upstream_chat(
         )
             .into_response();
     }
+    if body["model"] == "model/vgr-cloud" && body["messages"][0]["content"] == "cloud-auth-fail" {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "cloud credential rejected"}})),
+        )
+            .into_response();
+    }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
     let prompt = body["messages"][0]["content"].as_str().unwrap_or("");
@@ -1086,6 +1093,43 @@ async fn vgr_escalates_a_rejected_attempt() -> TestResult {
         response.headers.get("x-switchyard-route-type"),
         Some(&HeaderValue::from_static("vgr"))
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_cloud_auth_failure_is_written_to_the_routing_log() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let log_path = temp_dir.path().join("routing.jsonl");
+    let state = vgr_state(&upstream.base_url, "model/vgr-judge")?.with_routing_log(&log_path)?;
+    let app = build_switchyard_router(state);
+
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "system", "content": "cloud-auth-fail"}]
+        })),
+        &[("x-switchyard-session-id", "cloud-auth-session")],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+
+    let records = std::fs::read_to_string(log_path)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let failure = records
+        .iter()
+        .find(|record| record["model"] == "model/vgr-cloud")
+        .ok_or("cloud failure row was not written")?;
+    assert_eq!(failure["route"], "switchyard/vgr");
+    assert_eq!(failure["tier"], "cloud");
+    assert_eq!(failure["failure_kind"], "upstream_http");
+    assert_eq!(failure["upstream_status"], 401);
+    assert_eq!(failure["session_id"], "cloud-auth-session");
     Ok(())
 }
 

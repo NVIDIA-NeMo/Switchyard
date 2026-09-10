@@ -40,7 +40,8 @@ use serde_json::{Value, json};
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
 use switchyard_runner::{
-    CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RunOutput, Runner, RunnerError,
+    CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RouteErrorSummary, RunOutput, Runner,
+    RunnerError,
 };
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
@@ -166,7 +167,26 @@ impl SharedRoutingLog {
         tier: Option<&str>,
         usage: &Usage,
     ) {
-        if let Err(error) = self.writer.lock().append(context, model, tier, usage) {
+        if let Err(error) = self.writer.lock().append(context, model, tier, usage, None) {
+            tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
+        }
+    }
+
+    fn append_failure(
+        &self,
+        context: routing_log::RoutingLogContext,
+        route: &str,
+        model: &str,
+        tier: Option<&str>,
+        failure: &RouteErrorSummary,
+    ) {
+        if let Err(error) = self.writer.lock().append(
+            context,
+            model,
+            tier,
+            &Usage::default(),
+            Some((route, failure)),
+        ) {
             tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
         }
     }
@@ -1020,6 +1040,7 @@ async fn handle_llm_request(
         Err(response) => return response,
     };
     let route_type = route.algorithm_name().to_string();
+    let route_model = request.llm_request.model.clone().unwrap_or_default();
     // Only the Codex namespace mapping is needed downstream, not the whole request.
     let request_extensions = request.llm_request.extensions.clone();
     let observer = stats_observer(
@@ -1028,7 +1049,25 @@ async fn handle_llm_request(
     );
     let output = match route.execute(request, Some(observer)).await {
         Ok(output) => output,
-        Err(error) => return runner_error(error),
+        Err(error) => {
+            let failure = error.execution_error_summary();
+            if let Some((log, context)) = state.routing_log.clone().zip(routing_log_context.clone())
+            {
+                let model = failure
+                    .target
+                    .as_ref()
+                    .map(ModelId::as_str)
+                    .unwrap_or("unknown");
+                log.append_failure(
+                    context,
+                    &route_model,
+                    model,
+                    vgr_tier(route, model),
+                    &failure,
+                );
+            }
+            return runner_error(error);
+        }
     };
     let RunOutput {
         selected_model,
@@ -1064,6 +1103,17 @@ async fn handle_llm_request(
         attach_routing_headers(&mut response, served_model.as_str(), &route_type);
     }
     response
+}
+
+fn vgr_tier(route: &Route, model: &str) -> Option<&'static str> {
+    if route.algorithm_name() != "vgr" {
+        return None;
+    }
+    route
+        .decision_targets()
+        .iter()
+        .position(|target| target.model.as_str() == model)
+        .map(|index| if index == 0 { "local" } else { "cloud" })
 }
 
 /// Holds the request log context until the request reaches a terminal state.

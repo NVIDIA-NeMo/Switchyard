@@ -13,6 +13,7 @@ use std::time::SystemTime;
 use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::{Metadata, ModelId, Usage};
+use switchyard_runner::RouteErrorSummary;
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
@@ -47,15 +48,27 @@ impl RoutingLog {
         model: &str,
         tier: Option<&str>,
         usage: &Usage,
+        failure: Option<(&str, &RouteErrorSummary)>,
     ) -> std::io::Result<()> {
         let usage = token_usage(usage);
+        let (route, failure_kind, upstream_status) =
+            failure.map_or((None, None, None), |(route, failure)| {
+                (
+                    Some(route),
+                    Some(failure.kind.as_str()),
+                    failure.upstream_status,
+                )
+            });
         let record = RoutingRecord {
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             task: context.task.map(Cow::Owned),
             trial_id: context.trial_id.map(Cow::Owned),
             session_id: context.session_id.map(Cow::Owned),
+            route: route.map(Cow::Borrowed),
             model: model.into(),
             tier: tier.unwrap_or("").into(),
+            failure_kind: failure_kind.map(Cow::Borrowed),
+            upstream_status,
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
@@ -136,8 +149,14 @@ struct RoutingRecord<'a> {
     trial_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
     session_id: Option<Cow<'a, str>>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    route: Option<Cow<'a, str>>,
     model: Cow<'a, str>,
     tier: Cow<'a, str>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    failure_kind: Option<Cow<'a, str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream_status: Option<u16>,
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,
