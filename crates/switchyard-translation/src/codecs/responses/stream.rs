@@ -823,10 +823,27 @@ fn ensure_responses_reasoning_started(
             "summary": [],
         },
     }));
+    out
+}
+
+// Opens the item's single summary part the first time text streams for it. Encrypted-only
+// reasoning never streams text, so it never opens a part; the item closes with an empty
+// `summary`, matching what `finish_responses_stream` emits for it.
+fn ensure_responses_reasoning_summary_started(
+    state: &mut StreamTranslationState,
+    index: usize,
+) -> Vec<Value> {
+    let mut out = ensure_responses_reasoning_started(state, index);
+    let item_id = responses_reasoning_item_id(state, index);
+    let item = state.response_reasoning.entry(index).or_default();
+    if item.summary_started {
+        return out;
+    }
+    item.summary_started = true;
     out.push(json!({
         "type": "response.reasoning_summary_part.added",
         "item_id": item_id,
-        "output_index": output_index,
+        "output_index": item.output_index.unwrap_or(0),
         "summary_index": 0,
         "part": {"type": "summary_text", "text": ""},
     }));
@@ -839,7 +856,7 @@ fn encode_responses_reasoning_delta(
     index: usize,
     text: String,
 ) -> Vec<Value> {
-    let mut out = ensure_responses_reasoning_started(state, index);
+    let mut out = ensure_responses_reasoning_summary_started(state, index);
     let item = state.response_reasoning.entry(index).or_default();
     item.text.push_str(&text);
     let output_index = item.output_index.unwrap_or(0);

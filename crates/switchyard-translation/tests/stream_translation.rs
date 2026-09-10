@@ -2194,3 +2194,54 @@ fn responses_stream_opens_reasoning_under_provider_id_before_payload_arrives() -
     assert_eq!(done["item"]["summary"][0]["text"], "plan");
     Ok(())
 }
+
+// An encrypted-only reasoning item streams no text, so it must not open a summary part it can
+// never close; the client should see the item open, then close with an empty `summary` and the
+// encrypted payload attached.
+#[test]
+fn responses_stream_encrypted_only_reasoning_opens_no_summary_part() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let mut state = StreamTranslationState::new(format, format);
+    let chunks = vec![
+        LlmResponseChunk::MessageStart {
+            id: Some("resp_1".into()),
+            model: Some(REASONING_MODEL.into()),
+        },
+        LlmResponseChunk::ReasoningDetailsDelta {
+            index: 0,
+            details: vec![json!({"type": "reasoning.encrypted", "data": "opaque", "id": "rs_1"})],
+            text: String::new(),
+        },
+        LlmResponseChunk::TextDelta {
+            index: 1,
+            text: "done".into(),
+        },
+        LlmResponseChunk::MessageStop { reason: None },
+    ];
+    let mut events = Vec::new();
+    for chunk in chunks {
+        events.extend(engine.encode_stream_event(
+            &mut state,
+            format,
+            LlmResponseStreamEvent::new(vec![chunk]),
+        )?);
+    }
+    events.extend(engine.finish_stream(&mut state, format)?);
+    let types: Vec<&str> = events.iter().filter_map(|e| e["type"].as_str()).collect();
+
+    assert!(
+        !types
+            .iter()
+            .any(|t| t.starts_with("response.reasoning_summary")),
+        "{types:?}"
+    );
+    let done = events
+        .iter()
+        .find(|e| e["type"] == "response.output_item.done" && e["item"]["type"] == "reasoning")
+        .ok_or("expected the reasoning item to close")?;
+    assert_eq!(done["item"]["id"], "rs_1");
+    assert_eq!(done["item"]["encrypted_content"], "opaque");
+    assert_eq!(done["item"]["summary"], json!([]));
+    Ok(())
+}
