@@ -31,6 +31,7 @@ pub struct Vgr {
 }
 
 impl Vgr {
+    /// Validates and constructs a verification-gated route.
     pub fn new(config: VgrConfig) -> Result<Self> {
         config.validate()?;
         let breaker = CircuitBreaker::new(config.breaker);
@@ -231,8 +232,17 @@ impl Algorithm for Vgr {
             .gather(&driver, &request, &caps, started, tools.tests_passed)
             .await;
         let decision = decide_from_signals(&caps, &signals);
+        let served = self.served_route(&decision);
+        tracing::info!(
+            target: "libsy",
+            branch = ?decision.branch,
+            predicted = ?decision.route,
+            served = ?served,
+            policy_version = decision.policy_version,
+            "vgr decision"
+        );
 
-        if self.served_route(&decision) == Route::Local {
+        if served == Route::Local {
             Ok(RoutingOutcome::answered(
                 self.config.targets.local.clone(),
                 request,

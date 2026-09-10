@@ -63,6 +63,7 @@ pub const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
+const HEADER_ROUTE_TYPE: &str = "x-switchyard-route-type";
 const MAX_ROUTING_HEADER_VALUE_LEN: usize = 512;
 /// Non-standard status used only in logs and metrics for a request whose
 /// downstream client disconnected before any response was written.
@@ -1018,6 +1019,7 @@ async fn handle_llm_request(
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
+    let route_type = route.algorithm_name().to_string();
     // Only the Codex namespace mapping is needed downstream, not the whole request.
     let request_extensions = request.llm_request.extensions.clone();
     let observer = stats_observer(
@@ -1059,7 +1061,7 @@ async fn handle_llm_request(
             Err(error) => return server_error(error.to_string()),
         };
     if let Some(served_model) = served_model.as_ref() {
-        attach_routing_headers(&mut response, served_model.as_str());
+        attach_routing_headers(&mut response, served_model.as_str(), &route_type);
     }
     response
 }
@@ -1178,8 +1180,9 @@ fn metadata_from_headers(headers: HeaderMap) -> Metadata {
     metadata
 }
 
-fn attach_routing_headers(response: &mut Response, served_model: &str) {
+fn attach_routing_headers(response: &mut Response, served_model: &str, route_type: &str) {
     insert_routing_header(response, HEADER_SELECTED_MODEL, served_model);
+    insert_routing_header(response, HEADER_ROUTE_TYPE, route_type);
 }
 
 fn insert_routing_header(response: &mut Response, name: &'static str, value: &str) {
@@ -1376,12 +1379,9 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(
-        state
-            .runner
-            .models()
-            .map(|model| (model.id.as_str(), model.capabilities)),
-    ))
+    Json(model_list_payload(state.runner.models().map(|model| {
+        (model.id.as_str(), model.algorithm, model.capabilities)
+    })))
 }
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
@@ -1462,20 +1462,23 @@ async fn not_found() -> Response {
 }
 
 fn model_list_payload<'a>(
-    entries: impl IntoIterator<Item = (&'a str, ModelCapabilities)>,
+    entries: impl IntoIterator<Item = (&'a str, &'a str, ModelCapabilities)>,
 ) -> Value {
     let mut entries = entries.into_iter().collect::<Vec<_>>();
-    entries.sort_unstable_by_key(|(model_id, _)| *model_id);
-    let model_ids = entries.iter().map(|(model, _)| *model).collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|(model_id, _, _)| *model_id);
+    let model_ids = entries
+        .iter()
+        .map(|(model, _, _)| *model)
+        .collect::<Vec<_>>();
     let first_id = model_ids.first().copied();
     let last_id = model_ids.last().copied();
     json!({
         "object": "list",
-        "data": entries.iter().map(|(model, caps)| model_entry_json(model, *caps)).collect::<Vec<_>>(),
+        "data": entries.iter().map(|(model, route_type, caps)| model_entry_json(model, route_type, *caps)).collect::<Vec<_>>(),
         "models": entries
             .iter()
             .enumerate()
-            .map(|(priority, (model, caps))| codex_model_entry_json(model, *caps, priority))
+            .map(|(priority, (model, route_type, caps))| codex_model_entry_json(model, route_type, *caps, priority))
             .collect::<Vec<_>>(),
         "first_id": first_id,
         "last_id": last_id,
@@ -1485,7 +1488,7 @@ fn model_list_payload<'a>(
     })
 }
 
-fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
+fn model_entry_json(model: &str, route_type: &str, capabilities: ModelCapabilities) -> Value {
     json!({
         "id": model,
         "object": "model",
@@ -1493,6 +1496,7 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
         "created": 0,
         "owned_by": "switchyard",
         "display_name": model,
+        "route_type": route_type,
         "capabilities": {
             "streaming": true,
             "tool_calling": capabilities.tool_calling,
@@ -1526,7 +1530,12 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 // supported_parameters — and fall back to the route's declared value. Some backends
 // publish nothing (the NVIDIA gateway returns id-only models and blocks /model/info),
 // so keep failing closed to config.
-fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority: usize) -> Value {
+fn codex_model_entry_json(
+    model: &str,
+    route_type: &str,
+    capabilities: ModelCapabilities,
+    priority: usize,
+) -> Value {
     // Codex is non-functional without shell and apply_patch, so an undeclared tool
     // capability defaults to enabled here; the OpenAI `data` entry reports the raw
     // Option separately for clients that want the undeclared state.
@@ -1536,6 +1545,7 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         "slug": model,
         "display_name": model,
         "description": "Switchyard-routed model.",
+        "route_type": route_type,
         "default_reasoning_level": if reasoning { json!("xhigh") } else { Value::Null },
         "supported_reasoning_levels": if reasoning { reasoning_levels() } else { json!([]) },
         "shell_type": if tool_calling { "shell_command" } else { "disabled" },

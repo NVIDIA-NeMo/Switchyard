@@ -24,13 +24,18 @@ pub enum ServingMode {
     /// Compute decisions but always serve the capable tier.
     Shadow,
     /// Serve decisions after explicit operator approval.
-    Active { approval: String },
+    Active {
+        /// Exact operator attestation required by [`ACTIVE_APPROVAL`].
+        approval: String,
+    },
 }
 
 /// Model targets used by one VGR route.
 #[derive(Clone, Debug)]
 pub struct Targets {
+    /// Tier that produces the candidate attempt.
     pub local: ModelId,
+    /// Tier used when the candidate is not licensed.
     pub cloud: ModelId,
     /// Local verifier, defaulting to `local`.
     pub judge: Option<ModelId>,
@@ -41,15 +46,22 @@ pub struct Targets {
 /// Complete runtime configuration.
 #[derive(Clone, Debug)]
 pub struct VgrConfig {
+    /// Completion and verifier targets.
     pub targets: Targets,
+    /// Authority granted to routing decisions.
     pub mode: ServingMode,
+    /// End-to-end budget for attempt generation and verification.
     pub deadline: Duration,
+    /// Optional live stop controlled by the operator.
     pub kill_switch: Option<KillSwitch>,
+    /// Local endpoint breaker tuning.
     pub breaker: BreakerConfig,
+    /// Whether a cheap typing call selects a verification regime.
     pub task_typing: bool,
 }
 
 impl VgrConfig {
+    /// Creates an off-by-default route between local and capable tiers.
     pub fn new(local: ModelId, cloud: ModelId) -> Self {
         Self {
             targets: Targets {

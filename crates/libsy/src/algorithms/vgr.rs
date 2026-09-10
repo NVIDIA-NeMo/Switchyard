@@ -18,6 +18,10 @@ mod runtime;
 mod safety;
 mod text;
 
+pub use config::{ACTIVE_APPROVAL, ServingMode, Targets, VgrConfig};
+pub use runtime::Vgr;
+pub use safety::{BreakerConfig, KillSwitch};
+
 #[cfg(test)]
 mod tests;
 
@@ -51,7 +55,7 @@ pub enum TaskType {
 
 /// Tool-error count together with its trust provenance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ToolErrorCount {
+pub enum ToolErrorCount {
     /// Count from host-owned execution evidence.
     Host(i32),
     /// Count derived from untrusted request history.
