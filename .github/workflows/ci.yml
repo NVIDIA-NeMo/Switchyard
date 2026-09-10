@@ -120,7 +120,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -130,7 +129,7 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --locked
       - name: mypy
-        run: uv run mypy switchyard
+        run: uv run mypy
 
   # Unit tests on supported Python versions. Integration/e2e tests are
   # intentionally deselected here because they may need Docker, live provider
