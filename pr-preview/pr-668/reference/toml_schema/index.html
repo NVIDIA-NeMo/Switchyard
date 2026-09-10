@@ -2119,6 +2119,30 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 <td>Trailing tool results the signals are computed over.</td>
 </tr>
 <tr>
+<td><code>tool_semantics.observe</code></td>
+<td style="text-align: center;">No</td>
+<td><code>[]</code></td>
+<td>Exact ASCII case-insensitive domain tool names that count as read-only investigation.</td>
+</tr>
+<tr>
+<td><code>tool_semantics.mutate</code></td>
+<td style="text-align: center;">No</td>
+<td><code>[]</code></td>
+<td>Exact ASCII case-insensitive domain tool names that count as state-changing production.</td>
+</tr>
+<tr>
+<td><code>tool_semantics.plan</code></td>
+<td style="text-align: center;">No</td>
+<td><code>[]</code></td>
+<td>Exact ASCII case-insensitive domain tool names that count as planning or task decomposition.</td>
+</tr>
+<tr>
+<td><code>tool_semantics.new</code></td>
+<td style="text-align: center;">No</td>
+<td><code>[]</code></td>
+<td>Exact ASCII case-insensitive domain tool names that demonstrate forward activity without favoring either tier.</td>
+</tr>
+<tr>
 <td><code>classifier.classify_trigger</code></td>
 <td style="text-align: center;">No</td>
 <td><code>every_request</code></td>
@@ -2231,6 +2255,30 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td style="text-align: center;">No</td>
 <td><code>3</code></td>
 <td>Trailing tool results the signals are computed over.</td>
+</tr>
+<tr>
+<td><code>stage.tool_semantics.observe</code></td>
+<td style="text-align: center;">No</td>
+<td><code>[]</code></td>
+<td>Additional exact ASCII case-insensitive tool names that count as observation.</td>
+</tr>
+<tr>
+<td><code>stage.tool_semantics.mutate</code></td>
+<td style="text-align: center;">No</td>
+<td><code>[]</code></td>
+<td>Additional exact ASCII case-insensitive tool names that count as mutation.</td>
+</tr>
+<tr>
+<td><code>stage.tool_semantics.plan</code></td>
+<td style="text-align: center;">No</td>
+<td><code>[]</code></td>
+<td>Additional exact ASCII case-insensitive tool names that count as planning.</td>
+</tr>
+<tr>
+<td><code>stage.tool_semantics.new</code></td>
+<td style="text-align: center;">No</td>
+<td><code>[]</code></td>
+<td>Additional exact ASCII case-insensitive tool names that count as neutral forward activity.</td>
 </tr>
 <tr>
 <td><code>subagents</code></td>
