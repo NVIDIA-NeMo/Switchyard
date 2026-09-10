@@ -11,8 +11,9 @@ deployment through Relay's
 Switchyard's routing algorithms select a model for each LLM request or step in
 an agent trajectory, balancing cost and performance. The NeMo Relay integration
 makes those algorithms available to coding agent harnesses supported by Relay.
-Any Relay harness integration that can load manifest-driven plugins can
-configure and use Switchyard's core routers.
+The integration is not tied to one routing algorithm. It supports passthrough,
+random, Stage, composite, advisor, and LLM classifier routes, including
+capability, escalation, and custom modes.
 
 The plugin reports the selected and served models, fallback use, routing
 latency, and token use through Relay telemetry. Use it to answer:
