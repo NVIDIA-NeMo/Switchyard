@@ -7,7 +7,8 @@ This guide gives QA the minimum setup needed to run an agent through
 Verification-Gated Routing (VGR) on the RTX Spark test configuration. It covers
 the currently supported cycle-1 path:
 
-- Qwen3.6-35B-A3B Q4_K_M served by `llama.cpp` as the local tier
+- `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` using
+  `Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, served by `llama.cpp` as the local tier
 - Opus 5 through the NVIDIA inference gateway as the cloud tier
 - native ARM64 Windows `switchyard-server.exe`
 - an agent connected directly to the Switchyard proxy
@@ -36,7 +37,7 @@ Install or obtain these dependencies before starting QA.
 | Visual Studio Build Tools | ARM64 MSVC tools, Windows 11 SDK, and Clang; use the approved 14.44 toolset |
 | NVIDIA software | Current approved Windows GPU driver |
 | `llama.cpp` | Release-pinned native Windows ARM64 `llama-server` build |
-| Local model | Release-pinned Qwen3.6-35B-A3B Q4_K_M GGUF and prompt template |
+| Local model | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, file `Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` |
 | Agent client | A client that accepts a custom OpenAI- or Anthropic-compatible base URL and model ID |
 | Docker Desktop | **Benchmark only:** WSL2 integration, Docker Compose, and x64 emulation enabled |
 
@@ -61,8 +62,9 @@ installed inside the generated task images.
 
 - Internal Git access for `internal/vgr-qa-policy-2.11`.
 - A valid `NVIDIA_API_KEY` for the Opus 5 cloud tier.
-- A locally generated API key for `llama-server`.
-- Local ports 4000 and 8010 available.
+- Access to Hugging Face for the initial model download, unless the model is
+  already present in the local `llama.cpp` cache.
+- Local ports 4000 and 9931 available.
 - Windows private-network firewall permission if an agent outside the native
   Windows host must reach Switchyard.
 
@@ -83,7 +85,7 @@ Run each component in the location shown below.
 
 | Component | Location | Address | Applies to |
 |---|---|---|---|
-| Qwen local model | Native Windows, `llama-server` | `127.0.0.1:8010` | General |
+| Qwen local model | Native Windows, `llama-server` | `127.0.0.1:9931` | General |
 | Switchyard VGR | Native Windows, `switchyard-server.exe` | `127.0.0.1:4000` or `0.0.0.0:4000` | General |
 | Agent | Native Windows or an approved client environment | Switchyard proxy | General |
 | Hermes and Harbor | WSL2 | Connect through Docker | Benchmark only |
@@ -118,36 +120,31 @@ benchmark datasets and results are expected to be untracked.
 
 ## 3. Start the local Qwen model
 
-From native Windows PowerShell, set the local credential without writing it to
-the repository:
+From native Windows PowerShell, run the release-pinned `llama-server.exe`
+build. The command downloads the approved GGUF from Hugging Face on first use
+and reuses the local cache afterward:
 
 ```powershell
-$env:LOCAL_QWEN_API_KEY = Read-Host -MaskInput "Local llama API key"
-```
-
-Start the pinned `llama.cpp` build and GGUF. Replace the executable and model
-paths with the approved release-pinned paths:
-
-```powershell
-& C:\llama\llama-server.exe `
-  -m C:\path\to\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf `
-  --alias qwen-local `
-  --host 0.0.0.0 `
-  --port 8010 `
+llama-server.exe -hf "unsloth/Qwen3.6-35B-A3B-MTP-GGUF" `
+  -hff "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" `
+  --no-mmproj `
+  --host 127.0.0.1 `
+  --port 9931 `
+  --batch-size 4096 `
+  --ubatch-size 4096 `
+  --ctx-size 65536 `
+  --parallel 1 `
+  -ngl 999 `
   --jinja `
-  -ngl 99 `
-  -fa on `
-  --reasoning-budget 0 `
-  --api-key $env:LOCAL_QWEN_API_KEY `
-  -c 262144 `
-  -np 4
+  --chat-template-kwargs '{"preserve_thinking":true}' `
+  --spec-type draft-mtp `
+  --spec-draft-n-max 2
 ```
 
 Verify the endpoint from another native Windows PowerShell:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8010/v1/models `
-  -Headers @{ Authorization = "Bearer $env:LOCAL_QWEN_API_KEY" }
+Invoke-RestMethod http://127.0.0.1:9931/v1/models
 ```
 
 ## 4. Create the native Windows VGR configuration
@@ -168,12 +165,11 @@ In the copied file, make only these local-tier changes:
 ```toml
 [llm_clients.local_qwen]
 format = "openai_chat"
-base_url = "http://127.0.0.1:8010/v1"
-api_key_env = "LOCAL_QWEN_API_KEY"
+base_url = "http://127.0.0.1:9931/v1"
 max_retries = 2
 
 [targets.local]
-id = "qwen-local"
+id = "Qwen/Qwen3.6-35B-A3B"
 llm_client = "local_qwen"
 ```
 
@@ -191,7 +187,8 @@ benchmarks. It is not the fixture for the separate 30-second POLICY deadline
 test; that contract is represented by
 `benchmark/configs/vgr-qa-policy-2.11.toml`.
 
-Never place either API key directly in TOML.
+Never place `NVIDIA_API_KEY` directly in TOML. The local `llama-server`
+endpoint in this configuration does not require an API key.
 
 ## 5. Build and start native Switchyard
 
