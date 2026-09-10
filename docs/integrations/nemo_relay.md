@@ -2,15 +2,17 @@
 
 The [Switchyard native plugin](../../crates/switchyard-nemo-relay-plugin/README.md)
 loads Switchyard into an existing
-[NeMo Relay](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/overview#integrating-with-relay)
+[NeMo Relay runtime](https://docs.nvidia.com/nemo/relay/about-nemo-relay/overview)
 deployment through Relay's
-[native plugin system](https://docs.nvidia.com/nemo/relay/v0.8.3/build-plugins/native/about).
+[native dynamic plugin system](https://docs.nvidia.com/nemo/relay/build-plugins/native/about).
 
 ## Why Use Switchyard with NeMo Relay?
 
-Using the strongest model for every request is simple, but routine work may not
-need it. Switchyard can send simpler requests to a lower-cost model and reserve
-a stronger model for harder work.
+Switchyard's routing algorithms select a model for each LLM request or step in
+an agent trajectory, balancing cost and performance. The NeMo Relay integration
+makes those algorithms available to coding agent harnesses supported by Relay.
+Any Relay harness integration that can load manifest-driven plugins can
+configure and use Switchyard's core routers.
 
 The plugin reports the selected and served models, fallback use, routing
 latency, and token use through Relay telemetry. Use it to answer:
@@ -58,7 +60,7 @@ Relay does not copy request identity into exported metric attributes. Use this
 calculation for a workload or time window, not to reconcile one trace.
 
 Relay does not include a model-price catalog. Follow its
-[model-pricing guide](https://docs.nvidia.com/nemo/relay/v0.8.3/nemo-relay-cli/basic-usage#add-model-pricing-for-cost-estimates)
+[model-pricing guide](https://docs.nvidia.com/nemo/relay/configure-plugins/model-pricing)
 to supply and validate model rates. Run the same representative workload once
 with a fixed model and once with routing. Compare cost, latency, fallback rate,
 and task success. Missing usage, failed attempts, internal HTTP retries, and
@@ -72,9 +74,9 @@ the plugin checks whether the requested model matches a configured Switchyard
 route. Matching requests go through Switchyard. Other requests are left
 unchanged by Switchyard and passed to the next Relay handler. The plugin uses
 Relay's
-[execution intercepts](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/middleware#execution-intercepts)
+[execution intercepts](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/middleware#execution-intercepts)
 for non-streaming requests and
-[stream execution intercepts](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/middleware#stream-execution-intercepts)
+[stream execution intercepts](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/middleware#stream-execution-intercepts)
 for streaming requests.
 
 ```mermaid
@@ -103,10 +105,10 @@ Relay's LLM middleware again. This avoids treating a router's judge call or
 fallback attempt as another application request.
 
 Relay records the
-[LLM call](https://docs.nvidia.com/nemo/relay/v0.8.3/instrument-applications/instrument-llm-call#integration-pattern)
+[LLM call](https://docs.nvidia.com/nemo/relay/instrument-applications/instrument-llm-call#integration-pattern)
 made by the application. Switchyard reports its internal routing work through
 Relay
-[marks](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/events#mark)
+[marks](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/events#mark)
 and metrics.
 
 | Owner | Responsibilities |
@@ -116,26 +118,25 @@ and metrics.
 | Model provider | Runs the model and returns its response, stream, and available usage. |
 
 For more detail, see Relay's
-[managed execution pipeline](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/architecture#managed-execution-pipeline)
+[managed execution pipeline](https://docs.nvidia.com/nemo/relay/about-nemo-relay/architecture#managed-execution-pipeline)
 and
-[plugin delivery models](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/plugins#plugin-delivery-models).
+[plugin delivery models](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/plugins#plugin-delivery-models).
 
 ## Set Up the Plugin
 
 Follow the [plugin README](../../crates/switchyard-nemo-relay-plugin/README.md)
 to build and package the native library, register and enable it in Relay, and
 configure its deployment. Relay documents how to
-[add and enable a discoverable plugin](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/discoverable-plugins#add-and-enable-a-plugin)
+[add and enable a discoverable plugin](https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#add-and-enable-a-plugin)
 and how it
-[validates the package before loading code](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/discoverable-plugins#validate-before-loading-code).
+[validates the package before loading code](https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#validate-before-loading-code).
 
 !!! note "Relay compatibility"
 
-    The plugin supports Relay `>=0.8.1,<0.9.0` and native plugin API `1`. The
-    packaged
+    The plugin requires `relay = ">=0.8.1,<0.9.0"` and native plugin API `1`.
+    The packaged
     [`relay-plugin.toml`](../../crates/switchyard-nemo-relay-plugin/relay-plugin.toml)
-    is the source of truth. Links on this page point to Relay 0.8.3 so they stay
-    within that supported range.
+    is the source of truth.
 
 Configure exactly one Switchyard deployment source: either
 `switchyard_config_path`, which points to the TOML used by `switchyard-server`,
@@ -209,9 +210,9 @@ keep in-memory state there, such as session affinity or an escalation decision.
 State behavior and expiry depend on the algorithm. The state is not shared
 between Relay processes and is lost when a process restarts. See Relay's
 documentation on
-[plugin ownership](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/plugins#ownership-and-scope)
+[plugin ownership](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/plugins#ownership-and-scope)
 and
-[runtime state](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/architecture#where-runtime-state-lives).
+[runtime state](https://docs.nvidia.com/nemo/relay/about-nemo-relay/architecture#where-runtime-state-lives).
 
 The plugin adds these fields to each routing mark, including metric marks.
 Missing values are `null`:
@@ -227,7 +228,7 @@ Subscribers and log or trace exporters can read them, but Relay does not copy
 them into exported metric attributes.
 
 These values come from request headers rather than Relay's active scope. Relay's
-[session and subagent headers](https://docs.nvidia.com/nemo/relay/v0.8.3/nemo-relay-cli/basic-usage#runtime-mapping)
+[session and subagent headers](https://docs.nvidia.com/nemo/relay/nemo-relay-cli/basic-usage#runtime-mapping)
 can populate them for correlation. They do not by themselves mark a request as
 delegated work for Switchyard's
 [`subagents` router](../routing_algorithms/subagent_routing.md). For algorithms
@@ -239,7 +240,7 @@ provides a value, the Switchyard session ID remains unset.
 
 Relay sees one LLM lifecycle for the request made by the agent. Switchyard
 reports the routing work through Relay marks and metrics. Existing Relay
-[subscribers](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/subscribers#how-subscribers-relate-to-events)
+[subscribers](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/subscribers#how-subscribers-relate-to-events)
 can receive these records, but each output format presents them differently.
 
 ### ATIF and OpenTelemetry Show Different Views
@@ -262,14 +263,14 @@ stream its own cancellation lifecycle.
 ### How Routing Appears in Traces
 
 In Relay's
-[full and OpenInference trace projections](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#trace-projections),
-[`mark_projection`](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#trace-endpoint-fields)
+[full and OpenInference trace projections](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/opentelemetry#trace-projections),
+[`mark_projection`](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/opentelemetry#trace-endpoint-fields)
 controls how marks appear. With `inherit` or `event`, a routing mark is an event
 on its parent span while that span is open. Otherwise, Relay emits it as a
 zero-duration span and retains its parent when possible. With `tool`, routing
 marks are always visible zero-duration spans. The plugin does not nest these
 marks under the LLM span. The
-[`gen_ai` projection](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#genai-projection)
+[`gen_ai` projection](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/opentelemetry#genai-projection)
 omits marks. With `mark_projection = "tool"`, the trace has this shape:
 
 ```mermaid
@@ -294,7 +295,7 @@ and appear beside the call. Without an agent scope, a backend can display the
 LLM span and marks as separate roots. The metadata field
 `parent_agent_id` is a correlation value; it does not set Relay trace
 parentage. See Relay's
-[scope hierarchy](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/scopes#scope-hierarchy-and-ownership)
+[scope hierarchy](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/scopes#scope-hierarchy-and-ownership)
 for the parentage rules.
 
 ### Mark Contract
@@ -304,7 +305,7 @@ contract. Each non-metric mark uses the mark name as its schema name and version
 `1`. Consumers should accept additional fields and values within a version.
 Removing or renaming a field, changing its type, or changing its meaning
 requires a new version. Relay's
-[event envelope](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/events#fields-common-to-every-event)
+[event envelope](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/events#fields-common-to-every-event)
 describes the surrounding event envelope.
 
 | Mark | Severity | Data |
@@ -322,7 +323,7 @@ or answer work.
 `switchyard.routing.llm_call` uses Debug severity. It still appears in the
 supported trace projections, but Relay's OTLP logs default to Info. Set
 `minimum_severity` to `debug` to include these call records in
-[log export](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#log-export).
+[log export](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/opentelemetry#log-export).
 
 Switchyard marks use the target's upstream model ID, not its local TOML key.
 Relay request telemetry normally uses the Switchyard route ID, while response
@@ -354,7 +355,7 @@ types are `input`, `cached_input`, `cache_creation_input`, `output`,
 `reasoning`, and `total`.
 
 Configure delivery through Relay's
-[OpenTelemetry metric export](https://docs.nvidia.com/nemo/relay/v0.8.3/configure-plugins/observability/opentelemetry#metric-export).
+[OpenTelemetry metric export](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/opentelemetry#metric-export).
 
 ## Data Handling
 
@@ -362,5 +363,5 @@ Switchyard routing telemetry excludes request and response content. Its marks
 do not contain prompts, bodies, headers, credentials, raw provider responses,
 or free-form provider errors. Relay's LLM events can capture request and
 response data according to Relay's
-[input and output event semantics](https://docs.nvidia.com/nemo/relay/v0.8.3/about-nemo-relay/concepts/events#input-and-output-payloads),
+[input and output event semantics](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/events#input-and-output-payloads),
 independently of these Switchyard marks.
