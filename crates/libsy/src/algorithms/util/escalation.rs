@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
 
-use super::classifier_contract::{ClassifierContract, ClassifierContractConfig};
+use super::classifier_contract::{ClassifierContract, ClassifierContractConfig, validate_prompt};
 use super::llm_judge::{
     ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
     StructuredJudge,
@@ -22,6 +22,7 @@ use crate::{LibsyError, Result};
 use switchyard_protocol::Request;
 
 const PROMPT_TEMPLATE: &str = include_str!("../../prompts/escalation/prompt.md");
+const DEESCALATION_PROMPT: &str = include_str!("../../prompts/escalation/deescalation.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../../prompts/escalation/schema.json");
 
 /// Separator marking where [`truncate_middle`] dropped a message's interior.
@@ -40,6 +41,47 @@ const FIRST_USER_CHARS: usize = 2_000;
 /// Backstop on the assembled transcript; the per-message caps normally bind first.
 const MAX_REQUEST_CHARS: usize = 18_000;
 
+/// Optional policy for returning an escalated session to the efficient tier.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeescalationConfig {
+    /// Minimum number of capable-tier turns before the judge may release the session.
+    pub strong_min_calls: u32,
+    /// Optional hard limit on capable-tier turns before a forced return.
+    #[serde(default)]
+    pub strong_max_calls: Option<u32>,
+    /// Consecutive judge declines required to return to the efficient tier.
+    pub confirmations: u32,
+    /// Efficient calls served without judging after a hard-limit return.
+    #[serde(default)]
+    pub weak_cooldown_calls: u32,
+}
+
+impl DeescalationConfig {
+    fn validate(&self) -> Result<()> {
+        let reject = |message: &str| {
+            Err(LibsyError::AlgorithmError {
+                message: message.to_string(),
+            })
+        };
+        if self.strong_min_calls == 0 {
+            return reject("deescalation.strong_min_calls must be at least 1");
+        }
+        if self.confirmations == 0 {
+            return reject("deescalation.confirmations must be at least 1");
+        }
+        if self
+            .strong_max_calls
+            .is_some_and(|strong_max_calls| strong_max_calls < self.strong_min_calls)
+        {
+            return reject(
+                "deescalation.strong_max_calls must be at least deescalation.strong_min_calls",
+            );
+        }
+        Ok(())
+    }
+}
+
 /// The tuning surface for the trajectory judge.
 ///
 /// The routing settings retain their benchmarked defaults. Everything else is a fixed invariant
@@ -56,6 +98,8 @@ pub struct EscalationJudgeConfig {
     pub recent_turn_window: usize,
     /// Per-message cap inside the trailing window.
     pub window_message_chars: usize,
+    /// De-escalation policy. `None` preserves permanent latching to the capable tier.
+    pub deescalation: Option<DeescalationConfig>,
 }
 
 impl EscalationJudgeConfig {
@@ -74,6 +118,9 @@ impl EscalationJudgeConfig {
                 self.window_message_chars
             ));
         }
+        if let Some(deescalation) = self.deescalation {
+            deescalation.validate()?;
+        }
         Ok(())
     }
 }
@@ -84,6 +131,23 @@ impl Default for EscalationJudgeConfig {
             confirmations: 2,
             recent_turn_window: 28,
             window_message_chars: 500,
+            deescalation: None,
+        }
+    }
+}
+
+/// Router-controlled phase attached to judge input when de-escalation is enabled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EvaluationPhase {
+    Efficient,
+    Strong,
+}
+
+impl EvaluationPhase {
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Efficient => "EFFICIENT_EVALUATION",
+            Self::Strong => "STRONG_EVALUATION",
         }
     }
 }
@@ -99,12 +163,18 @@ pub(crate) struct EscalationVerdict {
 /// Builds the condensed trajectory presented to the escalation judge.
 pub(crate) struct EscalationInput {
     config: EscalationJudgeConfig,
+    phase: Option<EvaluationPhase>,
 }
 
 impl ClassifierInput for EscalationInput {
     fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
         let messages = &request.llm_request.messages;
-        let summary = summarize_for_judge(messages, conversation_turn(request), &self.config);
+        let summary = summarize_for_judge(
+            messages,
+            conversation_turn(request),
+            self.phase,
+            &self.config,
+        );
         vec![Message::text(Role::User, summary)]
     }
 }
@@ -120,6 +190,7 @@ pub(crate) type EscalationJudge = StructuredJudge<EscalationInput, SerdeDecoder<
 pub(crate) struct EscalationPolicy {
     capable: ModelId,
     efficient: ModelId,
+    phase: Option<EvaluationPhase>,
 }
 
 impl JudgePolicy for EscalationPolicy {
@@ -140,15 +211,21 @@ impl JudgePolicy for EscalationPolicy {
     }
 }
 
-/// Maps present verdicts to stable `escalate` or `continue` values; absent verdicts add nothing.
+/// Maps present verdicts to phase-aware evidence; absent verdicts add nothing.
 fn escalation_evidence(
-    _policy: &EscalationPolicy,
+    policy: &EscalationPolicy,
     verdict: Option<&EscalationVerdict>,
 ) -> Option<Value> {
     verdict.map(|verdict| {
+        let verdict = match (policy.phase, verdict.escalate) {
+            (Some(EvaluationPhase::Strong), true) => "retain",
+            (Some(EvaluationPhase::Strong), false) => "deescalate",
+            (_, true) => "escalate",
+            (_, false) => "continue",
+        };
         serde_json::json!({
             "source": "escalation",
-            "verdict": if verdict.escalate { "escalate" } else { "continue" },
+            "verdict": verdict,
         })
     })
 }
@@ -163,22 +240,43 @@ pub(crate) fn build_judge(
     efficient: ModelId,
     contract_config: &ClassifierContractConfig,
     config: EscalationJudgeConfig,
+    phase: Option<EvaluationPhase>,
     max_output_tokens: u64,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
     config.validate()?;
-    let contract =
-        ClassifierContract::from_config(contract_config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+    let contract = build_contract(contract_config, phase.is_some())?;
     Ok(JudgeClassifier::new(
         StructuredJudge::new(
-            EscalationInput { config },
+            EscalationInput { config, phase },
             contract,
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(max_output_tokens)?,
         ),
         judge_target,
-        EscalationPolicy { capable, efficient },
+        EscalationPolicy {
+            capable,
+            efficient,
+            phase,
+        },
     )
     .with_evidence(escalation_evidence))
+}
+
+fn build_contract(
+    contract_config: &ClassifierContractConfig,
+    phase_aware: bool,
+) -> Result<ClassifierContract> {
+    let prompt = contract_config.prompt().unwrap_or(PROMPT_TEMPLATE);
+    validate_prompt(prompt)?;
+    let phase_aware_config = phase_aware.then(|| {
+        contract_config.clone().with_prompt(format!(
+            "{}\n\n{}",
+            prompt.trim_end(),
+            DEESCALATION_PROMPT.trim()
+        ))
+    });
+    let contract_config = phase_aware_config.as_ref().unwrap_or(contract_config);
+    ClassifierContract::from_config(contract_config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)
 }
 
 /// The 1-indexed model invocation the transcript ends on: one per assistant reply.
@@ -258,6 +356,7 @@ fn truncate_middle(text: &str, limit: usize) -> String {
 fn summarize_for_judge(
     messages: &[Message],
     turn: usize,
+    phase: Option<EvaluationPhase>,
     config: &EscalationJudgeConfig,
 ) -> String {
     let mut anchors: Vec<String> = Vec::new();
@@ -297,7 +396,10 @@ fn summarize_for_judge(
             window.len(),
             messages.len(),
         );
-        std::iter::once(header)
+        phase
+            .map(|phase| format!("Routing phase: {}", phase.marker()))
+            .into_iter()
+            .chain(std::iter::once(header))
             .chain(anchors.iter().cloned())
             .chain(window.iter().cloned())
             .collect::<Vec<_>>()
@@ -362,16 +464,17 @@ mod tests {
     use super::*;
     use crate::algorithms::util::llm_judge::Judge;
 
-    fn escalation_judge(max_output_tokens: u64) -> Result<EscalationJudge> {
+    fn escalation_judge(
+        max_output_tokens: u64,
+        phase: Option<EvaluationPhase>,
+        contract_config: &ClassifierContractConfig,
+    ) -> Result<EscalationJudge> {
         Ok(StructuredJudge::new(
             EscalationInput {
                 config: EscalationJudgeConfig::default(),
+                phase,
             },
-            ClassifierContract::from_config(
-                &ClassifierContractConfig::default(),
-                PROMPT_TEMPLATE,
-                SCHEMA_TEMPLATE,
-            )?,
+            build_contract(contract_config, phase.is_some())?,
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(max_output_tokens)?,
         ))
@@ -379,7 +482,11 @@ mod tests {
 
     #[test]
     fn judge_request_is_rubric_plus_summary_under_a_completion_cap() -> Result<()> {
-        let judge = escalation_judge(super::super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?;
+        let judge = escalation_judge(
+            super::super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            None,
+            &ClassifierContractConfig::default(),
+        )?;
 
         // As the classifier calls it: the turn's reply is already on the transcript.
         let mut judged = request_at_turn(None, 4);
@@ -392,12 +499,23 @@ mod tests {
         // Rubric in instructions, condensed trajectory as the sole user message.
         assert_eq!(built.llm_request.instructions.len(), 1);
         assert_eq!(built.llm_request.instructions[0].role, Role::System);
+        assert_eq!(
+            built.llm_request.instructions[0].content.as_slice(),
+            &[ContentBlock::Text {
+                text: PROMPT_TEMPLATE.to_string()
+            }]
+        );
         assert_eq!(built.llm_request.messages.len(), 1);
         assert_eq!(built.llm_request.messages[0].role, Role::User);
         assert!(
             built.llm_request.messages[0]
                 .text_content("")
                 .is_some_and(|text| text.contains("Conversation turn 4"))
+        );
+        assert!(
+            built.llm_request.messages[0]
+                .text_content("")
+                .is_none_or(|text| !text.contains("Routing phase:"))
         );
         // Bounded output, so a reasoning judge cannot run away mid-verdict.
         assert_eq!(
@@ -410,7 +528,7 @@ mod tests {
 
     #[test]
     fn judge_request_uses_the_configured_completion_cap() -> Result<()> {
-        let judge = escalation_judge(512)?;
+        let judge = escalation_judge(512, None, &ClassifierContractConfig::default())?;
 
         let built = judge.build_request(&State::default(), &request_at_turn(None, 1));
 
@@ -478,6 +596,69 @@ mod tests {
     }
 
     #[test]
+    fn deescalation_settings_must_be_valid() {
+        let zero = EscalationJudgeConfig {
+            deescalation: Some(DeescalationConfig {
+                strong_min_calls: 0,
+                strong_max_calls: None,
+                confirmations: 2,
+                weak_cooldown_calls: 0,
+            }),
+            ..EscalationJudgeConfig::default()
+        };
+        assert!(
+            zero.validate()
+                .is_err_and(|error| error.to_string().contains("at least 1"))
+        );
+
+        let inverted = EscalationJudgeConfig {
+            deescalation: Some(DeescalationConfig {
+                strong_min_calls: 4,
+                strong_max_calls: Some(3),
+                confirmations: 2,
+                weak_cooldown_calls: 0,
+            }),
+            ..EscalationJudgeConfig::default()
+        };
+        assert!(
+            inverted
+                .validate()
+                .is_err_and(|error| error.to_string().contains("at least deescalation"))
+        );
+    }
+
+    #[test]
+    fn deescalation_contract_marks_both_routing_phases() -> Result<()> {
+        let contract = ClassifierContractConfig::default().with_prompt("Custom trajectory rubric.");
+        for (phase, marker) in [
+            (EvaluationPhase::Efficient, "EFFICIENT_EVALUATION"),
+            (EvaluationPhase::Strong, "STRONG_EVALUATION"),
+        ] {
+            let judge = escalation_judge(512, Some(phase), &contract)?;
+            let built = judge.build_request(&State::default(), &request_at_turn(None, 1));
+            let system_prompt = built.llm_request.instructions[0].content.iter().find_map(
+                |content| match content {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                },
+            );
+            assert!(system_prompt.is_some_and(|prompt| {
+                prompt.starts_with("Custom trajectory rubric.")
+                    && prompt.contains("EFFICIENT_EVALUATION")
+                    && prompt.contains("STRONG_EVALUATION")
+            }));
+            assert!(
+                built.llm_request.messages[0]
+                    .text_content("")
+                    .is_some_and(|summary| summary.starts_with(&format!(
+                        "Routing phase: {marker}"
+                    )))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn summary_keeps_anchors_and_the_recent_window() {
         let mut messages = vec![
             Message::text(Role::System, "you are a coding agent"),
@@ -491,7 +672,7 @@ mod tests {
             ..EscalationJudgeConfig::default()
         };
 
-        let summary = summarize_for_judge(&messages, 11, &config);
+        let summary = summarize_for_judge(&messages, 11, None, &config);
 
         assert!(
             summary.contains("[system] you are a coding agent"),
@@ -528,7 +709,7 @@ mod tests {
             ..EscalationJudgeConfig::default()
         };
 
-        let summary = summarize_for_judge(&messages, 21, &config);
+        let summary = summarize_for_judge(&messages, 21, None, &config);
 
         assert!(
             summary.chars().count() <= MAX_REQUEST_CHARS,

@@ -4,6 +4,7 @@
 //! Escalation routing that judges an efficient model's answer before selecting a serving tier.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use switchyard_protocol::{
@@ -12,21 +13,32 @@ use switchyard_protocol::{
 
 use super::util::classifier_contract::ClassifierContractConfig;
 use super::util::decisive;
-use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
+use super::util::escalation::{
+    self, DeescalationConfig, EscalationJudge, EscalationJudgeConfig, EscalationPolicy,
+    EvaluationPhase,
+};
 use super::util::llm_judge::JudgeClassifier;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
 
-/// Session-state key holding the consecutive-escalate streak.
 const STREAK_KEY: &str = "escalation_streak";
+const STRONG_CALLS_KEY: &str = "escalation_strong_calls";
+const RELEASE_STREAK_KEY: &str = "escalation_release_streak";
+const WEAK_COOLDOWN_KEY: &str = "escalation_weak_cooldown";
 
-fn streak(state: &State) -> u32 {
-    match state.extra.get(STREAK_KEY) {
+fn count(state: &State, key: &str) -> u32 {
+    match state.extra.get(key) {
         Some(StateValue::Count(n)) => *n,
         _ => 0,
     }
+}
+
+fn set_count(state: &mut State, key: &str, value: u32) {
+    state
+        .extra
+        .insert(key.to_string(), StateValue::Count(value));
 }
 
 fn assistant_message(response: &AggLlmResponse) -> Message {
@@ -43,11 +55,18 @@ fn assistant_message(response: &AggLlmResponse) -> Message {
 /// confirms. Returns the efficient response directly when not escalating so the caller does
 /// not pay for a second model call.
 struct EscalationClassifier {
-    judge: JudgeClassifier<EscalationJudge, EscalationPolicy>,
+    escalation_judge: JudgeClassifier<EscalationJudge, EscalationPolicy>,
     capable: ModelId,
     efficient: ModelId,
     /// Consecutive escalate verdicts required to latch.
     confirmations: u32,
+    deescalation: Option<DeescalationPolicy>,
+    missing_session_warning_emitted: AtomicBool,
+}
+
+struct DeescalationPolicy {
+    config: DeescalationConfig,
+    judge: JudgeClassifier<EscalationJudge, EscalationPolicy>,
 }
 
 /// Builds the escalation classifier used by the shared LLM classifier route shell.
@@ -60,20 +79,126 @@ pub(super) fn build_classifier(
     max_output_tokens: u64,
 ) -> Result<Arc<dyn Classifier<State>>> {
     let confirmations = config.confirmations;
+    let deescalation = match config.deescalation {
+        Some(deescalation) => Some(DeescalationPolicy {
+            config: deescalation,
+            judge: escalation::build_judge(
+                judge_target.clone(),
+                capable_target.clone(),
+                efficient_target.clone(),
+                &contract_config,
+                config.clone(),
+                Some(EvaluationPhase::Strong),
+                max_output_tokens,
+            )?,
+        }),
+        None => None,
+    };
+    let is_phase_aware = deescalation.is_some();
     let classifier: Arc<dyn Classifier<State>> = Arc::new(EscalationClassifier {
-        judge: escalation::build_judge(
+        escalation_judge: escalation::build_judge(
             judge_target,
             capable_target.clone(),
             efficient_target.clone(),
             &contract_config,
             config,
+            is_phase_aware.then_some(EvaluationPhase::Efficient),
             max_output_tokens,
         )?,
         capable: capable_target.clone(),
         efficient: efficient_target.clone(),
         confirmations,
+        deescalation,
+        missing_session_warning_emitted: AtomicBool::new(false),
     });
     Ok(classifier)
+}
+
+impl EscalationClassifier {
+    async fn review_capable(
+        &self,
+        deescalation: &DeescalationPolicy,
+        state: &mut State,
+        request: &Request,
+        driver: &Driver,
+        strong_calls: u32,
+    ) -> Result<(Classification, Option<Response>)> {
+        let next_strong_call = strong_calls.saturating_add(1);
+
+        // The call that confirms escalation is the first capable call.
+        if next_strong_call < deescalation.config.strong_min_calls {
+            set_count(state, STRONG_CALLS_KEY, next_strong_call);
+            driver.set_evidence(serde_json::json!({"source": "escalation", "verdict": "latched"}));
+            return Ok((decisive(&self.capable), None));
+        }
+
+        let capable_response = driver
+            .call_model(
+                request.clone(),
+                vec![self.capable.clone(), self.efficient.clone()],
+            )
+            .await?;
+        if capable_response.served_model() == Some(&self.efficient) {
+            set_count(state, RELEASE_STREAK_KEY, 0);
+            driver.set_evidence(serde_json::json!({"source": "fallback"}));
+            return Ok((decisive(&self.efficient), Some(capable_response)));
+        }
+        let agg = match capable_response.llm_response.into_agg().await {
+            Ok(agg) => agg,
+            Err(LlmClientError::Transport { .. }) => {
+                set_count(state, RELEASE_STREAK_KEY, 0);
+                driver.set_evidence(
+                    serde_json::json!({"source": "fallback", "reason_code": "transport"}),
+                );
+                return Ok((decisive(&self.efficient), None));
+            }
+            Err(source) => {
+                return Err(LibsyError::client_call(self.capable.clone(), source));
+            }
+        };
+        let mut judge_request = request.clone();
+        judge_request
+            .llm_request
+            .messages
+            .push(assistant_message(&agg));
+        let capable_response = Response {
+            llm_response: if request.llm_request.stream {
+                LlmResponse::Stream(agg.into_stream())
+            } else {
+                LlmResponse::Agg(agg)
+            },
+            metadata: capable_response.metadata,
+        };
+
+        let (classification, _) = deescalation
+            .judge
+            .score(state, &mut judge_request, Some(driver))
+            .await?;
+        let best = classification.argmax(false)?;
+        let release_streak = match &best {
+            Some(score) if score.target == self.efficient => {
+                count(state, RELEASE_STREAK_KEY).saturating_add(1)
+            }
+            _ => 0,
+        };
+        set_count(state, STRONG_CALLS_KEY, next_strong_call);
+        set_count(state, RELEASE_STREAK_KEY, release_streak);
+
+        if release_streak >= deescalation.config.confirmations {
+            set_count(state, STREAK_KEY, 0);
+            set_count(state, STRONG_CALLS_KEY, 0);
+            set_count(state, RELEASE_STREAK_KEY, 0);
+            tracing::debug!(
+                target = %self.efficient,
+                "de-escalation policy released session to efficient tier"
+            );
+        } else if release_streak > 0 {
+            driver.set_evidence(serde_json::json!({"source": "escalation", "verdict": "pending"}));
+        }
+
+        // A confirmed release applies on the next request; this turn is already complete.
+        Ok((decisive(&self.capable), Some(capable_response)))
+    }
 }
 
 #[async_trait]
@@ -90,8 +215,57 @@ impl Classifier<State> for EscalationClassifier {
             });
         };
 
-        // A confirmed session stays capable without a judge call.
-        if streak(state) >= self.confirmations {
+        let has_session_id = request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.session_id.as_deref())
+            .is_some_and(|session_id| !session_id.is_empty());
+        if (self.deescalation.is_some() || self.confirmations > 1)
+            && !has_session_id
+            && !self
+                .missing_session_warning_emitted
+                .swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                target: "libsy",
+                confirmations = self.confirmations,
+                deescalation = self.deescalation.is_some(),
+                required_header = "x-switchyard-session-id",
+                "stateful escalation has no session ID; routing state will not persist"
+            );
+        }
+
+        let mut strong_calls = count(state, STRONG_CALLS_KEY);
+        if let Some(deescalation) = &self.deescalation
+            && deescalation
+                .config
+                .strong_max_calls
+                .is_some_and(|strong_max_calls| strong_calls >= strong_max_calls)
+        {
+            set_count(state, STREAK_KEY, 0);
+            set_count(state, STRONG_CALLS_KEY, 0);
+            set_count(state, RELEASE_STREAK_KEY, 0);
+            set_count(
+                state,
+                WEAK_COOLDOWN_KEY,
+                deescalation.config.weak_cooldown_calls,
+            );
+            strong_calls = 0;
+            tracing::debug!(
+                target = %self.efficient,
+                "de-escalation policy reached its hard limit and returned to efficient tier"
+            );
+        }
+        if let Some(deescalation) = &self.deescalation
+            && strong_calls > 0
+        {
+            return self
+                .review_capable(deescalation, state, request, driver, strong_calls)
+                .await;
+        }
+
+        // A confirmed permanent escalation stays capable without a judge call.
+        if self.deescalation.is_none() && count(state, STREAK_KEY) >= self.confirmations {
             driver.set_evidence(serde_json::json!({
                 "source": "escalation",
                 "verdict": "latched",
@@ -154,28 +328,37 @@ impl Classifier<State> for EscalationClassifier {
             metadata: efficient_response.metadata,
         };
 
+        let weak_cooldown = count(state, WEAK_COOLDOWN_KEY);
+        if weak_cooldown > 0 {
+            set_count(state, WEAK_COOLDOWN_KEY, weak_cooldown - 1);
+            driver
+                .set_evidence(serde_json::json!({"source": "deescalation", "verdict": "cooldown"}));
+            return Ok((decisive(&self.efficient), Some(efficient_response)));
+        }
+
         let (classification, _) = self
-            .judge
+            .escalation_judge
             .score(state, &mut judge_request, Some(driver))
             .await?;
 
-        let held = streak(state);
+        let held = count(state, STREAK_KEY);
         let best = classification.argmax(false)?;
         let (escalate, pending) = match &best {
-            Some(score) if score.target == self.capable => (true, held + 1),
+            Some(score) if score.target == self.capable => (true, held.saturating_add(1)),
             Some(_) => (false, 0),
             None => (false, held),
         };
-        state
-            .extra
-            .insert(STREAK_KEY.to_string(), StateValue::Count(pending));
+        set_count(state, STREAK_KEY, pending);
 
         if escalate && pending >= self.confirmations {
-            // Streak confirmed: drop the efficient response, caller will serve capable.
             driver.set_evidence(serde_json::json!({
                 "source": "escalation",
                 "verdict": "escalate",
             }));
+            if self.deescalation.is_some() {
+                set_count(state, STRONG_CALLS_KEY, 1);
+                set_count(state, RELEASE_STREAK_KEY, 0);
+            }
             return Ok((decisive(&self.capable), None));
         }
 
@@ -291,6 +474,45 @@ mod tests {
         )?))
     }
 
+    fn deescalation_router(config: DeescalationConfig) -> Result<Arc<LlmTaskClassifier>> {
+        Ok(Arc::new(LlmTaskClassifier::new(
+            LlmClassifierConfig::Escalation {
+                judge_target: ModelId::from("judge"),
+                efficient_target: ModelId::from("efficient"),
+                capable_target: ModelId::from("capable"),
+                contract: ClassifierContractConfig::default(),
+                config: EscalationJudgeConfig {
+                    confirmations: 1,
+                    deescalation: Some(config),
+                    ..EscalationJudgeConfig::default()
+                },
+                max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            },
+        )?))
+    }
+
+    async fn selected_over(
+        router: Arc<LlmTaskClassifier>,
+        turns: usize,
+        model: Arc<Queue>,
+        judge: Arc<Queue>,
+    ) -> Result<Vec<ModelId>> {
+        let request = classify_session_request();
+        let mut selected = Vec::with_capacity(turns);
+        for _ in 0..turns {
+            selected.push(
+                test_drive(
+                    router.clone(),
+                    request.clone(),
+                    queued(Arc::clone(&model), Arc::clone(&judge)),
+                )
+                .await?
+                .0,
+            );
+        }
+        Ok(selected)
+    }
+
     #[tokio::test]
     async fn serves_efficient_when_judge_declines() -> Result<()> {
         let judge = Queue::new([r#"{"escalate":false,"reason":"progressing"}"#]);
@@ -387,6 +609,111 @@ mod tests {
         let (selected_model, _) = test_drive(router, request, queued(model, judge)).await?;
 
         assert_eq!(selected_model, "capable");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deescalation_holds_then_returns_to_efficient() -> Result<()> {
+        let judge = Queue::new([
+            r#"{"escalate":true,"reason":"stuck"}"#,
+            r#"{"escalate":false,"reason":"recovered"}"#,
+            r#"{"escalate":false,"reason":"routine"}"#,
+            r#"{"escalate":false,"reason":"progressing"}"#,
+        ]);
+        let model = Queue::new([
+            "efficient draft",
+            "capable t1",
+            "capable t2",
+            "capable t3",
+            "capable t4",
+            "efficient resumed",
+        ]);
+        let router = deescalation_router(DeescalationConfig {
+            strong_min_calls: 3,
+            strong_max_calls: None,
+            confirmations: 2,
+            weak_cooldown_calls: 0,
+        })?;
+        assert_eq!(
+            selected_over(router, 5, model, judge).await?,
+            ["capable", "capable", "capable", "capable", "efficient"].map(ModelId::from)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deescalation_hard_limit_forces_a_weak_cooldown() -> Result<()> {
+        let judge = Queue::new([
+            r#"{"escalate":true,"reason":"stuck"}"#,
+            r#"{"escalate":true,"reason":"still hard"}"#,
+            r#"{"escalate":true,"reason":"still hard"}"#,
+            r#"{"escalate":false,"reason":"progressing"}"#,
+        ]);
+        let model = Queue::new([
+            "efficient draft",
+            "capable t1",
+            "capable t2",
+            "capable t3",
+            "efficient cooldown t1",
+            "efficient cooldown t2",
+            "efficient judged",
+        ]);
+        let router = deescalation_router(DeescalationConfig {
+            strong_min_calls: 2,
+            strong_max_calls: Some(3),
+            confirmations: 2,
+            weak_cooldown_calls: 2,
+        })?;
+        assert_eq!(
+            selected_over(router, 6, model, judge).await?,
+            [
+                "capable",
+                "capable",
+                "capable",
+                "efficient",
+                "efficient",
+                "efficient",
+            ]
+            .map(ModelId::from)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn strong_review_returns_an_efficient_fallback_without_judging_it() -> Result<()> {
+        let judge = Queue::new([r#"{"escalate":true,"reason":"stuck"}"#]);
+        let model = Queue::new(["efficient draft", "capable t1", "efficient fallback"]);
+        let router = deescalation_router(DeescalationConfig {
+            strong_min_calls: 1,
+            strong_max_calls: None,
+            confirmations: 1,
+            weak_cooldown_calls: 0,
+        })?;
+        let request = classify_session_request();
+
+        test_drive(
+            router.clone(),
+            request.clone(),
+            queued(Arc::clone(&model), Arc::clone(&judge)),
+        )
+        .await?;
+        let serve = move |target: ModelId, _request: Request| {
+            let model = Arc::clone(&model);
+            async move {
+                assert_ne!(target, "judge", "fallback answer must not be judged");
+                let mut response = reply(model.take());
+                response.set_served_model(&ModelId::from("efficient"));
+                Ok(response)
+            }
+        };
+
+        let (selected_model, response) = test_drive(router, request, serve).await?;
+
+        assert_eq!(selected_model, "efficient");
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("efficient fallback".to_string())
+        );
         Ok(())
     }
 
