@@ -384,6 +384,7 @@ mod tests {
                 output_tokens: Some(2),
                 ..Default::default()
             },
+            None,
         )
         .expect("append routing record");
 
