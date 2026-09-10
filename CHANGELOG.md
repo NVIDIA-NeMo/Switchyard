@@ -13,6 +13,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   on the Responses wire, `reasoning_effort` on Chat Completions), so a strong
   tier can run at `max` behind a client that sends `high`. `extra_body` only
   fills absent keys and could not do this. Rejected on Anthropic clients.
+- **Target `model` distinct from `id`** — a target may name the provider model
+  it sends upstream separately from its routing id, so several targets can
+  address one provider model with different settings (effort, headers,
+  endpoint). Previously the runner kept a single target per model id and
+  dropped the rest.
 - **Raw Responses stream trace** — an opt-in trace of every upstream Responses
   event as received, under `RUST_LOG=switchyard_translation::responses::raw=trace`,
   for diagnosing provider-specific event shapes. (#646)
