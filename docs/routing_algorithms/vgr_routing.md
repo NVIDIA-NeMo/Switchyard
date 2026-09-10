@@ -211,3 +211,6 @@ curl http://localhost:4000/v1/chat/completions \
 
 The `x-model-router-selected-model` response header names the tier that served
 the turn, so you can see commits and escalations without reading logs.
+`x-switchyard-route-type` identifies the configured routing algorithm as `vgr`;
+diagnostic passthrough routes report `passthrough` instead. The same value is
+available as `route_type` on both model-card formats returned by `GET /v1/models`.

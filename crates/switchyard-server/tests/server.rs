@@ -3648,6 +3648,83 @@ mode = "evaluate"
     )
 }
 
+#[tokio::test]
+async fn vgr_and_passthrough_routes_are_client_distinguishable() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let config = format!(
+        r#"{}
+
+[routes.diagnostic]
+id = "switchyard/diagnostic-passthrough"
+type = "passthrough"
+target = "local"
+"#,
+        vgr_config(&upstream.base_url, "model/vgr-verified-local")
+    );
+    let app = build_switchyard_router(load_test_config(&config)?);
+
+    let models = send(&app, "GET", "/v1/models", None).await?.json()?;
+    let route_types = models["data"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            Some((
+                entry["id"].as_str()?.to_string(),
+                entry["route_type"].as_str()?.to_string(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(route_types["switchyard/vgr"], "vgr");
+    assert_eq!(
+        route_types["switchyard/diagnostic-passthrough"],
+        "passthrough"
+    );
+    let codex_route_types = models["models"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            Some((
+                entry["slug"].as_str()?.to_string(),
+                entry["route_type"].as_str()?.to_string(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(codex_route_types["switchyard/vgr"], "vgr");
+    assert_eq!(
+        codex_route_types["switchyard/diagnostic-passthrough"],
+        "passthrough"
+    );
+
+    for (model, expected_route_type) in [
+        ("switchyard/vgr", "vgr"),
+        ("switchyard/diagnostic-passthrough", "passthrough"),
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": model,
+                "messages": [{"role": "user", "content": "what is the capital of France?"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-switchyard-route-type")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_route_type)
+        );
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn vgr_checker_config(
     base_url: &str,
