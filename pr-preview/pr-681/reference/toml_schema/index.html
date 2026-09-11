@@ -2117,6 +2117,12 @@ dependencies available in the active virtual environment.</p>
 <td>packaged capability prompt</td>
 <td>Replaces the capability-forecaster prompt for the gate call only.</td>
 </tr>
+<tr>
+<td><code>escalation.gate.classifier_target</code></td>
+<td style="text-align: center;">No</td>
+<td>the route's <code>classifier_target</code></td>
+<td>Target the once-per-session gate forecast is called through, so a strong forecaster can gate while a cheap model judges every weak turn.</td>
+</tr>
 </tbody>
 </table>
 <p>Existing configurations that contain <code>escalation</code> but omit <code>mode</code> remain valid.</p>
