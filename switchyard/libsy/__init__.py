@@ -17,6 +17,7 @@ from switchyard_rust.libsy import (
     RoutingOutcome,
     Step,
     TaskClassifierConfig,
+    drive,
 )
 
 from . import algorithms as algorithms
@@ -36,4 +37,5 @@ __all__ = [
     "Step",
     "TaskClassifierConfig",
     "algorithms",
+    "drive",
 ]

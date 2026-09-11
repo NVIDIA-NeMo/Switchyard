@@ -10,6 +10,7 @@ use futures::StreamExt;
 use http::header::{HeaderName, HeaderValue};
 use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyList;
 use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger,
@@ -22,10 +23,24 @@ use switchyard_protocol::{
     LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId,
     Request, Response,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 use crate::errors::{ContextWindowExceededError, py_libsy_error};
 use crate::py_serde::{from_python, to_python};
+
+const RESPONSE_SOURCE_ID: &str = "switchyard.response_source_id";
+
+fn request_from_python(
+    request: &Bound<'_, PyAny>,
+    headers: Option<HashMap<String, String>>,
+) -> PyResult<Request> {
+    let headers = headers.as_ref().map(header_map_from_python).transpose()?;
+    Ok(Request {
+        llm_request: from_python(request)?,
+        raw_request: None,
+        metadata: headers.map(|headers| Metadata::from_headers(&headers)),
+    })
+}
 
 /// The Python API keeps its `session_affinity` flag, which selects the per-session trigger.
 fn classify_trigger(session_affinity: bool) -> ClassifyTrigger {
@@ -357,11 +372,17 @@ enum PyLlmResponse {
 }
 
 impl PyLlmResponse {
-    fn to_core(&self, py: Python<'_>, model: ModelId) -> PyResult<LlmResponse> {
+    fn to_core(
+        &self,
+        py: Python<'_>,
+        model: ModelId,
+        streams: &Py<PyList>,
+    ) -> PyResult<LlmResponse> {
         match self {
             Self::Agg { response } => from_python(response.bind(py)).map(LlmResponse::Agg),
             Self::Stream { stream } => {
-                python_response_stream(py, stream.clone_ref(py), model).map(LlmResponse::Stream)
+                python_response_stream(py, stream.clone_ref(py), model, streams)
+                    .map(LlmResponse::Stream)
             }
         }
     }
@@ -384,12 +405,29 @@ fn python_client_error(py: Python<'_>, error: PyErr, model: &ModelId) -> LlmClie
     }
 }
 
+struct PythonStreamGuard(Py<PyAny>);
+
+impl Drop for PythonStreamGuard {
+    fn drop(&mut self) {
+        Python::attach(|py| {
+            let _ = self.0.bind(py).call_method0("_release");
+        });
+    }
+}
+
 fn python_response_stream(
     py: Python<'_>,
     stream: Py<PyAny>,
     model: ModelId,
+    streams: &Py<PyList>,
 ) -> PyResult<LlmResponseStream> {
-    let iterator = stream.bind(py).call_method0("__aiter__")?.unbind();
+    let iterator = py
+        .import("switchyard_rust.libsy")?
+        .getattr("_InputStream")?
+        .call1((stream,))?
+        .unbind();
+    streams.bind(py).append(iterator.bind(py))?;
+    let iterator = PythonStreamGuard(iterator);
     // Rust polls on Tokio, so retain the Python task's event loop and context for every item.
     let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
     let stream = futures::stream::unfold(Some((iterator, locals, model)), |state| async move {
@@ -397,7 +435,7 @@ fn python_response_stream(
         let next = Python::attach(|py| {
             pyo3_async_runtimes::into_future_with_locals(
                 &locals,
-                iterator.bind(py).call_method0("__anext__")?,
+                iterator.0.bind(py).call_method0("__anext__")?,
             )
         });
         match next {
@@ -430,16 +468,18 @@ struct PyModelCall {
     algorithm: String,
     request: Py<PyAny>,
     models: Vec<String>,
+    streams: Py<PyList>,
 }
 
 impl PyModelCall {
-    fn new(py: Python<'_>, call: CallModel) -> PyResult<Self> {
+    fn new(py: Python<'_>, call: CallModel, streams: Py<PyList>) -> PyResult<Self> {
         let request = to_python(py, &call.request.llm_request)?;
         Ok(Self {
             algorithm: call.algorithm.clone(),
             models: call.models.iter().map(ToString::to_string).collect(),
             inner: Some(call),
             request,
+            streams,
         })
     }
 
@@ -471,7 +511,23 @@ impl PyModelCall {
     }
 
     /// Fulfill this call with a normalized aggregate or streamed response.
-    fn respond(&mut self, py: Python<'_>, response: PyRef<'_, PyLlmResponse>) -> PyResult<()> {
+    ///
+    /// `served_model` names the Switchyard model that answered. `source_id` is a
+    /// nonempty receipt in the host's per-run records. Omitted identifiers stay
+    /// unknown. These fields do not authorize fallbacks or response reuse.
+    #[pyo3(signature = (response, *, served_model=None, source_id=None))]
+    fn respond(
+        &mut self,
+        py: Python<'_>,
+        response: PyRef<'_, PyLlmResponse>,
+        served_model: Option<String>,
+        source_id: Option<String>,
+    ) -> PyResult<()> {
+        for (name, value) in [("served_model", &served_model), ("source_id", &source_id)] {
+            if value.as_ref().is_some_and(String::is_empty) {
+                return Err(PyValueError::new_err(format!("{name} must be nonempty")));
+            }
+        }
         let model = self
             .inner
             .as_ref()
@@ -482,14 +538,32 @@ impl PyModelCall {
             .as_ref()
             .map(ModelId::new)
             .ok_or_else(|| py_libsy_error("model call request is missing its selected model"))?;
-        let llm_response = response.to_core(py, model)?;
+        let llm_response = response.to_core(
+            py,
+            served_model.as_ref().map(ModelId::new).unwrap_or(model),
+            &self.streams,
+        )?;
         let call = self.take()?;
-        let metadata = call.request.metadata.clone();
+        let mut metadata = call.request.metadata.clone().unwrap_or_default();
+        metadata.served_model = served_model.map(ModelId::new);
+        if let Some(extra) = metadata.extra_metadata.as_mut() {
+            extra.remove(RESPONSE_SOURCE_ID);
+        }
+        if let Some(source_id) = source_id {
+            metadata
+                .extra_metadata
+                .get_or_insert_default()
+                .insert(RESPONSE_SOURCE_ID.to_string(), source_id);
+        }
         call.respond(Ok(Response {
             llm_response,
-            metadata,
+            metadata: Some(metadata),
         }))
         .map_err(py_libsy_error)
+    }
+
+    fn _is_completed(&self) -> bool {
+        self.inner.is_none()
     }
 
     /// Fulfill this call with a Python client failure.
@@ -551,6 +625,12 @@ struct PyRoutingOutcome {
     selected_model_ids: Vec<String>,
     request: Py<PyAny>,
     response: Option<Py<PyAny>>,
+    /// The Switchyard model that served the response, if explicitly supplied.
+    #[pyo3(get)]
+    served_model: Option<String>,
+    /// The host's opaque response receipt, if explicitly supplied.
+    #[pyo3(get)]
+    source_id: Option<String>,
     #[pyo3(get)]
     metadata: Option<Py<PyOutcomeMetadata>>,
 }
@@ -581,7 +661,9 @@ impl PyRoutingOutcome {
 /// Async Python iterator over one normalized Rust response stream.
 #[pyclass(name = "_LlmResponseStream", module = "switchyard.libsy", frozen)]
 struct PyLlmResponseStream {
-    inner: Arc<Mutex<LlmResponseStream>>,
+    inner: Arc<Mutex<Option<LlmResponseStream>>>,
+    closed: watch::Sender<bool>,
+    streams: Py<PyList>,
 }
 
 #[pymethods]
@@ -592,17 +674,54 @@ impl PyLlmResponseStream {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let stream = Arc::clone(&self.inner);
+        let mut closed = self.closed.subscribe();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match stream.lock().await.next().await {
+            let next = async {
+                let mut stream = stream.lock().await;
+                match stream.as_mut() {
+                    Some(stream) => stream.next().await,
+                    None => None,
+                }
+            };
+            let event = tokio::select! {
+                biased;
+                _ = closed.wait_for(|closed| *closed) => None,
+                event = next => event,
+            };
+            match event {
                 Some(Ok(event)) => Python::attach(|py| to_python(py, &event)),
                 Some(Err(error)) => Err(py_libsy_error(error)),
                 None => Err(PyStopAsyncIteration::new_err(())),
             }
         })
     }
+
+    fn aclose<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.closed.send_replace(true);
+        let stream = Arc::clone(&self.inner);
+        let streams = self.streams.clone_ref(py);
+        let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            stream.lock().await.take();
+            Python::attach(|py| {
+                pyo3_async_runtimes::into_future_with_locals(
+                    &locals,
+                    py.import("switchyard_rust.libsy")?
+                        .getattr("_close_streams")?
+                        .call1((streams, false))?,
+                )
+            })?
+            .await?;
+            Ok(())
+        })
+    }
 }
 
-fn response_to_python(py: Python<'_>, response: LlmResponse) -> PyResult<Py<PyAny>> {
+fn response_to_python(
+    py: Python<'_>,
+    response: LlmResponse,
+    streams: Py<PyList>,
+) -> PyResult<Py<PyAny>> {
     let response = match response {
         LlmResponse::Agg(response) => PyLlmResponse::Agg {
             response: to_python(py, &response)?,
@@ -611,7 +730,9 @@ fn response_to_python(py: Python<'_>, response: LlmResponse) -> PyResult<Py<PyAn
             stream: Py::new(
                 py,
                 PyLlmResponseStream {
-                    inner: Arc::new(Mutex::new(stream)),
+                    inner: Arc::new(Mutex::new(Some(stream))),
+                    closed: watch::channel(false).0,
+                    streams,
                 },
             )?
             .into_any(),
@@ -635,6 +756,7 @@ enum PyStep {
 #[pyclass(name = "_RunStream", module = "switchyard.libsy", frozen)]
 struct PyRunStream {
     inner: Arc<Mutex<StepStream>>,
+    streams: Py<PyList>,
 }
 
 #[pymethods]
@@ -645,10 +767,11 @@ impl PyRunStream {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let stream = Arc::clone(&self.inner);
+        let streams = self.streams.clone_ref(py);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let step = stream.lock().await.next().await;
             match step {
-                Some(Ok(step)) => step_to_python(step),
+                Some(Ok(step)) => step_to_python(step, streams),
                 Some(Err(error)) => Err(py_libsy_error(error)),
                 None => Err(PyStopAsyncIteration::new_err(())),
             }
@@ -676,18 +799,15 @@ impl PyAlgorithm {
         request: &Bound<'_, PyAny>,
         headers: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<PyRunStream> {
-        let headers = headers.as_ref().map(header_map_from_python).transpose()?;
-        let request = Request {
-            llm_request: from_python(request)?,
-            raw_request: None,
-            metadata: headers.map(|headers| Metadata::from_headers(&headers)),
-        };
+        let streams = PyList::empty(request.py()).unbind();
+        let request = request_from_python(request, headers)?;
         let stream = {
             let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
             Arc::clone(&self.inner).run_stream(request)
         };
         Ok(PyRunStream {
             inner: Arc::new(Mutex::new(stream)),
+            streams,
         })
     }
 
@@ -696,42 +816,110 @@ impl PyAlgorithm {
     }
 }
 
-fn step_to_python(step: RustStep) -> PyResult<PyStep> {
+fn step_to_python(step: RustStep, streams: Py<PyList>) -> PyResult<PyStep> {
     match step {
         RustStep::CallModel(call) => Python::attach(|py| {
             Ok(PyStep::CallModel {
-                call: Py::new(py, PyModelCall::new(py, *call)?)?,
+                call: Py::new(py, PyModelCall::new(py, *call, streams)?)?,
             })
         }),
-        RustStep::Done(outcome) => {
-            let RoutingOutcome {
-                selected_model_ids,
-                request,
-                response,
-                metadata,
-            } = *outcome;
-            Python::attach(|py| {
-                Ok(PyStep::Done {
-                    outcome: Py::new(
-                        py,
-                        PyRoutingOutcome {
-                            metadata: metadata
-                                .map(|inner| Py::new(py, PyOutcomeMetadata { inner }))
-                                .transpose()?,
-                            selected_model_ids: selected_model_ids
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect(),
-                            request: to_python(py, &request.llm_request)?,
-                            response: response
-                                .map(|response| response_to_python(py, response.llm_response))
-                                .transpose()?,
-                        },
-                    )?,
-                })
+        RustStep::Done(outcome) => Python::attach(|py| {
+            Ok(PyStep::Done {
+                outcome: outcome_to_python(py, *outcome, streams)?,
             })
-        }
+        }),
     }
+}
+
+fn outcome_to_python(
+    py: Python<'_>,
+    outcome: RoutingOutcome,
+    streams: Py<PyList>,
+) -> PyResult<Py<PyRoutingOutcome>> {
+    let source = outcome
+        .response
+        .as_ref()
+        .and_then(|response| response.metadata.as_ref());
+    let served_model = source
+        .and_then(|metadata| metadata.served_model.as_ref())
+        .map(ToString::to_string);
+    let source_id = source
+        .and_then(|metadata| metadata.extra_metadata.as_ref())
+        .and_then(|extra| extra.get(RESPONSE_SOURCE_ID))
+        .cloned();
+    Py::new(
+        py,
+        PyRoutingOutcome {
+            served_model,
+            source_id,
+            selected_model_ids: outcome
+                .selected_model_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            request: to_python(py, &outcome.request.llm_request)?,
+            response: outcome
+                .response
+                .map(|response| response_to_python(py, response.llm_response, streams))
+                .transpose()?,
+            metadata: outcome
+                .metadata
+                .map(|inner| Py::new(py, PyOutcomeMetadata { inner }))
+                .transpose()?,
+        },
+    )
+}
+
+/// The Python wrapper owns cancellation and joins callbacks after this future stops.
+#[pyfunction]
+#[pyo3(signature = (algorithm, request, serve, stop, streams, headers=None))]
+fn _drive<'py>(
+    py: Python<'py>,
+    algorithm: PyRef<'_, PyAlgorithm>,
+    request: &Bound<'_, PyAny>,
+    serve: Py<PyAny>,
+    stop: &Bound<'_, PyAny>,
+    streams: Py<PyList>,
+    headers: Option<HashMap<String, String>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let algorithm = Arc::clone(&algorithm.inner);
+    let request = request_from_python(request, headers)?;
+    let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
+    let stop = pyo3_async_runtimes::into_future_with_locals(&locals, stop.call_method0("wait")?)?;
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let run = switchyard_libsy::drive(algorithm, request, |call| {
+            let future = Python::attach(|py| {
+                let call = Py::new(py, PyModelCall::new(py, call, streams.clone_ref(py))?)?;
+                pyo3_async_runtimes::into_future_with_locals(
+                    &locals,
+                    serve.bind(py).call1((call,))?,
+                )
+            });
+            async move {
+                match future {
+                    Ok(future) => future.await.map(|_| ()),
+                    Err(error) => Err(error),
+                }
+                .map_err(|error| RustLibsyError::external("Python host callback", error))
+            }
+        });
+        let outcome = tokio::select! {
+            _ = stop => return Ok(None),
+            outcome = run => outcome,
+        };
+        Python::attach(|py| {
+            let outcome = outcome.map_err(|error| {
+                let exception = py_libsy_error(&error);
+                if let RustLibsyError::External { source, .. } = error
+                    && let Ok(cause) = source.downcast::<PyErr>()
+                {
+                    exception.set_cause(py, Some(*cause));
+                }
+                exception
+            })?;
+            outcome_to_python(py, outcome, streams).map(Some)
+        })
+    })
 }
 
 /// Construct the no-op reference algorithm.
@@ -905,6 +1093,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     libsy_module.add_class::<PyRoutingOutcome>()?;
     libsy_module.add_class::<PyStep>()?;
     libsy_module.add_class::<PyTaskClassifierConfig>()?;
+    libsy_module.add_function(wrap_pyfunction!(_drive, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(noop_algorithm, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(random_algorithm, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(llm_classifier_algorithm, &libsy_module)?)?;
