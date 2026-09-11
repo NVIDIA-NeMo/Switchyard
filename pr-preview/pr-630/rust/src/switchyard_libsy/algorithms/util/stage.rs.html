@@ -579,7 +579,7 @@
 <a href=#579 id=579 data-nosnippet>579</a>                    Tier::Capable =&gt; Category::Capable,
 <a href=#580 id=580 data-nosnippet>580</a>                    Tier::Efficient =&gt; Category::Efficient,
 <a href=#581 id=581 data-nosnippet>581</a>                };
-<a href=#582 id=582 data-nosnippet>582</a>                <span class="kw">let </span>target = driver.first_model_for(category)<span class="question-mark">?</span>;
+<a href=#582 id=582 data-nosnippet>582</a>                <span class="kw">let </span>target = driver.first_model_for(<span class="kw-2">&amp;</span>category)<span class="question-mark">?</span>;
 <a href=#583 id=583 data-nosnippet>583</a>                record_decision_source(state, source);
 <a href=#584 id=584 data-nosnippet>584</a>                record_routing_decision(source, target);
 <a href=#585 id=585 data-nosnippet>585</a>                <span class="comment">// Only a resolved turn routes on this classifier's target, so it

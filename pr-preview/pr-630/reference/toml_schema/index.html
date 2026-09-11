@@ -2097,9 +2097,13 @@ dependencies available in the active virtual environment.</p>
 </table>
 <p>Existing configurations that contain <code>escalation</code> but omit <code>mode</code> remain valid.</p>
 <p>Custom mode validates the judge's JSON against <code>response_schema</code>, resolves the
-policy selector, and routes to a runtime model category. A verdict names a
-category and the first model in it serves the turn; if that call fails the client
-falls through the rest of that category, then through whatever <code>models.any</code> adds.</p>
+policy selector, and routes to a runtime model group. A verdict names a group and
+the first model in it serves the turn; if that call fails the client falls through
+the rest of that group, then through whatever <code>models.any</code> adds.</p>
+<p>The <code>[routes.&lt;name&gt;.models]</code> table takes any group name you choose. <code>any</code> and
+<code>judge</code> are reserved and required; <code>capable</code> and <code>efficient</code> are reserved for the
+tier meaning the other algorithms give them. Every other key is yours, which is
+how one route chooses between more than two models.</p>
 <table>
 <thead>
 <tr>
@@ -2114,31 +2118,37 @@ falls through the rest of that category, then through whatever <code>models.any<
 <td><code>models.any</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>Every selectable completion target, in last-resort fallback order. A target missing from this list is rejected at routing time.</td>
+<td>Every selectable completion target, in last-resort fallback order. Every other group's targets must also appear here; one that does not is rejected at configuration load.</td>
 </tr>
 <tr>
 <td><code>models.judge</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>One or more ordered judge candidates.</td>
+<td>One or more ordered judge candidates. Not a completion destination.</td>
 </tr>
 <tr>
 <td><code>models.capable</code></td>
-<td style="text-align: center;">When used</td>
+<td style="text-align: center;">No</td>
 <td>—</td>
-<td>Ordered capable-tier models. A <code>capable</code> verdict selects the first and falls through the rest in order. May be omitted when neither the policy nor <code>default_target</code> selects <code>capable</code>.</td>
+<td>Ordered capable-tier models. A <code>capable</code> verdict selects the first and falls through the rest in order.</td>
 </tr>
 <tr>
 <td><code>models.efficient</code></td>
-<td style="text-align: center;">When used</td>
+<td style="text-align: center;">No</td>
 <td>—</td>
-<td>Ordered efficient-tier models. An <code>efficient</code> verdict selects the first and falls through the rest in order. May be omitted when neither the policy nor <code>default_target</code> selects <code>efficient</code>.</td>
+<td>Ordered efficient-tier models. An <code>efficient</code> verdict selects the first and falls through the rest in order.</td>
+</tr>
+<tr>
+<td><code>models.&lt;your name&gt;</code></td>
+<td style="text-align: center;">No</td>
+<td>—</td>
+<td>A group you name. A verdict naming it selects its first model and falls through the rest in order.</td>
 </tr>
 <tr>
 <td><code>default_target</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>Category used when the judge fails or its verdict cannot be routed. Must be <code>any</code>, <code>capable</code>, or <code>efficient</code>, and that category must contain at least one target.</td>
+<td>Group used when the judge fails or its verdict cannot be routed. Any group except <code>judge</code>, and it must contain at least one target.</td>
 </tr>
 <tr>
 <td><code>prompt</code></td>
@@ -2178,8 +2188,9 @@ falls through the rest of that category, then through whatever <code>models.any<
 </tr>
 </tbody>
 </table>
-<p>The selected JSON label must be <code>any</code>, <code>judge</code>, <code>capable</code>, or <code>efficient</code>. A
-label naming a target rather than one of those falls back to <code>default_target</code>.</p>
+<p>The selected JSON label must name a configured group. A label naming a target
+rather than a group, or a group you did not configure, falls back to
+<code>default_target</code>. <code>judge</code> is not routable.</p>
 <p>Classifier prompts must not contain <code>{{RESPONSE_SCHEMA}}</code>. Switchyard supplies
 the schema automatically: through the structured-output request in <code>json_schema</code>
 mode, or in the prompt in <code>json_object</code> mode.</p>

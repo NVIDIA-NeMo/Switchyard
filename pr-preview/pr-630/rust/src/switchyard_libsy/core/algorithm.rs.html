@@ -66,15 +66,15 @@
 <a href=#66 id=66 data-nosnippet>66</a>    </span>}
 <a href=#67 id=67 data-nosnippet>67</a>
 <a href=#68 id=68 data-nosnippet>68</a>    <span class="doccomment">/// The models in `category`, ordered best-first.
-<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub fn </span>models_for(<span class="kw-2">&amp;</span><span class="self">self</span>, category: Category) -&gt; <span class="kw-2">&amp;</span>[ModelId] {
-<a href=#70 id=70 data-nosnippet>70</a>        <span class="self">self</span>.by_category.get(<span class="kw-2">&amp;</span>category).map_or(<span class="kw-2">&amp;</span>[], Vec::as_slice)
+<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub fn </span>models_for(<span class="kw-2">&amp;</span><span class="self">self</span>, category: <span class="kw-2">&amp;</span>Category) -&gt; <span class="kw-2">&amp;</span>[ModelId] {
+<a href=#70 id=70 data-nosnippet>70</a>        <span class="self">self</span>.by_category.get(category).map_or(<span class="kw-2">&amp;</span>[], Vec::as_slice)
 <a href=#71 id=71 data-nosnippet>71</a>    }
 <a href=#72 id=72 data-nosnippet>72</a>
 <a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// The models delegated sub-agent work uses for `category`, ordered best-first.
-<a href=#74 id=74 data-nosnippet>74</a>    </span><span class="kw">pub fn </span>subagent_models_for(<span class="kw-2">&amp;</span><span class="self">self</span>, category: Category) -&gt; <span class="kw-2">&amp;</span>[ModelId] {
+<a href=#74 id=74 data-nosnippet>74</a>    </span><span class="kw">pub fn </span>subagent_models_for(<span class="kw-2">&amp;</span><span class="self">self</span>, category: <span class="kw-2">&amp;</span>Category) -&gt; <span class="kw-2">&amp;</span>[ModelId] {
 <a href=#75 id=75 data-nosnippet>75</a>        <span class="self">self</span>.subagent
 <a href=#76 id=76 data-nosnippet>76</a>            .as_ref()
-<a href=#77 id=77 data-nosnippet>77</a>            .and_then(|models| models.get(<span class="kw-2">&amp;</span>category))
+<a href=#77 id=77 data-nosnippet>77</a>            .and_then(|models| models.get(category))
 <a href=#78 id=78 data-nosnippet>78</a>            .map_or(<span class="kw-2">&amp;</span>[], Vec::as_slice)
 <a href=#79 id=79 data-nosnippet>79</a>    }
 <a href=#80 id=80 data-nosnippet>80</a>}
@@ -292,7 +292,7 @@
 <a href=#292 id=292 data-nosnippet>292</a>    }
 <a href=#293 id=293 data-nosnippet>293</a>
 <a href=#294 id=294 data-nosnippet>294</a>    <span class="doccomment">/// The available models for this category, typically ordered best-first.
-<a href=#295 id=295 data-nosnippet>295</a>    </span><span class="kw">pub fn </span>models_for(<span class="kw-2">&amp;</span><span class="self">self</span>, category: Category) -&gt; <span class="kw-2">&amp;</span>[ModelId] {
+<a href=#295 id=295 data-nosnippet>295</a>    </span><span class="kw">pub fn </span>models_for(<span class="kw-2">&amp;</span><span class="self">self</span>, category: <span class="kw-2">&amp;</span>Category) -&gt; <span class="kw-2">&amp;</span>[ModelId] {
 <a href=#296 id=296 data-nosnippet>296</a>        <span class="kw">match </span><span class="self">self</span>.scope {
 <a href=#297 id=297 data-nosnippet>297</a>            Scope::Parent =&gt; <span class="self">self</span>.models.models_for(category),
 <a href=#298 id=298 data-nosnippet>298</a>            Scope::Subagent =&gt; <span class="self">self</span>.models.subagent_models_for(category),
@@ -300,11 +300,11 @@
 <a href=#300 id=300 data-nosnippet>300</a>    }
 <a href=#301 id=301 data-nosnippet>301</a>
 <a href=#302 id=302 data-nosnippet>302</a>    <span class="doccomment">/// The first available model for `category`.
-<a href=#303 id=303 data-nosnippet>303</a>    </span><span class="kw">pub fn </span>first_model_for(<span class="kw-2">&amp;</span><span class="self">self</span>, category: Category) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="kw-2">&amp;</span>ModelId&gt; {
+<a href=#303 id=303 data-nosnippet>303</a>    </span><span class="kw">pub fn </span>first_model_for(<span class="kw-2">&amp;</span><span class="self">self</span>, category: <span class="kw-2">&amp;</span>Category) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="kw-2">&amp;</span>ModelId&gt; {
 <a href=#304 id=304 data-nosnippet>304</a>        <span class="self">self</span>.models_for(category)
 <a href=#305 id=305 data-nosnippet>305</a>            .first()
 <a href=#306 id=306 data-nosnippet>306</a>            .ok_or_else(|| LibsyError::AlgorithmError {
-<a href=#307 id=307 data-nosnippet>307</a>                message: <span class="string">"no models available for category "</span>.to_string() + category.as_str(),
+<a href=#307 id=307 data-nosnippet>307</a>                message: <span class="macro">format!</span>(<span class="string">"no models available for category {}"</span>, category.as_str()),
 <a href=#308 id=308 data-nosnippet>308</a>            })
 <a href=#309 id=309 data-nosnippet>309</a>    }
 <a href=#310 id=310 data-nosnippet>310</a>

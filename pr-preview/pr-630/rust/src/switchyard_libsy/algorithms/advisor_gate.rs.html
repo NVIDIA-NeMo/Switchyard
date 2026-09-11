@@ -197,7 +197,7 @@
 <a href=#197 id=197 data-nosnippet>197</a>        request: Request,
 <a href=#198 id=198 data-nosnippet>198</a>        scope: <span class="kw-2">&amp;</span>ScopeKey,
 <a href=#199 id=199 data-nosnippet>199</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;RoutingOutcome&gt; {
-<a href=#200 id=200 data-nosnippet>200</a>        <span class="kw">let </span>executor = driver.first_model_for(Category::Any)<span class="question-mark">?</span>;
+<a href=#200 id=200 data-nosnippet>200</a>        <span class="kw">let </span>executor = driver.first_model_for(<span class="kw-2">&amp;</span>Category::Any)<span class="question-mark">?</span>;
 <a href=#201 id=201 data-nosnippet>201</a>
 <a href=#202 id=202 data-nosnippet>202</a>        <span class="comment">// Spent budget (or failure cap): pure passthrough — live stream,
 <a href=#203 id=203 data-nosnippet>203</a>        // verbatim preserved-body replay, zero buffering. Executor errors
@@ -349,7 +349,7 @@
 <a href=#349 id=349 data-nosnippet>349</a>        review_tail: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;,
 <a href=#350 id=350 data-nosnippet>350</a>        trigger: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
 <a href=#351 id=351 data-nosnippet>351</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;ConsultOutcome&gt; {
-<a href=#352 id=352 data-nosnippet>352</a>        <span class="kw">let </span>advisor = driver.first_model_for(Category::Judge)<span class="question-mark">?</span>;
+<a href=#352 id=352 data-nosnippet>352</a>        <span class="kw">let </span>advisor = driver.first_model_for(<span class="kw-2">&amp;</span>Category::Judge)<span class="question-mark">?</span>;
 <a href=#353 id=353 data-nosnippet>353</a>        <span class="comment">// The advisor reviews the FULL transcript: system/developer content is
 <a href=#354 id=354 data-nosnippet>354</a>        // normalized out of `messages` into `instructions`, so prepend it back
 <a href=#355 id=355 data-nosnippet>355</a>        // as leading messages (identical {role, content} shape) — the task

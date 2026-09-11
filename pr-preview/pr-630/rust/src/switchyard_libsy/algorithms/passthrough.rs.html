@@ -20,7 +20,7 @@
 <a href=#20 id=20 data-nosnippet>20</a>    </span>}
 <a href=#21 id=21 data-nosnippet>21</a>
 <a href=#22 id=22 data-nosnippet>22</a>    <span class="kw">async fn </span>route(<span class="self">self</span>: Arc&lt;<span class="self">Self</span>&gt;, driver: Driver, request: Request) -&gt; <span class="prelude-ty">Result</span>&lt;RoutingOutcome&gt; {
-<a href=#23 id=23 data-nosnippet>23</a>        <span class="kw">let </span><span class="kw-2">mut </span>models = driver.models_for(Category::Any).to_vec();
+<a href=#23 id=23 data-nosnippet>23</a>        <span class="kw">let </span><span class="kw-2">mut </span>models = driver.models_for(<span class="kw-2">&amp;</span>Category::Any).to_vec();
 <a href=#24 id=24 data-nosnippet>24</a>        <span class="comment">// Selected is the first one. The rest are fallbacks.
 <a href=#25 id=25 data-nosnippet>25</a>        </span><span class="kw">let </span><span class="prelude-val">Some</span>(target) = models.pop() <span class="kw">else </span>{
 <a href=#26 id=26 data-nosnippet>26</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::NoTargets);

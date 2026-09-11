@@ -242,7 +242,7 @@
 <a href=#242 id=242 data-nosnippet>242</a>    <span class="doccomment">/// Adds fail-open evidence only for evidence-enabled judges and preserves an earlier decision.
 <a href=#243 id=243 data-nosnippet>243</a>    </span><span class="kw">fn </span>report_fail_open(<span class="kw-2">&amp;</span><span class="self">self</span>, driver: <span class="kw-2">&amp;</span>Driver, error: String, reason: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str) {
 <a href=#244 id=244 data-nosnippet>244</a>        <span class="kw">let </span>judge_target = driver
-<a href=#245 id=245 data-nosnippet>245</a>            .first_model_for(Category::Judge)
+<a href=#245 id=245 data-nosnippet>245</a>            .first_model_for(<span class="kw-2">&amp;</span>Category::Judge)
 <a href=#246 id=246 data-nosnippet>246</a>            .map(|c| c.as_str())
 <a href=#247 id=247 data-nosnippet>247</a>            .unwrap_or(<span class="string">"missing"</span>);
 <a href=#248 id=248 data-nosnippet>248</a>        report_fail_open(judge_target, error, reason);
@@ -347,7 +347,7 @@
 <a href=#347 id=347 data-nosnippet>347</a>        request: <span class="kw-2">&amp;mut </span>Request,
 <a href=#348 id=348 data-nosnippet>348</a>        driver: <span class="kw-2">&amp;</span>Driver,
 <a href=#349 id=349 data-nosnippet>349</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
-<a href=#350 id=350 data-nosnippet>350</a>        <span class="kw">let </span>judge_models = driver.models_for(Category::Judge);
+<a href=#350 id=350 data-nosnippet>350</a>        <span class="kw">let </span>judge_models = driver.models_for(<span class="kw-2">&amp;</span>Category::Judge);
 <a href=#351 id=351 data-nosnippet>351</a>        <span class="kw">if </span>judge_models.is_empty() {
 <a href=#352 id=352 data-nosnippet>352</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::AlgorithmError {
 <a href=#353 id=353 data-nosnippet>353</a>                message: <span class="string">"no models available for category Judge"</span>.to_string(),

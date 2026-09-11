@@ -246,7 +246,7 @@
 <a href=#246 id=246 data-nosnippet>246</a>        <span class="kw">let </span><span class="kw-2">mut </span>assignments = <span class="self">self</span>.assignments.lock();
 <a href=#247 id=247 data-nosnippet>247</a>        <span class="kw">let </span>assigned = assignments.get(<span class="kw-2">&amp;</span>key).cloned();
 <a href=#248 id=248 data-nosnippet>248</a>        <span class="kw">let </span>assigned = <span class="kw">match </span>assigned.as_ref() {
-<a href=#249 id=249 data-nosnippet>249</a>            <span class="prelude-val">Some</span>(target) <span class="kw">if </span>!driver.models_for(Category::Any).contains(target) =&gt; {
+<a href=#249 id=249 data-nosnippet>249</a>            <span class="prelude-val">Some</span>(target) <span class="kw">if </span>!driver.models_for(<span class="kw-2">&amp;</span>Category::Any).contains(target) =&gt; {
 <a href=#250 id=250 data-nosnippet>250</a>                assignments.remove(<span class="kw-2">&amp;</span>key);
 <a href=#251 id=251 data-nosnippet>251</a>                <span class="prelude-val">None
 <a href=#252 id=252 data-nosnippet>252</a>            </span>}

@@ -144,12 +144,12 @@
 <a href=#144 id=144 data-nosnippet>144</a>        }
 <a href=#145 id=145 data-nosnippet>145</a>        <span class="kw">match </span>verdict {
 <a href=#146 id=146 data-nosnippet>146</a>            <span class="prelude-val">Some</span>(verdict) <span class="kw">if </span>verdict.escalate =&gt; <span class="prelude-val">Ok</span>(Classification::Scores(<span class="macro">vec!</span>[Score {
-<a href=#147 id=147 data-nosnippet>147</a>                target: driver.first_model_for(Category::Capable)<span class="question-mark">?</span>.clone(),
+<a href=#147 id=147 data-nosnippet>147</a>                target: driver.first_model_for(<span class="kw-2">&amp;</span>Category::Capable)<span class="question-mark">?</span>.clone(),
 <a href=#148 id=148 data-nosnippet>148</a>                confidence: <span class="number">1.0</span>,
 <a href=#149 id=149 data-nosnippet>149</a>                category: <span class="prelude-val">Some</span>(Category::Capable),
 <a href=#150 id=150 data-nosnippet>150</a>            }])),
 <a href=#151 id=151 data-nosnippet>151</a>            <span class="prelude-val">Some</span>(<span class="kw">_</span>) =&gt; <span class="prelude-val">Ok</span>(Classification::Scores(<span class="macro">vec!</span>[Score {
-<a href=#152 id=152 data-nosnippet>152</a>                target: driver.first_model_for(Category::Efficient)<span class="question-mark">?</span>.clone(),
+<a href=#152 id=152 data-nosnippet>152</a>                target: driver.first_model_for(<span class="kw-2">&amp;</span>Category::Efficient)<span class="question-mark">?</span>.clone(),
 <a href=#153 id=153 data-nosnippet>153</a>                confidence: <span class="number">1.0</span>,
 <a href=#154 id=154 data-nosnippet>154</a>                category: <span class="prelude-val">Some</span>(Category::Efficient),
 <a href=#155 id=155 data-nosnippet>155</a>            }])),

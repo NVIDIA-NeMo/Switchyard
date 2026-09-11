@@ -161,9 +161,9 @@
 <a href=#161 id=161 data-nosnippet>161</a>                // alternatives to the model the classifier picked, in the order it ranked
 <a href=#162 id=162 data-nosnippet>162</a>                // them. Every other runtime target follows as a last resort, so a route
 <a href=#163 id=163 data-nosnippet>163</a>                // whose category holds one model still fails over to the other tier.
-<a href=#164 id=164 data-nosnippet>164</a>                </span><span class="kw">let </span>chosen = driver.models_for(score.category.unwrap_or(Category::Any));
+<a href=#164 id=164 data-nosnippet>164</a>                </span><span class="kw">let </span>chosen = driver.models_for(score.category.as_ref().unwrap_or(<span class="kw-2">&amp;</span>Category::Any));
 <a href=#165 id=165 data-nosnippet>165</a>                <span class="kw">let </span><span class="kw-2">mut </span>fallback_models: Vec&lt;ModelId&gt; = Vec::new();
-<a href=#166 id=166 data-nosnippet>166</a>                <span class="kw">for </span>candidate <span class="kw">in </span>chosen.iter().chain(driver.models_for(Category::Any)) {
+<a href=#166 id=166 data-nosnippet>166</a>                <span class="kw">for </span>candidate <span class="kw">in </span>chosen.iter().chain(driver.models_for(<span class="kw-2">&amp;</span>Category::Any)) {
 <a href=#167 id=167 data-nosnippet>167</a>                    <span class="kw">if </span><span class="kw-2">*</span>candidate != target &amp;&amp; !fallback_models.contains(candidate) {
 <a href=#168 id=168 data-nosnippet>168</a>                        fallback_models.push(candidate.clone());
 <a href=#169 id=169 data-nosnippet>169</a>                    }
@@ -226,7 +226,7 @@
 <a href=#226 id=226 data-nosnippet>226</a>        };
 <a href=#227 id=227 data-nosnippet>227</a>
 <a href=#228 id=228 data-nosnippet>228</a>        <span class="comment">// 3. Resolve the target and log the choice.
-<a href=#229 id=229 data-nosnippet>229</a>        </span>algorithm::ensure_model_is_target(driver.models_for(Category::Any), <span class="kw-2">&amp;</span>score.target)<span class="question-mark">?</span>;
+<a href=#229 id=229 data-nosnippet>229</a>        </span>algorithm::ensure_model_is_target(driver.models_for(<span class="kw-2">&amp;</span>Category::Any), <span class="kw-2">&amp;</span>score.target)<span class="question-mark">?</span>;
 <a href=#230 id=230 data-nosnippet>230</a>        <span class="kw">let </span>target = score.target.clone();
 <a href=#231 id=231 data-nosnippet>231</a>        <span class="macro">tracing::info!</span>(algorithm=<span class="self">self</span>.name, target=%score.target, confidence=score.confidence, <span class="string">"Model selected"</span>);
 <a href=#232 id=232 data-nosnippet>232</a>
@@ -236,7 +236,7 @@
 <a href=#236 id=236 data-nosnippet>236</a>            <span class="kw">let </span>event = Event::Decision {
 <a href=#237 id=237 data-nosnippet>237</a>                request,
 <a href=#238 id=238 data-nosnippet>238</a>                selected_model_id: <span class="kw-2">&amp;</span>target,
-<a href=#239 id=239 data-nosnippet>239</a>                category: score.category,
+<a href=#239 id=239 data-nosnippet>239</a>                category: score.category.clone(),
 <a href=#240 id=240 data-nosnippet>240</a>                driver,
 <a href=#241 id=241 data-nosnippet>241</a>            };
 <a href=#242 id=242 data-nosnippet>242</a>            processor.process(state, event).<span class="kw">await</span><span class="question-mark">?</span>;

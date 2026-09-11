@@ -89,7 +89,7 @@
 <a href=#89 id=89 data-nosnippet>89</a>        driver: <span class="kw-2">&amp;</span>Driver,
 <a href=#90 id=90 data-nosnippet>90</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(Classification, <span class="prelude-ty">Option</span>&lt;Response&gt;)&gt; {
 <a href=#91 id=91 data-nosnippet>91</a>        <span class="comment">// All the available models
-<a href=#92 id=92 data-nosnippet>92</a>        </span><span class="kw">let </span>options = driver.models_for(Category::Any);
+<a href=#92 id=92 data-nosnippet>92</a>        </span><span class="kw">let </span>options = driver.models_for(<span class="kw-2">&amp;</span>Category::Any);
 <a href=#93 id=93 data-nosnippet>93</a>        <span class="kw">if </span>options.is_empty() {
 <a href=#94 id=94 data-nosnippet>94</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::NoTargets);
 <a href=#95 id=95 data-nosnippet>95</a>        }
