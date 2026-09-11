@@ -16,7 +16,7 @@ use super::llm_judge::{
     ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
     StructuredJudge,
 };
-use crate::algorithms::llm_class::VerdictScale;
+use crate::algorithms::llm_class::{self, VerdictScale};
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
@@ -78,7 +78,14 @@ pub struct EscalationJudgeConfig {
 #[serde(deny_unknown_fields)]
 pub struct EscalationGateConfig {
     /// Lowest solve probability that keeps the session on the efficient tier. In `[0, 1]`.
-    pub base_threshold: f64,
+    /// Exactly one of `base_threshold` and `min_confidence` must be set.
+    #[serde(default)]
+    pub base_threshold: Option<f64>,
+    /// The threshold as a ladder rung: the efficient tier keeps this rung and every rung above
+    /// it, and every rung below latches to the capable tier. Pairs naturally with
+    /// `verdict_scale = "ordinal"`, so an ordinal configuration carries no numbers at all.
+    #[serde(default)]
+    pub min_confidence: Option<String>,
     /// Added once for uncertain or unmatched verdicts and twice for unsupported verdicts, as in
     /// capability mode. `base_threshold + 2 * threshold_step` must be at most `1`.
     #[serde(default)]
@@ -100,12 +107,33 @@ pub struct EscalationGateConfig {
 }
 
 impl EscalationGateConfig {
+    /// The numeric threshold the gate applies, from whichever form the operator wrote.
+    pub(crate) fn threshold(&self) -> Result<f64> {
+        let reject = |message: String| Err(LibsyError::AlgorithmError { message });
+        match (self.base_threshold, self.min_confidence.as_deref()) {
+            (Some(threshold), None) => Ok(threshold),
+            (None, Some(rung)) => llm_class::rung_threshold(rung).ok_or_else(|| {
+                LibsyError::AlgorithmError {
+                    message: format!(
+                        "gate.min_confidence must be a ladder rung (surely, extremely_likely, very_likely, likely, uncertain, unlikely, very_unlikely, almost_surely_not), got {rung:?}"
+                    ),
+                }
+            }),
+            (Some(_), Some(_)) => reject(
+                "gate.base_threshold and gate.min_confidence cannot both be set".to_string(),
+            ),
+            (None, None) => reject(
+                "gate needs base_threshold or min_confidence".to_string(),
+            ),
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         let reject = |message: String| Err(LibsyError::AlgorithmError { message });
-        if !(0.0..=1.0).contains(&self.base_threshold) {
+        let threshold = self.threshold()?;
+        if !(0.0..=1.0).contains(&threshold) {
             return reject(format!(
-                "gate.base_threshold must be between 0 and 1, got {}",
-                self.base_threshold
+                "gate.base_threshold must be between 0 and 1, got {threshold}"
             ));
         }
         if !self.threshold_step.is_finite() || self.threshold_step < 0.0 {
@@ -114,7 +142,7 @@ impl EscalationGateConfig {
                 self.threshold_step
             ));
         }
-        let unsupported_threshold = self.base_threshold + 2.0 * self.threshold_step;
+        let unsupported_threshold = threshold + 2.0 * self.threshold_step;
         if unsupported_threshold > 1.0 {
             return reject(format!(
                 "gate.base_threshold + 2 * gate.threshold_step must be at most 1, got {unsupported_threshold}"

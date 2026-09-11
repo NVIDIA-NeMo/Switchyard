@@ -217,7 +217,8 @@ Escalation mode serves the weak target first and judges the completed turn. See
 | `escalation.recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
 | `escalation.window_message_chars` | No | `500` | Per-message cap inside that window. |
 | `escalation.gate` | No | unset | Up-front capability gate: judges the first request of a session from the task framing with the packaged capability forecaster and latches to `strong_target` when `p_solve` is below the threshold, before `weak_target` is called. Needs a session ID. |
-| `escalation.gate.base_threshold` | Yes, when `gate` is set | — | Lowest solve probability that keeps the session on `weak_target`. In `[0, 1]`. |
+| `escalation.gate.base_threshold` | One of the two, when `gate` is set | — | Lowest solve probability that keeps the session on `weak_target`. In `[0, 1]`. |
+| `escalation.gate.min_confidence` | One of the two, when `gate` is set | — | The threshold as a ladder rung: `weak_target` keeps this rung and every rung above it, every rung below latches to `strong_target`. Use with `verdict_scale = "ordinal"` for a configuration with no numbers. |
 | `escalation.gate.threshold_step` | No | `0.0` | Added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `escalation.gate.prompt` | No | packaged capability prompt | Replaces the capability-forecaster prompt for the gate call only. |
 | `escalation.gate.classifier_target` | No | the route's `classifier_target` | Target the once-per-session gate forecast is called through, so a strong forecaster can gate while a cheap model judges every weak turn. |

@@ -126,9 +126,16 @@ ladder (`surely` down to `almost_surely_not`) instead of a probability. Models
 produce ordinal judgements more reliably than calibrated numbers: asked for a
 probability they cluster on a few round values, and given a stated cutoff they
 write a number just under it. Each rung maps to the midpoint of the frequency
-band it names, so `base_threshold` still selects the split; a threshold of 0.45
-latches `unlikely` and below, 0.55 latches `uncertain` and below. The chosen
-rung is recorded in the evidence next to the score. The gate verdict is recorded in the route's
+band it names, so `base_threshold` still selects the split. Better, write the
+threshold as a rung too:
+
+```toml
+escalation = { confirmations = 1, gate = { verdict_scale = "ordinal", min_confidence = "uncertain" } }
+```
+
+keeps `uncertain` and everything above it on the weak tier and latches
+`unlikely` and below, with no number anywhere in the prompt, the answer or the
+configuration. The chosen rung is recorded in the evidence next to the score. The gate verdict is recorded in the route's
 evidence as `{"source": "escalation", "verdict": "gate"}`.
 
 ## Judge model compatibility

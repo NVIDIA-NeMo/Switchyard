@@ -480,7 +480,8 @@ mod tests {
                 config: EscalationJudgeConfig {
                     confirmations: 1,
                     gate: Some(EscalationGateConfig {
-                        base_threshold,
+                        base_threshold: Some(base_threshold),
+                        min_confidence: None,
                         threshold_step: 0.0,
                         prompt: None,
                         classifier_target: None,
@@ -529,8 +530,9 @@ mod tests {
             config: EscalationJudgeConfig {
                 confirmations: 1,
                 gate: Some(EscalationGateConfig {
-                    // Between `uncertain` (0.50) and `unlikely` (0.38): unlikely and below latch.
-                    base_threshold: 0.45,
+                    // Keep `uncertain` and above on the efficient tier; `unlikely` and below latch.
+                    base_threshold: None,
+                    min_confidence: Some("uncertain".to_string()),
                     threshold_step: 0.0,
                     prompt: None,
                     classifier_target: None,
@@ -629,7 +631,8 @@ mod tests {
                 contract: ClassifierContractConfig::default(),
                 config: EscalationJudgeConfig {
                     gate: Some(EscalationGateConfig {
-                        base_threshold,
+                        base_threshold: Some(base_threshold),
+                        min_confidence: None,
                         threshold_step: 0.0,
                         prompt: None,
                         classifier_target: None,
@@ -643,6 +646,32 @@ mod tests {
         };
         assert!(build(0.4).is_ok());
         assert!(build(1.5).is_err());
+
+        let rung = |min_confidence: Option<&str>, base_threshold: Option<f64>| {
+            LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+                judge_target: ModelId::from("judge"),
+                efficient_target: ModelId::from("efficient"),
+                capable_target: ModelId::from("capable"),
+                contract: ClassifierContractConfig::default(),
+                config: EscalationJudgeConfig {
+                    gate: Some(EscalationGateConfig {
+                        base_threshold,
+                        min_confidence: min_confidence.map(str::to_string),
+                        threshold_step: 0.0,
+                        prompt: None,
+                        classifier_target: None,
+                        verdict_scale: VerdictScale::Ordinal,
+                    }),
+                    ..EscalationJudgeConfig::default()
+                },
+                max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+                gate_judge_target: None,
+            })
+        };
+        assert!(rung(Some("uncertain"), None).is_ok());
+        assert!(rung(Some("maybe"), None).is_err());
+        assert!(rung(Some("uncertain"), Some(0.5)).is_err());
+        assert!(rung(None, None).is_err());
     }
 
     #[tokio::test]

@@ -21,7 +21,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   judge for one of eight named rungs instead of a probability; rungs map to
   band midpoints so thresholds keep working. Models rank tasks more reliably
   than they number them, and a stated numeric cutoff invites answers just
-  under it.
+  under it. `escalation.gate.min_confidence` writes the gate's threshold as a
+  rung, so an ordinal configuration carries no numbers at all.
 - **Per-target `reasoning_effort`** — a target can force the reasoning effort
   of every request it serves, replacing the caller's value (`reasoning.effort`
   on the Responses wire, `reasoning_effort` on Chat Completions), so a strong

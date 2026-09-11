@@ -81,6 +81,20 @@ fn rung_midpoint(rung: &str) -> Option<f64> {
         .find(|(name, _)| *name == rung)
         .map(|(_, midpoint)| *midpoint)
 }
+
+/// The numeric threshold that keeps `rung` and every rung above it on the efficient tier and
+/// sends every rung below it to the capable tier: halfway between `rung`'s midpoint and the
+/// next lower rung's (or halfway to zero for the lowest rung). `None` for an unknown rung.
+pub(crate) fn rung_threshold(rung: &str) -> Option<f64> {
+    let index = CONFIDENCE_RUNGS
+        .iter()
+        .position(|(name, _)| *name == rung)?;
+    let lower = CONFIDENCE_RUNGS
+        .get(index + 1)
+        .map(|(_, midpoint)| *midpoint)
+        .unwrap_or(0.0);
+    Some((CONFIDENCE_RUNGS[index].1 + lower) / 2.0)
+}
 /// Telemetry label for this algorithm's spans, metrics, and logs.
 const ALGORITHM_NAME: &str = "llm_task_classifier";
 
@@ -909,7 +923,7 @@ pub(super) fn build_capability_gate(
     let contract = ClassifierContract::from_config(&contract_config, prompt, schema)?;
     let config = TaskClassifierConfig {
         verdict_scale: gate.verdict_scale,
-        base_threshold: gate.base_threshold,
+        base_threshold: gate.threshold()?,
         threshold_step: gate.threshold_step,
         ..TaskClassifierConfig::default()
     };
@@ -1014,6 +1028,15 @@ mod tests {
         )
         .expect("parses");
         assert!(!both.is_valid());
+    }
+
+    #[test]
+    fn rung_thresholds_sit_between_adjacent_rungs() {
+        // Keeping `uncertain` (0.50) and above means latching `unlikely` (0.38) and below.
+        let threshold = rung_threshold("uncertain").expect("known rung");
+        assert!(threshold < 0.50 && threshold > 0.38);
+        assert!(rung_threshold("almost_surely_not").is_some_and(|t| t > 0.0 && t < 0.08));
+        assert!(rung_threshold("maybe").is_none());
     }
 
     #[test]
