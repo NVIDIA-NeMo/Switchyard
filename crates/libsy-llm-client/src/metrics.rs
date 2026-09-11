@@ -12,7 +12,8 @@ use std::{
 use opentelemetry::metrics::ObservableGauge;
 use opentelemetry::{KeyValue, global};
 use switchyard_libsy::Result;
-use switchyard_protocol::{ModelId, Response};
+use switchyard_protocol::{ModelId, Response, WireFormat};
+use switchyard_translation::{DiagnosticSeverity, TranslationDiagnostic};
 
 static TOTAL_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_ERRORS: AtomicU64 = AtomicU64::new(0);
@@ -104,6 +105,47 @@ pub(crate) fn record_retry_recovered() {
         .add(1, &[]);
 }
 
+// Records translation diagnostics without putting request-derived values in metric labels.
+pub(crate) fn record_translation_diagnostics(
+    diagnostics: &[TranslationDiagnostic],
+    operation: &'static str,
+    format: WireFormat,
+) {
+    for diagnostic in diagnostics {
+        let severity = diagnostic_severity_label(&diagnostic.severity);
+        global::meter("switchyard")
+            .u64_counter("switchyard.translation_diagnostics")
+            .build()
+            .add(
+                1,
+                &[
+                    KeyValue::new("code", diagnostic.code.clone()),
+                    KeyValue::new("format", format.as_str()),
+                    KeyValue::new("operation", operation),
+                    KeyValue::new("severity", severity),
+                ],
+            );
+        tracing::warn!(
+            target: "libsy",
+            code = %diagnostic.code,
+            format = format.as_str(),
+            operation,
+            severity,
+            diagnostic = %diagnostic.message,
+            path = diagnostic.path.as_deref().unwrap_or(""),
+            "LLM protocol translation emitted a diagnostic"
+        );
+    }
+}
+
+const fn diagnostic_severity_label(severity: &DiagnosticSeverity) -> &'static str {
+    match severity {
+        DiagnosticSeverity::Info => "info",
+        DiagnosticSeverity::Warning => "warning",
+        DiagnosticSeverity::Error => "error",
+    }
+}
+
 /// Records the time needed to produce the routing outcome, including classifier calls,
 /// target resolution, request rewrites, and decision publishing.
 pub(crate) fn record_routing_overhead(algorithm: &str, overhead: Duration) {
@@ -170,7 +212,24 @@ pub(crate) fn record_routed_request(
 
 #[cfg(test)]
 mod tests {
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+
     use super::*;
+
+    #[derive(Default)]
+    struct LogBuffer(Mutex<Vec<u8>>);
+
+    impl Write for &LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().expect("log buffer lock").extend(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn outcome_labels_match_the_retry_policy() {
@@ -184,5 +243,47 @@ mod tests {
             assert_eq!(http_outcome_label(Some(status)), "other_error");
         }
         assert_eq!(http_outcome_label(None), "retryable_error");
+    }
+
+    // One diagnostic produces one warning containing its structured troubleshooting fields.
+    #[test]
+    fn translation_diagnostic_emits_one_structured_warning() {
+        let output = Arc::new(LogBuffer::default());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(output.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            record_translation_diagnostics(
+                &[TranslationDiagnostic::warning(
+                    "lossy_conversion",
+                    "dropped unsupported JSON Schema constraints",
+                )
+                .at_path("$.response_format")],
+                "request_encode",
+                WireFormat::AnthropicMessages,
+            );
+        });
+
+        let bytes = output.0.lock().expect("log buffer lock").clone();
+        let logs = String::from_utf8(bytes).expect("captured log must be UTF-8");
+        let warnings = logs
+            .lines()
+            .filter(|line| line.contains("LLM protocol translation emitted a diagnostic"))
+            .collect::<Vec<_>>();
+        assert_eq!(warnings.len(), 1, "diagnostic warnings: {logs}");
+        for field in [
+            "WARN",
+            "libsy",
+            "lossy_conversion",
+            "anthropic_messages",
+            "request_encode",
+            "warning",
+            "dropped unsupported JSON Schema constraints",
+            "$.response_format",
+        ] {
+            assert!(warnings[0].contains(field), "missing {field:?} in {logs}");
+        }
     }
 }

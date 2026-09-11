@@ -18,16 +18,14 @@ use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Metadata, ModelId, Request,
     Response, RoutedLlmClient,
 };
-use switchyard_translation::{
-    WireFormat, decode_aggregated_response, decode_request, decode_stream,
-    encode_aggregated_response_with_extensions, encode_request, encode_stream_with_extensions,
-};
+use switchyard_translation::{WireFormat, decode_stream, encode_stream_with_extensions};
 use tracing::Instrument;
 
 use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
 use crate::metrics;
 use crate::raw::RawResponse;
+use crate::translation;
 
 // Headers this client owns or that are hop-by-hop. Backends apply an explicitly
 // enabled caller credential after generic metadata forwarding skips these.
@@ -240,7 +238,7 @@ impl TranslatingLlmClient {
         model: &ModelId,
         endpoint: UpstreamEndpoint,
     ) -> Result<EncodedResponse> {
-        let mut body = encode_request(&llm_request, wire_format)
+        let mut body = translation::encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
@@ -496,7 +494,7 @@ impl TranslatingLlmClient {
                 let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
                     LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
                 })?;
-                let agg = decode_aggregated_response(&body, wire_format)
+                let agg = translation::decode_response(&body, wire_format)
                     .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
                 LlmResponse::Agg(agg)
             }
@@ -529,7 +527,7 @@ impl TranslatingLlmClient {
         model: Option<&ModelId>,
         wire_format: WireFormat,
     ) -> Result<RawResponse> {
-        let llm_request = decode_request(wire_format, &raw_http_request)
+        let llm_request = translation::decode_request(wire_format, &raw_http_request)
             .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
         let request_extensions = llm_request.extensions.clone();
         // The model that serves the call — the rewrite target when the caller pinned
@@ -557,7 +555,7 @@ impl TranslatingLlmClient {
 
         match response.llm_response {
             LlmResponse::Agg(agg) => {
-                let body = encode_aggregated_response_with_extensions(
+                let body = translation::encode_response(
                     &agg,
                     wire_format,
                     served_model.as_deref(),

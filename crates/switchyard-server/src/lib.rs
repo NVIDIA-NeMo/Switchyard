@@ -11,6 +11,7 @@ mod routing_log;
 mod shutdown;
 mod sse;
 mod stats;
+mod translation;
 mod usage_metrics;
 
 use std::collections::BTreeMap;
@@ -38,7 +39,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObservation, RunObserver};
-use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
+use switchyard_protocol::{LlmClientError, Metadata, ModelId, ProviderExtensions, Request, Usage};
 use switchyard_runner::{
     CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RunOutput, Runner, RunnerError,
 };
@@ -46,7 +47,7 @@ use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
 
-use switchyard_translation::{WireFormat, decode_request, encode_aggregated_response};
+use switchyard_translation::WireFormat;
 
 use crate::response::into_http_response;
 use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
@@ -738,10 +739,11 @@ async fn decision(
             // The request moved into the decision run, so its namespace mapping
             // is gone by here. A Codex tool call in this preview keeps its
             // qualified name.
-            match encode_aggregated_response(
+            match translation::encode_response(
                 &aggregate,
                 input_format,
                 outcome.selected_model_id().ok().map(ModelId::as_str),
+                &ProviderExtensions::default(),
             ) {
                 Ok(response) => Some(response),
                 Err(error) => return server_error(error.to_string()),
@@ -959,7 +961,7 @@ fn resolve_route(
     body: Value,
     wire_format: WireFormat,
 ) -> std::result::Result<(&Route, Request), Response> {
-    let llm_request = decode_request(wire_format, &body)
+    let llm_request = translation::decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
     let requested_model = llm_request
         .model

@@ -344,20 +344,22 @@ async fn upstream_messages_requires_forwarded_oauth(
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
-    let has_expected_headers = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        == Some("Bearer claude-oauth-token")
-        && headers
-            .get("anthropic-beta")
+    // The diagnostics fixture intentionally has no OAuth credentials.
+    let has_expected_headers = body["model"] == "model/anthropic-diagnostics"
+        || (headers
+            .get("authorization")
             .and_then(|value| value.to_str().ok())
-            == Some("oauth-2025-04-20")
-        && headers
-            .get("anthropic-version")
-            .and_then(|value| value.to_str().ok())
-            == Some("2023-06-01")
-        && !headers.contains_key("chatgpt-account-id")
-        && !headers.contains_key("x-openai-fedramp");
+            == Some("Bearer claude-oauth-token")
+            && headers
+                .get("anthropic-beta")
+                .and_then(|value| value.to_str().ok())
+                == Some("oauth-2025-04-20")
+            && headers
+                .get("anthropic-version")
+                .and_then(|value| value.to_str().ok())
+                == Some("2023-06-01")
+            && !headers.contains_key("chatgpt-account-id")
+            && !headers.contains_key("x-openai-fedramp"));
     if !has_expected_headers {
         return (
             StatusCode::UNAUTHORIZED,
@@ -868,6 +870,117 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         let line = metric_line(metrics, metric, &[("model", MODEL)])
             .ok_or_else(|| format!("missing {metric} series for {MODEL}"))?;
         assert!(!line.contains("tier="), "unexpected tier label in {line}");
+    }
+    Ok(())
+}
+
+// A successful cross-provider request must expose any contract weakening in runtime telemetry.
+#[tokio::test]
+async fn metrics_exposes_lossy_outbound_request_translation() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.anthropic]
+format = "anthropic_messages"
+base_url = "{base_url}"
+max_retries = 0
+
+[targets.anthropic]
+id = "model/anthropic-diagnostics"
+llm_client = "anthropic"
+
+[routes.diagnostics]
+id = "switchyard/diagnostics"
+type = "passthrough"
+target = "anthropic"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+    let diagnostic_labels = [
+        ("code", "lossy_conversion"),
+        ("format", "anthropic_messages"),
+        ("operation", "request_encode"),
+        ("severity", "warning"),
+    ];
+    let request = |min_length| {
+        let answer = match min_length {
+            Some(min_length) => json!({"type": "string", "minLength": min_length}),
+            None => json!({"type": "string"}),
+        };
+        json!({
+            "model": "switchyard/diagnostics",
+            "messages": [{"role": "user", "content": "Return JSON"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer",
+                    "strict": true,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"answer": answer},
+                        "required": ["answer"]
+                    }
+                }
+            }
+        })
+    };
+    let mut metrics = send(&app, "GET", "/metrics", None)
+        .await?
+        .text()?
+        .to_string();
+
+    for (min_length, expected_delta) in [(None, 0.0), (Some(5), 1.0)] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(request(min_length)),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
+        let after = send(&app, "GET", "/metrics", None)
+            .await?
+            .text()?
+            .to_string();
+        assert_eq!(
+            metric_delta(
+                &metrics,
+                &after,
+                "switchyard_translation_diagnostics_total",
+                &diagnostic_labels,
+            )
+            .unwrap_or_default(),
+            expected_delta
+        );
+        metrics = after;
+    }
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0].pointer("/output_config/format/schema/properties/answer"),
+        Some(&json!({"type": "string"}))
+    );
+    assert!(
+        calls[1]
+            .pointer("/output_config/format/schema/properties/answer/minLength")
+            .is_none()
+    );
+    let diagnostic_line = metric_line(
+        &metrics,
+        "switchyard_translation_diagnostics_total",
+        &diagnostic_labels,
+    )
+    .ok_or("missing translation diagnostic metric")?;
+    for forbidden_label in ["diagnostic=", "path="] {
+        assert!(
+            !diagnostic_line.contains(forbidden_label),
+            "unexpected high-cardinality label in {diagnostic_line}"
+        );
     }
     Ok(())
 }

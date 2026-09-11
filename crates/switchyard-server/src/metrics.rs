@@ -9,6 +9,8 @@ use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::metrics::{Aggregation, Instrument, SdkMeterProvider, Stream};
 use prometheus::{Encoder, Registry, TextEncoder};
 use switchyard_llm_client::metrics::{http_outcome_label, http_status_code_label};
+use switchyard_protocol::WireFormat;
+use switchyard_translation::{DiagnosticSeverity, TranslationDiagnostic};
 
 pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
@@ -160,6 +162,43 @@ pub(crate) fn record_client_response(status: u16) {
             1,
             &[KeyValue::new("outcome", http_outcome_label(Some(status)))],
         );
+}
+
+// Records server-boundary diagnostics with bounded metric labels and request details only in logs.
+pub(crate) fn record_translation_diagnostics(
+    diagnostics: &[TranslationDiagnostic],
+    operation: &'static str,
+    format: WireFormat,
+) {
+    for diagnostic in diagnostics {
+        let severity = match diagnostic.severity {
+            DiagnosticSeverity::Info => "info",
+            DiagnosticSeverity::Warning => "warning",
+            DiagnosticSeverity::Error => "error",
+        };
+        global::meter("switchyard")
+            .u64_counter("switchyard.translation_diagnostics")
+            .build()
+            .add(
+                1,
+                &[
+                    KeyValue::new("code", diagnostic.code.clone()),
+                    KeyValue::new("format", format.as_str()),
+                    KeyValue::new("operation", operation),
+                    KeyValue::new("severity", severity),
+                ],
+            );
+        tracing::warn!(
+            target: "libsy",
+            code = %diagnostic.code,
+            format = format.as_str(),
+            operation,
+            severity,
+            diagnostic = %diagnostic.message,
+            path = diagnostic.path.as_deref().unwrap_or(""),
+            "LLM protocol translation emitted a diagnostic"
+        );
+    }
 }
 
 /// Encodes the current cumulative metric values in Prometheus text format.
