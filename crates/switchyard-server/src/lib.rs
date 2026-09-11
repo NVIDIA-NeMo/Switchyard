@@ -1337,14 +1337,27 @@ fn client_error(error: &LlmClientError) -> Response {
 // Provider errors are often JSON documents; expose their message without
 // embedding the entire document as an escaped string in our error envelope.
 fn upstream_error_message(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|body| {
-            body.pointer("/error/message")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| body.to_string())
+    let mut message = body.to_string();
+    for _ in 0..2 {
+        let Some(extracted) = json_error_message_prefix(&message) else {
+            break;
+        };
+        if extracted == message {
+            break;
+        }
+        message = extracted;
+    }
+    message
+}
+
+fn json_error_message_prefix(body: &str) -> Option<String> {
+    let mut deserializer = serde_json::Deserializer::from_str(body);
+    Value::deserialize(&mut deserializer).ok().and_then(|body| {
+        body.pointer("/error/message")
+            .or_else(|| body.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
 }
 
 // Error metadata retained until the client-facing endpoint selects an envelope.
@@ -1832,6 +1845,22 @@ mod tests {
             },
         );
         assert_eq!(algorithm_error(error).status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn upstream_error_message_extracts_wrapped_json_before_gateway_metadata() {
+        let expected = "unexpected tool_use_id nonexistent_call_id_xyz";
+        let cases = [
+            concat!(
+                r#"{"message":"unexpected tool_use_id nonexistent_call_id_xyz"}"#,
+                ". Received Model Group=cloud"
+            ),
+            r#"{"error":{"message":"{\"message\":\"unexpected tool_use_id nonexistent_call_id_xyz\"}. Received Model Group=cloud"}}"#,
+        ];
+
+        for body in cases {
+            assert_eq!(upstream_error_message(body), expected);
+        }
     }
 
     /// A successful judge call lands in the per-session routing snapshot under its

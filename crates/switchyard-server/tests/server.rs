@@ -144,6 +144,16 @@ async fn upstream_chat(
         )
             .into_response();
     }
+    if prompt == "metadata-error" {
+        return (
+            StatusCode::BAD_REQUEST,
+            concat!(
+                r#"{"message":"unexpected tool_use_id nonexistent_call_id_xyz"}"#,
+                ". Received Model Group=cloud"
+            ),
+        )
+            .into_response();
+    }
     if body["model"] == "model/vgr-cloud" && body["messages"][0]["content"] == "cloud-auth-fail" {
         return (
             StatusCode::UNAUTHORIZED,
@@ -3457,6 +3467,28 @@ async fn request_and_upstream_errors_use_the_inbound_wire_format() -> TestResult
         assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{path}");
         assert_eq!(response.json()?, expected, "{path}");
     }
+
+    let trailing_metadata = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "metadata-error"}]
+        })),
+    )
+    .await?;
+    assert_eq!(trailing_metadata.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        trailing_metadata.json()?,
+        json!({
+            "error": {
+                "message": "unexpected tool_use_id nonexistent_call_id_xyz",
+                "type": "upstream_error",
+                "code": "upstream_error"
+            }
+        })
+    );
 
     let anthropic_unknown = send(
         &app,
