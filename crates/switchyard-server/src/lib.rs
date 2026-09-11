@@ -1383,12 +1383,15 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(
-        state
-            .runner
-            .models()
-            .map(|model| (model.id.as_str(), model.capabilities)),
-    ))
+    Json(model_list_payload(state.runner.model_routes().map(
+        |(id, route)| {
+            (
+                id.as_str(),
+                route.capabilities(),
+                route.reasoning_summaries(),
+            )
+        },
+    )))
 }
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
@@ -1469,20 +1472,25 @@ async fn not_found() -> Response {
 }
 
 fn model_list_payload<'a>(
-    entries: impl IntoIterator<Item = (&'a str, ModelCapabilities)>,
+    entries: impl IntoIterator<Item = (&'a str, ModelCapabilities, Option<bool>)>,
 ) -> Value {
     let mut entries = entries.into_iter().collect::<Vec<_>>();
-    entries.sort_unstable_by_key(|(model_id, _)| *model_id);
-    let model_ids = entries.iter().map(|(model, _)| *model).collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|(model_id, _, _)| *model_id);
+    let model_ids = entries
+        .iter()
+        .map(|(model, _, _)| *model)
+        .collect::<Vec<_>>();
     let first_id = model_ids.first().copied();
     let last_id = model_ids.last().copied();
     json!({
         "object": "list",
-        "data": entries.iter().map(|(model, caps)| model_entry_json(model, *caps)).collect::<Vec<_>>(),
+        "data": entries.iter().map(|(model, caps, _)| model_entry_json(model, *caps)).collect::<Vec<_>>(),
         "models": entries
             .iter()
             .enumerate()
-            .map(|(priority, (model, caps))| codex_model_entry_json(model, *caps, priority))
+            .map(|(priority, (model, caps, summaries))| {
+                codex_model_entry_json(model, *caps, *summaries, priority)
+            })
             .collect::<Vec<_>>(),
         "first_id": first_id,
         "last_id": last_id,
@@ -1533,12 +1541,18 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 // supported_parameters — and fall back to the route's declared value. Some backends
 // publish nothing (the NVIDIA gateway returns id-only models and blocks /model/info),
 // so keep failing closed to config.
-fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority: usize) -> Value {
+fn codex_model_entry_json(
+    model: &str,
+    capabilities: ModelCapabilities,
+    reasoning_summaries: Option<bool>,
+    priority: usize,
+) -> Value {
     // Codex is non-functional without shell and apply_patch, so an undeclared tool
     // capability defaults to enabled here; the OpenAI `data` entry reports the raw
     // Option separately for clients that want the undeclared state.
     let tool_calling = capabilities.tool_calling.unwrap_or(true);
     let reasoning = capabilities.reasoning.unwrap_or(false);
+    let reasoning_summaries = reasoning_summaries.unwrap_or(reasoning);
     json!({
         "slug": model,
         "display_name": model,
@@ -1556,7 +1570,8 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         // Required `ModelInfo` string. Unlike the launcher, the server cannot read
         // Codex's bundled prompt, so it sends a minimal stub.
         "base_instructions": "You are Codex, a coding agent.",
-        "supports_reasoning_summaries": reasoning,
+        "supports_reasoning_summaries": reasoning_summaries,
+        "supports_reasoning_summary_parameter": reasoning_summaries,
         "default_reasoning_summary": "none",
         "support_verbosity": reasoning,
         "default_verbosity": if reasoning { json!("low") } else { Value::Null },

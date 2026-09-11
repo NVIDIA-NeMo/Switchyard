@@ -122,6 +122,7 @@ pub struct Route {
     clients: ClientRouter,
     caller_auth: Option<CallerAuthKind>,
     capabilities: ModelCapabilities,
+    reasoning_summaries: Option<bool>,
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
@@ -149,6 +150,7 @@ impl Route {
             clients,
             caller_auth,
             capabilities,
+            reasoning_summaries: None,
             anthropic_auxiliary_target,
             responses_auxiliary_target,
             decision_targets,
@@ -163,6 +165,17 @@ impl Route {
     /// Returns model-list capability metadata.
     pub fn capabilities(&self) -> ModelCapabilities {
         self.capabilities
+    }
+
+    /// Sets whether Codex can send reasoning summary controls.
+    pub fn with_reasoning_summaries(mut self, reasoning_summaries: Option<bool>) -> Self {
+        self.reasoning_summaries = reasoning_summaries;
+        self
+    }
+
+    /// Returns whether Codex can send reasoning summary controls.
+    pub fn reasoning_summaries(&self) -> Option<bool> {
+        self.reasoning_summaries
     }
 
     /// Returns the forwarded caller credential family.
