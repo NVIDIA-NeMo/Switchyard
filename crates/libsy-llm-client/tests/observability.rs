@@ -1211,15 +1211,19 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
         Some(Some(MODEL))
     );
     let observations = observations.lock();
-    assert_eq!(observations.len(), 2);
-    let RunObservation::AnswerCall(observation) = &observations[0] else {
+    assert_eq!(observations.len(), 3);
+    let RunObservation::Outcome(metadata) = &observations[0] else {
+        return Err(test_error("expected an outcome observation"));
+    };
+    assert_eq!(metadata.algorithm, ALGO);
+    let RunObservation::AnswerCall(observation) = &observations[1] else {
         return Err(test_error("expected an answer-call observation"));
     };
     assert_eq!(observation.selected_model, MODEL);
     assert!(observation.is_success);
     assert!(observation.usage.is_some());
     assert!(matches!(
-        observations[1],
+        observations[2],
         RunObservation::RoutingOverhead(_)
     ));
     Ok(())
