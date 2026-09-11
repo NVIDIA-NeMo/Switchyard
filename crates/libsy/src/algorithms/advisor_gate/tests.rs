@@ -34,7 +34,7 @@ fn gate(config: AdvisorGateConfig) -> Arc<dyn Algorithm> {
 
 fn runtime_models() -> HashMap<Category, Vec<ModelId>> {
     [
-        (Category::Any, vec![target(EXECUTOR)]),
+        (Category::Efficient, vec![target(EXECUTOR)]),
         (Category::Judge, vec![target(ADVISOR)]),
     ]
     .into()
@@ -305,7 +305,7 @@ async fn calls_preserve_candidates_and_attribute_the_serving_executor() {
     let models = RuntimeModels::new(
         [
             (
-                Category::Any,
+                Category::Efficient,
                 vec![target(EXECUTOR), target(EXECUTOR_FALLBACK)],
             ),
             (

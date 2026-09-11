@@ -698,6 +698,7 @@ impl AlgorithmSpec {
                 advisor_target,
                 ..
             } => category_models([
+                (Category::Efficient, vec![executor_target.clone()]),
                 (Category::Any, vec![executor_target.clone()]),
                 (Category::Judge, vec![advisor_target.clone()]),
             ]),

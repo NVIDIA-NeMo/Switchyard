@@ -1731,6 +1731,12 @@ advisor_target = "advisor"
             .route("switchyard/advisor")
             .expect("advisor route should exist");
         let models = route.models();
+        // The gate calls the executor through `efficient`; `any` keeps it in the
+        // route's last-resort pool.
+        assert_eq!(
+            models.models_for(&Category::Efficient),
+            [ModelId::from("executor/model")]
+        );
         assert_eq!(
             models.models_for(&Category::Any),
             [ModelId::from("executor/model")]

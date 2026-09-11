@@ -240,8 +240,13 @@ impl JudgePolicy for TaskClassifierPolicy {
         } else {
             Category::Capable
         };
+        // The chosen category may have no models configured. That is ambiguous, not an
+        // error, so the surrounding router applies its configured fallback.
+        let Some(target) = driver.models_for(&category).first().cloned() else {
+            return Ok(Classification::Ambiguous(vec![]));
+        };
         Ok(Classification::Scores(vec![Score {
-            target: driver.first_model_for(&category)?.clone(),
+            target,
             confidence: 1.0,
             category: Some(category),
         }]))

@@ -659,6 +659,20 @@ struct PyAlgorithm {
 impl PyAlgorithm {
     /// Run the algorithm as routing-time model calls followed by one terminal outcome.
     ///
+    /// Models are supplied per request, not at algorithm construction, so the
+    /// same algorithm object can route against a different pool on every call.
+    ///
+    /// `models` maps a category name to the model ids in it, ordered best-first:
+    /// the algorithm picks the first entry and treats the rest as fallbacks.
+    /// `any`, `capable`, `efficient`, and `judge` are the categories algorithms
+    /// reason about. Any other name is a deployment-defined group that only a
+    /// custom classifier's policy can select by name. An empty category name
+    /// raises `ValueError`.
+    ///
+    /// `subagent_models` is the same mapping for the delegated sub-agent scope.
+    /// Algorithms that route delegated work read it instead of `models`; when it
+    /// is omitted that scope is empty.
+    ///
     /// `headers`, when given, is normalized into the request's correlation
     /// [`Metadata`] exactly as an HTTP host would (`Metadata::from_headers`),
     /// so metadata-driven algorithms see the same signals in Python as when

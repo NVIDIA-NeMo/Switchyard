@@ -243,10 +243,13 @@ where
         if self.release_on_user_turn && has_new_user_turn(&request.llm_request.messages) {
             return Ok((Classification::Scores(Vec::new()), None));
         }
+        // An empty `any` group carries no information about which models are still
+        // available, so it must not be read as "every assignment is now stale".
+        let available = driver.models_for(&Category::Any);
         let mut assignments = self.assignments.lock();
         let assigned = assignments.get(&key).cloned();
         let assigned = match assigned.as_ref() {
-            Some(target) if !driver.models_for(&Category::Any).contains(target) => {
+            Some(target) if !available.is_empty() && !available.contains(target) => {
                 assignments.remove(&key);
                 None
             }
@@ -895,6 +898,31 @@ mod tests {
                 .first()
                 .map(|s| s.target.as_str()),
             Some("strong")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_unprovisioned_any_group_does_not_evict_assignments() -> Result<(), BoxErr> {
+        let router = AffinityRouter::new();
+        let mut state = ();
+        let mut req = request(session("session-1", "agent-a"));
+        retain(&router, &mut state, &mut req, "model-a").await?;
+
+        let empty = Driver::new("test", Arc::new(RuntimeModels::default())).0;
+        let (classification, _) = router.score(&mut state, &mut req, &empty).await?;
+        let Classification::Scores(retained) = classification else {
+            return Err("affinity never returns ambiguous scores".into());
+        };
+        assert_eq!(retained.first().map(|s| s.target.as_str()), Some("model-a"));
+
+        // The assignment survived, so a later turn with the group present still latches.
+        assert_eq!(
+            scores(&router, &mut state, &mut req)
+                .await?
+                .first()
+                .map(|s| s.target.as_str()),
+            Some("model-a")
         );
         Ok(())
     }

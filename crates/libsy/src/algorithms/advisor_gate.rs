@@ -197,11 +197,11 @@ impl AdvisorGate {
         request: Request,
         scope: &ScopeKey,
     ) -> Result<RoutingOutcome> {
-        let executor_models = driver.models_for(&Category::Any).to_vec();
+        let executor_models = driver.models_for(&Category::Efficient).to_vec();
         let executor = executor_models
             .first()
             .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "no models available for category Any".to_string(),
+                message: "no models available for category Efficient".to_string(),
             })?;
 
         // Spent budget (or failure cap): pure passthrough — live stream,
@@ -367,8 +367,6 @@ impl AdvisorGate {
         review_tail: Option<&str>,
         trigger: &'static str,
     ) -> Result<ConsultOutcome> {
-        let advisor = driver.first_model_for(&Category::Judge)?.clone();
-        let advisor_models = driver.models_for(&Category::Judge).to_vec();
         // The advisor reviews the FULL transcript: system/developer content is
         // normalized out of `messages` into `instructions`, so prepend it back
         // as leading messages (identical {role, content} shape) — the task
@@ -390,17 +388,26 @@ impl AdvisorGate {
         );
         let consult_request = self.build_consult_request(base, transcript);
         let started = Instant::now();
-        let reply = match driver.call_model(consult_request, advisor_models).await {
-            Ok(response) => {
-                let served_advisor = response
-                    .served_model()
-                    .cloned()
-                    .unwrap_or_else(|| advisor.clone());
-                response
-                    .llm_response
-                    .into_agg()
-                    .await
-                    .map_err(|source| LibsyError::client_call(served_advisor, source))
+        // An unresolvable advisor is treated like any other consult failure, so
+        // fail_open still returns the buffered executor turn to the client.
+        let reply = match driver.first_model_for(&Category::Judge) {
+            Ok(advisor) => {
+                let advisor = advisor.clone();
+                let advisor_models = driver.models_for(&Category::Judge).to_vec();
+                match driver.call_model(consult_request, advisor_models).await {
+                    Ok(response) => {
+                        let served_advisor = response
+                            .served_model()
+                            .cloned()
+                            .unwrap_or_else(|| advisor.clone());
+                        response
+                            .llm_response
+                            .into_agg()
+                            .await
+                            .map_err(|source| LibsyError::client_call(served_advisor, source))
+                    }
+                    Err(error) => Err(error),
+                }
             }
             Err(error) => Err(error),
         };
