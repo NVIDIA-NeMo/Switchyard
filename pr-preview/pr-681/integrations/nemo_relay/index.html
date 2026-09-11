@@ -1612,7 +1612,7 @@
 
 
 <h1 id="use-switchyard-with-nemo-relay">Use Switchyard with NeMo Relay<a class="headerlink" href="#use-switchyard-with-nemo-relay" title="Permanent link">&para;</a></h1>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f11f2219943b4fe635a0568aefb2df7c8da08592/crates/switchyard-nemo-relay-plugin/README.md">Switchyard native plugin</a>
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9945700d1f30d4d521ff36a2662f6ebb6ed1b472/crates/switchyard-nemo-relay-plugin/README.md">Switchyard native plugin</a>
 loads Switchyard into an existing
 <a href="https://docs.nvidia.com/nemo/relay/about-nemo-relay/overview">NeMo Relay runtime</a>
 deployment through Relay's
@@ -1638,7 +1638,7 @@ Switchyard does not need to run as a separate service.</p>
 usual.</p>
 <p>Routing does not require Relay. You can instead run the
 <a href="../../getting_started/#server-path">standalone server</a> or embed
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f11f2219943b4fe635a0568aefb2df7c8da08592/crates/libsy/README.md"><code>switchyard-libsy</code></a> directly.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9945700d1f30d4d521ff36a2662f6ebb6ed1b472/crates/libsy/README.md"><code>switchyard-libsy</code></a> directly.</p>
 <h3 id="measure-the-cost-of-routing">Measure the Cost of Routing<a class="headerlink" href="#measure-the-cost-of-routing" title="Permanent link">&para;</a></h3>
 <p>A routed request can spend tokens choosing a model and generating the answer.
 Some routes call a judge or classifier first. The selected model, or a fallback,
@@ -1729,7 +1729,7 @@ and metrics.</p>
 and
 <a href="https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/plugins#plugin-delivery-models">plugin delivery models</a>.</p>
 <h2 id="set-up-the-plugin">Set Up the Plugin<a class="headerlink" href="#set-up-the-plugin" title="Permanent link">&para;</a></h2>
-<p>Follow the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f11f2219943b4fe635a0568aefb2df7c8da08592/crates/switchyard-nemo-relay-plugin/README.md">plugin README</a>
+<p>Follow the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9945700d1f30d4d521ff36a2662f6ebb6ed1b472/crates/switchyard-nemo-relay-plugin/README.md">plugin README</a>
 to build and package the native library, register and enable it in Relay, and
 configure its deployment. Relay documents how to
 <a href="https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#add-and-enable-a-plugin">add and enable a discoverable plugin</a>
@@ -1739,7 +1739,7 @@ and how it
 <p class="admonition-title">Relay compatibility</p>
 <p>The plugin requires <code>relay = "&gt;=0.8.1,&lt;0.9.0"</code> and native plugin API <code>1</code>.
 The packaged
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f11f2219943b4fe635a0568aefb2df7c8da08592/crates/switchyard-nemo-relay-plugin/relay-plugin.toml"><code>relay-plugin.toml</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9945700d1f30d4d521ff36a2662f6ebb6ed1b472/crates/switchyard-nemo-relay-plugin/relay-plugin.toml"><code>relay-plugin.toml</code></a>
 is the source of truth.</p>
 </div>
 <p>Configure exactly one Switchyard deployment source: either
