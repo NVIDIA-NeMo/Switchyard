@@ -1356,8 +1356,10 @@ fn build_algorithm(
         } => {
             #[cfg(feature = "prefill-router")]
             {
-                let targets =
-                    resolve_targets(route_name, names.iter().map(String::as_str), targets)?;
+                let targets = names
+                    .iter()
+                    .map(|name| resolve_target_model_id(route_name, name, targets))
+                    .collect::<AlgorithmResult<Vec<_>>>()?;
                 let mut config = prefill_router::PrefillRouterConfig::new(targets, checkpoint);
                 config.device.clone_from(device);
                 config.cache_dir.clone_from(cache_dir);
