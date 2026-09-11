@@ -45,6 +45,7 @@ pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
 /// `Arc<RuntimeModels>` rather than cloned per driver.
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeModels {
+    /// When using subagents this is the parent agent category.
     by_category: HashMap<Category, Vec<ModelId>>,
     subagent: Option<HashMap<Category, Vec<ModelId>>>,
 }
