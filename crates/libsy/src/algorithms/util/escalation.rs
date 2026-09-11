@@ -91,6 +91,13 @@ pub struct EscalationGateConfig {
     /// Replaces the packaged capability-classifier prompt for the gate call only.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Target the gate forecast is called through, by target name. Defaults to the route's
+    /// `classifier_target`. The gate runs once per session and benefits from a strong forecaster,
+    /// while the trajectory judge runs on every weak turn and is better served by a cheap model;
+    /// naming them separately lets a deployment pay for each where it matters. Resolved by the
+    /// deployment loader, which is why it is a name here rather than a model id.
+    #[serde(default)]
+    pub classifier_target: Option<String>,
 }
 
 impl EscalationGateConfig {

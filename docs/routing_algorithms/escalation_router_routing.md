@@ -116,7 +116,10 @@ almost every multi-file task, because the judge has no reference distribution
 to calibrate against. A threshold on a forecast is what capability mode already
 uses to set its split, and the gate reuses that policy unchanged, including
 `threshold_step` for uncertain and unsupported verdicts and `prompt` to replace
-the packaged forecaster prompt. The gate verdict is recorded in the route's
+the packaged forecaster prompt. `gate.classifier_target` lets the gate call a
+different target from the per-turn judge: the forecast runs once per session
+and rewards a strong model, while the trajectory judge runs on every weak turn
+and is where a cheap model belongs. The gate verdict is recorded in the route's
 evidence as `{"source": "escalation", "verdict": "gate"}`.
 
 ## Judge model compatibility

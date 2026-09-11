@@ -510,7 +510,17 @@ impl AlgorithmSpec {
     pub fn callable_target_names(&self) -> Vec<&str> {
         let mut names = self.routing_target_names();
         match self {
-            Self::LlmClassifier { config, .. } => names.push(&config.classifier_target),
+            Self::LlmClassifier { config, .. } => {
+                names.push(&config.classifier_target);
+                if let Some(gate_target) = config
+                    .escalation
+                    .as_ref()
+                    .and_then(|escalation| escalation.gate.as_ref())
+                    .and_then(|gate| gate.classifier_target.as_deref())
+                {
+                    names.push(gate_target);
+                }
+            }
             Self::Passthrough {
                 subagents: Some(subagents),
                 ..
@@ -942,6 +952,13 @@ fn build_algorithm(
                     let strong =
                         resolve_target_model_id(route_name, &config.strong_target, targets)?;
                     let weak = resolve_target_model_id(route_name, &config.weak_target, targets)?;
+                    let gate_judge_target = config
+                        .judge
+                        .gate
+                        .as_ref()
+                        .and_then(|gate| gate.classifier_target.as_deref())
+                        .map(|name| resolve_target_model_id(route_name, name, targets))
+                        .transpose()?;
                     LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
                         judge_target: classifier,
                         efficient_target: weak,
@@ -950,6 +967,7 @@ fn build_algorithm(
                             .with_response_format_type(config.response_format_type),
                         config: config.judge,
                         max_output_tokens: config.max_output_tokens,
+                        gate_judge_target,
                     })
                 }
                 LlmClassifierModeConfig::Custom(config) => {

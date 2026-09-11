@@ -221,6 +221,7 @@ impl PyLlmClassifierConfig {
         let config = config.bind(py).try_borrow()?;
         Ok(Self {
             inner: LlmClassifierConfig::Escalation {
+                gate_judge_target: None,
                 judge_target: ModelId::new(judge_target),
                 efficient_target: ModelId::new(efficient_target),
                 capable_target: ModelId::new(capable_target),

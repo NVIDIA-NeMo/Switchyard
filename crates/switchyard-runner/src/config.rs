@@ -1048,6 +1048,24 @@ new = ["send_message"]
         Ok(())
     }
 
+    /// The gate may name its own judge target; it is resolved like `classifier_target` and an
+    /// unknown name is rejected at load time.
+    #[test]
+    fn an_escalation_gate_can_name_its_own_judge_target() -> RunnerResult<()> {
+        let gated = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { confirmations = 1, gate = { base_threshold = 0.4, classifier_target = \"strong\" } }",
+        );
+        runner_from_toml(&gated)?;
+
+        let unknown = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { confirmations = 1, gate = { base_threshold = 0.4, classifier_target = \"nobody\" } }",
+        );
+        assert!(error_message(&unknown).contains("nobody"));
+        Ok(())
+    }
+
     #[test]
     fn two_targets_can_share_an_upstream_model_under_distinct_ids() -> RunnerResult<()> {
         let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";

@@ -558,6 +558,8 @@ pub enum LlmClassifierConfig {
         config: EscalationJudgeConfig,
         /// Maximum completion tokens available to the escalation verdict.
         max_output_tokens: u64,
+        /// Resolved `escalation.gate.classifier_target`; `None` uses `judge_target`.
+        gate_judge_target: Option<ModelId>,
     },
     /// Routes among named targets using a user-supplied schema and policy.
     Custom {
@@ -594,7 +596,9 @@ impl LlmTaskClassifier {
                 contract,
                 config,
                 max_output_tokens,
+                gate_judge_target,
             } => Self::build_escalation(
+                gate_judge_target,
                 judge_target,
                 efficient_target,
                 capable_target,
@@ -741,6 +745,7 @@ impl LlmTaskClassifier {
     }
 
     fn build_escalation(
+        gate_judge_target: Option<ModelId>,
         judge_target: ModelId,
         efficient_target: ModelId,
         capable_target: ModelId,
@@ -749,6 +754,7 @@ impl LlmTaskClassifier {
         max_output_tokens: u64,
     ) -> Result<Self> {
         let inner = escalation::build_classifier(
+            gate_judge_target,
             judge_target,
             &efficient_target,
             &capable_target,
