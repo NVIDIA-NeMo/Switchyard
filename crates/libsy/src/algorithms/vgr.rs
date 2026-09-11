@@ -292,7 +292,7 @@ pub struct Capabilities {
     pub structured_answer: bool,
     /// Typed as agentic, or the attempt shows tool activity.
     pub is_agentic: bool,
-    /// A reported tool-error count and its provenance. Never client-declared.
+    /// A tool-error count derived from normalized tool-result history.
     pub tool_errors: Option<ToolErrorCount>,
     /// Total tool results in the execution log summarized with `tool_errors`.
     pub tool_results: Option<i32>,
