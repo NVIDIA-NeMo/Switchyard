@@ -1452,15 +1452,13 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
                 model.id.clone(),
                 model.algorithm.to_string(),
                 model.capabilities,
-                model.routing_targets.first().cloned(),
             )
         })
         .collect::<Vec<_>>();
     let mut entries = Vec::with_capacity(models.len());
-    for (id, algorithm, mut capabilities, local_target) in models {
+    for (id, algorithm, mut capabilities) in models {
         if algorithm == "vgr"
-            && let Some(discovered) =
-                discover_context_window(&state.fallback_http, local_target.as_ref()).await
+            && let Some(discovered) = discover_context_window(&state.runner, &id).await
         {
             capabilities.context_window = Some(discovered);
         }
@@ -1471,28 +1469,10 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
     )))
 }
 
-async fn discover_context_window(
-    client: &reqwest::Client,
-    target: Option<&DecisionTarget>,
-) -> Option<u32> {
-    let mut url = reqwest::Url::parse(&target?.base_url).ok()?;
-    let root = url
-        .path()
-        .trim_end_matches('/')
-        .strip_suffix("/v1")
-        .unwrap_or_else(|| url.path().trim_end_matches('/'))
-        .to_string();
-    url.set_path(&format!("{}/props", root.trim_end_matches('/')));
-    url.set_query(None);
-    let response = client
-        .get(url)
-        .timeout(Duration::from_secs(2))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?;
-    let body: Value = response.json().await.ok()?;
+async fn discover_context_window(runner: &Runner, model: &ModelId) -> Option<u32> {
+    let body = runner
+        .model_properties(model.as_str(), Duration::from_secs(2))
+        .await?;
     let context = body
         .get("default_generation_settings")?
         .get("n_ctx")?
