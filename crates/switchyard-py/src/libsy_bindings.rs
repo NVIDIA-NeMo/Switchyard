@@ -110,6 +110,9 @@ impl PyEscalationClassifierConfig {
                 confirmations,
                 recent_turn_window,
                 window_message_chars,
+                // Neither the handoff note nor the capability gate is exposed to Python yet.
+                handoff_note: None,
+                gate: None,
             },
             max_output_tokens,
         })
