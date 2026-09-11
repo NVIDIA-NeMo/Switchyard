@@ -157,18 +157,48 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
     Compatible algorithms must finish without intermediate model calls or an
     already-produced response. Supported request rewrites are carried to the
     selected deployment by the object's LiteLLM callback role.
+
+    `models` maps a category name (`any`, `capable`, `efficient`, `judge`, or a
+    deployment-defined group) to its LiteLLM model names, ordered best-first.
+    The algorithm picks the first name it can use from a category, so the order
+    within each list is the preference order. Every name must be a LiteLLM
+    deployment that can appear in the routing candidate pool: the plugin keeps
+    only the selected candidate, and a selection outside the pool LiteLLM
+    offered for this request raises `ValueError`.
+
+    When `models` is omitted, each of the four categories is filled with the
+    request's full candidate pool, so any selection is valid by construction.
     """
 
-    def __init__(self, algorithm: Algorithm) -> None:
+    def __init__(
+        self,
+        algorithm: Algorithm,
+        models: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
         super().__init__()
         self._algorithm = algorithm
+        self._models = (
+            {category: list(names) for category, names in models.items()}
+            if models is not None
+            else None
+        )
 
     async def run(self, context: RoutingContext) -> RoutingContext:
         """Run Switchyard and retain only its selected LiteLLM candidate."""
         candidates = list(context.candidate_models)
         request = _request(context.structured_messages)
 
-        async for step in self._algorithm.run_stream(request):
+        models = (
+            self._models
+            if self._models is not None
+            else {
+                "any": candidates,
+                "judge": candidates,
+                "capable": candidates,
+                "efficient": candidates,
+            }
+        )
+        async for step in self._algorithm.run_stream(request, models):
             match step:
                 case Step.CallModel(_):
                     raise ValueError(

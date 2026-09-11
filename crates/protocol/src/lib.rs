@@ -4,6 +4,7 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+pub mod category;
 pub mod client;
 pub mod envelope;
 pub mod format;
@@ -12,6 +13,7 @@ pub mod metadata;
 pub mod model_id;
 pub mod stream;
 
+pub use category::*;
 pub use client::*;
 pub use envelope::*;
 pub use format::*;

@@ -22,8 +22,9 @@ use serde_json::{Value, json};
 use switchyard_llm_client::{
     Backend, ClientRouter, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
-use switchyard_protocol::ModelId;
 use switchyard_protocol::RoutedLlmClient;
+use switchyard_protocol::{Category, ModelId, WireFormat};
+use switchyard_runner::{DecisionTarget, ModelCapabilities, Route, Runner, RuntimeModels};
 use switchyard_server::config::load_server_state;
 use switchyard_server::{
     DEFAULT_MAX_REQUEST_BODY_BYTES, ServerState, build_llm_router, build_switchyard_router,
@@ -301,23 +302,34 @@ async fn upstream_chat(
                 .is_some_and(|content| content.contains("schema-invalid verdict"))
         })
     });
+    // A custom-mode task may name the group it wants the judge to pick, so one
+    // config can be driven through each of its groups in turn.
+    let requested_group = body["messages"].as_array().and_then(|messages| {
+        messages.iter().find_map(|message| {
+            message["content"]
+                .as_str()?
+                .split_once("route to ")
+                .map(|(_, group)| group.trim().to_string())
+        })
+    });
     let content = if model == "model/classifier" && custom_target_schema {
         if requests_invalid_verdict {
-            r#"{"decision":{"target":"unknown"}}"#
+            r#"{"decision":{"target":"unknown"}}"#.to_string()
         } else {
-            r#"{"decision":{"target":"premium"}}"#
+            let group = requested_group.unwrap_or_else(|| "efficient".to_string());
+            format!(r#"{{"decision":{{"target":"{group}"}}}}"#)
         }
     } else if body
         .pointer("/response_format/json_schema/schema/properties/escalate")
         .is_some()
     {
-        r#"{"escalate":false,"reason":"making progress"}"#
+        r#"{"escalate":false,"reason":"making progress"}"#.to_string()
     } else if model == "model/classifier" && requests_schema_invalid_verdict {
-        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#
+        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#.to_string()
     } else if model == "model/classifier" {
-        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
+        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
     } else {
-        "ok"
+        "ok".to_string()
     };
     Json(json!({
         "id": "chatcmpl-test",
@@ -528,16 +540,39 @@ fn random_state_with_retries(
     let entries = routes
         .iter()
         .map(|(route_model, targets)| {
-            let target_set = targets.iter().map(|model| ModelId::from(*model)).collect();
-            let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
+            let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(None, None)?);
+            let decision_targets = targets
+                .iter()
+                .map(|model| DecisionTarget {
+                    target: (*model).to_string(),
+                    model: ModelId::from(*model),
+                    format: WireFormat::OpenAiChat,
+                    base_url: base_url.to_string(),
+                    extra_body: BTreeMap::new(),
+                })
+                .collect();
             Ok((
                 ModelId::from(*route_model),
-                algorithm,
-                ClientRouter::single(Arc::clone(&client)),
+                Route::new(
+                    algorithm,
+                    ClientRouter::single(Arc::clone(&client)),
+                    None,
+                    ModelCapabilities::default(),
+                    None,
+                    None,
+                    decision_targets,
+                    RuntimeModels::new(
+                        [(
+                            Category::Any,
+                            targets.iter().map(|model| ModelId::from(*model)).collect(),
+                        )]
+                        .into(),
+                    ),
+                ),
             ))
         })
         .collect::<TestResult<Vec<_>>>()?;
-    Ok(ServerState::new(entries)?)
+    ServerState::from_runner(Runner::new(entries)).map_err(Into::into)
 }
 
 async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Router)> {
@@ -1583,8 +1618,7 @@ new = ["send_message_to_user"]
 }
 
 #[tokio::test]
-async fn custom_classifier_routes_four_targets_and_falls_back_on_an_invalid_verdict() -> TestResult
-{
+async fn custom_classifier_uses_categories_and_falls_back_on_an_invalid_verdict() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
         r#"
@@ -1618,9 +1652,8 @@ llm_client = "upstream"
 id = "switchyard/custom"
 type = "llm_classifier"
 mode = "custom"
-classifier_target = "classifier"
-targets = ["weak", "middle", "strong", "premium"]
-default_target = "strong"
+models = {{ judge = ["classifier"], fast = ["weak"], balanced = ["middle"], reasoning = ["strong"], premium = ["premium"], any = ["weak", "middle", "strong", "premium"] }}
+default_target = "premium"
 prompt = "CUSTOM MULTI TARGET"
 response_schema = '''
 {{
@@ -1629,7 +1662,7 @@ response_schema = '''
     "decision": {{
       "type": "object",
       "properties": {{
-        "target": {{"type": "string", "enum": ["weak", "middle", "strong", "premium"]}}
+        "target": {{"type": "string", "enum": ["fast", "balanced", "reasoning", "premium"]}}
       }},
       "required": ["target"],
       "additionalProperties": false
@@ -1648,9 +1681,14 @@ selector = "/decision/target"
     ))?;
     let app = build_switchyard_router(state);
 
+    // Each named group resolves to its own model, so the policy picks between
+    // four of them rather than between the two tier categories.
     for (task, selected) in [
-        ("route this task", "model/premium"),
-        ("return an invalid verdict", "model/strong"),
+        ("route to fast", "model/weak"),
+        ("route to balanced", "model/middle"),
+        ("route to reasoning", "model/strong"),
+        ("route to premium", "model/premium"),
+        ("return an invalid verdict", "model/premium"),
     ] {
         let response = send(
             &app,
@@ -1690,7 +1728,7 @@ selector = "/decision/target"
     assert_eq!(
         judge_call["response_format"]["json_schema"]["schema"]["properties"]["decision"]["properties"]
             ["target"]["enum"],
-        json!(["weak", "middle", "strong", "premium"])
+        json!(["fast", "balanced", "reasoning", "premium"])
     );
     Ok(())
 }

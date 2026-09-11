@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 
     @final
     class CustomClassifierConfig:
-        """Configure schema-validated routing across named targets.
+        """Configure schema-validated routing across runtime model groups.
 
         ``max_output_tokens`` must be positive. Enabling ``message_hash_fallback``
         requires ``session_affinity``.
@@ -180,9 +180,6 @@ if TYPE_CHECKING:
 
         @staticmethod
         def capability(
-            judge_target: str,
-            efficient_target: str,
-            capable_target: str,
             *,
             config: TaskClassifierConfig,
         ) -> LlmClassifierConfig:
@@ -191,9 +188,6 @@ if TYPE_CHECKING:
 
         @staticmethod
         def escalation(
-            judge_target: str,
-            efficient_target: str,
-            capable_target: str,
             *,
             config: EscalationClassifierConfig,
         ) -> LlmClassifierConfig:
@@ -202,20 +196,23 @@ if TYPE_CHECKING:
 
         @staticmethod
         def custom(
-            judge_target: str,
-            targets: Sequence[tuple[str, str]],
             *,
             default_target: str,
             config: CustomClassifierConfig,
         ) -> LlmClassifierConfig:
-            """Route among named targets using a schema-selected label."""
+            """Route among runtime model groups using a schema-selected label.
+
+            ``default_target`` names the group used when the judge fails or its
+            verdict cannot be routed. Alongside ``capable`` and ``efficient`` a
+            deployment may define its own group names, so one route can choose
+            between more than two models.
+            """
             ...
 
     @final
     class LlmFallback:
         def __init__(
             self,
-            judge_target: str,
             *,
             config: TaskClassifierConfig,
         ) -> None: ...
@@ -225,14 +222,14 @@ if TYPE_CHECKING:
         def run_stream(
             self,
             request: Mapping[str, object],
+            models: Mapping[str, Sequence[str]],
+            subagent_models: Mapping[str, Sequence[str]] | None = None,
             headers: Mapping[str, str] | None = None,
         ) -> AsyncIterator[Step.CallModel | Step.Done]: ...
 
     def noop() -> Algorithm: ...
 
     def random(
-        targets: Sequence[str],
-        *,
         weights: Sequence[float] | None = None,
         seed: int | None = None,
     ) -> Algorithm: ...
@@ -242,16 +239,11 @@ if TYPE_CHECKING:
         ...
 
     def llm_task_classifier(
-        judge_target: str,
-        efficient_target: str,
-        capable_target: str,
         *,
         config: TaskClassifierConfig,
     ) -> Algorithm: ...
 
     def stage_router(
-        capable_target: str,
-        efficient_target: str,
         *,
         picker: str,
         confidence_threshold: float,
