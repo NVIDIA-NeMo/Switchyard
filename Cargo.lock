@@ -2514,6 +2514,7 @@ dependencies = [
  "serde_json",
  "switchyard-protocol",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
