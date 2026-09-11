@@ -58,6 +58,7 @@ struct EscalationClassifier {
 
 /// Builds the escalation classifier used by the shared LLM classifier route shell.
 pub(super) fn build_classifier(
+    gate_judge_target: Option<ModelId>,
     judge_target: ModelId,
     efficient_target: &ModelId,
     capable_target: &ModelId,
@@ -68,7 +69,7 @@ pub(super) fn build_classifier(
     let confirmations = config.confirmations;
     let gate = match &config.gate {
         Some(gate) => Some(llm_class::build_capability_gate(
-            judge_target.clone(),
+            gate_judge_target.unwrap_or_else(|| judge_target.clone()),
             efficient_target,
             capable_target,
             gate,
@@ -362,6 +363,7 @@ mod tests {
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+                gate_judge_target: None,
             },
         )?))
     }
@@ -418,6 +420,7 @@ mod tests {
                 ..EscalationJudgeConfig::default()
             },
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            gate_judge_target: None,
         })?);
 
         test_drive(router, classify_request(), serve).await?;
@@ -479,10 +482,12 @@ mod tests {
                         base_threshold,
                         threshold_step: 0.0,
                         prompt: None,
+                        classifier_target: None,
                     }),
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+                gate_judge_target: None,
             },
         )?))
     }
@@ -591,10 +596,12 @@ mod tests {
                         base_threshold,
                         threshold_step: 0.0,
                         prompt: None,
+                        classifier_target: None,
                     }),
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+                gate_judge_target: None,
             })
         };
         assert!(build(0.4).is_ok());

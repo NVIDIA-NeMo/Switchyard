@@ -219,6 +219,7 @@ Escalation mode serves the weak target first and judges the completed turn. See
 | `escalation.gate.base_threshold` | Yes, when `gate` is set | — | Lowest solve probability that keeps the session on `weak_target`. In `[0, 1]`. |
 | `escalation.gate.threshold_step` | No | `0.0` | Added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `escalation.gate.prompt` | No | packaged capability prompt | Replaces the capability-forecaster prompt for the gate call only. |
+| `escalation.gate.classifier_target` | No | the route's `classifier_target` | Target the once-per-session gate forecast is called through, so a strong forecaster can gate while a cheap model judges every weak turn. |
 
 Existing configurations that contain `escalation` but omit `mode` remain valid.
 

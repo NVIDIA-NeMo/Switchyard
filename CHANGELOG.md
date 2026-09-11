@@ -14,6 +14,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the weak tier is called. Sets the turn-one split with a number instead of a
   task-level rule in the judge prompt, which latched almost every multi-file
   task in practice. The trajectory judge takes over afterwards.
+  `gate.classifier_target` lets the once-per-session forecast use a stronger
+  model than the per-turn trajectory judge.
 - **Per-target `reasoning_effort`** — a target can force the reasoning effort
   of every request it serves, replacing the caller's value (`reasoning.effort`
   on the Responses wire, `reasoning_effort` on Chat Completions), so a strong
