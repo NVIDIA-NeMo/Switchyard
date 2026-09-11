@@ -17,6 +17,7 @@ max_retries = 2
 [targets.model_a]
 id = "model/a"
 llm_client = "example"
+system_prompt = "Use the fast path for routine work."
 extra_body = { service_tier = "priority" }
 
 [targets.model_b]
@@ -51,6 +52,11 @@ capable_target = "model_a"
 efficient_target = "model_b"
 picker = "efficient_first"
 confidence_threshold = 0.5
+
+[routes.stage.tool_semantics]
+observe = ["lookup_customer"]
+mutate = ["update_inventory"]
+new = ["send_message"]
 ```
 
 ```bash
@@ -84,6 +90,8 @@ client's `base_url` should receive the caller's login. A forwarding route must
 be called through the matching provider API.
 Target-level `extra_body` values are shallow-merged into the upstream request when
 the request does not already contain that key.
+Target-level `system_prompt` values are prepended when that target serves a completion.
+Selected and fallback targets are prepared independently.
 `max_retries` defaults to `2` and applies to transport failures, timeouts, HTTP 408/429, and 5xx
 responses.
 
@@ -118,11 +126,14 @@ fallback produced while the judge was unreachable. `message_hash_fallback` keys 
 content rather than a session id, so unrelated callers sending identical text share one
 assignment.
 
-A `stage_router` route scores tool-result and agent-progress signals from recent turns to pick a
-tier per turn, without an extra classifier call on every turn. `capable_target`,
+A `stage_router` route scores tool-result and activity signals from recent turns to pick a
+tier per turn, without an extra classifier call on every turn. Domain-specific exact tool names
+can extend its built-in coding vocabulary through `tool_semantics.observe`,
+`tool_semantics.mutate`, `tool_semantics.plan`, and neutral `tool_semantics.new`. `capable_target`,
 `efficient_target`, `picker` (`efficient_first` or `capable_first`), and `confidence_threshold`
-are required. Optional handoff notes, per-tier system prompts, and a capability-judge fallback are
-documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
+are required. All configured semantic names use exact ASCII case-insensitive matching. Optional
+handoff notes, per-tier system prompts, and a capability-judge fallback are documented in
+[Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
 
 ## Endpoints
 
@@ -169,7 +180,8 @@ target and summarizes its score, confidence, and input-dimension histograms. The
 with `/v1/stats/reset`; the process-lifetime counters on `/metrics` remain cumulative.
 
 Token counting selects an Anthropic-format completion target, preferring target names or model IDs
-containing `opus`, `sonnet`, then `haiku`. Other ties preserve the route's target order.
+containing `opus`, `sonnet`, then `haiku`. Other ties preserve the route's target order. Target
+system prompts are applied to answer calls, not token-count requests.
 
 ## Metrics
 

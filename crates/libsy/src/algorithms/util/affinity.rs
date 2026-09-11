@@ -232,7 +232,7 @@ where
         &self,
         _state: &mut S,
         request: &mut Request,
-        _driver: Option<&Driver>,
+        driver: Option<&Driver>,
     ) -> crate::Result<(Classification, Option<switchyard_protocol::Response>)> {
         let Some(key) = self.affinity_key(request) else {
             return Ok((Classification::Scores(Vec::new()), None));
@@ -243,6 +243,11 @@ where
             return Ok((Classification::Scores(Vec::new()), None));
         }
         let assigned = self.assignments.lock().get(&key).cloned();
+        if assigned.is_some()
+            && let Some(driver) = driver
+        {
+            driver.set_evidence(serde_json::json!({"source": "retained"}));
+        }
         Ok((
             Classification::Scores(match assigned {
                 Some(target) => vec![Score {

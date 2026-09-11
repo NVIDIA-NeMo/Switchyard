@@ -3,7 +3,7 @@
 
 //! Version-1 TOML deployment loading for the shared runner.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -69,6 +69,11 @@ struct RouteConfig {
     reasoning: Option<bool>,
     vision: Option<bool>,
     algorithm: AlgorithmSpec,
+}
+
+struct TargetPromptPolicy {
+    prompts: HashMap<ModelId, String>,
+    routing_answer_target: Option<ModelId>,
 }
 
 impl<'de> Deserialize<'de> for RouteConfig {
@@ -155,16 +160,35 @@ impl DeploymentConfig {
             )));
         }
 
-        let mut seen_client_model_ids = HashSet::new();
+        // The LLM client keeps one backend per model id, so two targets naming the same model on
+        // the same client share it. That is harmless when their request settings agree (an alias
+        // for a different system prompt, say) and silently wrong when they do not: the second
+        // target's reasoning_effort or extra_body would never reach the wire.
+        let mut seen_client_model_ids: HashMap<(&str, &str), (&String, &TargetConfig)> =
+            HashMap::new();
         for (target_name, target) in &self.targets {
             validate_value("target name", target_name)?;
             validate_value(&format!("target {target_name} id"), &target.id)?;
-            if !seen_client_model_ids.insert((target.llm_client.as_str(), target.id.as_str())) {
-                tracing::warn!(
-                    "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
-                    target.id,
-                    target.llm_client
-                );
+            match seen_client_model_ids.entry((target.llm_client.as_str(), target.id.as_str())) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert((target_name, target));
+                }
+                std::collections::hash_map::Entry::Occupied(slot) => {
+                    let (first_name, first) = slot.get();
+                    if first.reasoning_effort != target.reasoning_effort
+                        || first.extra_body != target.extra_body
+                    {
+                        return Err(RunnerError::configuration(format!(
+                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort or extra_body; one target per model id is kept, so give each its own model id or llm client",
+                            target.id, target.llm_client
+                        )));
+                    }
+                    tracing::warn!(
+                        "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
+                        target.id,
+                        target.llm_client
+                    );
+                }
             }
         }
 
@@ -227,7 +251,7 @@ impl DeploymentConfig {
 
         for (name, client_config) in &self.llm_clients {
             validate_value("llm client name", name)?;
-            build_backend(name, client_config, &BTreeMap::new())?;
+            build_backend(name, client_config, &BTreeMap::new(), None)?;
         }
         for (target_name, target) in &self.targets {
             let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
@@ -241,9 +265,26 @@ impl DeploymentConfig {
                 .ok_or_else(|| {
                     RunnerError::configuration("validated llm client was not initialized")
                 })?;
+            if let Some(effort) = &target.reasoning_effort {
+                if effort.trim().is_empty() {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} reasoning_effort must not be empty"
+                    )));
+                }
+                if matches!(client_config.format, ClientFormat::AnthropicMessages) {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} reasoning_effort is only supported on openai_chat and openai_responses clients"
+                    )));
+                }
+            }
             model_configs.push(ModelConfig::new(
                 target.id.clone(),
-                build_backend(&target.llm_client, client_config, &target.extra_body)?,
+                build_backend(
+                    &target.llm_client,
+                    client_config,
+                    &target.extra_body,
+                    target.reasoning_effort.clone(),
+                )?,
                 None,
             ));
         }
@@ -299,7 +340,67 @@ impl DeploymentConfig {
             let client: Arc<dyn RoutedLlmClient> = client.clone();
             by_model.insert(target.id.clone(), client);
         }
-        Ok((ClientRouter::new(by_model), caller_auth))
+        let TargetPromptPolicy {
+            prompts,
+            routing_answer_target,
+        } = self.build_route_target_prompts(route_name, route)?;
+        let router =
+            ClientRouter::new_with_target_prompts(by_model, prompts, routing_answer_target);
+        Ok((router, caller_auth))
+    }
+
+    /// Builds the effective prompt policy for this route's completion targets.
+    fn build_route_target_prompts(
+        &self,
+        route_name: &str,
+        route: &RouteConfig,
+    ) -> RunnerResult<TargetPromptPolicy> {
+        let mut prompts = HashMap::new();
+        let mut aliases = HashMap::<&ModelId, Option<&str>>::new();
+        for name in route.algorithm.routing_target_names() {
+            let target = self.targets.get(name).ok_or_else(|| {
+                RunnerError::configuration(format!("route references unknown target {name}"))
+            })?;
+            let prompt = target.system_prompt.as_deref();
+            if aliases
+                .insert(&target.id, prompt)
+                .is_some_and(|configured| configured != prompt)
+            {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} maps completion target aliases to model {} with different system_prompt values",
+                    target.id
+                )));
+            }
+            if let Some(prompt) = prompt {
+                prompts.insert(target.id.clone(), prompt.to_string());
+            }
+        }
+        let mut policy = TargetPromptPolicy {
+            prompts,
+            routing_answer_target: None,
+        };
+        let Some((response_name, dependency_name)) =
+            route.algorithm.routing_response_and_dependency()
+        else {
+            return Ok(policy);
+        };
+        let response = self.targets.get(response_name).ok_or_else(|| {
+            RunnerError::configuration(format!("route references unknown target {response_name}"))
+        })?;
+        if !policy.prompts.contains_key(&response.id) {
+            return Ok(policy);
+        }
+        let dependency = self.targets.get(dependency_name).ok_or_else(|| {
+            RunnerError::configuration(format!("route references unknown target {dependency_name}"))
+        })?;
+        if response.id == dependency.id {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} cannot apply system_prompt to target {response_name}: model {} is also used by routing-only target {dependency_name}",
+                response.id,
+            )));
+        }
+        policy.routing_answer_target = Some(response.id.clone());
+        Ok(policy)
     }
 
     fn fallback_base_url(&self) -> RunnerResult<Option<String>> {
@@ -423,6 +524,10 @@ struct TargetConfig {
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
+    system_prompt: Option<String>,
+    /// Reasoning effort forced on every request to this target, replacing the caller's value.
+    /// Only meaningful on `openai_chat` and `openai_responses` clients.
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -455,6 +560,7 @@ fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
     extra_body: &BTreeMap<String, Value>,
+    reasoning_effort: Option<String>,
 ) -> RunnerResult<Backend> {
     if config.max_retries > MAX_CONFIGURED_RETRIES {
         return Err(RunnerError::configuration(format!(
@@ -494,6 +600,7 @@ fn build_backend(
         forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
+        reasoning_effort,
         max_retries: config.max_retries,
     };
     let backend = match config.format {
@@ -681,6 +788,12 @@ efficient_target = "weak"
 picker = "efficient_first"
 confidence_threshold = 1.0
 
+[routes.stage.tool_semantics]
+observe = ["lookup_customer"]
+mutate = ["send_payment"]
+plan = ["create_workflow"]
+new = ["send_message"]
+
 [routes.stage.classifier]
 target = "stage_judge"
 base_threshold = 0.5
@@ -708,6 +821,9 @@ classify_trigger = "user_turn"
 capable_target = "strong"
 efficient_target = "weak"
 confidence_threshold = 0.5
+
+[routes.composed.stage.tool_semantics]
+new = ["send_message"]
 "#
         )
     }
@@ -743,6 +859,33 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn stage_rejects_ambiguous_or_non_additive_tool_semantics() {
+        for (configured, expected) in [
+            (
+                stage_config().replace(
+                    "mutate = [\"send_payment\"]",
+                    "mutate = [\"LOOKUP_CUSTOMER\"]",
+                ),
+                "appears in both tool_semantics.observe and tool_semantics.mutate",
+            ),
+            (
+                stage_config().replace("new = [\"send_message\"]", "new = [\"Read\"]"),
+                "already has built-in semantics and cannot be reclassified",
+            ),
+            (
+                stage_config().replace("observe = [\"lookup_customer\"]", "observe = [\" \"]"),
+                "contains an empty tool name",
+            ),
+        ] {
+            let message = error_message(&configured);
+            assert!(
+                message.contains(expected),
+                "expected {expected:?} in error, got: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn passthrough_and_stage_accept_subagent_routing() -> RunnerResult<()> {
         let stage = stage_config();
         let stage_with_classifier = with_subagent_llm_classifier(&stage, "stage", "");
@@ -766,6 +909,49 @@ confidence_threshold = 0.5
             runner_from_toml(&configured)?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn aliased_completion_targets_reject_prompt_conflicts() {
+        let configured = stage_config()
+            .replace(
+                "id = \"strong/model\"\nllm_client = \"responses\"",
+                "id = \"strong/model\"\nllm_client = \"responses\"\nsystem_prompt = \"capable\"",
+            )
+            .replace(
+                "[routes.stage]",
+                "[targets.strong_alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n\n[routes.stage]",
+            )
+            .replace("efficient_target = \"weak\"", "efficient_target = \"strong_alias\"");
+        let message = error_message(&configured);
+        assert!(
+            message.contains("completion target aliases to model strong/model with different system_prompt values"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn prompted_routing_response_cannot_share_a_model_with_a_dependency() {
+        let configured = VALID_CONFIG
+            .replace(
+                "id = \"classifier/model\"\nllm_client = \"primary\"",
+                "id = \"weak/model\"\nllm_client = \"primary\"",
+            )
+            .replace(
+                "id = \"weak/model\"\nllm_client = \"anthropic\"",
+                "id = \"weak/model\"\nllm_client = \"anthropic\"\nsystem_prompt = \"answer prompt\"",
+            )
+            .replace(
+                "base_threshold = 0.5",
+                "base_threshold = 0.5\nescalation = { confirmations = 1 }",
+            );
+
+        let message = error_message(&configured);
+
+        assert!(
+            message.contains("cannot apply system_prompt to target weak: model weak/model is also used by routing-only target classifier"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]
@@ -801,6 +987,51 @@ confidence_threshold = 0.5
             "base_threshold = 0.5\nescalation = { confirmations = 0 }",
         );
         assert!(error_message(&starved).contains("confirmations must be at least 1"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_target_reasoning_effort_parses_and_is_rejected_where_unsupported() -> RunnerResult<()> {
+        let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        let weak = "[targets.weak]\nid = \"weak/model\"\nllm_client = \"anthropic\"";
+        assert!(VALID_CONFIG.contains(strong) && VALID_CONFIG.contains(weak));
+
+        let forced = VALID_CONFIG.replace(strong, &format!("{strong}\nreasoning_effort = \"max\""));
+        runner_from_toml(&forced)?;
+
+        let blank = VALID_CONFIG.replace(strong, &format!("{strong}\nreasoning_effort = \" \""));
+        assert!(error_message(&blank).contains("reasoning_effort must not be empty"));
+
+        let anthropic = VALID_CONFIG.replace(weak, &format!("{weak}\nreasoning_effort = \"high\""));
+        assert!(
+            error_message(&anthropic)
+                .contains("only supported on openai_chat and openai_responses")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_targets_with_conflicting_settings_are_rejected() -> RunnerResult<()> {
+        let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        assert!(VALID_CONFIG.contains(strong));
+        // Same model, same client, different effort: the second target could never take effect.
+        let conflicting = VALID_CONFIG.replace(
+            strong,
+            &format!(
+                "{strong}\n\n[targets.strong_max]\nid = \"strong/model\"\nllm_client = \"responses\"\nreasoning_effort = \"max\""
+            ),
+        );
+        assert!(
+            error_message(&conflicting).contains("different reasoning_effort or extra_body"),
+            "{}",
+            error_message(&conflicting)
+        );
+        // An alias with identical settings is still allowed (it only warns).
+        let alias = VALID_CONFIG.replace(
+            strong,
+            &format!("{strong}\n\n[targets.strong_alias]\nid = \"strong/model\"\nllm_client = \"responses\""),
+        );
+        runner_from_toml(&alias)?;
         Ok(())
     }
 
@@ -871,6 +1102,22 @@ confidence_threshold = 0.5
             "picker = \"efficient_first\"\nmagic = true",
         );
         assert!(error_message(&config).contains("unknown field"));
+    }
+
+    #[test]
+    fn auto_route_builds_a_stage_router_with_no_extra_fields() -> RunnerResult<()> {
+        let config = format!(
+            r#"{VALID_CONFIG}
+[routes.auto]
+id = "switchyard/auto"
+type = "auto"
+capable_target = "strong"
+efficient_target = "weak"
+"#
+        );
+        let runner = runner_from_toml(&config)?;
+        assert!(runner.route("switchyard/auto").is_some());
+        Ok(())
     }
 
     #[test]
@@ -1187,7 +1434,7 @@ target = "azure"
         let Some(client) = config.llm_clients.get("primary") else {
             return Err(RunnerError::configuration("primary llm client is missing"));
         };
-        let backend = build_backend("primary", client, &target.extra_body)?;
+        let backend = build_backend("primary", client, &target.extra_body, None)?;
 
         assert_eq!(
             backend.extra_body().get("service_tier"),

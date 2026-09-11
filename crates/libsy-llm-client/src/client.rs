@@ -246,6 +246,9 @@ impl TranslatingLlmClient {
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
         set_json_model(&mut body, model);
+        if matches!(backend, Backend::OpenAiResponses(_)) {
+            sanitize_openai_responses_provider_body(&mut body);
+        }
         // Strip before `merge_extra_body` so a target can reinstate either field
         // deliberately via `extra_body`.
         if matches!(backend, Backend::Anthropic(_)) {
@@ -253,6 +256,9 @@ impl TranslatingLlmClient {
             strip_unsigned_thinking_blocks(&mut body);
         }
         merge_extra_body(&mut body, backend.extra_body());
+        // After the merge on purpose: the effort override must win over both the caller's
+        // value and any `reasoning` default a target set through `extra_body`.
+        apply_reasoning_effort(&mut body, backend);
         if matches!(backend, Backend::Anthropic(_)) {
             enable_anthropic_prompt_caching(&mut body);
         }
@@ -464,17 +470,9 @@ impl TranslatingLlmClient {
                 // Adapt the reqwest body stream to plain bytes; the SSE-decode itself is
                 // transport-agnostic and lives in `switchyard-translation`.
                 let bytes = http_response.bytes_stream().map(|chunk| {
-                    chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
-                        if error.is_timeout() {
-                            LlmClientError::Timeout {
-                                source: Box::new(error),
-                            }
-                        } else {
-                            LlmClientError::Transport {
-                                source: Box::new(error),
-                            }
-                        }
-                    })
+                    chunk
+                        .map(|bytes| bytes.to_vec())
+                        .map_err(convert_reqwest_error)
                 });
                 let mut chunks = decode_stream(bytes, wire_format)?;
                 // Providers reject an over-ceiling streaming request with an in-band
@@ -707,6 +705,7 @@ fn record_gen_ai_request(url: &str, model: &str, streaming: bool) {
 fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     // Reqwest labels truncated or otherwise unreadable response bodies as decode
     // errors, so distinguish them from serde JSON failures at the call site.
+    let error = error.without_url();
     if error.is_timeout() {
         LlmClientError::Timeout {
             source: Box::new(error),
@@ -751,6 +750,124 @@ fn apply_extra_headers(mut builder: RequestBuilder, backend: &Backend) -> Reques
 fn set_json_model(body: &mut Value, model: &str) {
     if let Value::Object(object) = body {
         object.insert("model".to_string(), Value::String(model.to_string()));
+    }
+}
+
+const CODEX_NAMESPACE_SEPARATOR: &str = "__";
+
+// Codex extends Responses with namespace containers and namespaced function
+// calls. OpenAI-compatible providers expect a flat Responses tool namespace.
+fn sanitize_openai_responses_provider_body(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    sanitize_openai_responses_input_for_provider(object.get_mut("input"));
+    sanitize_openai_responses_tools_for_provider(object.get_mut("tools"));
+    sanitize_openai_responses_tool_choice_for_provider(object.get_mut("tool_choice"));
+}
+
+fn sanitize_openai_responses_input_for_provider(input: Option<&mut Value>) {
+    let Some(Value::Array(items)) = input else {
+        return;
+    };
+    for item in items {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        if object.get("type").and_then(Value::as_str) == Some("function_call") {
+            qualify_responses_function_name(object);
+        }
+    }
+}
+
+fn sanitize_openai_responses_tools_for_provider(tools: Option<&mut Value>) {
+    let Some(Value::Array(tools)) = tools else {
+        return;
+    };
+    let mut flat_tools = Vec::with_capacity(tools.len());
+    for tool in std::mem::take(tools) {
+        push_sanitized_openai_responses_tool(&mut flat_tools, tool);
+    }
+    *tools = flat_tools;
+}
+
+fn push_sanitized_openai_responses_tool(out: &mut Vec<Value>, tool: Value) {
+    let Value::Object(mut object) = tool else {
+        out.push(tool);
+        return;
+    };
+    if object.get("type").and_then(Value::as_str) == Some("namespace") {
+        let namespace = object
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let Some(Value::Array(children)) = object.remove("tools") else {
+            out.push(Value::Object(object));
+            return;
+        };
+        for child in children {
+            push_sanitized_namespaced_tool(out, &namespace, child);
+        }
+        return;
+    }
+    ensure_responses_function_tool_description(&mut object);
+    out.push(Value::Object(object));
+}
+
+fn push_sanitized_namespaced_tool(out: &mut Vec<Value>, namespace: &str, tool: Value) {
+    let Value::Object(mut object) = tool else {
+        out.push(tool);
+        return;
+    };
+    if object.get("type").and_then(Value::as_str) == Some("function") {
+        qualify_responses_function_name_with_namespace(&mut object, namespace);
+        ensure_responses_function_tool_description(&mut object);
+    }
+    out.push(Value::Object(object));
+}
+
+fn sanitize_openai_responses_tool_choice_for_provider(tool_choice: Option<&mut Value>) {
+    let Some(Value::Object(object)) = tool_choice else {
+        return;
+    };
+    if object.get("type").and_then(Value::as_str) == Some("function") {
+        qualify_responses_function_name(object);
+    }
+}
+
+fn qualify_responses_function_name(object: &mut Map<String, Value>) {
+    let namespace = object
+        .remove("namespace")
+        .and_then(|value| value.as_str().map(ToOwned::to_owned));
+    let Some(namespace) = namespace.as_deref() else {
+        return;
+    };
+    qualify_responses_function_name_with_namespace(object, namespace);
+}
+
+fn qualify_responses_function_name_with_namespace(
+    object: &mut Map<String, Value>,
+    namespace: &str,
+) {
+    if namespace.is_empty() {
+        return;
+    }
+    let Some(name) = object.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    let prefix = format!("{namespace}{CODEX_NAMESPACE_SEPARATOR}");
+    if name.starts_with(&prefix) {
+        return;
+    }
+    object.insert("name".to_string(), Value::String(format!("{prefix}{name}")));
+}
+
+fn ensure_responses_function_tool_description(object: &mut Map<String, Value>) {
+    if object.get("type").and_then(Value::as_str) == Some("function")
+        && !matches!(object.get("description"), Some(Value::String(_)))
+    {
+        object.insert("description".to_string(), Value::String(String::new()));
     }
 }
 
@@ -817,6 +934,44 @@ fn is_unsigned_thinking_block(block: &Value) -> bool {
         block.get("signature").and_then(Value::as_str),
         Some(signature) if !signature.is_empty()
     )
+}
+
+// Forces the target's configured reasoning effort onto the outbound body, replacing the
+// caller's value. Unlike `extra_body`, this is an override: a route that sends one model at a
+// higher effort than the client asked for is the point of the setting.
+fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
+    let Some(effort) = backend.reasoning_effort() else {
+        return;
+    };
+    let Value::Object(object) = body else {
+        return;
+    };
+    match backend {
+        Backend::OpenAiResponses(_) => {
+            // Responses nests effort under `reasoning` next to fields the caller may have set
+            // (`summary`, for example), so only the `effort` key is replaced. A `reasoning`
+            // value that is not an object is malformed and is replaced whole.
+            let reasoning = object
+                .entry("reasoning".to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if !reasoning.is_object() {
+                *reasoning = Value::Object(serde_json::Map::new());
+            }
+            if let Value::Object(reasoning) = reasoning {
+                reasoning.insert("effort".to_string(), Value::String(effort.to_string()));
+            }
+        }
+        Backend::OpenAiChat(_) => {
+            // Chat Completions takes effort as a top-level field.
+            object.insert(
+                "reasoning_effort".to_string(),
+                Value::String(effort.to_string()),
+            );
+        }
+        // Anthropic has no effort field (thinking is a token budget); the runner rejects the
+        // setting on Anthropic clients at load time, so this arm is unreachable in practice.
+        Backend::Anthropic(_) => {}
+    }
 }
 
 // Applies target defaults without overriding fields supplied by the caller.
@@ -937,6 +1092,7 @@ mod tests {
             forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
+            reasoning_effort: None,
             max_retries: 0,
         }
     }
@@ -957,6 +1113,14 @@ mod tests {
         )]
     }
 
+    fn responses_map(base_url: &str) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(config(base_url)),
+            None,
+        )]
+    }
+
     fn chat_map_with_extra_body(
         base_url: &str,
         extra_body: BTreeMap<String, Value>,
@@ -964,6 +1128,22 @@ mod tests {
         let mut backend = config(base_url);
         backend.extra_body = extra_body;
         vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
+    }
+
+    fn chat_map_with_effort(base_url: &str, effort: &str) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.reasoning_effort = Some(effort.to_string());
+        vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
+    }
+
+    fn responses_map_with_effort(base_url: &str, effort: &str) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.reasoning_effort = Some(effort.to_string());
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(backend),
+            None,
+        )]
     }
 
     fn anthropic_map(base_url: &str) -> Vec<ModelConfig> {
@@ -1045,6 +1225,17 @@ mod tests {
             raw_request: None,
             metadata: None,
         }
+    }
+
+    #[tokio::test]
+    async fn transport_errors_drop_the_upstream_url() {
+        let error = reqwest::Client::new()
+            .post("http://127.0.0.1:1/v1?key=CANARY")
+            .send()
+            .await
+            .expect_err("closed port");
+
+        assert!(!convert_reqwest_error(error).to_string().contains("CANARY"));
     }
 
     #[test]
@@ -1405,6 +1596,89 @@ mod tests {
             )
             .await?;
         // The body_partial_json matcher asserts the upstream saw model "gpt".
+        Ok(())
+    }
+
+    /// A configured reasoning effort replaces the caller's value on both OpenAI wire formats,
+    /// which `extra_body` (defaults only) cannot do.
+    #[tokio::test]
+    async fn reasoning_effort_override_replaces_the_callers_effort()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "model": "gpt",
+                "reasoning_effort": "max"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map_with_effort(
+            &format!("{}/v1", server.uri()),
+            "max",
+        ))?;
+        client
+            .call_rewrite_model_raw(
+                json!({
+                    "model": "client-facing",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning_effort": "high"
+                }),
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "model": "gpt",
+                "reasoning": {"effort": "max", "summary": "auto"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "gpt",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&responses_map_with_effort(
+            &format!("{}/v1", server.uri()),
+            "max",
+        ))?;
+        client
+            .call_rewrite_model_raw(
+                json!({
+                    "model": "client-facing",
+                    "input": [{"role": "user", "content": "hi"}],
+                    "reasoning": {"effort": "high", "summary": "auto"}
+                }),
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?;
         Ok(())
     }
 
@@ -2187,6 +2461,99 @@ mod tests {
         assert_eq!(body["output"][0]["namespace"], "mcp__open_websearch");
         // Arguments are parsed and re-serialized, so the spacing is normalized.
         assert_eq!(body["output"][0]["arguments"], "{\"q\": \"rust\"}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn openai_responses_backend_flattens_codex_namespaces_before_upstream()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "model": "gpt",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "output": [{
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "mcp__open_websearch__search",
+                    "arguments": "{\"q\":\"rust\"}"
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&responses_map(&format!("{}/v1", server.uri())))?;
+        let parameters = json!({"type": "object", "properties": {"q": {"type": "string"}}});
+        let raw = json!({
+            "model": "client-facing",
+            "input": [{
+                "type": "function_call",
+                "call_id": "call_0",
+                "name": "search",
+                "namespace": "mcp__open_websearch",
+                "arguments": "{}"
+            }],
+            "tool_choice": {
+                "type": "function",
+                "name": "search",
+                "namespace": "mcp__open_websearch"
+            },
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__open_websearch",
+                "tools": [{
+                    "type": "function",
+                    "name": "search",
+                    "parameters": parameters.clone()
+                }]
+            }]
+        });
+
+        let RawResponse::Buffered(body) = client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
+            )
+            .await?
+        else {
+            panic!("expected a buffered response");
+        };
+
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let request_body: Value = serde_json::from_slice(&received[0].body)?;
+        assert_eq!(request_body["model"], "gpt");
+        assert_eq!(
+            request_body["tools"],
+            json!([{
+                "type": "function",
+                "name": "mcp__open_websearch__search",
+                "description": "",
+                "parameters": parameters
+            }])
+        );
+        assert_eq!(
+            request_body["tool_choice"],
+            json!({"type": "function", "name": "mcp__open_websearch__search"})
+        );
+        assert_eq!(
+            request_body["input"][0]["name"],
+            "mcp__open_websearch__search"
+        );
+        assert!(request_body["input"][0].get("namespace").is_none());
+
+        assert_eq!(body["output"][0]["type"], "function_call");
+        assert_eq!(body["output"][0]["name"], "search");
+        assert_eq!(body["output"][0]["namespace"], "mcp__open_websearch");
         Ok(())
     }
 

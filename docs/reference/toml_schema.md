@@ -88,7 +88,20 @@ calls an upstream.
 |---|:---:|---|---|
 | `id` | Yes | — | Exact model ID sent upstream. |
 | `llm_client` | Yes | — | Key under `[llm_clients]`. |
+| `system_prompt` | No | unset | System prompt prepended when this target serves a completion. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
+| `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`). Rejected on `anthropic_messages` clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. Two targets for the same model id on the same `llm_client` collapse into one, so give each effort tier its own `llm_clients` entry (same endpoint, different name). |
+
+Each selected or fallback target is prepared from the routed request independently. A prompt
+configured for one target is therefore not carried into another target's fallback request.
+Judge-only, classifier-only, and reviewer-only targets are not completion destinations and do not
+receive this prompt.
+
+Escalation's weak target and Advisor's executor produce a candidate response while routing, so
+their target prompt is applied to that call. A prompted target in either role cannot use the same
+model ID as that route's judge or reviewer because those calls would otherwise be indistinguishable
+at the client boundary; Switchyard rejects that configuration when it loads.
+Token-count requests do not apply target system prompts.
 
 ## `[routes.<name>]`
 
@@ -236,11 +249,28 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental, unbenchmarked). Tier used when the signals are not confident. |
 | `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. |
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
-| `capable_system_prompt` | No | unset | System prompt handed to the capable tier. |
-| `efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
+| `tool_semantics.observe` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as read-only investigation. |
+| `tool_semantics.mutate` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as state-changing production. |
+| `tool_semantics.plan` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as planning or task decomposition. |
+| `tool_semantics.new` | No | `[]` | Exact ASCII case-insensitive domain tool names that demonstrate forward activity without favoring either tier. |
 | `classifier.classify_trigger` | No | `every_request` | When the judge runs. See the `llm_classifier` route. `new_session` has no effect here. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
+
+### `auto`
+
+Uses Switchyard's recommended default routing strategy instead of one you pick
+yourself: a `stage_router` preset with `picker = "efficient_first"` and
+`confidence_threshold = 0.5`, no classifier. See
+[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for a
+deeper dive on the current default, or the
+[strategy table](../routing_algorithms/overview.md#choose-a-strategy) to pick
+one manually.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `capable_target` | Yes | — | Capable tier. |
+| `efficient_target` | Yes | — | Efficient tier. |
 
 ### `composite`
 
@@ -258,8 +288,10 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | `stage.efficient_target` | Yes | — | Efficient tier. |
 | `stage.confidence_threshold` | Yes | — | Corroboration a decisive signal needs. In `[0, 1]`. |
 | `stage.recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
-| `stage.capable_system_prompt` | No | unset | System prompt handed to the capable tier. |
-| `stage.efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
+| `stage.tool_semantics.observe` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as observation. |
+| `stage.tool_semantics.mutate` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as mutation. |
+| `stage.tool_semantics.plan` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as planning. |
+| `stage.tool_semantics.new` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as neutral forward activity. |
 | `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |
 
 The tier is retained per session. A deployment that sends no session ID needs

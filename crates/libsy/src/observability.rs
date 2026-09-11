@@ -38,8 +38,9 @@ use std::time::{Duration, Instant};
 use opentelemetry::metrics::Meter;
 use opentelemetry::{KeyValue, global};
 use tracing::Span;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::Result;
+use crate::{OutcomeMetadata, Result};
 use switchyard_protocol::{ModelId, Request, Response};
 
 const METRICS_SCOPE: &str = "switchyard";
@@ -61,16 +62,22 @@ pub(crate) fn outcome_value<T>(result: &Result<T>) -> &'static str {
 /// Span covering one algorithm run (the whole `route` execution).
 ///
 /// Correlation ids from the request [`switchyard_protocol::Metadata`] are recorded as span fields
-/// when present. `tracing` spans cannot grow field names at runtime, so
-/// arbitrary host labels ride in via [`switchyard_protocol::Metadata::extra_metadata`], recorded
-/// whole into the `extra_metadata` field. `outcome` and `error` are filled in
-/// by [`record_run`] when the run ends.
+/// when present. Arbitrary extra metadata and error details are not exported.
+/// [`record_outcome`] fills in successful outcome fields; [`record_run`] records
+/// whether the run succeeded.
 pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
     let span = tracing::info_span!(
         target: TRACING_TARGET,
         "libsy.run",
         algorithm,
         outcome_id = tracing::field::Empty,
+        evidence.source = tracing::field::Empty,
+        evidence.score = tracing::field::Empty,
+        evidence.confidence = tracing::field::Empty,
+        evidence.threshold = tracing::field::Empty,
+        evidence.verdict = tracing::field::Empty,
+        evidence.trigger = tracing::field::Empty,
+        evidence.reason_code = tracing::field::Empty,
         switchyard.algorithm = algorithm,
         openinference.span.kind = "CHAIN",
         switchyard.route = tracing::field::Empty,
@@ -81,9 +88,7 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
         task_kind = tracing::field::Empty,
         agent_role = tracing::field::Empty,
         correlation_id = tracing::field::Empty,
-        extra_metadata = tracing::field::Empty,
         outcome = tracing::field::Empty,
-        error = tracing::field::Empty,
     );
     if let Some(route) = request.model_id() {
         span.record("switchyard.route", route.as_ref());
@@ -104,11 +109,46 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
         if let Some(session_id) = &metadata.session_id {
             span.record("session.id", session_id.as_str());
         }
-        if let Some(extra) = &metadata.extra_metadata {
-            span.record("extra_metadata", tracing::field::debug(extra));
-        }
     }
     span
+}
+
+/// Projects a successful outcome onto the existing run span. Model IDs are an
+/// ordered OpenTelemetry string array, preserving fallback order. Evidence uses typed fields;
+/// unknown keys and values of the wrong type are omitted.
+pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
+    let span = Span::current();
+    span.record("outcome_id", metadata.outcome_id());
+    span.set_attribute(
+        "selected_model_ids",
+        opentelemetry::Value::Array(opentelemetry::Array::String(
+            models
+                .iter()
+                .map(|model| model.to_string().into())
+                .collect(),
+        )),
+    );
+    if let Some(evidence) = &metadata.evidence {
+        for (key, field) in [
+            ("source", "evidence.source"),
+            ("verdict", "evidence.verdict"),
+            ("trigger", "evidence.trigger"),
+            ("reason_code", "evidence.reason_code"),
+        ] {
+            if let Some(value) = evidence.get(key).and_then(serde_json::Value::as_str) {
+                span.record(field, value);
+            }
+        }
+        for (key, field) in [
+            ("score", "evidence.score"),
+            ("confidence", "evidence.confidence"),
+            ("threshold", "evidence.threshold"),
+        ] {
+            if let Some(value) = evidence.get(key).and_then(serde_json::Value::as_f64) {
+                span.record(field, value);
+            }
+        }
+    }
 }
 
 /// Holds `switchyard.algorithms_in_flight` up by one for as long as it lives.
@@ -141,7 +181,7 @@ fn record_algorithms_in_flight(algorithm: &str, delta: i64) {
 }
 
 /// Runs one algorithm task to completion, recording the run counter, duration
-/// histogram, span outcome, and failure log when it resolves. Counts the run as
+/// histogram and span outcome when it resolves. Counts the run as
 /// in flight for its whole duration.
 /// Executes inside the `libsy.run` span its caller instruments the task with.
 pub(crate) async fn observe_run<T>(
@@ -158,20 +198,10 @@ pub(crate) async fn observe_run<T>(
 }
 
 /// Records the end of one algorithm run: the run counter and duration
-/// histogram, the `outcome`/`error` fields on `span`, and a warn log when the
-/// run failed.
+/// histogram and the `outcome` field on `span`, without error details.
 fn record_run<T>(algorithm: &str, duration: Duration, result: &Result<T>, span: &Span) {
     let outcome = outcome_value(result);
     span.record("outcome", outcome);
-    if let Err(error) = result {
-        span.record("error", tracing::field::display(error));
-        tracing::warn!(
-            target: TRACING_TARGET,
-            algorithm,
-            error = %error,
-            "algorithm run failed"
-        );
-    }
 
     let attributes = [
         KeyValue::new("algorithm", algorithm.to_string()),
@@ -203,8 +233,7 @@ pub(crate) fn record_classifier_fail_open(judge_model: &str, reason: &'static st
 }
 
 /// Records the resolution of one offloaded model call: the call counter and
-/// latency histogram, the `outcome`/`error`/token fields on `span`, and a warn
-/// log when the call failed.
+/// latency histogram and the outcome/token fields on `span`, without error details.
 pub(crate) fn record_llm_call(
     algorithm: &str,
     selected_model: &str,
@@ -230,45 +259,27 @@ pub(crate) fn record_llm_call(
         .build()
         .record(duration.as_secs_f64() * 1000.0, &call_attributes);
 
-    match result {
-        Ok(response) => {
-            // Token usage exists only once a response is buffered; a streamed
-            // response resolves before its usage is known, so none is recorded.
-            let Some(usage) = response.llm_response.as_agg().map(|agg| &agg.usage) else {
-                return;
-            };
-            for (field, value) in [
-                ("input_tokens", usage.input_tokens),
-                ("output_tokens", usage.output_tokens),
-                ("total_tokens", usage.total_tokens),
-                ("reasoning_tokens", usage.reasoning_tokens),
-            ] {
-                if let Some(value) = value {
-                    span.record(field, value);
-                }
+    if let Ok(response) = result {
+        // Token usage exists only once a response is buffered; a streamed
+        // response resolves before its usage is known, so none is recorded.
+        let Some(usage) = response.llm_response.as_agg().map(|agg| &agg.usage) else {
+            return;
+        };
+        for (field, value) in [
+            ("input_tokens", usage.input_tokens),
+            ("output_tokens", usage.output_tokens),
+            ("total_tokens", usage.total_tokens),
+            ("reasoning_tokens", usage.reasoning_tokens),
+        ] {
+            if let Some(value) = value {
+                span.record(field, value);
             }
-        }
-        Err(error) => {
-            span.record("error", tracing::field::display(error));
-            tracing::warn!(
-                target: TRACING_TARGET,
-                algorithm,
-                selected_model,
-                error = %error,
-                "model call failed"
-            );
         }
     }
 }
 
-/// Records one published routing decision: the decision counter plus a structured debug event.
+/// Counts one published routing decision.
 pub(crate) fn record_decision(algorithm: &str, selected_model: &ModelId) {
-    tracing::debug!(
-        target: TRACING_TARGET,
-        algorithm,
-        selected_model = %selected_model,
-        "routing decision"
-    );
     meter().u64_counter("switchyard.decisions").build().add(
         1,
         &[

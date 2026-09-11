@@ -8,6 +8,8 @@ use std::{future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::In
 
 use async_trait::async_trait;
 use futures::{FutureExt, Stream, StreamExt};
+use parking_lot::Mutex;
+use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::Instrument;
@@ -121,6 +123,8 @@ pub struct Driver {
     step_tx: mpsc::Sender<Result<Step>>,
     /// The owning algorithm's telemetry label, stamped onto every call this driver publishes.
     algorithm: String,
+    /// Run-scoped evidence shared by driver clones and attached only to a successful outcome.
+    evidence: Arc<Mutex<Option<Value>>>,
 }
 
 impl Driver {
@@ -136,9 +140,23 @@ impl Driver {
             Self {
                 step_tx,
                 algorithm: algorithm.to_string(),
+                evidence: Arc::new(Mutex::new(None)),
             },
             step_rx,
         )
+    }
+
+    /// Replace the current run's evidence when a component makes the final decision.
+    pub(crate) fn set_evidence(&self, evidence: Value) {
+        *self.evidence.lock() = Some(evidence);
+    }
+
+    /// Supply fallback evidence without replacing a decision made earlier in the cascade.
+    pub(crate) fn set_evidence_if_empty(&self, evidence: Value) {
+        let mut current = self.evidence.lock();
+        if current.is_none() {
+            *current = Some(evidence);
+        }
     }
 
     /// Publish a model call and await the consumer's response.
@@ -158,7 +176,6 @@ impl Driver {
             selected_model = %models.first().map(ModelId::as_str).unwrap_or("NoTargets"),
             openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
-            error = tracing::field::Empty,
             input_tokens = tracing::field::Empty,
             output_tokens = tracing::field::Empty,
             total_tokens = tracing::field::Empty,
@@ -204,10 +221,10 @@ impl Driver {
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
         let result = result.map(|mut outcome| {
-            let metadata = outcome
-                .metadata
-                .get_or_insert_with(|| crate::OutcomeMetadata::new(self.algorithm.clone(), None));
-            tracing::Span::current().record("outcome_id", metadata.outcome_id());
+            let metadata = outcome.metadata.get_or_insert_with(|| {
+                crate::OutcomeMetadata::new(self.algorithm.clone(), self.evidence.lock().take())
+            });
+            observability::record_outcome(metadata, &outcome.selected_model_ids);
             outcome
         });
         let selected_model = result
@@ -365,9 +382,20 @@ impl RoutingIdentity {
 /// # Observability
 ///
 /// [`run_stream`](Self::run_stream) creates a `libsy.run` span, and each offloaded model
-/// call creates a `libsy.llm_call` span. Routing decisions and failures are emitted through
-/// `tracing`; metrics use the global OpenTelemetry meter provider. The provider call
-/// itself belongs to the host, and is instrumented by whoever makes it.
+/// call creates a nested `libsy.llm_call` span. Successful outcomes record their
+/// [`OutcomeMetadata::outcome_id`](crate::OutcomeMetadata::outcome_id) on `libsy.run`,
+/// alongside `selected_model_ids` (an ordered OpenTelemetry string array).
+/// `algorithm` and `switchyard.algorithm` retain the run's [`Algorithm::name`].
+/// Optional `evidence.source`, `evidence.verdict`, `evidence.trigger`, and
+/// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`, and
+/// `evidence.threshold` are numbers. Unknown evidence fields are not exported.
+/// These fields are span attributes, never metric labels.
+///
+/// The run/call observability helpers retain `outcome` status and operational metrics,
+/// but omit error details and arbitrary request extra metadata. Algorithms and hosts
+/// may emit their own logs. Errors still reach the caller unchanged.
+/// The host controls the tracing subscriber and global OpenTelemetry
+/// meter provider; libsy installs no exporter and performs no telemetry network I/O.
 #[async_trait]
 pub trait Algorithm: Send + Sync + 'static {
     /// Stable, low-cardinality name identifying this algorithm — the
@@ -466,6 +494,8 @@ mod tests {
             let response = driver
                 .call_model(request.clone(), vec![target.clone()])
                 .await?;
+            driver.set_evidence(serde_json::json!({"source": "test"}));
+            driver.set_evidence_if_empty(serde_json::json!({"source": "ignored"}));
             Ok(RoutingOutcome::answered(target, request, response))
         }
     }
@@ -743,7 +773,10 @@ mod tests {
                             .get_version_num(),
                         7
                     );
-                    assert!(metadata.evidence.is_none());
+                    assert_eq!(
+                        metadata.evidence,
+                        Some(serde_json::json!({"source": "test"}))
+                    );
                     let response = outcome
                         .response
                         .ok_or_else(|| test_error("expected an answered outcome"))?;

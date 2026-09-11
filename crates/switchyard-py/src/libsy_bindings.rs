@@ -16,7 +16,7 @@ use switchyard_libsy::{
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
     PickerMode, Random, RoutingOutcome, StageRouter, StageRouterConfig, Step as RustStep,
-    StepStream, TaskClassifierConfig,
+    StepStream, TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
     LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId,
@@ -514,12 +514,45 @@ impl PyModelCall {
     }
 }
 
-/// The terminal routing selection, rewritten request, and optional existing response.
+/// Identity and optional JSON evidence from the Rust routing outcome.
+#[pyclass(name = "OutcomeMetadata", module = "switchyard.libsy", frozen)]
+struct PyOutcomeMetadata {
+    inner: switchyard_libsy::OutcomeMetadata,
+}
+
+#[pymethods]
+impl PyOutcomeMetadata {
+    /// UUIDv7 generated for this outcome.
+    #[getter]
+    fn outcome_id(&self) -> &str {
+        self.inner.outcome_id()
+    }
+
+    /// Name of the algorithm that produced this outcome.
+    #[getter]
+    fn algorithm(&self) -> &str {
+        &self.inner.algorithm
+    }
+
+    /// Optional evidence converted to ordinary Python JSON values.
+    #[getter]
+    fn evidence(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.inner
+            .evidence
+            .as_ref()
+            .map(|value| to_python(py, value))
+            .transpose()
+    }
+}
+
+/// The terminal routing selection, rewritten request, optional response, and metadata.
 #[pyclass(name = "RoutingOutcome", module = "switchyard.libsy", frozen)]
 struct PyRoutingOutcome {
     selected_model_ids: Vec<String>,
     request: Py<PyAny>,
     response: Option<Py<PyAny>>,
+    #[pyo3(get)]
+    metadata: Option<Py<PyOutcomeMetadata>>,
 }
 
 #[pymethods]
@@ -675,13 +708,16 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 selected_model_ids,
                 request,
                 response,
-                metadata: _,
+                metadata,
             } = *outcome;
             Python::attach(|py| {
                 Ok(PyStep::Done {
                     outcome: Py::new(
                         py,
                         PyRoutingOutcome {
+                            metadata: metadata
+                                .map(|inner| Py::new(py, PyOutcomeMetadata { inner }))
+                                .transpose()?,
                             selected_model_ids: selected_model_ids
                                 .iter()
                                 .map(ToString::to_string)
@@ -779,6 +815,7 @@ fn build_llm_classifier(config: LlmClassifierConfig) -> PyResult<PyAlgorithm> {
     only_on_wrong_signal_escalation=true,
     capable_system_prompt=None,
     efficient_system_prompt=None,
+    tool_semantics=None,
     classifier=None
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -794,6 +831,7 @@ fn stage_router_algorithm(
     only_on_wrong_signal_escalation: bool,
     capable_system_prompt: Option<String>,
     efficient_system_prompt: Option<String>,
+    tool_semantics: Option<HashMap<String, Vec<String>>>,
     classifier: Option<Py<PyLlmFallback>>,
 ) -> PyResult<PyAlgorithm> {
     let mode = match picker {
@@ -828,6 +866,19 @@ fn stage_router_algorithm(
     if let Some(prompt) = efficient_system_prompt {
         config.tier_prompts = config.tier_prompts.with(efficient.clone(), prompt);
     }
+    if let Some(mut semantics) = tool_semantics {
+        config.tool_semantics = ToolSemantics {
+            observe: semantics.remove("observe").unwrap_or_default(),
+            mutate: semantics.remove("mutate").unwrap_or_default(),
+            plan: semantics.remove("plan").unwrap_or_default(),
+            new: semantics.remove("new").unwrap_or_default(),
+        };
+        if let Some(category) = semantics.keys().next() {
+            return Err(PyValueError::new_err(format!(
+                "unknown tool_semantics category {category:?}; expected observe, mutate, plan, or new"
+            )));
+        }
+    }
     config.llm_fallback = classifier
         .map(|classifier| classifier.bind(py).try_borrow()?.clone_core(py))
         .transpose()?;
@@ -849,6 +900,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     libsy_module.add_class::<PyLlmResponse>()?;
     libsy_module.add_class::<PyLlmResponseStream>()?;
     libsy_module.add_class::<PyModelCall>()?;
+    libsy_module.add_class::<PyOutcomeMetadata>()?;
     libsy_module.add_class::<PyRunStream>()?;
     libsy_module.add_class::<PyRoutingOutcome>()?;
     libsy_module.add_class::<PyStep>()?;

@@ -130,16 +130,14 @@ fn emit_routing_observations(
     let (Some(observer), Some(observations)) = (observer, observations) else {
         return;
     };
-    let mut answer_observation = None;
+    let mut answer_observed = false;
     for observation in observations.lock().drain(..) {
-        if answer_observation.is_none() && answered_model == Some(&observation.selected_model) {
-            answer_observation = Some(observation);
+        if !answer_observed && answered_model == Some(&observation.selected_model) {
+            answer_observed = true;
+            observer(RunObservation::AnswerCall(observation));
         } else {
             observer(RunObservation::LlmCall(observation));
         }
-    }
-    if let Some(observation) = answer_observation {
-        observer(RunObservation::AnswerCall(observation));
     }
 }
 
@@ -652,6 +650,32 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn answer_observation_keeps_call_order() {
+        let pending = Some(Arc::new(Mutex::new(
+            ["answer", "judge"]
+                .map(|model| LlmCallObservation {
+                    selected_model: model.into(),
+                    is_success: true,
+                    duration: std::time::Duration::ZERO,
+                    usage: None,
+                })
+                .into(),
+        )));
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&emitted);
+        let observer: RunObserver = Arc::new(move |event| captured.lock().push(event));
+        let answer = ModelId::from("answer");
+
+        emit_routing_observations(&Some(observer), &pending, Some(&answer));
+
+        assert!(matches!(
+            &emitted.lock()[..],
+            [RunObservation::AnswerCall(answer), RunObservation::LlmCall(judge)]
+                if answer.selected_model == "answer" && judge.selected_model == "judge"
+        ));
+    }
+
     #[tokio::test]
     async fn each_fallback_candidate_receives_only_its_own_prompt() -> Result<()> {
         let client = Arc::new(CandidateClient {
@@ -870,6 +894,7 @@ mod tests {
                 forward_auth: false,
                 extra_headers: BTreeMap::new(),
                 extra_body: BTreeMap::new(),
+                reasoning_effort: None,
                 max_retries: 2,
             })
         };
@@ -961,6 +986,7 @@ mod tests {
                 forward_auth: false,
                 extra_headers: BTreeMap::new(),
                 extra_body: BTreeMap::new(),
+                reasoning_effort: None,
                 max_retries: 0,
             })
         };

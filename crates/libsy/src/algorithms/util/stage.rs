@@ -257,9 +257,9 @@ impl ScoreResult {
 pub struct CodingAgentDimensions {
     /// Windowed max error severity in `[0, 1]`.
     pub severity: f64,
-    /// `1.0` when a deep turn has no reads, plans, writes, or edits (pure churn).
+    /// `1.0` when a deep turn has no recognized observation, mutation, plan, or new activity.
     pub spinning: f64,
-    /// `1.0` when a deep turn reads/plans but does not write or edit.
+    /// `1.0` when a deep turn observes/plans but does not mutate or show new activity.
     pub exploring: f64,
     /// Fraction of recent tool ops that produced code (writes + edits).
     pub production_intensity: f64,
@@ -302,10 +302,11 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
     let deep_enough = signal.turn_depth >= STALL_MIN_TURN_DEPTH;
     let no_production = signal.recent_write_count == 0 && signal.recent_edit_count == 0;
     let investigating = signal.recent_read_count >= 1 || signal.recent_todowrite_count >= 1;
+    let new_activity = signal.recent_new_count >= 1;
     // spinning vs exploring partition the "not producing" case by investigative
     // activity, so at most one fires — no double-counting on the production axis.
-    let spinning = deep_enough && no_production && !investigating;
-    let exploring = deep_enough && no_production && investigating;
+    let spinning = deep_enough && no_production && !investigating && !new_activity;
+    let exploring = deep_enough && no_production && investigating && !new_activity;
 
     CodingAgentDimensions {
         severity: f64::from(signal.severity),
@@ -604,7 +605,7 @@ impl Classifier<State> for StageClassifier {
         &self,
         state: &mut State,
         request: &mut Request,
-        _driver: Option<&Driver>,
+        driver: Option<&Driver>,
     ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
         let tool_signals = &state.tool_signals;
         let Some(signal) = tool_signals else {
@@ -629,6 +630,17 @@ impl Classifier<State> for StageClassifier {
                 // is the only branch whose tier the signals actually chose — an
                 // ambiguous turn is decided further down the cascade.
                 self.apply_handoff_note(request, tier, source);
+                if let Some(driver) = driver {
+                    let evidence = match (source, confidence) {
+                        (DecisionSource::Dimensions, Some(confidence)) => serde_json::json!({
+                            "source": source.as_str(),
+                            "confidence": confidence,
+                            "threshold": self.confidence_threshold,
+                        }),
+                        _ => serde_json::json!({"source": source.as_str()}),
+                    };
+                    driver.set_evidence(evidence);
+                }
                 // Prefer pick_tier's own confidence (e.g. 1.0 for an Override)
                 // over re-deriving it from the neutral 0.5 placeholder.
                 let conf = confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs());
@@ -733,6 +745,57 @@ mod tests {
             }
             other => panic!("expected consult-classifier, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn new_activity_suppresses_stall_dimensions_without_biasing_the_score() {
+        let signal = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            recent_new_count: 1,
+            ..Default::default()
+        };
+
+        let dimensions = dimensions_from_signal(&signal);
+
+        assert_eq!(dimensions.spinning, 0.0);
+        assert_eq!(dimensions.exploring, 0.0);
+        assert_eq!(score_signal(&signal).score, 0.0);
+    }
+
+    #[test]
+    fn old_new_activity_does_not_suppress_a_current_stall() {
+        let signal = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            new_count: 1,
+            recent_new_count: 0,
+            ..Default::default()
+        };
+
+        let dimensions = dimensions_from_signal(&signal);
+
+        assert_eq!(dimensions.spinning, 1.0);
+        assert_eq!(dimensions.exploring, 0.0);
+        assert!(score_signal(&signal).score > 0.0);
+    }
+
+    #[test]
+    fn new_activity_does_not_dilute_existing_production() {
+        let baseline = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            recent_write_count: 1,
+            ..Default::default()
+        };
+        let with_new = ToolSignals {
+            recent_new_count: 2,
+            new_count: 2,
+            ..baseline.clone()
+        };
+
+        assert_eq!(
+            dimensions_from_signal(&with_new).production_intensity,
+            dimensions_from_signal(&baseline).production_intensity
+        );
+        assert_eq!(score_signal(&with_new), score_signal(&baseline));
     }
 
     // ─── StageClassifier ─────────────────────────────────────────────────

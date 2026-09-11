@@ -99,19 +99,36 @@ impl Drop for MockUpstream {
     }
 }
 
+fn user_prompt(body: &Value) -> &str {
+    body["messages"]
+        .as_array()
+        .and_then(|messages| messages.iter().find(|message| message["role"] == "user"))
+        .and_then(|message| message["content"].as_str())
+        .unwrap_or_default()
+}
+
+fn has_system_prompt(call: &Value, expected: &str) -> bool {
+    call["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["role"] == "system" && message["content"].as_str() == Some(expected)
+        })
+    })
+}
+
 async fn upstream_chat(
     State(calls): State<Arc<Mutex<Vec<Value>>>>,
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
-    if body["messages"][0]["content"] == "fail" {
+    let prompt = user_prompt(&body);
+    if prompt == "fail" {
         return (
             StatusCode::IM_A_TEAPOT,
             Json(json!({"error": {"message": "upstream rejected request"}})),
         )
             .into_response();
     }
-    if body["messages"][0]["content"] == "auth-fail" {
+    if prompt == "auth-fail" {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": {"message": "upstream authentication failed"}})),
@@ -120,13 +137,12 @@ async fn upstream_chat(
     }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
-    let prompt = body["messages"][0]["content"].as_str().unwrap_or("");
     if prompt == "retry-once"
         && calls
             .lock()
             .await
             .iter()
-            .filter(|call| call["messages"][0]["content"] == "retry-once")
+            .filter(|call| user_prompt(call) == "retry-once")
             .count()
             == 1
     {
@@ -144,7 +160,7 @@ async fn upstream_chat(
         )
             .into_response();
     }
-    if model == "model/weak" && body["messages"][0]["content"] == "overflow" {
+    if model == "model/weak" && prompt == "overflow" {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -159,7 +175,7 @@ async fn upstream_chat(
     if body["stream"].as_bool() == Some(true) {
         // Streamed tool call, for the namespace-on-every-event assertions. The
         // model calls a tool by the name it was given, so echo that name back.
-        if body["messages"][0]["content"] == "mcp-tool-call" {
+        if prompt == "mcp-tool-call" {
             let called = body["tool_choice"]["function"]["name"]
                 .as_str()
                 .or_else(|| body["tools"][0]["function"]["name"].as_str())
@@ -178,7 +194,7 @@ async fn upstream_chat(
             );
             return Sse::new(stream).into_response();
         }
-        if body["messages"][0]["content"] == "stream-error" {
+        if prompt == "stream-error" {
             let events = [
                 json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}).to_string(),
                 json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"content": "before"}}]}).to_string(),
@@ -240,7 +256,7 @@ async fn upstream_chat(
     }
 
     // Buffered tool call, the non-streaming counterpart of the branch above.
-    if body["messages"][0]["content"] == "mcp-tool-call" {
+    if prompt == "mcp-tool-call" {
         let called = body["tool_choice"]["function"]["name"]
             .as_str()
             .or_else(|| body["tools"][0]["function"]["name"].as_str())
@@ -291,10 +307,9 @@ async fn upstream_chat(
         } else {
             r#"{"decision":{"target":"premium"}}"#
         }
-    } else if model == "model/classifier"
-        && body
-            .pointer("/response_format/json_schema/schema/properties/escalate")
-            .is_some()
+    } else if body
+        .pointer("/response_format/json_schema/schema/properties/escalate")
+        .is_some()
     {
         r#"{"escalate":false,"reason":"making progress"}"#
     } else if model == "model/classifier" && requests_schema_invalid_verdict {
@@ -498,6 +513,7 @@ fn random_state_with_retries(
         forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        reasoning_effort: None,
         max_retries,
     });
     let target_models = routes
@@ -900,10 +916,12 @@ max_retries = 0
 [targets.first]
 id = "{first}"
 llm_client = "mock"
+system_prompt = "weak answer prompt"
 
 [targets.second]
 id = "{second}"
 llm_client = "mock"
+system_prompt = "strong answer prompt"
 
 [routes.random]
 id = "{ROUTE_MODEL}"
@@ -1115,6 +1133,7 @@ base_url = "{model_url}"
 [targets.judge]
 id = "model/classifier"
 llm_client = "judge_provider"
+system_prompt = "judge target prompt"
 
 [targets.quality]
 id = "model/strong"
@@ -1124,6 +1143,7 @@ llm_client = "model_provider"
 id = "model/weak"
 llm_client = "model_provider"
 extra_body = {{ service_tier = "priority" }}
+system_prompt = "economy answer prompt"
 
 [routes.classify]
 id = "switchyard/classify"
@@ -1218,6 +1238,14 @@ escalation = {{ confirmations = 1 }}
     );
     assert_eq!(model_upstream.models().await, ["model/weak"]);
     assert_eq!(judge_upstream.models().await, ["model/classifier"]);
+    assert!(has_system_prompt(
+        &model_upstream.calls.lock().await[0],
+        "economy answer prompt"
+    ));
+    assert!(!has_system_prompt(
+        &judge_upstream.calls.lock().await[0],
+        "judge target prompt"
+    ));
     Ok(())
 }
 
@@ -1341,8 +1369,6 @@ efficient_target = "weak"
 picker = "efficient_first"
 confidence_threshold = 0.5
 recent_turn_window = 3
-capable_system_prompt = "diagnose before you edit"
-efficient_system_prompt = "follow the settled plan"
 
 [routes.stage.handoff_notes]
 escalation_note = "the previous model was stalling"
@@ -1397,6 +1423,162 @@ base_threshold = 0.5
         1
     );
     assert_eq!(stats["classifier"]["total_tokens"]["prompt"], 10);
+    Ok(())
+}
+
+// A configured mutation must select the efficient tier through the HTTP configuration path.
+#[tokio::test]
+async fn stage_router_uses_configured_tool_semantics() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "capable_first"
+confidence_threshold = 0.3
+
+[routes.stage.tool_semantics]
+mutate = ["send_payment_request"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/stage",
+            "messages": [
+                {"role": "user", "content": "pay the balance"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_payment_request",
+                        "arguments": "{}"
+                    }
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "payment sent"}
+            ]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/weak")
+    );
+    Ok(())
+}
+
+// Composite TOML must pass custom stage semantics through to the nested stage router.
+#[tokio::test]
+async fn composite_router_uses_configured_tool_semantics() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.composite]
+id = "switchyard/composite"
+type = "composite"
+
+[routes.composite.classifier]
+target = "classifier"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[routes.composite.stage]
+capable_target = "strong"
+efficient_target = "weak"
+confidence_threshold = 0.3
+
+[routes.composite.stage.tool_semantics]
+new = ["send_message_to_user"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/composite",
+            "messages": [
+                {"role": "user", "content": "help the customer"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "working"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_message_to_user",
+                        "arguments": "{}"
+                    }
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "message sent"}
+            ]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/weak")
+    );
+    assert_eq!(
+        upstream.models().await,
+        ["model/weak"],
+        "configured new activity must suppress the deep-turn stall without consulting the judge"
+    );
     Ok(())
 }
 
@@ -1648,16 +1830,18 @@ format = "openai_chat"
 base_url = "{base_url}"
 
 [targets.classifier]
-id = "model/classifier"
+id = "model/strong"
 llm_client = "upstream"
 
 [targets.strong]
 id = "model/strong"
 llm_client = "upstream"
+system_prompt = "strong answer prompt"
 
 [targets.weak]
 id = "model/weak"
 llm_client = "upstream"
+system_prompt = "weak answer prompt"
 
 [routes.escalation]
 id = "switchyard/escalation"
@@ -1685,7 +1869,11 @@ escalation = {{ confirmations = 1 }}
     )
     .await?;
     assert_eq!(response.status, StatusCode::OK);
-    assert_eq!(upstream.models().await, ["model/weak", "model/classifier"]);
+    assert_eq!(upstream.models().await, ["model/weak", "model/strong"]);
+    let calls = upstream.calls.lock().await;
+    assert!(has_system_prompt(&calls[0], "weak answer prompt"));
+    assert!(!has_system_prompt(&calls[1], "strong answer prompt"));
+    drop(calls);
 
     let stats = send(
         &app,
@@ -1700,7 +1888,7 @@ escalation = {{ confirmations = 1 }}
     assert_eq!(stats["total_prompt_tokens"], 20);
     assert_eq!(stats["total_completion_tokens"], 4);
     assert_eq!(stats["models"]["model/weak"]["calls"], 1);
-    assert_eq!(stats["models"]["model/classifier"]["calls"], 1);
+    assert_eq!(stats["models"]["model/strong"]["calls"], 1);
 
     let process_stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(process_stats["total_requests"], 1);
@@ -1824,6 +2012,7 @@ llm_client = "responses"
 [targets.strong]
 id = "real/opus"
 llm_client = "claude"
+system_prompt = "completion instructions"
 
 [targets.other]
 id = "real/sonnet"
@@ -1874,6 +2063,7 @@ targets = ["responses", "other", "strong"]
     let calls = upstream.calls.lock().await;
     assert_eq!(calls.len(), 3);
     assert_eq!(calls[0]["model"], "real/opus");
+    assert!(calls[0].get("system").is_none());
     assert_eq!(
         calls[1],
         json!({
@@ -1993,6 +2183,60 @@ target = "weak"
     let app = build_switchyard_router(state);
     let response = send(&app, "POST", "/future/provider/endpoint", None).await?;
     assert_eq!(response.status, StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+#[tokio::test]
+async fn transport_errors_hide_credential_bearing_upstream_urls() -> TestResult {
+    const CANARY: &str = "CANARY_ADMIN_QUERY_KEY";
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}/v1?key={CANARY}", listener.local_addr()?);
+    drop(listener);
+
+    let routed = build_switchyard_router(random_state(&base_url, &[(ROUTE_MODEL, &["model/a"])])?);
+    let routed_response = send(
+        &routed,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+    )
+    .await?;
+
+    let fallback = load_test_config(&format!(
+        r#"
+schema_version = 1
+fallback_client = "upstream"
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.model]
+id = "model/a"
+llm_client = "upstream"
+
+[routes.model]
+id = "switchyard/model"
+type = "passthrough"
+target = "model"
+"#
+    ))?;
+    let fallback = build_switchyard_router(fallback);
+    let fallback_response = send(&fallback, "POST", "/unmatched", None).await?;
+
+    for response in [routed_response, fallback_response] {
+        assert_eq!(response.status, StatusCode::BAD_GATEWAY);
+        let body = response.json()?;
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            !message.contains(CANARY),
+            "credential leaked in {message:?}"
+        );
+    }
     Ok(())
 }
 
@@ -2715,13 +2959,23 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         );
         assert_eq!(response.json()?["model"], "model/strong");
         let calls = upstream.calls.lock().await;
+        let candidate_calls = &calls[previous_call_count..];
         assert_eq!(
-            calls[previous_call_count..]
+            candidate_calls
                 .iter()
                 .map(|call| call["model"].as_str().unwrap_or(""))
                 .collect::<Vec<_>>(),
             ["model/weak", "model/strong"]
         );
+        assert!(has_system_prompt(&candidate_calls[0], "weak answer prompt"));
+        assert!(has_system_prompt(
+            &candidate_calls[1],
+            "strong answer prompt"
+        ));
+        assert!(!has_system_prompt(
+            &candidate_calls[1],
+            "weak answer prompt"
+        ));
     }
 
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
@@ -3195,10 +3449,12 @@ base_url = "{base_url}"
 [targets.executor]
 id = "model/executor"
 llm_client = "upstream"
+system_prompt = "executor answer prompt"
 
 [targets.advisor]
 id = "model/advisor"
 llm_client = "upstream"
+system_prompt = "advisor target prompt"
 
 [routes.gated]
 id = "switchyard/advisor"
@@ -3239,6 +3495,10 @@ async fn advisor_route_approve_flow_and_stats() -> TestResult {
     );
     // Executor turn first, then the review consult.
     assert_eq!(upstream.models().await, ["model/executor", "model/advisor"]);
+    let calls = upstream.calls.lock().await;
+    assert!(has_system_prompt(&calls[0], "executor answer prompt"));
+    assert!(!has_system_prompt(&calls[1], "advisor target prompt"));
+    drop(calls);
 
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(stats["models"]["model/executor"]["calls"], 1);

@@ -604,14 +604,20 @@ fn decode_responses_output_item_added(
     if item.get("type").and_then(Value::as_str) == Some("reasoning") {
         return decode_responses_reasoning_item(item, index, state);
     }
-    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+    let item_type = item.get("type").and_then(Value::as_str);
+    if item_type != Some("function_call") && item_type != Some("custom_tool_call") {
         return Vec::new();
     }
-    let arguments_delta = item
-        .get("arguments")
-        .and_then(Value::as_str)
-        .filter(|arguments| !arguments.is_empty())
-        .map(ToOwned::to_owned);
+    // A freeform call's `input` becomes the single `input` argument; it is only complete on
+    // the done event, so nothing is emitted for it here beyond id and name.
+    let arguments_delta = if item_type == Some("custom_tool_call") {
+        None
+    } else {
+        item.get("arguments")
+            .and_then(Value::as_str)
+            .filter(|arguments| !arguments.is_empty())
+            .map(ToOwned::to_owned)
+    };
     if let Some(arguments) = arguments_delta.as_deref() {
         state
             .tool_states
@@ -650,10 +656,20 @@ fn decode_responses_output_item_done(
     if item.get("type").and_then(Value::as_str) == Some("reasoning") {
         return decode_responses_reasoning_item(item, index, state);
     }
-    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+    let item_type = item.get("type").and_then(Value::as_str);
+    if item_type != Some("function_call") && item_type != Some("custom_tool_call") {
         return Vec::new();
     }
-    let arguments = item.get("arguments").and_then(Value::as_str);
+    let custom_arguments = (item_type == Some("custom_tool_call")).then(|| {
+        json!({
+            crate::codex_custom_tools::INPUT_ARGUMENT:
+                item.get("input").and_then(Value::as_str).unwrap_or_default()
+        })
+        .to_string()
+    });
+    let arguments = custom_arguments
+        .as_deref()
+        .or_else(|| item.get("arguments").and_then(Value::as_str));
     if let Some(arguments) = arguments {
         // Compared against what THIS decoder has seen. Reading the encoder's
         // `arguments` instead only deduplicates when a single state performs
@@ -807,10 +823,27 @@ fn ensure_responses_reasoning_started(
             "summary": [],
         },
     }));
+    out
+}
+
+// Opens the item's single summary part the first time text streams for it. Encrypted-only
+// reasoning never streams text, so it never opens a part; the item closes with an empty
+// `summary`, matching what `finish_responses_stream` emits for it.
+fn ensure_responses_reasoning_summary_started(
+    state: &mut StreamTranslationState,
+    index: usize,
+) -> Vec<Value> {
+    let mut out = ensure_responses_reasoning_started(state, index);
+    let item_id = responses_reasoning_item_id(state, index);
+    let item = state.response_reasoning.entry(index).or_default();
+    if item.summary_started {
+        return out;
+    }
+    item.summary_started = true;
     out.push(json!({
         "type": "response.reasoning_summary_part.added",
         "item_id": item_id,
-        "output_index": output_index,
+        "output_index": item.output_index.unwrap_or(0),
         "summary_index": 0,
         "part": {"type": "summary_text", "text": ""},
     }));
@@ -823,7 +856,11 @@ fn encode_responses_reasoning_delta(
     index: usize,
     text: String,
 ) -> Vec<Value> {
-    let mut out = ensure_responses_reasoning_started(state, index);
+    // An empty delta carries nothing to show and must not open a part that would never close.
+    if text.is_empty() {
+        return ensure_responses_reasoning_started(state, index);
+    }
+    let mut out = ensure_responses_reasoning_summary_started(state, index);
     let item = state.response_reasoning.entry(index).or_default();
     item.text.push_str(&text);
     let output_index = item.output_index.unwrap_or(0);
