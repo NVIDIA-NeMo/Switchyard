@@ -110,6 +110,8 @@ impl PyEscalationClassifierConfig {
                 confirmations,
                 recent_turn_window,
                 window_message_chars,
+                // The up-front capability gate is not exposed to Python yet.
+                gate: None,
             },
             max_output_tokens,
         })
