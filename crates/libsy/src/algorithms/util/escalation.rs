@@ -60,6 +60,56 @@ pub struct EscalationJudgeConfig {
     pub recent_turn_window: usize,
     /// Per-message cap inside the trailing window.
     pub window_message_chars: usize,
+    /// Optional up-front capability gate. When set, the first request of a session is judged
+    /// from the task framing alone with the packaged capability forecaster, and a solve
+    /// probability below the threshold latches the session to the capable tier before the
+    /// efficient tier has spent anything. The trajectory judge takes over afterwards.
+    pub gate: Option<EscalationGateConfig>,
+}
+
+/// Numeric threshold for the escalation route's up-front capability gate.
+///
+/// Prose in the trajectory-judge prompt cannot set a split reliably: a task-level bar worded
+/// as "spans several modules" or "the hardest minority" latches almost every multi-file task.
+/// The gate reuses the capability classifier's forecast (`p_solve`) and threshold policy so the
+/// operator dials the split with a number, the same way capability mode does.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EscalationGateConfig {
+    /// Lowest solve probability that keeps the session on the efficient tier. In `[0, 1]`.
+    pub base_threshold: f64,
+    /// Added once for uncertain or unmatched verdicts and twice for unsupported verdicts, as in
+    /// capability mode. `base_threshold + 2 * threshold_step` must be at most `1`.
+    #[serde(default)]
+    pub threshold_step: f64,
+    /// Replaces the packaged capability-classifier prompt for the gate call only.
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+impl EscalationGateConfig {
+    fn validate(&self) -> Result<()> {
+        let reject = |message: String| Err(LibsyError::AlgorithmError { message });
+        if !(0.0..=1.0).contains(&self.base_threshold) {
+            return reject(format!(
+                "gate.base_threshold must be between 0 and 1, got {}",
+                self.base_threshold
+            ));
+        }
+        if !self.threshold_step.is_finite() || self.threshold_step < 0.0 {
+            return reject(format!(
+                "gate.threshold_step must be finite and non-negative, got {}",
+                self.threshold_step
+            ));
+        }
+        let unsupported_threshold = self.base_threshold + 2.0 * self.threshold_step;
+        if unsupported_threshold > 1.0 {
+            return reject(format!(
+                "gate.base_threshold + 2 * gate.threshold_step must be at most 1, got {unsupported_threshold}"
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl EscalationJudgeConfig {
@@ -68,6 +118,9 @@ impl EscalationJudgeConfig {
         let reject = |message: String| Err(LibsyError::AlgorithmError { message });
         if self.confirmations == 0 {
             return reject("confirmations must be at least 1".to_string());
+        }
+        if let Some(gate) = &self.gate {
+            gate.validate()?;
         }
         if self.recent_turn_window == 0 {
             return reject("recent_turn_window must be at least 1".to_string());
@@ -88,6 +141,7 @@ impl Default for EscalationJudgeConfig {
             confirmations: 2,
             recent_turn_window: 28,
             window_message_chars: 500,
+            gate: None,
         }
     }
 }

@@ -18,7 +18,7 @@ use super::util::affinity::{AffinityRouter, ClassifyTrigger};
 use super::util::classifier_contract::{
     ClassifierContract, ClassifierContractConfig, ClassifierResponseFormat,
 };
-use super::util::escalation::EscalationJudgeConfig;
+use super::util::escalation::{EscalationGateConfig, EscalationJudgeConfig};
 use super::util::llm_judge::{
     ClassifierInput, JsonSchemaDecoder, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
     SerdeDecoder, StructuredJudge,
@@ -801,6 +801,47 @@ impl LlmTaskClassifier {
             inner,
         })
     }
+}
+
+/// Builds the up-front capability gate an escalation route runs once per session: the packaged
+/// capability forecaster, judged through the escalation judge's target, mapped to a tier by the
+/// same threshold policy capability mode uses. The gate reads the task framing only
+/// (`recent_turn_window` unset), so it works before any trajectory exists.
+pub(super) fn build_capability_gate(
+    judge_target: ModelId,
+    efficient_target: &ModelId,
+    capable_target: &ModelId,
+    gate: &EscalationGateConfig,
+    response_format_type: ClassifierResponseFormat,
+    max_output_tokens: u64,
+) -> Result<Arc<dyn Classifier<State>>> {
+    let mut contract_config =
+        ClassifierContractConfig::default().with_response_format_type(response_format_type);
+    if let Some(prompt) = &gate.prompt {
+        contract_config = contract_config.with_prompt(prompt.clone());
+    }
+    let contract =
+        ClassifierContract::from_config(&contract_config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+    let config = TaskClassifierConfig {
+        base_threshold: gate.base_threshold,
+        threshold_step: gate.threshold_step,
+        ..TaskClassifierConfig::default()
+    };
+    Ok(Arc::new(
+        JudgeClassifier::new(
+            StructuredJudge::new(
+                TaskInput {
+                    recent_turn_window: None,
+                },
+                contract,
+                SerdeDecoder::new(),
+                JudgeRuntimeConfig::new(max_output_tokens)?,
+            ),
+            judge_target,
+            TaskClassifierPolicy::new(efficient_target.clone(), capable_target.clone(), &config),
+        )
+        .with_evidence(capability_evidence),
+    ))
 }
 
 #[async_trait]
