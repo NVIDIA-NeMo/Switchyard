@@ -5,9 +5,12 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use libsy::RoutingOutcome;
 use serde_json::Value;
+use switchyard_llm_client::TranslatingLlmClient;
 use switchyard_protocol::{ModelId, WireFormat};
 
 use crate::config;
@@ -17,6 +20,7 @@ use crate::{ModelCapabilities, Route, RunnerError};
 pub struct Runner {
     routes: Vec<(ModelId, Route)>,
     fallback_base_url: Option<String>,
+    model_properties_probes: BTreeMap<ModelId, ModelPropertiesProbe>,
 }
 
 /// Borrowed model metadata returned while listing routes.
@@ -47,6 +51,33 @@ pub struct DecisionTarget {
     pub extra_body: BTreeMap<String, Value>,
 }
 
+pub(crate) struct ModelPropertiesProbe {
+    model: ModelId,
+    format: WireFormat,
+    client: Arc<TranslatingLlmClient>,
+}
+
+impl ModelPropertiesProbe {
+    pub(crate) fn new(
+        model: ModelId,
+        format: WireFormat,
+        client: Arc<TranslatingLlmClient>,
+    ) -> Self {
+        Self {
+            model,
+            format,
+            client,
+        }
+    }
+
+    async fn get(&self, timeout: Duration) -> Option<Value> {
+        self.client
+            .get_model_properties(&self.model, self.format, timeout)
+            .await
+            .ok()
+    }
+}
+
 impl Runner {
     /// Loads and validates a version-1 deployment TOML file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, RunnerError> {
@@ -66,11 +97,20 @@ impl Runner {
         Self {
             routes,
             fallback_base_url: None,
+            model_properties_probes: BTreeMap::new(),
         }
     }
 
     pub(crate) fn with_fallback_url(mut self, fallback_base_url: Option<String>) -> Self {
         self.fallback_base_url = fallback_base_url;
+        self
+    }
+
+    pub(crate) fn with_model_properties_probes(
+        mut self,
+        probes: BTreeMap<ModelId, ModelPropertiesProbe>,
+    ) -> Self {
+        self.model_properties_probes = probes;
         self
     }
 
@@ -90,6 +130,11 @@ impl Runner {
             capabilities: route.capabilities(),
             routing_targets: route.decision_targets(),
         })
+    }
+
+    /// Reads one route's configured local backend properties without exposing its credentials.
+    pub async fn model_properties(&self, model: &str, timeout: Duration) -> Option<Value> {
+        self.model_properties_probes.get(model)?.get(timeout).await
     }
 
     /// Returns the validated API root used for unmatched HTTP requests.

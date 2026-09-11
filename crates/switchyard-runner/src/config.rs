@@ -17,6 +17,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
+use crate::runner::ModelPropertiesProbe;
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
     Runner, RunnerError,
@@ -196,6 +197,7 @@ impl DeploymentConfig {
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
+        let mut model_properties_probes = BTreeMap::new();
         for (route_name, config) in &self.routes {
             validate_value("route name", route_name)?;
             validate_value(&format!("route {route_name} id"), &config.id)?;
@@ -216,6 +218,11 @@ impl DeploymentConfig {
                 .algorithm
                 .build(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            if matches!(&config.algorithm, AlgorithmSpec::Vgr { .. })
+                && let Some(probe) = self.build_model_properties_probe(config, &clients)
+            {
+                model_properties_probes.insert(config.id.clone(), probe);
+            }
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients)?;
             let anthropic_auxiliary_target =
@@ -238,7 +245,9 @@ impl DeploymentConfig {
             );
             routes.push((config.id.clone(), route));
         }
-        let runner = Runner::new(routes).with_fallback_url(fallback_base_url);
+        let runner = Runner::new(routes)
+            .with_fallback_url(fallback_base_url)
+            .with_model_properties_probes(model_properties_probes);
         Ok(runner)
     }
 
@@ -413,6 +422,22 @@ impl DeploymentConfig {
             ))
         })?;
         Ok(Some(config.base_url.as_str().to_string()))
+    }
+
+    fn build_model_properties_probe(
+        &self,
+        route: &RouteConfig,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> Option<ModelPropertiesProbe> {
+        let local_target_name = route.routing_target_names().into_iter().next()?;
+        let local_target = self.targets.get(local_target_name)?;
+        let client_config = self.llm_clients.get(&local_target.llm_client)?;
+        let client = clients.get(&local_target.llm_client)?;
+        Some(ModelPropertiesProbe::new(
+            local_target.id.clone(),
+            client_config.format.wire_format(),
+            Arc::clone(client),
+        ))
     }
 
     fn build_anthropic_auxiliary_target(
