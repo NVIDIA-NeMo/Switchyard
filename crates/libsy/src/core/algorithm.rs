@@ -151,6 +151,12 @@ impl Driver {
         *self.evidence.lock() = Some(evidence);
     }
 
+    /// Returns a copy of the evidence recorded so far, so a component that wraps another can
+    /// read the inner decision back (for example to log a judge's score and threshold).
+    pub(crate) fn evidence(&self) -> Option<Value> {
+        self.evidence.lock().clone()
+    }
+
     /// Supply fallback evidence without replacing a decision made earlier in the cascade.
     pub(crate) fn set_evidence_if_empty(&self, evidence: Value) {
         let mut current = self.evidence.lock();

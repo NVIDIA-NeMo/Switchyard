@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde_json::Value;
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, Message, ModelId, Request, Response, Role,
 };
@@ -148,6 +149,14 @@ impl Classifier<State> for EscalationClassifier {
                     let to_capable = classification
                         .argmax(false)?
                         .is_some_and(|score| score.target == self.capable);
+                    // The forecaster's evidence carries `score` (p_solve) and `threshold`; log it
+                    // so an operator can read the forecast distribution and tune the threshold.
+                    let forecast = driver.evidence().unwrap_or(Value::Null);
+                    tracing::info!(
+                        latched = to_capable,
+                        forecast = %forecast,
+                        "escalation gate verdict"
+                    );
                     if to_capable {
                         state.extra.insert(
                             STREAK_KEY.to_string(),
@@ -157,10 +166,20 @@ impl Classifier<State> for EscalationClassifier {
                             target = %self.capable,
                             "escalation gate latched the session to the capable tier"
                         );
-                        driver.set_evidence(serde_json::json!({
+                        let mut evidence = serde_json::json!({
                             "source": "escalation",
                             "verdict": "gate",
-                        }));
+                        });
+                        if let (Some(evidence), Some(forecast)) =
+                            (evidence.as_object_mut(), forecast.as_object())
+                        {
+                            for key in ["score", "threshold"] {
+                                if let Some(value) = forecast.get(key) {
+                                    evidence.insert(key.to_string(), value.clone());
+                                }
+                            }
+                        }
+                        driver.set_evidence(evidence);
                         return Ok((decisive(&self.capable), None));
                     }
                 }
