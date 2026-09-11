@@ -216,6 +216,10 @@ Escalation mode serves the weak target first and judges the completed turn. See
 | `escalation.confirmations` | No | `2` | Consecutive escalate verdicts required to latch. Above `1` needs a session ID. |
 | `escalation.recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
 | `escalation.window_message_chars` | No | `500` | Per-message cap inside that window. |
+| `escalation.gate` | No | unset | Up-front capability gate: judges the first request of a session from the task framing with the packaged capability forecaster and latches to `strong_target` when `p_solve` is below the threshold, before `weak_target` is called. Needs a session ID. |
+| `escalation.gate.base_threshold` | Yes, when `gate` is set | — | Lowest solve probability that keeps the session on `weak_target`. In `[0, 1]`. |
+| `escalation.gate.threshold_step` | No | `0.0` | Added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
+| `escalation.gate.prompt` | No | packaged capability prompt | Replaces the capability-forecaster prompt for the gate call only. |
 
 Existing configurations that contain `escalation` but omit `mode` remain valid.
 

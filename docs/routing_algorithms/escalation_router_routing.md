@@ -90,6 +90,35 @@ A judge that times out, errors, or returns an unparseable verdict fails open: th
 turn serves the buffered weak reply and the existing streak is held rather than
 cleared. A judge failure never creates a strong-tier latch.
 
+## Up-front capability gate
+
+The trajectory judge only sees trouble once it has happened, and a hand-off
+mid-task makes the strong tier redo the work, so for tasks that were never going
+to fit the weak tier the cheapest moment to escalate is the first request.
+`escalation.gate` adds that moment as a numeric threshold:
+
+```toml
+escalation = { confirmations = 1, gate = { base_threshold = 0.4 } }
+```
+
+On the first request of a session the route calls the judge with the packaged
+capability-classifier prompt, reading the task framing alone, and applies the
+capability threshold policy to its `p_solve` forecast. Below `base_threshold`
+the session latches to `strong_target` immediately and the weak tier is never
+called. At or above it the request proceeds as usual and the trajectory judge
+takes over for the rest of the session. The gate runs once per session, so it
+needs a session ID, like `confirmations` above `1`. An unusable gate verdict or
+a failed gate call falls open to the weak tier.
+
+Why a number rather than a task-level rule in the judge prompt: in practice a
+prose bar ("spans several modules", "the hardest minority of tasks") latches
+almost every multi-file task, because the judge has no reference distribution
+to calibrate against. A threshold on a forecast is what capability mode already
+uses to set its split, and the gate reuses that policy unchanged, including
+`threshold_step` for uncertain and unsupported verdicts and `prompt` to replace
+the packaged forecaster prompt. The gate verdict is recorded in the route's
+evidence as `{"source": "escalation", "verdict": "gate"}`.
+
 ## Judge model compatibility
 
 The trajectory judge uses the same response contract and provider/model
