@@ -154,14 +154,15 @@
 <a href=#154 id=154 data-nosnippet>154</a>                Event::Decision {
 <a href=#155 id=155 data-nosnippet>155</a>                    request: <span class="kw-2">&amp;mut </span>request,
 <a href=#156 id=156 data-nosnippet>156</a>                    selected_model_id: <span class="kw-2">&amp;</span>selected,
-<a href=#157 id=157 data-nosnippet>157</a>                    driver: <span class="kw-2">&amp;</span>empty_driver(),
-<a href=#158 id=158 data-nosnippet>158</a>                },
-<a href=#159 id=159 data-nosnippet>159</a>            )
-<a href=#160 id=160 data-nosnippet>160</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#161 id=161 data-nosnippet>161</a>
-<a href=#162 id=162 data-nosnippet>162</a>        <span class="macro">assert_eq!</span>(state.conversation.tool_result_count, <span class="number">0</span>);
-<a href=#163 id=163 data-nosnippet>163</a>        <span class="macro">assert!</span>(state.turn.visible_text.is_none());
-<a href=#164 id=164 data-nosnippet>164</a>        <span class="prelude-val">Ok</span>(())
-<a href=#165 id=165 data-nosnippet>165</a>    }
-<a href=#166 id=166 data-nosnippet>166</a>}
+<a href=#157 id=157 data-nosnippet>157</a>                    category: <span class="prelude-val">None</span>,
+<a href=#158 id=158 data-nosnippet>158</a>                    driver: <span class="kw-2">&amp;</span>empty_driver(),
+<a href=#159 id=159 data-nosnippet>159</a>                },
+<a href=#160 id=160 data-nosnippet>160</a>            )
+<a href=#161 id=161 data-nosnippet>161</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#162 id=162 data-nosnippet>162</a>
+<a href=#163 id=163 data-nosnippet>163</a>        <span class="macro">assert_eq!</span>(state.conversation.tool_result_count, <span class="number">0</span>);
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="macro">assert!</span>(state.turn.visible_text.is_none());
+<a href=#165 id=165 data-nosnippet>165</a>        <span class="prelude-val">Ok</span>(())
+<a href=#166 id=166 data-nosnippet>166</a>    }
+<a href=#167 id=167 data-nosnippet>167</a>}
 </code></pre></div></section></main></body></html>
