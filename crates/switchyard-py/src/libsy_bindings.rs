@@ -16,7 +16,7 @@ use switchyard_libsy::{
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
     PickerMode, Random, RoutingOutcome, StageRouter, StageRouterConfig, Step as RustStep,
-    StepStream, TaskClassifierConfig, ToolSemantics,
+    StepStream, TaskClassifierConfig, ToolSemantics, VerdictScale,
 };
 use switchyard_protocol::{
     LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId,
@@ -283,6 +283,8 @@ impl PyTaskClassifierConfig {
     ) -> PyResult<Self> {
         Ok(Self {
             inner: TaskClassifierConfig {
+                // The ordinal confidence scale is not exposed to Python yet.
+                verdict_scale: VerdictScale::default(),
                 base_threshold,
                 threshold_step,
                 classify_trigger: classify_trigger(session_affinity),

@@ -15,7 +15,7 @@ use libsy::{
     CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
     StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
-    ToolSemantics,
+    ToolSemantics, VerdictScale,
 };
 use serde::Deserialize;
 use switchyard_protocol::ModelId;
@@ -108,6 +108,7 @@ struct CapabilityClassifierRouteConfig {
     prompt: Option<String>,
     response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
+    verdict_scale: VerdictScale,
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +170,10 @@ pub struct LlmClassifierRouteConfig {
     /// Most completion tokens the judge verdict may use.
     #[serde(default = "default_classifier_max_output_tokens")]
     pub max_output_tokens: u64,
+    /// Capability mode: whether the forecaster reports `p_solve` as a probability or
+    /// `confidence` as one rung of the fixed ladder (the gate has its own `gate.verdict_scale`).
+    #[serde(default)]
+    pub verdict_scale: VerdictScale,
     /// Escalation mode: how many escalate verdicts latch the session, and how
     /// much of the transcript the judge sees.
     pub escalation: Option<EscalationJudgeConfig>,
@@ -421,6 +426,7 @@ impl StageClassifierConfig {
             contract: classifier_contract(self.prompt.as_deref())
                 .with_response_format_type(self.response_format_type),
             max_output_tokens: self.max_output_tokens,
+            verdict_scale: VerdictScale::default(),
         }
     }
 }
@@ -611,6 +617,7 @@ impl LlmClassifierRouteConfig {
             prompt,
             response_format_type,
             max_output_tokens,
+            verdict_scale,
             escalation,
             targets,
             default_target,
@@ -665,6 +672,7 @@ impl LlmClassifierRouteConfig {
                         prompt: prompt.clone(),
                         response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
+                        verdict_scale: *verdict_scale,
                     },
                 ))
             }
@@ -940,6 +948,7 @@ fn build_algorithm(
                         contract: classifier_contract(config.prompt.as_deref())
                             .with_response_format_type(config.response_format_type),
                         max_output_tokens: config.max_output_tokens,
+                        verdict_scale: config.verdict_scale,
                     };
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                         judge_target: classifier,
