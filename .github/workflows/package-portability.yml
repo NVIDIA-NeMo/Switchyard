@@ -24,6 +24,11 @@ on:
       - "switchyard_rust/**"
   workflow_dispatch:
 
+# Cancel superseded PR runs; keep push and manual runs independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -37,6 +42,7 @@ jobs:
   wheel:
     name: Wheel (linux-x86_64)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
