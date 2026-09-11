@@ -16,10 +16,13 @@ use switchyard_protocol::{
 
 use super::transcript::{NO_TEXT_PLACEHOLDER, TRUNCATION_MARKER, middle_drop};
 use super::*;
+use crate::RuntimeModels;
 use crate::core::testing::{Serve, reply, test_drive_with_models};
 
 const EXECUTOR: &str = "executor";
 const ADVISOR: &str = "advisor";
+const EXECUTOR_FALLBACK: &str = "executor-fallback";
+const ADVISOR_FALLBACK: &str = "advisor-fallback";
 
 fn target(name: &str) -> ModelId {
     ModelId::new(name)
@@ -294,6 +297,59 @@ async fn approved_terminal_turn_returns_buffered_body() {
     );
     assert_eq!(completion_text(&agg_of(response).await), "all done");
     assert_eq!(selected_model, EXECUTOR);
+}
+
+#[tokio::test]
+async fn calls_preserve_candidates_and_attribute_the_serving_executor() {
+    let gate = gate(AdvisorGateConfig::default());
+    let models = RuntimeModels::new(
+        [
+            (
+                Category::Any,
+                vec![target(EXECUTOR), target(EXECUTOR_FALLBACK)],
+            ),
+            (
+                Category::Judge,
+                vec![target(ADVISOR), target(ADVISOR_FALLBACK)],
+            ),
+        ]
+        .into(),
+    );
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&calls);
+    let outcome = crate::drive(gate, task_request(), Arc::new(models), move |call| {
+        let observed = Arc::clone(&observed);
+        async move {
+            let candidates = call.models.clone();
+            observed.lock().push(candidates.clone());
+            let (text, served) = if candidates[0] == target(EXECUTOR) {
+                ("all done", target(EXECUTOR_FALLBACK))
+            } else {
+                ("APPROVE", target(ADVISOR_FALLBACK))
+            };
+            let mut response = reply(text);
+            response.set_served_model(&served);
+            call.respond(Ok(response))
+        }
+    })
+    .await
+    .expect("routes");
+
+    assert_eq!(
+        *calls.lock(),
+        vec![
+            vec![target(EXECUTOR), target(EXECUTOR_FALLBACK)],
+            vec![target(ADVISOR), target(ADVISOR_FALLBACK)],
+        ]
+    );
+    assert_eq!(
+        outcome.selected_model_id().expect("selected model"),
+        &target(EXECUTOR_FALLBACK)
+    );
+    assert_eq!(
+        outcome.request.model_id().as_deref(),
+        Some(EXECUTOR_FALLBACK)
+    );
 }
 
 #[tokio::test]
