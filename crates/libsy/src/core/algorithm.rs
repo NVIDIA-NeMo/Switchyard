@@ -538,6 +538,7 @@ mod tests {
             Response {
                 llm_response: LlmResponse::Agg(text_response(None, "existing")),
                 metadata: None,
+                upstream_headers: http::HeaderMap::new(),
             },
         );
 
@@ -675,6 +676,7 @@ mod tests {
                 Ok(Response {
                     llm_response: LlmResponse::Stream(stream),
                     metadata: None,
+                    upstream_headers: http::HeaderMap::new(),
                 })
             }
         };
@@ -759,6 +761,7 @@ mod tests {
                             "fulfilled".to_string(),
                         )),
                         metadata: None,
+                        upstream_headers: http::HeaderMap::new(),
                     }))?;
                 }
                 Step::Done(outcome) => {

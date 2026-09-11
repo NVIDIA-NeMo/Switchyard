@@ -152,6 +152,7 @@ impl Classifier<State> for EscalationClassifier {
                 LlmResponse::Agg(agg)
             },
             metadata: efficient_response.metadata,
+            upstream_headers: efficient_response.upstream_headers,
         };
 
         let (classification, _) = self
@@ -236,6 +237,7 @@ mod tests {
                 Ok(Response {
                     llm_response: LlmResponse::Agg(text_response(None, queue.take())),
                     metadata: request.metadata,
+                    upstream_headers: http::HeaderMap::new(),
                 })
             }
         }
@@ -271,6 +273,7 @@ mod tests {
                 Err(error),
             ]))),
             metadata: None,
+            upstream_headers: http::HeaderMap::new(),
         }
     }
 

@@ -77,6 +77,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Hierarchical routing** — libsy adds hierarchical routing, with stages
   delegating to their own sub-router; a hierarchical stage router that
   carries its own judge is rejected. (#533)
+- **Upstream response headers forwarded** — the LLM client records the
+  upstream HTTP response headers on both the buffered and the streaming path,
+  and `switchyard-server` replays an allowlisted subset to the downstream
+  client: W3C tracing (`traceparent`, `tracestate`, `baggage`),
+  `x-request-id`, Anthropic's `request-id`, `openai-processing-ms`, and the
+  `anthropic-ratelimit-`, `x-ratelimit-`, and `x-upstream-` namespaces. Body
+  description, hop-by-hop, cookie, and Switchyard-owned headers are never
+  forwarded, and a header Switchyard writes itself always beats an upstream
+  echo of the same name. (#571)
 
 ### Changed
 
@@ -91,6 +100,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **LiteLLM integration replaced by a routing plugin** — the client
   integration becomes a routing plugin, and its example moves out of
   `experimental`. (#532)
+- **`Response` gains a required `upstream_headers` field** *(source-breaking)*
+  — `switchyard_protocol::Response` carries the upstream HTTP headers, so Rust
+  callers that construct a `Response` with a struct literal must add
+  `upstream_headers: Default::default()`. Field access and every other use are
+  unaffected, and there is no wire or Python-surface change. (#571)
 
 ### Removed
 

@@ -48,6 +48,7 @@ impl Algorithm for Noop {
         let response = Response {
             llm_response,
             metadata: request.metadata.clone(),
+            upstream_headers: http::HeaderMap::new(),
         };
         Ok(RoutingOutcome::answered(model_id, request, response))
     }

@@ -172,6 +172,69 @@ async fn upstream_chat(
         )
             .into_response();
     }
+    if prompt == "upstream-headers" {
+        // Both the buffered and the streamed reply echo the same set, so the two
+        // capture paths are compared against one expectation.
+        const UPSTREAM_HEADER_ECHO: [(&str, &str); 5] = [
+            ("x-upstream-trace", "trace-123"),
+            ("x-request-id", "req-42"),
+            ("request-id", "req_anthropic_42"),
+            ("x-model-router-selected-model", "model/upstream-echo"),
+            ("x-switchyard-session-id", "spoofed-by-upstream"),
+        ];
+        // Streaming captures the headers off the response head, before any body
+        // arrives, so the streamed variant exercises a different capture branch.
+        let mut response = if body["stream"].as_bool() == Some(true) {
+            let events = [
+                json!({"id": "chatcmpl-headers", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}).to_string(),
+                json!({"id": "chatcmpl-headers", "model": model, "choices": [{"index": 0, "delta": {"content": "ok"}}]}).to_string(),
+                json!({"id": "chatcmpl-headers", "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}).to_string(),
+                "[DONE]".to_string(),
+            ];
+            let stream = futures_util::stream::iter(
+                events
+                    .into_iter()
+                    .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
+            );
+            let mut response = Sse::new(stream).into_response();
+            let headers = response.headers_mut();
+            for (name, value) in UPSTREAM_HEADER_ECHO {
+                headers.append(name, HeaderValue::from_static(value));
+            }
+            response
+        } else {
+            (
+                UPSTREAM_HEADER_ECHO,
+                Json(json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+                })),
+            )
+                .into_response()
+        };
+        let headers = response.headers_mut();
+        headers.append("x-upstream-trace", HeaderValue::from_static("trace-456"));
+        headers.append(
+            "link",
+            HeaderValue::from_static("<https://example.test/next>; rel=next"),
+        );
+        headers.append(
+            "link",
+            HeaderValue::from_static("<https://example.test/prev>; rel=prev"),
+        );
+        headers.append(
+            "set-cookie",
+            HeaderValue::from_static("session=upstream; HttpOnly"),
+        );
+        return response;
+    }
     if body["stream"].as_bool() == Some(true) {
         // Streamed tool call, for the namespace-on-every-event assertions. The
         // model calls a tool by the name it was given, so echo that name back.
@@ -3853,6 +3916,108 @@ async fn responses_round_trips_codex_tool_namespaces() -> TestResult {
         .ok_or("stream produced no response.completed event")?;
     assert_eq!(completed["response"]["output"][0]["name"], "search");
     assert_eq!(completed["response"]["output"][0]["namespace"], "mcp__b");
+    Ok(())
+}
+
+/// Allowed upstream response headers ride through to the client, while body, cookie,
+/// and Switchyard-owned headers do not; a header this server writes always beats an
+/// upstream echo of the same name.
+#[tokio::test]
+async fn upstream_headers_forward_but_switchyard_writes_win() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    let body = json!({
+        "model": ROUTE_MODEL,
+        "messages": [{"role": "user", "content": "upstream-headers"}]
+    });
+    let response = send(&app, "POST", "/v1/chat/completions", Some(body)).await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    // Observability headers survive the proxy hop.
+    let traces = response
+        .headers
+        .get_all("x-upstream-trace")
+        .iter()
+        .map(|value| value.to_str())
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(traces, ["trace-123", "trace-456"]);
+    assert_eq!(
+        response
+            .headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("req-42")
+    );
+    // Anthropic spells its correlation id without the `x-` prefix.
+    assert_eq!(
+        response
+            .headers
+            .get("request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("req_anthropic_42")
+    );
+    assert!(!response.headers.contains_key("link"));
+
+    // Upstream cookies must never become Switchyard-origin cookies.
+    assert!(!response.headers.contains_key("set-cookie"));
+
+    // Switchyard's own namespace never forwards from upstream.
+    assert!(!response.headers.contains_key("x-switchyard-session-id"));
+
+    // …and Switchyard's routing write beats the upstream echo.
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/a")
+    );
+    Ok(())
+}
+
+/// A streamed reply captures its headers off the response head, on a branch the
+/// buffered path never touches, so the same contract is asserted there too.
+#[tokio::test]
+async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    let body = json!({
+        "model": ROUTE_MODEL,
+        "stream": true,
+        "messages": [{"role": "user", "content": "upstream-headers"}]
+    });
+    let response = send(&app, "POST", "/v1/chat/completions", Some(body)).await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    let traces = response
+        .headers
+        .get_all("x-upstream-trace")
+        .iter()
+        .map(|value| value.to_str())
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(traces, ["trace-123", "trace-456"]);
+    assert_eq!(
+        response
+            .headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("req-42")
+    );
+    assert_eq!(
+        response
+            .headers
+            .get("request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("req_anthropic_42")
+    );
+    assert!(!response.headers.contains_key("link"));
+    assert!(!response.headers.contains_key("set-cookie"));
+    assert!(!response.headers.contains_key("x-switchyard-session-id"));
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/a")
+    );
     Ok(())
 }
 
