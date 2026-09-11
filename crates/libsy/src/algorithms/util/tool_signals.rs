@@ -374,6 +374,7 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     let mut tool_results = 0u32;
     let mut tool_tail_clean = false;
+    let mut error_count = 0u32;
     let mut compacted = false;
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
@@ -400,7 +401,11 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
                         .filter_map(text_of)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    tool_tail_clean = classify_text(&text).0 == 0.0;
+                    let is_error = result.is_error == Some(true)
+                        || structured_error(&text)
+                        || classify_text(&text).0 > 0.0;
+                    tool_tail_clean = !is_error;
+                    error_count = error_count.saturating_add(u32::from(is_error));
                     if !text.is_empty() {
                         tool_texts.push(text);
                     }
@@ -421,6 +426,7 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
         tool_calls,
         tool_results,
         tool_tail_clean,
+        error_count,
         messages.len() as u32,
         recent_window,
     );
@@ -478,6 +484,7 @@ fn build_signal(
     tool_calls: Vec<ObservedToolCall>,
     tool_results: u32,
     tool_tail_clean: bool,
+    error_count: u32,
     turn_depth: u32,
     recent_window: usize,
 ) -> ToolSignals {
@@ -494,13 +501,6 @@ fn build_signal(
             severity = sev;
         }
     }
-
-    // Unwindowed, so a caller that vetoes on "any error at all" sees errors the
-    // recent window has already decayed out of.
-    let error_count = tool_texts
-        .iter()
-        .filter(|text| classify_text(text).0 > 0.0)
-        .count() as u32;
 
     let no_error_streak = compute_no_error_streak(&tool_texts);
 
@@ -626,6 +626,13 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
     (severity, patterns)
 }
 
+fn structured_error(text: &str) -> bool {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|value| value.as_object().map(|object| object.contains_key("error")))
+        .unwrap_or(false)
+}
+
 fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
     let mut streak = 0u32;
     for text in tool_texts.iter().rev() {
@@ -738,6 +745,14 @@ mod tests {
                 is_error: None,
             })],
         }
+    }
+
+    fn tr_with_error_status(text: &str) -> Message {
+        let mut message = tr(text);
+        if let ContentBlock::ToolResult(result) = &mut message.content[0] {
+            result.is_error = Some(true);
+        }
+        message
     }
 
     #[test]
@@ -856,6 +871,18 @@ mod tests {
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, 0.0);
         assert_eq!(sig.write_count, 1);
+    }
+
+    #[test]
+    fn structured_tool_errors_contribute_to_the_execution_summary() {
+        let request = with_messages(vec![
+            tr(r#"{"error":"record not found"}"#),
+            tr_with_error_status("request failed"),
+            tr("recovered"),
+        ]);
+        let sig = ToolSignals::from_request(&request, None);
+        assert_eq!(sig.error_count, 2);
+        assert!(sig.tool_tail_clean);
     }
 
     #[test]
