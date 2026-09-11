@@ -10,14 +10,75 @@ algorithm construction, retry policy, and route validation.
 
 ## Install
 
-Build the platform bundle with the package script, then configure Relay to load
-the generated `relay-plugin.toml` manifest. The plugin requires NeMo Relay
-`>=0.8.1,<0.9.0`.
+The plugin requires NeMo Relay `>=0.8.1,<0.9.0`, a Rust toolchain, and Python 3
+for the packaging script. Run every command from the repository root.
+
+**1. Build the shared library.**
+
+```bash
+cargo build --release -p switchyard-nemo-relay-plugin
+```
+
+The artifact is `target/release/libswitchyard_nemo_relay_plugin.so` on Linux
+and `target/release/libswitchyard_nemo_relay_plugin.dylib` on macOS.
+
+**2. Package the bundle.** The script copies the library, the config schema,
+and license files into an empty directory and writes a `relay-plugin.toml`
+manifest with the library name and its SHA-256 digest filled in. Relay verifies
+that digest before it loads the library, so rebuild the bundle after every
+rebuild of the library.
+
+Linux:
+
+```bash
+python crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
+  --library target/release/libswitchyard_nemo_relay_plugin.so \
+  --output ./plugins/switchyard
+```
+
+macOS:
+
+```bash
+python crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
+  --library target/release/libswitchyard_nemo_relay_plugin.dylib \
+  --output ./plugins/switchyard
+```
+
+Pass `--archive switchyard-plugin.tar.gz` (or `.zip`) to also produce an
+archive for distribution.
+
+**3. Register the plugin.**
+
+```bash
+nemo-relay plugins validate ./plugins/switchyard/relay-plugin.toml
+nemo-relay plugins add --user ./plugins/switchyard/relay-plugin.toml
+```
+
+`add` writes a `[[plugins.dynamic]]` entry to your user `plugins.toml`
+(`~/.config/nemo-relay/plugins.toml` or `$XDG_CONFIG_HOME/nemo-relay/plugins.toml`).
+The plugin is not enabled yet; enabling before the deployment is configured
+fails validation because the plugin requires a Switchyard configuration.
+
+**4. Configure the deployment and trust policy** in that `plugins.toml`, as
+described in [Configure Relay](#configure-relay).
+
+**5. Enable and validate the plugin**, then restart Relay. The manifest ships
+with `enabled = false`; Relay validates a disabled plugin but never loads it.
+
+```bash
+nemo-relay plugins enable nvidia.switchyard
+nemo-relay plugins validate nvidia.switchyard
+```
+
+`validate` evaluates the manifest, the plugin configuration, the artifact
+digest, and the host trust policy.
 
 ## Configure Relay
 
-Use exactly one Switchyard deployment source. To share an existing deployment
-file with `switchyard-server`, configure its path:
+Add a `config` table to the `[[plugins.dynamic]]` entry that `plugins add`
+wrote, and a policy override for the plugin. Use exactly one Switchyard
+deployment source. To share an existing deployment file with
+`switchyard-server`, configure its path:
 
 ```toml
 [[plugins.dynamic]]
@@ -26,12 +87,28 @@ manifest = "./plugins/switchyard/relay-plugin.toml"
 [plugins.dynamic.config]
 priority = 0
 switchyard_config_path = "/etc/switchyard/routes.toml"
+
+[plugins.policy.overrides."nvidia.switchyard"]
+attestation = "integrity_only"
 ```
+
+The policy override is required. The generated manifest carries a SHA-256
+digest but no signature, and Relay 0.8 refuses to activate an unsigned dynamic
+plugin at gateway start unless its host policy says otherwise; `plugins
+validate` still passes without the override, so the failure only shows up at
+startup as `requires integrity.signature under host policy`. Native plugins
+run inside the Relay process without a sandbox, so only install a bundle you
+built or obtained from a source you trust. To require a signature instead, sign
+the artifact with an Ed25519 key and list it in `trusted_public_keys`; see
+Relay's
+[discoverable plugins guide](https://github.com/NVIDIA/NeMo-Relay/blob/main/docs/configure-plugins/discoverable-plugins.mdx)
+for the policy keys.
 
 `switchyard_config_path` is a Switchyard version-1 TOML deployment, accepted by both
 `switchyard-server` and `switchyard-runner`. See the
-[server configuration guide](../switchyard-server/CONFIGURATION.md) for the
-deployment schema and routing algorithms.
+[TOML schema reference](../../docs/reference/toml_schema.md) for every key and
+the [routing overview](../../docs/routing_algorithms/overview.md) for the
+algorithms.
 
 To keep the deployment in the Relay configuration, nest the same version-1
 Switchyard configuration under `switchyard_config`:
@@ -78,10 +155,10 @@ backend from that format rather than translating a route to a different
 provider API. When one upstream model must serve multiple caller formats,
 declare a target and route for each corresponding client format.
 
-The plugin emits a routing request mark, routing-model call marks, measured
-routing-overhead marks, and a selected-model decision mark. Token usage is
-emitted as Switchyard metrics for both routing-model and answer-model calls;
-Relay retains ownership of the outer LLM lifecycle.
+The plugin emits routing request, model-call, measured-overhead, and decision
+marks. Call marks distinguish routing from answer calls; decisions distinguish
+selected from served models. Token metrics cover both call roles, while Relay
+retains ownership of the outer LLM lifecycle.
 
 ## Observability
 
@@ -89,8 +166,9 @@ When Relay is configured with OTLP logs and metrics exporters, the plugin emits
 typed telemetry through Relay's native plugin runtime:
 
 - Routing request, decision, and overhead marks are Info logs.
-- Per-routing-model call marks are Debug logs, including their outcome and
-  latency, but not token usage.
+- Per-model call marks are Debug logs with `call_role`, outcome, and latency,
+  but no token usage. Streaming marks cover stream creation; later failures are
+  reported separately.
 - Terminal routing and response-finalization failures are Error logs. Their
   payload contains only the safe Switchyard failure summary; it excludes
   provider response bodies and free-form provider messages.
@@ -109,6 +187,21 @@ The plugin does not attach sessions, requests, or provider messages as metric
 attributes. `target_model` comes from the configured Switchyard target set,
 rather than arbitrary caller input, keeping the metric cardinality bounded by
 the deployment.
+
+Every non-metric mark sets `data_schema.name` to the mark name and
+`data_schema.version` to `1`. Consumers should tolerate unknown fields and
+values. Removing or renaming fields, changing their type, or changing their
+meaning requires a new schema version.
+
+| Mark | Data fields |
+| --- | --- |
+| `switchyard.routing.requested` | `algorithm` |
+| `switchyard.routing.llm_call` | `call_index`, `selected_model`, `call_role`, `outcome`, `latency_ms` |
+| `switchyard.routing.overhead` | `latency_ms` |
+| `switchyard.routing.decision` | `algorithm`, `selected_model`, nullable `served_model`, nullable `fallback_used` |
+| `switchyard.routing.error` | `failure_kind`; optional `category`, `phase`, `upstream_status`, and `target` |
+
+`served_model` and `fallback_used` are `null` when serving metadata is unavailable.
 
 ## Failure policy
 

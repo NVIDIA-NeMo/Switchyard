@@ -202,11 +202,18 @@ pub trait JudgePolicy: Send + Sync {
     fn to_classification(&self, verdict: Option<&Self::Verdict>) -> Classification;
 }
 
+type EvidenceFn<V, P> = fn(&P, Option<&V>) -> Option<Value>;
+
 /// A classifier that calls one judge target and routes through its verdict policy.
-pub struct JudgeClassifier<J, P> {
+pub struct JudgeClassifier<J, P>
+where
+    J: Judge,
+    P: JudgePolicy<Verdict = J::Verdict>,
+{
     judge: J,
     target: ModelId,
     policy: P,
+    evidence: Option<EvidenceFn<J::Verdict, P>>,
 }
 
 impl<J, P> JudgeClassifier<J, P>
@@ -220,6 +227,24 @@ where
             judge,
             target,
             policy,
+            evidence: None,
+        }
+    }
+
+    /// Enables bounded evidence for built-in judges without widening the public policy trait.
+    pub(crate) fn with_evidence(mut self, evidence: EvidenceFn<J::Verdict, P>) -> Self {
+        self.evidence = Some(evidence);
+        self
+    }
+
+    /// Adds fail-open evidence only for evidence-enabled judges and preserves an earlier decision.
+    fn report_fail_open(&self, driver: &Driver, error: String, reason: &'static str) {
+        report_fail_open(self.target.as_str(), error, reason);
+        if self.evidence.is_some() {
+            driver.set_evidence_if_empty(serde_json::json!({
+                "source": "fail_open",
+                "reason_code": reason,
+            }));
         }
     }
 
@@ -246,11 +271,7 @@ where
             )
             .await
             .inspect_err(|error| {
-                report_fail_open(
-                    judge_model,
-                    safe_error_summary(error),
-                    libsy_error_reason(error),
-                )
+                self.report_fail_open(driver, safe_error_summary(error), libsy_error_reason(error));
             })
             .ok()?;
         let aggregate = response
@@ -258,17 +279,13 @@ where
             .into_agg()
             .await
             .inspect_err(|error| {
-                report_fail_open(
-                    judge_model,
-                    safe_client_error(error),
-                    client_error_reason(error),
-                )
+                self.report_fail_open(driver, safe_client_error(error), client_error_reason(error));
             })
             .ok()?;
         self.judge
             .parse(&aggregate)
             .inspect_err(|error| {
-                report_fail_open(judge_model, safe_error_summary(error), "parse_error")
+                self.report_fail_open(driver, safe_error_summary(error), "parse_error");
             })
             .ok()
     }
@@ -333,8 +350,20 @@ where
             });
         };
         let verdict = self.verdict(state, request, driver).await;
+        let classification = self.policy.to_classification(verdict.as_ref());
+        if let Some(evidence) = self
+            .evidence
+            .and_then(|evidence| evidence(&self.policy, verdict.as_ref()))
+        {
+            match &classification {
+                Classification::Scores(scores) if !scores.is_empty() => {
+                    driver.set_evidence(evidence);
+                }
+                _ => driver.set_evidence_if_empty(evidence),
+            }
+        }
         // A judge consultation is a side call, never the turn's answer.
-        Ok((self.policy.to_classification(verdict.as_ref()), None))
+        Ok((classification, None))
     }
 }
 

@@ -182,6 +182,29 @@ impl LlmResponse {
     }
 }
 
+/// An encrypted reasoning detail that names its provider item id but carries no payload yet.
+fn is_reasoning_id_announcement(detail: &Value) -> bool {
+    detail.get("type").and_then(Value::as_str) == Some("reasoning.encrypted")
+        && detail.get("data").is_none()
+}
+
+/// Appends a reasoning detail to an accumulated block. A Responses stream decoder announces a
+/// reasoning item's provider id (`{"type": "reasoning.encrypted", "id"}`) before the payload
+/// arrives; the payload detail then replaces that announcement so history holds one detail.
+fn push_reasoning_detail(details: &mut Vec<Value>, detail: Value) {
+    if detail.get("type").and_then(Value::as_str) == Some("reasoning.encrypted")
+        && let Some(id) = detail.get("id").and_then(Value::as_str)
+        && let Some(announcement) = details.iter_mut().find(|existing| {
+            is_reasoning_id_announcement(existing)
+                && existing.get("id").and_then(Value::as_str) == Some(id)
+        })
+    {
+        *announcement = detail;
+        return;
+    }
+    details.push(detail);
+}
+
 impl AggLlmResponse {
     /// Converts a fully-buffered response into a synthetic chunk stream.
     ///
@@ -393,7 +416,9 @@ impl ResponseAccumulator {
                     .push_str(&text);
             }
             LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
-                self.reasoning_details.extend(details);
+                for detail in details {
+                    push_reasoning_detail(&mut self.reasoning_details, detail);
+                }
                 if !text.is_empty() {
                     self.reasoning
                         .get_or_insert_with(String::new)
@@ -433,7 +458,12 @@ impl ResponseAccumulator {
             content.push(ContentBlock::Reasoning {
                 text: self.reasoning.unwrap_or_default(),
                 signature: None,
-                details: self.reasoning_details,
+                // An announcement whose payload never arrived is a stream-level hint only.
+                details: self
+                    .reasoning_details
+                    .into_iter()
+                    .filter(|detail| !is_reasoning_id_announcement(detail))
+                    .collect(),
             });
         }
         if !self.text.is_empty() {

@@ -98,6 +98,9 @@ tool_calling = true
 reasoning = true
 ```
 
+The parent stage route may also declare `[routes.agent.tool_semantics]` to map
+domain-specific tools; delegated sub-agent policy configuration is unaffected.
+
 Clients must still request the route ID (`agent` above). An explicit model name
 that is not registered as a route is rejected before sub-agent classification.
 `message_hash_fallback` is not supported for sub-agent routing because affinity

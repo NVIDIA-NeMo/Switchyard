@@ -40,6 +40,7 @@ tracing-opentelemetry.workspace = true
 # SHA-256 and private snapshot directories for the cross-platform checker.
 ring = "0.17"
 tempfile = "3"
+uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # Direct process-group signalling and no-follow file opens for the checker.

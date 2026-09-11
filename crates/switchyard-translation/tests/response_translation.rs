@@ -7,7 +7,9 @@ pub mod common;
 
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+};
 
 use common::{
     REASONING_MODEL, normalized_policy, shell_tool_call, text_and_encrypted_reasoning_details,
@@ -325,8 +327,8 @@ fn openai_reasoning_response_translates_to_responses_reasoning_item() -> TestRes
 
     assert_eq!(output["output"][0]["type"], "reasoning");
     assert_eq!(
-        output["output"][0]["content"][0],
-        json!({"type": "reasoning_text", "text": "private reasoning"})
+        output["output"][0]["summary"][0],
+        json!({"type": "summary_text", "text": "private reasoning"})
     );
     assert_eq!(output["output"][1]["type"], "message");
     assert_eq!(output["output"][1]["content"][0]["text"], "Visible answer");
@@ -412,7 +414,7 @@ fn openai_reasoning_only_response_translates_to_responses_reasoning_only() -> Te
         .ok_or("Responses output should be an array")?;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], "reasoning");
-    assert_eq!(items[0]["content"][0]["text"], "private reasoning");
+    assert_eq!(items[0]["summary"][0]["text"], "private reasoning");
     Ok(())
 }
 
@@ -722,5 +724,134 @@ fn content_filter_and_refusal_translate_across_formats() -> TestResult {
         .body;
     assert_eq!(output["stop_reason"], "refusal");
     assert_eq!(output["stop_details"]["category"], "cyber");
+    Ok(())
+}
+
+// A Responses reasoning item that carries only `encrypted_content` must survive a
+// buffered decode/encode through the codec (preservation disabled so the same-format
+// shortcut cannot mask a lossy codec), or a buffering caller loses the client's only
+// replayable reasoning payload.
+#[test]
+fn responses_encrypted_reasoning_item_survives_buffered_round_trip() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "model": "kimi-k3",
+        "output": [
+            {
+                "type": "reasoning",
+                "id": "rs_upstream",
+                "status": "completed",
+                "summary": [],
+                "encrypted_content": "opaque-encrypted-reasoning"
+            },
+            {
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done", "annotations": []}]
+            }
+        ],
+        "usage": {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7}
+    });
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let reasoning = output["output"]
+        .as_array()
+        .ok_or("Responses output should be an array")?
+        .iter()
+        .find(|item| item["type"] == "reasoning")
+        .ok_or("output should include the reasoning item")?;
+    assert_eq!(reasoning["encrypted_content"], "opaque-encrypted-reasoning");
+    // The payload only verifies upstream under the id it was issued with.
+    assert_eq!(reasoning["id"], "rs_upstream");
+    Ok(())
+}
+
+// A freeform tool call returned by the upstream must reach the client as a `custom_tool_call`
+// again once the response is re-encoded with the request's extensions, and as a function-style
+// call with an `input` argument when the client speaks chat.
+#[test]
+fn responses_custom_tool_call_output_round_trips_with_request_extensions() -> TestResult {
+    let engine = TranslationEngine::default();
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": "List files",
+        "tools": [{
+            "type": "custom",
+            "name": "exec",
+            "description": "Runs a shell command.",
+            "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.*/"}
+        }]
+    });
+    let decoded_request = engine.decode_request(
+        WireFormat::OpenAiResponses,
+        &request,
+        &TranslationPolicy::default(),
+    )?;
+    let response = json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "model": "gpt-5.6-luna",
+        "output": [{
+            "type": "custom_tool_call",
+            "id": "ctc_1",
+            "call_id": "call_1",
+            "name": "exec",
+            "input": "ls -la",
+            "status": "completed"
+        }],
+        "usage": {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7}
+    });
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let ir = engine
+        .decode_response(WireFormat::OpenAiResponses, &response, &policy)?
+        .response;
+    let encoded = engine
+        .encode_response_with_extensions(
+            WireFormat::OpenAiResponses,
+            &ir,
+            &decoded_request.request.extensions,
+            &policy,
+        )?
+        .body;
+    let item = encoded["output"]
+        .as_array()
+        .ok_or("output should be an array")?
+        .iter()
+        .find(|item| item["type"] == "custom_tool_call")
+        .ok_or("the call must be re-emitted as custom_tool_call")?;
+    assert_eq!(item["name"], "exec");
+    assert_eq!(item["call_id"], "call_1");
+    assert_eq!(item["input"], "ls -la");
+    assert!(item.get("arguments").is_none(), "{item}");
+
+    // Without the request extensions (e.g. a plain chat client) the call stays function-style.
+    let chat = engine
+        .encode_response(WireFormat::OpenAiChat, &ir, &policy)?
+        .body;
+    let call = &chat["choices"][0]["message"]["tool_calls"][0];
+    assert_eq!(call["function"]["name"], "exec");
+    assert_eq!(call["function"]["arguments"], "{\"input\":\"ls -la\"}");
     Ok(())
 }

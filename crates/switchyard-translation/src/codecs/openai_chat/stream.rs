@@ -214,6 +214,18 @@ fn encode_openai_chat_stream(
             )]
         }
         LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
+            // A Responses decoder announces a reasoning item's provider id ahead of its
+            // payload; that announcement carries nothing a chat client can use.
+            let details: Vec<Value> = details
+                .into_iter()
+                .filter(|detail| {
+                    detail.get("type").and_then(Value::as_str) != Some("reasoning.encrypted")
+                        || detail.get("data").is_some()
+                })
+                .collect();
+            if details.is_empty() && text.is_empty() {
+                return Vec::new();
+            }
             let details_text = reasoning_text_from_details(&details);
             let mut delta = json!({"reasoning_details": details});
             if !text.is_empty() && details_text.as_deref() != Some(text.as_str()) {

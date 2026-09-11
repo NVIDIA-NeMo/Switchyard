@@ -14,8 +14,12 @@ max_retries = 2
 [targets.model]
 id = "provider/model"
 llm_client = "provider"
+system_prompt = "Follow this model's deployment instructions."
 extra_body = { chat_template_kwargs = { enable_thinking = false } }
 ```
+
+`system_prompt` is prepended when the target is a completion destination. Switchyard
+prepares each fallback independently, so a failed target's prompt is not carried to the next one.
 
 `extra_body` is target-specific. It shallow-merges top-level provider options into
 the outbound request, while explicit request fields win on conflicts.

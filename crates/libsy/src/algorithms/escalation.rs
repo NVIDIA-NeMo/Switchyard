@@ -92,6 +92,10 @@ impl Classifier<State> for EscalationClassifier {
 
         // A confirmed session stays capable without a judge call.
         if streak(state) >= self.confirmations {
+            driver.set_evidence(serde_json::json!({
+                "source": "escalation",
+                "verdict": "latched",
+            }));
             return Ok((decisive(&self.capable), None));
         }
 
@@ -111,7 +115,13 @@ impl Classifier<State> for EscalationClassifier {
             Err(LibsyError::ClientCall {
                 source: LlmClientError::ContextWindowExceeded { .. },
                 ..
-            }) => return Ok((decisive(&self.capable), None)),
+            }) => {
+                driver.set_evidence(serde_json::json!({
+                    "source": "fallback",
+                    "reason_code": "context_window",
+                }));
+                return Ok((decisive(&self.capable), None));
+            }
             Err(e) => return Err(e),
         };
         // The call resolves when its stream handle arrives; transport can still fail while
@@ -119,6 +129,10 @@ impl Classifier<State> for EscalationClassifier {
         let agg = match efficient_response.llm_response.into_agg().await {
             Ok(agg) => agg,
             Err(LlmClientError::Transport { .. }) => {
+                driver.set_evidence(serde_json::json!({
+                    "source": "fallback",
+                    "reason_code": "transport",
+                }));
                 return Ok((decisive(&self.capable), None));
             }
             Err(source) => {
@@ -158,7 +172,18 @@ impl Classifier<State> for EscalationClassifier {
 
         if escalate && pending >= self.confirmations {
             // Streak confirmed: drop the efficient response, caller will serve capable.
+            driver.set_evidence(serde_json::json!({
+                "source": "escalation",
+                "verdict": "escalate",
+            }));
             return Ok((decisive(&self.capable), None));
+        }
+
+        if escalate {
+            driver.set_evidence(serde_json::json!({
+                "source": "escalation",
+                "verdict": "pending",
+            }));
         }
 
         Ok((decisive(&self.efficient), Some(efficient_response)))

@@ -7,6 +7,7 @@
 mod core;
 pub use core::algorithm::{Algorithm, CallModel, Driver, RoutingOutcome, Step, StepStream, drive};
 pub use core::classifier::{Classification, Classifier, Score};
+pub use core::outcome_metadata::OutcomeMetadata;
 pub use core::processor::{Event, Processor};
 pub use core::state::{State, StateValue};
 
@@ -32,7 +33,7 @@ pub use algorithms::util::classifier_contract::{
 pub use algorithms::util::escalation::EscalationJudgeConfig;
 pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
-pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
+pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignals};
 pub use algorithms::vgr::Vgr;
 #[cfg(any(unix, windows))]
 pub use algorithms::vgr::checker::{

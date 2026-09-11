@@ -2345,6 +2345,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 
@@ -2517,6 +2518,7 @@ dependencies = [
  "serde_json",
  "switchyard-protocol",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

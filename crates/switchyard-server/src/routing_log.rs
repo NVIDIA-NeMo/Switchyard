@@ -65,6 +65,8 @@ impl RoutingLog {
             });
         let record = RoutingRecord {
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
+            route_id: context.route_id.into(),
+            algorithm: context.algorithm.into(),
             task: context.task.map(Cow::Owned),
             trial_id: context.trial_id.map(Cow::Owned),
             session_id: context.session_id.map(Cow::Owned),
@@ -118,9 +120,11 @@ pub(crate) fn snapshot(
     Ok((snapshot.total_calls > 0).then_some(snapshot))
 }
 
-/// Request fields retained until terminal usage and routing are available.
+/// Holds request metadata until route resolution attaches the durable route identity.
 #[derive(Clone)]
 pub(crate) struct RoutingLogContext {
+    route_id: String,
+    algorithm: String,
     task: Option<String>,
     trial_id: Option<String>,
     session_id: Option<String>,
@@ -137,6 +141,8 @@ impl RoutingLogContext {
     pub(crate) fn from_metadata(metadata: &Metadata) -> Self {
         let headers = metadata.http_headers.as_ref();
         Self {
+            route_id: String::new(),
+            algorithm: String::new(),
             task: headers
                 .and_then(|headers| nonempty_header(headers, TASK_HEADER))
                 .map(str::to_string),
@@ -167,6 +173,13 @@ impl RoutingLogContext {
         self.vgr_short_circuit = vgr_label(metadata, "switchyard.vgr.short_circuit");
         self
     }
+
+    /// Attaches the resolved route identity shared by every log entry for this request.
+    pub(crate) fn with_route(mut self, route_id: impl Into<String>, algorithm: &str) -> Self {
+        self.route_id = route_id.into();
+        self.algorithm = algorithm.to_string();
+        self
+    }
 }
 
 /// One appended routing record, and the read schema [`snapshot`] parses back,
@@ -176,6 +189,8 @@ impl RoutingLogContext {
 #[serde(default)]
 struct RoutingRecord<'a> {
     ts: Cow<'a, str>,
+    route_id: Cow<'a, str>,
+    algorithm: Cow<'a, str>,
     #[serde(borrow)]
     task: Option<Cow<'a, str>>,
     #[serde(borrow)]
