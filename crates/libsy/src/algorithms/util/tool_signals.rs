@@ -562,13 +562,13 @@ fn extract_tool_signals_with_window_and_semantics(
     let mut signal = build_signal(
         tool_texts,
         tool_calls,
-        tool_results,
-        tool_tail_clean,
-        error_count,
         messages.len() as u32,
         recent_window,
         semantics,
     );
+    signal.error_count = error_count;
+    signal.tool_results = tool_results;
+    signal.tool_tail_clean = tool_tail_clean;
     signal.compacted = compacted;
     signal.tool_result_count = u32::try_from(tool_result_count).unwrap_or(u32::MAX);
     signal.assistant_turn_count = u32::try_from(assistant_turn_count).unwrap_or(u32::MAX);
@@ -621,9 +621,6 @@ fn text_of(block: &ContentBlock) -> Option<&str> {
 fn build_signal(
     tool_texts: Vec<String>,
     tool_calls: Vec<ObservedToolCall>,
-    tool_results: u32,
-    tool_tail_clean: bool,
-    error_count: u32,
     turn_depth: u32,
     recent_window: usize,
     semantics: &ToolSemantics,
@@ -709,9 +706,9 @@ fn build_signal(
     ToolSignals {
         severity,
         no_error_streak,
-        error_count,
-        tool_results,
-        tool_tail_clean,
+        error_count: 0,
+        tool_results: 0,
+        tool_tail_clean: false,
         edit_count,
         write_count,
         read_count,
