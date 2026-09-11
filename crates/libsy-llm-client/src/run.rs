@@ -33,7 +33,8 @@ use crate::{metrics, observability};
 /// Run one request to completion, serving every offloaded model call with `client`.
 ///
 /// Returns the model selected by the algorithm and the final [`Response`]. `observer`, when
-/// present, receives each completed routing or answer call and the routing overhead.
+/// present, receives metadata for the routing outcome, each completed routing or answer call,
+/// and the routing overhead.
 ///
 /// `clients` resolves each offloaded call to the client for the target the algorithm
 /// selected — an algorithm may route among targets served by different providers, so this is
@@ -71,6 +72,11 @@ pub async fn run(
     metrics::record_routing_overhead(&algorithm_name, overhead);
 
     let selected_model_id = outcome.selected_model_id()?.clone();
+    if let Some(observer) = &observer
+        && let Some(metadata) = outcome.metadata
+    {
+        observer(RunObservation::Outcome(metadata));
+    }
     let (result, answer_duration) = if let Some(response) = outcome.response {
         (Ok(response), None)
     } else {
@@ -659,9 +665,13 @@ mod tests {
         assert!(matches!(observations[0], RunObservation::AnswerCall(_)));
         assert!(matches!(
             observations[1],
+            RunObservation::Outcome(ref metadata) if metadata.algorithm == "answered_test"
+        ));
+        assert!(matches!(
+            observations[2],
             RunObservation::RoutingOverhead(_)
         ));
-        assert_eq!(observations.len(), 2);
+        assert_eq!(observations.len(), 3);
         Ok(())
     }
 

@@ -198,10 +198,12 @@ meaning requires a new schema version.
 | `switchyard.routing.requested` | `algorithm` |
 | `switchyard.routing.llm_call` | `call_index`, `selected_model`, `call_role`, `outcome`, `latency_ms` |
 | `switchyard.routing.overhead` | `latency_ms` |
-| `switchyard.routing.decision` | `algorithm`, `selected_model`, nullable `served_model`, nullable `fallback_used` |
-| `switchyard.routing.error` | `failure_kind`; optional `category`, `phase`, `upstream_status`, and `target` |
+| `switchyard.routing.decision` | `algorithm`, `outcome_id`, `selected_model`, nullable `served_model`, nullable `fallback_used`, and optional `evidence` |
+| `switchyard.routing.error` | `failure_kind`; route-execution failures also include `category`, `phase`, nullable `upstream_status` and `target`, and may include `outcome_id` and `evidence` |
 
 `served_model` and `fallback_used` are `null` when serving metadata is unavailable.
+`evidence` is an object containing the supported string fields `source`, `verdict`,
+`trigger`, and `reason_code`, and numeric fields `score`, `confidence`, and `threshold`.
 
 ## Failure policy
 

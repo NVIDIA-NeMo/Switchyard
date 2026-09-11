@@ -410,6 +410,7 @@ fn stats_observer(
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
+        RunObservation::Outcome(_) => {}
         RunObservation::AnswerCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if call.is_success {

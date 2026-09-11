@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use switchyard_libsy::OutcomeMetadata;
 use switchyard_protocol::{ModelId, Usage};
 
 /// One completed model call observed while serving an algorithm run.
@@ -24,6 +25,8 @@ pub struct LlmCallObservation {
 /// One request-scoped observation emitted by the algorithm runner.
 #[derive(Clone, Debug)]
 pub enum RunObservation {
+    /// Metadata attached to the completed routing outcome.
+    Outcome(OutcomeMetadata),
     /// A completed model call requested by the algorithm for routing work.
     LlmCall(LlmCallObservation),
     /// A completed terminal model call made from the routing outcome.
