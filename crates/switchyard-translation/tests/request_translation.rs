@@ -16,6 +16,68 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+fn anthropic_tool_use_message(calls: &[(&str, &str)]) -> Value {
+    let content = calls
+        .iter()
+        .map(|(id, name)| {
+            json!({
+                "type": "tool_use",
+                "id": sanitize_anthropic_tool_use_id(id),
+                "name": name,
+                "input": {}
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({"role": "assistant", "content": content})
+}
+
+#[test]
+fn orphaned_tool_results_are_rejected_during_request_decode() {
+    let engine = TranslationEngine::default();
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({
+                "model": "route",
+                "messages": [
+                    {"role": "user", "content": "Run the diagnostic."},
+                    {
+                        "role": "tool",
+                        "tool_call_id": "nonexistent_call_id_xyz",
+                        "content": "ready"
+                    }
+                ]
+            }),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({
+                "model": "route",
+                "max_tokens": 64,
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "nonexistent_call_id_xyz",
+                        "content": "ready"
+                    }]
+                }]
+            }),
+        ),
+    ];
+
+    for (format, body) in cases {
+        let error = engine
+            .decode_request(format, &body, &TranslationPolicy::default())
+            .expect_err("orphaned tool result should be rejected");
+        assert_eq!(error.kind(), "InvalidValue");
+        assert!(
+            error.to_string().contains("nonexistent_call_id_xyz"),
+            "{error}"
+        );
+    }
+}
+
 // A target prompt makes every preserved provider body stale.
 #[test]
 fn preparing_a_target_prompt_invalidates_exact_replay() -> TestResult {
@@ -360,7 +422,7 @@ fn anthropic_unknown_content_does_not_leak_into_responses_request_blocks() -> Te
 fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult {
     let engine = TranslationEngine::default();
     let raw_id = "functions.list_skills:0";
-    let body = json!({
+    let mut body = json!({
         "model": "claude-sonnet-4-20250514",
         "messages": [{
             "role": "user",
@@ -375,6 +437,10 @@ fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult
         }],
         "max_tokens": 1024
     });
+    body["messages"]
+        .as_array_mut()
+        .ok_or("messages should be an array")?
+        .insert(0, anthropic_tool_use_message(&[(raw_id, "list_skills")]));
 
     let output = engine
         .translate_request(
@@ -385,12 +451,14 @@ fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult
         )?
         .body;
 
+    assert_eq!(output["messages"][0]["tool_calls"][0]["id"], raw_id);
     assert_eq!(
-        output["messages"],
-        json!([
-            {"role": "tool", "tool_call_id": raw_id, "content": "72F"},
-            {"role": "user", "content": "Now summarize it."}
-        ])
+        output["messages"][1],
+        json!({"role": "tool", "tool_call_id": raw_id, "content": "72F"})
+    );
+    assert_eq!(
+        output["messages"][2],
+        json!({"role": "user", "content": "Now summarize it."})
     );
     Ok(())
 }
@@ -422,7 +490,7 @@ fn anthropic_tool_result_multimodal_blocks_round_trip_complete() -> TestResult {
             "data": "aW1hZ2U="
         }
     });
-    let body = json!({
+    let mut body = json!({
         "model": "claude-sonnet-4-20250514",
         "messages": [{
             "role": "user",
@@ -438,6 +506,13 @@ fn anthropic_tool_result_multimodal_blocks_round_trip_complete() -> TestResult {
         }],
         "max_tokens": 1024
     });
+    body["messages"]
+        .as_array_mut()
+        .ok_or("messages should be an array")?
+        .insert(
+            0,
+            anthropic_tool_use_message(&[("toolu_document", "read_document")]),
+        );
 
     let output = engine
         .translate_request(
@@ -449,7 +524,7 @@ fn anthropic_tool_result_multimodal_blocks_round_trip_complete() -> TestResult {
         .body;
 
     assert_eq!(
-        output["messages"][0]["content"][0]["content"],
+        output["messages"][1]["content"][0]["content"],
         json!([
             {"type": "text", "text": "content ready"},
             image,
@@ -470,7 +545,7 @@ fn anthropic_tool_result_file_id_does_not_become_openai_file_id() -> TestResult 
             "file_id": "file_anthropic_123"
         }
     });
-    let body = json!({
+    let mut body = json!({
         "model": "claude-sonnet-4-20250514",
         "messages": [{
             "role": "user",
@@ -482,6 +557,13 @@ fn anthropic_tool_result_file_id_does_not_become_openai_file_id() -> TestResult 
         }],
         "max_tokens": 1024
     });
+    body["messages"]
+        .as_array_mut()
+        .ok_or("messages should be an array")?
+        .insert(
+            0,
+            anthropic_tool_use_message(&[("toolu_document", "read_document")]),
+        );
 
     let translated = engine.translate_request(
         WireFormat::AnthropicMessages,
@@ -490,9 +572,9 @@ fn anthropic_tool_result_file_id_does_not_become_openai_file_id() -> TestResult 
         &TranslationPolicy::default(),
     )?;
 
-    assert_eq!(translated.body["messages"][1]["content"][0]["type"], "text");
+    assert_eq!(translated.body["messages"][2]["content"][0]["type"], "text");
     let recovered: Value = serde_json::from_str(
-        translated.body["messages"][1]["content"][0]["text"]
+        translated.body["messages"][2]["content"][0]["text"]
             .as_str()
             .ok_or("file fallback should be text")?,
     )?;
@@ -507,7 +589,7 @@ fn anthropic_tool_result_file_id_does_not_become_openai_file_id() -> TestResult 
 #[test]
 fn anthropic_parallel_multimodal_tool_results_preserve_order_and_policy() -> TestResult {
     let engine = TranslationEngine::default();
-    let body = json!({
+    let mut body = json!({
         "model": "claude-sonnet-4-20250514",
         "messages": [{
             "role": "user",
@@ -547,6 +629,16 @@ fn anthropic_parallel_multimodal_tool_results_preserve_order_and_policy() -> Tes
         }],
         "max_tokens": 1024
     });
+    body["messages"]
+        .as_array_mut()
+        .ok_or("messages should be an array")?
+        .insert(
+            0,
+            anthropic_tool_use_message(&[
+                ("toolu_image", "read_image"),
+                ("toolu_document", "read_document"),
+            ]),
+        );
 
     let output = engine
         .translate_request(
@@ -557,29 +649,38 @@ fn anthropic_parallel_multimodal_tool_results_preserve_order_and_policy() -> Tes
         )?
         .body;
 
+    assert_eq!(output["messages"][0]["tool_calls"][0]["id"], "toolu_image");
     assert_eq!(
-        output["messages"],
-        json!([
-            {"role": "tool", "tool_call_id": "toolu_image", "content": "image ready"},
-            {
-                "role": "tool",
-                "tool_call_id": "toolu_document",
-                "content": "document ready"
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,aW1hZ2U="}
-                    },
-                    {
-                        "type": "file",
-                        "file": {"file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
-                    }
-                ]
-            }
-        ])
+        output["messages"][0]["tool_calls"][1]["id"],
+        "toolu_document"
+    );
+    assert_eq!(
+        output["messages"][1],
+        json!({"role": "tool", "tool_call_id": "toolu_image", "content": "image ready"})
+    );
+    assert_eq!(
+        output["messages"][2],
+        json!({
+            "role": "tool",
+            "tool_call_id": "toolu_document",
+            "content": "document ready"
+        })
+    );
+    assert_eq!(
+        output["messages"][3],
+        json!({
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,aW1hZ2U="}
+                },
+                {
+                    "type": "file",
+                    "file": {"file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+                }
+            ]
+        })
     );
     let policy = TranslationPolicy {
         lossy_conversion_policy: LossyConversionPolicy::Reject,

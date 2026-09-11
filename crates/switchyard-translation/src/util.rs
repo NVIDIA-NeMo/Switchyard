@@ -3,7 +3,7 @@
 
 //! Shared helpers for codec validation, diagnostics, and preservation metadata.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Map, Value, json};
@@ -122,6 +122,52 @@ pub fn compact_text_blocks<'a>(
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(separator)
+}
+
+pub(crate) fn validate_tool_call_pairing(request: &LlmRequest) -> Result<()> {
+    let mut issued = HashSet::new();
+    let mut completed = HashSet::new();
+
+    for (message_index, message) in request.messages.iter().enumerate() {
+        for (block_index, block) in message.content.iter().enumerate() {
+            match block {
+                ContentBlock::ToolCall(call) => {
+                    if !issued.insert(call.id.as_str()) {
+                        return Err(TranslationError::InvalidValue {
+                            path: format!("$.messages[{message_index}].content[{block_index}].id"),
+                            message: format!("duplicate tool call id {:?}", call.id),
+                        });
+                    }
+                }
+                ContentBlock::ToolResult(result) => {
+                    let path =
+                        format!("$.messages[{message_index}].content[{block_index}].tool_call_id");
+                    if !issued.contains(result.tool_call_id.as_str()) {
+                        return Err(TranslationError::InvalidValue {
+                            path,
+                            message: format!(
+                                "unexpected tool_call_id {:?}; each tool result must correspond \
+                                 to a prior assistant tool call",
+                                result.tool_call_id
+                            ),
+                        });
+                    }
+                    if !completed.insert(result.tool_call_id.as_str()) {
+                        return Err(TranslationError::InvalidValue {
+                            path,
+                            message: format!(
+                                "duplicate result for tool_call_id {:?}",
+                                result.tool_call_id
+                            ),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Checks a request against declared target capabilities.
