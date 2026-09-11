@@ -108,7 +108,7 @@ impl Classifier<State> for FallOpen {
             Tier::Capable => Category::Capable,
             Tier::Efficient => Category::Efficient,
         };
-        let target = driver.first_model_for(category)?.clone();
+        let target = driver.first_model_for(&category)?.clone();
         Ok((
             Classification::Scores(vec![Score {
                 target,

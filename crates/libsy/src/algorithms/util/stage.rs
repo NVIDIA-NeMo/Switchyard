@@ -579,7 +579,7 @@ impl Classifier<State> for StageClassifier {
                     Tier::Capable => Category::Capable,
                     Tier::Efficient => Category::Efficient,
                 };
-                let target = driver.first_model_for(category)?;
+                let target = driver.first_model_for(&category)?;
                 record_decision_source(state, source);
                 record_routing_decision(source, target);
                 // Only a resolved turn routes on this classifier's target, so it

@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 
     @final
     class CustomClassifierConfig:
-        """Configure schema-validated routing across runtime model categories.
+        """Configure schema-validated routing across runtime model groups.
 
         ``max_output_tokens`` must be positive. Enabling ``message_hash_fallback``
         requires ``session_affinity``.
@@ -200,7 +200,13 @@ if TYPE_CHECKING:
             default_target: str,
             config: CustomClassifierConfig,
         ) -> LlmClassifierConfig:
-            """Route among runtime categories using a schema-selected label."""
+            """Route among runtime model groups using a schema-selected label.
+
+            ``default_target`` names the group used when the judge fails or its
+            verdict cannot be routed. Alongside ``capable`` and ``efficient`` a
+            deployment may define its own group names, so one route can choose
+            between more than two models.
+            """
             ...
 
     @final

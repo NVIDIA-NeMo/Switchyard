@@ -778,19 +778,19 @@ target = "weak"
             .expect("classifier route should exist");
         let models = classifier.models();
         assert_eq!(
-            models.models_for(Category::Judge),
+            models.models_for(&Category::Judge),
             [ModelId::from("classifier/model")]
         );
         assert_eq!(
-            models.models_for(Category::Efficient),
+            models.models_for(&Category::Efficient),
             [ModelId::from("weak/model")]
         );
         assert_eq!(
-            models.models_for(Category::Capable),
+            models.models_for(&Category::Capable),
             [ModelId::from("strong/model")]
         );
         assert_eq!(
-            models.models_for(Category::Any),
+            models.models_for(&Category::Any),
             [ModelId::from("weak/model"), ModelId::from("strong/model")]
         );
         assert!(runner.route("switchyard/passthrough").is_some());
@@ -833,11 +833,11 @@ classify_trigger = "new_session""#,
             .models();
 
         assert_eq!(
-            models.subagent_models_for(Category::Any),
+            models.subagent_models_for(&Category::Any),
             [ModelId::from("strong/model")]
         );
         assert_eq!(
-            models.models_for(Category::Any),
+            models.models_for(&Category::Any),
             [ModelId::from("strong/model"), ModelId::from("weak/model")]
         );
         Ok(())
@@ -1718,11 +1718,11 @@ advisor_target = "advisor"
             .expect("advisor route should exist");
         let models = route.models();
         assert_eq!(
-            models.models_for(Category::Any),
+            models.models_for(&Category::Any),
             [ModelId::from("executor/model")]
         );
         assert_eq!(
-            models.models_for(Category::Judge),
+            models.models_for(&Category::Judge),
             [ModelId::from("advisor/model")]
         );
         assert_eq!(

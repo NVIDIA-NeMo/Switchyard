@@ -161,9 +161,9 @@ where
                 // alternatives to the model the classifier picked, in the order it ranked
                 // them. Every other runtime target follows as a last resort, so a route
                 // whose category holds one model still fails over to the other tier.
-                let chosen = driver.models_for(score.category.unwrap_or(Category::Any));
+                let chosen = driver.models_for(score.category.as_ref().unwrap_or(&Category::Any));
                 let mut fallback_models: Vec<ModelId> = Vec::new();
-                for candidate in chosen.iter().chain(driver.models_for(Category::Any)) {
+                for candidate in chosen.iter().chain(driver.models_for(&Category::Any)) {
                     if *candidate != target && !fallback_models.contains(candidate) {
                         fallback_models.push(candidate.clone());
                     }
@@ -226,7 +226,7 @@ where
         };
 
         // 3. Resolve the target and log the choice.
-        algorithm::ensure_model_is_target(driver.models_for(Category::Any), &score.target)?;
+        algorithm::ensure_model_is_target(driver.models_for(&Category::Any), &score.target)?;
         let target = score.target.clone();
         tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
 
@@ -236,7 +236,7 @@ where
             let event = Event::Decision {
                 request,
                 selected_model_id: &target,
-                category: score.category,
+                category: score.category.clone(),
                 driver,
             };
             processor.process(state, event).await?;

@@ -197,7 +197,7 @@ impl AdvisorGate {
         request: Request,
         scope: &ScopeKey,
     ) -> Result<RoutingOutcome> {
-        let executor = driver.first_model_for(Category::Any)?;
+        let executor = driver.first_model_for(&Category::Any)?;
 
         // Spent budget (or failure cap): pure passthrough — live stream,
         // verbatim preserved-body replay, zero buffering. Executor errors
@@ -349,7 +349,7 @@ impl AdvisorGate {
         review_tail: Option<&str>,
         trigger: &'static str,
     ) -> Result<ConsultOutcome> {
-        let advisor = driver.first_model_for(Category::Judge)?;
+        let advisor = driver.first_model_for(&Category::Judge)?;
         // The advisor reviews the FULL transcript: system/developer content is
         // normalized out of `messages` into `instructions`, so prepend it back
         // as leading messages (identical {role, content} shape) — the task

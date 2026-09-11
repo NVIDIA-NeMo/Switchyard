@@ -89,7 +89,7 @@ where
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         // All the available models
-        let options = driver.models_for(Category::Any);
+        let options = driver.models_for(&Category::Any);
         if options.is_empty() {
             return Err(LibsyError::NoTargets);
         }

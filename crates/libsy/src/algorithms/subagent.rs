@@ -145,7 +145,7 @@ mod tests {
             let scores = match category {
                 Some(category) => vec![Score {
                     confidence: 1.0,
-                    target: driver.first_model_for(category)?.clone(),
+                    target: driver.first_model_for(&category)?.clone(),
                     category: Some(category),
                 }],
                 None => Vec::new(),

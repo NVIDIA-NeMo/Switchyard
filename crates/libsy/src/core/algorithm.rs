@@ -66,15 +66,15 @@ impl RuntimeModels {
     }
 
     /// The models in `category`, ordered best-first.
-    pub fn models_for(&self, category: Category) -> &[ModelId] {
-        self.by_category.get(&category).map_or(&[], Vec::as_slice)
+    pub fn models_for(&self, category: &Category) -> &[ModelId] {
+        self.by_category.get(category).map_or(&[], Vec::as_slice)
     }
 
     /// The models delegated sub-agent work uses for `category`, ordered best-first.
-    pub fn subagent_models_for(&self, category: Category) -> &[ModelId] {
+    pub fn subagent_models_for(&self, category: &Category) -> &[ModelId] {
         self.subagent
             .as_ref()
-            .and_then(|models| models.get(&category))
+            .and_then(|models| models.get(category))
             .map_or(&[], Vec::as_slice)
     }
 }
@@ -292,7 +292,7 @@ impl Driver {
     }
 
     /// The available models for this category, typically ordered best-first.
-    pub fn models_for(&self, category: Category) -> &[ModelId] {
+    pub fn models_for(&self, category: &Category) -> &[ModelId] {
         match self.scope {
             Scope::Parent => self.models.models_for(category),
             Scope::Subagent => self.models.subagent_models_for(category),
@@ -300,11 +300,11 @@ impl Driver {
     }
 
     /// The first available model for `category`.
-    pub fn first_model_for(&self, category: Category) -> Result<&ModelId> {
+    pub fn first_model_for(&self, category: &Category) -> Result<&ModelId> {
         self.models_for(category)
             .first()
             .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "no models available for category ".to_string() + category.as_str(),
+                message: format!("no models available for category {}", category.as_str()),
             })
     }
 

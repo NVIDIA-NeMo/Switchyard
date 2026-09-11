@@ -40,7 +40,11 @@ fn parse_category(value: &str) -> PyResult<Category> {
     value.parse().map_err(PyValueError::new_err)
 }
 
-/// Convert one scope's `{category: [model_id]}` mapping into its typed form.
+/// Convert one scope's `{group: [model_id]}` mapping into its typed form.
+///
+/// `any`, `capable`, `efficient`, and `judge` are the groups algorithms reason
+/// about. Any other key is a deployment-defined group, selectable by name only
+/// by a custom classifier's policy.
 fn category_models_from_python(
     models: HashMap<String, Vec<String>>,
 ) -> PyResult<HashMap<Category, Vec<ModelId>>> {

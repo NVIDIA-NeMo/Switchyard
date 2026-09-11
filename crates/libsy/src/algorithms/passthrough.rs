@@ -20,7 +20,7 @@ impl Algorithm for Passthrough {
     }
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
-        let mut models = driver.models_for(Category::Any).to_vec();
+        let mut models = driver.models_for(&Category::Any).to_vec();
         // Selected is the first one. The rest are fallbacks.
         let Some(target) = models.pop() else {
             return Err(LibsyError::NoTargets);

@@ -70,8 +70,8 @@ impl Classifier<State> for EscalationClassifier {
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
-        let capable = driver.first_model_for(Category::Capable)?.clone();
-        let efficient = driver.first_model_for(Category::Efficient)?.clone();
+        let capable = driver.first_model_for(&Category::Capable)?.clone();
+        let efficient = driver.first_model_for(&Category::Efficient)?.clone();
 
         // A confirmed session stays capable without a judge call.
         if streak(state) >= self.confirmations {

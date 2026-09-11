@@ -475,7 +475,7 @@ mod tests {
             driver: Driver,
             request: Request,
         ) -> Result<RoutingOutcome> {
-            let models = driver.models_for(Category::Any);
+            let models = driver.models_for(&Category::Any);
             let selected_model = models.first().cloned().ok_or(LibsyError::NoTargets)?;
             Ok(RoutingOutcome::route_to(
                 selected_model,

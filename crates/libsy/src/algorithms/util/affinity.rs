@@ -246,7 +246,7 @@ where
         let mut assignments = self.assignments.lock();
         let assigned = assignments.get(&key).cloned();
         let assigned = match assigned.as_ref() {
-            Some(target) if !driver.models_for(Category::Any).contains(target) => {
+            Some(target) if !driver.models_for(&Category::Any).contains(target) => {
                 assignments.remove(&key);
                 None
             }

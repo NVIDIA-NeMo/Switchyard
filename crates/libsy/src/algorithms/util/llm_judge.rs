@@ -242,7 +242,7 @@ where
     /// Adds fail-open evidence only for evidence-enabled judges and preserves an earlier decision.
     fn report_fail_open(&self, driver: &Driver, error: String, reason: &'static str) {
         let judge_target = driver
-            .first_model_for(Category::Judge)
+            .first_model_for(&Category::Judge)
             .map(|c| c.as_str())
             .unwrap_or("missing");
         report_fail_open(judge_target, error, reason);
@@ -347,7 +347,7 @@ where
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
-        let judge_models = driver.models_for(Category::Judge);
+        let judge_models = driver.models_for(&Category::Judge);
         if judge_models.is_empty() {
             return Err(LibsyError::AlgorithmError {
                 message: "no models available for category Judge".to_string(),

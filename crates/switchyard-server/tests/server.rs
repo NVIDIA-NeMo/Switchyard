@@ -302,23 +302,34 @@ async fn upstream_chat(
                 .is_some_and(|content| content.contains("schema-invalid verdict"))
         })
     });
+    // A custom-mode task may name the group it wants the judge to pick, so one
+    // config can be driven through each of its groups in turn.
+    let requested_group = body["messages"].as_array().and_then(|messages| {
+        messages.iter().find_map(|message| {
+            message["content"]
+                .as_str()?
+                .split_once("route to ")
+                .map(|(_, group)| group.trim().to_string())
+        })
+    });
     let content = if model == "model/classifier" && custom_target_schema {
         if requests_invalid_verdict {
-            r#"{"decision":{"target":"unknown"}}"#
+            r#"{"decision":{"target":"unknown"}}"#.to_string()
         } else {
-            r#"{"decision":{"target":"efficient"}}"#
+            let group = requested_group.unwrap_or_else(|| "efficient".to_string());
+            format!(r#"{{"decision":{{"target":"{group}"}}}}"#)
         }
     } else if body
         .pointer("/response_format/json_schema/schema/properties/escalate")
         .is_some()
     {
-        r#"{"escalate":false,"reason":"making progress"}"#
+        r#"{"escalate":false,"reason":"making progress"}"#.to_string()
     } else if model == "model/classifier" && requests_schema_invalid_verdict {
-        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#
+        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#.to_string()
     } else if model == "model/classifier" {
-        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
+        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
     } else {
-        "ok"
+        "ok".to_string()
     };
     Json(json!({
         "id": "chatcmpl-test",
@@ -1641,8 +1652,8 @@ llm_client = "upstream"
 id = "switchyard/custom"
 type = "llm_classifier"
 mode = "custom"
-models = {{ judge = ["classifier"], capable = ["strong", "premium"], efficient = ["middle", "weak"], any = ["weak", "middle", "strong", "premium"] }}
-default_target = "capable"
+models = {{ judge = ["classifier"], fast = ["weak"], balanced = ["middle"], reasoning = ["strong"], premium = ["premium"], any = ["weak", "middle", "strong", "premium"] }}
+default_target = "premium"
 prompt = "CUSTOM MULTI TARGET"
 response_schema = '''
 {{
@@ -1651,7 +1662,7 @@ response_schema = '''
     "decision": {{
       "type": "object",
       "properties": {{
-        "target": {{"type": "string", "enum": ["any", "judge", "capable", "efficient"]}}
+        "target": {{"type": "string", "enum": ["fast", "balanced", "reasoning", "premium"]}}
       }},
       "required": ["target"],
       "additionalProperties": false
@@ -1670,9 +1681,14 @@ selector = "/decision/target"
     ))?;
     let app = build_switchyard_router(state);
 
+    // Each named group resolves to its own model, so the policy picks between
+    // four of them rather than between the two tier categories.
     for (task, selected) in [
-        ("route this task", "model/middle"),
-        ("return an invalid verdict", "model/strong"),
+        ("route to fast", "model/weak"),
+        ("route to balanced", "model/middle"),
+        ("route to reasoning", "model/strong"),
+        ("route to premium", "model/premium"),
+        ("return an invalid verdict", "model/premium"),
     ] {
         let response = send(
             &app,
@@ -1712,7 +1728,7 @@ selector = "/decision/target"
     assert_eq!(
         judge_call["response_format"]["json_schema"]["schema"]["properties"]["decision"]["properties"]
             ["target"]["enum"],
-        json!(["any", "judge", "capable", "efficient"])
+        json!(["fast", "balanced", "reasoning", "premium"])
     );
     Ok(())
 }

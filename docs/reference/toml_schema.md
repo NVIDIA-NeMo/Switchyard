@@ -219,17 +219,23 @@ Escalation mode serves the weak target first and judges the completed turn. See
 Existing configurations that contain `escalation` but omit `mode` remain valid.
 
 Custom mode validates the judge's JSON against `response_schema`, resolves the
-policy selector, and routes to a runtime model category. A verdict names a
-category and the first model in it serves the turn; if that call fails the client
-falls through the rest of that category, then through whatever `models.any` adds.
+policy selector, and routes to a runtime model group. A verdict names a group and
+the first model in it serves the turn; if that call fails the client falls through
+the rest of that group, then through whatever `models.any` adds.
+
+The `[routes.<name>.models]` table takes any group name you choose. `any` and
+`judge` are reserved and required; `capable` and `efficient` are reserved for the
+tier meaning the other algorithms give them. Every other key is yours, which is
+how one route chooses between more than two models.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `models.any` | Yes | — | Every selectable completion target, in last-resort fallback order. A target missing from this list is rejected at routing time. |
-| `models.judge` | Yes | — | One or more ordered judge candidates. |
-| `models.capable` | When used | — | Ordered capable-tier models. A `capable` verdict selects the first and falls through the rest in order. May be omitted when neither the policy nor `default_target` selects `capable`. |
-| `models.efficient` | When used | — | Ordered efficient-tier models. An `efficient` verdict selects the first and falls through the rest in order. May be omitted when neither the policy nor `default_target` selects `efficient`. |
-| `default_target` | Yes | — | Category used when the judge fails or its verdict cannot be routed. Must be `any`, `capable`, or `efficient`, and that category must contain at least one target. |
+| `models.any` | Yes | — | Every selectable completion target, in last-resort fallback order. Every other group's targets must also appear here; one that does not is rejected at configuration load. |
+| `models.judge` | Yes | — | One or more ordered judge candidates. Not a completion destination. |
+| `models.capable` | No | — | Ordered capable-tier models. A `capable` verdict selects the first and falls through the rest in order. |
+| `models.efficient` | No | — | Ordered efficient-tier models. An `efficient` verdict selects the first and falls through the rest in order. |
+| `models.<your name>` | No | — | A group you name. A verdict naming it selects its first model and falls through the rest in order. |
+| `default_target` | Yes | — | Group used when the judge fails or its verdict cannot be routed. Any group except `judge`, and it must contain at least one target. |
 | `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
 | `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
@@ -237,8 +243,9 @@ falls through the rest of that category, then through whatever `models.any` adds
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 
-The selected JSON label must be `any`, `judge`, `capable`, or `efficient`. A
-label naming a target rather than one of those falls back to `default_target`.
+The selected JSON label must name a configured group. A label naming a target
+rather than a group, or a group you did not configure, falls back to
+`default_target`. `judge` is not routable.
 
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
 the schema automatically: through the structured-output request in `json_schema`

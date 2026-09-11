@@ -241,7 +241,7 @@ impl JudgePolicy for TaskClassifierPolicy {
             Category::Capable
         };
         Ok(Classification::Scores(vec![Score {
-            target: driver.first_model_for(category)?.clone(),
+            target: driver.first_model_for(&category)?.clone(),
             confidence: 1.0,
             category: Some(category),
         }]))
@@ -535,13 +535,13 @@ impl<S: Send> Classifier<S> for DefaultCategoryClassifier {
         _request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
-        let target = driver.first_model_for(self.0)?;
+        let target = driver.first_model_for(&self.0)?;
         driver.set_evidence_if_empty(serde_json::json!({"source": "fall_open"}));
         Ok((
             Classification::Scores(vec![Score {
                 target: target.clone(),
                 confidence: 0.0,
-                category: Some(self.0),
+                category: Some(self.0.clone()),
             }]),
             None,
         ))

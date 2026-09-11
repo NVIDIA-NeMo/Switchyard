@@ -144,12 +144,12 @@ impl JudgePolicy for EscalationPolicy {
         }
         match verdict {
             Some(verdict) if verdict.escalate => Ok(Classification::Scores(vec![Score {
-                target: driver.first_model_for(Category::Capable)?.clone(),
+                target: driver.first_model_for(&Category::Capable)?.clone(),
                 confidence: 1.0,
                 category: Some(Category::Capable),
             }])),
             Some(_) => Ok(Classification::Scores(vec![Score {
-                target: driver.first_model_for(Category::Efficient)?.clone(),
+                target: driver.first_model_for(&Category::Efficient)?.clone(),
                 confidence: 1.0,
                 category: Some(Category::Efficient),
             }])),

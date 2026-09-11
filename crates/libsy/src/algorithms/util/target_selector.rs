@@ -45,10 +45,15 @@ impl JudgePolicy for TargetSelectorPolicy {
             .and_then(|verdict| self.selector.resolve(verdict).ok())
             .and_then(Value::as_str)
             .and_then(|label| label.parse::<Category>().ok())
-            .and_then(|category| Some((category, driver.models_for(category).first()?)));
+            // The judge decides the turn; it is not somewhere to route it.
+            .filter(|category| *category != Category::Judge)
+            .and_then(|category| {
+                let target = driver.models_for(&category).first()?.clone();
+                Some((category, target))
+            });
         match target {
             Some((category, target)) => Ok(Classification::Scores(vec![Score {
-                target: target.clone(),
+                target,
                 confidence: 1.0,
                 category: Some(category),
             }])),
