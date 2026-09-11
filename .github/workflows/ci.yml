@@ -41,7 +41,7 @@ jobs:
 
   # ruff is a hard gate — the codebase passes today, keep it that way.
   lint:
-    name: Lint (ruff)
+    name: Lint
     needs: changes
     if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
@@ -52,6 +52,8 @@ jobs:
           python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
+      - name: actionlint
+        run: uvx --from pre-commit==4.5.0 pre-commit run actionlint --all-files
       - run: uv sync --locked --no-install-project
       - name: ruff check
         run: uv run --no-sync ruff check .
