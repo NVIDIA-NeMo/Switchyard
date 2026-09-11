@@ -15,12 +15,12 @@ use switchyard_libsy::{
     Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger,
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
-    PickerMode, Random, RoutingOutcome, StageRouter, StageRouterConfig, Step as RustStep,
-    StepStream, TaskClassifierConfig,
+    PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter, StageRouterConfig,
+    Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
-    LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId,
-    Request, Response,
+    Category, LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata,
+    ModelId, Request, Response,
 };
 use tokio::sync::Mutex;
 
@@ -34,6 +34,29 @@ fn classify_trigger(session_affinity: bool) -> ClassifyTrigger {
     } else {
         ClassifyTrigger::EveryRequest
     }
+}
+
+fn parse_category(value: &str) -> PyResult<Category> {
+    value.parse().map_err(PyValueError::new_err)
+}
+
+/// Convert one scope's `{group: [model_id]}` mapping into its typed form.
+///
+/// `any`, `capable`, `efficient`, and `judge` are the groups algorithms reason
+/// about. Any other key is a deployment-defined group, selectable by name only
+/// by a custom classifier's policy.
+fn category_models_from_python(
+    models: HashMap<String, Vec<String>>,
+) -> PyResult<HashMap<Category, Vec<ModelId>>> {
+    models
+        .into_iter()
+        .map(|(category, ids)| {
+            Ok((
+                parse_category(&category)?,
+                ids.into_iter().map(ModelId::from).collect(),
+            ))
+        })
+        .collect()
 }
 
 /// Convert Python-owned headers into the request metadata expected by libsy.
@@ -190,19 +213,10 @@ struct PyLlmClassifierConfig {
 impl PyLlmClassifierConfig {
     /// Configure capability routing between efficient and capable targets.
     #[staticmethod]
-    #[pyo3(signature = (judge_target, efficient_target, capable_target, *, config))]
-    fn capability(
-        py: Python<'_>,
-        judge_target: String,
-        efficient_target: String,
-        capable_target: String,
-        config: Py<PyTaskClassifierConfig>,
-    ) -> PyResult<Self> {
+    #[pyo3(signature = (*, config))]
+    fn capability(py: Python<'_>, config: Py<PyTaskClassifierConfig>) -> PyResult<Self> {
         Ok(Self {
             inner: LlmClassifierConfig::Capability {
-                judge_target: ModelId::new(judge_target),
-                efficient_target: ModelId::new(efficient_target),
-                capable_target: ModelId::new(capable_target),
                 config: config.bind(py).try_borrow()?.clone_core(),
             },
         })
@@ -210,20 +224,11 @@ impl PyLlmClassifierConfig {
 
     /// Configure response-based escalation between efficient and capable targets.
     #[staticmethod]
-    #[pyo3(signature = (judge_target, efficient_target, capable_target, *, config))]
-    fn escalation(
-        py: Python<'_>,
-        judge_target: String,
-        efficient_target: String,
-        capable_target: String,
-        config: Py<PyEscalationClassifierConfig>,
-    ) -> PyResult<Self> {
+    #[pyo3(signature = (*, config))]
+    fn escalation(py: Python<'_>, config: Py<PyEscalationClassifierConfig>) -> PyResult<Self> {
         let config = config.bind(py).try_borrow()?;
         Ok(Self {
             inner: LlmClassifierConfig::Escalation {
-                judge_target: ModelId::new(judge_target),
-                efficient_target: ModelId::new(efficient_target),
-                capable_target: ModelId::new(capable_target),
                 contract: config.contract.clone(),
                 config: config.judge.clone(),
                 max_output_tokens: config.max_output_tokens,
@@ -231,25 +236,18 @@ impl PyLlmClassifierConfig {
         })
     }
 
-    /// Configure schema-driven routing across named targets.
+    /// Configure schema-driven routing across runtime model categories.
     #[staticmethod]
-    #[pyo3(signature = (judge_target, targets, *, default_target, config))]
+    #[pyo3(signature = (*, default_target, config))]
     fn custom(
         py: Python<'_>,
-        judge_target: String,
-        targets: Vec<(String, String)>,
         default_target: String,
         config: Py<PyCustomClassifierConfig>,
     ) -> PyResult<Self> {
         let config = config.bind(py).try_borrow()?.clone_core();
         Ok(Self {
             inner: LlmClassifierConfig::Custom {
-                judge_target: ModelId::new(judge_target),
-                targets: targets
-                    .into_iter()
-                    .map(|(name, target)| (name, ModelId::new(target)))
-                    .collect(),
-                default_target,
+                default_target: parse_category(&default_target)?,
                 config,
             },
         })
@@ -326,14 +324,12 @@ fn classifier_contract(
     skip_from_py_object
 )]
 struct PyLlmFallback {
-    judge_target: String,
     config: Py<PyTaskClassifierConfig>,
 }
 
 impl PyLlmFallback {
     fn clone_core(&self, py: Python<'_>) -> PyResult<LlmFallback> {
         Ok(LlmFallback {
-            judge_target: ModelId::new(self.judge_target.clone()),
             config: self.config.bind(py).try_borrow()?.clone_core(),
         })
     }
@@ -342,12 +338,9 @@ impl PyLlmFallback {
 #[pymethods]
 impl PyLlmFallback {
     #[new]
-    #[pyo3(signature = (judge_target, *, config))]
-    fn new(judge_target: String, config: Py<PyTaskClassifierConfig>) -> Self {
-        Self {
-            judge_target,
-            config,
-        }
+    #[pyo3(signature = (*, config))]
+    fn new(config: Py<PyTaskClassifierConfig>) -> Self {
+        Self { config }
     }
 }
 
@@ -520,12 +513,45 @@ impl PyModelCall {
     }
 }
 
-/// The terminal routing selection, rewritten request, and optional existing response.
+/// Identity and optional JSON evidence from the Rust routing outcome.
+#[pyclass(name = "OutcomeMetadata", module = "switchyard.libsy", frozen)]
+struct PyOutcomeMetadata {
+    inner: switchyard_libsy::OutcomeMetadata,
+}
+
+#[pymethods]
+impl PyOutcomeMetadata {
+    /// UUIDv7 generated for this outcome.
+    #[getter]
+    fn outcome_id(&self) -> &str {
+        self.inner.outcome_id()
+    }
+
+    /// Name of the algorithm that produced this outcome.
+    #[getter]
+    fn algorithm(&self) -> &str {
+        &self.inner.algorithm
+    }
+
+    /// Optional evidence converted to ordinary Python JSON values.
+    #[getter]
+    fn evidence(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.inner
+            .evidence
+            .as_ref()
+            .map(|value| to_python(py, value))
+            .transpose()
+    }
+}
+
+/// The terminal routing selection, rewritten request, optional response, and metadata.
 #[pyclass(name = "RoutingOutcome", module = "switchyard.libsy", frozen)]
 struct PyRoutingOutcome {
     selected_model_ids: Vec<String>,
     request: Py<PyAny>,
     response: Option<Py<PyAny>>,
+    #[pyo3(get)]
+    metadata: Option<Py<PyOutcomeMetadata>>,
 }
 
 #[pymethods]
@@ -639,15 +665,31 @@ struct PyAlgorithm {
 impl PyAlgorithm {
     /// Run the algorithm as routing-time model calls followed by one terminal outcome.
     ///
+    /// Models are supplied per request, not at algorithm construction, so the
+    /// same algorithm object can route against a different pool on every call.
+    ///
+    /// `models` maps a category name to the model ids in it, ordered best-first:
+    /// the algorithm picks the first entry and treats the rest as fallbacks.
+    /// `any`, `capable`, `efficient`, and `judge` are the categories algorithms
+    /// reason about. Any other name is a deployment-defined group that only a
+    /// custom classifier's policy can select by name. An empty category name
+    /// raises `ValueError`.
+    ///
+    /// `subagent_models` is the same mapping for the delegated sub-agent scope.
+    /// Algorithms that route delegated work read it instead of `models`; when it
+    /// is omitted that scope is empty.
+    ///
     /// `headers`, when given, is normalized into the request's correlation
     /// [`Metadata`] exactly as an HTTP host would (`Metadata::from_headers`),
     /// so metadata-driven algorithms see the same signals in Python as when
     /// served over HTTP.
-    #[pyo3(signature = (request, headers=None))]
+    #[pyo3(signature = (request, models, subagent_models=None, headers=None))]
     fn run_stream(
         &self,
         request: &Bound<'_, PyAny>,
-        headers: Option<std::collections::HashMap<String, String>>,
+        models: HashMap<String, Vec<String>>,
+        subagent_models: Option<HashMap<String, Vec<String>>>,
+        headers: Option<HashMap<String, String>>,
     ) -> PyResult<PyRunStream> {
         let headers = headers.as_ref().map(header_map_from_python).transpose()?;
         let request = Request {
@@ -655,9 +697,14 @@ impl PyAlgorithm {
             raw_request: None,
             metadata: headers.map(|headers| Metadata::from_headers(&headers)),
         };
+        let mut runtime_models = RuntimeModels::new(category_models_from_python(models)?);
+        if let Some(subagent_models) = subagent_models {
+            runtime_models =
+                runtime_models.with_subagent(category_models_from_python(subagent_models)?);
+        }
         let stream = {
             let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
-            Arc::clone(&self.inner).run_stream(request)
+            Arc::clone(&self.inner).run_stream(request, Arc::new(runtime_models))
         };
         Ok(PyRunStream {
             inner: Arc::new(Mutex::new(stream)),
@@ -681,13 +728,16 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 selected_model_ids,
                 request,
                 response,
-                metadata: _,
+                metadata,
             } = *outcome;
             Python::attach(|py| {
                 Ok(PyStep::Done {
                     outcome: Py::new(
                         py,
                         PyRoutingOutcome {
+                            metadata: metadata
+                                .map(|inner| Py::new(py, PyOutcomeMetadata { inner }))
+                                .transpose()?,
                             selected_model_ids: selected_model_ids
                                 .iter()
                                 .map(ToString::to_string)
@@ -714,17 +764,10 @@ fn noop_algorithm() -> PyAlgorithm {
 
 /// Construct random routing over targets with optional relative weights and seed.
 #[pyfunction(name = "random")]
-#[pyo3(signature = (targets, *, weights=None, seed=None))]
-fn random_algorithm(
-    targets: Vec<String>,
-    weights: Option<Vec<f64>>,
-    seed: Option<u64>,
-) -> PyResult<PyAlgorithm> {
-    let model_ids = targets.into_iter().map(ModelId::new).collect();
-    let algorithm = Random::new(model_ids, weights, seed).map_err(|error| match error {
-        RustLibsyError::NoTargets => PyValueError::new_err("random requires at least one target"),
-        other => PyValueError::new_err(other.to_string()),
-    })?;
+#[pyo3(signature = (weights=None, seed=None))]
+fn random_algorithm(weights: Option<Vec<f64>>, seed: Option<u64>) -> PyResult<PyAlgorithm> {
+    let algorithm =
+        Random::new(weights, seed).map_err(|other| PyValueError::new_err(other.to_string()))?;
     Ok(PyAlgorithm {
         inner: Arc::new(algorithm),
     })
@@ -741,24 +784,12 @@ fn llm_classifier_algorithm(
 
 /// Construct capability classifier routing.
 #[pyfunction(name = "llm_task_classifier")]
-#[pyo3(signature = (
-    judge_target,
-    efficient_target,
-    capable_target,
-    *,
-    config
-))]
+#[pyo3(signature = (*, config))]
 fn llm_task_classifier_algorithm(
     py: Python<'_>,
-    judge_target: String,
-    efficient_target: String,
-    capable_target: String,
     config: Py<PyTaskClassifierConfig>,
 ) -> PyResult<PyAlgorithm> {
     build_llm_classifier(LlmClassifierConfig::Capability {
-        judge_target: ModelId::new(judge_target),
-        efficient_target: ModelId::new(efficient_target),
-        capable_target: ModelId::new(capable_target),
         config: config.bind(py).try_borrow()?.clone_core(),
     })
 }
@@ -774,8 +805,6 @@ fn build_llm_classifier(config: LlmClassifierConfig) -> PyResult<PyAlgorithm> {
 /// Construct signal-driven stage routing with an optional LLM classifier fallback.
 #[pyfunction(name = "stage_router")]
 #[pyo3(signature = (
-    capable_target,
-    efficient_target,
     *,
     picker,
     confidence_threshold,
@@ -785,13 +814,12 @@ fn build_llm_classifier(config: LlmClassifierConfig) -> PyResult<PyAlgorithm> {
     only_on_wrong_signal_escalation=true,
     capable_system_prompt=None,
     efficient_system_prompt=None,
+    tool_semantics=None,
     classifier=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn stage_router_algorithm(
     py: Python<'_>,
-    capable_target: String,
-    efficient_target: String,
     picker: &str,
     confidence_threshold: f64,
     recent_window: Option<usize>,
@@ -800,6 +828,7 @@ fn stage_router_algorithm(
     only_on_wrong_signal_escalation: bool,
     capable_system_prompt: Option<String>,
     efficient_system_prompt: Option<String>,
+    tool_semantics: Option<HashMap<String, Vec<String>>>,
     classifier: Option<Py<PyLlmFallback>>,
 ) -> PyResult<PyAlgorithm> {
     let mode = match picker {
@@ -811,8 +840,6 @@ fn stage_router_algorithm(
             )));
         }
     };
-    let capable = ModelId::new(capable_target);
-    let efficient = ModelId::new(efficient_target);
     let mut config = StageRouterConfig::new(mode, confidence_threshold);
     config.recent_window = recent_window;
     config.handoff_notes = match (escalation_note, deescalation_note) {
@@ -828,18 +855,27 @@ fn stage_router_algorithm(
         }
         (None, None) => None,
     };
-    if let Some(prompt) = capable_system_prompt {
-        config.tier_prompts = config.tier_prompts.with(capable.clone(), prompt);
-    }
-    if let Some(prompt) = efficient_system_prompt {
-        config.tier_prompts = config.tier_prompts.with(efficient.clone(), prompt);
+    config.capable_system_prompt = capable_system_prompt;
+    config.efficient_system_prompt = efficient_system_prompt;
+    if let Some(mut semantics) = tool_semantics {
+        config.tool_semantics = ToolSemantics {
+            observe: semantics.remove("observe").unwrap_or_default(),
+            mutate: semantics.remove("mutate").unwrap_or_default(),
+            plan: semantics.remove("plan").unwrap_or_default(),
+            new: semantics.remove("new").unwrap_or_default(),
+        };
+        if let Some(category) = semantics.keys().next() {
+            return Err(PyValueError::new_err(format!(
+                "unknown tool_semantics category {category:?}; expected observe, mutate, plan, or new"
+            )));
+        }
     }
     config.llm_fallback = classifier
         .map(|classifier| classifier.bind(py).try_borrow()?.clone_core(py))
         .transpose()?;
 
-    let algorithm = StageRouter::new(capable, efficient, config)
-        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let algorithm =
+        StageRouter::new(config).map_err(|error| PyValueError::new_err(error.to_string()))?;
     Ok(PyAlgorithm {
         inner: Arc::new(algorithm),
     })
@@ -855,6 +891,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     libsy_module.add_class::<PyLlmResponse>()?;
     libsy_module.add_class::<PyLlmResponseStream>()?;
     libsy_module.add_class::<PyModelCall>()?;
+    libsy_module.add_class::<PyOutcomeMetadata>()?;
     libsy_module.add_class::<PyRunStream>()?;
     libsy_module.add_class::<PyRoutingOutcome>()?;
     libsy_module.add_class::<PyStep>()?;

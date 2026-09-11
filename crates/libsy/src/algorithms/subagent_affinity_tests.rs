@@ -7,6 +7,7 @@
 //! *which* target delegated work belongs on, affinity decides *how long* that decision
 //! lives.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -17,9 +18,10 @@ use super::util::subagent::SubagentOverride;
 use crate::Result;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
-use crate::core::testing::{echo, test_drive};
+use crate::core::testing::{echo, test_drive_with_models};
 use switchyard_protocol::{
-    Metadata, ModelId, Request, Response, completion_text, slice_to_header_map, text_request,
+    Category, Metadata, ModelId, Request, Response, completion_text, slice_to_header_map,
+    text_request,
 };
 
 /// The cascade's terminal classifier: always picks the orchestrator.
@@ -31,12 +33,13 @@ impl Classifier for AlwaysOrchestrator {
         &self,
         _state: &mut (),
         _request: &mut Request,
-        _driver: Option<&Driver>,
+        _driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         Ok((
             Classification::Scores(vec![Score {
                 confidence: 0.5,
                 target: ModelId::from("orchestrator"),
+                category: None,
             }]),
             None,
         ))
@@ -63,7 +66,7 @@ fn request(headers: &[(&str, &str)]) -> Request {
 fn router() -> Arc<FallThrough> {
     let affinity = Arc::new(AffinityRouter::for_subagents());
     Arc::new(
-        FallThrough::<()>::new(targets())
+        FallThrough::<()>::new()
             .with_processor(affinity.clone())
             .with_classifier(affinity)
             .with_classifier(Arc::new(SubagentOverride::new("worker")))
@@ -73,7 +76,9 @@ fn router() -> Arc<FallThrough> {
 
 /// Runs one turn, returning the target that served it.
 async fn turn(router: &Arc<FallThrough>, headers: &[(&str, &str)]) -> Result<String> {
-    let (_, response) = test_drive(router.clone(), request(headers), echo()).await?;
+    let models = HashMap::from([(Category::Any, targets())]);
+    let (_, response) =
+        test_drive_with_models(router.clone(), request(headers), models, echo()).await?;
     Ok(response
         .llm_response
         .as_agg()
@@ -140,7 +145,7 @@ async fn harness_maintenance_turns_are_not_forced_to_the_worker() -> Result<()> 
 /// Builds a cascade whose override scores `worker`, sharing `affinity` across instances.
 fn router_overriding_to(affinity: Arc<AffinityRouter>, worker: &str) -> Arc<FallThrough> {
     Arc::new(
-        FallThrough::<()>::new(targets())
+        FallThrough::<()>::new()
             .with_processor(affinity.clone())
             .with_classifier(affinity)
             .with_classifier(Arc::new(SubagentOverride::new(worker)))
@@ -200,7 +205,7 @@ async fn a_cascade_without_the_override_still_routes_root_traffic() -> Result<()
     // cascade, which is the point of composing them rather than nesting one in the other.
     let affinity = Arc::new(AffinityRouter::for_subagents());
     let router = Arc::new(
-        FallThrough::<()>::new(targets())
+        FallThrough::<()>::new()
             .with_processor(affinity.clone())
             .with_classifier(affinity)
             .with_classifier(Arc::new(AlwaysOrchestrator)),

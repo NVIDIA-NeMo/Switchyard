@@ -64,7 +64,7 @@ Cargo builds the release binary and installs it into `~/.cargo/bin` by default.
 
 The Rust server reads an explicit TOML file.
 
-Create `routes.toml` with an LLM-classifier route:
+Create `routes.toml` with an auto route:
 
 ```toml
 schema_version = 1
@@ -84,12 +84,9 @@ llm_client = "openrouter"
 
 [routes.smart]
 id = "switchyard"
-type = "llm_classifier"
-mode = "capability"
-classifier_target = "weak"
-strong_target = "strong"
-weak_target = "weak"
-base_threshold = 0.5
+type = "auto"
+capable_target = "strong"
+efficient_target = "weak"
 ```
 
 `format` selects the upstream protocol and must be `openai_chat`,
@@ -131,14 +128,15 @@ curl http://localhost:4000/v1/chat/completions \
 
 #### Choose a route type
 
-This guide uses `llm_classifier`, which asks a classifier target whether each
-request should use the weak or strong target. The Rust server also supports:
+This guide uses `auto`, which routes with Switchyard's recommended default
+settings. The Rust server also supports:
 
 | Algorithm | Use it when | Config |
 |---|---|---|
+| Auto | You want a recommended default instead of picking a strategy yourself. | `auto` |
 | [Random](routing_algorithms/random_routing.md) | You need a weighted split for A/B tests or baselines. | `random` |
 | [LLM classifier](routing_algorithms/llm_classifier_routing.md) | Request content should decide whether to use the weak or strong target. | `llm_classifier` |
-| [Stage router](routing_algorithms/stage_router_routing.md) | Tool-result and progress signals should select an efficient or capable target. | `stage_router` |
+| [Stage router](routing_algorithms/stage_router_routing.md) | Built-in or configured tool-activity signals should select an efficient or capable target. | `stage_router` |
 
 A single TOML file can declare multiple routes. The table key, such as
 `routes.smart`, is a local configuration name; each route's `id` is exposed as a
@@ -212,6 +210,17 @@ judge call your host performs over its own transport. The run ends with `Step::D
 response when routing already produced the answer. Otherwise the host makes the terminal answer
 call from that outcome. Serving these calls yourself is what lets libsy embed in a host that
 already owns its HTTP stack, retries, and credentials.
+
+Successful runs also include `OutcomeMetadata`: a unique `outcome_id`, the algorithm
+name, and optional JSON evidence. In Python, read `outcome.metadata.outcome_id`,
+`outcome.metadata.algorithm`, and `outcome.metadata.evidence` after checking that
+`outcome.metadata` is present. Evidence is a normal Python value, usually a dictionary;
+algorithms without evidence return `None`.
+
+With a host-installed OpenTelemetry subscriber, the existing `libsy.run` span records
+the same identity, selected models, and supported evidence fields. See
+the [OpenTelemetry reference](reference/opentelemetry.md) for field names, metrics,
+and export setup. libsy does not install an exporter or send telemetry itself.
 
 For the request, response, and streaming types the steps carry, see
 [`switchyard-protocol`](../crates/protocol/README.md).

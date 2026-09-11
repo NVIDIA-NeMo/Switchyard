@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use switchyard_protocol::{
-    AggLlmResponse, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Role,
+    AggLlmResponse, Category, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Role,
     completion_text,
 };
 
@@ -199,14 +199,24 @@ pub trait Judge: Send + Sync {
 pub trait JudgePolicy: Send + Sync {
     type Verdict: Send + Sync;
 
-    fn to_classification(&self, verdict: Option<&Self::Verdict>) -> Classification;
+    fn to_classification(
+        &self,
+        verdict: Option<&Self::Verdict>,
+        driver: &Driver,
+    ) -> Result<Classification>;
 }
 
-/// A classifier that calls one judge target and routes through its verdict policy.
-pub struct JudgeClassifier<J, P> {
+type EvidenceFn<V, P> = fn(&P, Option<&V>) -> Option<Value>;
+
+/// A classifier that calls the runtime judge models and routes through its verdict policy.
+pub struct JudgeClassifier<J, P>
+where
+    J: Judge,
+    P: JudgePolicy<Verdict = J::Verdict>,
+{
     judge: J,
-    target: ModelId,
     policy: P,
+    evidence: Option<EvidenceFn<J::Verdict, P>>,
 }
 
 impl<J, P> JudgeClassifier<J, P>
@@ -214,12 +224,33 @@ where
     J: Judge,
     P: JudgePolicy<Verdict = J::Verdict>,
 {
-    /// Combines a judge target with a verdict policy.
-    pub fn new(judge: J, target: ModelId, policy: P) -> Self {
+    /// Combines a judge with a verdict policy.
+    pub fn new(judge: J, policy: P) -> Self {
         Self {
             judge,
-            target,
             policy,
+            evidence: None,
+        }
+    }
+
+    /// Enables bounded evidence for built-in judges without widening the public policy trait.
+    pub(crate) fn with_evidence(mut self, evidence: EvidenceFn<J::Verdict, P>) -> Self {
+        self.evidence = Some(evidence);
+        self
+    }
+
+    /// Adds fail-open evidence only for evidence-enabled judges and preserves an earlier decision.
+    fn report_fail_open(&self, driver: &Driver, error: String, reason: &'static str) {
+        let judge_target = driver
+            .first_model_for(&Category::Judge)
+            .map(|c| c.as_str())
+            .unwrap_or("missing");
+        report_fail_open(judge_target, error, reason);
+        if self.evidence.is_some() {
+            driver.set_evidence_if_empty(serde_json::json!({
+                "source": "fail_open",
+                "reason_code": reason,
+            }));
         }
     }
 
@@ -235,22 +266,19 @@ where
         state: &mut State,
         request: &Request,
         driver: &Driver,
+        judge_models: &[ModelId],
     ) -> Option<J::Verdict> {
-        let judge_model = self.target.as_str();
+        let judge_model = judge_models.first()?.as_str();
 
         tracing::info!(target = judge_model, "consulting llm judge");
         let response = driver
             .call_model(
                 self.judge.build_request(state, request),
-                vec![self.target.clone()],
+                judge_models.to_vec(),
             )
             .await
             .inspect_err(|error| {
-                report_fail_open(
-                    judge_model,
-                    safe_error_summary(error),
-                    libsy_error_reason(error),
-                )
+                self.report_fail_open(driver, safe_error_summary(error), libsy_error_reason(error));
             })
             .ok()?;
         let aggregate = response
@@ -258,17 +286,13 @@ where
             .into_agg()
             .await
             .inspect_err(|error| {
-                report_fail_open(
-                    judge_model,
-                    safe_client_error(error),
-                    client_error_reason(error),
-                )
+                self.report_fail_open(driver, safe_client_error(error), client_error_reason(error));
             })
             .ok()?;
         self.judge
             .parse(&aggregate)
             .inspect_err(|error| {
-                report_fail_open(judge_model, safe_error_summary(error), "parse_error")
+                self.report_fail_open(driver, safe_error_summary(error), "parse_error");
             })
             .ok()
     }
@@ -321,20 +345,29 @@ where
         &self,
         state: &mut State,
         request: &mut Request,
-        driver: Option<&Driver>,
+        driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
-        // A missing driver is a broken composition, not an unavailable judge.
-        let Some(driver) = driver else {
+        let judge_models = driver.models_for(&Category::Judge);
+        if judge_models.is_empty() {
             return Err(LibsyError::AlgorithmError {
-                message: format!(
-                    "judge classifier for target {:?} requires a driver to call it",
-                    self.target
-                ),
+                message: "no models available for category Judge".to_string(),
             });
-        };
-        let verdict = self.verdict(state, request, driver).await;
+        }
+        let verdict = self.verdict(state, request, driver, judge_models).await;
+        let classification = self.policy.to_classification(verdict.as_ref(), driver)?;
+        if let Some(evidence) = self
+            .evidence
+            .and_then(|evidence| evidence(&self.policy, verdict.as_ref()))
+        {
+            match &classification {
+                Classification::Scores(scores) if !scores.is_empty() => {
+                    driver.set_evidence(evidence);
+                }
+                _ => driver.set_evidence_if_empty(evidence),
+            }
+        }
         // A judge consultation is a side call, never the turn's answer.
-        Ok((self.policy.to_classification(verdict.as_ref()), None))
+        Ok((classification, None))
     }
 }
 
@@ -361,6 +394,8 @@ fn strip_json_fence(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::algorithm::RuntimeModels;
+    use std::sync::Arc;
 
     use futures::StreamExt;
     use http::StatusCode;
@@ -399,21 +434,26 @@ mod tests {
     impl JudgePolicy for TestPolicy {
         type Verdict = TestVerdict;
 
-        fn to_classification(&self, verdict: Option<&Self::Verdict>) -> Classification {
+        fn to_classification(
+            &self,
+            verdict: Option<&Self::Verdict>,
+            _driver: &Driver,
+        ) -> Result<Classification> {
             let target = if verdict.is_some() {
                 "verdict"
             } else {
                 "no-verdict"
             };
-            Classification::Scores(vec![Score {
+            Ok(Classification::Scores(vec![Score {
                 target: ModelId::from(target),
                 confidence: 1.0,
-            }])
+                category: None,
+            }]))
         }
     }
 
     fn classifier() -> JudgeClassifier<TestJudge, TestPolicy> {
-        JudgeClassifier::new(TestJudge, ModelId::from("judge"), TestPolicy)
+        JudgeClassifier::new(TestJudge, TestPolicy)
     }
 
     fn request() -> Request {
@@ -528,7 +568,8 @@ mod tests {
 
     /// Serves the single offloaded judge call with `reply` through a standalone step receiver.
     async fn score_served_with(reply: Result<Response>) -> Result<ModelId> {
-        let (driver, step_rx) = Driver::new("test");
+        let models = RuntimeModels::new([(Category::Judge, vec![ModelId::from("judge")])].into());
+        let (driver, step_rx) = Driver::new("test", Arc::new(models));
         let mut steps = tokio_stream::wrappers::ReceiverStream::new(step_rx);
         let classifier = classifier();
         let mut state = State::default();
@@ -539,10 +580,8 @@ mod tests {
                 let _ = call.respond(reply);
             }
         };
-        let (classification, ()) = tokio::join!(
-            classifier.score(&mut state, &mut request, Some(&driver)),
-            serve
-        );
+        let (classification, ()) =
+            tokio::join!(classifier.score(&mut state, &mut request, &driver), serve);
         let (classification, _) = classification?;
         selected(classification)
     }
@@ -663,24 +702,6 @@ mod tests {
             message: "driver failed".to_string(),
         };
         assert_eq!(libsy_error_reason(&error), "call_error");
-    }
-
-    #[tokio::test]
-    async fn a_missing_driver_is_an_error_not_a_fallback() -> Result<()> {
-        let mut request = request();
-        let error = classifier()
-            .score(&mut State::default(), &mut request, None)
-            .await
-            .err()
-            .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "expected a missing-driver error".to_string(),
-            })?;
-
-        assert!(
-            matches!(&error, LibsyError::AlgorithmError { message } if message.contains("judge")),
-            "unexpected error: {error}"
-        );
-        Ok(())
     }
 
     #[test]

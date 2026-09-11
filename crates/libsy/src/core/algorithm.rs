@@ -4,10 +4,15 @@
 //! The [`Algorithm`] trait and its [`Driver`] — the orchestration contract every
 //! algorithm implements and the offload channel it uses for routing-time model calls.
 
-use std::{future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc,
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use futures::{FutureExt, Stream, StreamExt};
+use parking_lot::Mutex;
+use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::Instrument;
@@ -19,7 +24,7 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStreamEvent`] is its host/algorithm envelope; and
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{Category, ModelId, Request, Response};
 
 use crate::{DriverError, LibsyError, Result, observability};
 
@@ -27,6 +32,65 @@ use crate::{DriverError, LibsyError, Result, observability};
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
 /// `Arc<dyn Algorithm>` object-safe.
 pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
+
+/// The models one algorithm run may use, grouped by [`Category`]. Within a
+/// category they are ordered best-first.
+///
+/// Delegated sub-agent work gets its own groups, reachable only through
+/// [`Driver::for_subagent`]. Keeping them separate is what stops a sub-agent's
+/// `capable` from resolving to the parent's, and stops the parent falling back
+/// onto a model only its sub-agents were given.
+///
+/// One run's driver clones all read the same value, so it is passed as
+/// `Arc<RuntimeModels>` rather than cloned per driver.
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeModels {
+    /// When using subagents this is the parent agent category.
+    by_category: HashMap<Category, Vec<ModelId>>,
+    subagent: Option<HashMap<Category, Vec<ModelId>>>,
+}
+
+impl RuntimeModels {
+    /// The models available to the algorithm itself.
+    pub fn new(by_category: HashMap<Category, Vec<ModelId>>) -> Self {
+        Self {
+            by_category,
+            subagent: None,
+        }
+    }
+
+    /// Adds the groups used for delegated sub-agent work.
+    pub fn with_subagent(mut self, models: HashMap<Category, Vec<ModelId>>) -> Self {
+        self.subagent = Some(models);
+        self
+    }
+
+    /// The models in `category`, ordered best-first.
+    pub fn models_for(&self, category: &Category) -> &[ModelId] {
+        self.by_category.get(category).map_or(&[], Vec::as_slice)
+    }
+
+    /// The models delegated sub-agent work uses for `category`, ordered best-first.
+    pub fn subagent_models_for(&self, category: &Category) -> &[ModelId] {
+        self.subagent
+            .as_ref()
+            .and_then(|models| models.get(category))
+            .map_or(&[], Vec::as_slice)
+    }
+}
+
+impl From<HashMap<Category, Vec<ModelId>>> for RuntimeModels {
+    fn from(by_category: HashMap<Category, Vec<ModelId>>) -> Self {
+        Self::new(by_category)
+    }
+}
+
+/// Which of a [`RuntimeModels`]' groups a driver reads.
+#[derive(Clone, Copy)]
+enum Scope {
+    Parent,
+    Subagent,
+}
 
 /// An offloaded model call, surfaced inside [`Step::CallModel`].
 ///
@@ -119,14 +183,27 @@ impl RoutingOutcome {
 #[derive(Clone)]
 pub struct Driver {
     step_tx: mpsc::Sender<Result<Step>>,
+
     /// The owning algorithm's telemetry label, stamped onto every call this driver publishes.
     algorithm: String,
+
+    /// Run-scoped evidence shared by driver clones and attached only to a successful outcome.
+    evidence: Arc<Mutex<Option<Value>>>,
+
+    /// Every group this run may route over, shared by all driver clones.
+    models: Arc<RuntimeModels>,
+
+    /// Which of those groups this driver reads.
+    scope: Scope,
 }
 
 impl Driver {
     /// Build an empty driver with its step channel ready. Created per call by
     /// [`run_stream`](Algorithm::run_stream). Also returns the Step receiver.
-    pub(crate) fn new(algorithm: &str) -> (Self, mpsc::Receiver<Result<Step>>) {
+    pub(crate) fn new(
+        algorithm: &str,
+        models: Arc<RuntimeModels>,
+    ) -> (Self, mpsc::Receiver<Result<Step>>) {
         // Capacity one keeps the algorithm paced by the stream consumer. It limits queued steps,
         // not model calls already pulled from the stream, which can still run at the same time.
         // A larger buffer would use more memory and let the algorithm run farther ahead with
@@ -136,9 +213,25 @@ impl Driver {
             Self {
                 step_tx,
                 algorithm: algorithm.to_string(),
+                evidence: Arc::new(Mutex::new(None)),
+                models,
+                scope: Scope::Parent,
             },
             step_rx,
         )
+    }
+
+    /// Replace the current run's evidence when a component makes the final decision.
+    pub(crate) fn set_evidence(&self, evidence: Value) {
+        *self.evidence.lock() = Some(evidence);
+    }
+
+    /// Supply fallback evidence without replacing a decision made earlier in the cascade.
+    pub(crate) fn set_evidence_if_empty(&self, evidence: Value) {
+        let mut current = self.evidence.lock();
+        if current.is_none() {
+            *current = Some(evidence);
+        }
     }
 
     /// Publish a model call and await the consumer's response.
@@ -158,7 +251,6 @@ impl Driver {
             selected_model = %models.first().map(ModelId::as_str).unwrap_or("NoTargets"),
             openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
-            error = tracing::field::Empty,
             input_tokens = tracing::field::Empty,
             output_tokens = tracing::field::Empty,
             total_tokens = tracing::field::Empty,
@@ -199,15 +291,46 @@ impl Driver {
         result
     }
 
+    /// The available models for this category, typically ordered best-first.
+    pub fn models_for(&self, category: &Category) -> &[ModelId] {
+        match self.scope {
+            Scope::Parent => self.models.models_for(category),
+            Scope::Subagent => self.models.subagent_models_for(category),
+        }
+    }
+
+    /// The first available model for `category`.
+    pub fn first_model_for(&self, category: &Category) -> Result<&ModelId> {
+        self.models_for(category)
+            .first()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: format!("no models available for category {}", category.as_str()),
+            })
+    }
+
+    /// A driver scoped to delegated sub-agent work: its categories are the
+    /// sub-agent's own, and the parent's are no longer reachable through it.
+    pub fn for_subagent(&self) -> Result<Self> {
+        if self.models.subagent.is_none() {
+            return Err(LibsyError::AlgorithmError {
+                message: "delegated work has no sub-agent models".to_string(),
+            });
+        }
+        Ok(Self {
+            scope: Scope::Subagent,
+            ..self.clone()
+        })
+    }
+
     /// Emit the terminal step: [`Step::Done`] on `Ok`, or an `Err` stream
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
         let result = result.map(|mut outcome| {
-            let metadata = outcome
-                .metadata
-                .get_or_insert_with(|| crate::OutcomeMetadata::new(self.algorithm.clone(), None));
-            tracing::Span::current().record("outcome_id", metadata.outcome_id());
+            let metadata = outcome.metadata.get_or_insert_with(|| {
+                crate::OutcomeMetadata::new(self.algorithm.clone(), self.evidence.lock().take())
+            });
+            observability::record_outcome(metadata, &outcome.selected_model_ids);
             outcome
         });
         let selected_model = result
@@ -250,13 +373,14 @@ pub enum Step {
 pub async fn drive<F, Fut>(
     algorithm: Arc<dyn Algorithm>,
     request: Request,
+    models: Arc<RuntimeModels>,
     serve: F,
 ) -> Result<RoutingOutcome>
 where
     F: Fn(CallModel) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let stream = algorithm.run_stream(request);
+    let stream = algorithm.run_stream(request, models);
     tokio::pin!(stream);
 
     let mut in_flight = futures::stream::FuturesUnordered::new();
@@ -365,9 +489,20 @@ impl RoutingIdentity {
 /// # Observability
 ///
 /// [`run_stream`](Self::run_stream) creates a `libsy.run` span, and each offloaded model
-/// call creates a `libsy.llm_call` span. Routing decisions and failures are emitted through
-/// `tracing`; metrics use the global OpenTelemetry meter provider. The provider call
-/// itself belongs to the host, and is instrumented by whoever makes it.
+/// call creates a nested `libsy.llm_call` span. Successful outcomes record their
+/// [`OutcomeMetadata::outcome_id`](crate::OutcomeMetadata::outcome_id) on `libsy.run`,
+/// alongside `selected_model_ids` (an ordered OpenTelemetry string array).
+/// `algorithm` and `switchyard.algorithm` retain the run's [`Algorithm::name`].
+/// Optional `evidence.source`, `evidence.verdict`, `evidence.trigger`, and
+/// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`, and
+/// `evidence.threshold` are numbers. Unknown evidence fields are not exported.
+/// These fields are span attributes, never metric labels.
+///
+/// The run/call observability helpers retain `outcome` status and operational metrics,
+/// but omit error details and arbitrary request extra metadata. Algorithms and hosts
+/// may emit their own logs. Errors still reach the caller unchanged.
+/// The host controls the tracing subscriber and global OpenTelemetry
+/// meter provider; libsy installs no exporter and performs no telemetry network I/O.
 #[async_trait]
 pub trait Algorithm: Send + Sync + 'static {
     /// Stable, low-cardinality name identifying this algorithm — the
@@ -388,8 +523,8 @@ pub trait Algorithm: Send + Sync + 'static {
     /// the stream aborts the spawned algorithm task.
     ///
     /// Every invocation owns a separate [`Driver`].
-    fn run_stream(self: Arc<Self>, request: Request) -> StepStream {
-        let (driver, step_rx) = Driver::new(self.name());
+    fn run_stream(self: Arc<Self>, request: Request, models: Arc<RuntimeModels>) -> StepStream {
+        let (driver, step_rx) = Driver::new(self.name(), models);
         let span = observability::run_span(self.name(), &request);
         let handle = tokio::spawn(
             async move {
@@ -466,6 +601,8 @@ mod tests {
             let response = driver
                 .call_model(request.clone(), vec![target.clone()])
                 .await?;
+            driver.set_evidence(serde_json::json!({"source": "test"}));
+            driver.set_evidence_if_empty(serde_json::json!({"source": "ignored"}));
             Ok(RoutingOutcome::answered(target, request, response))
         }
     }
@@ -532,7 +669,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             // Distinct oneshots keep reverse-order replies paired with their producers, and a
             // retained call remains pending until the host responds.
-            let (driver, mut step_rx) = Driver::new("test");
+            let (driver, mut step_rx) = Driver::new("test", Arc::new(RuntimeModels::default()));
             let first_driver = driver.clone();
             let mut first = tokio::spawn(async move {
                 first_driver
@@ -589,7 +726,7 @@ mod tests {
             );
 
             // Dropping the host-facing promise closes only that call's reply channel.
-            let (driver, mut step_rx) = Driver::new("test");
+            let (driver, mut step_rx) = Driver::new("test", Arc::new(RuntimeModels::default()));
             let producer = tokio::spawn(async move {
                 driver
                     .call_model(request(), vec![ModelId::from("dropped")])
@@ -609,7 +746,7 @@ mod tests {
             ));
 
             // A standalone driver reports the typed step receiver disappearing at its next call.
-            let (driver, step_rx) = Driver::new("test");
+            let (driver, step_rx) = Driver::new("test", Arc::new(RuntimeModels::default()));
             drop(step_rx);
             let result = driver
                 .call_model(request(), vec![ModelId::from("closed")])
@@ -712,7 +849,8 @@ mod tests {
     async fn run_offloads_via_promise_then_finishes() -> Result<()> {
         // Every call is offloaded via a promise the orchestrator surfaces as a
         // `CallModel` step for us to fulfill.
-        let stream = orch(target_set(&["offload/model"])).run_stream(request());
+        let stream = orch(target_set(&["offload/model"]))
+            .run_stream(request(), Arc::new(RuntimeModels::default()));
         tokio::pin!(stream);
 
         let mut saw_call = false;
@@ -743,7 +881,10 @@ mod tests {
                             .get_version_num(),
                         7
                     );
-                    assert!(metadata.evidence.is_none());
+                    assert_eq!(
+                        metadata.evidence,
+                        Some(serde_json::json!({"source": "test"}))
+                    );
                     let response = outcome
                         .response
                         .ok_or_else(|| test_error("expected an answered outcome"))?;
@@ -821,7 +962,8 @@ mod tests {
         // A client-less target offloads its call; we fulfill the promise with an
         // Err, which must flow back through `call_model_target` into the algorithm and
         // out as an error step — not a response.
-        let stream = orch(target_set(&["offload/model"])).run_stream(request());
+        let stream = orch(target_set(&["offload/model"]))
+            .run_stream(request(), Arc::new(RuntimeModels::default()));
         tokio::pin!(stream);
 
         let mut saw_error = false;
@@ -893,7 +1035,7 @@ mod tests {
             dropped: dropped.clone(),
         });
 
-        let stream = algo.run_stream(request());
+        let stream = algo.run_stream(request(), Arc::new(RuntimeModels::default()));
         started_rx
             .recv()
             .await
@@ -930,7 +1072,7 @@ mod tests {
         }
 
         let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
-        let stream = algo.run_stream(request());
+        let stream = algo.run_stream(request(), Arc::new(RuntimeModels::default()));
         tokio::pin!(stream);
 
         let mut saw_error = false;

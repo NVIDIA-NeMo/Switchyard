@@ -16,13 +16,13 @@ use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::stage::{StageRouterConfig, build_stage_route};
 use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
-use super::util::stage::{StageTargets, Tier, set_fall_open};
+use super::util::stage::{Tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::Classifier;
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{ModelId, Request};
+use switchyard_protocol::{Category, Request};
 
 const COMPOSITE: &str = "composite";
 
@@ -33,13 +33,20 @@ const COMPOSITE: &str = "composite";
 /// into state on every request so the cascade below reads it.
 struct TierSetter {
     judge: Arc<dyn Classifier<State>>,
-    targets: StageTargets,
     trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     tiers: Mutex<HashMap<RoutingIdentity, Tier>>,
 }
 
 impl TierSetter {
+    fn tier_for(category: Option<Category>) -> Option<Tier> {
+        match category {
+            Some(Category::Capable) => Some(Tier::Capable),
+            Some(Category::Efficient) => Some(Tier::Efficient),
+            _ => None,
+        }
+    }
+
     /// Two requests for one identity can both pass this and both judge, since a
     /// judge call sits between here and [`retain`](Self::retain). The later wins.
     fn is_due(&self, identity: Option<&RoutingIdentity>, request: &Request) -> bool {
@@ -76,7 +83,7 @@ impl Processor<State> for TierSetter {
         if self.is_due(identity.as_ref(), request) {
             let (classification, _) = self.judge.score(state, request, driver).await?;
             if let Some(winner) = classification.argmax(false)?
-                && let Some(tier) = self.targets.tier_for(&winner.target)
+                && let Some(tier) = Self::tier_for(winner.category)
             {
                 set_fall_open(state, tier);
                 if let Some(identity) = identity {
@@ -90,6 +97,7 @@ impl Processor<State> for TierSetter {
         if let Some(tier) = identity.and_then(|identity| self.tiers.lock().get(&identity).copied())
         {
             set_fall_open(state, tier);
+            driver.set_evidence_if_empty(serde_json::json!({"source": "retained"}));
         }
         Ok(())
     }
@@ -97,8 +105,6 @@ impl Processor<State> for TierSetter {
 
 /// A judge stacked over a stage router.
 pub struct CompositeRouterConfig {
-    /// Target the judge is called through. Not a routing destination.
-    pub judge_target: ModelId,
     /// Judge settings, including how often `classify_trigger` runs it.
     pub judge: TaskClassifierConfig,
     /// Serves the turns, with the tier the judge picked as its fall-open default.
@@ -117,11 +123,7 @@ impl CompositeRouter {
     ///
     /// A stage router carrying its own judge is allowed, but that judge sits ahead
     /// of the fall-open tier and so answers most of the turns this one set a tier for.
-    pub fn new(
-        capable: ModelId,
-        efficient: ModelId,
-        config: CompositeRouterConfig,
-    ) -> Result<Self> {
+    pub fn new(config: CompositeRouterConfig) -> Result<Self> {
         if config.judge.classify_trigger == ClassifyTrigger::EveryRequest {
             return Err(LibsyError::AlgorithmError {
                 message: "composite: classify_trigger must be user_turn or new_session".to_string(),
@@ -138,19 +140,15 @@ impl CompositeRouter {
             ..config.judge
         };
         let judge = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
-            judge_target: config.judge_target,
-            efficient_target: efficient.clone(),
-            capable_target: capable.clone(),
             config: judge_config,
         })?;
         let setter = TierSetter {
             judge: Arc::new(judge),
-            targets: StageTargets::new(capable.clone(), efficient.clone()),
             trigger,
             message_hash_fallback,
             tiers: Mutex::new(HashMap::new()),
         };
-        let route = build_stage_route(capable, efficient, config.stage)?
+        let route = build_stage_route(config.stage)?
             .with_name(COMPOSITE)
             .with_processor(Arc::new(setter));
         Ok(Self { route })
@@ -174,14 +172,28 @@ impl Algorithm for CompositeRouter {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
-    use switchyard_protocol::{Message, Role};
+    use switchyard_protocol::{Category, Message, ModelId, Role};
 
     use super::*;
     use crate::algorithms::util::stage::PickerMode;
     use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
-    use crate::core::testing::test_drive;
+    use crate::core::testing::test_drive_with_models;
+
+    fn runtime_models() -> HashMap<Category, Vec<ModelId>> {
+        [
+            (Category::Judge, vec![ModelId::from(JUDGE)]),
+            (Category::Efficient, vec![ModelId::from("weak")]),
+            (Category::Capable, vec![ModelId::from("strong")]),
+            (
+                Category::Any,
+                vec![ModelId::from("strong"), ModelId::from("weak")],
+            ),
+        ]
+        .into()
+    }
 
     fn user_turn_request() -> Request {
         let mut request = turn_request(false);
@@ -201,49 +213,90 @@ mod tests {
     }
 
     fn hash_keyed_router() -> Result<Arc<CompositeRouter>> {
-        Ok(Arc::new(CompositeRouter::new(
-            ModelId::from("strong"),
-            ModelId::from("weak"),
-            CompositeRouterConfig {
-                judge_target: ModelId::from(JUDGE),
-                judge: TaskClassifierConfig {
-                    base_threshold: 0.5,
-                    classify_trigger: ClassifyTrigger::UserTurn,
-                    message_hash_fallback: true,
-                    ..Default::default()
-                },
-                stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+        Ok(Arc::new(CompositeRouter::new(CompositeRouterConfig {
+            judge: TaskClassifierConfig {
+                base_threshold: 0.5,
+                classify_trigger: ClassifyTrigger::UserTurn,
+                message_hash_fallback: true,
+                ..Default::default()
             },
-        )?))
+            stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+        })?))
     }
 
     fn router() -> Result<Arc<CompositeRouter>> {
-        Ok(Arc::new(CompositeRouter::new(
-            ModelId::from("strong"),
-            ModelId::from("weak"),
-            CompositeRouterConfig {
-                judge_target: ModelId::from(JUDGE),
-                judge: TaskClassifierConfig {
-                    base_threshold: 0.5,
-                    classify_trigger: ClassifyTrigger::UserTurn,
-                    ..Default::default()
-                },
-                stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+        Ok(Arc::new(CompositeRouter::new(CompositeRouterConfig {
+            judge: TaskClassifierConfig {
+                base_threshold: 0.5,
+                classify_trigger: ClassifyTrigger::UserTurn,
+                ..Default::default()
             },
-        )?))
+            stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+        })?))
     }
 
     #[test]
     fn rejects_every_request_as_a_trigger() {
         let config = CompositeRouterConfig {
-            judge_target: ModelId::from(JUDGE),
             judge: TaskClassifierConfig::default(),
             stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
         };
         assert!(matches!(
-            CompositeRouter::new(ModelId::from("strong"), ModelId::from("weak"), config),
+            CompositeRouter::new(config),
             Err(LibsyError::AlgorithmError { .. })
         ));
+    }
+
+    /// A route may point its judge at the same target it serves capable turns on.
+    /// The tier then cannot be recovered by looking the served model up in the
+    /// runtime groups — one id, two categories — so it comes off the verdict itself.
+    #[tokio::test]
+    async fn a_judge_sharing_the_capable_model_still_latches_the_tier() -> Result<()> {
+        let models: HashMap<Category, Vec<ModelId>> = [
+            (Category::Judge, vec![ModelId::from("strong")]),
+            (Category::Capable, vec![ModelId::from("strong")]),
+            (Category::Efficient, vec![ModelId::from("weak")]),
+            (
+                Category::Any,
+                vec![ModelId::from("strong"), ModelId::from("weak")],
+            ),
+        ]
+        .into();
+        // The judge runs first as a request-side processor, so the opening call is its own.
+        let calls = Arc::new(Mutex::new(0u32));
+        let serve = {
+            let calls = Arc::clone(&calls);
+            move |target: ModelId, _request: Request| {
+                let calls = Arc::clone(&calls);
+                async move {
+                    let mut calls = calls.lock();
+                    *calls += 1;
+                    let completion = if *calls == 1 {
+                        // p_solve below the threshold: the judge does not trust the
+                        // efficient tier, so the verdict is capable.
+                        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1}"#.to_string()
+                    } else {
+                        target.to_string()
+                    };
+                    Ok(crate::core::testing::reply(completion))
+                }
+            }
+        };
+        let router = router()?;
+
+        test_drive_with_models(
+            router.clone(),
+            user_turn_request(),
+            models.clone(),
+            serve.clone(),
+        )
+        .await?;
+        // A tool step is not a user turn, so nothing re-judges and the latched tier decides.
+        let (selected, _) =
+            test_drive_with_models(router, turn_request(false), models, serve).await?;
+
+        assert_eq!(selected, ModelId::from("strong"));
+        Ok(())
     }
 
     #[tokio::test]
@@ -252,15 +305,17 @@ mod tests {
         *recorder.judge_p_solve.lock() = 0.1;
         let router = hash_keyed_router()?;
 
-        test_drive(
+        test_drive_with_models(
             router.clone(),
             unkeyed(user_turn_request()),
+            runtime_models(),
             recorder.serve(),
         )
         .await?;
-        test_drive(
+        test_drive_with_models(
             router.clone(),
             unkeyed(turn_request(false)),
+            runtime_models(),
             recorder.serve(),
         )
         .await?;
@@ -284,8 +339,20 @@ mod tests {
         *recorder.judge_p_solve.lock() = 0.1;
         let router = router()?;
 
-        test_drive(router.clone(), user_turn_request(), recorder.serve()).await?;
-        test_drive(router.clone(), turn_request(false), recorder.serve()).await?;
+        test_drive_with_models(
+            router.clone(),
+            user_turn_request(),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+        test_drive_with_models(
+            router.clone(),
+            turn_request(false),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
 
         let routed = recorder.routed();
         assert_eq!(

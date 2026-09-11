@@ -5,7 +5,9 @@
 #![doc = include_str!("../README.md")]
 
 mod core;
-pub use core::algorithm::{Algorithm, CallModel, Driver, RoutingOutcome, Step, StepStream, drive};
+pub use core::algorithm::{
+    Algorithm, CallModel, Driver, RoutingOutcome, RuntimeModels, Step, StepStream, drive,
+};
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::outcome_metadata::OutcomeMetadata;
 pub use core::processor::{Event, Processor};
@@ -31,16 +33,16 @@ pub use algorithms::util::classifier_contract::{
     ClassifierContractConfig, ClassifierResponseFormat,
 };
 pub use algorithms::util::escalation::EscalationJudgeConfig;
-pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
+pub use algorithms::util::prompts::append_note;
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
-pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
+pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignals};
 
 // Stage-router scoring and tier selection — the shared signal-driven routing
 // core (scorer, picker, and the `StageClassifier`).
 pub use algorithms::util::stage::{
     CodingAgentDimensions, DECISION_SOURCE_KEY, DecisionSource, HandoffNoteConfig, PickOutcome,
-    PickerMode, ScoreResult, StageClassifier, StageTargets, Tier, clear_fall_open,
-    dimensions_from_signal, pick_tier, score_signal, set_fall_open,
+    PickerMode, ScoreResult, StageClassifier, Tier, clear_fall_open, dimensions_from_signal,
+    pick_tier, score_signal, set_fall_open,
 };
 
 mod observability;

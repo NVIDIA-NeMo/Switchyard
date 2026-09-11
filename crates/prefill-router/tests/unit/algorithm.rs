@@ -4,9 +4,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use libsy::{Algorithm, LibsyError};
+use libsy::{Algorithm, LibsyError, RuntimeModels};
 use switchyard_protocol::{
-    ContentBlock, LlmRequest, Message, ModelId, Request, Role, ToolResult, text_request,
+    Category, ContentBlock, LlmRequest, Message, ModelId, Request, Role, ToolResult, text_request,
 };
 
 use crate::{PrefillForward, PrefillRouterAlgo, Result};
@@ -66,14 +66,19 @@ fn forward() -> (
 }
 
 async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<String> {
-    let outcome = libsy::drive(route, request, |call| async move {
-        call.respond(Ok(switchyard_protocol::Response {
-            llm_response: switchyard_protocol::LlmResponse::Agg(
-                switchyard_protocol::text_response(None, "unused"),
-            ),
-            metadata: None,
-        }))
-    })
+    let outcome = libsy::drive(
+        route,
+        request,
+        Arc::new(RuntimeModels::new([(Category::Any, target_set())].into())),
+        |call| async move {
+            call.respond(Ok(switchyard_protocol::Response {
+                llm_response: switchyard_protocol::LlmResponse::Agg(
+                    switchyard_protocol::text_response(None, "unused"),
+                ),
+                metadata: None,
+            }))
+        },
+    )
     .await?;
     Ok(outcome.selected_model_id()?.to_string())
 }

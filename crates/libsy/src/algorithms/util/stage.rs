@@ -28,8 +28,7 @@ use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
 use crate::observability::meter;
-use switchyard_protocol::ModelId;
-use switchyard_protocol::Request;
+use switchyard_protocol::{Category, Request};
 
 /// Turn depth below which stall signals stay quiet — early no-write turns are
 /// normal exploration, not a stall.
@@ -95,51 +94,6 @@ impl Tier {
             "weak" => Some(Self::Efficient),
             _ => None,
         }
-    }
-}
-
-/// The targets a stage router's two tiers route to.
-///
-/// The tiers are a fixed pair, but their targets are whatever the deployment
-/// calls them, so the classifier scores onto those names and the routed call
-/// reaches the right model.
-#[derive(Clone, Debug)]
-pub struct StageTargets {
-    capable: ModelId,
-    efficient: ModelId,
-}
-
-impl StageTargets {
-    /// Name the targets the two tiers route to.
-    pub fn new(capable: impl Into<ModelId>, efficient: impl Into<ModelId>) -> Self {
-        Self {
-            capable: capable.into(),
-            efficient: efficient.into(),
-        }
-    }
-
-    /// The target `tier` routes to.
-    pub fn name(&self, tier: Tier) -> &ModelId {
-        match tier {
-            Tier::Capable => &self.capable,
-            Tier::Efficient => &self.efficient,
-        }
-    }
-
-    /// The tier a routed target belongs to, or `None` for one outside the pair.
-    pub fn tier_for(&self, target: &ModelId) -> Option<Tier> {
-        if *target == self.capable {
-            Some(Tier::Capable)
-        } else if *target == self.efficient {
-            Some(Tier::Efficient)
-        } else {
-            None
-        }
-    }
-
-    /// The tier label for a routed target, or `None` for one outside the pair.
-    pub fn label_for(&self, target: &ModelId) -> Option<&'static str> {
-        self.tier_for(target).map(Tier::label)
     }
 }
 
@@ -257,9 +211,9 @@ impl ScoreResult {
 pub struct CodingAgentDimensions {
     /// Windowed max error severity in `[0, 1]`.
     pub severity: f64,
-    /// `1.0` when a deep turn has no reads, plans, writes, or edits (pure churn).
+    /// `1.0` when a deep turn has no recognized observation, mutation, plan, or new activity.
     pub spinning: f64,
-    /// `1.0` when a deep turn reads/plans but does not write or edit.
+    /// `1.0` when a deep turn observes/plans but does not mutate or show new activity.
     pub exploring: f64,
     /// Fraction of recent tool ops that produced code (writes + edits).
     pub production_intensity: f64,
@@ -302,10 +256,11 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
     let deep_enough = signal.turn_depth >= STALL_MIN_TURN_DEPTH;
     let no_production = signal.recent_write_count == 0 && signal.recent_edit_count == 0;
     let investigating = signal.recent_read_count >= 1 || signal.recent_todowrite_count >= 1;
+    let new_activity = signal.recent_new_count >= 1;
     // spinning vs exploring partition the "not producing" case by investigative
     // activity, so at most one fires — no double-counting on the production axis.
-    let spinning = deep_enough && no_production && !investigating;
-    let exploring = deep_enough && no_production && investigating;
+    let spinning = deep_enough && no_production && !investigating && !new_activity;
+    let exploring = deep_enough && no_production && investigating && !new_activity;
 
     CodingAgentDimensions {
         severity: f64::from(signal.severity),
@@ -556,18 +511,16 @@ impl HandoffNoteConfig {
 /// With [`with_handoff_notes`](Self::with_handoff_notes) it also splices a note
 /// into the request explaining why the signals sent the turn where they did.
 pub struct StageClassifier {
-    targets: StageTargets,
     mode: PickerMode,
     confidence_threshold: f64,
     handoff_notes: Option<HandoffNoteConfig>,
 }
 
 impl StageClassifier {
-    /// Scores onto `targets`, with the given default tier (`mode`) and
-    /// `confidence_threshold`.
-    pub fn new(targets: StageTargets, mode: PickerMode, confidence_threshold: f64) -> Self {
+    /// Scores onto the runtime capable and efficient models, with the given
+    /// default tier (`mode`) and `confidence_threshold`.
+    pub fn new(mode: PickerMode, confidence_threshold: f64) -> Self {
         Self {
-            targets,
             mode,
             confidence_threshold,
             handoff_notes: None,
@@ -604,7 +557,7 @@ impl Classifier<State> for StageClassifier {
         &self,
         state: &mut State,
         request: &mut Request,
-        _driver: Option<&Driver>,
+        driver: &Driver,
     ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
         let tool_signals = &state.tool_signals;
         let Some(signal) = tool_signals else {
@@ -622,13 +575,26 @@ impl Classifier<State> for StageClassifier {
                 probability,
                 confidence,
             } => {
-                let target = self.targets.name(tier);
+                let category = match tier {
+                    Tier::Capable => Category::Capable,
+                    Tier::Efficient => Category::Efficient,
+                };
+                let target = driver.first_model_for(&category)?;
                 record_decision_source(state, source);
                 record_routing_decision(source, target);
                 // Only a resolved turn routes on this classifier's target, so it
                 // is the only branch whose tier the signals actually chose — an
                 // ambiguous turn is decided further down the cascade.
                 self.apply_handoff_note(request, tier, source);
+                let evidence = match (source, confidence) {
+                    (DecisionSource::Dimensions, Some(confidence)) => serde_json::json!({
+                        "source": source.as_str(),
+                        "confidence": confidence,
+                        "threshold": self.confidence_threshold,
+                    }),
+                    _ => serde_json::json!({"source": source.as_str()}),
+                };
+                driver.set_evidence(evidence);
                 // Prefer pick_tier's own confidence (e.g. 1.0 for an Override)
                 // over re-deriving it from the neutral 0.5 placeholder.
                 let conf = confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs());
@@ -636,6 +602,7 @@ impl Classifier<State> for StageClassifier {
                     Classification::Scores(vec![Score {
                         target: target.clone(),
                         confidence: conf,
+                        category: Some(category),
                     }]),
                     None,
                 ))
@@ -648,8 +615,24 @@ impl Classifier<State> for StageClassifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::algorithm::RuntimeModels;
     use serde_json::json;
-    use switchyard_protocol::{Metadata, Request, WireFormat, text_request};
+    use std::sync::Arc;
+    use switchyard_protocol::{Metadata, ModelId, Request, WireFormat, text_request};
+
+    fn driver() -> Driver {
+        Driver::new(
+            "stage_test",
+            Arc::new(RuntimeModels::new(
+                [
+                    (Category::Capable, vec![ModelId::from("strong")]),
+                    (Category::Efficient, vec![ModelId::from("weak")]),
+                ]
+                .into(),
+            )),
+        )
+        .0
+    }
 
     fn signal_from(messages: serde_json::Value) -> ToolSignals {
         let raw_request = Some(json!({"model": "m", "messages": messages}));
@@ -735,12 +718,58 @@ mod tests {
         }
     }
 
-    // ─── StageClassifier ─────────────────────────────────────────────────
+    #[test]
+    fn new_activity_suppresses_stall_dimensions_without_biasing_the_score() {
+        let signal = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            recent_new_count: 1,
+            ..Default::default()
+        };
 
-    /// Tiers named the way a deployment would name them.
-    fn tiers() -> StageTargets {
-        StageTargets::new("strong", "weak")
+        let dimensions = dimensions_from_signal(&signal);
+
+        assert_eq!(dimensions.spinning, 0.0);
+        assert_eq!(dimensions.exploring, 0.0);
+        assert_eq!(score_signal(&signal).score, 0.0);
     }
+
+    #[test]
+    fn old_new_activity_does_not_suppress_a_current_stall() {
+        let signal = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            new_count: 1,
+            recent_new_count: 0,
+            ..Default::default()
+        };
+
+        let dimensions = dimensions_from_signal(&signal);
+
+        assert_eq!(dimensions.spinning, 1.0);
+        assert_eq!(dimensions.exploring, 0.0);
+        assert!(score_signal(&signal).score > 0.0);
+    }
+
+    #[test]
+    fn new_activity_does_not_dilute_existing_production() {
+        let baseline = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            recent_write_count: 1,
+            ..Default::default()
+        };
+        let with_new = ToolSignals {
+            recent_new_count: 2,
+            new_count: 2,
+            ..baseline.clone()
+        };
+
+        assert_eq!(
+            dimensions_from_signal(&with_new).production_intensity,
+            dimensions_from_signal(&baseline).production_intensity
+        );
+        assert_eq!(score_signal(&with_new), score_signal(&baseline));
+    }
+
+    // ─── StageClassifier ─────────────────────────────────────────────────
 
     /// A `State` carrying `signal` as its tool signals.
     fn state_with(signal: ToolSignals) -> State {
@@ -755,8 +784,8 @@ mod tests {
         // No tool activity yet — nothing to score, so the signals have no opinion
         // and the turn belongs to whatever the cascade has behind them.
         let mut state = State::default();
-        let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut Request::default(), None)
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut Request::default(), &driver())
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
         assert!(matches!(
@@ -774,8 +803,9 @@ mod tests {
             ..Default::default()
         };
         let mut state = state_with(signal);
-        let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut Request::default(), None)
+        let driver = driver();
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
         match classification.0 {
             Classification::Scores(scores) => {
@@ -805,8 +835,9 @@ mod tests {
             ..Default::default()
         };
         let mut state = state_with(signal);
-        let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut Request::default(), None)
+        let driver = driver();
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
         match classification.0 {
             Classification::Scores(scores) => {
@@ -823,8 +854,8 @@ mod tests {
         // A quiet signal corroborates neither axis, so the scorer abstains and
         // records why.
         let mut state = state_with(ToolSignals::default());
-        let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut Request::default(), None)
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut Request::default(), &driver())
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
         assert!(matches!(
@@ -893,7 +924,7 @@ mod tests {
     /// A classifier that hands the capable tier an escalation note, gated to
     /// signal-driven escalations.
     fn noting_classifier(mode: PickerMode) -> StageClassifier {
-        StageClassifier::new(tiers(), mode, 0.5).with_handoff_notes(HandoffNoteConfig::new(
+        StageClassifier::new(mode, 0.5).with_handoff_notes(HandoffNoteConfig::new(
             ESCALATION,
             Some(DEESCALATION.to_string()),
             true,
@@ -930,9 +961,10 @@ mod tests {
     async fn a_signal_driven_escalation_carries_the_note() -> Result<()> {
         let mut state = state_with(critical());
         let mut request = request();
+        let driver = driver();
 
         noting_classifier(PickerMode::EfficientFirst)
-            .score(&mut state, &mut request, None)
+            .score(&mut state, &mut request, &driver)
             .await?;
 
         assert_eq!(trailing_text(&request), Some(format!("hi|{ESCALATION}")));
@@ -945,10 +977,11 @@ mod tests {
         // of escalated turns each carries one. Nothing tracks the previous tier.
         let classifier = noting_classifier(PickerMode::EfficientFirst);
         let mut state = state_with(critical());
+        let driver = driver();
 
         for _ in 0..3 {
             let mut request = request();
-            classifier.score(&mut state, &mut request, None).await?;
+            classifier.score(&mut state, &mut request, &driver).await?;
             assert_eq!(trailing_text(&request), Some(format!("hi|{ESCALATION}")));
         }
         Ok(())
@@ -965,9 +998,10 @@ mod tests {
         };
         let mut state = state_with(signal);
         let mut request = request();
+        let driver = driver();
 
         noting_classifier(PickerMode::EfficientFirst)
-            .score(&mut state, &mut request, None)
+            .score(&mut state, &mut request, &driver)
             .await?;
 
         assert_eq!(trailing_text(&request), Some(format!("hi|{DEESCALATION}")));
@@ -982,7 +1016,7 @@ mod tests {
         let mut request = request();
 
         let classification = noting_classifier(PickerMode::CapableFirst)
-            .score(&mut state, &mut request, None)
+            .score(&mut state, &mut request, &driver())
             .await?;
 
         assert!(matches!(classification.0, Classification::Ambiguous(_)));
@@ -994,9 +1028,10 @@ mod tests {
     async fn no_note_when_notes_are_unconfigured() -> Result<()> {
         let mut state = state_with(critical());
         let mut request = request();
+        let driver = driver();
 
-        StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut request, None)
+        StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut request, &driver)
             .await?;
 
         assert_eq!(trailing_text(&request), Some("hi".to_string()));
