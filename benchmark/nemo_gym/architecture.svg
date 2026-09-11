@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title description">
+  <title id="title">NeMo Gym and Switchyard for Evaluation</title>
+  <desc id="description">The evaluation flow follows four steps: dataset, initialize environment, agent executes, and verify. The simple agent runs in the agent server; the MCQA verifier runs in the resources server. Below the agent, Gym's model server hosts Switchyard in-process and exchanges requests and responses with upstream models. Run the same tasks twice: the fixed route always uses the stronger model, while the routed condition uses a classifier to choose the weaker or stronger model. Compare paired rewards, selected models, model and classifier tokens, latency, and routing statistics.</desc>
+  <metadata>SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0</metadata>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 L 3 5 Z" fill="#4B4B4B"/>
+    </marker>
+    <style>
+      text { font-family: 'NVIDIA Sans', Arial, Helvetica, sans-serif; fill: #000; }
+      .title { font-size: 44px; font-weight: 700; }
+      .subtitle { font-size: 27px; fill: #76B900; }
+      .heading { font-size: 28px; font-weight: 700; }
+      .step { font-size: 29px; }
+      .server { font-size: 20px; font-weight: 700; }
+      .detail { font-size: 20px; }
+      .body { font-size: 24px; }
+      .caption { font-size: 18px; fill: #4B4B4B; }
+      .flow { fill: none; stroke: #4B4B4B; stroke-width: 1.8; marker-end: url(#arrow); }
+      .exchange { fill: none; stroke: #4B4B4B; stroke-width: 1.8; marker-start: url(#arrow); marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="#fff"/>
+  <text x="800" y="66" text-anchor="middle" class="title">NeMo Gym + Switchyard for Evaluation</text>
+  <text x="800" y="110" text-anchor="middle" class="subtitle">Run the same tasks with a fixed model or a router, then compare rewards, tokens and latency</text>
+
+  <rect x="34" y="205" width="1190" height="250" rx="36" fill="#E6EDEA"/>
+  <text x="80" y="252" class="heading">NeMo Gym</text>
+
+  <rect x="67" y="285" width="248" height="100" fill="#fff"/>
+  <text x="191" y="326" text-anchor="middle" class="step">Dataset</text>
+  <text x="191" y="362" text-anchor="middle" class="step">(tasks)</text>
+  <text x="191" y="420" text-anchor="middle" class="detail">MCQA examples</text>
+
+  <rect x="358" y="285" width="248" height="100" fill="#fff"/>
+  <text x="482" y="326" text-anchor="middle" class="step">Initialize</text>
+  <text x="482" y="362" text-anchor="middle" class="step">Environment</text>
+
+  <rect x="649" y="285" width="248" height="100" fill="#fff"/>
+  <text x="773" y="326" text-anchor="middle" class="step">Agent</text>
+  <text x="773" y="362" text-anchor="middle" class="step">Executes</text>
+  <text x="773" y="410" text-anchor="middle" class="server">Agent server</text>
+  <text x="773" y="435" text-anchor="middle" class="detail">simple_agent</text>
+
+  <rect x="940" y="285" width="248" height="100" fill="#fff"/>
+  <text x="1064" y="345" text-anchor="middle" class="step">Verify</text>
+  <text x="1064" y="410" text-anchor="middle" class="server">Resources server</text>
+  <text x="1064" y="435" text-anchor="middle" class="detail">MCQA verifier</text>
+
+  <path d="M 315 335 H 356" class="flow"/>
+  <path d="M 606 335 H 647" class="flow"/>
+  <path d="M 897 335 H 938" class="flow"/>
+  <path d="M 1188 335 H 1375 V 553" class="flow"/>
+
+  <path d="M 773 458 V 553" class="exchange"/>
+  <text x="795" y="512" class="caption">Model request / response</text>
+
+  <rect x="503" y="555" width="540" height="180" rx="28" fill="#E6EDEA"/>
+  <text x="773" y="593" text-anchor="middle" class="heading">Model server</text>
+  <rect x="532" y="613" width="482" height="98" fill="#fff"/>
+  <text x="773" y="644" text-anchor="middle" class="server">Switchyard (hosted by Gym)</text>
+  <text x="773" y="672" text-anchor="middle" class="detail">Fixed: always use the stronger model</text>
+  <text x="773" y="698" text-anchor="middle" class="detail">Routed: classifier chooses weak or strong</text>
+
+  <path d="M 625 737 V 806" class="exchange"/>
+  <path d="M 935 737 V 806" class="exchange"/>
+  <text x="780" y="780" text-anchor="middle" class="caption">Upstream models</text>
+  <rect x="510" y="808" width="230" height="62" rx="20" fill="#E6EDEA"/>
+  <text x="625" y="848" text-anchor="middle" class="body">Weaker model</text>
+  <rect x="820" y="808" width="230" height="62" rx="20" fill="#E6EDEA"/>
+  <text x="935" y="848" text-anchor="middle" class="body">Stronger model</text>
+
+  <path d="M 1043 676 H 1118" class="flow"/>
+  <text x="1080" y="632" text-anchor="middle" class="caption">Usage /</text>
+  <text x="1080" y="655" text-anchor="middle" class="caption">routing</text>
+
+  <rect x="1120" y="555" width="435" height="245" fill="#fff" stroke="#76B900" stroke-width="3"/>
+  <text x="1140" y="595" class="heading">Output:</text>
+  <text x="1140" y="632" class="body">Compare fixed vs. routed runs</text>
+  <text x="1140" y="676" class="body">Per-task rewards</text>
+  <text x="1140" y="708" class="body">Selected models</text>
+  <text x="1140" y="740" class="body">Model + classifier tokens</text>
+  <text x="1140" y="772" class="body">Latency and routing statistics</text>
+</svg>

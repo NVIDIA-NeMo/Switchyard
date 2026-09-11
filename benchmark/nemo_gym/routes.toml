@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.nvidia]
+format = "openai_chat"
+base_url = "https://integrate.api.nvidia.com/v1"
+api_key_env = "NVIDIA_API_KEY"
+max_retries = 0
+
+[targets.strong]
+id = "nvidia/nemotron-3-super-120b-a12b"
+llm_client = "nvidia"
+extra_body = { chat_template_kwargs = { enable_thinking = false } }
+
+[targets.weak]
+id = "openai/gpt-oss-20b"
+llm_client = "nvidia"
+extra_body = { reasoning_effort = "low" }
+
+[routes.fixed]
+id = "fixed"
+type = "passthrough"
+target = "strong"
+
+[routes.routed]
+id = "routed"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "weak"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+max_output_tokens = 512
