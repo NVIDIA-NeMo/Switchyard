@@ -137,6 +137,7 @@ settings. The Rust server also supports:
 | [Random](routing_algorithms/random_routing.md) | You need a weighted split for A/B tests or baselines. | `random` |
 | [LLM classifier](routing_algorithms/llm_classifier_routing.md) | Request content should decide whether to use the weak or strong target. | `llm_classifier` |
 | [Stage router](routing_algorithms/stage_router_routing.md) | Built-in or configured tool-activity signals should select an efficient or capable target. | `stage_router` |
+| [Plan/execute](routing_algorithms/plan_execute_routing.md) | A capable model should plan, then an efficient model should execute after the first edit. | `plan_execute` |
 
 A single TOML file can declare multiple routes. The table key, such as
 `routes.smart`, is a local configuration name; each route's `id` is exposed as a

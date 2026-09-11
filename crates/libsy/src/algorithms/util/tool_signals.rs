@@ -120,6 +120,8 @@ static BASH_WRITE_PATTERNS: &[&str] = &[
     "tee ",
     "printf >",
     "printf >>",
+    " > ",
+    " >> ",
     "> /",
     ">> /",
     "<< 'eof'",
@@ -1147,6 +1149,14 @@ mod tests {
             sig.write_count, 1,
             "Bash heredoc should bucket into write_count"
         );
+        assert_eq!(sig.edit_count, 0);
+    }
+
+    #[test]
+    fn bash_redirection_after_arguments_counts_as_write() {
+        let request = with_messages(vec![bash("printf 'completed\\n' > task.txt")]);
+        let sig = ToolSignals::from_request(&request, None);
+        assert_eq!(sig.write_count, 1);
         assert_eq!(sig.edit_count, 0);
     }
 

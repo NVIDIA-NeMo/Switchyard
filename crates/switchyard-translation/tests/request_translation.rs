@@ -780,6 +780,43 @@ fn responses_request_translates_codex_tool_shape_to_openai_chat() -> TestResult 
     Ok(())
 }
 
+#[test]
+fn responses_reencode_preserves_required_namespace_description() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "switchyard",
+        "input": "Fix the parser",
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "description": "Tools for managing sub-agents.",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Start one agent.",
+                "parameters": {"type": "object"}
+            }]
+        }]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(&mut request, &"gpt-5.6-sol".into(), Some("Plan first."));
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+
+    assert_eq!(output["tools"][0]["type"], "namespace");
+    assert_eq!(output["tools"][0]["name"], "multi_agent_v1");
+    assert_eq!(
+        output["tools"][0]["description"],
+        "Tools for managing sub-agents."
+    );
+    Ok(())
+}
+
 // Verifies Python-style Responses tool definitions translate into OpenAI Chat tools.
 #[test]
 fn responses_request_translates_python_compatible_tool_shape_to_openai_chat() -> TestResult {
@@ -1538,6 +1575,43 @@ fn responses_empty_reasoning_without_encrypted_content_is_omitted() -> TestResul
     assert_eq!(item_types, vec!["message", "message"]);
     assert_eq!(input[0]["role"], "user");
     assert_eq!(input[1]["role"], "user");
+    Ok(())
+}
+
+#[test]
+fn responses_reencode_preserves_encrypted_reasoning_item() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let reasoning = json!({
+        "type": "reasoning",
+        "id": "reasoning-1",
+        "summary": [],
+        "encrypted_content": "opaque-encrypted-reasoning"
+    });
+    let body = json!({
+        "model": "switchyard",
+        "input": [
+            {"type": "message", "role": "user", "content": "Inspect the repo"},
+            reasoning,
+            {
+                "type": "function_call",
+                "name": "shell",
+                "call_id": "call-ls",
+                "arguments": "{\"command\":\"ls\"}"
+            },
+            {"type": "function_call_output", "call_id": "call-ls", "output": "a.py"}
+        ]
+    });
+
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+    prepare_request_for_target(&mut request, &"gpt-5.6-sol".into(), Some("Plan first."));
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+
+    assert_eq!(output["input"][1], reasoning);
     Ok(())
 }
 

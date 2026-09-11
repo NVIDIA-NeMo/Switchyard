@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Plan/execute configuration for Harbor Terminal-Bench Lite.
+# Harbor selects this route with --model switchyard.
+
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.capable]
+id = "anthropic/claude-opus-4.7"
+llm_client = "openrouter"
+
+[targets.efficient]
+id = "moonshotai/kimi-k2.7-code"
+llm_client = "openrouter"
+
+[routes.switchyard]
+id = "switchyard"
+type = "plan_execute"
+capable_target = "capable"
+efficient_target = "efficient"
