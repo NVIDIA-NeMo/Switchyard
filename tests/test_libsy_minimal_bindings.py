@@ -5,6 +5,7 @@
 
 from collections.abc import AsyncIterator
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -14,6 +15,7 @@ from switchyard.libsy import (
     CustomClassifierConfig,
     LlmClassifierConfig,
     LlmResponse,
+    OutcomeMetadata,
     RoutingOutcome,
     Step,
     TaskClassifierConfig,
@@ -77,6 +79,8 @@ async def run_algorithm(
                         call.respond(LlmResponse.Agg(response))
                         break
             case Step.Done(outcome):
+                assert isinstance(outcome.metadata, OutcomeMetadata)
+                assert UUID(outcome.metadata.outcome_id).version == 7
                 if outcome.response is not None:
                     match outcome.response:
                         case LlmResponse.Agg(response):
@@ -113,6 +117,10 @@ async def test_random_streams_complex_steps_and_accepts_a_dictionary_response() 
     assert outcome is not None
     assert outcome.selected_model_ids == ["fast"]
     assert outcome.response is None
+    assert outcome.metadata is not None
+    assert UUID(outcome.metadata.outcome_id).version == 7
+    assert outcome.metadata.algorithm == "random"
+    assert outcome.metadata.evidence is None
     response = await client.call(outcome.request)
     assert client.calls[0]["model"] == "fast"
     assert client.calls[0]["messages"][0]["content"] == [
@@ -198,14 +206,23 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
         ),
     )
 
-    _, response = await run_algorithm(
-        algorithm,
-        {
-            "judge": judge,
-            "weak": weak,
-            "strong": EchoClient("strong"),
-        },
-    )
+    outcome: RoutingOutcome | None = None
+    async for step in algorithm.run_stream(request_body()):
+        match step:
+            case Step.CallModel(call):
+                call.respond(LlmResponse.Agg(await judge.call(call.request)))
+            case Step.Done(done):
+                outcome = done
+
+    assert outcome is not None
+    assert outcome.selected_model_ids[0] == "weak"
+    assert outcome.metadata is not None
+    assert outcome.metadata.evidence == {
+        "source": "llm-classifier",
+        "score": pytest.approx(0.9),
+        "threshold": pytest.approx(0.5),
+    }
+    response = await weak.call(outcome.request)
 
     prompt = judge.calls[0]["instructions"][0]["content"][0]["text"]
     assert prompt == "Custom capability rubric."
@@ -419,3 +436,69 @@ async def test_context_window_failure_falls_back_to_the_next_model() -> None:
 
     assert selected_model == "fast"
     assert response["model"] == "strong"
+
+
+async def test_stage_router_applies_additive_tool_semantics() -> None:
+    """Verify that configured mutation semantics reach stage-router scoring."""
+
+    algorithm = algorithms.stage_router(
+        "strong",
+        "fast",
+        picker="capable_first",
+        confidence_threshold=0.3,
+        tool_semantics={
+            "observe": ["KB_search"],
+            "mutate": ["send_payment_request"],
+            "plan": ["create_research_plan"],
+            "new": ["send_message_to_user"],
+        },
+    )
+
+    selected_model, _ = await run_algorithm(
+        algorithm,
+        {"strong": EchoClient("strong"), "fast": EchoClient("fast")},
+        request={
+            "model": "auto",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "pay the balance"}],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_call",
+                            "id": "call_1",
+                            "name": "send_payment_request",
+                            "arguments": {},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_call_id": "call_1",
+                            "content": [{"type": "text", "text": "payment sent"}],
+                            "is_error": None,
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert selected_model == "fast"
+
+
+def test_stage_router_rejects_unknown_tool_semantics_category() -> None:
+    with pytest.raises(ValueError, match="unknown tool_semantics category"):
+        algorithms.stage_router(
+            "strong",
+            "fast",
+            picker="efficient_first",
+            confidence_threshold=0.5,
+            tool_semantics={"complete": ["end_conversation"]},
+        )

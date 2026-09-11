@@ -123,7 +123,7 @@ where
         &self,
         _state: &mut S,
         request: &mut Request,
-        _driver: Option<&Driver>,
+        driver: Option<&Driver>,
     ) -> Result<(Classification, Option<Response>)> {
         // Delegated *work* only. A harness maintenance turn (e.g. Codex `compact`) carries
         // sub-agent lineage but is not delegated work, so it abstains and routes normally.
@@ -131,6 +131,9 @@ where
             .metadata
             .as_ref()
             .is_some_and(Metadata::is_subagent_work);
+        if is_delegated_work && let Some(driver) = driver {
+            driver.set_evidence(serde_json::json!({"source": "subagent"}));
+        }
         Ok((
             Classification::Scores(if is_delegated_work {
                 vec![Score {

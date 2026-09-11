@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Per-target `reasoning_effort`** — a target can force the reasoning effort
+  of every request it serves, replacing the caller's value (`reasoning.effort`
+  on the Responses wire, `reasoning_effort` on Chat Completions), so a strong
+  tier can run at `max` behind a client that sends `high`. `extra_body` only
+  fills absent keys and could not do this. Rejected on Anthropic clients.
+- **Raw Responses stream trace** — an opt-in trace of every upstream Responses
+  event as received, under `RUST_LOG=switchyard_translation::responses::raw=trace`,
+  for diagnosing provider-specific event shapes. (#646)
 - **NeMo Relay native plugin** — a dynamically loaded integration that loads
   Switchyard's standard TOML deployment and executes its `switchyard-runner`-
   supported configured routes in process. Managed calls require NeMo Relay
@@ -99,6 +107,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Encrypted-only reasoning items open no summary part** — the Responses
+  stream encoder opened a `reasoning_summary_part` for every reasoning item and
+  closed it only when text had streamed, so an encrypted-only item left a part
+  open with no `done`. The part now opens on the first text delta. (#671)
+- **Responses reasoning through transforming routes** — reasoning that a route
+  buffers or re-encodes now reaches the client in the standard `summary_text`
+  shape with `reasoning_summary_*` events, encrypted-only and done-only
+  reasoning items are decoded from every carrier a provider uses, and encrypted
+  payloads are re-emitted under the provider's item id so the client's replay
+  verifies upstream. Responses with several reasoning items keep all of them.
+  (#646)
+- **Unique, bounded Responses item ids** — synthesized output-item ids carry a
+  per-response discriminator so replayed history no longer repeats `rs_0` and
+  `fc_1` across turns, and upstream response ids longer than 40 characters are
+  digested to stay within OpenAI's 64-character item-id limit. (#646)
 - **Reasoning order in mixed stream chunks** — the OpenAI Chat stream decoder
   emits reasoning deltas before content deltas from the same chunk, so
   interleaved reasoning is no longer reordered. (#387)

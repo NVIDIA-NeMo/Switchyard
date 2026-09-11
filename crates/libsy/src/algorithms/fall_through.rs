@@ -73,9 +73,12 @@ impl<S: Send> Classifier<S> for DefaultTarget {
         &self,
         _state: &mut S,
         _request: &mut Request,
-        _driver: Option<&Driver>,
+        driver: Option<&Driver>,
     ) -> Result<(Classification, Option<Response>)> {
         // Zero confidence: this is a fallback, not a judgement.
+        if let Some(driver) = driver {
+            driver.set_evidence_if_empty(serde_json::json!({"source": "fall_open"}));
+        }
         Ok((
             Classification::Scores(vec![Score {
                 target: self.target.clone(),

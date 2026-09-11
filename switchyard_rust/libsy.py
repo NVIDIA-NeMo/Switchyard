@@ -21,6 +21,7 @@ _EXPORTS = frozenset(
         "LlmFallback",
         "LlmResponse",
         "ModelCall",
+        "OutcomeMetadata",
         "RoutingOutcome",
         "Step",
         "TaskClassifierConfig",
@@ -112,7 +113,23 @@ if TYPE_CHECKING:
         def fail(self, error: BaseException) -> None: ...
 
     @final
+    class OutcomeMetadata:
+        """Read-only outcome identity and optional algorithm evidence."""
+
+        @property
+        def outcome_id(self) -> str: ...
+
+        @property
+        def algorithm(self) -> str: ...
+
+        @property
+        def evidence(self) -> Any | None: ...
+
+    @final
     class RoutingOutcome:
+        @property
+        def metadata(self) -> OutcomeMetadata | None: ...
+
         @property
         def selected_model_ids(self) -> list[str]: ...
 
@@ -244,6 +261,7 @@ if TYPE_CHECKING:
         only_on_wrong_signal_escalation: bool = True,
         capable_system_prompt: str | None = None,
         efficient_system_prompt: str | None = None,
+        tool_semantics: dict[str, Sequence[str]] | None = None,
         classifier: LlmFallback | None = None,
     ) -> Algorithm: ...
 
