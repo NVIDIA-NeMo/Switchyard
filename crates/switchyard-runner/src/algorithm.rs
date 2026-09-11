@@ -1127,7 +1127,28 @@ fn build_algorithm(
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     match config {
         AlgorithmSpec::Noop { .. } => Ok(Arc::new(Noop {})),
-        AlgorithmSpec::Random { weights, seed, .. } => {
+        AlgorithmSpec::Random {
+            targets: names,
+            weights,
+            seed,
+        } => {
+            // The algorithm only sees its targets at request time, so a bad pairing
+            // would otherwise fail every request instead of failing to start.
+            if let Some(weights) = weights
+                && weights.len() != names.len()
+            {
+                return Err(AlgorithmConfigError::new(format!(
+                    "random route {route_name}: expected {} weights, got {}",
+                    names.len(),
+                    weights.len()
+                )));
+            }
+            let mut seen = BTreeSet::new();
+            if let Some(duplicate) = names.iter().find(|name| !seen.insert(*name)) {
+                return Err(AlgorithmConfigError::new(format!(
+                    "random route {route_name}: targets must be unique, {duplicate} is repeated"
+                )));
+            }
             let algorithm = Random::new(weights.clone(), *seed).map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("random route {route_name}: {error}"),

@@ -1281,6 +1281,20 @@ classifier_magic = true
                 "at least one weight must be positive",
             ),
             (
+                VALID_CONFIG.replace(
+                    "targets = [\"strong\", \"weak\"]",
+                    "targets = [\"strong\", \"strong\"]",
+                ),
+                "targets must be unique, strong is repeated",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "targets = [\"strong\", \"weak\"]",
+                    "targets = [\"strong\", \"weak\"]\nweights = [1]",
+                ),
+                "expected 2 weights, got 1",
+            ),
+            (
                 VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 1.5"),
                 "base_threshold must be between 0 and 1",
             ),
