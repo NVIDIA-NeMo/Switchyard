@@ -445,36 +445,24 @@ export SWITCHYARD_VERIFIER_PROXY_TOKEN="$(
 export SWITCHYARD_VERIFIER_HTTP_PROXY="http://verifier:${SWITCHYARD_VERIFIER_PROXY_TOKEN}@proxy:3129"
 ```
 
-### 8.4 Start one task
+### 8.4 Run the Hermes demo sample
 
-Set `TASK` to a task ID present in the generated dataset and use a unique job
-name:
+The demo runs ten Terminal-Bench 2.1 tasks with frozen Hermes outcomes and
+policy-stable VGR routes:
+
+- five local-required tasks where the local tier passed and VGR selected local;
+- five cloud-required tasks where local failed, cloud passed, and VGR selected
+  cloud.
 
 ```bash
-TASK=git-leak-recovery
-JOB_NAME="tb21-vgr-qa-smoke-$(date -u +%Y%m%dT%H%M%SZ)"
-
-uv run --project "$ROOT" --no-sync harbor run \
-  --agent hermes \
-  --model openai/switchyard/vgr \
-  --path benchmark/datasets/terminal-bench-2-1-closed-book \
-  --jobs-dir benchmark/native-runs/tb21/jobs \
-  --job-name "$JOB_NAME" \
-  --n-concurrent 1 \
-  --max-retries 0 \
-  --agent-timeout-multiplier 2.0 \
-  --environment-build-timeout-multiplier 90.0 \
-  --artifact /etc/proxy-ca/strip.jsonl \
-  --ve "HTTP_PROXY=${SWITCHYARD_VERIFIER_HTTP_PROXY}" \
-  --ve "HTTPS_PROXY=${SWITCHYARD_VERIFIER_HTTP_PROXY}" \
-  --ve "http_proxy=${SWITCHYARD_VERIFIER_HTTP_PROXY}" \
-  --ve "https_proxy=${SWITCHYARD_VERIFIER_HTTP_PROXY}" \
-  --ve "NO_PROXY=localhost,127.0.0.1,proxy" \
-  --ve "no_proxy=localhost,127.0.0.1,proxy" \
-  --include-task-name "$TASK"
+bash "$ROOT/benchmark/run-hermes-demo.sh"
 ```
 
-The six verifier proxy settings are required for a closed-book benchmark run.
+The script uses the prepared closed-book dataset, creates a unique Harbor job,
+and points the containerized Hermes agent at `switchyard/vgr` on the native
+Switchyard server. The task list is
+`benchmark/tb21_hermes_demo_tasks.txt`. Add `--dry-run` to print the resolved
+Harbor command without creating a network or starting the benchmark.
 
 ## 9. Common setup failures
 
