@@ -294,6 +294,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::algorithms::llm_class::VerdictScale;
     use crate::algorithms::llm_class::{LlmClassifierConfig, LlmTaskClassifier};
     use crate::algorithms::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
     use crate::algorithms::util::escalation::EscalationGateConfig;
@@ -554,6 +555,7 @@ mod tests {
                         threshold_step: 0.0,
                         prompt: None,
                         classifier_target: None,
+                        verdict_scale: VerdictScale::default(),
                     }),
                     ..EscalationJudgeConfig::default()
                 },
@@ -585,6 +587,40 @@ mod tests {
             response.llm_response.as_agg().map(completion_text),
             Some("capable answer".to_string())
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gate_on_the_ordinal_scale_latches_below_the_threshold_rung() -> Result<()> {
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+            judge_target: ModelId::from("judge"),
+            efficient_target: ModelId::from("efficient"),
+            capable_target: ModelId::from("capable"),
+            contract: ClassifierContractConfig::default(),
+            config: EscalationJudgeConfig {
+                confirmations: 1,
+                gate: Some(EscalationGateConfig {
+                    // Between `uncertain` (0.50) and `unlikely` (0.38): unlikely and below latch.
+                    base_threshold: 0.45,
+                    threshold_step: 0.0,
+                    prompt: None,
+                    classifier_target: None,
+                    verdict_scale: VerdictScale::Ordinal,
+                }),
+                ..EscalationJudgeConfig::default()
+            },
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            gate_judge_target: None,
+        })?);
+        let judge = Queue::new([
+            r#"{"crux":"protocol framing","primary_rule":"LIM-2","capability_boundary":"unsupported","confidence":"unlikely"}"#,
+        ]);
+        let model = Queue::new(["capable answer"]);
+
+        let (selected_model, _) =
+            test_drive(router, classify_session_request(), queued(model, judge)).await?;
+
+        assert_eq!(selected_model, "capable");
         Ok(())
     }
 
@@ -668,6 +704,7 @@ mod tests {
                         threshold_step: 0.0,
                         prompt: None,
                         classifier_target: None,
+                        verdict_scale: VerdictScale::default(),
                     }),
                     ..EscalationJudgeConfig::default()
                 },

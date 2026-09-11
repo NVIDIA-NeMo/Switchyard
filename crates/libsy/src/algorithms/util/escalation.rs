@@ -16,6 +16,7 @@ use super::llm_judge::{
     ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
     StructuredJudge,
 };
+use crate::algorithms::llm_class::VerdictScale;
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
@@ -98,6 +99,10 @@ pub struct EscalationGateConfig {
     /// deployment loader, which is why it is a name here rather than a model id.
     #[serde(default)]
     pub classifier_target: Option<String>,
+    /// Whether the forecaster reports `p_solve` as a number (default) or `confidence` as one
+    /// of eight ladder rungs, mapped to band midpoints before the threshold is applied.
+    #[serde(default)]
+    pub verdict_scale: VerdictScale,
 }
 
 impl EscalationGateConfig {

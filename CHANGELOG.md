@@ -16,6 +16,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   task in practice. The trajectory judge takes over afterwards.
   `gate.classifier_target` lets the once-per-session forecast use a stronger
   model than the per-turn trajectory judge.
+- **Ordinal confidence scale for the capability forecaster** — `verdict_scale =
+  "ordinal"` on capability routes and `escalation.gate.verdict_scale` ask the
+  judge for one of eight named rungs instead of a probability; rungs map to
+  band midpoints so thresholds keep working. Models rank tasks more reliably
+  than they number them, and a stated numeric cutoff invites answers just
+  under it.
 - **Per-target `reasoning_effort`** — a target can force the reasoning effort
   of every request it serves, replacing the caller's value (`reasoning.effort`
   on the Responses wire, `reasoning_effort` on Chat Completions), so a strong

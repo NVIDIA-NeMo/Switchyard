@@ -119,7 +119,16 @@ uses to set its split, and the gate reuses that policy unchanged, including
 the packaged forecaster prompt. `gate.classifier_target` lets the gate call a
 different target from the per-turn judge: the forecast runs once per session
 and rewards a strong model, while the trajectory judge runs on every weak turn
-and is where a cheap model belongs. The gate verdict is recorded in the route's
+and is where a cheap model belongs.
+
+`gate.verdict_scale = "ordinal"` asks the forecaster for one rung of a fixed
+ladder (`surely` down to `almost_surely_not`) instead of a probability. Models
+produce ordinal judgements more reliably than calibrated numbers: asked for a
+probability they cluster on a few round values, and given a stated cutoff they
+write a number just under it. Each rung maps to the midpoint of the frequency
+band it names, so `base_threshold` still selects the split; a threshold of 0.45
+latches `unlikely` and below, 0.55 latches `uncertain` and below. The chosen
+rung is recorded in the evidence next to the score. The gate verdict is recorded in the route's
 evidence as `{"source": "escalation", "verdict": "gate"}`.
 
 ## Judge model compatibility
