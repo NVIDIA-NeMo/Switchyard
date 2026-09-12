@@ -520,7 +520,7 @@ impl VgrClassifier {
             )
             .await?;
         let typed = rungs::parse_task_type(&agg);
-        if typed.is_none() {
+        if typed.is_none() && !rungs::task_type_abstained(&agg) {
             record.unknown(Stage::Typing, Unknown::Unparsable);
         }
         typed
@@ -629,13 +629,13 @@ impl VgrClassifier {
             return signals;
         }
 
-        // The deliberating readout: the same question, reasoned before answering.
+        // The deliberating readout: the same question, briefly reasoned before answering.
         signals.deliberation = match self
             .ask(
                 driver,
                 self.config.judge_target().clone(),
                 Billing::Local,
-                Question::Evidence,
+                Question::Deliberation,
                 judged,
                 rungs::DELIBERATION_MAX_OUTPUT_TOKENS,
                 request,

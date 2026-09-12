@@ -1866,12 +1866,35 @@ async fn typing_the_request_makes_the_answer_regime_reachable() -> Result<()> {
                     .first()
                     .and_then(|m| m.text_content(""))
                     .unwrap_or_default();
+                let system = r
+                    .llm_request
+                    .instructions
+                    .iter()
+                    .flat_map(|instruction| &instruction.content)
+                    .find_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
                 let result: ServeResult = match log.targets().len() {
                     1 => Ok(reply("Paris.")),
-                    2 => Ok(reply("answer")),
+                    2 => {
+                        assert_eq!(r.llm_request.reasoning.effort.as_deref(), Some("none"));
+                        Ok(reply("answer"))
+                    }
                     // The local rungs come first and neither commits.
                     3 => Ok(reply_with_readout("yes", 0.1)),
-                    4 => Ok(reply("no")),
+                    4 => {
+                        assert!(system.contains("no more than three short sentences"));
+                        assert!(system.contains("finish within the available token budget"));
+                        assert_eq!(r.llm_request.reasoning.effort, None);
+                        assert_eq!(r.llm_request.sampling.temperature, Some(0.0));
+                        assert_eq!(
+                            r.llm_request.output.max_output_tokens,
+                            Some(super::super::rungs::DELIBERATION_MAX_OUTPUT_TOKENS)
+                        );
+                        Ok(reply("no"))
+                    }
                     _ => {
                         // The witness is asked the task and never shown the attempt,
                         // so agreement between the two is evidence, not an echo.

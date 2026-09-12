@@ -44,7 +44,7 @@ const VGR_DECISIONS_METRIC: &str = "switchyard.vgr.decisions";
 /// reference derives this by hashing its own source text, which has no Rust
 /// analogue; a hand-maintained version is the honest equivalent — it must be
 /// bumped when a prompt in [`rungs`](super::rungs) changes.
-pub(super) const PROMPT_VERSION: &str = "2";
+pub(super) const PROMPT_VERSION: &str = "3";
 
 /// Which rung a timing belongs to.
 ///
