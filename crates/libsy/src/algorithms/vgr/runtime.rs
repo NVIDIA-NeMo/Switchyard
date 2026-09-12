@@ -637,7 +637,7 @@ impl VgrClassifier {
                 Billing::Local,
                 Question::Deliberation,
                 judged,
-                rungs::DELIBERATION_MAX_OUTPUT_TOKENS,
+                rungs::LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS,
                 request,
                 Stage::Deliberation,
                 record,

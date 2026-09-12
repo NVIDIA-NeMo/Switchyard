@@ -1891,7 +1891,7 @@ async fn typing_the_request_makes_the_answer_regime_reachable() -> Result<()> {
                         assert_eq!(r.llm_request.sampling.temperature, Some(0.0));
                         assert_eq!(
                             r.llm_request.output.max_output_tokens,
-                            Some(super::super::rungs::DELIBERATION_MAX_OUTPUT_TOKENS)
+                            Some(super::super::rungs::LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS)
                         );
                         Ok(reply("no"))
                     }

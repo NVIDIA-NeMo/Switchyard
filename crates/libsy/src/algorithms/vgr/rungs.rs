@@ -27,9 +27,15 @@ use super::rules::Tri;
 
 /// Completion budget for a deliberating verifier.
 ///
-/// Leaves enough room for the local verifier to complete the measured good
-/// cases while still failing closed on a verifier that deliberates indefinitely.
-pub(super) const DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 768;
+/// Enough for an ordinary judge to reason before its verdict line, and small
+/// enough that a verifier which ignores the one-word instruction still costs little.
+pub(super) const DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 512;
+
+/// Completion budget for the local thinking-model deliberation rung.
+///
+/// Leaves enough room for measured good cases to finish while still failing
+/// closed when the model deliberates indefinitely.
+pub(super) const LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 768;
 
 /// Instruction shared by every verifier prompt.
 ///
@@ -562,7 +568,7 @@ mod tests {
         let request = build_request(
             Question::Deliberation,
             "evidence",
-            DELIBERATION_MAX_OUTPUT_TOKENS,
+            LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS,
             None,
         );
         assert_eq!(request.llm_request.sampling.temperature, Some(0.0));
