@@ -69,6 +69,7 @@ struct RouteConfig {
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
     vision: Option<bool>,
+    base_instructions: Option<String>,
     algorithm: AlgorithmSpec,
 }
 
@@ -88,6 +89,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
         let vision = take_optional(&mut table, "vision")?;
+        let base_instructions = take_optional(&mut table, "base_instructions")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
@@ -96,6 +98,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             tool_calling,
             reasoning,
             vision,
+            base_instructions,
             algorithm,
         })
     }
@@ -236,7 +239,7 @@ impl DeploymentConfig {
             if let Some(subagent) = names.subagent {
                 models = models.with_subagent(resolve_category_models(subagent, &targets)?);
             }
-            let route = Route::new(
+            let mut route = Route::new(
                 algorithm,
                 route_clients,
                 caller_auth,
@@ -246,6 +249,9 @@ impl DeploymentConfig {
                 decision_targets,
                 models,
             );
+            if let Some(instructions) = &config.base_instructions {
+                route = route.with_base_instructions(instructions.clone())?;
+            }
             routes.push((config.id.clone(), route));
         }
         let runner = Runner::new(routes).with_fallback_url(fallback_base_url);

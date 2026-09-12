@@ -77,6 +77,11 @@ impl Runner {
             .map(|(_, route)| route)
     }
 
+    /// Iterates over route IDs and their configuration in caller-provided order.
+    pub fn routes(&self) -> impl Iterator<Item = (&ModelId, &Route)> {
+        self.routes.iter().map(|(id, route)| (id, route))
+    }
+
     /// Iterates over configured routes in caller-provided order.
     pub fn models(&self) -> impl Iterator<Item = ModelInfo<'_>> {
         self.routes.iter().map(|(id, route)| ModelInfo {

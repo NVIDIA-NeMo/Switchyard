@@ -122,6 +122,7 @@ pub struct Route {
     clients: ClientRouter,
     caller_auth: Option<CallerAuthKind>,
     capabilities: ModelCapabilities,
+    base_instructions: Option<String>,
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
@@ -152,6 +153,7 @@ impl Route {
             clients,
             caller_auth,
             capabilities,
+            base_instructions: None,
             anthropic_auxiliary_target,
             responses_auxiliary_target,
             decision_targets,
@@ -167,6 +169,23 @@ impl Route {
     /// Returns model-list capability metadata.
     pub fn capabilities(&self) -> ModelCapabilities {
         self.capabilities
+    }
+
+    /// Sets the instructions advertised to Codex, preserving the text verbatim.
+    /// Returns a configuration error if the text is empty or whitespace-only.
+    pub fn with_base_instructions(mut self, instructions: String) -> Result<Self, RunnerError> {
+        if instructions.trim().is_empty() {
+            return Err(RunnerError::configuration(
+                "base_instructions must not be empty",
+            ));
+        }
+        self.base_instructions = Some(instructions);
+        Ok(self)
+    }
+
+    /// Returns the route's Codex instructions, or `None` when undeclared.
+    pub fn base_instructions(&self) -> Option<&str> {
+        self.base_instructions.as_deref()
     }
 
     /// Returns the forwarded caller credential family.
