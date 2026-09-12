@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 use switchyard_protocol::{
-    AggLlmResponse, LlmClientError, LlmResponse, Message, ModelId, Request, Response, Role,
+    AggLlmResponse, Category, LlmClientError, LlmResponse, Message, Request, Response, Role,
 };
 
 use super::llm_class;
@@ -50,18 +50,12 @@ struct EscalationClassifier {
     judge: JudgeClassifier<EscalationJudge, EscalationPolicy>,
     /// Optional capability forecast run once per session before the first efficient call.
     gate: Option<Arc<dyn Classifier<State>>>,
-    capable: ModelId,
-    efficient: ModelId,
     /// Consecutive escalate verdicts required to latch.
     confirmations: u32,
 }
 
 /// Builds the escalation classifier used by the shared LLM classifier route shell.
 pub(super) fn build_classifier(
-    gate_judge_target: Option<ModelId>,
-    judge_target: ModelId,
-    efficient_target: &ModelId,
-    capable_target: &ModelId,
     contract_config: ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
@@ -69,9 +63,6 @@ pub(super) fn build_classifier(
     let confirmations = config.confirmations;
     let gate = match &config.gate {
         Some(gate) => Some(llm_class::build_capability_gate(
-            gate_judge_target.unwrap_or_else(|| judge_target.clone()),
-            efficient_target,
-            capable_target,
             gate,
             contract_config.response_format_type(),
             max_output_tokens,
@@ -80,16 +71,7 @@ pub(super) fn build_classifier(
     };
     let classifier: Arc<dyn Classifier<State>> = Arc::new(EscalationClassifier {
         gate,
-        judge: escalation::build_judge(
-            judge_target,
-            capable_target.clone(),
-            efficient_target.clone(),
-            &contract_config,
-            config,
-            max_output_tokens,
-        )?,
-        capable: capable_target.clone(),
-        efficient: efficient_target.clone(),
+        judge: escalation::build_judge(&contract_config, config, max_output_tokens)?,
         confirmations,
     });
     Ok(classifier)
@@ -101,13 +83,10 @@ impl Classifier<State> for EscalationClassifier {
         &self,
         state: &mut State,
         request: &mut Request,
-        driver: Option<&Driver>,
+        driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
-        let Some(driver) = driver else {
-            return Err(LibsyError::AlgorithmError {
-                message: "escalation classifier requires a driver".into(),
-            });
-        };
+        let capable = driver.first_model_for(&Category::Capable)?.clone();
+        let efficient = driver.first_model_for(&Category::Efficient)?.clone();
 
         // A confirmed session stays capable without a judge call.
         if streak(state) >= self.confirmations {
@@ -115,7 +94,7 @@ impl Classifier<State> for EscalationClassifier {
                 "source": "escalation",
                 "verdict": "latched",
             }));
-            return Ok((decisive(&self.capable), None));
+            return Ok((decisive(&capable), None));
         }
 
         // The gate forecasts once per session, from the task framing alone, before the efficient
@@ -129,11 +108,11 @@ impl Classifier<State> for EscalationClassifier {
                 .extra
                 .insert(GATE_KEY.to_string(), StateValue::Count(1));
             let mut gate_request = request.clone();
-            match gate.score(state, &mut gate_request, Some(driver)).await {
+            match gate.score(state, &mut gate_request, driver).await {
                 Ok((classification, _)) => {
                     let to_capable = classification
                         .argmax(false)?
-                        .is_some_and(|score| score.target == self.capable);
+                        .is_some_and(|score| score.target == capable);
                     // The forecaster's evidence carries `score` (p_solve) and `threshold`; log it
                     // so an operator can read the forecast distribution and tune the threshold.
                     let forecast = driver.evidence().unwrap_or(Value::Null);
@@ -148,7 +127,7 @@ impl Classifier<State> for EscalationClassifier {
                             StateValue::Count(self.confirmations),
                         );
                         tracing::info!(
-                            target = %self.capable,
+                            target = %capable,
                             "escalation gate latched the session to the capable tier"
                         );
                         let mut evidence = serde_json::json!({
@@ -165,7 +144,7 @@ impl Classifier<State> for EscalationClassifier {
                             }
                         }
                         driver.set_evidence(evidence);
-                        return Ok((decisive(&self.capable), None));
+                        return Ok((decisive(&capable), None));
                     }
                 }
                 Err(error) => {
@@ -179,11 +158,11 @@ impl Classifier<State> for EscalationClassifier {
         // If the efficient model exceeds its context window, fall through to capable. This call
         // deliberately has one candidate so the classifier sees the efficient model's error.
         tracing::info!(
-            target = %self.efficient,
+            target = %efficient,
             "escalation classifier selected efficient tier"
         );
         let efficient_response = match driver
-            .call_model(request.clone(), vec![self.efficient.clone()])
+            .call_model(request.clone(), vec![efficient.clone()])
             .await
         {
             Ok(r) => r,
@@ -195,7 +174,7 @@ impl Classifier<State> for EscalationClassifier {
                     "source": "fallback",
                     "reason_code": "context_window",
                 }));
-                return Ok((decisive(&self.capable), None));
+                return Ok((decisive(&capable), None));
             }
             Err(e) => return Err(e),
         };
@@ -208,10 +187,10 @@ impl Classifier<State> for EscalationClassifier {
                     "source": "fallback",
                     "reason_code": "transport",
                 }));
-                return Ok((decisive(&self.capable), None));
+                return Ok((decisive(&capable), None));
             }
             Err(source) => {
-                return Err(LibsyError::client_call(self.efficient.clone(), source));
+                return Err(LibsyError::client_call(efficient.clone(), source));
             }
         };
         // Append the efficient reply so the judge reads this turn's completed trajectory.
@@ -229,15 +208,12 @@ impl Classifier<State> for EscalationClassifier {
             metadata: efficient_response.metadata,
         };
 
-        let (classification, _) = self
-            .judge
-            .score(state, &mut judge_request, Some(driver))
-            .await?;
+        let (classification, _) = self.judge.score(state, &mut judge_request, driver).await?;
 
         let held = streak(state);
         let best = classification.argmax(false)?;
         let (escalate, pending) = match &best {
-            Some(score) if score.target == self.capable => (true, held + 1),
+            Some(score) if score.target == capable => (true, held + 1),
             Some(_) => (false, 0),
             None => (false, held),
         };
@@ -251,7 +227,7 @@ impl Classifier<State> for EscalationClassifier {
                 "source": "escalation",
                 "verdict": "escalate",
             }));
-            return Ok((decisive(&self.capable), None));
+            return Ok((decisive(&capable), None));
         }
 
         if escalate {
@@ -261,19 +237,19 @@ impl Classifier<State> for EscalationClassifier {
             }));
         }
 
-        Ok((decisive(&self.efficient), Some(efficient_response)))
+        Ok((decisive(&efficient), Some(efficient_response)))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use std::sync::Arc;
 
     use parking_lot::Mutex;
     use switchyard_protocol::{
-        ContentBlock, LlmClientError, LlmResponse, LlmResponseChunk, Metadata, Request, Response,
-        completion_text, text_request, text_response,
+        ContentBlock, LlmClientError, LlmResponse, LlmResponseChunk, Metadata, ModelId, Request,
+        Response, completion_text, text_request, text_response,
     };
 
     use super::*;
@@ -281,7 +257,7 @@ mod tests {
     use crate::algorithms::llm_class::{LlmClassifierConfig, LlmTaskClassifier};
     use crate::algorithms::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
     use crate::algorithms::util::escalation::EscalationGateConfig;
-    use crate::core::testing::{Serve, reply, test_drive};
+    use crate::core::testing::{Serve, reply, test_drive_with_models};
 
     /// A queue of replies, drained in order.
     struct Queue(Mutex<VecDeque<String>>);
@@ -336,6 +312,19 @@ mod tests {
         }
     }
 
+    fn runtime_models() -> HashMap<Category, Vec<ModelId>> {
+        [
+            (Category::Judge, vec![ModelId::from("judge")]),
+            (Category::Efficient, vec![ModelId::from("efficient")]),
+            (Category::Capable, vec![ModelId::from("capable")]),
+            (
+                Category::Any,
+                vec![ModelId::from("capable"), ModelId::from("efficient")],
+            ),
+        ]
+        .into()
+    }
+
     /// Returns a stream that emits partial content before failing during aggregation.
     fn streamed_then_error(error: LlmClientError) -> Response {
         Response {
@@ -355,16 +344,12 @@ mod tests {
     fn escalation_router() -> Result<Arc<LlmTaskClassifier>> {
         Ok(Arc::new(LlmTaskClassifier::new(
             LlmClassifierConfig::Escalation {
-                judge_target: ModelId::from("judge"),
-                efficient_target: ModelId::from("efficient"),
-                capable_target: ModelId::from("capable"),
                 contract: ClassifierContractConfig::default(),
                 config: EscalationJudgeConfig {
                     confirmations: 1,
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-                gate_judge_target: None,
             },
         )?))
     }
@@ -374,9 +359,10 @@ mod tests {
         let judge = Queue::new([r#"{"escalate":false,"reason":"progressing"}"#]);
         let model = Queue::new(["efficient answer"]);
 
-        let (selected_model, response) = test_drive(
+        let (selected_model, response) = test_drive_with_models(
             escalation_router()?,
             classify_request(),
+            runtime_models(),
             queued(model, judge),
         )
         .await?;
@@ -412,19 +398,15 @@ mod tests {
             }
         };
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
-            judge_target: ModelId::from("judge"),
-            efficient_target: ModelId::from("efficient"),
-            capable_target: ModelId::from("capable"),
             contract: ClassifierContractConfig::default().with_prompt("Custom trajectory rubric."),
             config: EscalationJudgeConfig {
                 confirmations: 1,
                 ..EscalationJudgeConfig::default()
             },
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-            gate_judge_target: None,
         })?);
 
-        test_drive(router, classify_request(), serve).await?;
+        test_drive_with_models(router, classify_request(), runtime_models(), serve).await?;
 
         assert_eq!(&*prompts.lock(), &["Custom trajectory rubric."]);
         Ok(())
@@ -435,9 +417,10 @@ mod tests {
         let judge = Queue::new([r#"{"escalate":true,"reason":"stuck in a loop"}"#]);
         let model = Queue::new(["efficient draft", "capable answer"]);
 
-        let (selected_model, response) = test_drive(
+        let (selected_model, response) = test_drive_with_models(
             escalation_router()?,
             classify_request(),
+            runtime_models(),
             queued(model, judge),
         )
         .await?;
@@ -457,13 +440,15 @@ mod tests {
         let router = escalation_router()?;
         let request = classify_session_request();
 
-        test_drive(
+        test_drive_with_models(
             router.clone(),
             request.clone(),
+            runtime_models(),
             queued(Arc::clone(&model), Arc::clone(&judge)),
         )
         .await?;
-        let (selected_model, _) = test_drive(router, request, queued(model, judge)).await?;
+        let (selected_model, _) =
+            test_drive_with_models(router, request, runtime_models(), queued(model, judge)).await?;
 
         assert_eq!(selected_model, "capable");
         Ok(())
@@ -473,9 +458,6 @@ mod tests {
     fn gated_router(base_threshold: f64) -> Result<Arc<LlmTaskClassifier>> {
         Ok(Arc::new(LlmTaskClassifier::new(
             LlmClassifierConfig::Escalation {
-                judge_target: ModelId::from("judge"),
-                efficient_target: ModelId::from("efficient"),
-                capable_target: ModelId::from("capable"),
                 contract: ClassifierContractConfig::default(),
                 config: EscalationJudgeConfig {
                     confirmations: 1,
@@ -490,7 +472,6 @@ mod tests {
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-                gate_judge_target: None,
             },
         )?))
     }
@@ -505,9 +486,10 @@ mod tests {
         let judge = Queue::new([GATE_LOW]);
         let model = Queue::new(["capable answer"]);
 
-        let (selected_model, response) = test_drive(
+        let (selected_model, response) = test_drive_with_models(
             gated_router(0.5)?,
             classify_session_request(),
+            runtime_models(),
             queued(model, judge),
         )
         .await?;
@@ -523,9 +505,6 @@ mod tests {
     #[tokio::test]
     async fn gate_on_the_ordinal_scale_latches_below_the_threshold_rung() -> Result<()> {
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
-            judge_target: ModelId::from("judge"),
-            efficient_target: ModelId::from("efficient"),
-            capable_target: ModelId::from("capable"),
             contract: ClassifierContractConfig::default(),
             config: EscalationJudgeConfig {
                 confirmations: 1,
@@ -541,15 +520,19 @@ mod tests {
                 ..EscalationJudgeConfig::default()
             },
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-            gate_judge_target: None,
         })?);
         let judge = Queue::new([
             r#"{"crux":"protocol framing","primary_rule":"LIM-2","capability_boundary":"unsupported","confidence":"unlikely"}"#,
         ]);
         let model = Queue::new(["capable answer"]);
 
-        let (selected_model, _) =
-            test_drive(router, classify_session_request(), queued(model, judge)).await?;
+        let (selected_model, _) = test_drive_with_models(
+            router,
+            classify_session_request(),
+            runtime_models(),
+            queued(model, judge),
+        )
+        .await?;
 
         assert_eq!(selected_model, "capable");
         Ok(())
@@ -560,9 +543,10 @@ mod tests {
         let judge = Queue::new([GATE_HIGH, r#"{"escalate":false,"reason":"progressing"}"#]);
         let model = Queue::new(["efficient answer"]);
 
-        let (selected_model, response) = test_drive(
+        let (selected_model, response) = test_drive_with_models(
             gated_router(0.5)?,
             classify_session_request(),
+            runtime_models(),
             queued(model, judge),
         )
         .await?;
@@ -589,13 +573,15 @@ mod tests {
         let router = gated_router(0.5)?;
         let request = classify_session_request();
 
-        let (first, _) = test_drive(
+        let (first, _) = test_drive_with_models(
             router.clone(),
             request.clone(),
+            runtime_models(),
             queued(Arc::clone(&model), Arc::clone(&judge)),
         )
         .await?;
-        let (second, _) = test_drive(router, request, queued(model, judge)).await?;
+        let (second, _) =
+            test_drive_with_models(router, request, runtime_models(), queued(model, judge)).await?;
 
         assert_eq!(first, "efficient");
         assert_eq!(second, "capable");
@@ -610,9 +596,10 @@ mod tests {
         ]);
         let model = Queue::new(["efficient answer"]);
 
-        let (selected_model, _) = test_drive(
+        let (selected_model, _) = test_drive_with_models(
             gated_router(0.5)?,
             classify_session_request(),
+            runtime_models(),
             queued(model, judge),
         )
         .await?;
@@ -625,9 +612,6 @@ mod tests {
     fn gate_threshold_is_validated() {
         let build = |base_threshold: f64| {
             LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
-                judge_target: ModelId::from("judge"),
-                efficient_target: ModelId::from("efficient"),
-                capable_target: ModelId::from("capable"),
                 contract: ClassifierContractConfig::default(),
                 config: EscalationJudgeConfig {
                     gate: Some(EscalationGateConfig {
@@ -641,7 +625,6 @@ mod tests {
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-                gate_judge_target: None,
             })
         };
         assert!(build(0.4).is_ok());
@@ -649,9 +632,6 @@ mod tests {
 
         let rung = |min_confidence: Option<&str>, base_threshold: Option<f64>| {
             LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
-                judge_target: ModelId::from("judge"),
-                efficient_target: ModelId::from("efficient"),
-                capable_target: ModelId::from("capable"),
                 contract: ClassifierContractConfig::default(),
                 config: EscalationJudgeConfig {
                     gate: Some(EscalationGateConfig {
@@ -665,7 +645,6 @@ mod tests {
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-                gate_judge_target: None,
             })
         };
         assert!(rung(Some("uncertain"), None).is_ok());
@@ -687,8 +666,13 @@ mod tests {
             }
         };
 
-        let (selected_model, response) =
-            test_drive(escalation_router()?, classify_request(), serve).await?;
+        let (selected_model, response) = test_drive_with_models(
+            escalation_router()?,
+            classify_request(),
+            runtime_models(),
+            serve,
+        )
+        .await?;
 
         assert_eq!(selected_model, "capable");
         assert_eq!(
@@ -724,7 +708,8 @@ mod tests {
         let mut request = classify_request();
         request.llm_request.stream = true;
 
-        let result = test_drive(escalation_router()?, request, serve).await;
+        let result =
+            test_drive_with_models(escalation_router()?, request, runtime_models(), serve).await;
 
         assert_eq!(&*calls.lock(), &["efficient", "capable"]);
         let (_, response) = result?;
@@ -749,7 +734,7 @@ mod tests {
         let mut request = classify_request();
         request.llm_request.stream = true;
 
-        match test_drive(escalation_router()?, request, serve).await {
+        match test_drive_with_models(escalation_router()?, request, runtime_models(), serve).await {
             Err(LibsyError::ClientCall {
                 target,
                 source: LlmClientError::InvalidResponse { .. },

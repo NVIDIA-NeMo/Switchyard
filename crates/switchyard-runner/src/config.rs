@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+use libsy::RuntimeModels;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -15,7 +16,7 @@ use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     TranslatingLlmClient,
 };
-use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
+use switchyard_protocol::{Category, ModelId, RoutedLlmClient, WireFormat};
 
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
@@ -227,6 +228,14 @@ impl DeploymentConfig {
                 .into_iter()
                 .filter_map(|name| self.decision_target(name))
                 .collect();
+            let names = config
+                .algorithm
+                .runtime_model_names(route_name)
+                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            let mut models = RuntimeModels::new(resolve_category_models(names.parent, &targets)?);
+            if let Some(subagent) = names.subagent {
+                models = models.with_subagent(resolve_category_models(subagent, &targets)?);
+            }
             let route = Route::new(
                 algorithm,
                 route_clients,
@@ -235,6 +244,7 @@ impl DeploymentConfig {
                 anthropic_auxiliary_target,
                 responses_auxiliary_target,
                 decision_targets,
+                models,
             );
             routes.push((config.id.clone(), route));
         }
@@ -556,6 +566,30 @@ impl ClientFormat {
         }
     }
 }
+
+/// Resolves one scope's configured target names to the models the driver serves.
+fn resolve_category_models(
+    names: HashMap<Category, Vec<String>>,
+    targets: &BTreeMap<String, ModelId>,
+) -> RunnerResult<HashMap<Category, Vec<ModelId>>> {
+    names
+        .into_iter()
+        .map(|(category, names)| {
+            let models = names
+                .into_iter()
+                .map(|name| {
+                    targets.get(&name).cloned().ok_or_else(|| {
+                        RunnerError::configuration(format!(
+                            "route references unknown target {name}"
+                        ))
+                    })
+                })
+                .collect::<RunnerResult<Vec<_>>>()?;
+            Ok((category, models))
+        })
+        .collect()
+}
+
 fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
@@ -739,7 +773,26 @@ target = "weak"
     fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
         let runner = Runner::from_toml(VALID_CONFIG)?;
 
-        assert!(runner.route("switchyard/classifier").is_some());
+        let classifier = runner
+            .route("switchyard/classifier")
+            .expect("classifier route should exist");
+        let models = classifier.models();
+        assert_eq!(
+            models.models_for(&Category::Judge),
+            [ModelId::from("classifier/model")]
+        );
+        assert_eq!(
+            models.models_for(&Category::Efficient),
+            [ModelId::from("weak/model")]
+        );
+        assert_eq!(
+            models.models_for(&Category::Capable),
+            [ModelId::from("strong/model")]
+        );
+        assert_eq!(
+            models.models_for(&Category::Any),
+            [ModelId::from("weak/model"), ModelId::from("strong/model")]
+        );
         assert!(runner.route("switchyard/passthrough").is_some());
         Ok(())
     }
@@ -757,16 +810,37 @@ target = "weak"
         configured.push_str(
             r#"type = "llm_classifier"
 mode = "custom"
-classifier_target = "classifier"
-targets = ["strong", "weak"]
-default_target = "weak"
+models = { judge = ["classifier"], capable = ["strong"], efficient = ["weak"], any = ["strong", "weak"] }
+default_target = "efficient"
 prompt = "Select a target for this delegated task."
-response_schema = '{"type":"object","properties":{"target":{"type":"string","enum":["strong","weak"]}},"required":["target"],"additionalProperties":false}'
+response_schema = '{"type":"object","properties":{"target":{"type":"string","enum":["capable","efficient"]}},"required":["target"],"additionalProperties":false}'
 policy = { type = "target_selector", selector = "/target" }
 classify_trigger = "new_session""#,
         );
         configured.push_str(extra);
         configured
+    }
+
+    #[test]
+    fn subagent_models_stay_separate_from_the_parent_tiers() -> RunnerResult<()> {
+        // The sub-agent target is also the parent's capable tier. Merged into one group it
+        // would be indistinguishable from that tier, and delegated work would follow the
+        // parent's ordering instead of its own configured target.
+        let runner = runner_from_toml(&with_subagent_passthrough(&stage_config(), "stage"))?;
+        let models = runner
+            .route("switchyard/stage")
+            .expect("stage route should exist")
+            .models();
+
+        assert_eq!(
+            models.subagent_models_for(&Category::Any),
+            [ModelId::from("strong/model")]
+        );
+        assert_eq!(
+            models.models_for(&Category::Any),
+            [ModelId::from("strong/model"), ModelId::from("weak/model")]
+        );
+        Ok(())
     }
 
     fn with_subagent_passthrough(config: &str, route: &str) -> String {
@@ -1220,9 +1294,16 @@ classifier_magic = true
             (
                 VALID_CONFIG.replace(
                     "targets = [\"strong\", \"weak\"]",
+                    "targets = [\"strong\", \"weak\"]\nweights = [0, 0]",
+                ),
+                "at least one weight must be positive",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "targets = [\"strong\", \"weak\"]",
                     "targets = [\"strong\", \"strong\"]",
                 ),
-                "random targets must be unique",
+                "targets must be unique, strong is repeated",
             ),
             (
                 VALID_CONFIG.replace(
@@ -1230,13 +1311,6 @@ classifier_magic = true
                     "targets = [\"strong\", \"weak\"]\nweights = [1]",
                 ),
                 "expected 2 weights, got 1",
-            ),
-            (
-                VALID_CONFIG.replace(
-                    "targets = [\"strong\", \"weak\"]",
-                    "targets = [\"strong\", \"weak\"]\nweights = [0, 0]",
-                ),
-                "at least one weight must be positive",
             ),
             (
                 VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 1.5"),
@@ -1671,6 +1745,24 @@ advisor_target = "advisor"
     #[test]
     fn advisor_route_parses_with_defaults_and_builds() -> RunnerResult<()> {
         let state = runner_from_toml(ADVISOR_CONFIG)?;
+        let route = state
+            .route("switchyard/advisor")
+            .expect("advisor route should exist");
+        let models = route.models();
+        // The gate calls the executor through `efficient`; `any` keeps it in the
+        // route's last-resort pool.
+        assert_eq!(
+            models.models_for(&Category::Efficient),
+            [ModelId::from("executor/model")]
+        );
+        assert_eq!(
+            models.models_for(&Category::Any),
+            [ModelId::from("executor/model")]
+        );
+        assert_eq!(
+            models.models_for(&Category::Judge),
+            [ModelId::from("advisor/model")]
+        );
         assert_eq!(
             state
                 .models()

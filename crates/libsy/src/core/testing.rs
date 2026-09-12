@@ -13,14 +13,33 @@
 //! The closure is async so a fake can block on a barrier, wait on a notify, or never
 //! resolve, which is what the concurrency, hedging, and fan-out tests need.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use switchyard_protocol::{LlmClientError, LlmResponse, ModelId, Request, Response, text_response};
+use switchyard_protocol::{
+    Category, LlmClientError, LlmResponse, ModelId, Request, Response, text_response,
+};
 
-use crate::core::algorithm::{Algorithm, CallModel};
+use crate::core::algorithm::{Algorithm, CallModel, Driver, RuntimeModels};
 use crate::{LibsyError, Result};
+
+/// Builds one runtime model category for a test.
+pub(crate) fn category_models(
+    category: Category,
+    names: &[&str],
+) -> HashMap<Category, Vec<ModelId>> {
+    [(
+        category,
+        names.iter().map(|name| ModelId::from(*name)).collect(),
+    )]
+    .into()
+}
+
+pub(crate) fn empty_driver() -> Driver {
+    Driver::new("test", Arc::new(RuntimeModels::default())).0
+}
 
 /// The result a fake client hands back for one offloaded call.
 pub(crate) type ServeResult = std::result::Result<Response, LlmClientError>;
@@ -47,9 +66,19 @@ pub(crate) async fn test_drive(
     request: Request,
     serve: impl Serve,
 ) -> Result<(ModelId, Response)> {
+    test_drive_with_models(algorithm, request, RuntimeModels::default(), serve).await
+}
+
+/// Drive one request with an explicit runtime model set.
+pub(crate) async fn test_drive_with_models(
+    algorithm: Arc<dyn Algorithm>,
+    request: Request,
+    models: impl Into<RuntimeModels>,
+    serve: impl Serve,
+) -> Result<(ModelId, Response)> {
     let serve = Arc::new(serve);
     let routing_serve = Arc::clone(&serve);
-    let outcome = crate::drive(algorithm, request, move |call| {
+    let outcome = crate::drive(algorithm, request, Arc::new(models.into()), move |call| {
         fulfill(Arc::clone(&routing_serve), call)
     })
     .await?;

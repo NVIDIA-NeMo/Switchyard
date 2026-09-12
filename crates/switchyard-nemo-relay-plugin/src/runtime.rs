@@ -728,6 +728,7 @@ fn identity_metadata(metadata: Option<&Metadata>) -> Json {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+    use switchyard_runner::RuntimeModels;
 
     use switchyard_llm_client::ClientRouter;
     use switchyard_protocol::{LlmClientError, LlmResponseStreamEvent, ModelId, Usage};
@@ -749,6 +750,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            RuntimeModels::default(),
         );
         SwitchyardRuntime {
             runner: Runner::new(vec![(ModelId::from(model), route)]),
