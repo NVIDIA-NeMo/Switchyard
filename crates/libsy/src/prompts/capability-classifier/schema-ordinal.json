@@ -1,0 +1,52 @@
+{
+  "type": "json_schema",
+  "json_schema": {
+    "name": "CapabilityClassifierOrdinalDecision",
+    "strict": true,
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "crux",
+        "primary_rule",
+        "capability_boundary",
+        "confidence"
+      ],
+      "properties": {
+        "crux": {"type": "string", "minLength": 1},
+        "primary_rule": {
+          "type": "string",
+          "enum": [
+            "SUP-1",
+            "SUP-2",
+            "SUP-3",
+            "SUP-4",
+            "SUP-5",
+            "UNC-1",
+            "UNC-2",
+            "LIM-1",
+            "LIM-2",
+            "none"
+          ]
+        },
+        "capability_boundary": {
+          "type": "string",
+          "enum": ["supported", "uncertain", "unsupported", "unmatched"]
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "surely",
+            "extremely_likely",
+            "very_likely",
+            "likely",
+            "uncertain",
+            "unlikely",
+            "very_unlikely",
+            "almost_surely_not"
+          ]
+        }
+      }
+    }
+  }
+}
