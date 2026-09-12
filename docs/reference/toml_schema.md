@@ -121,8 +121,10 @@ Every route takes the common keys below, plus the keys for its type.
 
 For Codex direct-provider discovery, set `base_instructions` on each route to the
 complete prompt you want Codex to use. TOML multiline strings can hold the prompt.
-Leading and trailing whitespace is preserved; empty or whitespace-only values are
-rejected.
+Switchyard preserves the text after TOML parsing, including leading and trailing
+whitespace. TOML removes a newline immediately after the opening delimiter of a
+multiline string before Switchyard receives the value. Empty or whitespace-only
+values are rejected.
 
 To compare a routed session with a direct session, use the same resolved base
 instructions as the direct session for that Codex version, model, and configuration.
