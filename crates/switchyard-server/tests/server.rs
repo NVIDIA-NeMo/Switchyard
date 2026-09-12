@@ -39,6 +39,7 @@ type TestResult<T = ()> = Result<T, TestError>;
 
 const ROUTE_MODEL: &str = "switchyard/random";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+static ADVISOR_REDO_METRICS_LOCK: Mutex<()> = Mutex::const_new(());
 
 struct MockUpstream {
     base_url: String,
@@ -328,6 +329,8 @@ async fn upstream_chat(
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#.to_string()
     } else if model == "model/classifier" {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
+    } else if prompt == "complete-task" {
+        "Completed the task".to_string()
     } else {
         "ok".to_string()
     };
@@ -396,6 +399,84 @@ async fn upstream_responses_requires_forwarded_auth(
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
+    let model = body["model"].as_str().unwrap_or_default();
+    if matches!(model, "model/planner" | "model/executor") {
+        let request_text = body.to_string();
+        let is_review = request_text.contains("Reply with one of these forms")
+            || request_text.contains("force-redo");
+        let content = if is_review && request_text.contains("force-redo") {
+            "REDO\nCover the missing edge case."
+        } else if is_review {
+            "APPROVE"
+        } else if model == "model/executor" {
+            "Completed the task"
+        } else {
+            "Plan complete"
+        };
+        let output = if model == "model/executor" && !is_review {
+            json!([
+                {
+                    "type": "reasoning",
+                    "id": "rs_completion",
+                    "summary": [],
+                    "encrypted_content": "opaque-completion-reasoning"
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": content}]
+                }
+            ])
+        } else {
+            json!([{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": content}]
+            }])
+        };
+        let response = json!({
+            "id": "resp_plan_execute_review",
+            "object": "response",
+            "model": model,
+            "status": "completed",
+            "output": output,
+            "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}
+        });
+        if body["stream"].as_bool() == Some(true) {
+            let output_index = if model == "model/executor" && !is_review {
+                1
+            } else {
+                0
+            };
+            let events = [
+                json!({
+                    "type": "response.created",
+                    "response": {
+                        "id": "resp_plan_execute_review",
+                        "model": model,
+                        "status": "in_progress",
+                        "output": []
+                    }
+                })
+                .to_string(),
+                json!({
+                    "type": "response.output_text.delta",
+                    "output_index": output_index,
+                    "delta": content
+                })
+                .to_string(),
+                json!({"type": "response.completed", "response": response}).to_string(),
+                "[DONE]".to_string(),
+            ];
+            let stream = futures_util::stream::iter(
+                events
+                    .into_iter()
+                    .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
+            );
+            return Sse::new(stream).into_response();
+        }
+        return Json(response).into_response();
+    }
     if headers.contains_key("x-test-redirect") {
         return (StatusCode::TEMPORARY_REDIRECT, [("location", "/capture")]).into_response();
     }
@@ -1399,7 +1480,7 @@ planning_prompt = "{PLANNING_PROMPT}"
         })),
     )
     .await?;
-    assert_eq!(planning.status, StatusCode::OK);
+    assert_eq!(planning.status, StatusCode::OK, "{}", planning.text()?);
     assert_eq!(
         planning
             .headers
@@ -1551,6 +1632,339 @@ planning_prompt = "{PLANNING_PROMPT}"
             .to_string()
             .contains("The plan is ready."),
         "the efficient model must inherit the pre-edit trajectory"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn plan_execute_review_reuses_executor_responses_context() -> TestResult {
+    let _metrics_guard = ADVISOR_REDO_METRICS_LOCK.lock().await;
+    const PLANNING_PROMPT: &str = "Inspect and plan before editing.";
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_responses"
+base_url = "{base_url}"
+
+[targets.planner]
+id = "model/planner"
+llm_client = "upstream"
+
+[targets.executor]
+id = "model/executor"
+llm_client = "upstream"
+
+[routes.review]
+id = "switchyard/plan-execute-review"
+type = "plan_execute_review"
+planner_target = "planner"
+executor_target = "executor"
+planning_prompt = "{PLANNING_PROMPT}"
+reviewer_prompt = "force-redo: Review the completion and reply APPROVE or REDO."
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let planning = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/plan-execute-review",
+            "instructions": "Keep public APIs stable.",
+            "input": "complete-task"
+        })),
+    )
+    .await?;
+    assert_eq!(planning.status, StatusCode::OK, "{}", planning.text()?);
+
+    let mut execution_input = vec![
+        json!({"type": "message", "role": "user", "content": "complete-task"}),
+        json!({"type": "message", "role": "assistant", "content": "The plan is ready."}),
+        json!({
+            "type": "reasoning",
+            "id": "rs_execution",
+            "summary": [{"type": "summary_text", "text": "Apply the planned change."}],
+            "encrypted_content": "opaque-encrypted-reasoning"
+        }),
+        json!({
+            "type": "function_call",
+            "call_id": "call-edit",
+            "name": "apply_patch",
+            "arguments": "{\"patch\":\"*** Begin Patch\"}"
+        }),
+        json!({
+            "type": "function_call_output",
+            "call_id": "call-edit",
+            "output": "updated"
+        }),
+    ];
+    for index in 0..9 {
+        execution_input.extend([
+            json!({
+                "type": "function_call",
+                "call_id": format!("call-check-{index}"),
+                "name": "shell",
+                "arguments": format!("{{\"command\":\"cargo test check-{index}\"}}")
+            }),
+            json!({
+                "type": "function_call_output",
+                "call_id": format!("call-check-{index}"),
+                "output": "tests passed",
+                "provider_field": "preserve-me"
+            }),
+        ]);
+    }
+    execution_input.extend([
+        json!({
+            "type": "function_call",
+            "call_id": "call-final-patch",
+            "name": "exec_command",
+            "arguments": "{\"cmd\":\"deepswe_capture_model_patch && cat /logs/artifacts/model.patch\"}"
+        }),
+        json!({
+            "type": "function_call_output",
+            "call_id": "call-final-patch",
+            "output": "diff --git a/parser.rs b/parser.rs"
+        }),
+    ]);
+    let execution = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/plan-execute-review",
+            "instructions": "Keep public APIs stable.",
+            "tools": [{
+                "type": "function",
+                "name": "apply_patch",
+                "description": "Apply a patch",
+                "parameters": {"type": "object"}
+            }],
+            "input": execution_input,
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(execution.status, StatusCode::OK);
+    assert_eq!(
+        execution
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/executor")
+    );
+    assert_eq!(
+        upstream.models().await,
+        [
+            "model/planner",
+            "model/executor",
+            "model/planner",
+            "model/executor"
+        ]
+    );
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls[0]["instructions"], calls[2]["instructions"]);
+    assert!(
+        calls[0]["instructions"]
+            .to_string()
+            .contains(PLANNING_PROMPT)
+    );
+    assert!(
+        calls[2]["instructions"]
+            .to_string()
+            .contains(PLANNING_PROMPT)
+    );
+    assert_eq!(calls[2]["tool_choice"], "none");
+    assert_eq!(calls[2]["stream"], true);
+    assert!(calls[2].get("max_output_tokens").is_none());
+    let execution_input = calls[1]["input"]
+        .as_array()
+        .ok_or("execution input was not an array")?;
+    let review_input = calls[2]["input"]
+        .as_array()
+        .ok_or("review input was not an array")?;
+    assert!(review_input.len() < execution_input.len() + 3);
+    assert!(!calls[2]["input"].to_string().contains("call-check-0"));
+    assert!(!calls[2]["input"].to_string().contains("call-check-1"));
+    assert!(calls[2]["input"].to_string().contains("call-check-2"));
+    assert!(calls[2]["input"].to_string().contains("call-check-8"));
+    assert!(calls[2]["input"].to_string().contains("call-final-patch"));
+    assert!(
+        calls[2]["input"]
+            .to_string()
+            .contains("diff --git a/parser.rs b/parser.rs")
+    );
+    assert!(calls[2]["input"].to_string().contains("Completed the task"));
+    assert!(
+        calls[2]["input"]
+            .to_string()
+            .contains("opaque-completion-reasoning")
+    );
+    let repair_input = calls[3]["input"]
+        .as_array()
+        .ok_or("repair input was not an array")?;
+    assert_eq!(&repair_input[..execution_input.len()], execution_input);
+    assert!(calls[3]["input"].to_string().contains("call-check-0"));
+    assert!(
+        calls[3]["input"]
+            .to_string()
+            .contains("opaque-completion-reasoning")
+    );
+    assert!(
+        repair_input
+            .last()
+            .ok_or("repair feedback was missing")?
+            .to_string()
+            .contains("Cover the missing edge case.")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn plan_execute_review_approve_preserves_responses_context() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_responses"
+base_url = "{base_url}"
+
+[targets.planner]
+id = "model/planner"
+llm_client = "upstream"
+
+[targets.executor]
+id = "model/executor"
+llm_client = "upstream"
+
+[routes.review]
+id = "switchyard/plan-execute-review"
+type = "plan_execute_review"
+planner_target = "planner"
+executor_target = "executor"
+reviewer_prompt = "Reply with one of these forms: APPROVE or REDO."
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+    let headers = [("x-switchyard-session-id", "approve-prefix")];
+
+    let planning = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/plan-execute-review",
+            "instructions": "Keep public APIs stable.",
+            "input": "complete-task"
+        })),
+        &headers,
+    )
+    .await?;
+    assert_eq!(planning.status, StatusCode::OK);
+
+    let execution_input = json!([
+        {"type": "message", "role": "user", "content": "complete-task"},
+        {"type": "message", "role": "assistant", "content": "The plan is ready."},
+        {
+            "type": "function_call",
+            "call_id": "call-edit",
+            "name": "apply_patch",
+            "arguments": "{\"patch\":\"*** Begin Patch\"}"
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-edit",
+            "output": "updated",
+            "provider_field": "preserve-me"
+        }
+    ]);
+    let execution = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/plan-execute-review",
+            "instructions": "Keep public APIs stable.",
+            "input": execution_input,
+            "stream": true
+        })),
+        &headers,
+    )
+    .await?;
+    assert_eq!(execution.status, StatusCode::OK);
+    assert!(execution.text()?.contains("Completed the task"));
+    assert!(!execution.text()?.contains("APPROVE"));
+
+    let mut follow_input = execution_input
+        .as_array()
+        .ok_or("execution input was not an array")?
+        .clone();
+    follow_input.extend([
+        json!({
+            "type": "reasoning",
+            "id": "rs_completion",
+            "summary": [],
+            "encrypted_content": "opaque-completion-reasoning"
+        }),
+        json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Completed the task"}]
+        }),
+    ]);
+    follow_input.push(json!({
+        "type": "message",
+        "role": "user",
+        "content": "One more check."
+    }));
+    let follow = send_with_headers(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/plan-execute-review",
+            "instructions": "Keep public APIs stable.",
+            "input": follow_input
+        })),
+        &headers,
+    )
+    .await?;
+    assert_eq!(follow.status, StatusCode::OK);
+
+    assert_eq!(
+        upstream.models().await,
+        [
+            "model/planner",
+            "model/executor",
+            "model/planner",
+            "model/executor"
+        ]
+    );
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 4);
+    let executor_input = calls[1]["input"]
+        .as_array()
+        .ok_or("executor input was not an array")?;
+    let review_input = calls[2]["input"]
+        .as_array()
+        .ok_or("review input was not an array")?;
+    let follow_input = calls[3]["input"]
+        .as_array()
+        .ok_or("follow-up input was not an array")?;
+    assert_eq!(&review_input[..executor_input.len()], executor_input);
+    assert_eq!(&follow_input[..executor_input.len()], executor_input);
+    assert_eq!(
+        &review_input[executor_input.len()..review_input.len() - 1],
+        &follow_input[executor_input.len()..follow_input.len() - 1]
     );
     Ok(())
 }
@@ -3907,6 +4321,7 @@ fn gate_count(stats: &Value, path: &[&str]) -> u64 {
 // metrics and the only one that may assert their exact counts.
 #[tokio::test]
 async fn advisor_route_redo_fail_open_and_stats_projection() -> TestResult {
+    let _metrics_guard = ADVISOR_REDO_METRICS_LOCK.lock().await;
     let upstream = MockUpstream::start().await?;
     let app = build_switchyard_router(advisor_state_no_retry(&upstream.base_url)?);
     let before = send(&app, "GET", "/v1/stats", None).await?.json()?;

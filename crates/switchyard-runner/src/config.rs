@@ -1000,6 +1000,72 @@ planning_prompt = "   "
     }
 
     #[test]
+    fn plan_execute_review_route_builds_with_tuned_prompts() -> RunnerResult<()> {
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[routes.plan_execute_review]
+id = "switchyard/plan-execute-review"
+type = "plan_execute_review"
+planner_target = "strong"
+executor_target = "weak"
+planning_prompt = "Inspect and plan before editing."
+reviewer_prompt = "Review the completion and reply APPROVE or REDO."
+redo_feedback_prefix = "Continue with this feedback: "
+terminal_pattern = '(?i)^completed'
+reviewer_max_tokens = 1024
+fail_open = false
+"#
+        );
+        let runner = runner_from_toml(&config)?;
+
+        assert!(
+            runner
+                .models()
+                .any(|model| model.id.as_str() == "switchyard/plan-execute-review")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn plan_execute_review_allows_executor_prompt_when_reviewer_is_planner() -> RunnerResult<()> {
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[routes.plan_execute_review]
+id = "switchyard/plan-execute-review"
+type = "plan_execute_review"
+planner_target = "strong"
+executor_target = "weak"
+"#
+        )
+        .replace(
+            "id = \"weak/model\"\nllm_client = \"anthropic\"",
+            "id = \"weak/model\"\nllm_client = \"anthropic\"\nsystem_prompt = \"executor prompt\"",
+        );
+
+        runner_from_toml(&config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn plan_execute_review_route_rejects_an_invalid_pattern() {
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[routes.plan_execute_review]
+id = "switchyard/plan-execute-review"
+type = "plan_execute_review"
+planner_target = "strong"
+executor_target = "weak"
+terminal_pattern = "(unclosed"
+"#
+        );
+
+        assert!(error_message(&config).contains("not a valid regex"));
+    }
+
+    #[test]
     fn passthrough_and_stage_accept_subagent_routing() -> RunnerResult<()> {
         let stage = stage_config();
         let stage_with_classifier = with_subagent_llm_classifier(&stage, "stage", "");

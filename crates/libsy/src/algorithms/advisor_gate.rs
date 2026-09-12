@@ -30,14 +30,17 @@
 //! classifier reads them after the executor call, and the [`budget`] ledger
 //! holds the only mutable state.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use switchyard_protocol::{
-    Category, ContentBlock, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Request,
-    Role, SamplingParams,
+    AggLlmResponse, Category, ContentBlock, InstructionBlock, LlmRequest, Message, ModelId,
+    OutputParams, Request, Role, SamplingParams, ToolChoice, WireFormat,
 };
 
+use super::util::prompts::drop_exact_replay;
+use super::util::tool_signals::is_mutating_tool_call;
 use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
@@ -98,15 +101,33 @@ pub enum GateTrigger {
     Pattern(String),
 }
 
+/// Shape of the request sent to the reviewer.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ReviewContext {
+    /// Sends a bounded JSON transcript under a fresh reviewer instruction.
+    #[default]
+    Transcript,
+    /// Appends the completion and reviewer request to the live conversation.
+    Conversation,
+    /// Keeps the planning prefix through the first mutation and recent tool evidence.
+    ExecutionDelta,
+}
+
 /// Gate knobs; defaults mirror the benchmarked Python advisor configuration.
 #[derive(Clone, Debug)]
 pub struct AdvisorGateConfig {
     /// System prompt for the advisor's review call; states the APPROVE/REDO contract.
     pub reviewer_system_prompt: String,
+    /// Optional instruction prefix restored before a conversation review.
+    pub reviewer_prefix_prompt: Option<String>,
     /// Prepended to the advisor's REDO plan when fed back to the executor.
     pub redo_feedback_prefix: String,
+    /// How conversation state is presented to the reviewer.
+    pub review_context: ReviewContext,
     /// What fires the review.
     pub gate_trigger: GateTrigger,
+    /// Requires a matching trigger response to contain no tool call.
+    pub gate_require_no_tool_call: bool,
     /// Reviews allowed per budget scope. 1 keeps the original once-per-task
     /// gate; higher values re-review later terminal turns, making the gate a
     /// sequential best-of-(N+1) with the advisor as judge.
@@ -136,8 +157,11 @@ impl Default for AdvisorGateConfig {
     fn default() -> Self {
         Self {
             reviewer_system_prompt: REVIEWER_SYSTEM_PROMPT.to_string(),
+            reviewer_prefix_prompt: None,
             redo_feedback_prefix: REDO_FEEDBACK_PREFIX.to_string(),
+            review_context: ReviewContext::Transcript,
             gate_trigger: GateTrigger::NoToolCall,
+            gate_require_no_tool_call: false,
             max_reviews: 1,
             gate_stall_turns: 0,
             gate_min_tool_results: 0,
@@ -196,6 +220,7 @@ impl AdvisorGate {
         driver: &Driver,
         request: Request,
         scope: &ScopeKey,
+        review_base: Option<&Request>,
     ) -> Result<RoutingOutcome> {
         let executor_models = driver.models_for(&Category::Efficient).to_vec();
         let executor = executor_models
@@ -274,7 +299,13 @@ impl AdvisorGate {
             reasoning_text(&turn.agg).map(|reasoning| format!("{REASONING_TAIL_LABEL}{reasoning}"))
         });
         match self
-            .consult(driver, &request, review_tail.as_deref(), trigger_label)
+            .consult(
+                driver,
+                review_base.unwrap_or(&request),
+                &turn.agg,
+                review_tail.as_deref(),
+                trigger_label,
+            )
             .await
         {
             Ok(ConsultOutcome::Approve) => {
@@ -325,6 +356,28 @@ impl AdvisorGate {
         }
     }
 
+    /// Routes an executor turn while using a separate conversation for review.
+    pub(super) async fn route_with_review_base(
+        self: Arc<Self>,
+        driver: Driver,
+        request: Request,
+        review_base: Option<Request>,
+    ) -> Result<RoutingOutcome> {
+        let scope = budget_scope(&request);
+        let session_final = request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.session_final)
+            == Some(true);
+        let result = self
+            .route_inner(&driver, request, &scope, review_base.as_ref())
+            .await;
+        if session_final {
+            self.budget.evict_scope(&scope);
+        }
+        result
+    }
+
     /// REDO: the client never sees the gated turn. Its text (or reasoning) is
     /// echoed as an assistant message, the advisor's plan follows as user
     /// feedback, and the executor continues as a pure passthrough call.
@@ -339,60 +392,54 @@ impl AdvisorGate {
     ) -> RoutingOutcome {
         record_discarded(&turn.agg.usage);
         emit_discarded_audit(served_executor.as_str(), &turn.agg.usage);
-        let echo = visible_text(&turn.agg)
-            .or_else(|| reasoning_text(&turn.agg))
-            .unwrap_or_else(|| EMPTY_ECHO_PLACEHOLDER.to_string());
         let mut redo = request;
+        let echo = match &self.config.review_context {
+            ReviewContext::Transcript => {
+                let text = visible_text(&turn.agg)
+                    .or_else(|| reasoning_text(&turn.agg))
+                    .unwrap_or_else(|| EMPTY_ECHO_PLACEHOLDER.to_string());
+                Message::text(Role::Assistant, text)
+            }
+            ReviewContext::Conversation | ReviewContext::ExecutionDelta => {
+                response_message(&turn.agg, EMPTY_ECHO_PLACEHOLDER)
+            }
+        };
+        redo.llm_request.messages.push(echo);
+        let feedback = format!("{}{}", self.config.redo_feedback_prefix, plan);
+        let exact_responses_extended = extend_exact_responses_turn(&mut redo, &turn.agg, &feedback);
         redo.llm_request
             .messages
-            .push(Message::text(Role::Assistant, echo));
-        redo.llm_request.messages.push(Message::text(
-            Role::User,
-            format!("{}{}", self.config.redo_feedback_prefix, plan),
-        ));
-        // Mandatory after any message mutation: codecs otherwise replay the
-        // preserved pre-surgery body verbatim and the feedback never reaches
-        // the executor.
-        crate::algorithms::util::prompts::drop_exact_replay(&mut redo);
+            .push(Message::text(Role::User, feedback));
+        if !exact_responses_extended {
+            drop_exact_replay(&mut redo);
+        }
         RoutingOutcome::route_to(executor.clone(), executor_fallbacks.to_vec(), redo)
     }
 
-    /// Consults the advisor over the buffered transcript and parses the
+    /// Consults the advisor over the configured review context and parses the
     /// verdict. `Ok(Failed)` covers fail-open errors and unparseable replies
     /// (the caller refunds); fail-closed errors return `Err`.
     async fn consult(
         &self,
         driver: &Driver,
         base: &Request,
+        review_response: &AggLlmResponse,
         review_tail: Option<&str>,
         trigger: &'static str,
     ) -> Result<ConsultOutcome> {
         // The advisor reviews the FULL transcript: system/developer content is
         // normalized out of `messages` into `instructions`, so prepend it back
-        // as leading messages (identical {role, content} shape) — the task
+        // as leading messages with identical {role, content} shape. The task
         // constraints the verdict must check against usually live there.
-        let transcript_messages: Vec<Message> = base
-            .llm_request
-            .instructions
-            .iter()
-            .map(|block| Message {
-                role: block.role,
-                content: block.content.clone(),
-            })
-            .chain(base.llm_request.messages.iter().cloned())
-            .collect();
-        let transcript = review_transcript(
-            &transcript_messages,
-            review_tail,
-            self.config.transcript_max_chars,
-        );
-        let consult_request = self.build_consult_request(base, transcript);
+        let consult_request = self.build_consult_request(base, review_response, review_tail);
         let started = Instant::now();
         // An unresolvable advisor is treated like any other consult failure, so
         // fail_open still returns the buffered executor turn to the client.
+        let mut review_model = None;
         let reply = match driver.first_model_for(&Category::Judge) {
             Ok(advisor) => {
                 let advisor = advisor.clone();
+                review_model = Some(advisor.clone());
                 let advisor_models = driver.models_for(&Category::Judge).to_vec();
                 match driver.call_model(consult_request, advisor_models).await {
                     Ok(response) => {
@@ -400,6 +447,7 @@ impl AdvisorGate {
                             .served_model()
                             .cloned()
                             .unwrap_or_else(|| advisor.clone());
+                        review_model = Some(served_advisor.clone());
                         response
                             .llm_response
                             .into_agg()
@@ -433,6 +481,7 @@ impl AdvisorGate {
                     "advisor gate: consult failed; passing the turn through (fail open)"
                 );
                 emit_review_audit(ReviewAudit {
+                    model: review_model.as_ref().map_or("unavailable", ModelId::as_str),
                     verdict: "APPROVE",
                     error: Some(error.to_string()),
                     latency_ms,
@@ -448,6 +497,7 @@ impl AdvisorGate {
             Some(Verdict::Approve) => {
                 record_review("approve", trigger);
                 emit_review_audit(ReviewAudit {
+                    model: review_model.as_ref().map_or("unavailable", ModelId::as_str),
                     verdict: "APPROVE",
                     error: None,
                     latency_ms,
@@ -459,6 +509,7 @@ impl AdvisorGate {
             Some(Verdict::Redo { plan }) => {
                 record_review("redo", trigger);
                 emit_review_audit(ReviewAudit {
+                    model: review_model.as_ref().map_or("unavailable", ModelId::as_str),
                     verdict: "REDO",
                     error: None,
                     latency_ms,
@@ -473,6 +524,7 @@ impl AdvisorGate {
                 // the caller so a flaky advisor cannot burn the budget.
                 record_review("unparseable", trigger);
                 emit_review_audit(ReviewAudit {
+                    model: review_model.as_ref().map_or("unavailable", ModelId::as_str),
                     verdict: "UNPARSEABLE",
                     error: None,
                     latency_ms,
@@ -486,33 +538,344 @@ impl AdvisorGate {
         }
     }
 
-    /// A fresh, buffered, tool-free request carrying the reviewer contract and
-    /// the serialized transcript; metadata is kept for session correlation.
-    fn build_consult_request(&self, base: &Request, transcript: String) -> Request {
-        Request {
-            llm_request: LlmRequest {
-                model: base.llm_request.model.clone(),
-                instructions: vec![InstructionBlock {
-                    role: Role::System,
-                    content: vec![ContentBlock::Text {
-                        text: self.config.reviewer_system_prompt.clone(),
-                    }],
-                }],
-                messages: vec![Message::text(Role::User, transcript)],
-                sampling: SamplingParams {
-                    temperature: self.config.advisor_temperature,
-                    ..SamplingParams::default()
-                },
-                output: OutputParams {
-                    max_output_tokens: Some(self.config.advisor_max_tokens),
-                    response_format: None,
-                },
-                ..LlmRequest::default()
-            },
-            raw_request: None,
-            metadata: base.metadata.clone(),
+    /// Builds a buffered, tool-free request carrying the selected review context.
+    fn build_consult_request(
+        &self,
+        base: &Request,
+        review_response: &AggLlmResponse,
+        review_tail: Option<&str>,
+    ) -> Request {
+        match &self.config.review_context {
+            ReviewContext::Transcript => {
+                let transcript_messages: Vec<Message> = base
+                    .llm_request
+                    .instructions
+                    .iter()
+                    .map(|block| Message {
+                        role: block.role,
+                        content: block.content.clone(),
+                    })
+                    .chain(base.llm_request.messages.iter().cloned())
+                    .collect();
+                let transcript = review_transcript(
+                    &transcript_messages,
+                    review_tail,
+                    self.config.transcript_max_chars,
+                );
+                Request {
+                    llm_request: LlmRequest {
+                        model: base.llm_request.model.clone(),
+                        instructions: vec![InstructionBlock {
+                            role: Role::System,
+                            content: vec![ContentBlock::Text {
+                                text: self.config.reviewer_system_prompt.clone(),
+                            }],
+                        }],
+                        messages: vec![Message::text(Role::User, transcript)],
+                        sampling: SamplingParams {
+                            temperature: self.config.advisor_temperature,
+                            ..SamplingParams::default()
+                        },
+                        output: OutputParams {
+                            max_output_tokens: Some(self.config.advisor_max_tokens),
+                            response_format: None,
+                        },
+                        ..LlmRequest::default()
+                    },
+                    raw_request: None,
+                    metadata: base.metadata.clone(),
+                }
+            }
+            ReviewContext::Conversation | ReviewContext::ExecutionDelta => {
+                let mut request = match self.config.review_context {
+                    ReviewContext::ExecutionDelta => compact_execution_delta(base),
+                    _ => base.clone(),
+                };
+                if let Some(prefix) = &self.config.reviewer_prefix_prompt
+                    && !instructions_start_with(&request.llm_request.instructions, prefix)
+                {
+                    request.llm_request.instructions.insert(
+                        0,
+                        InstructionBlock {
+                            role: Role::System,
+                            content: vec![ContentBlock::Text {
+                                text: prefix.clone(),
+                            }],
+                        },
+                    );
+                }
+                request.llm_request.messages.push(response_message(
+                    review_response,
+                    review_tail.unwrap_or(transcript::NO_TEXT_PLACEHOLDER),
+                ));
+                request.llm_request.messages.push(Message::text(
+                    Role::User,
+                    self.config.reviewer_system_prompt.clone(),
+                ));
+                request.llm_request.tool_choice = Some(ToolChoice::None);
+                request.llm_request.sampling.temperature = self.config.advisor_temperature;
+                request.llm_request.output.max_output_tokens = Some(self.config.advisor_max_tokens);
+                request.llm_request.output.response_format = None;
+                request.raw_request = None;
+                if extend_exact_responses_turn(
+                    &mut request,
+                    review_response,
+                    &self.config.reviewer_system_prompt,
+                ) {
+                    configure_exact_responses_review(
+                        &mut request,
+                        self.config.advisor_temperature,
+                        self.config.reviewer_prefix_prompt.as_deref(),
+                    );
+                } else {
+                    drop_exact_replay(&mut request);
+                }
+                request
+            }
         }
     }
+}
+
+const RECENT_REVIEW_TOOL_CALLS: usize = 8;
+
+fn compact_execution_delta(base: &Request) -> Request {
+    let mut request = base.clone();
+    request.llm_request.messages = compact_messages(&base.llm_request.messages);
+
+    let format = switchyard_protocol::FormatId::known(WireFormat::OpenAiResponses);
+    let Some(body) = request.llm_request.preservation.requests.get_mut(&format) else {
+        return request;
+    };
+    let Some(input) = body
+        .get_mut("input")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return request;
+    };
+    *input = compact_responses_input(input);
+    request
+}
+
+fn compact_messages(messages: &[Message]) -> Vec<Message> {
+    let Some(boundary) = messages.iter().position(message_has_mutation) else {
+        return messages.to_vec();
+    };
+    let selected_call_ids = selected_message_call_ids(&messages[boundary..]);
+    messages[..boundary]
+        .iter()
+        .cloned()
+        .chain(messages[boundary..].iter().filter_map(|message| {
+            let selected_call_in_message = message.content.iter().any(|block| {
+                matches!(block, ContentBlock::ToolCall(call) if selected_call_ids.contains(&call.id))
+            });
+            let content = message
+                .content
+                .iter()
+                .filter(|block| match block {
+                    ContentBlock::ToolCall(call) => selected_call_ids.contains(&call.id),
+                    ContentBlock::ToolResult(result) => {
+                        selected_call_ids.contains(&result.tool_call_id)
+                    }
+                    _ => selected_call_in_message,
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            (!content.is_empty()).then_some(Message {
+                role: message.role,
+                content,
+            })
+        }))
+        .collect()
+}
+
+fn message_has_mutation(message: &Message) -> bool {
+    message.content.iter().any(|block| {
+        matches!(block, ContentBlock::ToolCall(call) if is_mutating_tool_call(&call.name, &call.arguments))
+    })
+}
+
+fn selected_message_call_ids(messages: &[Message]) -> HashSet<String> {
+    let calls = messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let recent_start = calls.len().saturating_sub(RECENT_REVIEW_TOOL_CALLS);
+    let first_mutation = calls
+        .iter()
+        .find(|call| is_mutating_tool_call(&call.name, &call.arguments))
+        .map(|call| call.id.as_str());
+    calls
+        .iter()
+        .enumerate()
+        .filter(|(index, call)| *index >= recent_start || Some(call.id.as_str()) == first_mutation)
+        .map(|(_, call)| call.id.clone())
+        .collect()
+}
+
+fn compact_responses_input(input: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let Some(boundary) = input.iter().position(raw_item_is_mutation) else {
+        return input.to_vec();
+    };
+    let calls = input[boundary..]
+        .iter()
+        .filter(|item| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
+        })
+        .collect::<Vec<_>>();
+    let recent_start = calls.len().saturating_sub(RECENT_REVIEW_TOOL_CALLS);
+    let first_mutation = calls
+        .iter()
+        .find(|item| raw_item_is_mutation(item))
+        .and_then(|item| item.get("call_id"))
+        .and_then(serde_json::Value::as_str);
+    let selected_call_ids = calls
+        .iter()
+        .enumerate()
+        .filter(|(index, item)| {
+            *index >= recent_start
+                || item.get("call_id").and_then(serde_json::Value::as_str) == first_mutation
+        })
+        .filter_map(|(_, item)| item.get("call_id").and_then(serde_json::Value::as_str))
+        .collect::<HashSet<_>>();
+
+    input[..boundary]
+        .iter()
+        .cloned()
+        .chain(
+            input[boundary..]
+                .iter()
+                .filter(|item| {
+                    let kind = item.get("type").and_then(serde_json::Value::as_str);
+                    matches!(kind, Some("function_call") | Some("function_call_output"))
+                        && item
+                            .get("call_id")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|call_id| selected_call_ids.contains(call_id))
+                })
+                .cloned(),
+        )
+        .collect()
+}
+
+fn raw_item_is_mutation(item: &serde_json::Value) -> bool {
+    if item.get("type").and_then(serde_json::Value::as_str) != Some("function_call") {
+        return false;
+    }
+    let Some(name) = item.get("name").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    is_mutating_tool_call(
+        name,
+        item.get("arguments").unwrap_or(&serde_json::Value::Null),
+    )
+}
+
+fn response_message(response: &AggLlmResponse, fallback: &str) -> Message {
+    let content = response
+        .outputs
+        .iter()
+        .flat_map(|output| output.content.iter().cloned())
+        .collect::<Vec<_>>();
+    if content.is_empty() {
+        return Message::text(Role::Assistant, fallback);
+    }
+    Message {
+        role: response
+            .outputs
+            .first()
+            .map_or(Role::Assistant, |output| output.role),
+        content,
+    }
+}
+
+fn extend_exact_responses_turn(
+    request: &mut Request,
+    response: &AggLlmResponse,
+    user_text: &str,
+) -> bool {
+    let format = switchyard_protocol::FormatId::known(WireFormat::OpenAiResponses);
+    let Some(response_output) = response
+        .preservation
+        .responses
+        .get(&format)
+        .and_then(|body| body.get("output"))
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+    else {
+        return false;
+    };
+    let Some(input) = request
+        .llm_request
+        .preservation
+        .requests
+        .get_mut(&format)
+        .and_then(|body| body.get_mut("input"))
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return false;
+    };
+    input.extend(response_output);
+    input.push(serde_json::json!({
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": user_text}],
+    }));
+    request
+        .llm_request
+        .preservation
+        .requests
+        .retain(|candidate, _| candidate == &format);
+    true
+}
+
+fn configure_exact_responses_review(
+    request: &mut Request,
+    temperature: Option<f64>,
+    reviewer_prefix_prompt: Option<&str>,
+) {
+    let format = switchyard_protocol::FormatId::known(WireFormat::OpenAiResponses);
+    let Some(body) = request
+        .llm_request
+        .preservation
+        .requests
+        .get_mut(&format)
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    body.insert("tool_choice".to_string(), serde_json::json!("none"));
+    body.remove("max_output_tokens");
+    if let Some(prefix) = reviewer_prefix_prompt {
+        let instructions = body
+            .get("instructions")
+            .and_then(serde_json::Value::as_str)
+            .filter(|instructions| !instructions.is_empty())
+            .map_or_else(
+                || prefix.to_string(),
+                |instructions| {
+                    if instructions == prefix || instructions.starts_with(&format!("{prefix}\n\n"))
+                    {
+                        instructions.to_string()
+                    } else {
+                        format!("{prefix}\n\n{instructions}")
+                    }
+                },
+            );
+        body.insert(
+            "instructions".to_string(),
+            serde_json::Value::String(instructions),
+        );
+    }
+    if let Some(temperature) = temperature {
+        body.insert("temperature".to_string(), serde_json::json!(temperature));
+    } else {
+        body.remove("temperature");
+    }
+    body.remove("text");
 }
 
 #[async_trait::async_trait]
@@ -528,7 +891,7 @@ impl Algorithm for AdvisorGate {
             .as_ref()
             .and_then(|metadata| metadata.session_final)
             == Some(true);
-        let result = self.route_inner(&driver, request, &scope).await;
+        let result = self.route_inner(&driver, request, &scope, None).await;
         if session_final {
             self.budget.evict_scope(&scope);
         }
@@ -547,4 +910,13 @@ fn algorithm_error(message: impl Into<String>) -> LibsyError {
     LibsyError::AlgorithmError {
         message: message.into(),
     }
+}
+
+fn instructions_start_with(instructions: &[InstructionBlock], prefix: &str) -> bool {
+    instructions.first().is_some_and(|block| {
+        block.role == Role::System
+            && block.content.first().is_some_and(
+                |content| matches!(content, ContentBlock::Text { text } if text == prefix),
+            )
+    })
 }

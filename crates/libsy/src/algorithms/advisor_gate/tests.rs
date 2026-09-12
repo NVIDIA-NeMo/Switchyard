@@ -1077,6 +1077,201 @@ async fn consult_request_shape() {
 }
 
 #[tokio::test]
+async fn conversation_consult_preserves_the_live_prefix() {
+    let script = Script::new();
+    let gate = gate(AdvisorGateConfig {
+        reviewer_system_prompt: "Review the completed work. Reply APPROVE or REDO.".to_string(),
+        review_context: ReviewContext::Conversation,
+        ..AdvisorGateConfig::default()
+    });
+    let serve = script.serve("APPROVE", |_| reply("Completed the task."));
+    let mut gated = task_request();
+    gated.llm_request.instructions.push(InstructionBlock {
+        role: Role::System,
+        content: vec![ContentBlock::Text {
+            text: "Keep public APIs stable.".to_string(),
+        }],
+    });
+    gated
+        .llm_request
+        .tools
+        .push(switchyard_protocol::ToolDefinition {
+            name: "shell".to_string(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+            strict: None,
+        });
+    gated.llm_request.reasoning.effort = Some("max".to_string());
+    gated.llm_request.preservation.requests.insert(
+        "openai_responses".into(),
+        serde_json::json!({"model": "gated"}),
+    );
+    gated.raw_request = Some(serde_json::json!({"model": "gated"}));
+
+    test_drive(gate, gated, serve).await.expect("routes");
+
+    let consult = script.call(1);
+    assert_eq!(consult.llm_request.instructions.len(), 1);
+    assert_eq!(consult.llm_request.messages.len(), 3);
+    assert_eq!(consult.llm_request.messages[0].role, Role::User);
+    assert_eq!(consult.llm_request.messages[1].role, Role::Assistant);
+    assert_eq!(
+        consult.llm_request.messages[1]
+            .text_content("\n")
+            .as_deref(),
+        Some("Completed the task.")
+    );
+    assert_eq!(consult.llm_request.messages[2].role, Role::User);
+    assert_eq!(consult.llm_request.tools.len(), 1);
+    assert_eq!(consult.llm_request.tool_choice, Some(ToolChoice::None));
+    assert_eq!(consult.llm_request.reasoning.effort.as_deref(), Some("max"));
+    assert!(consult.llm_request.preservation.requests.is_empty());
+    assert!(consult.raw_request.is_none());
+}
+
+#[test]
+fn execution_delta_keeps_planner_handoff_and_recent_tool_evidence() {
+    let mut messages = vec![
+        Message::text(Role::User, "fix the parser"),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: "read-plan".to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({"path": "parser.rs"}),
+            })],
+        },
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "read-plan".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "source".to_string(),
+                }],
+                is_error: Some(false),
+            })],
+        },
+        Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Reasoning {
+                    text: "implement the parser fix".to_string(),
+                    signature: Some("planner-signature".to_string()),
+                    details: vec![],
+                },
+                ContentBlock::Text {
+                    text: "The plan is ready.".to_string(),
+                },
+                ContentBlock::ToolCall(ToolCall {
+                    id: "edit-1".to_string(),
+                    name: "apply_patch".to_string(),
+                    arguments: serde_json::json!({"patch": "change"}),
+                }),
+            ],
+        },
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "edit-1".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "updated".to_string(),
+                }],
+                is_error: Some(false),
+            })],
+        },
+    ];
+    for index in 0..10 {
+        messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: format!("check-{index}"),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"command": format!("check {index}")}),
+            })],
+        });
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: format!("check-{index}"),
+                content: vec![ContentBlock::Text {
+                    text: format!("result {index}"),
+                }],
+                is_error: Some(false),
+            })],
+        });
+    }
+    messages.insert(
+        messages.len() - 2,
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: "final-patch".to_string(),
+                name: "exec_command".to_string(),
+                arguments: serde_json::json!({
+                    "cmd": "deepswe_capture_model_patch && cat /logs/artifacts/model.patch"
+                }),
+            })],
+        },
+    );
+    messages.insert(
+        messages.len() - 2,
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "final-patch".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "diff --git a/parser.rs b/parser.rs".to_string(),
+                }],
+                is_error: Some(false),
+            })],
+        },
+    );
+
+    let compact = super::compact_messages(&messages);
+    let encoded = serde_json::to_string(&compact).expect("messages serialize");
+    assert!(encoded.contains("read-plan"));
+    assert!(encoded.contains("planner-signature"));
+    assert!(encoded.contains("The plan is ready"));
+    assert!(encoded.contains("edit-1"));
+    assert!(!encoded.contains("check-0"));
+    assert!(!encoded.contains("check-1"));
+    assert!(!encoded.contains("check-2"));
+    assert!(encoded.contains("check-3"));
+    assert!(encoded.contains("check-9"));
+    assert!(encoded.contains("final-patch"));
+    assert!(encoded.contains("diff --git a/parser.rs b/parser.rs"));
+}
+
+#[test]
+fn responses_execution_delta_preserves_exact_planner_prefix() {
+    let input = vec![
+        serde_json::json!({"type": "message", "role": "user", "content": "fix it"}),
+        serde_json::json!({"type": "function_call", "call_id": "read-plan", "name": "read_file", "arguments": "{}"}),
+        serde_json::json!({"type": "function_call_output", "call_id": "read-plan", "output": "source"}),
+        serde_json::json!({"type": "reasoning", "id": "planner-reasoning", "encrypted_content": "keep-me"}),
+        serde_json::json!({"type": "function_call", "call_id": "edit-1", "name": "apply_patch", "arguments": "{\"patch\":\"change\"}"}),
+        serde_json::json!({"type": "function_call_output", "call_id": "edit-1", "output": "updated", "provider_field": "keep-me"}),
+        serde_json::json!({"type": "function_call", "call_id": "old-check", "name": "shell", "arguments": "{\"command\":\"check old\"}"}),
+        serde_json::json!({"type": "function_call_output", "call_id": "old-check", "output": "old"}),
+    ];
+    let mut extended = input.clone();
+    for index in 0..8 {
+        extended.push(serde_json::json!({"type": "function_call", "call_id": format!("check-{index}"), "name": "shell", "arguments": format!("{{\"command\":\"check {index}\"}}" )}));
+        extended.push(serde_json::json!({"type": "function_call_output", "call_id": format!("check-{index}"), "output": format!("result {index}")}));
+    }
+
+    let compact = super::compact_responses_input(&extended);
+    assert_eq!(&compact[..4], &input[..4]);
+    let encoded = serde_json::to_string(&compact).expect("input serializes");
+    assert!(encoded.contains("planner-reasoning"));
+    assert!(encoded.contains("edit-1"));
+    assert!(encoded.contains("provider_field"));
+    assert!(!encoded.contains("old-check"));
+    assert!(encoded.contains("check-0"));
+    assert!(encoded.contains("check-7"));
+}
+
+#[tokio::test]
 async fn consult_transcript_includes_system_instructions() {
     let script = Script::new();
     let gate = gate(AdvisorGateConfig::default());

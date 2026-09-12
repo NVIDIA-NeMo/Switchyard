@@ -68,6 +68,7 @@ pub(super) fn record_discarded(usage: &Usage) {
 
 /// One review consult's audit payload.
 pub(super) struct ReviewAudit<'a> {
+    pub(super) model: &'a str,
     pub(super) verdict: &'static str,
     pub(super) error: Option<String>,
     pub(super) latency_ms: f64,
@@ -80,6 +81,7 @@ pub(super) struct ReviewAudit<'a> {
 pub(super) fn emit_review_audit(audit: ReviewAudit<'_>) {
     let mut payload = serde_json::Map::new();
     payload.insert("advisor_review".to_string(), true.into());
+    payload.insert("model".to_string(), audit.model.into());
     payload.insert(
         "latency_ms".to_string(),
         ((audit.latency_ms * 10.0).round() / 10.0).into(),

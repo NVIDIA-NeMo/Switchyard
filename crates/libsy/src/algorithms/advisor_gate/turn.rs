@@ -7,7 +7,7 @@
 use futures::StreamExt;
 use switchyard_protocol::{
     AggLlmResponse, ContentBlock, LlmClientError, LlmResponse, LlmResponseChunk,
-    LlmResponseStreamEvent, Metadata, Response, ResponseAccumulator, StopReason,
+    LlmResponseStreamEvent, Metadata, Response, ResponseAccumulator, StopReason, WireFormat,
 };
 
 use crate::{LibsyError, Result};
@@ -84,9 +84,22 @@ pub(super) async fn buffer_turn(executor: &str, response: Response) -> Result<Ga
                 }
                 events.push(event);
             }
+            let mut agg = accumulator.finish();
+            if let Some(response) = events.iter().rev().find_map(|event| {
+                let preserved = event.preservation()?;
+                (preserved.source().as_str() == WireFormat::OpenAiResponses.as_str())
+                    .then(|| preserved.raw().get("response"))
+                    .flatten()
+                    .filter(|response| response.get("output").is_some())
+                    .cloned()
+            }) {
+                agg.preservation
+                    .responses
+                    .insert(WireFormat::OpenAiResponses.into(), response);
+            }
             Ok(GatedTurn {
                 events: Some(events),
-                agg: accumulator.finish(),
+                agg,
                 metadata,
             })
         }

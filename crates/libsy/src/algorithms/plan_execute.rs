@@ -7,12 +7,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use switchyard_protocol::{ModelId, Request};
+use switchyard_protocol::{Category, Request};
 
-use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
+use super::util::prompts::prepend_system_prompt;
 use super::util::tool_signals::ToolSignals;
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
-use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result, RoutingOutcome};
 
 /// Default instruction prepended while the capable model is planning.
@@ -40,35 +39,24 @@ impl Default for PlanExecuteConfig {
 /// Routes planning turns to a capable model and all turns after the first edit
 /// to an efficient model while preserving the caller's full trajectory.
 pub struct PlanExecute {
-    capable: ModelId,
-    efficient: ModelId,
-    planning_prompt: SystemPromptProcessor,
+    planning_prompt: String,
+    phase: ExecutionTracker,
+}
+
+/// Tracks whether a session has crossed from planning into execution.
+pub(super) struct ExecutionTracker {
     executing_sessions: Mutex<HashSet<RoutingIdentity>>,
 }
 
-impl PlanExecute {
-    /// Creates a plan/execute router.
-    ///
-    /// Returns an error when the planning prompt is empty.
-    pub fn new(capable: ModelId, efficient: ModelId, config: PlanExecuteConfig) -> Result<Self> {
-        if config.planning_prompt.trim().is_empty() {
-            return Err(LibsyError::AlgorithmError {
-                message: "planning_prompt must not be empty".to_string(),
-            });
-        }
-        let planning_prompt = SystemPromptProcessor::new(
-            TargetPrompts::default().with(capable.clone(), config.planning_prompt),
-        );
-        Ok(Self {
-            capable,
-            efficient,
-            planning_prompt,
+impl ExecutionTracker {
+    pub(super) fn new() -> Self {
+        Self {
             executing_sessions: Mutex::new(HashSet::new()),
-        })
+        }
     }
 
     /// Whether this request is in execution, latching the transition for keyed sessions.
-    fn is_executing(&self, request: &Request) -> bool {
+    pub(super) fn is_executing(&self, request: &Request) -> bool {
         let signals = ToolSignals::from_request(request, None);
         let mutation_seen = signals.edit_count > 0 || signals.write_count > 0;
         let Some(identity) = RoutingIdentity::from_request(request) else {
@@ -100,6 +88,23 @@ impl PlanExecute {
     }
 }
 
+impl PlanExecute {
+    /// Creates a plan/execute router.
+    ///
+    /// Returns an error when the planning prompt is empty.
+    pub fn new(config: PlanExecuteConfig) -> Result<Self> {
+        if config.planning_prompt.trim().is_empty() {
+            return Err(LibsyError::AlgorithmError {
+                message: "planning_prompt must not be empty".to_string(),
+            });
+        }
+        Ok(Self {
+            planning_prompt: config.planning_prompt,
+            phase: ExecutionTracker::new(),
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl Algorithm for PlanExecute {
     fn name(&self) -> &str {
@@ -108,57 +113,58 @@ impl Algorithm for PlanExecute {
 
     async fn route(
         self: Arc<Self>,
-        _driver: Driver,
+        driver: Driver,
         mut request: Request,
     ) -> Result<RoutingOutcome> {
-        if self.is_executing(&request) {
-            tracing::info!(target = %self.efficient, phase = "execute", "plan-execute selected target");
-            Ok(RoutingOutcome::route_to(
-                self.efficient.clone(),
-                Vec::new(),
-                request,
-            ))
+        let (category, phase) = if self.phase.is_executing(&request) {
+            (Category::Efficient, "execute")
         } else {
-            self.planning_prompt
-                .process(
-                    &mut (),
-                    Event::Decision {
-                        request: &mut request,
-                        selected_model_id: &self.capable,
-                    },
-                )
-                .await?;
-            tracing::info!(target = %self.capable, phase = "plan", "plan-execute selected target");
-            Ok(RoutingOutcome::route_to(
-                self.capable.clone(),
-                Vec::new(),
-                request,
-            ))
-        }
+            prepend_system_prompt(&mut request, &self.planning_prompt);
+            (Category::Capable, "plan")
+        };
+        let models = driver.models_for(&category);
+        let selected = models
+            .first()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: format!("no models available for category {category:?}"),
+            })?
+            .clone();
+        tracing::info!(target = %selected, phase, "plan-execute selected target");
+        Ok(RoutingOutcome::route_to(
+            selected,
+            models[1..].to_vec(),
+            request,
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use serde_json::json;
     use switchyard_protocol::{
-        ContentBlock, InstructionBlock, LlmRequest, Message, Metadata, Request, Role, ToolCall,
+        Category, ContentBlock, InstructionBlock, LlmRequest, Message, Metadata, ModelId, Request,
+        Role, ToolCall,
     };
 
     use super::*;
-    use crate::core::testing::{reply, test_drive};
+    use crate::core::algorithm::RuntimeModels;
+    use crate::core::testing::{reply, test_drive_with_models};
 
     fn algorithm() -> Arc<dyn Algorithm> {
         Arc::new(
-            PlanExecute::new(
-                ModelId::from("model/capable"),
-                ModelId::from("model/efficient"),
-                PlanExecuteConfig::default(),
-            )
-            .expect("default config should be valid"),
+            PlanExecute::new(PlanExecuteConfig::default()).expect("default config should be valid"),
         )
+    }
+
+    fn runtime_models() -> RuntimeModels {
+        HashMap::from([
+            (Category::Capable, vec![ModelId::from("model/capable")]),
+            (Category::Efficient, vec![ModelId::from("model/efficient")]),
+        ])
+        .into()
     }
 
     fn request(messages: Vec<Message>, session_id: Option<&str>) -> Request {
@@ -193,13 +199,18 @@ mod tests {
     ) -> (ModelId, Request) {
         let captured = Arc::new(Mutex::new(None));
         let capture = Arc::clone(&captured);
-        let (selected, _) = test_drive(algorithm, request, move |_target, request| {
-            let capture = Arc::clone(&capture);
-            async move {
-                *capture.lock().expect("capture lock should be available") = Some(request);
-                Ok(reply("ok"))
-            }
-        })
+        let (selected, _) = test_drive_with_models(
+            algorithm,
+            request,
+            runtime_models(),
+            move |_target, request| {
+                let capture = Arc::clone(&capture);
+                async move {
+                    *capture.lock().expect("capture lock should be available") = Some(request);
+                    Ok(reply("ok"))
+                }
+            },
+        )
         .await
         .expect("routing should succeed");
         let request = captured
@@ -341,13 +352,9 @@ mod tests {
 
     #[test]
     fn empty_planning_prompt_is_rejected() {
-        let result = PlanExecute::new(
-            ModelId::from("model/capable"),
-            ModelId::from("model/efficient"),
-            PlanExecuteConfig {
-                planning_prompt: "  ".to_string(),
-            },
-        );
+        let result = PlanExecute::new(PlanExecuteConfig {
+            planning_prompt: "  ".to_string(),
+        });
 
         assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
     }

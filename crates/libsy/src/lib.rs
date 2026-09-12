@@ -17,7 +17,7 @@ mod error;
 pub use error::{DriverError, LibsyError, Result};
 
 mod algorithms;
-pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
+pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger, ReviewContext};
 pub use algorithms::composite::{CompositeRouter, CompositeRouterConfig};
 pub use algorithms::llm_class::{
     CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
@@ -26,6 +26,10 @@ pub use algorithms::llm_class::{
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
 pub use algorithms::plan_execute::{DEFAULT_PLANNING_PROMPT, PlanExecute, PlanExecuteConfig};
+pub use algorithms::plan_execute_review::{
+    DEFAULT_REDO_FEEDBACK_PREFIX, DEFAULT_REVIEWER_PROMPT, DEFAULT_TERMINAL_PATTERN,
+    PlanExecuteReview, PlanExecuteReviewConfig,
+};
 pub use algorithms::rand::{Random, RandomClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::subagent::{SubagentRouter, SubagentRouterConfig};

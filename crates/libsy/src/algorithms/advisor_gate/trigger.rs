@@ -20,6 +20,8 @@ enum CompiledTrigger {
 /// checkpoint threshold.
 pub(super) struct TriggerClassifier {
     trigger: CompiledTrigger,
+    /// Whether any tool call suppresses an otherwise matching trigger.
+    require_no_tool_call: bool,
     /// Tool results required before a `no_tool_call` terminal turn is reviewable.
     min_tool_results: u32,
     /// Assistant turns at which the stall checkpoint is reached; 0 disables.
@@ -55,6 +57,7 @@ impl TriggerClassifier {
         };
         Ok(Self {
             trigger,
+            require_no_tool_call: config.gate_require_no_tool_call,
             min_tool_results: config.gate_min_tool_results,
             stall_turns: config.gate_stall_turns,
         })
@@ -69,6 +72,11 @@ impl TriggerClassifier {
             CompiledTrigger::NoToolCall => (!signals.turn.has_tool_use
                 && signals.conversation.tool_result_count >= self.min_tool_results)
                 .then_some("no_tool_call"),
+        };
+        let fired = if self.require_no_tool_call && signals.turn.has_tool_use {
+            None
+        } else {
+            fired
         };
         let stalled =
             self.stall_turns > 0 && signals.conversation.assistant_turn_count >= self.stall_turns;
@@ -155,6 +163,27 @@ mod tests {
                 .classify(&signals(false, None, 0, 0))
                 .fired
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn pattern_can_require_a_tool_free_response() {
+        let classifier = classifier(AdvisorGateConfig {
+            gate_trigger: GateTrigger::Pattern("Completed".to_string()),
+            gate_require_no_tool_call: true,
+            ..AdvisorGateConfig::default()
+        });
+        assert!(
+            classifier
+                .classify(&signals(true, Some("Completed one step"), 0, 0))
+                .fired
+                .is_none()
+        );
+        assert_eq!(
+            classifier
+                .classify(&signals(false, Some("Completed the task"), 0, 0))
+                .fired,
+            Some("pattern")
         );
     }
 

@@ -429,6 +429,14 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolSemantic {
     classify_tool_call_with_semantics(name, command, &ToolSemantics::default())
 }
 
+/// Whether a tool call changes task state under the built-in vocabulary.
+pub(crate) fn is_mutating_tool_call(name: &str, arguments: &Value) -> bool {
+    matches!(
+        classify_tool_call(name, command_of(arguments).as_deref()),
+        ToolSemantic::Mutate(_)
+    )
+}
+
 fn classify_tool_call_with_semantics(
     name: &str,
     command: Option<&str>,

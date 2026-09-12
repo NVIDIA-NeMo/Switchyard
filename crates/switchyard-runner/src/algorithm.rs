@@ -14,8 +14,9 @@ use libsy::{
     ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
     CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
-    PlanExecute, PlanExecuteConfig, Random, StageRouter, StageRouterConfig, SubagentRouter,
-    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    PlanExecute, PlanExecuteConfig, PlanExecuteReview, PlanExecuteReviewConfig, Random,
+    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
+    ToolSemantics,
 };
 use serde::Deserialize;
 use switchyard_protocol::{Category, ModelId};
@@ -341,6 +342,31 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         planning_prompt: Option<String>,
     },
+    /// Plans on one target, executes on another, then reviews completion once.
+    PlanExecuteReview {
+        /// Target used before the first edit.
+        planner_target: String,
+        /// Target used from the first edit onward.
+        executor_target: String,
+        /// Replaces the built-in planning prompt.
+        #[serde(default)]
+        planning_prompt: Option<String>,
+        /// Replaces the built-in reviewer prompt.
+        #[serde(default)]
+        reviewer_prompt: Option<String>,
+        /// Replaces the text put in front of REDO feedback.
+        #[serde(default)]
+        redo_feedback_prefix: Option<String>,
+        /// Replaces the completion response pattern.
+        #[serde(default)]
+        terminal_pattern: Option<String>,
+        /// Most output tokens one review may use on wires that accept the field.
+        #[serde(default = "default_advisor_max_tokens")]
+        reviewer_max_tokens: u64,
+        /// Lets the completion through when the reviewer fails.
+        #[serde(default = "default_fail_open")]
+        fail_open: bool,
+    },
     /// Asks a judge model which target should serve the request.
     LlmClassifier {
         /// Judge and tier settings, written directly in the route table.
@@ -546,6 +572,11 @@ impl AlgorithmSpec {
                 efficient_target,
                 ..
             } => vec![capable_target.as_str(), efficient_target.as_str()],
+            Self::PlanExecuteReview {
+                planner_target,
+                executor_target,
+                ..
+            } => vec![planner_target.as_str(), executor_target.as_str()],
             Self::LlmClassifier { config, .. } => match config.classifier_mode() {
                 ClassifierMode::Capability => config
                     .weak_target
@@ -634,6 +665,7 @@ impl AlgorithmSpec {
                 names.push(&classifier.target);
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
+            Self::PlanExecuteReview { planner_target, .. } => names.push(planner_target),
             _ => {}
         }
         // A sub-agent classifier calls its own judge, which is never a completion target.
@@ -668,6 +700,18 @@ impl AlgorithmSpec {
             Self::Passthrough { target, .. } => {
                 category_models([(Category::Any, vec![target.clone()])])
             }
+            Self::PlanExecute {
+                capable_target,
+                efficient_target,
+                ..
+            } => category_models([
+                (Category::Capable, vec![capable_target.clone()]),
+                (Category::Efficient, vec![efficient_target.clone()]),
+                (
+                    Category::Any,
+                    vec![capable_target.clone(), efficient_target.clone()],
+                ),
+            ]),
             Self::LlmClassifier { config } => {
                 classifier_runtime_model_names(config.validated_classifier_mode(route_name)?)
             }
@@ -718,6 +762,19 @@ impl AlgorithmSpec {
                 (Category::Any, vec![executor_target.clone()]),
                 (Category::Judge, vec![advisor_target.clone()]),
             ]),
+            Self::PlanExecuteReview {
+                planner_target,
+                executor_target,
+                ..
+            } => category_models([
+                (Category::Capable, vec![planner_target.clone()]),
+                (Category::Efficient, vec![executor_target.clone()]),
+                (
+                    Category::Any,
+                    vec![planner_target.clone(), executor_target.clone()],
+                ),
+                (Category::Judge, vec![planner_target.clone()]),
+            ]),
         };
 
         let subagents = match self {
@@ -751,6 +808,11 @@ impl AlgorithmSpec {
                 advisor_target,
                 ..
             } => Some((executor_target, advisor_target)),
+            Self::PlanExecuteReview {
+                executor_target,
+                planner_target,
+                ..
+            } => Some((executor_target, planner_target)),
             Self::Noop { .. }
             | Self::Random { .. }
             | Self::Passthrough { .. }
@@ -1185,15 +1247,50 @@ fn build_algorithm(
             efficient_target,
             planning_prompt,
         } => {
-            let capable = resolve_target_model_id(route_name, capable_target, targets)?;
-            let efficient = resolve_target_model_id(route_name, efficient_target, targets)?;
+            resolve_target_model_id(route_name, capable_target, targets)?;
+            resolve_target_model_id(route_name, efficient_target, targets)?;
             let mut config = PlanExecuteConfig::default();
             if let Some(prompt) = planning_prompt {
                 config.planning_prompt = prompt.clone();
             }
-            let algorithm = PlanExecute::new(capable, efficient, config).map_err(|error| {
+            let algorithm = PlanExecute::new(config).map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("plan_execute route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
+        }
+        AlgorithmSpec::PlanExecuteReview {
+            planner_target,
+            executor_target,
+            planning_prompt,
+            reviewer_prompt,
+            redo_feedback_prefix,
+            terminal_pattern,
+            reviewer_max_tokens,
+            fail_open,
+        } => {
+            resolve_target_model_id(route_name, planner_target, targets)?;
+            resolve_target_model_id(route_name, executor_target, targets)?;
+            let mut config = PlanExecuteReviewConfig::default();
+            if let Some(prompt) = planning_prompt {
+                config.planning_prompt = prompt.clone();
+            }
+            if let Some(prompt) = reviewer_prompt {
+                config.reviewer_prompt = prompt.clone();
+            }
+            if let Some(prefix) = redo_feedback_prefix {
+                config.redo_feedback_prefix = prefix.clone();
+            }
+            if let Some(pattern) = terminal_pattern {
+                config.terminal_pattern = pattern.clone();
+            }
+            config.reviewer_max_tokens = *reviewer_max_tokens;
+            config.fail_open = *fail_open;
+            let algorithm = PlanExecuteReview::new(config).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("plan_execute_review route {route_name}: {error}"),
                     error,
                 )
             })?;
