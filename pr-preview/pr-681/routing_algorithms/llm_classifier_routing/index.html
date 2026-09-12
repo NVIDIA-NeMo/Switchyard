@@ -1571,7 +1571,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1a68ca8d4e345da7ca0945b90ee167108c05f30b/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d428a358b77e5110b099ae0c7608af7cf2951442/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1646,47 +1646,65 @@ supplies it according to <code>response_format_type</code>.</p>
 packaged <code>crux</code>, <code>primary_rule</code>, <code>capability_boundary</code>, and <code>p_solve</code> fields.</p>
 <h2 id="custom-multi-target-routing">Custom multi-target routing<a class="headerlink" href="#custom-multi-target-routing" title="Permanent link">&para;</a></h2>
 <p>Custom mode accepts an inner JSON Schema and a policy that reads the validated
-verdict. This example routes across four configured targets:</p>
+verdict. The policy selects one of the route's model groups, and you name those
+groups yourself, so a route can choose between as many models as you like.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[routes.smart]</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;smart&quot;</span>
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;balanced&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;reasoning&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span><span class="p">]</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">default_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="s2">Choose the best configured target for this request.</span>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="s2">Return JSON matching the response schema supplied with the request.</span>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="s2">&quot;&quot;&quot;</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="n">response_schema</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&#39;&#39;</span>
-</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="s1">{</span>
-</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="s1">  &quot;type&quot;: &quot;object&quot;,</span>
-</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="s1">  &quot;properties&quot;: {</span>
-</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="s1">    &quot;decision&quot;: {</span>
-</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="s1">      &quot;type&quot;: &quot;object&quot;,</span>
-</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="s1">      &quot;properties&quot;: {</span>
-</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="s1">        &quot;target&quot;: {</span>
-</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="s1">          &quot;type&quot;: &quot;string&quot;,</span>
-</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="s1">          &quot;enum&quot;: [&quot;fast&quot;, &quot;balanced&quot;, &quot;reasoning&quot;, &quot;premium&quot;]</span>
-</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="s1">        }</span>
-</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="s1">      },</span>
-</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="s1">      &quot;required&quot;: [&quot;target&quot;],</span>
-</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="s1">      &quot;additionalProperties&quot;: false</span>
-</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="s1">    }</span>
-</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="s1">  },</span>
-</span><span id="__span-3-28"><a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a><span class="s1">  &quot;required&quot;: [&quot;decision&quot;],</span>
-</span><span id="__span-3-29"><a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a><span class="s1">  &quot;additionalProperties&quot;: false</span>
-</span><span id="__span-3-30"><a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a><span class="s1">}</span>
-</span><span id="__span-3-31"><a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a><span class="s1">&#39;&#39;&#39;</span>
-</span><span id="__span-3-32"><a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a>
-</span><span id="__span-3-33"><a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a><span class="k">[routes.smart.policy]</span>
-</span><span id="__span-3-34"><a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;target_selector&quot;</span>
-</span><span id="__span-3-35"><a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a><span class="n">selector</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/decision/target&quot;</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">default_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="s2">Choose the best group for this request.</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="s2">Return JSON matching the response schema supplied with the request.</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="s2">&quot;&quot;&quot;</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="n">response_schema</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&#39;&#39;</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="s1">{</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="s1">  &quot;type&quot;: &quot;object&quot;,</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="s1">  &quot;properties&quot;: {</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="s1">    &quot;decision&quot;: {</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="s1">      &quot;type&quot;: &quot;object&quot;,</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="s1">      &quot;properties&quot;: {</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="s1">        &quot;target&quot;: {</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="s1">          &quot;type&quot;: &quot;string&quot;,</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="s1">          &quot;enum&quot;: [&quot;fast&quot;, &quot;balanced&quot;, &quot;reasoning&quot;, &quot;premium&quot;]</span>
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="s1">        }</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="s1">      },</span>
+</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="s1">      &quot;required&quot;: [&quot;target&quot;],</span>
+</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="s1">      &quot;additionalProperties&quot;: false</span>
+</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="s1">    }</span>
+</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="s1">  },</span>
+</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="s1">  &quot;required&quot;: [&quot;decision&quot;],</span>
+</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="s1">  &quot;additionalProperties&quot;: false</span>
+</span><span id="__span-3-28"><a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a><span class="s1">}</span>
+</span><span id="__span-3-29"><a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a><span class="s1">&#39;&#39;&#39;</span>
+</span><span id="__span-3-30"><a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a>
+</span><span id="__span-3-31"><a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a><span class="k">[routes.smart.models]</span>
+</span><span id="__span-3-32"><a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a><span class="n">judge</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;classifier&quot;</span><span class="p">]</span>
+</span><span id="__span-3-33"><a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a><span class="n">fast</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">]</span>
+</span><span id="__span-3-34"><a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a><span class="n">balanced</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;balanced&quot;</span><span class="p">]</span>
+</span><span id="__span-3-35"><a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a><span class="n">reasoning</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;reasoning&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span><span class="p">]</span>
+</span><span id="__span-3-36"><a id="__codelineno-3-36" name="__codelineno-3-36" href="#__codelineno-3-36"></a><span class="n">premium</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;premium&quot;</span><span class="p">]</span>
+</span><span id="__span-3-37"><a id="__codelineno-3-37" name="__codelineno-3-37" href="#__codelineno-3-37"></a><span class="n">any</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;balanced&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;reasoning&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;premium&quot;</span><span class="p">]</span>
+</span><span id="__span-3-38"><a id="__codelineno-3-38" name="__codelineno-3-38" href="#__codelineno-3-38"></a>
+</span><span id="__span-3-39"><a id="__codelineno-3-39" name="__codelineno-3-39" href="#__codelineno-3-39"></a><span class="k">[routes.smart.policy]</span>
+</span><span id="__span-3-40"><a id="__codelineno-3-40" name="__codelineno-3-40" href="#__codelineno-3-40"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;target_selector&quot;</span>
+</span><span id="__span-3-41"><a id="__codelineno-3-41" name="__codelineno-3-41" href="#__codelineno-3-41"></a><span class="n">selector</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/decision/target&quot;</span>
 </span></code></pre></div>
-<p>The names in <code>targets</code> reference existing target tables. Switchyard passes the
+<p>The names in <code>models</code> reference existing target tables. Switchyard passes the
 schema to the provider in a strict structured-output wrapper and validates the
 returned JSON again. <code>jsonptr</code> resolves the selector against that verdict. A
-missing, non-string, or unknown target falls back to <code>default_target</code>.</p>
+missing, non-string, or unconfigured label falls back to <code>default_target</code>, and
+<code>judge</code> is never routable.</p>
+<p>A verdict names a group, and the <strong>first</strong> model in that group serves the turn.
+Later entries are that group's own fallbacks: if the serving call fails, the
+client falls through the rest of the chosen group first — <code>reasoning</code> retries on
+<code>premium</code> above — and then through whatever <code>models.any</code> adds. Every group's
+targets must also appear in <code>models.any</code>; one that does not is rejected when the
+configuration loads. <code>models.judge</code> supplies the judge call's own candidates in
+order and is not a completion destination.</p>
+<p><code>capable</code> and <code>efficient</code> are reserved names. Use them when you want a group to
+carry the tier meaning the stage and composite routers give it; otherwise any
+name works.</p>
 <p>This separation applies to every classifier mode. Prompts containing the legacy
 <code>{{RESPONSE_SCHEMA}}</code> placeholder are rejected during configuration validation.</p>
 <h3 id="forecast-and-policy-assumptions">Forecast and policy assumptions<a class="headerlink" href="#forecast-and-policy-assumptions" title="Permanent link">&para;</a></h3>

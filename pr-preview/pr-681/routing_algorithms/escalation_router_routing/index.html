@@ -1567,7 +1567,19 @@ uses to set its split, and the gate reuses that policy unchanged, including
 the packaged forecaster prompt. <code>gate.classifier_target</code> lets the gate call a
 different target from the per-turn judge: the forecast runs once per session
 and rewards a strong model, while the trajectory judge runs on every weak turn
-and is where a cheap model belongs. The gate verdict is recorded in the route's
+and is where a cheap model belongs.</p>
+<p><code>gate.verdict_scale = "ordinal"</code> asks the forecaster for one rung of a fixed
+ladder (<code>surely</code> down to <code>almost_surely_not</code>) instead of a probability. Models
+produce ordinal judgements more reliably than calibrated numbers: asked for a
+probability they cluster on a few round values, and given a stated cutoff they
+write a number just under it. Each rung maps to the midpoint of the frequency
+band it names, so <code>base_threshold</code> still selects the split. Better, write the
+threshold as a rung too:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">escalation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">confirmations</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">gate</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">verdict_scale</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;ordinal&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">min_confidence</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;uncertain&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+</span></code></pre></div>
+<p>keeps <code>uncertain</code> and everything above it on the weak tier and latches
+<code>unlikely</code> and below, with no number anywhere in the prompt, the answer or the
+configuration. The chosen rung is recorded in the evidence next to the score. The gate verdict is recorded in the route's
 evidence as <code>{"source": "escalation", "verdict": "gate"}</code>.</p>
 <h2 id="judge-model-compatibility">Judge model compatibility<a class="headerlink" href="#judge-model-compatibility" title="Permanent link">&para;</a></h2>
 <p>The trajectory judge uses the same response contract and provider/model
@@ -1613,23 +1625,23 @@ resets the streak to zero.</p>
 <p>After installing the Rust server, as described in
 <a href="../../getting_started/#install-the-server">Getting Started</a>, export the provider
 credential, validate the configuration, and start the binary:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
 <p>Send a request using the route ID, supplying a session identity so the streak
 persists across turns:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;x-switchyard-session-id: demo-session&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;agent&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;hello&quot;}]}&#39;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;x-switchyard-session-id: demo-session&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;agent&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;hello&quot;}]}&#39;</span>
 </span></code></pre></div>
 <p>Invalid settings are rejected when the configuration loads rather than on the
 first request, so <code>--dry-run</code> catches them.</p>
 <h2 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h2>
 <p>Read the standard stats endpoint:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/stats
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/stats
 </span></code></pre></div>
 <p>The snapshot reports per-model calls, tokens, latency, and cost for the strong
 and weak tiers. Judge calls are recorded in the classifier stats bucket, so their
