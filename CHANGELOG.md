@@ -78,6 +78,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   delegating to their own sub-router; a hierarchical stage router that
   carries its own judge is rejected. (#533)
 
+- **Per-target `system_prompt`** — a native target can configure
+  `system_prompt`, so the prompt follows the model that actually answers the
+  request instead of living only on Stage and Composite routes. (#464)
+- **`auto` algorithm type** — a deployment provides just `capable` and
+  `efficient` models and the recommended stage-router settings are used out
+  of the box; `auto` can be repointed at new strategies or defaults in the
+  future. (#654)
+- **Codex freeform tools and the Responses-lite request shape** — the
+  Responses codec understands the request shape Codex drives GPT-5 models
+  with and its freeform (`custom`) tools, so a GPT-5.x Codex session routes
+  natively and survives its first native-tool turn. (#648)
+- **Custom tool semantics for the stage router** — route-scoped exact-name
+  mappings classify custom tools as `observe`, `mutate`, or `plan` activity
+  (neutral `new` stays unchanged), decoupling tool semantics from any one
+  agent framework. (#606)
+- **Restricted LLM router for Rust hosts** — `build_llm_router(ServerState)`
+  exposes only the three inference endpoints (`/v1/chat/completions`,
+  `/v1/messages`, `/v1/responses`), so a host can own authentication, model
+  visibility, and operational routes on separate surfaces. (#586)
+- **`RoutingOutcome.selected_model_ids`** — the selected model and its
+  fallbacks merge into one ordered `Vec<ModelId>`, selected first, replacing
+  `selected_model_id` and `fallback_models`. (#592)
+- **Routing outcome metadata** — every successful outcome carries optional
+  `OutcomeMetadata { outcome_id, algorithm, evidence }`, and the outcome ID
+  is recorded on the matching `libsy.run` span. (#647)
+- **Bounded outcome evidence** — built-in algorithms populate
+  `RoutingOutcome.metadata.evidence` with bounded, structured JSON for the
+  facts that determined a route, without leaking prompts, responses, raw
+  errors, or arbitrary internal state. (#655)
+- **Outcome metadata in OpenTelemetry and Python** — the `libsy.run` span
+  records `outcome_id` and the ordered `selected_model_ids`, and Python's
+  `RoutingOutcome.metadata` exposes the same identity and evidence. (#658)
+- **Route attribution in the durable log** — durable routing-log records
+  gain `route_id` and `algorithm`, so per-route usage stays recoverable when
+  two configured routes serve the same backend model; older JSONL records
+  remain readable. (#618)
+- **Algorithms select a `Category`, not a specific model** — available
+  models travel with each request in the `Driver`, algorithms choose a
+  category such as `efficient`, and the category-to-model mapping lives in
+  the `Driver`. (#630)
+- **Request origin in routing logs** — the caller-supplied
+  `x-switchyard-origin` header is recorded as optional `origin` in the
+  durable routing JSONL for buffered answers, streamed answers, and judge
+  records; missing, empty, or non-text values serialize as `null`. (#641)
+
 ### Changed
 
 - **`Algorithm::route` returns `Result<RoutingOutcome>`** — instead of the
@@ -176,6 +221,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `message_stop` (optional `[DONE]` stays compatible for OpenAI Chat and
   Responses), and a duplicate EOF error is no longer appended after a decoded
   in-band provider error. (#425)
+
+- **Responses reasoning replayed as input history** — encrypted reasoning
+  items survive decode/encode after exact replay is invalidated, re-emitting
+  input history with `summary`/`encrypted_content` and omitting non-empty
+  `content` arrays. (#645)
+- **Buffered Responses input hardened for Codex upstreams** — rebuilt
+  requests carry resolvable tool names for upstreams that need them, and
+  parallel tool calls pair each result with its call instead of serializing
+  as `call, call, result, result`. (#664)
+- **Upstream URLs dropped from transport errors** — transport and timeout
+  errors no longer echo the upstream request URL, whose query string can
+  carry the key; the raw fallback proxy applies the same protection. (#649)
+- **Upstream bodies redacted from the client-call span** — the
+  `libsy.client_call` span keeps the target and HTTP status but no longer
+  records the raw upstream response body. (#611)
+- **Reasoning dropped from task classifier history** —
+  `TaskInput::build_messages` removes reasoning blocks from the history
+  handed to an LLM task classifier and drops messages left empty. (#610)
+- **Escalation judge anchored to task framing; verdict reasons logged** —
+  every user message that precedes the first assistant reply is anchored as
+  task framing with a wider per-message budget, so a specification sent
+  after Codex's environment block stays visible to the judge; verdicts keep
+  their reason, logged under the escalation target. (#639)
+- **OpenAI tool strictness preserved for Anthropic** — encoding an
+  Anthropic Messages tool definition writes `strict` for both `true` and
+  `false` and omits it when unset, so a strict tool no longer silently
+  becomes a normal tool. (#600)
+- **Anthropic tool strictness preserved** — decoding Anthropic Messages
+  requests keeps top-level `tools[].strict`, so explicit strictness reaches
+  OpenAI Chat and Responses targets instead of being replaced with an
+  absent value. (#585)
+- **Flat Responses `input_file` payloads decoded** — `decode_file_source`
+  reads `file_data`/`filename` carried directly on the content block, not
+  only nested under `file`, so flat payloads no longer fall through to
+  `FileSource::Raw`. (#590)
 
 ## [0.2.0]
 
