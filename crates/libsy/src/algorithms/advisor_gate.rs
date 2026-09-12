@@ -637,6 +637,11 @@ impl AdvisorGate {
 }
 
 const RECENT_REVIEW_TOOL_CALLS: usize = 8;
+// Marked test and patch chunks survive compaction regardless of their age.
+const REVIEW_EVIDENCE_MARKERS: [&str; 2] = [
+    "switchyard_review_patch_chunk",
+    "switchyard_review_test_evidence",
+];
 
 fn compact_execution_delta(base: &Request) -> Request {
     let mut request = base.clone();
@@ -711,9 +716,20 @@ fn selected_message_call_ids(messages: &[Message]) -> HashSet<String> {
     calls
         .iter()
         .enumerate()
-        .filter(|(index, call)| *index >= recent_start || Some(call.id.as_str()) == first_mutation)
+        .filter(|(index, call)| {
+            *index >= recent_start
+                || Some(call.id.as_str()) == first_mutation
+                || call_is_review_evidence(&call.arguments)
+        })
         .map(|(_, call)| call.id.clone())
         .collect()
+}
+
+fn call_is_review_evidence(arguments: &serde_json::Value) -> bool {
+    let encoded = arguments.to_string();
+    REVIEW_EVIDENCE_MARKERS
+        .iter()
+        .any(|marker| encoded.contains(marker))
 }
 
 fn compact_responses_input(input: &[serde_json::Value]) -> Vec<serde_json::Value> {
@@ -738,6 +754,7 @@ fn compact_responses_input(input: &[serde_json::Value]) -> Vec<serde_json::Value
         .filter(|(index, item)| {
             *index >= recent_start
                 || item.get("call_id").and_then(serde_json::Value::as_str) == first_mutation
+                || item.get("arguments").is_some_and(call_is_review_evidence)
         })
         .filter_map(|(_, item)| item.get("call_id").and_then(serde_json::Value::as_str))
         .collect::<HashSet<_>>();

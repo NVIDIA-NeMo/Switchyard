@@ -1180,6 +1180,37 @@ fn execution_delta_keeps_planner_handoff_and_recent_tool_evidence() {
             })],
         },
     ];
+    for (id, command, output) in [
+        (
+            "review-tests",
+            "# switchyard_review_test_evidence\ncargo test",
+            "all tests passed",
+        ),
+        (
+            "patch-chunk-000",
+            "# switchyard_review_patch_chunk 000\ncat /tmp/review-patch-000",
+            "diff --git a/early.rs b/early.rs",
+        ),
+    ] {
+        messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: id.to_string(),
+                name: "exec_command".to_string(),
+                arguments: serde_json::json!({"cmd": command}),
+            })],
+        });
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: id.to_string(),
+                content: vec![ContentBlock::Text {
+                    text: output.to_string(),
+                }],
+                is_error: Some(false),
+            })],
+        });
+    }
     for index in 0..10 {
         messages.push(Message {
             role: Role::Assistant,
@@ -1233,6 +1264,10 @@ fn execution_delta_keeps_planner_handoff_and_recent_tool_evidence() {
     assert!(encoded.contains("planner-signature"));
     assert!(encoded.contains("The plan is ready"));
     assert!(encoded.contains("edit-1"));
+    assert!(encoded.contains("review-tests"));
+    assert!(encoded.contains("all tests passed"));
+    assert!(encoded.contains("patch-chunk-000"));
+    assert!(encoded.contains("diff --git a/early.rs b/early.rs"));
     assert!(!encoded.contains("check-0"));
     assert!(!encoded.contains("check-1"));
     assert!(!encoded.contains("check-2"));
@@ -1251,6 +1286,10 @@ fn responses_execution_delta_preserves_exact_planner_prefix() {
         serde_json::json!({"type": "reasoning", "id": "planner-reasoning", "encrypted_content": "keep-me"}),
         serde_json::json!({"type": "function_call", "call_id": "edit-1", "name": "apply_patch", "arguments": "{\"patch\":\"change\"}"}),
         serde_json::json!({"type": "function_call_output", "call_id": "edit-1", "output": "updated", "provider_field": "keep-me"}),
+        serde_json::json!({"type": "function_call", "call_id": "review-tests", "name": "exec_command", "arguments": "{\"cmd\":\"# switchyard_review_test_evidence\\ncargo test\"}"}),
+        serde_json::json!({"type": "function_call_output", "call_id": "review-tests", "output": "all tests passed"}),
+        serde_json::json!({"type": "function_call", "call_id": "patch-chunk-000", "name": "exec_command", "arguments": "{\"cmd\":\"# switchyard_review_patch_chunk 000\\ncat /tmp/review-patch-000\"}"}),
+        serde_json::json!({"type": "function_call_output", "call_id": "patch-chunk-000", "output": "diff --git a/early.rs b/early.rs"}),
         serde_json::json!({"type": "function_call", "call_id": "old-check", "name": "shell", "arguments": "{\"command\":\"check old\"}"}),
         serde_json::json!({"type": "function_call_output", "call_id": "old-check", "output": "old"}),
     ];
@@ -1266,6 +1305,10 @@ fn responses_execution_delta_preserves_exact_planner_prefix() {
     assert!(encoded.contains("planner-reasoning"));
     assert!(encoded.contains("edit-1"));
     assert!(encoded.contains("provider_field"));
+    assert!(encoded.contains("review-tests"));
+    assert!(encoded.contains("all tests passed"));
+    assert!(encoded.contains("patch-chunk-000"));
+    assert!(encoded.contains("diff --git a/early.rs b/early.rs"));
     assert!(!encoded.contains("old-check"));
     assert!(encoded.contains("check-0"));
     assert!(encoded.contains("check-7"));

@@ -1702,6 +1702,28 @@ reviewer_prompt = "force-redo: Review the completion and reply APPROVE or REDO."
             "call_id": "call-edit",
             "output": "updated"
         }),
+        json!({
+            "type": "function_call",
+            "call_id": "call-review-tests",
+            "name": "exec_command",
+            "arguments": "{\"cmd\":\"# switchyard_review_test_evidence\\ncargo test\"}"
+        }),
+        json!({
+            "type": "function_call_output",
+            "call_id": "call-review-tests",
+            "output": "all tests passed"
+        }),
+        json!({
+            "type": "function_call",
+            "call_id": "call-patch-chunk-000",
+            "name": "exec_command",
+            "arguments": "{\"cmd\":\"# switchyard_review_patch_chunk 000\\ncat /tmp/review-patch-000\"}"
+        }),
+        json!({
+            "type": "function_call_output",
+            "call_id": "call-patch-chunk-000",
+            "output": "diff --git a/early.rs b/early.rs"
+        }),
     ];
     for index in 0..9 {
         execution_input.extend([
@@ -1794,6 +1816,18 @@ reviewer_prompt = "force-redo: Review the completion and reply APPROVE or REDO."
     assert!(!calls[2]["input"].to_string().contains("call-check-1"));
     assert!(calls[2]["input"].to_string().contains("call-check-2"));
     assert!(calls[2]["input"].to_string().contains("call-check-8"));
+    assert!(calls[2]["input"].to_string().contains("call-review-tests"));
+    assert!(calls[2]["input"].to_string().contains("all tests passed"));
+    assert!(
+        calls[2]["input"]
+            .to_string()
+            .contains("call-patch-chunk-000")
+    );
+    assert!(
+        calls[2]["input"]
+            .to_string()
+            .contains("diff --git a/early.rs b/early.rs")
+    );
     assert!(calls[2]["input"].to_string().contains("call-final-patch"));
     assert!(
         calls[2]["input"]
