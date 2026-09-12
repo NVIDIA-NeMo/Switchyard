@@ -114,7 +114,27 @@ Every route takes the common keys below, plus the keys for its type.
 | `context_window` | No | unset | Positive token count advertised for this route by `GET /v1/models`. Unset values appear as `null`. This does not enforce a request limit. |
 | `tool_calling` | No | unset | Whether `GET /v1/models` advertises tool-calling support for this route. Unset values appear as `null`. |
 | `reasoning` | No | unset | Whether `GET /v1/models` advertises reasoning support to Codex direct-provider discovery. Unset routes are advertised as non-reasoning. |
+| `base_instructions` | No | unset | Nonblank text served verbatim in the Codex model catalog. Codex uses it in place of its own base instructions. Unset routes keep the placeholder prompt and produce a startup warning. |
 | `vision` | No | unset | Whether `GET /v1/models` advertises **image input** to Codex direct-provider discovery. Unset routes are advertised as text-only. This is not cosmetic: Codex reads `input_modalities` from the model card and, when it reads text-only, replaces an attached image with the text `image content omitted because you do not support image input` **before sending**, so a route whose target can see but which does not declare `vision = true` loses the image in the client. Declare it only when every target the route can select accepts images. |
+
+### Codex base instructions
+
+For Codex direct-provider discovery, set `base_instructions` on each route to the
+complete prompt you want Codex to use. TOML multiline strings can hold the prompt.
+Leading and trailing whitespace is preserved; empty or whitespace-only values are
+rejected.
+
+To compare a routed session with a direct session, use the same resolved base
+instructions as the direct session for that Codex version, model, and configuration.
+Check them again after upgrading Codex. This setting controls the advertised prompt;
+it does not rewrite incoming request instructions or change other model metadata.
+
+When the setting is omitted, Switchyard still serves
+`You are Codex, a coding agent.` and logs the affected route IDs at startup. This
+keeps existing catalogs usable, but does not preserve Codex's original prompt.
+Codex versions that require instructions reject the entire catalog if both
+`base_instructions` and `model_messages.instructions_template` are absent. Serving
+the template instead also replaces Codex's prompt.
 
 ### `noop`
 

@@ -2533,6 +2533,112 @@ async fn json_extractor_statuses_keep_api_specific_error_envelopes() -> TestResu
     Ok(())
 }
 
+// Configured instructions must survive TOML loading and catalog serialization verbatim.
+#[tokio::test]
+async fn models_endpoint_preserves_per_route_base_instructions() -> TestResult {
+    const CONFIG: &str = r#"
+schema_version = 1
+[targets]
+[routes.configured]
+id = "configured"
+type = "noop"
+vision = true
+base_instructions = "  First line.\nSecond line: 中文.\n"
+[routes.other]
+id = "other"
+type = "noop"
+base_instructions = "A different prompt."
+[routes.default]
+id = "default"
+type = "noop"
+"#;
+    let app = build_switchyard_router(load_test_config(CONFIG)?);
+    let response = send(&app, "GET", "/v1/models", None).await?;
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.json()?;
+    let models = body["models"].as_array().expect("Codex catalog");
+    assert_eq!(models.len(), 3);
+    let entries = models
+        .iter()
+        .map(|entry| (entry["slug"].as_str().expect("route id"), entry))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        entries["configured"]["base_instructions"],
+        "  First line.\nSecond line: 中文.\n"
+    );
+    assert_eq!(entries["other"]["base_instructions"], "A different prompt.");
+    // Omitting instructions would invalidate the entire Codex catalog, including vision.
+    assert_eq!(
+        entries["default"]["base_instructions"],
+        "You are Codex, a coding agent."
+    );
+    assert_eq!(
+        entries["configured"]["input_modalities"],
+        json!(["text", "image"])
+    );
+    Ok(())
+}
+
+// Embedded discovery hosts must warn without logging any configured prompt text.
+#[tokio::test]
+async fn model_discovery_warns_only_for_unconfigured_routes() -> TestResult {
+    use std::io::{Read, Seek};
+
+    const CONFIG: &str = r#"
+schema_version = 1
+[targets]
+[routes.configured]
+id = "configured-id"
+type = "noop"
+base_instructions = "private prompt sentinel"
+[routes.missing]
+id = "missing-id"
+type = "noop"
+"#;
+    for (extra, needs_warning) in [("", true), ("base_instructions = 'another prompt'", false)] {
+        let mut log = tempfile::tempfile()?;
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(log.try_clone()?)
+            .finish();
+        let state = load_test_config(&format!("{CONFIG}{extra}"))?;
+        let _ = tracing::subscriber::with_default(subscriber, || build_switchyard_router(state));
+        log.rewind()?;
+        let mut output = String::new();
+        log.read_to_string(&mut output)?;
+        assert_eq!(
+            output.contains("Codex model discovery"),
+            needs_warning,
+            "{output}"
+        );
+        assert_eq!(output.contains("missing-id"), needs_warning, "{output}");
+        assert!(!output.contains("configured-id"), "{output}");
+        assert!(!output.contains("private prompt sentinel"), "{output}");
+        assert!(!output.contains("another prompt"), "{output}");
+    }
+    Ok(())
+}
+
+// A blank prompt must not silently disable the agent's base instructions.
+#[test]
+fn route_base_instructions_rejects_blank_values() {
+    for value in [r#""""#, r#"" \n\t ""#] {
+        let config = format!(
+            "schema_version = 1\n[targets]\n[routes.test]\nid = \"test\"\ntype = \"noop\"\nbase_instructions = {value}\n"
+        );
+        let error = load_test_config(&config)
+            .err()
+            .expect("blank prompt rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("base_instructions must not be empty"),
+            "{error}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn models_endpoint_reports_declared_route_capabilities_and_null_when_undeclared() -> TestResult
 {
