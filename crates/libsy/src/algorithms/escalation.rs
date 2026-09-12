@@ -6,10 +6,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde_json::Value;
 use switchyard_protocol::{
     AggLlmResponse, Category, LlmClientError, LlmResponse, Message, Request, Response, Role,
 };
 
+use super::llm_class;
 use super::util::classifier_contract::ClassifierContractConfig;
 use super::util::decisive;
 use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
@@ -21,6 +23,8 @@ use crate::{LibsyError, Result};
 
 /// Session-state key holding the consecutive-escalate streak.
 const STREAK_KEY: &str = "escalation_streak";
+/// Session-state key recording that the up-front capability gate has run for this session.
+const GATE_KEY: &str = "escalation_gate_done";
 
 fn streak(state: &State) -> u32 {
     match state.extra.get(STREAK_KEY) {
@@ -44,6 +48,8 @@ fn assistant_message(response: &AggLlmResponse) -> Message {
 /// not pay for a second model call.
 struct EscalationClassifier {
     judge: JudgeClassifier<EscalationJudge, EscalationPolicy>,
+    /// Optional capability forecast run once per session before the first efficient call.
+    gate: Option<Arc<dyn Classifier<State>>>,
     /// Consecutive escalate verdicts required to latch.
     confirmations: u32,
 }
@@ -55,7 +61,16 @@ pub(super) fn build_classifier(
     max_output_tokens: u64,
 ) -> Result<Arc<dyn Classifier<State>>> {
     let confirmations = config.confirmations;
+    let gate = match &config.gate {
+        Some(gate) => Some(llm_class::build_capability_gate(
+            gate,
+            contract_config.response_format_type(),
+            max_output_tokens,
+        )?),
+        None => None,
+    };
     let classifier: Arc<dyn Classifier<State>> = Arc::new(EscalationClassifier {
+        gate,
         judge: escalation::build_judge(&contract_config, config, max_output_tokens)?,
         confirmations,
     });
@@ -80,6 +95,62 @@ impl Classifier<State> for EscalationClassifier {
                 "verdict": "latched",
             }));
             return Ok((decisive(&capable), None));
+        }
+
+        // The gate forecasts once per session, from the task framing alone, before the efficient
+        // tier spends anything. A verdict below the threshold latches immediately; anything else
+        // (including an unusable verdict or a failed call) falls open to the efficient tier and
+        // leaves the trajectory judge in charge.
+        if let Some(gate) = &self.gate
+            && !matches!(state.extra.get(GATE_KEY), Some(StateValue::Count(_)))
+        {
+            state
+                .extra
+                .insert(GATE_KEY.to_string(), StateValue::Count(1));
+            let mut gate_request = request.clone();
+            match gate.score(state, &mut gate_request, driver).await {
+                Ok((classification, _)) => {
+                    let to_capable = classification
+                        .argmax(false)?
+                        .is_some_and(|score| score.target == capable);
+                    // The forecaster's evidence carries `score` (p_solve) and `threshold`; log it
+                    // so an operator can read the forecast distribution and tune the threshold.
+                    let forecast = driver.evidence().unwrap_or(Value::Null);
+                    tracing::info!(
+                        latched = to_capable,
+                        forecast = %forecast,
+                        "escalation gate verdict"
+                    );
+                    if to_capable {
+                        state.extra.insert(
+                            STREAK_KEY.to_string(),
+                            StateValue::Count(self.confirmations),
+                        );
+                        tracing::info!(
+                            target = %capable,
+                            "escalation gate latched the session to the capable tier"
+                        );
+                        let mut evidence = serde_json::json!({
+                            "source": "escalation",
+                            "verdict": "gate",
+                        });
+                        if let (Some(evidence), Some(forecast)) =
+                            (evidence.as_object_mut(), forecast.as_object())
+                        {
+                            for key in ["score", "threshold"] {
+                                if let Some(value) = forecast.get(key) {
+                                    evidence.insert(key.to_string(), value.clone());
+                                }
+                            }
+                        }
+                        driver.set_evidence(evidence);
+                        return Ok((decisive(&capable), None));
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "escalation gate failed; serving the efficient tier");
+                }
+            }
         }
 
         // Call efficient model and buffer the response so the judge can read it.
@@ -182,8 +253,10 @@ mod tests {
     };
 
     use super::*;
+    use crate::algorithms::llm_class::VerdictScale;
     use crate::algorithms::llm_class::{LlmClassifierConfig, LlmTaskClassifier};
     use crate::algorithms::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
+    use crate::algorithms::util::escalation::EscalationGateConfig;
     use crate::core::testing::{Serve, reply, test_drive_with_models};
 
     /// A queue of replies, drained in order.
@@ -379,6 +452,205 @@ mod tests {
 
         assert_eq!(selected_model, "capable");
         Ok(())
+    }
+
+    /// Builds a router with the up-front capability gate at the given threshold.
+    fn gated_router(base_threshold: f64) -> Result<Arc<LlmTaskClassifier>> {
+        Ok(Arc::new(LlmTaskClassifier::new(
+            LlmClassifierConfig::Escalation {
+                contract: ClassifierContractConfig::default(),
+                config: EscalationJudgeConfig {
+                    confirmations: 1,
+                    gate: Some(EscalationGateConfig {
+                        base_threshold: Some(base_threshold),
+                        min_confidence: None,
+                        threshold_step: 0.0,
+                        prompt: None,
+                        classifier_target: None,
+                        verdict_scale: VerdictScale::default(),
+                    }),
+                    ..EscalationJudgeConfig::default()
+                },
+                max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            },
+        )?))
+    }
+
+    const GATE_LOW: &str = r#"{"crux":"protocol framing","primary_rule":"LIM-2","capability_boundary":"unsupported","p_solve":0.2}"#;
+    const GATE_HIGH: &str = r#"{"crux":"local change","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#;
+
+    #[tokio::test]
+    async fn gate_latches_before_the_efficient_tier_is_called() -> Result<()> {
+        // Only the gate verdict is queued for the judge and only one model reply exists: had the
+        // efficient tier been called first, capable would have received "unexpected call".
+        let judge = Queue::new([GATE_LOW]);
+        let model = Queue::new(["capable answer"]);
+
+        let (selected_model, response) = test_drive_with_models(
+            gated_router(0.5)?,
+            classify_session_request(),
+            runtime_models(),
+            queued(model, judge),
+        )
+        .await?;
+
+        assert_eq!(selected_model, "capable");
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("capable answer".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gate_on_the_ordinal_scale_latches_below_the_threshold_rung() -> Result<()> {
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+            contract: ClassifierContractConfig::default(),
+            config: EscalationJudgeConfig {
+                confirmations: 1,
+                gate: Some(EscalationGateConfig {
+                    // Keep `uncertain` and above on the efficient tier; `unlikely` and below latch.
+                    base_threshold: None,
+                    min_confidence: Some("uncertain".to_string()),
+                    threshold_step: 0.0,
+                    prompt: None,
+                    classifier_target: None,
+                    verdict_scale: VerdictScale::Ordinal,
+                }),
+                ..EscalationJudgeConfig::default()
+            },
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+        })?);
+        let judge = Queue::new([
+            r#"{"crux":"protocol framing","primary_rule":"LIM-2","capability_boundary":"unsupported","confidence":"unlikely"}"#,
+        ]);
+        let model = Queue::new(["capable answer"]);
+
+        let (selected_model, _) = test_drive_with_models(
+            router,
+            classify_session_request(),
+            runtime_models(),
+            queued(model, judge),
+        )
+        .await?;
+
+        assert_eq!(selected_model, "capable");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gate_passes_then_trajectory_judge_decides() -> Result<()> {
+        let judge = Queue::new([GATE_HIGH, r#"{"escalate":false,"reason":"progressing"}"#]);
+        let model = Queue::new(["efficient answer"]);
+
+        let (selected_model, response) = test_drive_with_models(
+            gated_router(0.5)?,
+            classify_session_request(),
+            runtime_models(),
+            queued(model, judge),
+        )
+        .await?;
+
+        assert_eq!(selected_model, "efficient");
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("efficient answer".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gate_runs_once_per_session() -> Result<()> {
+        // Second request: the judge queue holds only an escalate verdict. If the gate ran again
+        // it would consume that verdict (invalid for the gate, so fail-open) and the trajectory
+        // judge would then read "unexpected call" and keep efficient.
+        let judge = Queue::new([
+            GATE_HIGH,
+            r#"{"escalate":false,"reason":"progressing"}"#,
+            r#"{"escalate":true,"reason":"stuck"}"#,
+        ]);
+        let model = Queue::new(["efficient t1", "efficient t2", "capable t2"]);
+        let router = gated_router(0.5)?;
+        let request = classify_session_request();
+
+        let (first, _) = test_drive_with_models(
+            router.clone(),
+            request.clone(),
+            runtime_models(),
+            queued(Arc::clone(&model), Arc::clone(&judge)),
+        )
+        .await?;
+        let (second, _) =
+            test_drive_with_models(router, request, runtime_models(), queued(model, judge)).await?;
+
+        assert_eq!(first, "efficient");
+        assert_eq!(second, "capable");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unusable_gate_verdict_falls_open_to_efficient() -> Result<()> {
+        let judge = Queue::new([
+            "not a verdict",
+            r#"{"escalate":false,"reason":"progressing"}"#,
+        ]);
+        let model = Queue::new(["efficient answer"]);
+
+        let (selected_model, _) = test_drive_with_models(
+            gated_router(0.5)?,
+            classify_session_request(),
+            runtime_models(),
+            queued(model, judge),
+        )
+        .await?;
+
+        assert_eq!(selected_model, "efficient");
+        Ok(())
+    }
+
+    #[test]
+    fn gate_threshold_is_validated() {
+        let build = |base_threshold: f64| {
+            LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+                contract: ClassifierContractConfig::default(),
+                config: EscalationJudgeConfig {
+                    gate: Some(EscalationGateConfig {
+                        base_threshold: Some(base_threshold),
+                        min_confidence: None,
+                        threshold_step: 0.0,
+                        prompt: None,
+                        classifier_target: None,
+                        verdict_scale: VerdictScale::default(),
+                    }),
+                    ..EscalationJudgeConfig::default()
+                },
+                max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            })
+        };
+        assert!(build(0.4).is_ok());
+        assert!(build(1.5).is_err());
+
+        let rung = |min_confidence: Option<&str>, base_threshold: Option<f64>| {
+            LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+                contract: ClassifierContractConfig::default(),
+                config: EscalationJudgeConfig {
+                    gate: Some(EscalationGateConfig {
+                        base_threshold,
+                        min_confidence: min_confidence.map(str::to_string),
+                        threshold_step: 0.0,
+                        prompt: None,
+                        classifier_target: None,
+                        verdict_scale: VerdictScale::Ordinal,
+                    }),
+                    ..EscalationJudgeConfig::default()
+                },
+                max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            })
+        };
+        assert!(rung(Some("uncertain"), None).is_ok());
+        assert!(rung(Some("maybe"), None).is_err());
+        assert!(rung(Some("uncertain"), Some(0.5)).is_err());
+        assert!(rung(None, None).is_err());
     }
 
     #[tokio::test]

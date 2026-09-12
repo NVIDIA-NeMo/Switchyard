@@ -18,7 +18,9 @@ use super::util::affinity::{AffinityRouter, ClassifyTrigger};
 use super::util::classifier_contract::{
     ClassifierContract, ClassifierContractConfig, ClassifierResponseFormat,
 };
-use super::util::escalation::EscalationJudgeConfig;
+use super::util::escalation::{
+    self as escalation_util, EscalationGateConfig, EscalationJudgeConfig,
+};
 use super::util::llm_judge::{
     ClassifierInput, JsonSchemaDecoder, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
     SerdeDecoder, StructuredJudge,
@@ -32,6 +34,69 @@ use switchyard_protocol::{Request, Response};
 
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../prompts/capability-classifier/schema.json");
+const ORDINAL_PROMPT_TEMPLATE: &str =
+    include_str!("../prompts/capability-classifier/prompt-ordinal.md");
+const ORDINAL_SCHEMA_TEMPLATE: &str =
+    include_str!("../prompts/capability-classifier/schema-ordinal.json");
+
+/// How the capability forecaster reports its verdict.
+///
+/// Models produce ordinal judgements more reliably than calibrated numbers: asked for a
+/// probability they cluster on a few round values and, given a stated cutoff, write a number
+/// just under it. The ordinal scale asks for one rung of a fixed ladder and maps it to the
+/// band's midpoint, so the threshold policy is unchanged and a threshold between two rungs
+/// selects exactly the rungs below it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerdictScale {
+    /// `p_solve` as a number in `[0, 1]`.
+    #[default]
+    Probability,
+    /// `confidence` as one of eight named rungs, from `surely` to `almost_surely_not`.
+    Ordinal,
+}
+
+impl VerdictScale {
+    fn templates(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Probability => (PROMPT_TEMPLATE, SCHEMA_TEMPLATE),
+            Self::Ordinal => (ORDINAL_PROMPT_TEMPLATE, ORDINAL_SCHEMA_TEMPLATE),
+        }
+    }
+}
+
+/// Ladder rungs and the midpoint of the natural-frequency band each one names.
+const CONFIDENCE_RUNGS: [(&str, f64); 8] = [
+    ("surely", 0.97),
+    ("extremely_likely", 0.90),
+    ("very_likely", 0.78),
+    ("likely", 0.62),
+    ("uncertain", 0.50),
+    ("unlikely", 0.38),
+    ("very_unlikely", 0.22),
+    ("almost_surely_not", 0.08),
+];
+
+fn rung_midpoint(rung: &str) -> Option<f64> {
+    CONFIDENCE_RUNGS
+        .iter()
+        .find(|(name, _)| *name == rung)
+        .map(|(_, midpoint)| *midpoint)
+}
+
+/// The numeric threshold that keeps `rung` and every rung above it on the efficient tier and
+/// sends every rung below it to the capable tier: halfway between `rung`'s midpoint and the
+/// next lower rung's (or halfway to zero for the lowest rung). `None` for an unknown rung.
+pub(crate) fn rung_threshold(rung: &str) -> Option<f64> {
+    let index = CONFIDENCE_RUNGS
+        .iter()
+        .position(|(name, _)| *name == rung)?;
+    let lower = CONFIDENCE_RUNGS
+        .get(index + 1)
+        .map(|(_, midpoint)| *midpoint)
+        .unwrap_or(0.0);
+    Some((CONFIDENCE_RUNGS[index].1 + lower) / 2.0)
+}
 /// Telemetry label for this algorithm's spans, metrics, and logs.
 const ALGORITHM_NAME: &str = "llm_task_classifier";
 
@@ -52,13 +117,28 @@ struct TaskClassifierVerdict {
     crux: String,
     primary_rule: String,
     capability_boundary: String,
-    p_solve: f64,
+    /// Probability scale: the forecast as a number.
+    #[serde(default)]
+    p_solve: Option<f64>,
+    /// Ordinal scale: the forecast as a ladder rung. Exactly one of the two is present.
+    #[serde(default)]
+    confidence: Option<String>,
 }
 
 impl TaskClassifierVerdict {
+    /// The forecast as a number on either scale: `p_solve` itself, or the midpoint of the
+    /// band the reported rung names.
+    fn p_solve(&self) -> Option<f64> {
+        match (self.p_solve, self.confidence.as_deref()) {
+            (Some(p), None) => Some(p),
+            (None, Some(rung)) => rung_midpoint(rung),
+            _ => None,
+        }
+    }
+
     /// Rejects malformed or internally inconsistent verdicts before policy evaluation.
     fn is_valid(&self) -> bool {
-        (0.0..=1.0).contains(&self.p_solve)
+        self.p_solve().is_some_and(|p| (0.0..=1.0).contains(&p))
             && !self.crux.trim().is_empty()
             && matches!(
                 (
@@ -233,9 +313,9 @@ impl JudgePolicy for TaskClassifierPolicy {
         let Some(threshold) = self.threshold(verdict) else {
             return Ok(Classification::Ambiguous(vec![]));
         };
-        let category = if verdict.p_solve >= threshold
-            || (threshold - verdict.p_solve).abs() <= f64::EPSILON
-        {
+        // `is_valid` guarantees the forecast is present on exactly one scale.
+        let p_solve = verdict.p_solve().unwrap_or(0.0);
+        let category = if p_solve >= threshold || (threshold - p_solve).abs() <= f64::EPSILON {
             Category::Efficient
         } else {
             Category::Capable
@@ -269,16 +349,23 @@ fn capability_evidence(
             "reason_code": "invalid_verdict",
         }));
     };
-    Some(serde_json::json!({
+    let mut evidence = serde_json::json!({
         "source": "llm-classifier",
-        "score": verdict.p_solve,
+        "score": verdict.p_solve(),
         "threshold": threshold,
-    }))
+    });
+    if let (Some(evidence), Some(rung)) = (evidence.as_object_mut(), verdict.confidence.as_deref())
+    {
+        evidence.insert("confidence".to_string(), Value::String(rung.to_string()));
+    }
+    Some(evidence)
 }
 
 #[derive(Clone, Debug)]
 /// Settings that control capability classifier prompting and routing.
 pub struct TaskClassifierConfig {
+    /// Whether the forecaster reports a probability or a ladder rung.
+    pub verdict_scale: VerdictScale,
     /// Lowest solve probability that routes a supported task to the efficient target.
     pub base_threshold: f64,
     /// Amount added per capability-boundary step.
@@ -322,6 +409,8 @@ struct TaskClassifierConfigWire {
     response_format_type: ClassifierResponseFormat,
     #[serde(default = "default_judge_max_output_tokens")]
     max_output_tokens: u64,
+    #[serde(default)]
+    verdict_scale: VerdictScale,
 }
 
 impl<'de> Deserialize<'de> for TaskClassifierConfig {
@@ -336,6 +425,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
         }
         contract = contract.with_response_format_type(wire.response_format_type);
         Ok(Self {
+            verdict_scale: wire.verdict_scale,
             base_threshold: wire.base_threshold,
             threshold_step: wire.threshold_step,
             classify_trigger: wire.classify_trigger,
@@ -354,6 +444,7 @@ const fn default_judge_max_output_tokens() -> u64 {
 impl Default for TaskClassifierConfig {
     fn default() -> Self {
         Self {
+            verdict_scale: VerdictScale::default(),
             base_threshold: 0.0,
             threshold_step: 0.0,
             classify_trigger: ClassifyTrigger::default(),
@@ -604,7 +695,7 @@ impl LlmTaskClassifier {
 
     fn build_capability(config: TaskClassifierConfig) -> Result<Self> {
         config.validate()?;
-        let contract = Self::load_capability_contract(&config.contract)?;
+        let contract = Self::load_capability_contract(&config.contract, config.verdict_scale)?;
         let classify_trigger = config.classify_trigger;
         let message_hash_fallback = config.message_hash_fallback;
         let classifier: Arc<dyn Classifier<State>> = Arc::new(
@@ -682,9 +773,13 @@ impl LlmTaskClassifier {
         })
     }
 
-    /// Loads the packaged capability-classifier contract.
-    fn load_capability_contract(config: &ClassifierContractConfig) -> Result<ClassifierContract> {
-        ClassifierContract::from_config(config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)
+    /// Loads the packaged capability-classifier contract for the configured verdict scale.
+    fn load_capability_contract(
+        config: &ClassifierContractConfig,
+        scale: VerdictScale,
+    ) -> Result<ClassifierContract> {
+        let (prompt, schema) = scale.templates();
+        ClassifierContract::from_config(config, prompt, schema)
     }
 
     /// Keeps affinity and fallback ordering identical across judge-backed modes.
@@ -716,6 +811,48 @@ impl LlmTaskClassifier {
             inner,
         })
     }
+}
+
+/// Builds the up-front capability gate an escalation route runs once per session: the packaged
+/// capability forecaster, judged through the escalation judge's target, mapped to a tier by the
+/// same threshold policy capability mode uses. The gate reads the task framing only
+/// (`recent_turn_window` unset), so it works before any trajectory exists.
+pub(super) fn build_capability_gate(
+    gate: &EscalationGateConfig,
+    response_format_type: ClassifierResponseFormat,
+    max_output_tokens: u64,
+) -> Result<Arc<dyn Classifier<State>>> {
+    let mut contract_config =
+        ClassifierContractConfig::default().with_response_format_type(response_format_type);
+    if let Some(prompt) = &gate.prompt {
+        contract_config = contract_config.with_prompt(prompt.clone());
+    }
+    let (prompt, schema) = gate.verdict_scale.templates();
+    let contract = ClassifierContract::from_config(&contract_config, prompt, schema)?;
+    let config = TaskClassifierConfig {
+        verdict_scale: gate.verdict_scale,
+        base_threshold: gate.threshold()?,
+        threshold_step: gate.threshold_step,
+        ..TaskClassifierConfig::default()
+    };
+    let mut classifier = JudgeClassifier::new(
+        StructuredJudge::new(
+            TaskInput {
+                recent_turn_window: None,
+            },
+            contract,
+            SerdeDecoder::new(),
+            JudgeRuntimeConfig::new(max_output_tokens)?,
+        ),
+        TaskClassifierPolicy::new(&config),
+    )
+    .with_evidence(capability_evidence);
+    if gate.classifier_target.is_some() {
+        classifier = classifier.with_judge_category(Category::Named(Arc::from(
+            escalation_util::GATE_JUDGE_CATEGORY,
+        )));
+    }
+    Ok(Arc::new(classifier))
 }
 
 #[async_trait]
@@ -765,6 +902,52 @@ mod tests {
 
     const TEST_THRESHOLD: f64 = 0.5;
 
+    #[test]
+    fn ordinal_verdicts_map_to_band_midpoints_and_probability_verdicts_pass_through() {
+        let ordinal: TaskClassifierVerdict = serde_json::from_str(
+            r#"{"crux":"framing","primary_rule":"LIM-2","capability_boundary":"unsupported","confidence":"unlikely"}"#,
+        )
+        .expect("ordinal verdict parses");
+        assert!(ordinal.is_valid());
+        assert_eq!(ordinal.p_solve(), Some(0.38));
+
+        let probability: TaskClassifierVerdict = serde_json::from_str(
+            r#"{"crux":"local change","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#,
+        )
+        .expect("probability verdict parses");
+        assert_eq!(probability.p_solve(), Some(0.9));
+
+        // An unknown rung, or both scales at once, is not a usable verdict.
+        let unknown: TaskClassifierVerdict = serde_json::from_str(
+            r#"{"crux":"x","primary_rule":"SUP-1","capability_boundary":"supported","confidence":"maybe"}"#,
+        )
+        .expect("parses");
+        assert!(!unknown.is_valid());
+        let both: TaskClassifierVerdict = serde_json::from_str(
+            r#"{"crux":"x","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.5,"confidence":"likely"}"#,
+        )
+        .expect("parses");
+        assert!(!both.is_valid());
+    }
+
+    #[test]
+    fn rung_thresholds_sit_between_adjacent_rungs() {
+        // Keeping `uncertain` (0.50) and above means latching `unlikely` (0.38) and below.
+        let threshold = rung_threshold("uncertain").expect("known rung");
+        assert!(threshold < 0.50 && threshold > 0.38);
+        assert!(rung_threshold("almost_surely_not").is_some_and(|t| t > 0.0 && t < 0.08));
+        assert!(rung_threshold("maybe").is_none());
+    }
+
+    #[test]
+    fn ordinal_scale_loads_the_ladder_prompt_and_schema() {
+        let (prompt, schema) = VerdictScale::Ordinal.templates();
+        assert!(prompt.contains("almost_surely_not") && !prompt.contains("p_solve"));
+        assert!(schema.contains("\"confidence\"") && !schema.contains("p_solve"));
+        let (prompt, schema) = VerdictScale::Probability.templates();
+        assert!(prompt.contains("p_solve") && schema.contains("p_solve"));
+    }
+
     type CapabilityJudge = StructuredJudge<TaskInput, SerdeDecoder<TaskClassifierVerdict>>;
 
     fn test_config(base_threshold: f64) -> TaskClassifierConfig {
@@ -804,7 +987,8 @@ mod tests {
             crux: "test crux".to_string(),
             primary_rule: primary_rule.to_string(),
             capability_boundary: capability_boundary.to_string(),
-            p_solve,
+            p_solve: Some(p_solve),
+            confidence: None,
         }
     }
 
@@ -1318,7 +1502,10 @@ mod tests {
     fn capability_judge(recent_turn_window: Option<usize>) -> Result<CapabilityJudge> {
         Ok(StructuredJudge::new(
             TaskInput { recent_turn_window },
-            LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?,
+            LlmTaskClassifier::load_capability_contract(
+                &ClassifierContractConfig::default(),
+                VerdictScale::Probability,
+            )?,
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?,
         ))
@@ -1693,8 +1880,10 @@ mod tests {
     /// rejecting every production verdict.
     #[test]
     fn every_schema_property_round_trips_through_the_judge_parser() -> Result<()> {
-        let contract =
-            LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?;
+        let contract = LlmTaskClassifier::load_capability_contract(
+            &ClassifierContractConfig::default(),
+            VerdictScale::Probability,
+        )?;
         let schema = contract.response_format();
         let reply = schema_shaped_verdict(schema)?;
         let judge: CapabilityJudge = StructuredJudge::new(
@@ -1709,14 +1898,16 @@ mod tests {
         let verdict = judge.parse(&text_response(None, reply))?;
 
         assert!(verdict.is_valid());
-        assert!((0.0..=1.0).contains(&verdict.p_solve));
+        assert!(verdict.p_solve().is_some_and(|p| (0.0..=1.0).contains(&p)));
         Ok(())
     }
 
     #[test]
     fn packaged_prompt_keeps_the_schema_in_the_structured_request() -> Result<()> {
-        let contract =
-            LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?;
+        let contract = LlmTaskClassifier::load_capability_contract(
+            &ClassifierContractConfig::default(),
+            VerdictScale::Probability,
+        )?;
         let prompt = contract.system_prompt();
         let schema_name = contract
             .response_format()

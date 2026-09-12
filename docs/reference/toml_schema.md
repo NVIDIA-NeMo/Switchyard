@@ -203,6 +203,7 @@ Capability mode classifies before serving. See
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 | `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
+| `verdict_scale` | No | `probability` | `probability` asks for `p_solve`; `ordinal` asks for `confidence` as one of eight named rungs mapped to band midpoints, so `base_threshold` selects rungs. See `escalation.gate.verdict_scale` for the ladder. |
 
 Escalation mode serves the weak target first and judges the completed turn. See
 [Escalation-Router Routing](../routing_algorithms/escalation_router_routing.md).
@@ -215,6 +216,13 @@ Escalation mode serves the weak target first and judges the completed turn. See
 | `escalation.confirmations` | No | `2` | Consecutive escalate verdicts required to latch. Above `1` needs a session ID. |
 | `escalation.recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
 | `escalation.window_message_chars` | No | `500` | Per-message cap inside that window. |
+| `escalation.gate` | No | unset | Up-front capability gate: judges the first request of a session from the task framing with the packaged capability forecaster and latches to `strong_target` when `p_solve` is below the threshold, before `weak_target` is called. Needs a session ID. |
+| `escalation.gate.base_threshold` | One of the two, when `gate` is set | — | Lowest solve probability that keeps the session on `weak_target`. In `[0, 1]`. |
+| `escalation.gate.min_confidence` | One of the two, when `gate` is set | — | The threshold as a ladder rung: `weak_target` keeps this rung and every rung above it, every rung below latches to `strong_target`. Use with `verdict_scale = "ordinal"` for a configuration with no numbers. |
+| `escalation.gate.threshold_step` | No | `0.0` | Added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
+| `escalation.gate.prompt` | No | packaged capability prompt | Replaces the capability-forecaster prompt for the gate call only. |
+| `escalation.gate.classifier_target` | No | the route's `classifier_target` | Target the once-per-session gate forecast is called through, so a strong forecaster can gate while a cheap model judges every weak turn. |
+| `escalation.gate.verdict_scale` | No | `probability` | `probability` asks the forecaster for `p_solve` in `[0, 1]`; `ordinal` asks for `confidence` as one of eight rungs (`surely`, `extremely_likely`, `very_likely`, `likely`, `uncertain`, `unlikely`, `very_unlikely`, `almost_surely_not`), mapped to band midpoints (0.97, 0.90, 0.78, 0.62, 0.50, 0.38, 0.22, 0.08) before the threshold applies. |
 
 Existing configurations that contain `escalation` but omit `mode` remain valid.
 
