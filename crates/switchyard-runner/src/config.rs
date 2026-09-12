@@ -287,7 +287,7 @@ impl DeploymentConfig {
                     )));
                 }
             }
-            model_configs.push(ModelConfig::new(
+            let mut model_config = ModelConfig::new(
                 target.id.clone(),
                 build_backend(
                     &target.llm_client,
@@ -296,7 +296,16 @@ impl DeploymentConfig {
                     target.reasoning_effort.clone(),
                 )?,
                 None,
-            ));
+            );
+            if let Some(model) = &target.model {
+                if model.trim().is_empty() {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} model must not be empty"
+                    )));
+                }
+                model_config = model_config.with_upstream_model(model.clone());
+            }
+            model_configs.push(model_config);
         }
 
         let mut clients = BTreeMap::new();
@@ -530,7 +539,11 @@ struct LlmClientConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetConfig {
+    /// Routing id of the target; also the model name sent upstream unless `model` is set.
     id: ModelId,
+    /// Provider model name sent upstream when it differs from `id`, so several targets
+    /// (for example one per reasoning effort) can address the same provider model.
+    model: Option<String>,
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
@@ -1106,6 +1119,21 @@ new = ["send_message"]
             &format!("{strong}\n\n[targets.strong_alias]\nid = \"strong/model\"\nllm_client = \"responses\""),
         );
         runner_from_toml(&alias)?;
+        Ok(())
+    }
+
+    #[test]
+    fn two_targets_can_share_an_upstream_model_under_distinct_ids() -> RunnerResult<()> {
+        let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        assert!(VALID_CONFIG.contains(strong));
+        let aliased = VALID_CONFIG.replace(
+            strong,
+            "[targets.strong]\nid = \"strong-max\"\nmodel = \"strong/model\"\nllm_client = \"responses\"\n\n[targets.strong_low]\nid = \"strong-low\"\nmodel = \"strong/model\"\nllm_client = \"responses\"",
+        );
+        runner_from_toml(&aliased)?;
+
+        let blank = VALID_CONFIG.replace(strong, &format!("{strong}\nmodel = \" \""));
+        assert!(error_message(&blank).contains("model must not be empty"));
         Ok(())
     }
 

@@ -57,13 +57,22 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
-/// How one model is served: the `default_backend` used when the request does not
-/// pin a wire format, plus any `other_backends` reachable over additional formats.
+/// How one routed model is served.
+///
+/// `model_name` is the routing identity a route or target refers to, and the key the client
+/// resolves a call by; `upstream_model`, when set, is the name the provider receives instead.
+/// Requests go to `default_backend` unless they pin a wire format served by one of
+/// `other_backends`. Several configs may point at one provider model under distinct routing
+/// ids, each with its own backend settings.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
     model_name: ModelId,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
+    /// Model name sent upstream when it differs from `model_name`. Lets two configs
+    /// with different backend settings (effort, headers, endpoint) address the same
+    /// provider model under distinct routing ids.
+    upstream_model: Option<String>,
 }
 
 impl ModelConfig {
@@ -78,7 +87,21 @@ impl ModelConfig {
             model_name: model_name.into(),
             default_backend,
             other_backends,
+            upstream_model: None,
         }
+    }
+
+    /// Sends `upstream_model` as the provider's model name instead of `model_name`.
+    pub fn with_upstream_model(mut self, upstream_model: impl Into<String>) -> Self {
+        self.upstream_model = Some(upstream_model.into());
+        self
+    }
+
+    /// The model name the provider sees for this config.
+    fn upstream_name(&self) -> &str {
+        self.upstream_model
+            .as_deref()
+            .unwrap_or_else(|| self.model_name.as_ref())
     }
 }
 
@@ -244,8 +267,14 @@ impl TranslatingLlmClient {
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
-        // the upstream always sees the target id.
-        set_json_model(&mut body, model);
+        // the upstream always sees the configured provider model name.
+        let upstream_model = self
+            .model_to_config
+            .get(model)
+            .map(ModelConfig::upstream_name)
+            .unwrap_or_else(|| model.as_ref())
+            .to_string();
+        set_json_model(&mut body, &upstream_model);
         if matches!(backend, Backend::OpenAiResponses(_)) {
             sanitize_openai_responses_provider_body(&mut body);
         }
@@ -1146,6 +1175,13 @@ mod tests {
         )]
     }
 
+    fn chat_map_with_upstream_model(base_url: &str, upstream: &str) -> Vec<ModelConfig> {
+        vec![
+            ModelConfig::new("gpt-tier", Backend::OpenAiChat(config(base_url)), None)
+                .with_upstream_model(upstream),
+        ]
+    }
+
     fn anthropic_map(base_url: &str) -> Vec<ModelConfig> {
         vec![ModelConfig::new(
             "claude",
@@ -1677,6 +1713,43 @@ mod tests {
                 None,
                 Some(&ModelId::from("gpt")),
                 WireFormat::OpenAiResponses,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// A config's upstream model name, not its routing id, is what the provider receives.
+    #[tokio::test]
+    async fn upstream_model_name_replaces_the_routing_id_on_the_wire()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"model": "gpt"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map_with_upstream_model(
+            &format!("{}/v1", server.uri()),
+            "gpt",
+        ))?;
+        client
+            .call_rewrite_model_raw(
+                json!({"model": "client-facing", "messages": [{"role": "user", "content": "hi"}]}),
+                None,
+                Some(&ModelId::from("gpt-tier")),
+                WireFormat::OpenAiChat,
             )
             .await?;
         Ok(())
