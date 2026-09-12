@@ -78,6 +78,67 @@ fn orphaned_tool_results_are_rejected_during_request_decode() {
     }
 }
 
+#[test]
+fn dangling_tool_calls_are_rejected_during_request_decode() {
+    let engine = TranslationEngine::default();
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({
+                "model": "route",
+                "messages": [
+                    {"role": "user", "content": "Run the diagnostic."},
+                    {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "dangling_call_id_xyz",
+                            "type": "function",
+                            "function": {"name": "diagnostic", "arguments": "{}"}
+                        }]
+                    },
+                    {"role": "user", "content": "Continue."}
+                ]
+            }),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({
+                "model": "route",
+                "max_tokens": 64,
+                "messages": [
+                    {"role": "user", "content": "Run the diagnostic."},
+                    {
+                        "role": "assistant",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": "dangling_call_id_xyz",
+                            "name": "diagnostic",
+                            "input": {}
+                        }]
+                    },
+                    {"role": "user", "content": "Continue."}
+                ]
+            }),
+        ),
+    ];
+
+    for (format, body) in cases {
+        let error = engine
+            .decode_request(format, &body, &TranslationPolicy::default())
+            .expect_err("dangling tool call should be rejected");
+        assert_eq!(error.kind(), "InvalidValue");
+        assert!(
+            error.to_string().contains("dangling_call_id_xyz"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("no matching tool result"),
+            "{error}"
+        );
+    }
+}
+
 // A target prompt makes every preserved provider body stale.
 #[test]
 fn preparing_a_target_prompt_invalidates_exact_replay() -> TestResult {
@@ -261,6 +322,14 @@ fn anthropic_thinking_blocks_do_not_leak_into_openai_chat_messages() -> TestResu
                         "input": {"query": "status"}
                     }
                 ]
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": "complete"
+                }]
             }
         ],
         "tools": [{
@@ -1166,6 +1235,21 @@ fn responses_function_call_arguments_wrap_non_object_values_for_anthropic() -> T
                 "name": "object_value",
                 "call_id": "call_object",
                 "arguments": {"already": "object"}
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_bad",
+                "output": "handled"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_array",
+                "output": "handled"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_object",
+                "output": "handled"
             }
         ]
     });
@@ -2510,6 +2594,14 @@ fn anthropic_tool_use_encodes_responses_arguments_as_json_string() -> TestResult
                     "id": sanitize_anthropic_tool_use_id(raw_id),
                     "name": "get_weather",
                     "input": {"city": "SF"}
+                }]
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": sanitize_anthropic_tool_use_id(raw_id),
+                    "content": "sunny"
                 }]
             }
         ],

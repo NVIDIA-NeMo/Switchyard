@@ -336,6 +336,7 @@ fn request_fixture(format: WireFormat) -> Value {
                     ]
                 },
                 {"role": "tool", "tool_call_id": "call_lookup", "content": "{\"ok\":true}"},
+                {"role": "tool", "tool_call_id": "call_raw", "content": "raw arguments handled"},
                 {"role": "user", "content": "Finish."}
             ],
             "tools": [{

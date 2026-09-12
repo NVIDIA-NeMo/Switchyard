@@ -126,18 +126,21 @@ pub fn compact_text_blocks<'a>(
 
 pub(crate) fn validate_tool_call_pairing(request: &LlmRequest) -> Result<()> {
     let mut issued = HashSet::new();
+    let mut issued_in_order = Vec::new();
     let mut completed = HashSet::new();
 
     for (message_index, message) in request.messages.iter().enumerate() {
         for (block_index, block) in message.content.iter().enumerate() {
             match block {
                 ContentBlock::ToolCall(call) => {
+                    let path = format!("$.messages[{message_index}].content[{block_index}].id");
                     if !issued.insert(call.id.as_str()) {
                         return Err(TranslationError::InvalidValue {
-                            path: format!("$.messages[{message_index}].content[{block_index}].id"),
+                            path,
                             message: format!("duplicate tool call id {:?}", call.id),
                         });
                     }
+                    issued_in_order.push((call.id.as_str(), path));
                 }
                 ContentBlock::ToolResult(result) => {
                     let path =
@@ -165,6 +168,19 @@ pub(crate) fn validate_tool_call_pairing(request: &LlmRequest) -> Result<()> {
                 _ => {}
             }
         }
+    }
+
+    if let Some((tool_call_id, path)) = issued_in_order
+        .into_iter()
+        .find(|(tool_call_id, _)| !completed.contains(tool_call_id))
+    {
+        return Err(TranslationError::InvalidValue {
+            path,
+            message: format!(
+                "tool call id {tool_call_id:?} has no matching tool result; every assistant tool \
+                 call in request history must have a corresponding result"
+            ),
+        });
     }
 
     Ok(())

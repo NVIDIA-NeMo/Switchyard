@@ -4192,6 +4192,75 @@ target = "local"
 }
 
 #[tokio::test]
+async fn dangling_tool_calls_are_rejected_before_route_selection() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let config = format!(
+        r#"{}
+
+[routes.diagnostic]
+id = "switchyard/diagnostic-passthrough"
+type = "passthrough"
+target = "local"
+"#,
+        vgr_config(&upstream.base_url, "model/vgr-verified-local")
+    );
+    let app = build_switchyard_router(load_test_config(&config)?);
+    let initial_call_count = upstream.calls.lock().await.len();
+    let mut errors = Vec::new();
+
+    for model in ["switchyard/vgr", "switchyard/diagnostic-passthrough"] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": "Run the diagnostic."},
+                    {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "dangling_call_id_xyz",
+                            "type": "function",
+                            "function": {
+                                "name": "diagnostic",
+                                "arguments": "{}"
+                            }
+                        }]
+                    },
+                    {"role": "user", "content": "Continue."}
+                ]
+            })),
+        )
+        .await?;
+
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{model}");
+        errors.push(response.json()?);
+    }
+
+    assert_eq!(errors[0], errors[1]);
+    assert_eq!(errors[0]["error"]["type"], "invalid_request_error");
+    assert_eq!(errors[0]["error"]["code"], "invalid_body");
+    assert!(
+        errors[0]["error"]["message"]
+            .as_str()
+            .is_some_and(|message| {
+                message.contains("dangling_call_id_xyz")
+                    && message.contains("no matching tool result")
+            }),
+        "{:?}",
+        errors[0]
+    );
+    assert_eq!(
+        upstream.calls.lock().await.len(),
+        initial_call_count,
+        "invalid transcripts must not reach any serving tier"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn vgr_cloud_auth_failure_is_written_to_the_routing_log() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let temp_dir = tempfile::tempdir()?;

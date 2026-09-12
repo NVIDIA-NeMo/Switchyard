@@ -2644,6 +2644,10 @@ mod tests {
                 "name": "search",
                 "namespace": "mcp__open_websearch",
                 "arguments": "{}"
+            }, {
+                "type": "function_call_output",
+                "call_id": "call_0",
+                "output": "completed"
             }],
             "tool_choice": {
                 "type": "function",
