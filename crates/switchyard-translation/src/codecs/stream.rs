@@ -78,8 +78,11 @@ pub struct StreamTranslationState {
 // One Responses reasoning output item under construction by the encoder.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ResponseReasoningState {
-    /// Set once the item's `added` events were emitted.
+    /// Set once the item's `added` event was emitted.
     pub(crate) started: bool,
+    /// Set once the item's summary part opened, which happens on the first text delta. An
+    /// encrypted-only item never opens one, so it never has to close one either.
+    pub(crate) summary_started: bool,
     pub(crate) output_index: Option<usize>,
     /// Provider item id the encrypted reasoning was issued under. Used as the emitted item id
     /// so the client's replay verifies upstream; `None` falls back to a synthesized id.

@@ -33,11 +33,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, LibsyError, RoutingOutcome};
+use libsy::{LibsyError, RoutingOutcome};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObservation, RunObserver};
+use switchyard_llm_client::{AuxiliaryOperation, RunObservation, RunObserver};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
 use switchyard_runner::{
     CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RunOutput, Runner, RunnerError,
@@ -179,29 +179,6 @@ impl SharedRoutingLog {
 }
 
 impl ServerState {
-    /// Creates server state from route model IDs, algorithms, and per-target clients.
-    pub fn new(routes: Vec<(ModelId, Arc<dyn Algorithm>, ClientRouter)>) -> ServerResult<Self> {
-        let routes = routes
-            .into_iter()
-            .map(|(model, algorithm, clients)| {
-                (
-                    model,
-                    Route::new(
-                        algorithm,
-                        clients,
-                        None,
-                        ModelCapabilities::default(),
-                        None,
-                        None,
-                        Vec::new(),
-                    ),
-                )
-            })
-            .collect();
-        let runner = Runner::new(routes);
-        Self::from_runner(runner)
-    }
-
     /// Creates HTTP-server state around an already configured runner.
     pub fn from_runner(runner: Runner) -> ServerResult<Self> {
         let metrics = metrics::registry().map_err(ServerError::new)?;
@@ -725,6 +702,7 @@ async fn decision(
         .as_deref()
         .map(ModelId::from)
         .unwrap_or_default();
+
     let mut outcome = match route.decide(request).await {
         Ok(outcome) => outcome,
         Err(error) => return runner_error(error),
@@ -1031,6 +1009,7 @@ async fn handle_llm_request(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
     );
+
     let output = match route.execute(request, Some(observer)).await {
         Ok(output) => output,
         Err(error) => return runner_error(error),

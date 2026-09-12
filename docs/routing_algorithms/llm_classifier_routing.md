@@ -139,18 +139,17 @@ packaged `crux`, `primary_rule`, `capability_boundary`, and `p_solve` fields.
 ## Custom multi-target routing
 
 Custom mode accepts an inner JSON Schema and a policy that reads the validated
-verdict. This example routes across four configured targets:
+verdict. The policy selects one of the route's model groups, and you name those
+groups yourself, so a route can choose between as many models as you like.
 
 ```toml
 [routes.smart]
 id = "smart"
 type = "llm_classifier"
 mode = "custom"
-classifier_target = "classifier"
-targets = ["fast", "balanced", "reasoning", "premium"]
 default_target = "premium"
 prompt = """
-Choose the best configured target for this request.
+Choose the best group for this request.
 Return JSON matching the response schema supplied with the request.
 """
 response_schema = '''
@@ -174,15 +173,36 @@ response_schema = '''
 }
 '''
 
+[routes.smart.models]
+judge = ["classifier"]
+fast = ["fast"]
+balanced = ["balanced"]
+reasoning = ["reasoning", "premium"]
+premium = ["premium"]
+any = ["fast", "balanced", "reasoning", "premium"]
+
 [routes.smart.policy]
 type = "target_selector"
 selector = "/decision/target"
 ```
 
-The names in `targets` reference existing target tables. Switchyard passes the
+The names in `models` reference existing target tables. Switchyard passes the
 schema to the provider in a strict structured-output wrapper and validates the
 returned JSON again. `jsonptr` resolves the selector against that verdict. A
-missing, non-string, or unknown target falls back to `default_target`.
+missing, non-string, or unconfigured label falls back to `default_target`, and
+`judge` is never routable.
+
+A verdict names a group, and the **first** model in that group serves the turn.
+Later entries are that group's own fallbacks: if the serving call fails, the
+client falls through the rest of the chosen group first — `reasoning` retries on
+`premium` above — and then through whatever `models.any` adds. Every group's
+targets must also appear in `models.any`; one that does not is rejected when the
+configuration loads. `models.judge` supplies the judge call's own candidates in
+order and is not a completion destination.
+
+`capable` and `efficient` are reserved names. Use them when you want a group to
+carry the tier meaning the stage and composite routers give it; otherwise any
+name works.
 
 This separation applies to every classifier mode. Prompts containing the legacy
 `{{RESPONSE_SCHEMA}}` placeholder are rejected during configuration validation.

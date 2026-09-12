@@ -5,24 +5,13 @@
 
 use std::sync::Arc;
 
-use switchyard_protocol::{ModelId, Request};
+use switchyard_protocol::{Category, Request};
 
 use crate::core::algorithm::{Algorithm, Driver};
-use crate::{Result, RoutingOutcome};
+use crate::{LibsyError, Result, RoutingOutcome};
 
 /// Routing algorithm that always selects one configured target.
-pub struct Passthrough {
-    target: ModelId,
-}
-
-impl Passthrough {
-    /// Creates an algorithm that always selects `target`.
-    pub fn new(target: impl Into<ModelId>) -> Self {
-        Self {
-            target: target.into(),
-        }
-    }
-}
+pub struct Passthrough;
 
 #[async_trait::async_trait]
 impl Algorithm for Passthrough {
@@ -30,11 +19,16 @@ impl Algorithm for Passthrough {
         "passthrough"
     }
 
-    async fn route(self: Arc<Self>, _driver: Driver, request: Request) -> Result<RoutingOutcome> {
-        tracing::info!(target = %self.target, "passthrough selected target");
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
+        let models = driver.models_for(&Category::Any).to_vec();
+        // Selected is the first one. The rest are fallbacks.
+        let Some(target) = models.first() else {
+            return Err(LibsyError::NoTargets);
+        };
+        tracing::info!(target = %target, "passthrough selected target");
         Ok(RoutingOutcome::route_to(
-            self.target.clone(),
-            Vec::new(),
+            target.clone(),
+            models[1..].to_vec(),
             request,
         ))
     }
@@ -46,8 +40,8 @@ mod tests {
 
     use super::Passthrough;
     use crate::core::algorithm::Algorithm;
-    use crate::core::testing::{echo, test_drive};
-    use switchyard_protocol::{Request, completion_text, text_request};
+    use crate::core::testing::{category_models, echo, test_drive_with_models};
+    use switchyard_protocol::{Category, Request, completion_text, text_request};
 
     #[tokio::test]
     async fn test_passthrough() -> crate::Result<()> {
@@ -57,8 +51,10 @@ mod tests {
             raw_request: None,
             metadata: None,
         };
-        let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(MODEL_ID));
-        let (selected_model, response) = test_drive(algorithm, request, echo()).await?;
+        let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough);
+        let models = category_models(Category::Any, &[MODEL_ID]);
+        let (selected_model, response) =
+            test_drive_with_models(algorithm, request, models, echo()).await?;
 
         assert_eq!(
             response

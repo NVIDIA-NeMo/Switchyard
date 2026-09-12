@@ -19,7 +19,9 @@ use std::time::Instant;
 
 use http::StatusCode;
 use parking_lot::Mutex;
-use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, RoutingOutcome, drive};
+use switchyard_libsy::{
+    Algorithm, CallModel, LibsyError, Result, RoutingOutcome, RuntimeModels, drive,
+};
 use switchyard_protocol::{
     LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
 };
@@ -44,6 +46,7 @@ pub async fn run(
     algorithm: Arc<dyn Algorithm>,
     clients: ClientRouter,
     request: Request,
+    models: Arc<RuntimeModels>,
     observer: Option<RunObserver>,
 ) -> Result<(ModelId, Response)> {
     let algorithm_name = algorithm.name().to_string();
@@ -52,7 +55,7 @@ pub async fn run(
     // This says if we have an observer, put Some(..) in routing_observations.
     // No observer means we don't want any routing_observations.
     let routing_observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
-    let outcome = drive(algorithm, request, {
+    let outcome = drive(algorithm, request, models, {
         let routing_observations = routing_observations.clone();
         move |call| serve(routing_clients.clone(), call, routing_observations.clone())
     })
@@ -110,9 +113,10 @@ pub async fn decide(
     algorithm: Arc<dyn Algorithm>,
     clients: ClientRouter,
     request: Request,
+    models: Arc<RuntimeModels>,
 ) -> Result<RoutingOutcome> {
     let routing_clients = clients.clone();
-    let mut outcome = drive(algorithm, request, move |call| {
+    let mut outcome = drive(algorithm, request, models, move |call| {
         serve(routing_clients.clone(), call, None)
     })
     .await?;
@@ -452,10 +456,9 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+    use switchyard_protocol::Category;
 
-    struct CandidateAlgorithm {
-        models: Vec<ModelId>,
-    }
+    struct CandidateAlgorithm {}
 
     struct AnsweredAlgorithm {
         model: ModelId,
@@ -469,13 +472,14 @@ mod tests {
 
         async fn route(
             self: Arc<Self>,
-            _driver: Driver,
+            driver: Driver,
             request: Request,
         ) -> Result<RoutingOutcome> {
-            let selected_model = self.models.first().cloned().ok_or(LibsyError::NoTargets)?;
+            let models = driver.models_for(&Category::Any);
+            let selected_model = models.first().cloned().ok_or(LibsyError::NoTargets)?;
             Ok(RoutingOutcome::route_to(
                 selected_model,
-                self.models.iter().skip(1).cloned().collect(),
+                models.iter().skip(1).cloned().collect(),
                 request,
             ))
         }
@@ -603,17 +607,27 @@ mod tests {
             requests: Mutex::new(Vec::new()),
             first,
         });
-        let algorithm = Arc::new(CandidateAlgorithm {
-            models: vec!["weak".into(), "strong".into()],
-        });
+        let algorithm = Arc::new(CandidateAlgorithm {});
+        let models = to_category_map(&["weak", "strong"]);
         let result = run(
             algorithm,
             ClientRouter::single(client.clone()),
             request(),
+            models,
             None,
         )
         .await;
         (client, result)
+    }
+
+    fn to_category_map(names: &[&str]) -> Arc<RuntimeModels> {
+        Arc::new(RuntimeModels::new(
+            [(
+                Category::Any,
+                names.iter().map(|name| ModelId::from(*name)).collect(),
+            )]
+            .into(),
+        ))
     }
 
     #[tokio::test]
@@ -633,6 +647,7 @@ mod tests {
             }),
             ClientRouter::single(client.clone()),
             request(),
+            Arc::new(RuntimeModels::default()),
             Some(observer),
         )
         .await?;
@@ -697,11 +712,10 @@ mod tests {
         );
 
         run(
-            Arc::new(CandidateAlgorithm {
-                models: vec!["weak".into(), "strong".into()],
-            }),
+            Arc::new(CandidateAlgorithm {}),
             clients,
             request(),
+            to_category_map(&["weak", "strong"]),
             None,
         )
         .await?;
@@ -733,6 +747,7 @@ mod tests {
             }),
             clients,
             request(),
+            Arc::new(RuntimeModels::default()),
         )
         .await?;
 
@@ -763,11 +778,10 @@ mod tests {
         );
 
         let outcome = decide(
-            Arc::new(CandidateAlgorithm {
-                models: vec!["weak".into(), "strong".into()],
-            }),
+            Arc::new(CandidateAlgorithm {}),
             clients,
             request(),
+            to_category_map(&["weak", "strong"]),
         )
         .await?;
 
@@ -905,10 +919,15 @@ mod tests {
             ])
             .map_err(|error| LibsyError::external("building test client", error))?,
         );
-        let algorithm = Arc::new(CandidateAlgorithm {
-            models: vec!["weak".into(), "strong".into()],
-        });
-        run(algorithm, ClientRouter::single(client), request(), None).await?;
+        let algorithm = Arc::new(CandidateAlgorithm {});
+        run(
+            algorithm,
+            ClientRouter::single(client),
+            request(),
+            to_category_map(&["weak", "strong"]),
+            None,
+        )
+        .await?;
 
         assert_eq!(&*calls.lock(), &["weak", "weak", "weak", "strong"]);
         Ok(())
@@ -997,9 +1016,7 @@ mod tests {
             ])
             .expect("building test client"),
         );
-        let algorithm = Arc::new(CandidateAlgorithm {
-            models: vec!["weak".into(), "strong".into()],
-        });
+        let algorithm = Arc::new(CandidateAlgorithm {});
         let mut llm_request = text_request(Some("auto".to_string()), "hello".to_string());
         llm_request.stream = true;
         let request = Request {
@@ -1007,7 +1024,14 @@ mod tests {
             raw_request: None,
             metadata: None,
         };
-        let result = run(algorithm, ClientRouter::single(client), request, None).await;
+        let result = run(
+            algorithm,
+            ClientRouter::single(client),
+            request,
+            to_category_map(&["weak", "strong"]),
+            None,
+        )
+        .await;
         (server, calls, result)
     }
 

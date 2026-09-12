@@ -112,6 +112,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Encrypted-only reasoning items open no summary part** — the Responses
+  stream encoder opened a `reasoning_summary_part` for every reasoning item and
+  closed it only when text had streamed, so an encrypted-only item left a part
+  open with no `done`. The part now opens on the first text delta. (#671)
 - **Responses reasoning through transforming routes** — reasoning that a route
   buffers or re-encodes now reaches the client in the standard `summary_text`
   shape with `reasoning_summary_*` events, encrypted-only and done-only
