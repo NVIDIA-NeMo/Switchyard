@@ -465,12 +465,14 @@ const fn default_judge_char_budget() -> usize {
     DEFAULT_JUDGE_CHAR_BUDGET
 }
 
-/// A zero budget would clip every message to the trim marker, leaving the judge a payload
-/// it cannot route. Rejecting it at construction beats serving empty verdicts.
+/// Smallest accepted judge payload budget. It must leave room for the routing instruction
+/// appended to every windowed payload, or that instruction alone would exceed the budget.
+const MIN_JUDGE_CHAR_BUDGET: usize = 256;
+
 fn validate_judge_char_budget(budget: usize) -> Result<()> {
-    if budget == 0 {
+    if budget < MIN_JUDGE_CHAR_BUDGET {
         return Err(LibsyError::AlgorithmError {
-            message: "judge_char_budget must be at least 1".to_string(),
+            message: format!("judge_char_budget must be at least {MIN_JUDGE_CHAR_BUDGET}"),
         });
     }
     Ok(())
@@ -1716,15 +1718,17 @@ mod tests {
         Ok(())
     }
 
-    /// A zero budget would clip every message to the trim marker, so it is rejected at
-    /// construction rather than serving the judge an unroutable payload.
+    /// A budget below the minimum could not fit the routing instruction that every windowed
+    /// payload ends with, so it is rejected at construction.
     #[test]
-    fn a_zero_judge_char_budget_is_rejected() {
-        let config = TaskClassifierConfig {
-            judge_char_budget: 0,
+    fn a_judge_char_budget_below_the_minimum_is_rejected() {
+        assert!(TRAILING_ROUTING_INSTRUCTION.chars().count() < MIN_JUDGE_CHAR_BUDGET);
+        let with_budget = |judge_char_budget| TaskClassifierConfig {
+            judge_char_budget,
             ..TaskClassifierConfig::default()
         };
-        assert!(config.validate().is_err());
+        assert!(with_budget(MIN_JUDGE_CHAR_BUDGET - 1).validate().is_err());
+        assert!(with_budget(MIN_JUDGE_CHAR_BUDGET).validate().is_ok());
     }
 
     fn tool_call(id: &str) -> Message {
