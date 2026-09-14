@@ -104,7 +104,7 @@ step 1, stop when you reach the result named under the heading.
 ### Path 1 — Load the NeMo Relay Plugin
 
 You finish with an existing NeMo Relay deployment routing through Switchyard.
-Requires NeMo Relay `>=0.8.1,<0.9.0` and a Rust toolchain to build the plugin.
+Requires NeMo Relay `>=0.8.0,<0.9.0` and a Rust toolchain to build the plugin.
 
 **1. Build, package, and register the plugin.** Follow steps 1–3 of the
 [install guide in the plugin README](crates/switchyard-nemo-relay-plugin/README.md#install).
