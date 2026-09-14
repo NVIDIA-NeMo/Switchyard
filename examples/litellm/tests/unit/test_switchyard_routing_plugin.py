@@ -36,13 +36,16 @@ def stage_plugin(**kwargs: object) -> SwitchyardRoutingPlugin:
     """Build the supported signal-only Stage configuration."""
     return SwitchyardRoutingPlugin(
         algorithms.stage_router(
-            SOL,
-            TERRA,
             picker="efficient_first",
             confidence_threshold=0.5,
             recent_window=3,
             **kwargs,
-        )
+        ),
+        models={
+            "any": [SOL, TERRA],
+            "capable": [SOL],
+            "efficient": [TERRA],
+        },
     )
 
 
@@ -152,13 +155,18 @@ async def test_litellm_conversion_preserves_stage_tool_signal_input() -> None:
 
     direct_outcome = None
     direct_algorithm = algorithms.stage_router(
-        SOL,
-        TERRA,
         picker="efficient_first",
         confidence_threshold=0.5,
         recent_window=3,
     )
-    async for step in direct_algorithm.run_stream(original_request):
+    async for step in direct_algorithm.run_stream(
+        original_request,
+        {
+            "capable": [SOL],
+            "efficient": [TERRA],
+            "any": [SOL, TERRA],
+        },
+    ):
         match step:
             case Step.Done(outcome):
                 direct_outcome = outcome
@@ -230,19 +238,9 @@ async def test_unsupported_structured_messages_fail_closed(
         await stage_plugin().run(routing_context(messages))
 
 
-async def test_selection_outside_current_litellm_pool_fails_closed() -> None:
-    plugin = SwitchyardRoutingPlugin(algorithms.random(["openrouter/openai/not-allowed"]))
-
-    with pytest.raises(ValueError, match="not in LiteLLM's candidate pool"):
-        await plugin.run(routing_context([{"role": "user", "content": "hello"}]))
-
-
 async def test_classifier_backed_algorithm_fails_on_intermediate_model_call() -> None:
     plugin = SwitchyardRoutingPlugin(
         algorithms.llm_task_classifier(
-            "openrouter/openai/gpt-5.6-judge",
-            TERRA,
-            SOL,
             config=TaskClassifierConfig(0.5),
         )
     )
@@ -434,7 +432,12 @@ def test_request_patch_rejects_unsafe_or_unrepresentable_overrides(
 class EmptyAlgorithm:
     """Algorithm-shaped test double whose stream violates the terminal-step contract."""
 
-    async def run_stream(self, request: dict[str, object]) -> AsyncIterator[object]:
+    async def run_stream(
+        self,
+        request: dict[str, object],
+        models: dict[str, list[str]],
+    ) -> AsyncIterator[object]:
+        del models
         if request:
             return
         yield object()

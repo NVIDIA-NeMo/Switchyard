@@ -10,5 +10,6 @@ pub(crate) mod testing;
 
 pub mod algorithm;
 pub mod classifier;
+pub mod outcome_metadata;
 pub mod processor;
 pub mod state;

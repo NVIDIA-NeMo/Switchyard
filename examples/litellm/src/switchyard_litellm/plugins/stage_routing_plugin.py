@@ -53,8 +53,6 @@ class StageRoutingPlugin(LiteLLMRequestRewriter):
             )
         plugin = SwitchyardRoutingPlugin(
             algorithms.stage_router(
-                candidates[0],
-                candidates[1],
                 picker=self._picker,
                 confidence_threshold=self._confidence_threshold,
                 recent_window=self._recent_window,
@@ -63,7 +61,12 @@ class StageRoutingPlugin(LiteLLMRequestRewriter):
                 only_on_wrong_signal_escalation=self._only_on_wrong_signal_escalation,
                 capable_system_prompt=self._capable_system_prompt,
                 efficient_system_prompt=self._efficient_system_prompt,
-            )
+            ),
+            models={
+                "any": candidates,
+                "capable": [candidates[0]],
+                "efficient": [candidates[1]],
+            },
         )
         return await plugin.run(context)
 

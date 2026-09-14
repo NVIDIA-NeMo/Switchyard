@@ -125,6 +125,8 @@ pub fn encode_stream_with_extensions(
     request_extensions: &switchyard_protocol::ProviderExtensions,
 ) -> std::result::Result<RawEventStream, LlmClientError> {
     let origins = crate::codex_namespaces::qualified_tool_origins(request_extensions);
+    let custom_tools = crate::codex_custom_tools::custom_tool_names(request_extensions);
+    let mut custom_state = crate::codex_custom_tools::CustomToolCallStreamState::default();
     let target_format: FormatId = target.into();
     // The target is always a built-in wire format, so this lookup cannot fail; a
     // failure returns as an `Err` rather than a panic.
@@ -152,6 +154,19 @@ pub fn encode_stream_with_extensions(
                 stamp_streamed_response_model(value, target, served_model_for_events.as_deref());
                 crate::codex_namespaces::restore_qualified_tool_names(value, &origins);
             }
+            // Argument deltas for a freeform tool cannot be expressed on the wire; the
+            // rewritten completed item carries the input instead.
+            let mut encoded: Vec<Value> = encoded
+                .into_iter()
+                .filter_map(|mut value| {
+                    crate::codex_custom_tools::restore_custom_tool_calls_in_event(
+                        &mut value,
+                        &custom_tools,
+                        &mut custom_state,
+                    )
+                    .then_some(value)
+                })
+                .collect();
             let terminal = encoded.pop();
             for value in encoded {
                 yield value;
@@ -172,7 +187,13 @@ pub fn encode_stream_with_extensions(
                 served_model_for_events.as_deref(),
             );
             crate::codex_namespaces::restore_qualified_tool_names(&mut value, &origins);
-            yield value;
+            if crate::codex_custom_tools::restore_custom_tool_calls_in_event(
+                &mut value,
+                &custom_tools,
+                &mut custom_state,
+            ) {
+                yield value;
+            }
         }
     };
 

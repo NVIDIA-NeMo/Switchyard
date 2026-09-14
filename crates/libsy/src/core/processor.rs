@@ -4,7 +4,7 @@
 use crate::Result;
 use crate::core::algorithm::Driver;
 use async_trait::async_trait;
-use switchyard_protocol::{AggLlmResponse, ModelId, Request};
+use switchyard_protocol::{AggLlmResponse, Category, ModelId, Request};
 
 /// An event observed by the algorithm. Events are consumed by [`Processor`] to mutate state.
 ///
@@ -17,7 +17,7 @@ pub enum Event<'a> {
         /// The request, rewritable in place.
         request: &'a mut Request,
         /// Offered so a processor can consult a model before the cascade runs.
-        driver: Option<&'a Driver>,
+        driver: &'a Driver,
     },
     /// A routing decision paired with the request that produced it.
     ///
@@ -28,6 +28,12 @@ pub enum Event<'a> {
         request: &'a mut Request,
         /// The model selected for `request`.
         selected_model_id: &'a ModelId,
+        /// The category `selected_model_id` was drawn from, when the deciding
+        /// classifier picked one. `None` for a decision made without a category,
+        /// such as an affinity replay.
+        category: Option<Category>,
+        /// Offered so a processor can inspect the runtime model categories.
+        driver: &'a Driver,
     },
     /// A buffered response received back from a model.
     ModelResponse(&'a AggLlmResponse),
@@ -44,6 +50,7 @@ pub trait Processor<S = ()>: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::testing::empty_driver;
     use std::collections::HashMap;
     use switchyard_protocol::{text_request, text_response};
 
@@ -95,7 +102,7 @@ mod tests {
                 &mut state,
                 Event::Request {
                     request: &mut req,
-                    driver: None,
+                    driver: &empty_driver(),
                 },
             )
             .await?;
@@ -108,6 +115,8 @@ mod tests {
                 Event::Decision {
                     request: &mut req,
                     selected_model_id: &selected_model_id,
+                    category: None,
+                    driver: &empty_driver(),
                 },
             )
             .await?;
@@ -129,7 +138,7 @@ mod tests {
                     &mut state,
                     Event::Request {
                         request: &mut req,
-                        driver: None,
+                        driver: &empty_driver(),
                     },
                 )
                 .await?;
@@ -166,7 +175,7 @@ mod tests {
                 &mut state,
                 Event::Request {
                     request: &mut req,
-                    driver: None,
+                    driver: &empty_driver(),
                 },
             )
             .await?;

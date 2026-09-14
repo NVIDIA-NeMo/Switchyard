@@ -142,13 +142,13 @@ jobs:
           type = "passthrough"
           target = "mock"
           TOML
-          target/release/switchyard-server --config bench.toml --port $PROXY_PORT &
+          target/release/switchyard-server --config bench.toml --port "$PROXY_PORT" &
           echo "PROXY_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for proxy to be ready
         run: |
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:$PROXY_PORT/health > /dev/null 2>&1; then
+            if curl -sf "http://localhost:${PROXY_PORT}/health" > /dev/null 2>&1; then
               echo "Proxy is up after ${i}s"
               exit 0
             fi

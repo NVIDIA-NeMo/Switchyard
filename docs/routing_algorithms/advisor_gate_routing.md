@@ -59,10 +59,11 @@ Reviews draw from a per-session budget of `max_reviews`. The budget scope is
 the caller's `proxy_x_session_id` header when present — benchmark harnesses
 stamp every request of one evaluation with it, sub-agents included, so the
 budget means "reviews for this task" even behind a gateway shared by many
-tasks — and falls back to one scope per server otherwise. Failed consults
-refund the budget and count toward a separate cap of 3, which bounds consult
-latency against a down advisor. An unparseable verdict also refunds and passes
-the turn through as APPROVE.
+tasks — then the session id resolved from harness headers (such as
+`x-switchyard-session-id`), and one scope per server when neither is present.
+Failed consults refund the budget and count toward a separate cap of 3, which
+bounds consult latency against a down advisor. An unparseable verdict also
+refunds and passes the turn through as APPROVE.
 
 Long sessions are truncated middle-out before the consult: the transcript keeps
 the task statement at the start and the most recent work at the end, marked

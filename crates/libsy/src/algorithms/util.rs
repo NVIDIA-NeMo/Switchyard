@@ -23,6 +23,7 @@ pub(crate) fn decisive(target: &ModelId) -> Classification {
     Classification::Scores(vec![Score {
         target: target.clone(),
         confidence: 1.0,
+        category: None,
     }])
 }
 

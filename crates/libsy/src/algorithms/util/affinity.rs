@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde::Deserialize;
-use switchyard_protocol::{ContentBlock, Message, ModelId, Request, Role};
+use switchyard_protocol::{Category, ContentBlock, Message, ModelId, Request, Role};
 
 use crate::core::algorithm::{Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -177,6 +177,7 @@ where
         if let Event::Decision {
             request,
             selected_model_id,
+            ..
         } = event
             && let Some(key) = self.affinity_key(request)
         {
@@ -232,7 +233,7 @@ where
         &self,
         _state: &mut S,
         request: &mut Request,
-        _driver: Option<&Driver>,
+        driver: &Driver,
     ) -> crate::Result<(Classification, Option<switchyard_protocol::Response>)> {
         let Some(key) = self.affinity_key(request) else {
             return Ok((Classification::Scores(Vec::new()), None));
@@ -242,12 +243,27 @@ where
         if self.release_on_user_turn && has_new_user_turn(&request.llm_request.messages) {
             return Ok((Classification::Scores(Vec::new()), None));
         }
-        let assigned = self.assignments.lock().get(&key).cloned();
+        // An empty `any` group carries no information about which models are still
+        // available, so it must not be read as "every assignment is now stale".
+        let available = driver.models_for(&Category::Any);
+        let mut assignments = self.assignments.lock();
+        let assigned = assignments.get(&key).cloned();
+        let assigned = match assigned.as_ref() {
+            Some(target) if !available.is_empty() && !available.contains(target) => {
+                assignments.remove(&key);
+                None
+            }
+            assigned => assigned,
+        };
+        if assigned.is_some() {
+            driver.set_evidence(serde_json::json!({"source": "retained"}));
+        }
         Ok((
             Classification::Scores(match assigned {
                 Some(target) => vec![Score {
                     confidence: 1.0,
-                    target,
+                    target: target.clone(),
+                    category: None,
                 }],
                 None => Vec::new(),
             }),
@@ -273,11 +289,29 @@ mod tests {
 
     use switchyard_protocol::{LlmRequest, Metadata, ToolResult, text_request};
 
+    use crate::core::algorithm::RuntimeModels;
+
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
     fn fixed_model(target: &str) -> ModelId {
         ModelId::from(target)
+    }
+
+    fn driver() -> Driver {
+        Driver::new(
+            "test",
+            Arc::new(RuntimeModels::new(
+                [(
+                    Category::Any,
+                    ["model-a", "model-b", "weak", "strong"]
+                        .map(ModelId::from)
+                        .to_vec(),
+                )]
+                .into(),
+            )),
+        )
+        .0
     }
 
     fn request(metadata: Metadata) -> Request {
@@ -345,6 +379,8 @@ mod tests {
                 Event::Decision {
                     request,
                     selected_model_id: &selected_model_id,
+                    category: None,
+                    driver: &driver(),
                 },
             )
             .await?;
@@ -357,7 +393,7 @@ mod tests {
         state: &mut (),
         request: &mut Request,
     ) -> Result<Vec<Score>, BoxErr> {
-        match classifier.score(state, request, None).await?.0 {
+        match classifier.score(state, request, &driver()).await?.0 {
             Classification::Scores(scores) => Ok(scores),
             Classification::Ambiguous(_) => Err("affinity never returns ambiguous scores".into()),
         }
@@ -638,6 +674,8 @@ mod tests {
                 Event::Decision {
                     request: &mut first,
                     selected_model_id: &fixed_model("model-a"),
+                    category: None,
+                    driver: &driver(),
                 },
             )
             .await?;
@@ -663,6 +701,8 @@ mod tests {
                 Event::Decision {
                     request: &mut unkeyed,
                     selected_model_id: &fixed_model("model-a"),
+                    category: None,
+                    driver: &driver(),
                 },
             )
             .await?;
@@ -687,6 +727,8 @@ mod tests {
                 Event::Decision {
                     request: &mut second,
                     selected_model_id: &fixed_model("model-b"),
+                    category: None,
+                    driver: &driver(),
                 },
             )
             .await?;
@@ -696,6 +738,8 @@ mod tests {
                 Event::Decision {
                     request: &mut first,
                     selected_model_id: &fixed_model("model-a"),
+                    category: None,
+                    driver: &driver(),
                 },
             )
             .await?;
@@ -854,6 +898,31 @@ mod tests {
                 .first()
                 .map(|s| s.target.as_str()),
             Some("strong")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_unprovisioned_any_group_does_not_evict_assignments() -> Result<(), BoxErr> {
+        let router = AffinityRouter::new();
+        let mut state = ();
+        let mut req = request(session("session-1", "agent-a"));
+        retain(&router, &mut state, &mut req, "model-a").await?;
+
+        let empty = Driver::new("test", Arc::new(RuntimeModels::default())).0;
+        let (classification, _) = router.score(&mut state, &mut req, &empty).await?;
+        let Classification::Scores(retained) = classification else {
+            return Err("affinity never returns ambiguous scores".into());
+        };
+        assert_eq!(retained.first().map(|s| s.target.as_str()), Some("model-a"));
+
+        // The assignment survived, so a later turn with the group present still latches.
+        assert_eq!(
+            scores(&router, &mut state, &mut req)
+                .await?
+                .first()
+                .map(|s| s.target.as_str()),
+            Some("model-a")
         );
         Ok(())
     }

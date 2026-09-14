@@ -6,7 +6,7 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use libsy::{Algorithm, LibsyError, RoutingOutcome};
+use libsy::{Algorithm, LibsyError, RoutingOutcome, RuntimeModels};
 use serde_json::Value;
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{LlmClientError, ModelId, Request, Response, WireFormat};
@@ -125,6 +125,7 @@ pub struct Route {
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
+    models: Arc<RuntimeModels>,
 }
 
 /// The selected model and untouched response produced by a route execution.
@@ -135,6 +136,7 @@ pub struct RunOutput {
 
 impl Route {
     /// Creates a fully configured execution route.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         algorithm: Arc<dyn Algorithm>,
         clients: ClientRouter,
@@ -143,6 +145,7 @@ impl Route {
         anthropic_auxiliary_target: Option<AuxiliaryTarget>,
         responses_auxiliary_target: Option<AuxiliaryTarget>,
         decision_targets: Vec<DecisionTarget>,
+        models: RuntimeModels,
     ) -> Self {
         Self {
             algorithm,
@@ -152,6 +155,7 @@ impl Route {
             anthropic_auxiliary_target,
             responses_auxiliary_target,
             decision_targets,
+            models: Arc::new(models),
         }
     }
 
@@ -178,6 +182,11 @@ impl Route {
             .cloned()
     }
 
+    /// Returns the models grouped for one algorithm execution.
+    pub fn models(&self) -> &RuntimeModels {
+        &self.models
+    }
+
     /// Rejects a caller format incompatible with forwarded credentials.
     pub fn check_caller_format(&self, input_format: WireFormat) -> Result<(), RunnerError> {
         if let Some(kind) = self.caller_auth
@@ -198,6 +207,7 @@ impl Route {
             Arc::clone(&self.algorithm),
             self.clients.clone(),
             request,
+            Arc::clone(&self.models),
             observer,
         )
         .await?;
@@ -209,9 +219,14 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        switchyard_llm_client::decide(Arc::clone(&self.algorithm), self.clients.clone(), request)
-            .await
-            .map_err(Into::into)
+        switchyard_llm_client::decide(
+            Arc::clone(&self.algorithm),
+            self.clients.clone(),
+            request,
+            Arc::clone(&self.models),
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Executes a model-bearing provider operation through a compatible target.

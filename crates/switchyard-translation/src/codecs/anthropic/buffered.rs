@@ -1044,11 +1044,15 @@ fn encode_anthropic_tools(tools: &[ToolDefinition]) -> Value {
         tools
             .iter()
             .map(|tool| {
-                json!({
+                let mut item = json!({
                     "name": tool.name,
                     "description": tool.description.clone().unwrap_or_default(),
                     "input_schema": tool.parameters,
-                })
+                });
+                if let Some(strict) = tool.strict {
+                    item["strict"] = Value::Bool(strict);
+                }
+                item
             })
             .collect(),
     )

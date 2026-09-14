@@ -56,6 +56,7 @@ impl Processor<GateSignals> for GateSignalProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::testing::empty_driver;
     use switchyard_protocol::{
         AggLlmResponse, ContentBlock, LlmRequest, Message, ModelId, Request, ResponseOutput, Role,
         ToolCall, ToolResult,
@@ -116,7 +117,7 @@ mod tests {
                 &mut state,
                 Event::Request {
                     request: &mut request,
-                    driver: None,
+                    driver: &empty_driver(),
                 },
             )
             .await?;
@@ -153,6 +154,8 @@ mod tests {
                 Event::Decision {
                     request: &mut request,
                     selected_model_id: &selected,
+                    category: None,
+                    driver: &empty_driver(),
                 },
             )
             .await?;

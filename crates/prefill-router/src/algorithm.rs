@@ -114,13 +114,13 @@ impl Algorithm for PrefillRouterAlgo {
 
     async fn route(
         self: Arc<Self>,
-        _driver: Driver,
+        driver: Driver,
         mut request: Request,
     ) -> libsy::Result<RoutingOutcome> {
         let mut state = ();
         if let Some(target) = self
             .affinity
-            .score(&mut state, &mut request, None)
+            .score(&mut state, &mut request, &driver)
             .await?
             .0
             .argmax(false)
@@ -181,6 +181,8 @@ impl Algorithm for PrefillRouterAlgo {
                 Event::Decision {
                     request: &mut request,
                     selected_model_id: &target,
+                    category: None,
+                    driver: &driver,
                 },
             )
             .await?;

@@ -23,6 +23,8 @@ nav:
   - Concepts:
       - Core Concepts: core_concepts.md
       - Architecture: architecture.md
+  - Integrations:
+      - NeMo Relay: integrations/nemo_relay.md
   - Routing:
       - Overview: routing_algorithms/overview.md
       - Sub-Agent-Aware Routing: routing_algorithms/subagent_routing.md
@@ -38,6 +40,7 @@ nav:
   - Reference:
       - Server CLI Reference: cli_reference.md
       - TOML Schema: reference/toml_schema.md
+      - OpenTelemetry: reference/opentelemetry.md
       - Rust API: reference/rust_api.md
 
 exclude_docs: |

@@ -58,12 +58,11 @@ async def main() -> None:
     }
     client = EchoClient()
     algorithm = algorithms.random(
-        ["fast", "quality"],
         weights=[1, 3],
         seed=42,
     )
 
-    async for step in algorithm.run_stream(request):
+    async for step in algorithm.run_stream(request, {"any": ["fast", "quality"]}):
         match step:
             case Step.CallModel(call):
                 call.respond(await client.call(call.request, call.models[0]))

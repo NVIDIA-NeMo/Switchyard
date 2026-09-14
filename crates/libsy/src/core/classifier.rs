@@ -4,7 +4,7 @@
 use crate::core::algorithm::Driver;
 use crate::{LibsyError, Result};
 use async_trait::async_trait;
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{Category, ModelId, Request, Response};
 
 /// One classifier's recommendation of a routing `target`, with a `[0.0, 1.0]` confidence.
 #[derive(Debug, Clone, PartialEq)]
@@ -13,6 +13,10 @@ pub struct Score {
     pub confidence: f64,
     /// The target (model / tier) being recommended.
     pub target: ModelId,
+    /// The category `target` was drawn from, when the classifier picked one. The rest of
+    /// that category is what the turn falls through on failure, so a decision made without
+    /// a category — an affinity replay, say — leaves this `None`.
+    pub category: Option<Category>,
 }
 
 /// A classifier's verdict for a request: a set of target [`Score`]s, flagged by how
@@ -73,8 +77,7 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
 pub trait Classifier<S = ()>: Send + Sync {
     /// Score the classifier's targets given the current state and request.
     ///
-    /// When present, `driver` lets a classifier offload model calls. It is `None`
-    /// when the classifier is evaluated outside an algorithm run.
+    /// `driver` lets a classifier inspect runtime models and offload model calls.
     ///
     /// `request` is borrowed mutably so a classifier may rewrite it in place — inject a
     /// system prompt, drop tools, compact history. The edit is not scoped to this call:
@@ -85,13 +88,14 @@ pub trait Classifier<S = ()>: Send + Sync {
         &self,
         state: &mut S,
         request: &mut Request,
-        driver: Option<&Driver>,
+        driver: &Driver,
     ) -> Result<(Classification, Option<Response>)>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::testing::empty_driver;
     use switchyard_protocol::text_request;
 
     /// Terse `Score` builder for the assertions below.
@@ -99,6 +103,7 @@ mod tests {
         Score {
             target: ModelId::from(target),
             confidence,
+            category: None,
         }
     }
 
@@ -180,7 +185,7 @@ mod tests {
             &self,
             state: &mut bool,
             request: &mut Request,
-            _driver: Option<&Driver>,
+            _driver: &Driver,
         ) -> Result<(Classification, Option<Response>)> {
             *state = true;
             let target = request.model_id().unwrap_or(ModelId::from("auto"));
@@ -188,6 +193,7 @@ mod tests {
                 Classification::Scores(vec![Score {
                     target,
                     confidence: 1.0,
+                    category: None,
                 }]),
                 None,
             ))
@@ -202,9 +208,8 @@ mod tests {
             raw_request: None,
             metadata: None,
         };
-        // A `None` driver is valid: the classifier scored without offloading a model call.
         let (classification, _) = RecordingClassifier
-            .score(&mut state, &mut request, None)
+            .score(&mut state, &mut request, &empty_driver())
             .await?;
         assert_eq!(
             classification.argmax(false)?.map(|s| s.target),
@@ -223,13 +228,14 @@ mod tests {
             &self,
             _state: &mut (),
             request: &mut Request,
-            _driver: Option<&Driver>,
+            _driver: &Driver,
         ) -> Result<(Classification, Option<Response>)> {
             request.llm_request.model = Some("rewritten".to_string());
             Ok((
                 Classification::Scores(vec![Score {
                     target: ModelId::from("rewritten"),
                     confidence: 1.0,
+                    category: None,
                 }]),
                 None,
             ))
@@ -246,7 +252,7 @@ mod tests {
         };
 
         RewritingClassifier
-            .score(&mut state, &mut request, None)
+            .score(&mut state, &mut request, &empty_driver())
             .await?;
 
         // The rewrite outlives the call: later classifiers in the cascade score this value,

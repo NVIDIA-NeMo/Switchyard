@@ -104,7 +104,7 @@ step 1, stop when you reach the result named under the heading.
 ### Path 1 — Load the NeMo Relay Plugin
 
 You finish with an existing NeMo Relay deployment routing through Switchyard.
-Requires NeMo Relay `>=0.8.1,<0.9.0` and a Rust toolchain to build the plugin.
+Requires NeMo Relay `>=0.8.0, <1.0.0` and a Rust toolchain to build the plugin.
 
 **1. Build, package, and register the plugin.** Follow steps 1–3 of the
 [install guide in the plugin README](crates/switchyard-nemo-relay-plugin/README.md#install).
@@ -171,17 +171,15 @@ switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", b
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
-**2. Construct an algorithm.** Target names are whatever your harness calls its
-models. This is the stage router from the benchmark; `random`,
-`llm_task_classifier`, and `llm_classifier` are built the same way.
+**2. Construct an algorithm.** Models are supplied when each request runs. This
+is the stage router from the benchmark; `random`, `llm_task_classifier`, and
+`llm_classifier` are built the same way.
 
 ```python
 from switchyard.libsy import LlmResponse, Step
 from switchyard.libsy.algorithms import stage_router
 
 algorithm = stage_router(
-    "capable",
-    "efficient",
     picker="efficient_first",
     confidence_threshold=0.5,
 )
@@ -205,8 +203,15 @@ async def call_with_fallback(request: dict, models: list[str], clients: dict) ->
     raise error or RuntimeError("no candidate models")
 
 
+runtime_models = {
+    "efficient": ["fast"],
+    "capable": ["quality"],
+    "any": ["quality", "fast"],
+}
+
+
 async def route(request: dict, clients: dict) -> LlmResponse.Agg | LlmResponse.Stream:
-    async for step in algorithm.run_stream(request):
+    async for step in algorithm.run_stream(request, runtime_models):
         match step:
             case Step.CallModel(call):
                 try:
@@ -222,7 +227,8 @@ async def route(request: dict, clients: dict) -> LlmResponse.Agg | LlmResponse.S
     raise RuntimeError("algorithm ended without a decision")
 ```
 
-`clients` maps each target name to your existing client; each `call` takes a
+`runtime_models` groups the model IDs available for this request by category.
+`clients` maps each model ID to your existing client; each `call` takes a
 normalized request dict and returns a normalized response dict. `call.models`
 and `outcome.selected_model_ids` list candidates in order, so the helper tries
 each one before giving up. `outcome.request` is the request to send, which may

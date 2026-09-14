@@ -45,7 +45,9 @@ pub struct HttpBackendConfig {
     pub base_url: String,
     /// API key for the provider, loaded by the caller. `None` sends no configured auth.
     pub api_key: Option<String>,
-    /// Whether this backend forwards the caller's provider credential instead.
+    /// Whether this backend forwards the caller's provider credential and application headers.
+    ///
+    /// All backends reachable through a forwarding route must use the same provider.
     pub forward_auth: bool,
     /// Custom headers added to every outbound call to this backend.
     ///
@@ -54,6 +56,10 @@ pub struct HttpBackendConfig {
     pub extra_headers: BTreeMap<String, String>,
     /// Default top-level request fields, applied only when the request omits the key.
     pub extra_body: BTreeMap<String, Value>,
+    /// Reasoning effort forced on every request to this backend, replacing whatever the caller
+    /// sent. Responses carries it as `reasoning.effort`, Chat Completions as `reasoning_effort`;
+    /// Anthropic has no equivalent and rejects the setting at configuration time.
+    pub reasoning_effort: Option<String>,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
 }
@@ -66,6 +72,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("forward_auth", &self.forward_auth)
             .field("extra_header_names", &self.extra_headers.keys())
             .field("extra_body_keys", &self.extra_body.keys())
+            .field("reasoning_effort", &self.reasoning_effort)
             .field("max_retries", &self.max_retries)
             .finish()
     }
@@ -175,6 +182,24 @@ impl Backend {
         self.config().forward_auth
     }
 
+    pub(crate) fn is_provider_owned_header(&self, name: &str) -> bool {
+        match self {
+            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
+                ["authorization", "chatgpt-account-id", "x-openai-fedramp"]
+                    .iter()
+                    .any(|owned| name.eq_ignore_ascii_case(owned))
+            }
+            Backend::Anthropic(_) => [
+                "authorization",
+                "x-api-key",
+                "anthropic-beta",
+                "anthropic-version",
+            ]
+            .iter()
+            .any(|owned| name.eq_ignore_ascii_case(owned)),
+        }
+    }
+
     /// Applies only the caller credential accepted by this provider.
     pub(crate) fn apply_forwarded_auth(
         &self,
@@ -211,35 +236,6 @@ impl Backend {
         builder
     }
 
-    /// Removes an echoed caller credential before an upstream error is returned or logged.
-    pub(crate) fn redact_forwarded_auth(
-        &self,
-        mut body: String,
-        metadata: Option<&Metadata>,
-    ) -> String {
-        if !self.is_forwarding_auth() {
-            return body;
-        }
-        let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) else {
-            return body;
-        };
-        let secret_headers: &[&str] = match self {
-            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
-                &["authorization", "chatgpt-account-id"]
-            }
-            Backend::Anthropic(_) => &["authorization", "x-api-key"],
-        };
-        for name in secret_headers {
-            let Some(value) = headers.get(*name).and_then(|value| value.to_str().ok()) else {
-                continue;
-            };
-            if !value.is_empty() {
-                body = body.replace(value, "[REDACTED]");
-            }
-        }
-        body
-    }
-
     /// Custom per-backend headers to forward on every call.
     pub fn extra_headers(&self) -> &BTreeMap<String, String> {
         &self.config().extra_headers
@@ -248,6 +244,11 @@ impl Backend {
     /// Default top-level fields to merge into outbound request bodies.
     pub fn extra_body(&self) -> &BTreeMap<String, Value> {
         &self.config().extra_body
+    }
+
+    /// Reasoning effort forced on outbound requests, if the target configures one.
+    pub fn reasoning_effort(&self) -> Option<&str> {
+        self.config().reasoning_effort.as_deref()
     }
 
     /// Additional attempts allowed after the initial request.
@@ -345,6 +346,7 @@ mod tests {
             forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
+            reasoning_effort: None,
             max_retries: 0,
         }
     }
