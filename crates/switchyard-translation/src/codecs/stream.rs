@@ -57,6 +57,9 @@ pub struct StreamTranslationState {
     pub(crate) decoded_reasoning: BTreeMap<usize, String>,
     /// Output indexes whose encrypted reasoning payload was already decoded.
     pub(crate) decoded_reasoning_encrypted: std::collections::BTreeSet<usize>,
+    /// Set once a tool call was observed while DECODING, so a terminal event that names no
+    /// stop reason can still report tool use.
+    pub(crate) decoded_tool_call: bool,
 
     pub(crate) response_created: bool,
     pub(crate) response_text_started: bool,

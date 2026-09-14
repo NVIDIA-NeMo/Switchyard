@@ -1285,6 +1285,153 @@ fn responses_buffered_and_streamed_outputs_match() -> TestResult {
     Ok(())
 }
 
+// The Responses events a provider streams for one completed function call, ending with a
+// `response.completed` whose output repeats the finished call.
+fn responses_function_call_stream() -> Vec<Value> {
+    let call = json!({
+        "id": "fc_1",
+        "type": "function_call",
+        "status": "completed",
+        "call_id": "call_1",
+        "name": "get_weather",
+        "arguments": "{\"city\":\"Paris\"}"
+    });
+    vec![
+        json!({
+            "type": "response.created",
+            "response": {"id": "resp_1", "model": "gpt-5.6", "status": "in_progress", "output": []}
+        }),
+        json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "id": "fc_1",
+                "type": "function_call",
+                "status": "in_progress",
+                "call_id": "call_1",
+                "name": "get_weather",
+                "arguments": ""
+            }
+        }),
+        json!({
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_1",
+            "output_index": 0,
+            "delta": "{\"city\":\"Paris\"}"
+        }),
+        json!({
+            "type": "response.function_call_arguments.done",
+            "item_id": "fc_1",
+            "output_index": 0,
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Paris\"}"
+        }),
+        json!({"type": "response.output_item.done", "output_index": 0, "item": call}),
+        json!({
+            "type": "response.completed",
+            "response": {"id": "resp_1", "model": "gpt-5.6", "status": "completed", "output": [call]}
+        }),
+    ]
+}
+
+// Translates a whole source stream into `target` events, including the encoder's finish.
+fn translate_stream(
+    engine: &TranslationEngine,
+    source: WireFormat,
+    target: WireFormat,
+    events: &[Value],
+) -> std::result::Result<Vec<Value>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut state = StreamTranslationState::new(source, target);
+    let mut out = Vec::new();
+    for event in events {
+        out.extend(engine.translate_event(&mut state, source, target, event)?);
+    }
+    out.extend(engine.finish_stream(&mut state, target)?);
+    Ok(out)
+}
+
+// A streamed Responses function call must end the Anthropic message with `tool_use`, the same
+// stop reason the buffered decoder reports. Anthropic's tool runners dispatch on it; `end_turn`
+// makes them return the unfinished tool-use turn without running the tool.
+#[test]
+fn responses_function_call_stream_stops_with_tool_use_for_anthropic() -> TestResult {
+    let events = translate_stream(
+        &TranslationEngine::default(),
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &responses_function_call_stream(),
+    )?;
+
+    let stop_reasons: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["type"] == "message_delta")
+        .map(|event| &event["delta"]["stop_reason"])
+        .collect();
+    assert_eq!(stop_reasons, vec![&json!("tool_use")]);
+    assert!(events.iter().any(|event| {
+        event["type"] == "content_block_start"
+            && event["content_block"]["type"] == "tool_use"
+            && event["content_block"]["name"] == "get_weather"
+    }));
+    Ok(())
+}
+
+// The same stream on the Chat wire must finish with `tool_calls`, not `stop`.
+#[test]
+fn responses_function_call_stream_finishes_with_tool_calls_for_openai_chat() -> TestResult {
+    let events = translate_stream(
+        &TranslationEngine::default(),
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &responses_function_call_stream(),
+    )?;
+
+    let finish_reasons: Vec<&Value> = events
+        .iter()
+        .filter_map(|event| event["choices"][0].get("finish_reason"))
+        .filter(|reason| !reason.is_null())
+        .collect();
+    assert_eq!(finish_reasons, vec![&json!("tool_calls")]);
+    assert!(events.iter().any(|event| {
+        event["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "get_weather"
+    }));
+    Ok(())
+}
+
+// Some providers end a stream with a bare `response.completed`. The tool deltas already
+// decoded are enough to report tool use; a text-only stream still reports no reason.
+#[test]
+fn responses_bare_completed_reports_tool_use_only_after_tool_deltas() -> TestResult {
+    let bare_completed = json!({"type": "response.completed", "response": {}});
+
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiResponses);
+    let mut last = Vec::new();
+    for event in responses_function_call_stream()
+        .iter()
+        .take(5)
+        .chain(std::iter::once(&bare_completed))
+    {
+        last = decode_stream_event(&mut state, WireFormat::OpenAiResponses, event);
+    }
+    assert_eq!(
+        last,
+        vec![LlmResponseChunk::MessageStop {
+            reason: Some("tool_use".to_string())
+        }]
+    );
+
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiResponses);
+    let text = json!({"type": "response.output_text.delta", "output_index": 0, "delta": "hi"});
+    decode_stream_event(&mut state, WireFormat::OpenAiResponses, &text);
+    assert_eq!(
+        decode_stream_event(&mut state, WireFormat::OpenAiResponses, &bare_completed),
+        vec![LlmResponseChunk::MessageStop { reason: None }]
+    );
+    Ok(())
+}
+
 // An OpenAI-shaped error frame carries no `choices`, so it must decode to a stream error
 // instead of a bare message start that silently drops the upstream message.
 #[test]

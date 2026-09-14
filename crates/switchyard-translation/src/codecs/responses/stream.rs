@@ -177,6 +177,7 @@ fn decode_responses_stream(
                 .get("delta")
                 .and_then(Value::as_str)
                 .map(|delta| {
+                    state.decoded_tool_call = true;
                     // Recorded so `response.output_item.done`, which repeats
                     // the complete arguments, can tell it is a repeat.
                     state
@@ -272,7 +273,18 @@ fn decode_responses_stream(
                 state.saw_backend_usage = true;
                 out.push(LlmResponseChunk::Usage(usage));
             }
-            out.push(LlmResponseChunk::MessageStop { reason: None });
+            // A completed response that produced a tool call ended the turn to run that
+            // tool, not because the assistant was done. The buffered decoder reports tool
+            // use for such output; the stream must too, or stop-reason-driven tool loops
+            // (Anthropic `tool_use`, Chat `tool_calls`) stop without running the tool.
+            // Carries the Anthropic spelling because every encoder already maps it.
+            let has_tool_call = event
+                .get("response")
+                .and_then(|response| response.get("output"))
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().any(is_responses_tool_call_item));
+            let reason = (has_tool_call || state.decoded_tool_call).then(|| "tool_use".to_string());
+            out.push(LlmResponseChunk::MessageStop { reason });
             out
         }
         // Carries the Anthropic spelling because every encoder already maps it.
@@ -608,6 +620,7 @@ fn decode_responses_output_item_added(
     if item_type != Some("function_call") && item_type != Some("custom_tool_call") {
         return Vec::new();
     }
+    state.decoded_tool_call = true;
     // A freeform call's `input` becomes the single `input` argument; it is only complete on
     // the done event, so nothing is emitted for it here beyond id and name.
     let arguments_delta = if item_type == Some("custom_tool_call") {
@@ -641,6 +654,14 @@ fn decode_responses_output_item_added(
     }]
 }
 
+// Whether a Responses output item is a client tool call the consumer must run.
+fn is_responses_tool_call_item(item: &Value) -> bool {
+    matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("function_call" | "custom_tool_call")
+    )
+}
+
 // Emits a final tool-call argument delta when Responses only supplies arguments at item end.
 fn decode_responses_output_item_done(
     event: &Value,
@@ -660,6 +681,7 @@ fn decode_responses_output_item_done(
     if item_type != Some("function_call") && item_type != Some("custom_tool_call") {
         return Vec::new();
     }
+    state.decoded_tool_call = true;
     let custom_arguments = (item_type == Some("custom_tool_call")).then(|| {
         json!({
             crate::codex_custom_tools::INPUT_ARGUMENT:

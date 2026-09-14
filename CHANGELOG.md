@@ -126,6 +126,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refunded the review budget but left the conversation's stall latch set, so
   every later eligible turn silently bypassed the advisor. The latch now clears
   whenever the reserved review is refunded or the budget is already spent.
+- **Streamed Responses tool calls end with a tool-use stop reason** — the
+  Responses stream decoder reported every `response.completed` as a plain
+  completion, so a streamed `function_call` reached Anthropic clients as
+  `stop_reason: "end_turn"` and Chat clients as `finish_reason: "stop"`.
+  Stop-reason-driven tool loops, including the official Anthropic TypeScript
+  SDK tool runner, then returned the unfinished tool-use turn without running
+  the tool. The decoder now reports `tool_use` when the completed output holds
+  a `function_call` or `custom_tool_call`, or when it already decoded tool
+  deltas, matching the buffered decoder.
 - **Encrypted-only reasoning items open no summary part** — the Responses
   stream encoder opened a `reasoning_summary_part` for every reasoning item and
   closed it only when text had streamed, so an encrypted-only item left a part
