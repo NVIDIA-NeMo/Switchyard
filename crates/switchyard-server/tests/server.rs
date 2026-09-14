@@ -2750,6 +2750,162 @@ target = "shared"
 }
 
 #[tokio::test]
+async fn subagent_tool_continuations_are_classified_on_every_request_across_apis() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+[routes.agent]
+id = "agent"
+type = "passthrough"
+target = "weak"
+[routes.agent.subagents]
+type = "llm_classifier"
+mode = "custom"
+classify_trigger = "every_request"
+models = {{ judge = ["classifier"], capable = ["strong"], efficient = ["weak"], any = ["strong", "weak"] }}
+default_target = "efficient"
+prompt = "classify the delegated task"
+response_schema = '''{{"type":"object","properties":{{"decision":{{"type":"object","properties":{{"target":{{"type":"string","enum":["capable","efficient"]}}}},"required":["target"],"additionalProperties":false}}}},"required":["decision"],"additionalProperties":false}}'''
+[routes.agent.subagents.policy]
+type = "target_selector"
+selector = "/decision/target"
+"#,
+        base_url = upstream.base_url
+    ))?);
+    let headers = [
+        ("x-claude-code-session-id", "root-session"),
+        ("x-claude-code-agent-id", "child-agent"),
+    ];
+    let mut classified = 0;
+    for (path, key, mut body, tool_turn) in [
+        (
+            "/v1/chat/completions",
+            "messages",
+            json!({"model":"agent","messages":[
+                {"role":"system","content":"child system instructions"},
+                {"role":"user","content":"harness context"},
+                {"role":"user","content":[{"type":"text","text":"injected context"},{"type":"text","text":"opening task: route to capable"}]}
+            ]}),
+            json!([
+                {"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
+                {"role":"tool","tool_call_id":"call_1","content":"tool output"}
+            ]),
+        ),
+        (
+            "/v1/messages",
+            "messages",
+            json!({"model":"agent","max_tokens":16,"system":"child system instructions","messages":[
+                {"role":"user","content":"harness context"},
+                {"role":"user","content":[{"type":"text","text":"injected context"},{"type":"text","text":"opening task: route to capable"}]}
+            ]}),
+            json!([
+                {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"read_file","input":{}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"tool output"}]}
+            ]),
+        ),
+        (
+            "/v1/responses",
+            "input",
+            json!({"model":"agent","instructions":"child system instructions","input":[
+                {"role":"user","content":"harness context"},
+                {"role":"user","content":[{"type":"input_text","text":"injected context"},{"type":"input_text","text":"opening task: route to capable"}]}
+            ]}),
+            json!([
+                {"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"},
+                {"type":"function_call_output","call_id":"call_1","output":"tool output"}
+            ]),
+        ),
+    ] {
+        for (step, expected_prompt) in [
+            (0, "opening task: route to capable"),
+            (1, "opening task: route to capable"),
+            (2, "continue task: route to capable"),
+        ] {
+            if step == 1 {
+                body[key]
+                    .as_array_mut()
+                    .ok_or("missing request messages")?
+                    .extend(
+                        tool_turn
+                            .as_array()
+                            .ok_or("missing tool messages")?
+                            .iter()
+                            .cloned(),
+                    );
+            }
+            if step == 2 {
+                body[key]
+                    .as_array_mut()
+                    .ok_or("missing request messages")?
+                    .push(json!({"role":"user","content":expected_prompt}));
+            }
+            let response =
+                send_with_headers(&app, "POST", path, Some(body.clone()), &headers).await?;
+            assert_eq!(response.status, StatusCode::OK);
+            assert_eq!(
+                response.headers["x-model-router-selected-model"],
+                "model/strong"
+            );
+            assert_eq!(response.json()?["model"], "model/strong");
+            classified += 1;
+            let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+            assert_eq!(stats["classifier"]["total_requests"], classified);
+            assert_eq!(stats["models"]["model/strong"]["calls"], classified);
+            let calls = upstream.calls.lock().await;
+            let judge = &calls[calls.len() - 2];
+            assert_eq!(judge["model"], "model/classifier");
+            assert_eq!(
+                judge["messages"],
+                json!([
+                    {"role":"system","content":"classify the delegated task"},
+                    {"role":"user","content":expected_prompt}
+                ])
+            );
+            let answer = calls.last().ok_or("missing answer request")?;
+            assert_eq!(answer["model"], "model/strong");
+            let answer = answer.to_string();
+            for preserved in [
+                "child system instructions",
+                "harness context",
+                "injected context",
+                "opening task: route to capable",
+            ] {
+                assert!(answer.contains(preserved));
+            }
+            if step > 0 {
+                assert!(answer.contains("tool output"));
+                assert!(answer.contains("call_1"));
+            }
+        }
+        let mut text_free = body;
+        text_free[key] = tool_turn;
+        let response = send_with_headers(&app, "POST", path, Some(text_free), &headers).await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response.headers["x-model-router-selected-model"],
+            "model/weak"
+        );
+        let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+        assert_eq!(stats["classifier"]["total_requests"], classified);
+        assert_eq!(stats["total_errors"], 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestResult {
     let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 

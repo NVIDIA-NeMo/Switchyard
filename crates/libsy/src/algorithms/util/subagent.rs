@@ -41,11 +41,11 @@ impl<S> SubagentGate<S> {
     }
 }
 
-/// Builds the prompt-only request shown to a delegated-work classifier.
+/// Builds a classifier request containing only the delegated task text.
 fn delegated_prompt_request(request: &Request) -> Option<Request> {
-    // Coding harnesses append the parent's task after their injected user context and reminders.
-    // Tool results arrive as text-free user messages, so a tool continuation still classifies
-    // the newest user text before it.
+    // Agent clients put the delegated task after added context and reminders.
+    // A user message containing only tool-result blocks has no top-level text.
+    // Find the latest nonblank user text without using text inside tool results.
     let prompt = request
         .llm_request
         .messages
@@ -154,33 +154,7 @@ where
 mod tests {
     use super::*;
     use crate::core::testing::empty_driver;
-    use parking_lot::Mutex;
     use switchyard_protocol::{slice_to_header_map, text_request};
-
-    #[derive(Default)]
-    struct CapturingClassifier {
-        requests: Mutex<Vec<Request>>,
-    }
-
-    #[async_trait]
-    impl Classifier<()> for CapturingClassifier {
-        async fn score(
-            &self,
-            _state: &mut (),
-            request: &mut Request,
-            _driver: &Driver,
-        ) -> Result<(Classification, Option<Response>)> {
-            self.requests.lock().push(request.clone());
-            Ok((
-                Classification::Scores(vec![Score {
-                    confidence: 1.0,
-                    target: ModelId::from("worker"),
-                    category: None,
-                }]),
-                None,
-            ))
-        }
-    }
 
     fn request(headers: &[(&str, &str)]) -> Request {
         let metadata =
@@ -257,61 +231,6 @@ mod tests {
             }
             Classification::Ambiguous(_) => panic!("override must score definitively"),
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn gate_abstains_when_delegated_work_has_no_text_prompt() -> Result<()> {
-        let classifier = Arc::new(CapturingClassifier::default());
-        let gate = SubagentGate::new(classifier.clone());
-        let mut request = request(&[("x-openai-subagent", "collab_spawn")]);
-        request.llm_request.messages = vec![Message::text(Role::Assistant, "no user prompt")];
-
-        let mut state = ();
-        let (classification, response) = gate
-            .score(&mut state, &mut request, &empty_driver())
-            .await?;
-
-        assert!(classification.argmax(false)?.is_none());
-        assert!(response.is_none());
-        assert!(classifier.requests.lock().is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn gate_classifies_tool_continuations_from_the_newest_user_text() -> Result<()> {
-        let classifier = Arc::new(CapturingClassifier::default());
-        let gate = SubagentGate::new(classifier.clone());
-        let mut request = request(&[("x-openai-subagent", "collab_spawn")]);
-        // OpenAI Chat `tool` messages become text-free user messages in the IR.
-        request.llm_request.messages = vec![
-            Message::text(Role::User, "Review this parser carefully."),
-            Message {
-                role: Role::User,
-                content: vec![ContentBlock::ToolResult(switchyard_protocol::ToolResult {
-                    tool_call_id: "call_1".to_string(),
-                    content: vec![ContentBlock::Text {
-                        text: "def parse(value): return value".to_string(),
-                    }],
-                    is_error: None,
-                })],
-            },
-        ];
-
-        let mut state = ();
-        let (classification, _) = gate
-            .score(&mut state, &mut request, &empty_driver())
-            .await?;
-
-        assert_eq!(
-            classification.argmax(false)?.map(|score| score.target),
-            Some(ModelId::from("worker"))
-        );
-        let seen = classifier.requests.lock();
-        assert_eq!(
-            seen[0].llm_request.messages,
-            vec![Message::text(Role::User, "Review this parser carefully.")]
-        );
         Ok(())
     }
 }

@@ -109,21 +109,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use parking_lot::Mutex;
-    use serde_json::json;
-    use switchyard_protocol::{
-        Category, ContentBlock, InstructionBlock, Message, Metadata, ModelId, Request, Response,
-        Role, text_request,
-    };
+    use switchyard_protocol::{Category, Metadata, ModelId, Request, Response, text_request};
 
     use super::{SubagentRouter, SubagentRouterConfig};
     use crate::algorithms::passthrough::Passthrough;
     use crate::core::classifier::{Classification, Classifier, Score};
-    use crate::core::testing::{echo, reply, test_drive_with_models};
-    use crate::{
-        ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, Driver,
-        LlmClassifierConfig, LlmTaskClassifier, RuntimeModels, State,
-    };
+    use crate::core::testing::{echo, test_drive_with_models};
+    use crate::{ClassifyTrigger, Driver, RuntimeModels, State};
 
     struct ScriptedClassifier {
         calls: AtomicUsize,
@@ -242,92 +234,6 @@ mod tests {
         )?);
         let (fixed, _) = test_drive_with_models(fixed, child("fixed"), models, echo()).await?;
         assert_eq!(fixed, "worker");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn custom_classifier_receives_only_the_delegated_prompt() -> crate::Result<()> {
-        let classifier = LlmTaskClassifier::new(LlmClassifierConfig::Custom {
-            default_target: Category::Capable,
-            config: CustomClassifierConfig::new(
-                "classify the delegated task",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "target": {"type": "string", "enum": ["capable", "efficient"]}
-                    },
-                    "required": ["target"],
-                    "additionalProperties": false
-                }),
-                CustomClassifierPolicy::target_selector("/target"),
-            ),
-        })?;
-        let router = configured(Arc::new(classifier))?;
-        let mut request = child("child-1");
-        request.llm_request.instructions = vec![InstructionBlock {
-            role: Role::System,
-            content: Message::text(Role::System, "child system instructions").content,
-        }];
-        request.llm_request.messages = vec![
-            Message::text(Role::User, "harness context"),
-            Message {
-                role: Role::User,
-                content: vec![
-                    ContentBlock::Text {
-                        text: "<system-reminder>tool context</system-reminder>".to_string(),
-                    },
-                    ContentBlock::Text {
-                        text: "review this parser".to_string(),
-                    },
-                ],
-            },
-        ];
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let served_calls = calls.clone();
-
-        let models = RuntimeModels::new([(Category::Any, vec![ModelId::from("parent")])].into())
-            .with_subagent(
-                [
-                    (Category::Judge, vec![ModelId::from("judge")]),
-                    (Category::Capable, vec![ModelId::from("worker")]),
-                    (Category::Efficient, vec![ModelId::from("reviewer")]),
-                    (
-                        Category::Any,
-                        vec![ModelId::from("worker"), ModelId::from("reviewer")],
-                    ),
-                ]
-                .into(),
-            );
-        let (selected, _) =
-            test_drive_with_models(router, request, models, move |target, request| {
-                let calls = served_calls.clone();
-                async move {
-                    let completion = if target == "judge" {
-                        r#"{"target":"efficient"}"#
-                    } else {
-                        "child answer"
-                    };
-                    calls.lock().push((target, request));
-                    Ok(reply(completion))
-                }
-            })
-            .await?;
-
-        assert_eq!(selected, "reviewer");
-        let calls = calls.lock();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].0, "judge");
-        assert_eq!(
-            calls[0].1.llm_request.instructions[0].content,
-            Message::text(Role::System, "classify the delegated task").content
-        );
-        assert_eq!(
-            calls[0].1.llm_request.messages,
-            vec![Message::text(Role::User, "review this parser")]
-        );
-        assert_eq!(calls[1].0, "reviewer");
-        assert_eq!(calls[1].1.llm_request.instructions.len(), 1);
-        assert_eq!(calls[1].1.llm_request.messages.len(), 2);
         Ok(())
     }
 }
