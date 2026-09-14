@@ -107,6 +107,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Advisor stall checkpoint re-arms after a refunded review** — a
+  stall-triggered consult that failed open or returned an unparseable verdict
+  refunded the review budget but left the conversation's stall latch set, so
+  every later eligible turn silently bypassed the advisor. The latch now clears
+  whenever the reserved review is refunded or the budget is already spent.
 - **Encrypted-only reasoning items open no summary part** — the Responses
   stream encoder opened a `reasoning_summary_part` for every reasoning item and
   closed it only when text had streamed, so an encrypted-only item left a part
