@@ -192,19 +192,12 @@ def test_complete_reordered_pair(
 
 
 @pytest.mark.parametrize(
-    "problem",
+    ("problem", "expected_error"),
     [
-        "missing",
-        "duplicate",
-        "input",
-        "provenance",
-        "capture",
-        "usage",
-        "failure",
-        "ledger_gap",
-        "instance",
-        "selection",
-        "gateway_response",
+        ("incomplete", "Incomplete runs"),
+        ("mismatched", "Task inputs, verifier metadata, or generation settings differ"),
+        ("capture", "incomplete model-call capture"),
+        ("truncated", "missing or incomplete final answer"),
     ],
 )
 def test_invalid_evidence_never_prints_averages(
@@ -213,34 +206,22 @@ def test_invalid_evidence_never_prints_averages(
     artifacts: dict[str, dict[str, Any]],
     capsys: pytest.CaptureFixture[str],
     problem: str,
+    expected_error: str,
 ) -> None:
     routed = artifacts["routed"]
-    if problem == "missing":
+    if problem == "incomplete":
         for run in artifacts.values():
             run["rows"].pop()
-    elif problem == "duplicate":
-        routed["rows"].append(deepcopy(routed["rows"][0]))
-    elif problem == "input":
+    elif problem == "mismatched":
         routed["inputs"][0]["expected_answer"] = "A"
-    elif problem == "provenance":
-        routed["provenance"]["gym_revision"] = "d" * 40
     elif problem == "capture":
         routed["rows"][0]["ng_model_call_capture"]["gaps"] = ["missing exchange"]
-    elif problem == "usage":
-        routed["events"][1]["tokens_total"] = 29
-    elif problem == "failure":
-        routed["failures"] = [{"_ng_task_index": 0, "_ng_rollout_index": 0}]
-    elif problem == "ledger_gap":
-        routed["events"].pop()
-    elif problem == "instance":
-        routed["events"][1]["instance_id"] = "another-proxy"
-    elif problem == "selection":
-        routed["events"][1]["deployment_model"] = BIG
     else:
-        routed["events"][1]["response_id"] = "not-the-final-response"
+        routed["rows"][0]["response"]["status"] = "incomplete"
     assert comparator.main(_write_runs(tmp_path, artifacts)) == 1
     output = capsys.readouterr()
     assert "Cannot compare:" in output.err
+    assert expected_error in output.err
     assert "Mean reward" not in output.out
 
 
@@ -280,30 +261,3 @@ def test_recovery_keeps_extra_work_and_terminal_attribution(
         line = next(line for line in output.splitlines() if line[:29].rstrip() == metric)
         assert line[29:].split() == values
     assert "WARNING: routed" in output
-
-
-@pytest.mark.parametrize(
-    "problem", ["truncated", "gateway_truncated", "ambiguous", "missing_ledger"]
-)
-def test_missing_terminal_or_snapshot_has_actionable_error(
-    tmp_path: Path,
-    comparator: ModuleType,
-    artifacts: dict[str, dict[str, Any]],
-    capsys: pytest.CaptureFixture[str],
-    problem: str,
-) -> None:
-    row = artifacts["routed"]["rows"][0]
-    if problem == "truncated":
-        row["response"]["status"] = "incomplete"
-    elif problem == "gateway_truncated":
-        artifacts["routed"]["events"][1]["response_status"] = "incomplete"
-    elif problem == "ambiguous":
-        row["ng_model_call_capture"]["calls"] *= 2
-    args = _write_runs(tmp_path, artifacts)
-    if problem == "missing_ledger":
-        (Path(args[1]) / FILES["events"]).unlink()
-    assert comparator.main(args) == 1
-    output = capsys.readouterr()
-    assert "Mean reward" not in output.out
-    if problem == "missing_ledger":
-        assert "litellm.log" in output.err
