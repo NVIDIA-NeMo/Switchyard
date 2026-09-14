@@ -5,10 +5,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
-import re
-import shutil
-import subprocess
 from copy import deepcopy
 from pathlib import Path
 from types import ModuleType
@@ -16,16 +12,14 @@ from typing import Any
 
 import pytest
 
-MISSING = object()
-BIG = "nvidia/nemotron-3-super-120b-a12b"
-SMALL = "openai/gpt-oss-20b"
+BIG = "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
+SMALL = "nvidia_nim/openai/gpt-oss-20b"
 FILES = {
     "inputs": "rollouts_materialized_inputs.jsonl",
     "rows": "rollouts.jsonl",
     "failures": "rollouts_failures.jsonl",
-    "condition": "switchyard-condition.json",
-    "snapshot": "switchyard-stats.json",
-    "commit": "gym-commit.txt",
+    "events": "litellm-calls.jsonl",
+    "provenance": "run-provenance.json",
 }
 
 
@@ -33,93 +27,120 @@ FILES = {
 def comparator() -> ModuleType:
     path = Path(__file__).resolve().parents[1] / "benchmark/nemo_gym/compare.py"
     spec = importlib.util.spec_from_file_location("switchyard_nemo_gym_compare", path)
-    assert spec is not None
-    assert spec.loader is not None
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+def _attempt(route: str, request_id: str, **fields: Any) -> list[dict[str, Any]]:
+    common = {"route": route, "request_id": request_id, "instance_id": "fixture-proxy"}
+    return [
+        {**common, "event": "start"},
+        {
+            **common,
+            "event": "finish",
+            "status_code": 200,
+            "error_type": None,
+            "response_id": request_id,
+            "response_status": "completed",
+            "selected_model": BIG,
+            "deployment_model": BIG,
+            "tokens_total": 30,
+            "routing_ms": 5,
+            **fields,
+        },
+    ]
+
+
 @pytest.fixture
 def artifacts() -> dict[str, dict[str, Any]]:
+    """Build paired runs with one correct and one wrong answer per condition."""
     runs = {}
     for route in ("fixed", "routed"):
-        inputs, rows = [], []
+        inputs, rows, events = [], [], []
         for index in range(2):
             task = {
                 "_ng_task_index": index,
                 "_ng_rollout_index": 0,
                 "expected_answer": "B",
-                "grading_mode": "strict_single_letter_boxed",
-                "agent_ref": {"name": "mcqa_simple_agent"},
+                "agent_ref": {"name": "mmlu-redux_mcqa_simple_agent"},
                 "responses_create_params": {
                     "input": [{"role": "user", "content": f"Question {index}"}],
                     "temperature": 0,
-                    "max_output_tokens": 512,
+                    "max_output_tokens": 4096,
                 },
             }
             inputs.append(task)
-            response = {
-                "status": "completed",
-                "model": SMALL if route == "routed" and index == 0 else BIG,
-                "output": [
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": "\\boxed{B}" if index == 0 else "\\boxed{A}",
-                            }
-                        ],
-                    }
-                ],
-            }
+            response_id = f"{route}-{index}"
+            tokens = 30 + 10 * index
+            model = SMALL if route == "routed" and index == 0 else BIG
             rows.append(
                 {
                     **deepcopy(task),
-                    "response": dict(deepcopy(response), model=route),
+                    "response": {
+                        "id": response_id,
+                        "status": "completed",
+                        "model": route,
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "status": "completed",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": "\\boxed{B}" if index == 0 else "\\boxed{A}",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
                     "reward": 1 - index,
                     "ng_perf": {"total_latency_ms": 100 + 200 * index},
                     "ng_model_call_capture": {
                         "gaps": [],
                         "calls": [
                             {
+                                "response_id": response_id,
                                 "status_code": 200,
                                 "error_category": None,
                                 "response_status": "completed",
-                                "model": response["model"],
-                                "tokens_total": 30 + 10 * index,
+                                "model": route,
+                                "tokens_total": tokens,
                             }
                         ],
                     },
                 }
             )
+            events.extend(
+                _attempt(
+                    route,
+                    response_id,
+                    tokens_total=tokens,
+                    selected_model=model,
+                    deployment_model=model,
+                )
+            )
         runs[route] = {
             "inputs": inputs,
             "rows": rows,
             "failures": [],
-            "commit": "3a26c35fa90c243427378569511f7b06f503e0fd",
-            "condition": {
-                "route": route,
-                "mode": "hosted",
-                "nemo_switchyard_version": "0.2.0",
-                "deployment_sha256": "a" * 64,
-            },
-            "snapshot": {
-                "mode": "hosted",
-                "scope": "this run (proxy hosted for exactly this run)",
-                "stats": {
-                    "total_errors": 0,
-                    "total_requests": 2,
-                    "total_tokens": {"total": 70},
-                    "routing_overhead": {"avg_ms": 5},
-                    "classifier": {
-                        "total_errors": 0,
-                        "total_requests": 2 if route == "routed" else 0,
-                        "total_tokens": {"total": 11 if route == "routed" else 0},
-                    },
+            "events": events,
+            "provenance": {
+                "gym_revision": "b" * 40,
+                "switchyard_revision": "c" * 40,
+                "runtime": {
+                    "mode": "litellm_libsy",
+                    "instance_id": "fixture-proxy",
+                    "litellm_version": "1.97.0",
+                    "switchyard_version": "0.2.0",
+                    "routing_plugin": "switchyard_litellm.RandomRoutingPlugin",
+                    "models": {"fixed": [BIG], "routed": [BIG, SMALL]},
+                    "profile_sha256": "a" * 64,
+                    "routing_sha256": "a" * 64,
+                    "callback_sha256": "a" * 64,
+                    "provider_base_sha256": "a" * 64,
                 },
             },
         }
@@ -132,262 +153,157 @@ def _write_runs(tmp_path: Path, artifacts: dict[str, dict[str, Any]]) -> list[st
         directory.mkdir()
         for name, filename in FILES.items():
             value = run[name]
-            if filename.endswith(".jsonl"):
-                text = "".join(json.dumps(row) + "\n" for row in value)
-            else:
-                text = value + "\n" if name == "commit" else json.dumps(value)
+            text = (
+                "".join(json.dumps(row) + "\n" for row in value)
+                if filename.endswith(".jsonl")
+                else json.dumps(value)
+            )
             (directory / filename).write_text(text, encoding="utf-8")
     return [str(tmp_path / route) for route in ("fixed", "routed")]
 
 
-def test_reordered_pairing_uses_captured_models_and_separate_classifier_tokens(
+def test_complete_reordered_pair(
     tmp_path: Path,
     comparator: ModuleType,
-    artifacts: dict,
+    artifacts: dict[str, dict[str, Any]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     artifacts["routed"]["rows"].reverse()
     artifacts["routed"]["inputs"].reverse()
+    artifacts["routed"]["events"].reverse()
     assert comparator.main(_write_runs(tmp_path, artifacts)) == 0
     output = capsys.readouterr()
     assert output.err == ""
     assert "Pairing: matched=2, fixed-only=0, routed-only=0" in output.out
     assert f'fixed selected models: {{"{BIG}": 2}}' in output.out
     assert f"routed selected models: {json.dumps({SMALL: 1, BIG: 1}, sort_keys=True)}" in output.out
-    expected = {
+    for metric, values in {
         "Mean reward": ["0.500", "0.500"],
-        "Selected-model tokens": ["70", "70"],
-        "Classifier tokens": ["0", "11"],
-        "Combined reported tokens": ["70", "81"],
+        "Terminal-answer tokens": ["70", "70"],
+        "Gateway-reported tokens": ["70", "70"],
         "Mean rollout latency (ms)": ["200", "200"],
-        "Mean routing overhead (ms)": ["5", "5"],
-        "Classifier requests": ["0", "2"],
-    }
-    for metric, values in expected.items():
-        line = next(line for line in output.out.splitlines() if line.startswith(metric))
-        assert line[len(metric) :].split() == values
+        "Gateway requests": ["2", "2"],
+        "Gateway errors": ["0", "0"],
+    }.items():
+        line = next(line for line in output.out.splitlines() if line[:29].rstrip() == metric)
+        assert line[29:].split() == values
+    assert "Classifier tokens: N/A" in output.out
+    assert "not exhaustive provider-attempt" in output.out
 
 
 @pytest.mark.parametrize(
-    ("path", "value"),
+    "problem",
     [
-        ("routed.rows", []),
-        (
-            "routed.failures",
-            [{"_ng_task_index": 0, "_ng_rollout_index": 0, "_ng_failure_class": "timeout"}],
-        ),
-        ("routed.rows.1._ng_task_index", 0),
-        ("routed.rows.0._ng_task_index", -1),
-        ("routed.rows.0._ng_task_index", True),
-        ("routed.rows.0._ng_rollout_index", "0"),
-        ("routed.rows.0._ng_rollout_index", MISSING),
-        ("routed.rows.0._ng_task_index", 99),
-        ("routed.inputs.1._ng_task_index", 0),
-        ("routed.inputs.0.expected_answer", "A"),
-        ("routed.inputs.0.responses_create_params.input.0.content", "Different question"),
-        ("routed.inputs.0.responses_create_params.temperature", 1),
-        ("routed.inputs.0.responses_create_params.max_output_tokens", 256),
-        ("routed.condition.deployment_sha256", "b" * 64),
-        ("routed.condition.deployment_sha256", MISSING),
-        ("routed.condition.nemo_switchyard_version", "0.3.0"),
-        ("routed.commit", "different-commit"),
-        ("routed.condition.route", "fixed"),
-        ("routed.condition.mode", "external"),
-        ("routed.snapshot.mode", "external"),
-        ("routed.snapshot.scope", "all runs"),
-        ("routed.condition", None),
-        ("routed.snapshot", []),
-        ("routed.rows.0._ng_failure_class", "timeout"),
-        ("routed.rows.0.reward", None),
-        ("routed.rows.0.reward", 1.1),
-        ("routed.rows.0.response", MISSING),
-        ("routed.rows.0.response", None),
-        ("routed.rows.0.response.status", "incomplete"),
-        ("routed.rows.0.response.output", []),
-        ("routed.rows.0.response.output", None),
-        ("routed.rows.0.response.output", [None]),
-        ("routed.rows.0.response.output.0.role", "user"),
-        ("routed.rows.0.response.output.0.content", None),
-        ("routed.rows.0.response.output.0.content", [None]),
-        ("routed.rows.0.response.output.0.content.0.text", "  "),
-        ("routed.rows.0.ng_model_call_capture", MISSING),
-        ("routed.rows.0.ng_model_call_capture", None),
-        ("routed.rows.0.ng_model_call_capture.gaps", ["missing call"]),
-        ("routed.rows.0.ng_model_call_capture.calls", []),
-        ("routed.rows.0.ng_model_call_capture.calls", [{}, {}]),
-        ("routed.rows.0.ng_model_call_capture.calls", [None]),
-        ("routed.rows.0.ng_model_call_capture.calls.0.status_code", 500),
-        ("routed.rows.0.ng_model_call_capture.calls.0.error_category", "timeout"),
-        ("routed.rows.0.ng_model_call_capture.calls.0.response_status", None),
-        ("routed.rows.0.ng_model_call_capture.calls.0.response_status", "incomplete"),
-        ("routed.rows.0.ng_model_call_capture.calls.0.model", "routed"),
-        ("routed.rows.0.ng_model_call_capture.calls.0.model", MISSING),
-        ("routed.rows.0.ng_model_call_capture.calls.0.tokens_total", None),
-        ("routed.rows.0.ng_perf.total_latency_ms", None),
-        ("routed.snapshot.stats.total_requests", 3),
-        ("routed.snapshot.stats.total_tokens.total", 81),
-        ("routed.snapshot.stats.classifier.total_requests", 0),
-        ("fixed.snapshot.stats.classifier.total_requests", 2),
-        ("routed.snapshot.stats.classifier.total_tokens.total", None),
+        "missing",
+        "duplicate",
+        "input",
+        "provenance",
+        "capture",
+        "usage",
+        "failure",
+        "ledger_gap",
+        "instance",
+        "selection",
+        "gateway_response",
     ],
 )
-def test_rejects_incompatible_or_malformed_artifacts(
+def test_invalid_evidence_never_prints_averages(
     tmp_path: Path,
     comparator: ModuleType,
-    artifacts: dict,
+    artifacts: dict[str, dict[str, Any]],
     capsys: pytest.CaptureFixture[str],
-    path: str,
-    value: Any,
+    problem: str,
 ) -> None:
-    keys = [int(key) if key.isdecimal() else key for key in path.split(".")]
-    target = artifacts
-    for key in keys[:-1]:
-        target = target[key]
-    if value is MISSING:
-        del target[keys[-1]]
+    routed = artifacts["routed"]
+    if problem == "missing":
+        for run in artifacts.values():
+            run["rows"].pop()
+    elif problem == "duplicate":
+        routed["rows"].append(deepcopy(routed["rows"][0]))
+    elif problem == "input":
+        routed["inputs"][0]["expected_answer"] = "A"
+    elif problem == "provenance":
+        routed["provenance"]["gym_revision"] = "d" * 40
+    elif problem == "capture":
+        routed["rows"][0]["ng_model_call_capture"]["gaps"] = ["missing exchange"]
+    elif problem == "usage":
+        routed["events"][1]["tokens_total"] = 29
+    elif problem == "failure":
+        routed["failures"] = [{"_ng_task_index": 0, "_ng_rollout_index": 0}]
+    elif problem == "ledger_gap":
+        routed["events"].pop()
+    elif problem == "instance":
+        routed["events"][1]["instance_id"] = "another-proxy"
+    elif problem == "selection":
+        routed["events"][1]["deployment_model"] = BIG
     else:
-        target[keys[-1]] = value
+        routed["events"][1]["response_id"] = "not-the-final-response"
     assert comparator.main(_write_runs(tmp_path, artifacts)) == 1
     output = capsys.readouterr()
     assert "Cannot compare:" in output.err
     assert "Mean reward" not in output.out
 
 
-@pytest.mark.parametrize("side", ["fixed", "routed"])
-@pytest.mark.parametrize("classifier", [False, True])
-@pytest.mark.parametrize("value", [MISSING, None, 1])
-def test_error_counts_must_be_present_and_zero(
+def test_recovery_keeps_extra_work_and_terminal_attribution(
     tmp_path: Path,
     comparator: ModuleType,
-    artifacts: dict,
-    side: str,
-    classifier: bool,
-    value: Any,
-) -> None:
-    stats = artifacts[side]["snapshot"]["stats"]
-    target = stats["classifier"] if classifier else stats
-    if value is MISSING:
-        del target["total_errors"]
-    else:
-        target["total_errors"] = value
-    assert comparator.main(_write_runs(tmp_path, artifacts)) == 1
-
-
-@pytest.mark.parametrize("sides", [("fixed",), ("routed",), ("fixed", "routed")])
-def test_missing_expected_row_rejects_even_when_both_sides_match(
-    tmp_path: Path,
-    comparator: ModuleType,
-    artifacts: dict,
+    artifacts: dict[str, dict[str, Any]],
     capsys: pytest.CaptureFixture[str],
-    sides: tuple,
 ) -> None:
-    for side in sides:
-        artifacts[side]["rows"].pop()
-    assert comparator.main(_write_runs(tmp_path, artifacts)) == 1
-    output = capsys.readouterr()
-    assert "missing=1" in output.out
-    assert "Incomplete runs" in output.err
-    assert "Mean reward" not in output.out
+    run = artifacts["routed"]
+    calls = run["rows"][0]["ng_model_call_capture"]["calls"]
+    calls.insert(0, {"status_code": 503, "error_category": "upstream", "tokens_total": None})
+    calls.append({**calls[1], "response_id": "superseded", "tokens_total": 20})
+    run["events"].extend(
+        _attempt(
+            "routed",
+            "failed",
+            status_code=503,
+            error_type="ServiceUnavailable",
+            response_id=None,
+            response_status=None,
+            tokens_total=None,
+            routing_ms=None,
+        )
+    )
+    run["events"].extend(_attempt("routed", "superseded", tokens_total=20))
+    assert comparator.main(_write_runs(tmp_path, artifacts)) == 0
+    output = capsys.readouterr().out
+    for metric, values in {
+        "Terminal-answer tokens": ["70", "70"],
+        "Gateway-reported tokens": ["70", "90"],
+        "Gateway requests": ["2", "4"],
+        "Gateway errors": ["0", "1"],
+        "Gateway requests w/o usage": ["0", "1"],
+        "Captured failed attempts": ["0", "1"],
+    }.items():
+        line = next(line for line in output.splitlines() if line[:29].rstrip() == metric)
+        assert line[29:].split() == values
+    assert "WARNING: routed" in output
 
 
 @pytest.mark.parametrize(
-    ("filename", "hint"),
-    [
-        ("switchyard-condition.json", "when the model server starts"),
-        ("switchyard-stats.json", "press Ctrl-C"),
-    ],
+    "problem", ["truncated", "gateway_truncated", "ambiguous", "missing_ledger"]
 )
-def test_missing_server_artifacts_explain_the_required_step(
+def test_missing_terminal_or_snapshot_has_actionable_error(
     tmp_path: Path,
     comparator: ModuleType,
-    artifacts: dict,
+    artifacts: dict[str, dict[str, Any]],
     capsys: pytest.CaptureFixture[str],
-    filename: str,
-    hint: str,
+    problem: str,
 ) -> None:
+    row = artifacts["routed"]["rows"][0]
+    if problem == "truncated":
+        row["response"]["status"] = "incomplete"
+    elif problem == "gateway_truncated":
+        artifacts["routed"]["events"][1]["response_status"] = "incomplete"
+    elif problem == "ambiguous":
+        row["ng_model_call_capture"]["calls"] *= 2
     args = _write_runs(tmp_path, artifacts)
-    missing = Path(args[1]) / filename
-    missing.unlink()
+    if problem == "missing_ledger":
+        (Path(args[1]) / FILES["events"]).unlink()
     assert comparator.main(args) == 1
     output = capsys.readouterr()
-    assert str(missing) in output.err
-    assert hint in output.err
     assert "Mean reward" not in output.out
-    assert not missing.exists()
-
-
-def test_misfiled_manifest_explains_route_directory_mismatch(
-    tmp_path: Path,
-    comparator: ModuleType,
-    artifacts: dict,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    artifacts["fixed"]["condition"]["route"] = "routed"
-    args = _write_runs(tmp_path, artifacts)
-    assert comparator.main(args) == 1
-    output = capsys.readouterr()
-    assert "fixed: manifest records route 'routed'" in output.err
-    assert "fresh directory" in output.err
-    assert "Mean reward" not in output.out
-    manifest = json.loads((Path(args[0]) / "switchyard-condition.json").read_text())
-    assert manifest["route"] == "routed"
-
-
-@pytest.mark.skipif(shutil.which("bash") is None, reason="Bash is not installed")
-@pytest.mark.parametrize("block_index", [0, 1])
-def test_routed_commands_reset_a_stale_fixed_output_directory(
-    tmp_path: Path,
-    block_index: int,
-) -> None:
-    readme = Path(__file__).resolve().parents[1] / "benchmark/nemo_gym/README.md"
-    section = readme.read_text(encoding="utf-8").split("## 4. Repeat with routing", 1)[1]
-    section = section.split("## 5.", 1)[0]
-    blocks = re.findall(r"```bash\n(.*?)\n```", section, re.DOTALL)
-    assert len(blocks) == 2
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            "gym() { printf '%s\\n' \"$@\"; }; git() { printf 'test-revision\\n'; };\n"
-            + blocks[block_index],
-        ],
-        env={
-            "PATH": os.defpath,
-            "EXAMPLE": str(tmp_path / "example"),
-            "WORK": str(tmp_path / "work"),
-            "RUN_DIR": str(run_dir),
-            "OUT": str(run_dir / "fixed"),
-            "ROUTE": "fixed",
-        },
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
-    assert result.returncode == 0, result.stderr
-    args = result.stdout.splitlines()
-    assert f"++model_call_capture_dir={run_dir}/routed/model-calls" in args
-    if block_index == 0:
-        assert args[args.index("--model") + 1] == "routed"
-        assert (
-            f"++policy_model.responses_api_models.switchyard_model.condition_dir={run_dir}/routed"
-            in args
-        )
-        assert (run_dir / "routed/gym-commit.txt").read_text() == "test-revision\n"
-    else:
-        assert args[args.index("--output") + 1] == str(run_dir / "routed/rollouts.jsonl")
-    assert not (run_dir / "fixed").exists()
-
-
-@pytest.mark.skipif(shutil.which("bash") is None, reason="Bash is not installed")
-def test_readme_shell_blocks_have_valid_bash_syntax() -> None:
-    readme = Path(__file__).resolve().parents[1] / "benchmark/nemo_gym/README.md"
-    blocks = re.findall(r"```bash\n(.*?)\n```", readme.read_text(encoding="utf-8"), re.DOTALL)
-    assert blocks, "The tutorial must contain executable Bash examples"
-    for index, block in enumerate(blocks, start=1):
-        result = subprocess.run(
-            ["bash", "-n"], input=block, text=True, capture_output=True, check=False, timeout=10
-        )
-        assert result.returncode == 0, f"Bash example {index}: {result.stderr}"
+    if problem == "missing_ledger":
+        assert "litellm.log" in output.err

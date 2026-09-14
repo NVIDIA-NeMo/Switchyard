@@ -1,0 +1,28 @@
+model_list:
+  - model_name: fixed
+    litellm_params: &strong
+      model: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
+      api_base: os.environ/NVIDIA_BASE_URL
+      api_key: os.environ/NVIDIA_API_KEY
+      max_retries: 0
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+  - model_name: routed
+    litellm_params: *strong
+  - model_name: routed
+    litellm_params:
+      model: nvidia_nim/openai/gpt-oss-20b
+      api_base: os.environ/NVIDIA_BASE_URL
+      api_key: os.environ/NVIDIA_API_KEY
+      max_retries: 0
+      extra_body:
+        reasoning_effort: low
+router_settings:
+  num_retries: 0
+  plugins:
+    - gym_routing_plugin.PLUGIN
+litellm_settings:
+  num_retries: 0
+  callbacks:
+    - gym_routing_plugin.PLUGIN

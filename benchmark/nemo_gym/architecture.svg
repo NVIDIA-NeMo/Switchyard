@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title description">
-  <title id="title">NeMo Gym and Switchyard for Evaluation</title>
-  <desc id="description">The evaluation flow follows four steps: dataset, initialize environment, agent executes, and verify. The simple agent runs in the agent server; the MCQA verifier runs in the resources server. Below the agent, Gym's model server hosts Switchyard in-process and exchanges requests and responses with upstream models. Run the same tasks twice: the fixed route always uses the stronger model, while the routed condition uses a classifier to choose the weaker or stronger model. Compare paired rewards, selected models, model and classifier tokens, latency, and routing statistics.</desc>
+  <title id="title">Evaluating Switchyard routing with NeMo Gym</title>
+  <desc id="description">The evaluation uses MMLU-Redux tasks, Gym's simple agent and MCQA verifier. Gym's litellm_model calls a separate runner-managed LiteLLM proxy through the OpenAI Responses API. Switchyard libsy Random routing runs directly inside LiteLLM, not as a Switchyard HTTP runtime. Compare fixed and routed runs on identical inputs using rewards, selected models, model tokens, latency and routing statistics.</desc>
   <metadata>SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0</metadata>
   <defs>
@@ -23,7 +23,7 @@ SPDX-License-Identifier: Apache-2.0</metadata>
   </defs>
 
   <rect width="1600" height="900" fill="#fff"/>
-  <text x="800" y="66" text-anchor="middle" class="title">NeMo Gym + Switchyard for Evaluation</text>
+  <text x="800" y="66" text-anchor="middle" class="title">Evaluating Switchyard routing with NeMo Gym</text>
   <text x="800" y="110" text-anchor="middle" class="subtitle">Run the same tasks with a fixed model or a router, then compare rewards, tokens and latency</text>
 
   <rect x="34" y="205" width="1190" height="250" rx="36" fill="#E6EDEA"/>
@@ -32,7 +32,7 @@ SPDX-License-Identifier: Apache-2.0</metadata>
   <rect x="67" y="285" width="248" height="100" fill="#fff"/>
   <text x="191" y="326" text-anchor="middle" class="step">Dataset</text>
   <text x="191" y="362" text-anchor="middle" class="step">(tasks)</text>
-  <text x="191" y="420" text-anchor="middle" class="detail">MCQA examples</text>
+  <text x="191" y="420" text-anchor="middle" class="detail">MMLU-Redux</text>
 
   <rect x="358" y="285" width="248" height="100" fill="#fff"/>
   <text x="482" y="326" text-anchor="middle" class="step">Initialize</text>
@@ -54,23 +54,25 @@ SPDX-License-Identifier: Apache-2.0</metadata>
   <path d="M 897 335 H 938" class="flow"/>
   <path d="M 1188 335 H 1375 V 553" class="flow"/>
 
-  <path d="M 773 458 V 553" class="exchange"/>
-  <text x="795" y="512" class="caption">Model request / response</text>
-
-  <rect x="503" y="555" width="540" height="180" rx="28" fill="#E6EDEA"/>
-  <text x="773" y="593" text-anchor="middle" class="heading">Model server</text>
-  <rect x="532" y="613" width="482" height="98" fill="#fff"/>
-  <text x="773" y="644" text-anchor="middle" class="server">Switchyard (hosted by Gym)</text>
-  <text x="773" y="672" text-anchor="middle" class="detail">Fixed: always use the stronger model</text>
-  <text x="773" y="698" text-anchor="middle" class="detail">Routed: classifier chooses weak or strong</text>
+  <path d="M 773 458 V 523" class="exchange"/>
+  <text x="795" y="495" class="caption">Model request / response</text>
+  <rect x="503" y="525" width="540" height="65" rx="20" fill="#E6EDEA"/>
+  <text x="773" y="553" text-anchor="middle" class="heading">Gym model server</text>
+  <text x="773" y="578" text-anchor="middle" class="detail">litellm_model</text>
+  <path d="M 773 592 V 628" class="exchange"/>
+  <text x="795" y="615" class="caption">OpenAI Responses API</text>
+  <rect x="503" y="630" width="540" height="105" rx="28" fill="#E6EDEA"/>
+  <text x="773" y="660" text-anchor="middle" class="heading">LiteLLM proxy</text>
+  <rect x="532" y="674" width="482" height="48" fill="#fff"/>
+  <text x="773" y="704" text-anchor="middle" class="server">Switchyard library</text>
 
   <path d="M 625 737 V 806" class="exchange"/>
   <path d="M 935 737 V 806" class="exchange"/>
   <text x="780" y="780" text-anchor="middle" class="caption">Upstream models</text>
   <rect x="510" y="808" width="230" height="62" rx="20" fill="#E6EDEA"/>
-  <text x="625" y="848" text-anchor="middle" class="body">Weaker model</text>
+  <text x="625" y="848" text-anchor="middle" class="body">GPT-OSS 20B</text>
   <rect x="820" y="808" width="230" height="62" rx="20" fill="#E6EDEA"/>
-  <text x="935" y="848" text-anchor="middle" class="body">Stronger model</text>
+  <text x="935" y="848" text-anchor="middle" class="body">Nemotron 3 Super</text>
 
   <path d="M 1043 676 H 1118" class="flow"/>
   <text x="1080" y="632" text-anchor="middle" class="caption">Usage /</text>
@@ -81,6 +83,6 @@ SPDX-License-Identifier: Apache-2.0</metadata>
   <text x="1140" y="632" class="body">Compare fixed vs. routed runs</text>
   <text x="1140" y="676" class="body">Per-task rewards</text>
   <text x="1140" y="708" class="body">Selected models</text>
-  <text x="1140" y="740" class="body">Model + classifier tokens</text>
+  <text x="1140" y="740" class="body">Model tokens</text>
   <text x="1140" y="772" class="body">Latency and routing statistics</text>
 </svg>

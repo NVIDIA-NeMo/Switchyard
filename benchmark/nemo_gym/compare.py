@@ -1,22 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare complete, paired, single-turn MCQA runs from the hosted Gym tutorial."""
+"""Compare complete, paired MCQA runs through LiteLLM and Switchyard Random routing."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import re
 import sys
 from collections import Counter
 from pathlib import Path
 from statistics import mean
 from typing import Any, cast
-
-GYM_COMMIT = "3a26c35fa90c243427378569511f7b06f503e0fd"
-SWITCHYARD_VERSION = "0.2.0"
-HOSTED_SCOPE = "this run (proxy hosted for exactly this run)"
 
 
 def require(condition: bool, message: str) -> None:
@@ -32,6 +29,12 @@ def number(value: Any, name: str) -> int | float:
         f"{name} must be a finite, nonnegative number",
     )
     return cast(int | float, value)
+
+
+def count(value: Any, name: str) -> int:
+    """Read a nonnegative integer counter."""
+    require(type(value) is int and value >= 0, f"{name} must be a nonnegative integer")
+    return cast(int, value)
 
 
 def read_object(path: Path) -> dict[str, Any]:
@@ -87,112 +90,141 @@ def has_answer(response: Any) -> bool:
 
 
 def load_run(path: Path) -> dict[str, Any]:
-    """Load expected tasks, completed rollouts, failures, and hosted-proxy provenance."""
-    failure_path = path / "rollouts_failures.jsonl"
-    rollout_path = path / "rollouts.jsonl"
-    condition_path = path / "switchyard-condition.json"
-    stats_path = path / "switchyard-stats.json"
+    """Require complete gateway request evidence alongside Gym's rollout artifacts."""
+    failure_path, rollout_path = path / "rollouts_failures.jsonl", path / "rollouts.jsonl"
+    for filename in ("run-provenance.json", "litellm-calls.jsonl"):
+        require(
+            (path / filename).is_file(),
+            f"Missing {path / filename}. Inspect {path / 'gym.log'} and {path.parent / 'litellm.log'}.",
+        )
+    events: dict[str, dict[str, dict[str, Any]]] = {"start": {}, "finish": {}}
+    for event in read_jsonl(path / "litellm-calls.jsonl"):
+        kind, request_id = event.get("event"), event.get("request_id")
+        require(kind in events, f"{path}: unknown gateway event")
+        kind = cast(str, kind)
+        require(isinstance(request_id, str) and bool(request_id), f"{path}: missing request ID")
+        request_id = cast(str, request_id)
+        require(request_id not in events[kind], f"{path}: duplicate gateway {kind} event")
+        events[kind][request_id] = event
     require(
-        condition_path.is_file(),
-        f"Missing {condition_path}. This file is written when the model server starts. "
-        "Set Terminal 1's OUT and condition_dir to the same run directory as Terminal 2. "
-        "If another condition's metadata was overwritten, rerun that condition in a fresh directory.",
-    )
-    require(
-        stats_path.is_file(),
-        f"Missing {stats_path}. After evaluation finishes, press Ctrl-C in the terminal "
-        "running gym env start and wait for shutdown to save the statistics. "
-        "If the servers have already stopped, inspect server-logs/policy_model.log for snapshot errors.",
+        bool(events["start"]) and events["start"].keys() == events["finish"].keys(),
+        f"{path}: incomplete gateway request evidence",
     )
     return {
         "inputs": index_rows(path / "rollouts_materialized_inputs.jsonl"),
         "rows": index_rows(rollout_path) if rollout_path.exists() else {},
         "failures": read_jsonl(failure_path) if failure_path.exists() else [],
-        "condition": read_object(condition_path),
-        "snapshot": read_object(stats_path),
-        "gym_commit": (path / "gym-commit.txt").read_text(encoding="utf-8").strip(),
+        "provenance": read_object(path / "run-provenance.json"),
+        "events": events,
     }
 
 
 def summarize(run: dict[str, Any], route: str) -> tuple[dict[str, int | float], Counter[str]]:
-    """Calculate metrics only for this tutorial's complete, one-call-per-task runs."""
-    condition, snapshot = run["condition"], run["snapshot"]
-    require(
-        condition["route"] == route,
-        f"{route}: manifest records route {condition['route']!r}. "
-        "The server's route and output directory must agree; rerun this condition in a fresh directory.",
-    )
-    require(condition["mode"] == snapshot["mode"] == "hosted", f"{route}: expected hosted mode")
-    require(snapshot["scope"] == HOSTED_SCOPE, f"{route}: statistics are not run-scoped")
-    require(
-        condition["nemo_switchyard_version"] == SWITCHYARD_VERSION,
-        f"{route}: unexpected Switchyard version",
-    )
-    require(run["gym_commit"] == GYM_COMMIT, f"{route}: unexpected Gym commit")
-    stats = snapshot["stats"]
-    classifier = stats["classifier"]
-    model_errors = number(stats["total_errors"], "model errors")
-    classifier_errors = number(classifier["total_errors"], "classifier errors")
-    require(
-        model_errors == classifier_errors == 0,
-        f"{route}: model errors={model_errors}, classifier errors={classifier_errors}",
-    )
+    """Join final answers by response ID while retaining all recorded gateway work."""
+    runtime = run["provenance"]["runtime"]
+    allowed_models = runtime["models"][route]
+    finishes = list(run["events"]["finish"].values())
+    responses: dict[str, dict[str, Any]] = {}
+    tokens = []
+    routing_times = []
+    errors = unknown_usage = 0
+    for phase in run["events"].values():
+        for event in phase.values():
+            require(event["route"] == route, f"{route}: gateway event belongs to another route")
+            require(
+                event["instance_id"] == runtime["instance_id"],
+                f"{route}: gateway events belong to another proxy instance",
+            )
+    for event in finishes:
+        failed = event.get("status_code") != 200 or bool(event.get("error_type"))
+        errors += int(failed)
+        if not failed:
+            model, response_id = event.get("selected_model"), event.get("response_id")
+            require(model in allowed_models, f"{route}: missing or invalid Switchyard selection")
+            require(
+                event.get("deployment_model") == model,
+                f"{route}: selected model differs from the LiteLLM deployment",
+            )
+            require(
+                isinstance(response_id, str) and bool(response_id),
+                f"{route}: missing gateway response ID",
+            )
+            require(response_id not in responses, f"{route}: ambiguous gateway response ID")
+            responses[response_id] = event
+            number(event.get("tokens_total"), "gateway response tokens")
+            number(event.get("routing_ms"), "routing decision time")
+        if event.get("tokens_total") is None:
+            unknown_usage += 1
+        else:
+            tokens.append(number(event["tokens_total"], "gateway tokens"))
+        if event.get("routing_ms") is not None:
+            routing_times.append(number(event["routing_ms"], "routing decision time"))
 
-    calls, rewards, latencies = [], [], []
+    calls, rewards, latencies, models = [], [], [], []
+    used_response_ids: set[str] = set()
+    captured_attempts = captured_errors = 0
     for key, row in sorted(run["rows"].items()):
         label = f"{route} {key}"
         require(not row.get("_ng_failure_class"), f"{label}: failed rollout")
         require(has_answer(row["response"]), f"{label}: missing or incomplete final answer")
+        response_id = row["response"].get("id")
+        require(isinstance(response_id, str) and bool(response_id), f"{label}: missing response id")
+        require(response_id not in used_response_ids, f"{label}: response reused across rollouts")
+        used_response_ids.add(response_id)
         reward = number(row["reward"], f"{label}: reward")
         require(reward <= 1, f"{label}: MCQA reward must be between zero and one")
         capture = row["ng_model_call_capture"]
         require(isinstance(capture, dict), f"{label}: missing model-call capture")
         require(not capture.get("gaps"), f"{label}: incomplete model-call capture")
-        require(len(capture["calls"]) == 1, f"{label}: expected exactly one captured model call")
-        call = capture["calls"][0]
+        records = capture["calls"]
+        require(
+            isinstance(records, list) and all(isinstance(call, dict) for call in records),
+            f"{label}: invalid captures",
+        )
+        terminal = [call for call in records if call.get("response_id") == response_id]
+        require(len(terminal) == 1, f"{label}: missing or ambiguous terminal capture")
+        call = terminal[0]
         require(
             call["status_code"] == 200 and not call.get("error_category"),
-            f"{label}: model call failed",
+            f"{label}: terminal call failed",
         )
         require(call["response_status"] == "completed", f"{label}: captured call is incomplete")
-        model = call.get("model")
+        require(call.get("model") == route, f"{label}: captured response has the wrong model group")
+        require(response_id in responses, f"{label}: final answer has no gateway evidence")
+        event = responses[response_id]
         require(
-            isinstance(model, str) and bool(model.strip()) and model not in {"fixed", "routed"},
-            f"{label}: missing selected model",
+            event.get("response_status") == "completed", f"{label}: gateway response is incomplete"
+        )
+        require(
+            number(call["tokens_total"], "terminal-answer tokens") == event["tokens_total"],
+            f"{label}: gateway/capture token totals differ",
+        )
+        captured_attempts += len(records)
+        captured_errors += sum(
+            record.get("status_code") != 200 or bool(record.get("error_category"))
+            for record in records
         )
         calls.append(call)
         rewards.append(reward)
         latencies.append(number(row["ng_perf"]["total_latency_ms"], f"{label}: rollout latency"))
+        models.append(event["selected_model"])
 
-    selected_tokens = sum(number(call["tokens_total"], "captured model tokens") for call in calls)
-    require(
-        number(stats["total_requests"], "model requests") == len(calls),
-        f"{route}: proxy/capture request counts differ",
-    )
-    require(
-        number(stats["total_tokens"]["total"], "proxy model tokens") == selected_tokens,
-        f"{route}: proxy/capture token totals differ",
-    )
-    classifier_calls = number(classifier["total_requests"], "classifier requests")
-    require(
-        classifier_calls == (0 if route == "fixed" else len(calls)),
-        f"{route}: unexpected classifier request count",
-    )
-    classifier_tokens = number(classifier["total_tokens"]["total"], "classifier tokens")
     return {
         "Paired rollouts": len(rewards),
         "Mean reward": mean(rewards),
-        "Selected-model tokens": selected_tokens,
-        "Classifier tokens": classifier_tokens,
-        "Combined reported tokens": selected_tokens + classifier_tokens,
-        "Mean rollout latency (ms)": mean(latencies),
-        "Mean routing overhead (ms)": number(
-            stats["routing_overhead"]["avg_ms"], "routing overhead"
+        "Terminal-answer tokens": sum(
+            number(call["tokens_total"], "terminal-answer tokens") for call in calls
         ),
-        "Classifier requests": classifier_calls,
-        "Model errors": model_errors,
-        "Classifier errors": classifier_errors,
-    }, Counter(call["model"] for call in calls)
+        "Gateway-reported tokens": sum(tokens),
+        "Gateway requests w/o usage": unknown_usage,
+        "Mean rollout latency (ms)": mean(latencies),
+        "Mean recorded routing (ms)": mean(routing_times),
+        "Recorded routing decisions": len(routing_times),
+        "Gateway requests": len(finishes),
+        "Gateway errors": errors,
+        "Captured model attempts": captured_attempts,
+        "Captured failed attempts": captured_errors,
+    }, Counter(models)
 
 
 def compare(fixed: Path, routed: Path) -> None:
@@ -203,48 +235,94 @@ def compare(fixed: Path, routed: Path) -> None:
         expected, actual = set(run["inputs"]), set(run["rows"])
         missing, unexpected = expected - actual, actual - expected
         print(
-            f"{name}: expected={len(expected)}, completed={len(actual)}, "
-            f"missing={len(missing)}, unexpected={len(unexpected)}, failures={len(run['failures'])}"
+            f"{name}: expected={len(expected)}, completed={len(actual)}, missing={len(missing)}, unexpected={len(unexpected)}, failures={len(run['failures'])}"
         )
         complete &= bool(expected) and not missing and not unexpected and not run["failures"]
     fixed_keys, routed_keys = set(runs["fixed"]["rows"]), set(runs["routed"]["rows"])
     print(
-        f"Pairing: matched={len(fixed_keys & routed_keys)}, "
-        f"fixed-only={len(fixed_keys - routed_keys)}, routed-only={len(routed_keys - fixed_keys)}"
+        f"Pairing: matched={len(fixed_keys & routed_keys)}, fixed-only={len(fixed_keys - routed_keys)}, routed-only={len(routed_keys - fixed_keys)}"
     )
     require(complete, "Incomplete runs: inspect the failure artifacts; no averages calculated")
     require(
         runs["fixed"]["inputs"] == runs["routed"]["inputs"],
         "Task inputs, verifier metadata, or generation settings differ",
     )
-    hashes = [run["condition"].get("deployment_sha256") for run in runs.values()]
-    require(
-        all(
-            isinstance(value, str)
-            and len(value) == 64
-            and all(char in "0123456789abcdef" for char in value)
-            for value in hashes
+    provenances = [run["provenance"] for run in runs.values()]
+    for provenance in provenances:
+        require(
+            all(
+                isinstance(provenance.get(key), str) and provenance[key].strip()
+                for key in ("gym_revision", "switchyard_revision")
+            ),
+            "Missing Gym or Switchyard revision",
         )
-        and hashes[0] == hashes[1],
-        "Expected the same recorded deployment hash in both runs",
-    )
+        runtime = provenance["runtime"]
+        require(runtime["mode"] == "litellm_libsy", "Expected the LiteLLM libsy integration")
+        require(
+            runtime["routing_plugin"] == "switchyard_litellm.RandomRoutingPlugin",
+            "Expected Switchyard Random routing",
+        )
+        require(
+            all(
+                isinstance(runtime.get(key), str) and runtime[key].strip()
+                for key in ("instance_id", "litellm_version", "switchyard_version")
+            ),
+            "Missing LiteLLM runtime identity",
+        )
+        require(
+            all(
+                re.fullmatch(r"[0-9a-f]{64}", str(runtime.get(key))) is not None
+                for key in (
+                    "profile_sha256",
+                    "routing_sha256",
+                    "callback_sha256",
+                    "provider_base_sha256",
+                )
+            ),
+            "Missing deployment fingerprint",
+        )
+        models = runtime["models"]
+        require(
+            all(
+                isinstance(models.get(route), list)
+                and all(isinstance(model, str) and model for model in models[route])
+                for route in ("fixed", "routed")
+            ),
+            "Missing configured models",
+        )
+        require(
+            len(models["fixed"]) == 1
+            and len(set(models["routed"])) == 2
+            and models["fixed"][0] in models["routed"],
+            "Expected a fixed target and a routed pair containing it",
+        )
+    require(provenances[0] == provenances[1], "Gym, Switchyard, or deployment provenance differs")
     summaries = {name: summarize(run, name) for name, run in runs.items()}
+    print(f"\nProvenance: {json.dumps(provenances[0], sort_keys=True)}")
     print(f"\n{'Metric':<29} {'fixed':>14} {'routed':>14}")
     for metric in summaries["fixed"][0]:
         values = [summaries[name][0][metric] for name in ("fixed", "routed")]
         formatted = [str(value) if type(value) is int else f"{value:.3f}" for value in values]
         print(f"{metric:<29} {formatted[0]:>14} {formatted[1]:>14}")
-    for name, (_, models) in summaries.items():
-        fallbacks = runs[name]["snapshot"]["stats"].get("routing_fallbacks", "unavailable")
-        print(f"\n{name} selected models: {json.dumps(models, sort_keys=True)}")
-        print(f"{name} reported fallbacks: {json.dumps(fallbacks, sort_keys=True)}")
+    for name, (summary, selected) in summaries.items():
+        print(f"\n{name} selected models: {json.dumps(selected, sort_keys=True)}")
+        if (
+            summary["Gateway errors"]
+            or summary["Gateway requests w/o usage"]
+            or summary["Captured failed attempts"]
+            or summary["Gateway requests"] != summary["Paired rollouts"]
+            or summary["Captured model attempts"] != summary["Paired rollouts"]
+        ):
+            print(f"WARNING: {name} completed with recovered errors or additional work.")
+    print("\nClassifier tokens: N/A (Random makes no classifier calls).")
     print(
-        "\nClassifier fail-open decisions are not counted in these v0.2.0 statistics; "
-        "inspect Gym's model-server log."
+        "Gateway totals include all recorded requests, including extra attempts; do not add terminal-answer tokens again."
     )
     print(
-        "Reported tokens are not dollar costs. A small run demonstrates the workflow, not a routing advantage."
+        "Unreported failed-request usage is unknown, not free. Gateway counts are not exhaustive provider-attempt or fallback telemetry."
     )
+    print("Routing time is already included in rollout latency. Tokens are not dollar costs.")
+    print("A small Random-routing run demonstrates the integration, not a routing advantage.")
 
 
 def main(argv: list[str] | None = None) -> int:

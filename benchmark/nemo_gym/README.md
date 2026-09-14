@@ -1,250 +1,159 @@
 # Evaluate Switchyard routing with NeMo Gym
 
-[NeMo Gym](https://github.com/NVIDIA-NeMo/Gym) is a library for evaluating models and agents using tasks with verifiable outcomes.
-This tutorial uses its five included multiple-choice examples to compare a fixed model with Switchyard routing.
+[NeMo Gym](https://github.com/NVIDIA-NeMo/Gym) is a library for evaluating and improving models and agents, combining infrastructure for developing environments and running evaluation and training at scale with popular benchmarks and training environments.
 
-![Gym evaluation with a hosted Switchyard model server](architecture.svg)
+This tutorial uses [MMLU-Redux 2.0](https://huggingface.co/datasets/edinburgh-dawg/mmlu-redux-2.0) to compare a fixed model with Switchyard routing.
 
-## What changes between the runs?
+Gym provides the evaluation substrate: it supplies tasks, runs the agent, and verifies answers to report rewards.
+Switchyard sits in the model-request path, selecting which upstream model serves each request.
 
-Both routes are defined in [routes.toml](routes.toml):
+![Gym evaluation through LiteLLM and Switchyard Random routing](architecture.svg)
 
-| Route | Behavior |
-|---|---|
-| `fixed` | Always use Nemotron 3 Super. |
-| `routed` | Ask GPT-OSS 20B to classify the task, then use GPT-OSS 20B or Nemotron 3 Super. |
+## Understand the wiring
 
-The dataset, agent, verifier, temperature, and answer-token limit stay the same.
-The classifier is an extra model call: its tokens count even when the router selects GPT-OSS 20B.
-Super uses `enable_thinking=false`; GPT-OSS 20B uses `reasoning_effort=low`, including for
-classification. These per-model settings stay unchanged between conditions. This is not a
-benchmark of either model's maximum reasoning capability.
+Gym calls a LiteLLM endpoint through its `litellm_model` adapter. The Switchyard library is integrated in LiteLLM, which is the path we'll use in this example. As such, Switchyard does not run as a separate server here.
 
-## 1. Install the pinned Gym checkout
+**LiteLLM defines the model groups.** This excerpt from [litellm.yaml](litellm.yaml) shows the candidates; provider settings are omitted here:
 
-You need Git, [uv](https://docs.astral.sh/uv/), two Bash terminals, and an NVIDIA API key for
-the public endpoint `https://integrate.api.nvidia.com/v1`. Use these exact model IDs:
-`openai/gpt-oss-20b` and `nvidia/nemotron-3-super-120b-a12b`.
-Inference may consume credits. The classifier requires strict JSON Schema responses from
-its selected model.
-
-**Smoke-tested:** A one-question paired run completed on this endpoint with correct answers
-in both conditions, GPT-OSS 20B serving the routed answer, and no reported model or classifier
-errors. The full five-question comparison below has not yet been validated for this pair.
-
-Run from the **Switchyard repository root**:
-
-```bash
-WORK="$PWD/scratch/nemo-gym-tutorial"
-mkdir -p "$WORK" &&
-git clone https://github.com/NVIDIA-NeMo/Gym.git "$WORK/Gym" &&
-git -C "$WORK/Gym" checkout 3a26c35fa90c243427378569511f7b06f503e0fd &&
-uv tool run --from uv==0.11.29 uv venv --python 3.13.14 "$WORK/.venv" &&
-uv tool run --from uv==0.11.29 uv pip install \
-  --python "$WORK/.venv/bin/python" uv==0.11.29 -e "$WORK/Gym"
+```yaml
+model_list:
+  - model_name: fixed
+    litellm_params: {model: nvidia_nim/nvidia/nemotron-3-super-120b-a12b}
+  - model_name: routed
+    litellm_params: {model: nvidia_nim/nvidia/nemotron-3-super-120b-a12b}
+  - model_name: routed
+    litellm_params: {model: nvidia_nim/openai/gpt-oss-20b}
 ```
 
-The pinned uv can download Python 3.13.14 even if your existing uv is older. It is also installed
-inside the tutorial environment for Gym's component setup; your global uv is left unchanged.
+`fixed` and `routed` are names we chose, not special Gym modes. The fixed group has one candidate, so it always uses Super. The routed group has two candidates for Switchyard to choose from.
 
-This keeps the checkout and environment under Switchyard's ignored `scratch/` directory,
-without changing another Gym checkout. Use a fresh directory for this one-time setup.
-The editable install lets Gym's component environments use the same pinned source.
+**Switchyard defines the selection policy.** [routes.toml](routes.toml) contains:
 
-Gym installs **`nemo-switchyard==0.2.0`** into its model-server environment and hosts the native
-proxy in-process. You do **not** need Docker or a separately running `switchyard-server`.
-The Switchyard checkout contains this tutorial; its current `main` is **not** the proxy being
-executed. Do not copy newer routing options into this version-pinned example.
-
-## 2. Start the fixed condition — Terminal 1
-
-Keep this terminal at the Switchyard repository root. Set your API key in the terminal,
-replacing the placeholder with your key:
-
-```bash
-export NVIDIA_API_KEY='<your-api-key>'
+```toml
+algorithm = "random"
+seed = 6
 ```
 
-Start Gym's resources, agent, and model servers. Run only one Gym environment at a time.
-The first start also installs their dependencies.
+LiteLLM uses the [Switchyard integration](../../examples/litellm/README.md) to choose a model using `routes.toml`. A small adapter records each choice and makes the response compatible with Gym.
+
+**Gym requests a group, not a concrete model.** These excerpts show the model wiring inside the runner; **these are wrapped in a [run.sh](./run.sh) script we'll run later, and are not additional steps to execute in this tutorial**:
+
+```text
+gym eval run --benchmark mmlu-redux --model-type litellm_model --model fixed \
+  ++policy_base_url=http://127.0.0.1:4000/v1 ++policy_api_key=unused
+
+gym eval run --benchmark mmlu-redux --model-type litellm_model --model routed \
+  ++policy_base_url=http://127.0.0.1:4000/v1 ++policy_api_key=unused
+```
+Note the following
+-  `--model-type` selects the adapter
+- `policy_base_url` points it at LiteLLM
+- `--model` selects the group. The local proxy uses provider credentials from the environment, not Gym's placeholder key.
+- The runner adds identical task limits and separate output/capture paths. The dataset, agent, verifier, temperature, and 4,096-token answer limit stay unchanged.
+
+## 1. Set up
+
+You need:
+
+- Bash on Linux/macOS
+- Git and curl
+- [uv](https://docs.astral.sh/uv/)
+- The [Rust toolchain prerequisites](../../docs/getting_started.md#prerequisites) for the current checkout bindings
+- An NVIDIA API key from [build.nvidia.com](https://build.nvidia.com/) with access to `openai/gpt-oss-20b` and `nvidia/nemotron-3-super-120b-a12b`
+
+Run these commands in Bash from the Switchyard repository root. These one-time commands create a Gym checkout under `scratch/` at the tested `v0.6.0` release. Choose an unused `GYM_DIR` without spaces or shell metacharacters.
 
 ```bash
-EXAMPLE="$PWD/benchmark/nemo_gym"
-WORK="$PWD/scratch/nemo-gym-tutorial"
-source "$WORK/.venv/bin/activate"
-RUN_DIR="$EXAMPLE/results/first-run"
-OUT="$RUN_DIR/fixed"
-mkdir -p "$RUN_DIR"
-
-mkdir "$OUT" &&
-git -C "$WORK/Gym" rev-parse HEAD > "$OUT/gym-commit.txt" &&
-gym env start --resources-server mcqa --model-type switchyard_model --model fixed \
-  "++policy_model.responses_api_models.switchyard_model.deployment=$EXAMPLE/routes.toml" \
-  ++policy_model.responses_api_models.switchyard_model.switchyard_base_url=null \
-  "++policy_model.responses_api_models.switchyard_model.condition_dir=$OUT" \
-  ++mcqa_simple_agent.responses_api_agents.simple_agent.max_steps=1 \
-  ++observability_enabled=true \
-  "++model_call_capture_dir=$OUT/model-calls" \
-  "++nemo_gym_log_dir=$OUT/server-logs" \
-  "hydra.run.dir=$OUT/hydra-start"
+export GYM_DIR="$PWD/scratch/nemo-gym-litellm/Gym"
+mkdir -p "$(dirname "$GYM_DIR")" &&
+git clone https://github.com/NVIDIA-NeMo/Gym.git "$GYM_DIR" &&
+git -C "$GYM_DIR" checkout v0.6.0 &&
+uv tool run --from uv==0.11.29 uv sync \
+  --directory "$GYM_DIR" --frozen --no-dev --python 3.13.14 &&
+uv tool run --from uv==0.11.29 uv pip install --no-deps \
+  --python "$GYM_DIR/.venv/bin/python" uv==0.11.29 &&
+"$GYM_DIR/.venv/bin/uv" sync --project examples/litellm --locked --python 3.12
 ```
 
-Wait for **`All 3 / 3 servers ready!`**. Leave this terminal running.
-`mkdir "$OUT"` deliberately refuses to reuse an existing condition directory.
-For a new comparison, change `RUN_DIR` to the same fresh path in **both terminals**.
+Gym and LiteLLM use separate Python environments. The proxy builds Switchyard bindings from this checkout; the native CLI workflow does not need Docker.
 
-## 3. Run the five questions — Terminal 2
+## 2. Run both conditions
 
-Open another Bash terminal at the **same Switchyard repository root**:
+The default is five tasks per condition, normally ten upstream calls. Inference can consume credits, and retries can add calls. Replace the placeholder below with your NVIDIA API key, then run. Pasting a key into this command may save it in shell history.
 
 ```bash
-EXAMPLE="$PWD/benchmark/nemo_gym"
-WORK="$PWD/scratch/nemo-gym-tutorial"
-source "$WORK/.venv/bin/activate"
-RUN_DIR="$EXAMPLE/results/first-run"
-OUT="$RUN_DIR/fixed"
-
-gym eval run --no-serve --agent mcqa_simple_agent \
-  --input "$WORK/Gym/resources_servers/mcqa/data/example.jsonl" \
-  --output "$OUT/rollouts.jsonl" \
-  --limit 5 --num-repeats 1 --concurrency 1 \
-  --temperature 0 --max-output-tokens 4096 \
-  ++route_failures_to_sidecar=true \
-  ++observability_enabled=true \
-  "++model_call_capture_dir=$OUT/model-calls" \
-  "hydra.run.dir=$OUT/hydra-eval"
+export NVIDIA_API_KEY="your-api-key"
+bash benchmark/nemo_gym/run.sh
 ```
 
-These questions are included with Gym. The MCQA resources server checks the answer letter
-against the expected answer; it does not call an LLM judge. A wrong answer earns zero reward.
-An infrastructure failure is a different outcome, recorded separately.
+The [runner](./run.sh) prepares MMLU-Redux, starts the local LiteLLM proxy, evaluates fixed then routed, stops the proxy, and prints the comparison. It saves `comparison.txt` and other artifacts under `benchmark/nemo_gym/results/<timestamp>/`. Keep this unauthenticated development proxy local; do not share or publicly expose it.
 
-The two-terminal flow is intentional: Gym's one-command evaluation mode does not accept
-`--split example`. `--no-serve` collects against the servers you already started.
+In `run.sh`, one loop runs both conditions: only the model group and output paths change. Leave the configuration and prepared data unchanged until both runs finish.
 
-**After collection finishes, press Ctrl-C in Terminal 1 and wait for shutdown to finish.**
-Gym writes `switchyard-stats.json` during shutdown, before stopping its hosted proxy.
-Do not compare the runs before that file has been written. If Gym reports that a worker
-exceeded its shutdown timeout, still wait for shutdown and check the statistics file.
-Missing statistics are a failed run, not zero usage.
+Gym components can outlive the command briefly; let them finish shutting down before an immediate rerun.
 
-## 4. Repeat with routing
+## 3. Read the comparison
 
-Use the same two terminals, environment, API key, and `RUN_DIR` as the fixed run.
-Do not change the TOML or generation settings. Run each **complete block** below: both
-terminals must use the `routed` directory, not the earlier `fixed` directory.
+Start with coverage and selected models, then compare rewards, tokens, and latency. Here is an excerpt from the **two-task local stub test**, not a real-model benchmark:
 
-**Terminal 1 — start the routed servers, after stopping the fixed servers:**
+```text
+Pairing: matched=2, fixed-only=0, routed-only=0
+
+Metric                                 fixed         routed
+Paired rollouts                            2              2
+Mean reward                            0.500          0.500
+Terminal-answer tokens                    30             30
+Gateway-reported tokens                   30             30
+
+fixed selected models: {"nvidia_nim/nvidia/nemotron-3-super-120b-a12b": 2}
+routed selected models: {"nvidia_nim/nvidia/nemotron-3-super-120b-a12b": 1, "nvidia_nim/openai/gpt-oss-20b": 1}
+```
+
+- **Pairing:** both conditions completed the same two tasks. Incomplete or invalid evidence is rejected instead of producing partial averages.
+- **Selection:** fixed stayed on Super; routed used both models. A small Random run need not split evenly.
+- **Reward and usage:** MCQA scores the boxed answer letter (correct = 1, wrong = 0). Token columns sum input and output tokens across rollouts, not just generated answers. The stub supplies answers and token counts, so these values demonstrate the report, not model quality or savings.
+
+For real runs, weigh reward against usage and latency rather than treating fewer tokens as a win by itself. Tokens are not dollar costs. The default five-task prefix is a smoke test, not a representative MMLU-Redux score; Random is not capability-based routing.
+
+## 4. Try a small change
+
+- **Workload:** use a fresh results directory and adjust the task count:
+
+  ```bash
+  RESULTS_DIR="$PWD/benchmark/nemo_gym/results/my-run" \
+    LIMIT=2 bash benchmark/nemo_gym/run.sh
+  ```
+
+- **Models:** edit [litellm.yaml](litellm.yaml), keeping one fixed candidate and two distinct routed candidates, including the fixed model. Keep per-model settings identical between conditions.
+- **Routing:** change the seed in [routes.toml](routes.toml), keeping `algorithm = "random"`. A seed repeats assignments only for an identical request sequence; retries or concurrency can change them.
+- **Another benchmark:** use `--benchmark NAME` in your own Gym calls against LiteLLM, with a compatible agent and verifier. This runner and comparator are MMLU-Redux-specific, not a general benchmark launcher.
+
+See `bash benchmark/nemo_gym/run.sh --help` for profile, port, repeat, and concurrency options.
+
+<details>
+<summary>Saved files and token counts</summary>
+
+Each `fixed/` and `routed/` folder contains:
+
+- `rollouts.jsonl`: model responses and rewards.
+- `rollouts_materialized_inputs.jsonl`: the tasks and settings used.
+- `rollouts_failures.jsonl`: failed tasks, if any.
+- `model-calls/` and `litellm-calls.jsonl`: model request logs.
+- `run-provenance.json`: version and configuration details.
+
+If something fails, start with that folder's `gym.log` or the result folder's `litellm.log`.
+
+The "Gateway-reported tokens" column includes the "Terminal-answer tokens", so don't add them together. Missing token counts are unknown, not zero, and some provider retries may not appear in the totals. Random makes no classifier calls; routing time is already included in rollout latency.
+
+To view the comparison again without calling the models, replace `my-run` with your results folder:
 
 ```bash
-OUT="$RUN_DIR/routed"
-mkdir "$OUT" &&
-git -C "$WORK/Gym" rev-parse HEAD > "$OUT/gym-commit.txt" &&
-gym env start --resources-server mcqa --model-type switchyard_model --model routed \
-  "++policy_model.responses_api_models.switchyard_model.deployment=$EXAMPLE/routes.toml" \
-  ++policy_model.responses_api_models.switchyard_model.switchyard_base_url=null \
-  "++policy_model.responses_api_models.switchyard_model.condition_dir=$OUT" \
-  ++mcqa_simple_agent.responses_api_agents.simple_agent.max_steps=1 \
-  ++observability_enabled=true \
-  "++model_call_capture_dir=$OUT/model-calls" \
-  "++nemo_gym_log_dir=$OUT/server-logs" \
-  "hydra.run.dir=$OUT/hydra-start"
+"$GYM_DIR/.venv/bin/python" benchmark/nemo_gym/compare.py \
+  benchmark/nemo_gym/results/my-run/fixed benchmark/nemo_gym/results/my-run/routed
 ```
 
-Wait for **`All 3 / 3 servers ready!`**.
+Keep the saved inputs because the source dataset can change. Request logs contain prompts and responses, so review them before sharing.
 
-**Terminal 2 — collect the routed results:**
+</details>
 
-```bash
-OUT="$RUN_DIR/routed"
-gym eval run --no-serve --agent mcqa_simple_agent \
-  --input "$WORK/Gym/resources_servers/mcqa/data/example.jsonl" \
-  --output "$OUT/rollouts.jsonl" \
-  --limit 5 --num-repeats 1 --concurrency 1 \
-  --temperature 0 --max-output-tokens 4096 \
-  ++route_failures_to_sidecar=true \
-  ++observability_enabled=true \
-  "++model_call_capture_dir=$OUT/model-calls" \
-  "hydra.run.dir=$OUT/hydra-eval"
-```
-
-**After collection finishes, press Ctrl-C in Terminal 1 and wait for shutdown.**
-The comparison needs `routed/switchyard-stats.json`, which does not exist while those
-servers are still running. Only then continue to Step 5.
-
-The route is selected when **starting the servers**. Changing a model flag only on
-`gym eval run --no-serve` does not change a running server's route.
-
-On the clean path, these five tasks use 15 upstream calls in total: five fixed answers,
-five classifier calls, and five routed answers. `routes.toml` disables Switchyard HTTP
-retries, but this is not a hard spending cap: Gym retries and routing fallbacks can add calls.
-The answer limit is 4,096 tokens; the separate classifier limit is 512 tokens. These are limits,
-not fixed usage. Keep the same answer limit and per-model reasoning settings in both conditions.
-
-## 5. Compare the runs
-
-After **both server runs have shut down**, run this in Terminal 2 with the same variables
-and environment. This prints the comparison table; routed collection alone does not.
-The command only reads saved files and makes no inference calls.
-
-```bash
-python "$EXAMPLE/compare.py" "$RUN_DIR/fixed" "$RUN_DIR/routed"
-```
-
-The script first reports expected, completed, missing, unmatched, and failed rollouts. It
-requires identical materialized tasks and generation settings, matching deployment hashes,
-the pinned versions, one successful captured model call per task, and usable final answers.
-It refuses partial comparisons: classifier statistics cover the whole run and cannot be
-fairly combined with only a successful subset of tasks.
-
-Then it prints paired mean reward, selected-model tokens, classifier tokens, their combined
-reported total, mean rollout latency, routing overhead, request/error counts, and selected
-models. Model names come from `ng_model_call_capture.calls[].model`, not the agent's top-level
-`response.model`, which may contain only the route name. Capture token totals must agree with
-proxy totals. The capture summaries retain model/status/usage fields; the script does not
-expect raw response payloads inside them.
-
-- **Rollout latency** includes the agent, model request, and verification.
-- **Routing overhead** is Switchyard's reported routing time, including classifier work.
-  It is already part of end-to-end latency; do not add it again.
-- **Tokens are not dollars.** Model prices differ, and provider-reported usage may be incomplete.
-- **Zero errors does not prove every classifier decision was valid.** Switchyard 0.2.0 can
-  fall back to the strong model after an unusable verdict without incrementing classifier
-  errors. Inspect `server-logs/policy_model.log`; the report labels this limitation.
-
-### Interpreting your result
-
-The report describes your own runs: there are no fixed expected scores or routing proportions.
-Fewer answer-model tokens do not necessarily mean fewer combined tokens once classifier
-usage is included. Routing decisions and service latency can vary. Five questions demonstrate
-the workflow, not a statistically meaningful routing advantage.
-
-## What was saved?
-
-Each condition has its own directory under `RUN_DIR`:
-
-| Artifact | What it tells you |
-|---|---|
-| `gym-commit.txt` | Exact Gym source revision. |
-| `switchyard-condition.json` | Route, hosted Switchyard version, deployment hash, and redacted configuration. |
-| `switchyard-stats.json` | Shutdown snapshot: selected-model and classifier usage, latency, errors, and routing statistics. |
-| `rollouts_materialized_inputs.jsonl` | The exact tasks and generation settings, with task/repeat indexes for pairing. |
-| `rollouts.jsonl` / `rollouts_failures.jsonl` | Completed results and separately recorded infrastructure failures. |
-| `rollouts_aggregate_metrics.json` | Gym's aggregate evaluation metrics. |
-| `model-calls/` | Raw per-rollout requests and responses. Normalized summaries appear in the rollout's `ng_model_call_capture`. |
-| `server-logs/` | Gym component logs, including Switchyard routing decisions and classifier warnings. |
-| `hydra-start/` / `hydra-eval/` | Resolved configuration snapshots from the two commands, kept out of the repository root. |
-
-Keep keys in environment variables, not in TOML or committed files. Captures contain task
-prompts and model responses; review them before sharing.
-
-## Next experiment
-
-To change models or providers, edit `llm_clients` and `targets` in `routes.toml` **before**
-running both conditions into a fresh result directory. The classifier provider must support
-the pinned version's strict JSON Schema output. To make the smoke test smaller, use
-`--limit 1` in both collections; the clean path then has three upstream calls.
-
-For other benchmarks, agent harnesses, and externally managed proxies, see the
-[Gym Switchyard integration reference](https://docs.nvidia.com/nemo/gym/main/model-server/switchyard/).
-This small comparison script deliberately supports only the hosted, single-turn setup above.
+**Tested:** with Gym `v0.6.0`.
