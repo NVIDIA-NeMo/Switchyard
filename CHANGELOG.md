@@ -19,7 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **NeMo Relay native plugin** — a dynamically loaded integration that loads
   Switchyard's standard TOML deployment and executes its `switchyard-runner`-
   supported configured routes in process. Managed calls require NeMo Relay
-  `>=0.8.0,<0.9.0`; unknown models use Relay's continuation unchanged.
+  `>=0.8.0, <1.0.0`; unknown models use Relay's continuation unchanged.
 
 - **NeMo Relay routing marks** — routing-model usage, measured routing
   overhead, and selected-model decisions are emitted as ATOF marks. The final

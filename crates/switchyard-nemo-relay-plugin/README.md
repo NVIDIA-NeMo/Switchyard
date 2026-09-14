@@ -10,7 +10,7 @@ algorithm construction, retry policy, and route validation.
 
 ## Install
 
-The plugin requires NeMo Relay `>=0.8.0,<0.9.0`, a Rust toolchain, and Python 3
+The plugin requires NeMo Relay `>=0.8.0, <1.0.0`, a Rust toolchain, and Python 3
 for the packaging script. Run every command from the repository root.
 
 **1. Build the shared library.**
