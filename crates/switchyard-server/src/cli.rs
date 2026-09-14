@@ -52,6 +52,12 @@ pub(crate) struct ServerArgs {
     #[arg(long, value_name = "PATH")]
     routing_log_file: Option<PathBuf>,
 
+    /// File whose contents Codex adopts as its system prompt for every route in
+    /// `GET /v1/models`. Without it Codex gets a one-line placeholder instead of its
+    /// bundled instructions; export them with `codex debug models --bundled`.
+    #[arg(long, value_name = "PATH")]
+    codex_base_instructions_file: Option<PathBuf>,
+
     /// TLS certificate path in PEM format.
     #[arg(long, requires = "tls_key")]
     tls_cert: Option<PathBuf>,
@@ -71,6 +77,15 @@ impl ServerArgs {
         let mut state = load_server_state(&self.config)?;
         if let Some(path) = self.routing_log_file {
             state = state.with_routing_log(path)?;
+        }
+        if let Some(path) = self.codex_base_instructions_file {
+            let text = std::fs::read_to_string(&path).map_err(|error| {
+                ServerError::new(format!(
+                    "invalid --codex-base-instructions-file {}: {error}",
+                    path.display()
+                ))
+            })?;
+            state = state.with_codex_base_instructions(text)?;
         }
         let tls = match (self.tls_cert, self.tls_key) {
             (Some(cert), Some(key)) => {

@@ -20,6 +20,7 @@ switchyard-server --config <deployment.toml> [options]
 | `--shutdown-timeout SHUTDOWN_TIMEOUT` | `30s` | Maximum time active requests may drain during shutdown. |
 | `--dry-run` | Off | Validate the deployment without binding a socket. |
 | `--routing-log-file PATH` | None | Append durable per-request routing records to this JSONL file. |
+| `--codex-base-instructions-file PATH` | None | File served as `base_instructions` for every route in `GET /v1/models`. Codex adopts it as its system prompt; without it Codex gets a one-line placeholder. Export the bundled prompt with `codex debug models --bundled`. |
 | `--tls-cert PATH` | None | PEM certificate path; requires `--tls-key`. |
 | `--tls-key PATH` | None | PEM private-key path; requires `--tls-cert`. |
 | `-h, --help` | — | Print command help. |

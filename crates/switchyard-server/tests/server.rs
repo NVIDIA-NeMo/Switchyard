@@ -2976,6 +2976,66 @@ subagents = {{ type = "passthrough", target = "strong" }}
 }
 
 #[tokio::test]
+async fn codex_catalog_serves_configured_base_instructions_verbatim() -> TestResult {
+    const CONFIG: &str = r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.shared]
+id = "nvidia/deepseek-ai/deepseek-v4-pro"
+llm_client = "primary"
+
+[routes.a]
+id = "route/a"
+type = "passthrough"
+target = "shared"
+
+[routes.b]
+id = "route/b"
+type = "passthrough"
+target = "shared"
+"#;
+    let codex_instructions = |state: ServerState| async move {
+        let body = send(&build_switchyard_router(state), "GET", "/v1/models", None)
+            .await?
+            .json()?;
+        TestResult::Ok(
+            body["models"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|entry| entry["base_instructions"].clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    // Without configuration every route carries the placeholder Codex requires to decode
+    // the catalog at all.
+    assert_eq!(
+        codex_instructions(load_test_config(CONFIG)?).await?,
+        vec![json!("You are Codex, a coding agent."); 2]
+    );
+
+    // Codex's own prompt is multi-line with trailing whitespace; it must reach the
+    // catalog byte for byte.
+    let prompt = "You are Codex, an agent based on GPT-5.\n\n  # Tools\n\n- shell  \n";
+    let state = load_test_config(CONFIG)?.with_codex_base_instructions(prompt)?;
+    assert_eq!(codex_instructions(state).await?, vec![json!(prompt); 2]);
+
+    // A blank prompt would make Codex discard the whole catalog, so it is rejected.
+    assert!(
+        load_test_config(CONFIG)?
+            .with_codex_base_instructions(" \n")
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestResult {
     let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 

@@ -87,6 +87,11 @@ fn should_forward_upstream_header(name: &HeaderName) -> bool {
 /// Non-standard status used only in logs and metrics for a request whose
 /// downstream client disconnected before any response was written.
 const CLIENT_CLOSED_REQUEST: u16 = 499;
+
+/// `base_instructions` served in the Codex model catalog when no
+/// `--codex-base-instructions-file` is given. Codex adopts this string as its system
+/// prompt, so operators wanting parity with a direct session must supply the file.
+const DEFAULT_CODEX_BASE_INSTRUCTIONS: &str = "You are Codex, a coding agent.";
 const STARTUP_BANNER_ART: &str = include_str!("../assets/startup_banner.txt");
 
 /// Error returned while configuring or running the server.
@@ -162,6 +167,7 @@ pub struct ServerState {
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
+    codex_base_instructions: Arc<str>,
 }
 
 #[derive(Clone)]
@@ -217,12 +223,27 @@ impl ServerState {
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
+            codex_base_instructions: Arc::from(DEFAULT_CODEX_BASE_INSTRUCTIONS),
         })
     }
 
     /// Enables durable per-request routing records at `path`.
     pub fn with_routing_log(mut self, path: impl Into<PathBuf>) -> ServerResult<Self> {
         self.routing_log = Some(SharedRoutingLog::new(path.into())?);
+        Ok(self)
+    }
+
+    /// Serves `text` verbatim as `base_instructions` for every Codex catalog entry.
+    ///
+    /// Rejects blank text: Codex discards the whole catalog when the field is empty.
+    pub fn with_codex_base_instructions(mut self, text: impl Into<String>) -> ServerResult<Self> {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return Err(ServerError::new(
+                "codex base instructions must not be blank",
+            ));
+        }
+        self.codex_base_instructions = Arc::from(text);
         Ok(self)
     }
 
@@ -1397,6 +1418,7 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
             .runner
             .models()
             .map(|model| (model.id.as_str(), model.capabilities)),
+        &state.codex_base_instructions,
     ))
 }
 
@@ -1479,6 +1501,7 @@ async fn not_found() -> Response {
 
 fn model_list_payload<'a>(
     entries: impl IntoIterator<Item = (&'a str, ModelCapabilities)>,
+    base_instructions: &str,
 ) -> Value {
     let mut entries = entries.into_iter().collect::<Vec<_>>();
     entries.sort_unstable_by_key(|(model_id, _)| *model_id);
@@ -1491,7 +1514,9 @@ fn model_list_payload<'a>(
         "models": entries
             .iter()
             .enumerate()
-            .map(|(priority, (model, caps))| codex_model_entry_json(model, *caps, priority))
+            .map(|(priority, (model, caps))| {
+                codex_model_entry_json(model, *caps, priority, base_instructions)
+            })
             .collect::<Vec<_>>(),
         "first_id": first_id,
         "last_id": last_id,
@@ -1532,9 +1557,9 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 //
 // Two kinds of fields live here. context_window, tool_calling, and reasoning are model
 // facts a backend can publish; the route declares them in config today. The rest
-// (shell_type, apply_patch_tool_type, base_instructions, the reasoning-level presets,
-// truncation_policy) are Codex client conventions no backend returns, so they stay
-// constant.
+// (shell_type, apply_patch_tool_type, the reasoning-level presets, truncation_policy) are
+// Codex client conventions no backend returns, so they stay constant. `base_instructions`
+// is whatever the operator configured; Codex adopts it as the session's system prompt.
 //
 // TODO: source context_window, tool_calling, and reasoning from the backend, not route
 // config. Switchyard is a proxy, so it should re-publish what the backend advertises
@@ -1542,7 +1567,12 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 // supported_parameters — and fall back to the route's declared value. Some backends
 // publish nothing (the NVIDIA gateway returns id-only models and blocks /model/info),
 // so keep failing closed to config.
-fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority: usize) -> Value {
+fn codex_model_entry_json(
+    model: &str,
+    capabilities: ModelCapabilities,
+    priority: usize,
+    base_instructions: &str,
+) -> Value {
     // Codex is non-functional without shell and apply_patch, so an undeclared tool
     // capability defaults to enabled here; the OpenAI `data` entry reports the raw
     // Option separately for clients that want the undeclared state.
@@ -1562,9 +1592,7 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         "additional_speed_tiers": [],
         "availability_nux": null,
         "upgrade": null,
-        // Required `ModelInfo` string. Unlike the launcher, the server cannot read
-        // Codex's bundled prompt, so it sends a minimal stub.
-        "base_instructions": "You are Codex, a coding agent.",
+        "base_instructions": base_instructions,
         "supports_reasoning_summaries": reasoning,
         "default_reasoning_summary": "none",
         "support_verbosity": reasoning,

@@ -142,6 +142,26 @@ are required. All configured semantic names use exact ASCII case-insensitive mat
 handoff notes, per-tier system prompts, and a capability-judge fallback are documented in
 [Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
 
+## Codex model discovery
+
+`GET /v1/models` also returns a `models` array in the shape Codex reads from a direct
+provider. Codex requires a `base_instructions` string on every entry and adopts it as the
+session's system prompt, replacing its own bundled instructions. Without configuration the
+server sends the placeholder `You are Codex, a coding agent.`, so a routed session runs on a
+one-line prompt. To keep parity with a direct session, save Codex's bundled prompt to a file
+and pass `--codex-base-instructions-file PATH`; the file's contents are served verbatim to
+every route.
+
+```bash
+codex debug models --bundled \
+  | python3 -c 'import json,sys; m=json.load(sys.stdin)["models"]; print(next(x for x in m if x["slug"]=="gpt-5.6-sol")["base_instructions"], end="")' \
+  > codex-base-instructions.md
+switchyard-server --config routes.toml --codex-base-instructions-file codex-base-instructions.md
+```
+
+A blank file is rejected at startup because Codex discards the whole catalog when the field
+is empty.
+
 ## Endpoints
 
 | Method | Path | Purpose |
