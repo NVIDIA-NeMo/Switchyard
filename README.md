@@ -266,11 +266,11 @@ the common route shape and self-hosted targets.
 - **[Routing Overview](docs/routing_algorithms/overview.md)**: choose and configure a routing algorithm
 - **[TOML Schema](docs/reference/toml_schema.md)**: every configuration key
 - **[Architecture](docs/architecture.md)**: how the proxy and library components fit together
-- **[`switchyard-server`](crates/switchyard-server/README.md)**: server configuration, routing algorithms, and metrics
-- **[`switchyard-libsy`](crates/libsy/README.md)**: embed routing algorithms in a Rust application
-- **[`switchyard-protocol`](crates/protocol/README.md)**: provider-neutral request, response, and streaming types
-- **[`switchyard-translation`](crates/switchyard-translation/README.md)**: request, response, and stream translation
-- **[`switchyard-nemo-relay-plugin`](crates/switchyard-nemo-relay-plugin/README.md)**: install Switchyard as a native NeMo Relay plugin
+- **[switchyard-server](crates/switchyard-server/README.md)**: server configuration, routing algorithms, and metrics
+- **[switchyard-libsy](crates/libsy/README.md)**: embed routing algorithms in a Rust application
+- **[switchyard-protocol](crates/protocol/README.md)**: provider-neutral request, response, and streaming types
+- **[switchyard-translation](crates/switchyard-translation/README.md)**: request, response, and stream translation
+- **[switchyard-nemo-relay-plugin](crates/switchyard-nemo-relay-plugin/README.md)**: install Switchyard as a native NeMo Relay plugin
 
 ## Benchmark Provenance
 
