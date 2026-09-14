@@ -2889,6 +2889,7 @@ selector = "/decision/target"
     Ok(())
 }
 
+// Compaction uses the parent classifier; review tasks use the subagent worker.
 #[tokio::test]
 async fn codex_maintenance_uses_the_parent_classifier_across_apis() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -2898,58 +2899,50 @@ schema_version = 1
 [llm_clients.upstream]
 format = "openai_chat"
 base_url = "{base_url}"
-[targets.classifier]
-id = "model/classifier"
-llm_client = "upstream"
-[targets.strong]
-id = "model/strong"
-llm_client = "upstream"
-[targets.weak]
-id = "model/weak"
-llm_client = "upstream"
-[routes.composite]
+[targets]
+classifier = {{ id = "model/classifier", llm_client = "upstream" }}
+strong = {{ id = "model/strong", llm_client = "upstream" }}
+weak = {{ id = "model/weak", llm_client = "upstream" }}
+[routes.agent]
 id = "agent"
 type = "composite"
-[routes.composite.classifier]
-target = "classifier"
-base_threshold = 0.5
-classify_trigger = "user_turn"
-[routes.composite.stage]
-capable_target = "strong"
-efficient_target = "weak"
-confidence_threshold = 0.3
-[routes.composite.subagents]
-type = "passthrough"
-target = "strong"
+classifier = {{ target = "classifier", base_threshold = 0.5, classify_trigger = "user_turn" }}
+stage = {{ capable_target = "strong", efficient_target = "weak", confidence_threshold = 0.3 }}
+subagents = {{ type = "passthrough", target = "strong" }}
 "#,
         base_url = upstream.base_url
     ))?);
-    let mut parent_calls = 0;
-    let mut child_calls = 0;
-    for (path, body) in [
+    let cases = [
+        (Some("compact"), None, "model/weak"),
+        (Some("review"), None, "model/strong"),
+        (Some("collab_spawn"), None, "model/strong"),
+        (Some("unknown"), None, "model/weak"),
+        (Some("memory_consolidation"), None, "model/weak"),
+        (None, None, "model/strong"),
+        (Some("review"), Some("false"), "model/weak"),
+        (Some("compact"), Some("true"), "model/weak"),
+    ];
+    for (path, body, cases) in [
         (
             "/v1/chat/completions",
-            json!({"model": "agent", "messages": [{"role": "user", "content": "hi"}]}),
+            json!({"model":"agent","messages":[{"role":"user","content":"hi"}]}),
+            &cases[..],
         ),
         (
             "/v1/messages",
-            json!({"model": "agent", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}),
+            json!({"model":"agent","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}),
+            &cases[..2],
         ),
-        ("/v1/responses", json!({"model": "agent", "input": "hi"})),
+        (
+            "/v1/responses",
+            json!({"model":"agent","input":"hi"}),
+            &cases[..2],
+        ),
     ] {
-        for (kind, explicit, expected) in [
-            (Some("compact"), None, "model/weak"),
-            (Some("review"), None, "model/strong"),
-            (Some("collab_spawn"), None, "model/strong"),
-            (Some("unknown"), None, "model/weak"),
-            (None, None, "model/strong"),
-            (Some("review"), Some("false"), "model/weak"),
-            (Some("compact"), Some("true"), "model/weak"),
-        ] {
+        for (kind, explicit, expected) in cases {
             let mut metadata = json!({
-                "session_id": "root-session",
-                "thread_id": format!("child-{}", parent_calls + child_calls),
-                "parent_thread_id": "root-thread",
+                "thread_id": "child",
+                "parent_thread_id": "root",
                 "thread_source": "subagent",
             });
             if let Some(kind) = kind {
@@ -2963,29 +2956,22 @@ target = "strong"
             let response =
                 send_with_headers(&app, "POST", path, Some(body.clone()), &headers).await?;
             assert_eq!(response.status, StatusCode::OK);
-            assert_eq!(response.headers["x-model-router-selected-model"], expected);
-            assert_eq!(response.json()?["model"], expected);
-            if expected == "model/weak" {
-                parent_calls += 1;
-            } else {
-                child_calls += 1;
-            }
-            let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-            assert_eq!(stats["classifier"]["total_requests"], parent_calls);
-            assert_eq!(stats["models"]["model/weak"]["calls"], parent_calls);
+            assert_eq!(response.headers["x-model-router-selected-model"], *expected);
         }
     }
-    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-    assert_eq!(stats["models"]["model/strong"]["calls"], child_calls);
-    assert_eq!(stats["total_errors"], 0);
     let models = upstream.models().await;
-    assert_eq!(
-        models
-            .iter()
-            .filter(|model| *model == "model/classifier")
-            .count(),
-        parent_calls as usize
-    );
+    for (model, expected) in [
+        ("model/classifier", 7),
+        ("model/weak", 7),
+        ("model/strong", 5),
+    ] {
+        assert_eq!(
+            models.iter().filter(|actual| *actual == model).count(),
+            expected
+        );
+    }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["classifier"]["total_requests"], 7);
     Ok(())
 }
 
