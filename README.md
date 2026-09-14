@@ -23,7 +23,7 @@ Switchyard runs inside gateways you may already have.
 - **NeMo Relay** — a native plugin. Load a `routes.toml` into a Relay deployment
   you already run. [Setup →](#path-1--load-the-nemo-relay-plugin)
 - **LiteLLM** — a routing plugin for LiteLLM's `Router` and proxy.
-  [`examples/litellm`](examples/litellm/README.md)
+  [Setup →](examples/litellm/README.md)
 - **More integrations** coming soon.
 
 ```mermaid
