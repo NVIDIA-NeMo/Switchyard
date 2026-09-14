@@ -44,6 +44,8 @@ target = "invalid"
     Ok(())
 }
 
+/// Checks that `--dry-run` accepts valid UTF-8 instructions and rejects missing,
+/// blank, or invalid UTF-8 files.
 #[test]
 fn dry_run_validates_codex_instruction_files() -> TestResult {
     let directory = tempfile::tempdir()?;
