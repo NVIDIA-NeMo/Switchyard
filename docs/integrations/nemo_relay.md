@@ -126,8 +126,10 @@ and
 ## Set Up the Plugin
 
 Follow the [plugin README](../../crates/switchyard-nemo-relay-plugin/README.md)
-to build and package the native library, register and enable it in Relay, and
-configure its deployment. Relay documents how to
+to install a released bundle from the
+[NeMo Relay Plugins repository](https://github.com/NVIDIA/NeMo-Relay-Plugins/releases)
+or build and package the native library from source, then register and enable
+it in Relay and configure its deployment. Relay documents how to
 [add and enable a discoverable plugin](https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#add-and-enable-a-plugin)
 and how it
 [validates the package before loading code](https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#validate-before-loading-code).
