@@ -1350,68 +1350,57 @@ fn translate_stream(
     Ok(out)
 }
 
-// A streamed Responses function call must end the Anthropic message with `tool_use`, the same
-// stop reason the buffered decoder reports. Anthropic's tool runners dispatch on it; `end_turn`
-// makes them return the unfinished tool-use turn without running the tool.
+// A streamed Responses function call must end with the tool-use stop reason the buffered decoder
+// reports: Anthropic `tool_use`, Chat `tool_calls`. Anthropic's tool runners dispatch on it;
+// `end_turn` makes them return the unfinished tool-use turn without running the tool. A bare
+// `response.completed` with no output array falls back to the argument deltas already decoded,
+// while a text-only stream still reports no reason.
 #[test]
-fn responses_function_call_stream_stops_with_tool_use_for_anthropic() -> TestResult {
-    let events = translate_stream(
-        &TranslationEngine::default(),
+fn responses_function_call_stream_ends_with_tool_use_on_every_wire() -> TestResult {
+    let engine = TranslationEngine::default();
+    let stream = responses_function_call_stream();
+
+    let anthropic = translate_stream(
+        &engine,
         WireFormat::OpenAiResponses,
         WireFormat::AnthropicMessages,
-        &responses_function_call_stream(),
+        &stream,
     )?;
-
-    let stop_reasons: Vec<&Value> = events
+    let stop_reasons: Vec<&Value> = anthropic
         .iter()
         .filter(|event| event["type"] == "message_delta")
         .map(|event| &event["delta"]["stop_reason"])
         .collect();
     assert_eq!(stop_reasons, vec![&json!("tool_use")]);
-    assert!(events.iter().any(|event| {
+    assert!(anthropic.iter().any(|event| {
         event["type"] == "content_block_start"
             && event["content_block"]["type"] == "tool_use"
             && event["content_block"]["name"] == "get_weather"
     }));
-    Ok(())
-}
 
-// The same stream on the Chat wire must finish with `tool_calls`, not `stop`.
-#[test]
-fn responses_function_call_stream_finishes_with_tool_calls_for_openai_chat() -> TestResult {
-    let events = translate_stream(
-        &TranslationEngine::default(),
+    let chat = translate_stream(
+        &engine,
         WireFormat::OpenAiResponses,
         WireFormat::OpenAiChat,
-        &responses_function_call_stream(),
+        &stream,
     )?;
-
-    let finish_reasons: Vec<&Value> = events
+    let finish_reasons: Vec<&Value> = chat
         .iter()
         .filter_map(|event| event["choices"][0].get("finish_reason"))
         .filter(|reason| !reason.is_null())
         .collect();
     assert_eq!(finish_reasons, vec![&json!("tool_calls")]);
-    assert!(events.iter().any(|event| {
+    assert!(chat.iter().any(|event| {
         event["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "get_weather"
     }));
-    Ok(())
-}
 
-// Some providers end a stream with a bare `response.completed`. The tool deltas already
-// decoded are enough to report tool use; a text-only stream still reports no reason.
-#[test]
-fn responses_bare_completed_reports_tool_use_only_after_tool_deltas() -> TestResult {
+    // Delta-only fallback: `response.created`, one argument delta, then a bare completion with
+    // no output-item events at all.
     let bare_completed = json!({"type": "response.completed", "response": {}});
-
     let mut state =
         StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiResponses);
     let mut last = Vec::new();
-    for event in responses_function_call_stream()
-        .iter()
-        .take(5)
-        .chain(std::iter::once(&bare_completed))
-    {
+    for event in [&stream[0], &stream[2], &bare_completed] {
         last = decode_stream_event(&mut state, WireFormat::OpenAiResponses, event);
     }
     assert_eq!(
