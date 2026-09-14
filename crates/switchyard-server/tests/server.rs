@@ -2890,6 +2890,106 @@ selector = "/decision/target"
 }
 
 #[tokio::test]
+async fn codex_maintenance_uses_the_parent_classifier_across_apis() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+[routes.composite]
+id = "agent"
+type = "composite"
+[routes.composite.classifier]
+target = "classifier"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+[routes.composite.stage]
+capable_target = "strong"
+efficient_target = "weak"
+confidence_threshold = 0.3
+[routes.composite.subagents]
+type = "passthrough"
+target = "strong"
+"#,
+        base_url = upstream.base_url
+    ))?);
+    let mut parent_calls = 0;
+    let mut child_calls = 0;
+    for (path, body) in [
+        (
+            "/v1/chat/completions",
+            json!({"model": "agent", "messages": [{"role": "user", "content": "hi"}]}),
+        ),
+        (
+            "/v1/messages",
+            json!({"model": "agent", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}),
+        ),
+        ("/v1/responses", json!({"model": "agent", "input": "hi"})),
+    ] {
+        for (kind, explicit, expected) in [
+            (Some("compact"), None, "model/weak"),
+            (Some("review"), None, "model/strong"),
+            (Some("collab_spawn"), None, "model/strong"),
+            (Some("unknown"), None, "model/weak"),
+            (None, None, "model/strong"),
+            (Some("review"), Some("false"), "model/weak"),
+            (Some("compact"), Some("true"), "model/weak"),
+        ] {
+            let mut metadata = json!({
+                "session_id": "root-session",
+                "thread_id": format!("child-{}", parent_calls + child_calls),
+                "parent_thread_id": "root-thread",
+                "thread_source": "subagent",
+            });
+            if let Some(kind) = kind {
+                metadata["subagent_kind"] = json!(kind);
+            }
+            let metadata = metadata.to_string();
+            let mut headers = vec![("x-codex-turn-metadata", metadata.as_str())];
+            if let Some(explicit) = explicit {
+                headers.push(("x-switchyard-is-subagent", explicit));
+            }
+            let response =
+                send_with_headers(&app, "POST", path, Some(body.clone()), &headers).await?;
+            assert_eq!(response.status, StatusCode::OK);
+            assert_eq!(response.headers["x-model-router-selected-model"], expected);
+            assert_eq!(response.json()?["model"], expected);
+            if expected == "model/weak" {
+                parent_calls += 1;
+            } else {
+                child_calls += 1;
+            }
+            let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+            assert_eq!(stats["classifier"]["total_requests"], parent_calls);
+            assert_eq!(stats["models"]["model/weak"]["calls"], parent_calls);
+        }
+    }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["models"]["model/strong"]["calls"], child_calls);
+    assert_eq!(stats["total_errors"], 0);
+    let models = upstream.models().await;
+    assert_eq!(
+        models
+            .iter()
+            .filter(|model| *model == "model/classifier")
+            .count(),
+        parent_calls as usize
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestResult {
     let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 

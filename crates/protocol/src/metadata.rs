@@ -263,8 +263,9 @@ fn parse_sub_agent(headers: &http::HeaderMap) -> (Option<String>, bool, bool) {
 
     let is_subagent = explicit.unwrap_or(claude_subagent || codex_child || harness_kind.is_some());
 
-    // A harness-named kind decides: `compact` and other maintenance kinds carry child
-    // lineage but are not delegated work. Only kindless lineage counts as work.
+    // An explicit false disables subagent routing. Otherwise, a supplied task kind must
+    // be in SUBAGENT_WORK_KINDS; child-thread headers cannot override it. Without a kind,
+    // an explicit true or recognized child-thread headers indicate subagent work.
     let is_delegated_work = match (explicit, harness_kind.as_deref()) {
         (Some(false), _) => false,
         (_, Some(kind)) => SUBAGENT_WORK_KINDS.contains(&kind),
@@ -430,22 +431,6 @@ mod tests {
         assert_eq!(child.parent_agent_id.as_deref(), Some("root-thread"));
         assert!(child.is_subagent);
         assert!(child.is_subagent_work());
-
-        // The same lineage with a named kind: `compact` is harness maintenance and
-        // stays on the parent route, `review` is delegated work.
-        for (kind, is_work) in [("compact", false), ("review", true)] {
-            let body = serde_json::json!({
-                "session_id": "root-session",
-                "thread_id": "child-thread",
-                "parent_thread_id": "root-thread",
-                "thread_source": "subagent",
-                "subagent_kind": kind,
-            })
-            .to_string();
-            let child = metadata(&[(CODEX_TURN_METADATA_HEADER, body.as_str())]);
-            assert!(child.is_subagent, "{kind} keeps the lineage fact");
-            assert_eq!(child.is_subagent_work(), is_work, "{kind}");
-        }
     }
 
     #[test]
