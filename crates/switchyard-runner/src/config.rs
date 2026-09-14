@@ -161,6 +161,20 @@ impl DeploymentConfig {
             )));
         }
 
+        let mut route_names_by_id = HashMap::new();
+        for (route_name, config) in &self.routes {
+            validate_value("route name", route_name)?;
+            validate_value(&format!("route {route_name} id"), &config.id)?;
+            if let Some(first_route_name) =
+                route_names_by_id.insert(config.id.as_str(), route_name.as_str())
+            {
+                return Err(RunnerError::configuration(format!(
+                    "routes {first_route_name} and {route_name} both use id {}; route ids must be unique",
+                    config.id
+                )));
+            }
+        }
+
         // The LLM client keeps one backend per model id, so two targets naming the same model on
         // the same client share it. That is harmless when their request settings agree (an alias
         // for a different system prompt, say) and silently wrong when they do not: the second
@@ -198,8 +212,6 @@ impl DeploymentConfig {
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
-            validate_value("route name", route_name)?;
-            validate_value(&format!("route {route_name} id"), &config.id)?;
             for target_name in config.callable_target_names() {
                 self.targets.get(target_name).ok_or_else(|| {
                     RunnerError::configuration(format!(
@@ -795,6 +807,28 @@ target = "weak"
         );
         assert!(runner.route("switchyard/passthrough").is_some());
         Ok(())
+    }
+
+    #[test]
+    fn duplicate_route_ids_are_rejected() {
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[routes.duplicate]
+id = "switchyard/passthrough"
+type = "passthrough"
+target = "strong"
+"#
+        );
+
+        let error = error_message(&config);
+
+        assert!(
+            error.contains(
+                "routes duplicate and passthrough both use id switchyard/passthrough; route ids must be unique"
+            ),
+            "{error}"
+        );
     }
 
     fn error_message(toml: &str) -> String {
