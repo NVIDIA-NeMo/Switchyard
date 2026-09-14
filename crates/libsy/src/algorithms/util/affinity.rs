@@ -3,8 +3,8 @@
 
 //! Model affinity as a single SDK component.
 //!
-//! [`AffinityRouter`] retains the first model chosen for a request's stable identity and
-//! forces that model on later requests sharing the identity. It is one object that plays
+//! [`AffinityRouter`] retains the first model and category chosen for a request's stable identity
+//! and forces that decision on later requests sharing the identity. It is one object that plays
 //! both SDK roles, so registering it as a processor and a classifier cannot drift apart:
 //!
 //! - As a [`Processor`] it *writes* the assignment: [`Event::Decision`] carries the request
@@ -85,7 +85,7 @@ pub struct AffinityRouter {
     ///
     /// Held on the instance so the two roles share one process-local map through a
     /// single registered [`Arc`](std::sync::Arc); bounded by [`MAX_ASSIGNMENTS`].
-    assignments: Mutex<HashMap<RoutingIdentity, ModelId>>,
+    assignments: Mutex<HashMap<RoutingIdentity, (ModelId, Option<Category>)>>,
     /// Whether the "no identity to key on" warning has already been emitted.
     unkeyed_warning_emitted: AtomicBool,
 }
@@ -177,6 +177,7 @@ where
         if let Event::Decision {
             request,
             selected_model_id,
+            category,
             ..
         } = event
             && let Some(key) = self.affinity_key(request)
@@ -185,7 +186,7 @@ where
             let writable = self.release_on_user_turn || !assignments.contains_key(&key);
             if self.should_latch(selected_model_id) && writable {
                 evict_if_full(&mut assignments);
-                assignments.insert(key, selected_model_id.clone());
+                assignments.insert(key, (selected_model_id.clone(), category));
             }
         }
         Ok(())
@@ -249,7 +250,7 @@ where
         let mut assignments = self.assignments.lock();
         let assigned = assignments.get(&key).cloned();
         let assigned = match assigned.as_ref() {
-            Some(target) if !available.is_empty() && !available.contains(target) => {
+            Some((target, _)) if !available.is_empty() && !available.contains(target) => {
                 assignments.remove(&key);
                 None
             }
@@ -260,10 +261,10 @@ where
         }
         Ok((
             Classification::Scores(match assigned {
-                Some(target) => vec![Score {
+                Some((target, category)) => vec![Score {
                     confidence: 1.0,
                     target: target.clone(),
-                    category: None,
+                    category: category.clone(),
                 }],
                 None => Vec::new(),
             }),

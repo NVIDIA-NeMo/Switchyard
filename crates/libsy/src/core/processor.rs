@@ -29,8 +29,7 @@ pub enum Event<'a> {
         /// The model selected for `request`.
         selected_model_id: &'a ModelId,
         /// The category `selected_model_id` was drawn from, when the deciding
-        /// classifier picked one. `None` for a decision made without a category,
-        /// such as an affinity replay.
+        /// classifier picked one. `None` for a decision made without a category.
         category: Option<Category>,
         /// Offered so a processor can inspect the runtime model categories.
         driver: &'a Driver,
