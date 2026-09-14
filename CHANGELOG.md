@@ -141,7 +141,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sub-agent requests silently routed through the parent route. A route with a
   `subagents` table now logs one warning naming the Claude Code version when it
   sees an older build, and the sub-agent routing guide states the version floor.
-  `Metadata` gains a `user_agent` field for this check.
+  `switchyard_protocol::Metadata` gains a public `user_agent` field for this
+  check; downstream code that builds `Metadata` with a full struct literal must
+  add the field or use `..Metadata::default()`.
 - **Encrypted-only reasoning items open no summary part** — the Responses
   stream encoder opened a `reasoning_summary_part` for every reasoning item and
   closed it only when text had streamed, so an encrypted-only item left a part
