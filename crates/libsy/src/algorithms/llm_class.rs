@@ -1127,6 +1127,7 @@ mod tests {
                     Ok(Response {
                         llm_response: LlmResponse::Agg(text_response(None, text)),
                         metadata: None,
+                        upstream_headers: Default::default(),
                     })
                 }
             }
