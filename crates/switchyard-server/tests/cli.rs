@@ -43,3 +43,51 @@ target = "invalid"
     );
     Ok(())
 }
+
+#[test]
+fn dry_run_validates_codex_instruction_files() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let config = directory.path().join("routes.toml");
+    fs::write(
+        &config,
+        r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "http://127.0.0.1:1/v1"
+[targets.local]
+id = "upstream-model"
+llm_client = "local"
+[routes.local]
+id = "test-route"
+type = "passthrough"
+target = "local"
+"#,
+    )?;
+    let prompt = directory.path().join("instructions.txt");
+    for (contents, expected_success) in [
+        (None, false),
+        (Some(b" \n\t".as_slice()), false),
+        (Some(b"\xff".as_slice()), false),
+        (
+            Some(b"Configured instructions.\n  Keep whitespace.  \n".as_slice()),
+            true,
+        ),
+    ] {
+        if let Some(contents) = contents {
+            fs::write(&prompt, contents)?;
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_switchyard-server"))
+            .arg("--config")
+            .arg(&config)
+            .arg("--dry-run")
+            .arg("--codex-base-instructions-file")
+            .arg(&prompt)
+            .output()?;
+        assert_eq!(output.status.success(), expected_success);
+        if !expected_success {
+            assert!(String::from_utf8(output.stderr)?.contains("codex"));
+        }
+    }
+    Ok(())
+}

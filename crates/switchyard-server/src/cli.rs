@@ -52,9 +52,10 @@ pub(crate) struct ServerArgs {
     #[arg(long, value_name = "PATH")]
     routing_log_file: Option<PathBuf>,
 
-    /// File whose contents Codex adopts as its system prompt for every route in
-    /// `GET /v1/models`. Without it Codex gets a one-line placeholder instead of its
-    /// bundled instructions; export them with `codex debug models --bundled`.
+    /// Read the Codex system prompt from this UTF-8 file once at startup. The same
+    /// text applies to every route in `GET /v1/models`. Without this option, Codex
+    /// gets a one-line placeholder. Export bundled prompts with
+    /// `codex debug models --bundled`, then choose one to save in the file.
     #[arg(long, value_name = "PATH")]
     codex_base_instructions_file: Option<PathBuf>,
 

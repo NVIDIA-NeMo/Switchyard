@@ -3013,25 +3013,17 @@ target = "shared"
         )
     };
 
-    // Without configuration every route carries the placeholder Codex requires to decode
-    // the catalog at all.
+    // Without a configured prompt, every route uses the default placeholder.
     assert_eq!(
         codex_instructions(load_test_config(CONFIG)?).await?,
         vec![json!("You are Codex, a coding agent."); 2]
     );
 
-    // Codex's own prompt is multi-line with trailing whitespace; it must reach the
-    // catalog byte for byte.
+    // Preserve line breaks and trailing whitespace in the configured prompt.
     let prompt = "You are Codex, an agent based on GPT-5.\n\n  # Tools\n\n- shell  \n";
     let state = load_test_config(CONFIG)?.with_codex_base_instructions(prompt)?;
     assert_eq!(codex_instructions(state).await?, vec![json!(prompt); 2]);
 
-    // A blank prompt would make Codex discard the whole catalog, so it is rejected.
-    assert!(
-        load_test_config(CONFIG)?
-            .with_codex_base_instructions(" \n")
-            .is_err()
-    );
     Ok(())
 }
 

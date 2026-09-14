@@ -88,9 +88,9 @@ fn should_forward_upstream_header(name: &HeaderName) -> bool {
 /// downstream client disconnected before any response was written.
 const CLIENT_CLOSED_REQUEST: u16 = 499;
 
-/// `base_instructions` served in the Codex model catalog when no
-/// `--codex-base-instructions-file` is given. Codex adopts this string as its system
-/// prompt, so operators wanting parity with a direct session must supply the file.
+/// Default `base_instructions` in `GET /v1/models`. Codex uses this placeholder
+/// as its system prompt. Operators can supply their chosen instructions with
+/// `--codex-base-instructions-file`.
 const DEFAULT_CODEX_BASE_INSTRUCTIONS: &str = "You are Codex, a coding agent.";
 const STARTUP_BANNER_ART: &str = include_str!("../assets/startup_banner.txt");
 
@@ -233,9 +233,10 @@ impl ServerState {
         Ok(self)
     }
 
-    /// Serves `text` verbatim as `base_instructions` for every Codex catalog entry.
+    /// Uses `text` as `base_instructions` for every Codex entry in `GET /v1/models`.
+    /// Preserves whitespace.
     ///
-    /// Rejects blank text: Codex discards the whole catalog when the field is empty.
+    /// Returns an error for blank text so Codex does not receive an empty system prompt.
     pub fn with_codex_base_instructions(mut self, text: impl Into<String>) -> ServerResult<Self> {
         let text = text.into();
         if text.trim().is_empty() {
@@ -1559,7 +1560,7 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 // facts a backend can publish; the route declares them in config today. The rest
 // (shell_type, apply_patch_tool_type, the reasoning-level presets, truncation_policy) are
 // Codex client conventions no backend returns, so they stay constant. `base_instructions`
-// is whatever the operator configured; Codex adopts it as the session's system prompt.
+// is the operator's chosen text or the default placeholder. Codex uses it as the system prompt.
 //
 // TODO: source context_window, tool_calling, and reasoning from the backend, not route
 // config. Switchyard is a proxy, so it should re-publish what the backend advertises

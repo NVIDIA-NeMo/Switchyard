@@ -144,13 +144,16 @@ handoff notes, per-tier system prompts, and a capability-judge fallback are docu
 
 ## Codex model discovery
 
-`GET /v1/models` also returns a `models` array in the shape Codex reads from a direct
-provider. Codex requires a `base_instructions` string on every entry and adopts it as the
-session's system prompt, replacing its own bundled instructions. Without configuration the
-server sends the placeholder `You are Codex, a coding agent.`, so a routed session runs on a
-one-line prompt. To keep parity with a direct session, save Codex's bundled prompt to a file
-and pass `--codex-base-instructions-file PATH`; the file's contents are served verbatim to
-every route.
+`GET /v1/models` includes a `models` array for Codex. Codex uses each entry's
+`base_instructions` as its system prompt, replacing its bundled instructions. By default,
+Switchyard sends the one-line placeholder `You are Codex, a coding agent.`.
+
+Use `--codex-base-instructions-file PATH` to choose the system prompt for routed Codex
+sessions. The server reads the UTF-8 file once at startup and preserves its whitespace. The
+same text applies to every route; the operator chooses the prompt independently of the
+target model.
+
+This example exports Codex's bundled prompt for `gpt-5.6-sol`:
 
 ```bash
 codex debug models --bundled \
@@ -159,8 +162,9 @@ codex debug models --bundled \
 switchyard-server --config routes.toml --codex-base-instructions-file codex-base-instructions.md
 ```
 
-A blank file is rejected at startup because Codex discards the whole catalog when the field
-is empty.
+The server stops startup if the file is missing, unreadable, contains invalid UTF-8, or
+contains only whitespace. After updating Codex or choosing a different prompt, export the
+file again and restart the server.
 
 ## Endpoints
 
