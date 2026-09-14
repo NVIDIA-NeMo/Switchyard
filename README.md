@@ -123,7 +123,8 @@ pip install git+https://github.com/NVIDIA-NeMo/Switchyard.git
 
 The API below is newer than `nemo-switchyard` 0.2.0 on PyPI, so install from
 source until the next release. Rust: depend on `switchyard-libsy` and
-`switchyard-protocol` from this repository's `main` branch, pinned to a `rev`.
+`switchyard-protocol` from this repository instead. Pin both to the commit you
+tested — `@<sha>` for pip, `rev = "<sha>"` for Cargo — before depending on them.
 
 **2. Construct an algorithm.** It selects a category — `efficient` or
 `capable` — and you map categories to model IDs when each request runs.
@@ -136,7 +137,8 @@ algorithm = stage_router(picker="efficient_first", confidence_threshold=0.5)
 ```
 
 **3. Drive it.** `run_stream` yields steps. Serve each `CallModel` with your own
-client; `Done` carries the pick.
+client — `call.models` is ordered by preference, and `call.fail(error)` reports
+a failed call; `Done` carries the pick.
 
 ```python
 models = {"efficient": ["fast"], "capable": ["quality"], "any": ["quality", "fast"]}
@@ -152,7 +154,7 @@ async for step in algorithm.run_stream(request, models):
 **4. Make the answer call** with `model` and `request`, using your own HTTP
 client, retries, and credentials.
 
-The complete runnable version — fallbacks, streaming, a working client — is
+The complete runnable version — streaming and a working client — is
 [`examples/libsy.py`](examples/libsy.py). Types:
 [`switchyard-libsy`](crates/libsy/README.md),
 [`switchyard-protocol`](crates/protocol/README.md).
