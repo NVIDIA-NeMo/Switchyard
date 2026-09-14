@@ -45,20 +45,28 @@ impl SubagentRouterConfig {
 const MIN_CLAUDE_CODE_VERSION: [u64; 3] = [2, 1, 139];
 
 /// Parses the version out of a Claude Code `User-Agent` such as
-/// `claude-cli/2.1.139 (external, cli)`. Returns `None` for any other client.
-fn claude_code_version(user_agent: &str) -> Option<[u64; 3]> {
-    let version = user_agent
+/// `claude-cli/2.1.139 (external, cli)`, plus whether it carries a prerelease tag
+/// (`2.1.139-beta.1`). Returns `None` for any other client.
+fn claude_code_version(user_agent: &str) -> Option<([u64; 3], bool)> {
+    let tagged = user_agent
         .strip_prefix("claude-cli/")?
-        .split([' ', '-', '+'])
+        .split([' ', '+'])
         .next()?;
+    let (version, prerelease) = match tagged.split_once('-') {
+        Some((version, _)) => (version, true),
+        None => (tagged, false),
+    };
     let mut parts = version.split('.').map(|part| part.parse::<u64>().ok());
-    Some([parts.next()??, parts.next()??, parts.next()??])
+    Some(([parts.next()??, parts.next()??, parts.next()??], prerelease))
 }
 
 /// The Claude Code version behind `metadata` when it predates child identity headers.
 fn outdated_claude_code(metadata: Option<&Metadata>) -> Option<[u64; 3]> {
-    let version = claude_code_version(metadata?.user_agent.as_deref()?)?;
-    (version < MIN_CLAUDE_CODE_VERSION).then_some(version)
+    let (version, prerelease) = claude_code_version(metadata?.user_agent.as_deref()?)?;
+    // A prerelease of the floor itself predates the release that added the headers.
+    let outdated =
+        version < MIN_CLAUDE_CODE_VERSION || (prerelease && version == MIN_CLAUDE_CODE_VERSION);
+    outdated.then_some(version)
 }
 
 /// Routes delegated work independently while preserving the parent algorithm for other traffic.
@@ -248,6 +256,7 @@ mod tests {
             Some([2, 1, 121])
         );
         assert_eq!(outdated("claude-cli/2.1.139 (external, cli)"), None);
+        assert_eq!(outdated("claude-cli/2.1.139-beta.1"), Some([2, 1, 139]));
         assert_eq!(outdated("codex_cli_rs/0.120.0"), None);
         assert_eq!(outdated("claude-cli/nightly"), None);
 
