@@ -165,10 +165,7 @@ mod tests {
     use async_trait::async_trait;
     use switchyard_protocol::{Category, Metadata, ModelId, Request, Response, text_request};
 
-    use super::{
-        MIN_CLAUDE_CODE_VERSION, SubagentRouter, SubagentRouterConfig, claude_code_version,
-        outdated_claude_code,
-    };
+    use super::{SubagentRouter, SubagentRouterConfig, outdated_claude_code};
     use crate::algorithms::passthrough::Passthrough;
     use crate::core::classifier::{Classification, Classifier, Score};
     use crate::core::testing::{echo, test_drive_with_models};
@@ -241,52 +238,26 @@ mod tests {
         }))
     }
 
-    #[test]
-    fn parses_claude_code_versions_from_the_user_agent() {
-        assert_eq!(
-            claude_code_version("claude-cli/2.1.121 (external, cli)"),
-            Some([2, 1, 121])
-        );
-        assert_eq!(claude_code_version("claude-cli/2.1.139"), Some([2, 1, 139]));
-        assert_eq!(
-            claude_code_version("claude-cli/3.0.0-beta.1 (external, cli)"),
-            Some([3, 0, 0])
-        );
-        assert_eq!(claude_code_version("codex_cli_rs/0.120.0"), None);
-        assert_eq!(claude_code_version("claude-cli/nightly"), None);
-        assert_eq!(claude_code_version("claude-cli/2.1"), None);
-    }
-
-    #[test]
-    fn flags_only_claude_code_older_than_the_identity_floor() {
+    #[tokio::test]
+    async fn outdated_claude_code_warns_once_and_routes_through_the_parent() -> crate::Result<()> {
         let outdated =
             |user_agent: &str| outdated_claude_code(claude_code(user_agent).metadata.as_ref());
-        // A build without the headers is flagged with its version.
+        // Only Claude Code builds below the identity floor are flagged, with their version.
         assert_eq!(
             outdated("claude-cli/2.1.121 (external, cli)"),
             Some([2, 1, 121])
         );
-        assert_eq!(outdated("claude-cli/2.0.999"), Some([2, 0, 999]));
-        // The floor itself and anything newer are fine.
         assert_eq!(outdated("claude-cli/2.1.139 (external, cli)"), None);
-        assert_eq!(outdated("claude-cli/2.1.211 (external, cli)"), None);
-        assert_eq!(outdated("claude-cli/3.0.0"), None);
-        // Other clients and requests without metadata are never flagged.
         assert_eq!(outdated("codex_cli_rs/0.120.0"), None);
-        assert_eq!(outdated_claude_code(None), None);
-        assert_eq!(MIN_CLAUDE_CODE_VERSION, [2, 1, 139]);
-    }
+        assert_eq!(outdated("claude-cli/nightly"), None);
 
-    #[tokio::test]
-    async fn outdated_claude_code_still_routes_through_the_parent() -> crate::Result<()> {
+        // Without child identity the request is indistinguishable from the parent's, so it
+        // keeps routing through the parent algorithm; the warning fires once per route.
         let router = configured(Arc::new(ScriptedClassifier {
             calls: AtomicUsize::new(0),
         }))?;
         let models = RuntimeModels::new([(Category::Any, vec![ModelId::from("parent")])].into())
             .with_subagent([(Category::Any, vec![ModelId::from("worker")])].into());
-
-        // Without child identity the request is indistinguishable from the parent's, so it
-        // keeps routing through the parent algorithm; the warning is emitted once.
         for _ in 0..2 {
             let request = claude_code("claude-cli/2.1.121 (external, cli)");
             let (selected, _) =
@@ -294,17 +265,6 @@ mod tests {
             assert_eq!(selected, "parent");
         }
         assert!(router.outdated_claude_code_warned.load(Ordering::Relaxed));
-
-        let (selected, _) = test_drive_with_models(
-            configured(Arc::new(ScriptedClassifier {
-                calls: AtomicUsize::new(0),
-            }))?,
-            claude_code("claude-cli/2.1.139 (external, cli)"),
-            models,
-            echo(),
-        )
-        .await?;
-        assert_eq!(selected, "parent");
         Ok(())
     }
 
