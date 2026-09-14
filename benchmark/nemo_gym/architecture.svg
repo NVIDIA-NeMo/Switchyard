@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title description">
   <title id="title">Evaluating Switchyard routing with NeMo Gym</title>
-  <desc id="description">The evaluation uses MMLU-Redux tasks, Gym's simple agent and MCQA verifier. Gym's litellm_model calls a separate runner-managed LiteLLM proxy through the OpenAI Responses API. Switchyard libsy Random routing runs directly inside LiteLLM, not as a Switchyard HTTP runtime. Compare fixed and routed runs on identical inputs using rewards, selected models, model tokens, latency and routing statistics.</desc>
+  <desc id="description">MMLU-Redux 2.0 supplies the multiple-choice questions. Gym's simple_agent initializes each task session, obtains a model answer, and sends it to the mcqa resources server, which grades the boxed answer letter against the expected answer. Gym's litellm_model calls a runner-managed LiteLLM proxy through the OpenAI Responses API. Switchyard Random routing runs as a library inside LiteLLM, not as a separate Switchyard server. Compare fixed and routed runs on identical inputs using rewards, selected models, input and output tokens, latency and routing statistics.</desc>
   <metadata>SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0</metadata>
   <defs>
@@ -32,11 +32,11 @@ SPDX-License-Identifier: Apache-2.0</metadata>
   <rect x="67" y="285" width="248" height="100" fill="#fff"/>
   <text x="191" y="326" text-anchor="middle" class="step">Dataset</text>
   <text x="191" y="362" text-anchor="middle" class="step">(tasks)</text>
-  <text x="191" y="420" text-anchor="middle" class="detail">MMLU-Redux</text>
+  <text x="191" y="420" text-anchor="middle" class="detail">MMLU-Redux 2.0</text>
 
   <rect x="358" y="285" width="248" height="100" fill="#fff"/>
   <text x="482" y="326" text-anchor="middle" class="step">Initialize</text>
-  <text x="482" y="362" text-anchor="middle" class="step">Environment</text>
+  <text x="482" y="362" text-anchor="middle" class="step">Task session</text>
 
   <rect x="649" y="285" width="248" height="100" fill="#fff"/>
   <text x="773" y="326" text-anchor="middle" class="step">Agent</text>
@@ -47,7 +47,7 @@ SPDX-License-Identifier: Apache-2.0</metadata>
   <rect x="940" y="285" width="248" height="100" fill="#fff"/>
   <text x="1064" y="345" text-anchor="middle" class="step">Verify</text>
   <text x="1064" y="410" text-anchor="middle" class="server">Resources server</text>
-  <text x="1064" y="435" text-anchor="middle" class="detail">MCQA verifier</text>
+  <text x="1064" y="435" text-anchor="middle" class="detail">Multiple-choice verifier</text>
 
   <path d="M 315 335 H 356" class="flow"/>
   <path d="M 606 335 H 647" class="flow"/>
@@ -83,6 +83,6 @@ SPDX-License-Identifier: Apache-2.0</metadata>
   <text x="1140" y="632" class="body">Compare fixed vs. routed runs</text>
   <text x="1140" y="676" class="body">Per-task rewards</text>
   <text x="1140" y="708" class="body">Selected models</text>
-  <text x="1140" y="740" class="body">Model tokens</text>
+  <text x="1140" y="740" class="body">Input + output tokens</text>
   <text x="1140" y="772" class="body">Latency and routing statistics</text>
 </svg>
