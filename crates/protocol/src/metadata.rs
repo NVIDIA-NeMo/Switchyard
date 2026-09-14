@@ -65,6 +65,9 @@ const TASK_ID_HEADER: &str = "x-task-id";
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
 
+// Caller identification. Coding harnesses report their name and version here.
+const USER_AGENT_HEADER: &str = "user-agent";
+
 /// Harness-defined sub-agent kinds that carry delegated user work rather than
 /// harness maintenance (`compact`, `memory_consolidation`, ...). Unknown kinds
 /// are excluded deliberately; extend with captured request fixtures.
@@ -186,6 +189,9 @@ pub struct Metadata {
     pub session_final: Option<bool>,
     /// External trace/request id for joining with the host's telemetry.
     pub correlation_id: Option<String>,
+    /// The caller's `User-Agent`, when present. Coding harnesses name themselves and
+    /// their version here, such as `claude-cli/2.1.139 (external, cli)`.
+    pub user_agent: Option<String>,
     /// Switchyard target that successfully served a response.
     pub served_model: Option<ModelId>,
     /// Arbitrary host-defined key/value metadata.
@@ -216,6 +222,7 @@ impl Metadata {
                 .as_deref()
                 .and_then(parse_bool),
             correlation_id: sy_header(headers, SWITCHYARD_REQUEST_ID_HEADER),
+            user_agent: header(headers, USER_AGENT_HEADER).map(str::to_string),
             ..Metadata::default()
         }
     }
@@ -485,6 +492,22 @@ mod tests {
         assert_eq!(root.agent_id, None);
         assert_eq!(root.parent_agent_id, None);
         assert!(!root.is_subagent);
+    }
+
+    #[test]
+    fn captures_the_user_agent_verbatim() {
+        let claude = metadata(&[
+            ("user-agent", " claude-cli/2.1.121 (external, cli) "),
+            ("x-claude-code-session-id", "claude-session"),
+        ]);
+        assert_eq!(
+            claude.user_agent.as_deref(),
+            Some("claude-cli/2.1.121 (external, cli)")
+        );
+        assert!(!claude.is_subagent);
+
+        assert_eq!(metadata(&[("user-agent", "")]).user_agent, None);
+        assert_eq!(metadata(&[]).user_agent, None);
     }
 
     #[test]

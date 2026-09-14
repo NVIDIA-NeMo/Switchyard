@@ -135,6 +135,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the tool. The decoder now reports `tool_use` when the completed output holds
   a `function_call` or `custom_tool_call`, or when it already decoded tool
   deltas, matching the buffered decoder.
+- **Outdated Claude Code on sub-agent routes** — Claude Code sends the child
+  identity header (`x-claude-code-agent-id`) that sub-agent routing needs only
+  from version 2.1.139. Older builds send just the session id, so their
+  sub-agent requests silently routed through the parent route. A route with a
+  `subagents` table now logs one warning naming the Claude Code version when it
+  sees an older build, and the sub-agent routing guide states the version floor.
+  `Metadata` gains a `user_agent` field for this check.
 - **Encrypted-only reasoning items open no summary part** — the Responses
   stream encoder opened a `reasoning_summary_part` for every reasoning item and
   closed it only when text had streamed, so an encrypted-only item left a part
