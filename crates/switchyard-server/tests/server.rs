@@ -368,8 +368,14 @@ async fn upstream_messages_requires_forwarded_oauth(
             .get("anthropic-version")
             .and_then(|value| value.to_str().ok())
             == Some("2023-06-01")
-        && !headers.contains_key("chatgpt-account-id")
-        && !headers.contains_key("x-openai-fedramp");
+        && headers
+            .get("chatgpt-account-id")
+            .and_then(|value| value.to_str().ok())
+            == Some("account-123")
+        && headers
+            .get("x-openai-fedramp")
+            .and_then(|value| value.to_str().ok())
+            == Some("true");
     if !has_expected_headers {
         return (
             StatusCode::UNAUTHORIZED,
@@ -422,8 +428,14 @@ async fn upstream_responses_requires_forwarded_auth(
             .get("x-openai-fedramp")
             .and_then(|value| value.to_str().ok())
             == Some("true")
-        && !headers.contains_key("x-api-key")
-        && !headers.contains_key("anthropic-beta");
+        && headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok())
+            == Some("provider-api-key")
+        && headers
+            .get("anthropic-beta")
+            .and_then(|value| value.to_str().ok())
+            == Some("provider-beta");
     if !has_expected_headers {
         return (
             StatusCode::UNAUTHORIZED,
@@ -2316,8 +2328,8 @@ target = "claude"
         &[
             ("authorization", "Bearer claude-oauth-token"),
             ("anthropic-beta", "oauth-2025-04-20,unsupported-beta"),
-            ("chatgpt-account-id", "must-not-cross-providers"),
-            ("x-openai-fedramp", "must-not-cross-providers"),
+            ("chatgpt-account-id", "account-123"),
+            ("x-openai-fedramp", "true"),
         ],
     )
     .await?;
@@ -2372,8 +2384,8 @@ target = "openai"
             ("authorization", "Bearer codex-login-token"),
             ("chatgpt-account-id", "account-123"),
             ("x-openai-fedramp", "true"),
-            ("x-api-key", "must-not-cross-providers"),
-            ("anthropic-beta", "oauth-must-not-cross-providers"),
+            ("x-api-key", "provider-api-key"),
+            ("anthropic-beta", "provider-beta"),
         ],
     )
     .await?;

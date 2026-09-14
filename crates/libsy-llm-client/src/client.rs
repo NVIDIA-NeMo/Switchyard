@@ -521,7 +521,8 @@ impl TranslatingLlmClient {
     /// `http_headers` are carried through as the request's
     /// [`Metadata::http_headers`]. Backends with `forward_auth` disabled forward only
     /// allowed metadata headers; `forward_auth` backends forward all application
-    /// headers. Transport headers are always rebuilt. Pass `None` to forward nothing.
+    /// headers. All backends reachable through a forwarding route must use the same
+    /// provider. Transport headers are always rebuilt. Pass `None` to forward nothing.
     pub async fn call_rewrite_model_raw(
         &self,
         raw_http_request: Value,

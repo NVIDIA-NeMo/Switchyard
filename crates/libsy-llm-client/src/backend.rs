@@ -45,7 +45,9 @@ pub struct HttpBackendConfig {
     pub base_url: String,
     /// API key for the provider, loaded by the caller. `None` sends no configured auth.
     pub api_key: Option<String>,
-    /// Whether this backend forwards the caller's provider credential instead.
+    /// Whether this backend forwards the caller's provider credential and application headers.
+    ///
+    /// All backends reachable through a forwarding route must use the same provider.
     pub forward_auth: bool,
     /// Custom headers added to every outbound call to this backend.
     ///
