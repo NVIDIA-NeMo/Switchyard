@@ -49,6 +49,27 @@ fn preparing_a_target_prompt_invalidates_exact_replay() -> TestResult {
     Ok(())
 }
 
+// Rebuilding for target instructions must preserve the Responses conversation link.
+#[test]
+fn responses_previous_response_id_survives_target_prompt() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({"model": "route", "input": "hi", "previous_response_id": "resp_1"});
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(&mut request, &"target".into(), Some("target prompt"));
+
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+
+    assert_eq!(output["instructions"], "target prompt");
+    assert_eq!(output["previous_response_id"], "resp_1");
+    Ok(())
+}
+
 // Model-only preparation retains provider fields while aligning exact replay with the target.
 #[test]
 fn preparing_without_a_prompt_preserves_exact_replay() -> TestResult {

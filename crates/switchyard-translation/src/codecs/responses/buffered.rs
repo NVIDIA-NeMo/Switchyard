@@ -1795,6 +1795,7 @@ fn copy_responses_request_extensions(
     for field in [
         "metadata",
         "parallel_tool_calls",
+        "previous_response_id",
         "prompt_cache_key",
         "prompt_cache_retention",
         "safety_identifier",
