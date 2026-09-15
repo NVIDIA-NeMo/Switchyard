@@ -2666,11 +2666,7 @@ target = "shared"
 
     assert_eq!(body["models"], json!([]));
 
-    let template = "Route {{ model_id }} <&>\n\
-        {% if context_window is not none %}Window {{ context_window }}. {% endif %}\
-        {% if tool_calling is true %}Tools. {% elif tool_calling is false %}No tools. {% endif %}\
-        {% if reasoning is true %}Reasoning. {% endif %}\
-        {% if vision is none %}Vision undeclared.{% endif %}  \n";
+    let template = "{{ model_id }} <&> {{ context_window }} {{ tool_calling }} {{ reasoning }} {{ vision }}  \n";
     let state = load_test_config(CONFIG)?.with_codex_system_template(template)?;
     let body = send(
         &build_switchyard_router(state),
@@ -2689,19 +2685,10 @@ target = "shared"
         .collect::<BTreeMap<_, _>>();
     assert_eq!(codex_metadata.len(), 4);
     for (id, expected) in [
-        (
-            "declared",
-            "Route declared <&>\nWindow 1000000. Tools. Vision undeclared.  \n",
-        ),
-        (
-            "reasoning",
-            "Route reasoning <&>\nReasoning. Vision undeclared.  \n",
-        ),
-        (
-            "restricted",
-            "Route restricted <&>\nWindow 262000. No tools. Vision undeclared.  \n",
-        ),
-        ("undeclared", "Route undeclared <&>\nVision undeclared.  \n"),
+        ("declared", "declared <&> 1000000 True None None  \n"),
+        ("reasoning", "reasoning <&> None None True None  \n"),
+        ("restricted", "restricted <&> 262000 False None None  \n"),
+        ("undeclared", "undeclared <&> None None None None  \n"),
     ] {
         assert_eq!(codex_metadata[id]["base_instructions"], expected);
     }

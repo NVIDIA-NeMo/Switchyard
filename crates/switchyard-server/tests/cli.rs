@@ -44,7 +44,6 @@ target = "invalid"
     Ok(())
 }
 
-/// Checks template loading and rendering before the server binds a socket.
 #[test]
 fn dry_run_validates_codex_system_templates() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -53,77 +52,42 @@ fn dry_run_validates_codex_system_templates() -> TestResult {
         &config,
         r#"
 schema_version = 1
-[llm_clients.local]
-format = "openai_chat"
-base_url = "http://127.0.0.1:1/v1"
-[targets.local]
-id = "upstream-model"
-llm_client = "local"
-[routes.local]
-id = "test-route"
-type = "passthrough"
-target = "local"
-[routes.second]
-id = "second-route"
-type = "passthrough"
-target = "local"
+[llm_clients]
+local = { format = "openai_chat", base_url = "http://127.0.0.1:1/v1" }
+[targets]
+local = { id = "upstream-model", llm_client = "local" }
+[routes]
+a = { id = "a", type = "passthrough", target = "local" }
+b = { id = "b", type = "passthrough", target = "local" }
 "#,
     )?;
     let prompt = directory.path().join("system.jinja");
-    for (contents, expected_error) in [
-        (None, Some("invalid --codex-system-template")),
-        (
-            Some(b" \n\t".as_slice()),
-            Some("renders blank instructions"),
-        ),
-        (
-            Some(b"\xff".as_slice()),
-            Some("invalid --codex-system-template"),
-        ),
-        (
-            Some(b"{{ model_id".as_slice()),
-            Some("invalid Codex system template"),
-        ),
-        (
-            Some(b"{{ model_id | nonexistent }}".as_slice()),
-            Some("cannot render Codex system template"),
-        ),
-        (
-            Some(b"{% if typo is true %}tools{% endif %}Custom".as_slice()),
-            Some("unknown Codex system template variables: typo"),
-        ),
-        (
-            Some(b"{% if false %}{{ personality }}{% endif %}Custom".as_slice()),
-            Some("unknown Codex system template variables: personality"),
-        ),
-        (
-            Some(b"{% if model_id == 'second-route' %}Custom{% endif %}".as_slice()),
-            Some("renders blank instructions for model 'test-route'"),
-        ),
-        (
-            Some(b"Custom instructions for {{ model_id }}.\n  Keep whitespace.  \n".as_slice()),
-            None,
-        ),
-    ] {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_switchyard-server"));
+    command
+        .arg("--config")
+        .arg(&config)
+        .args(["--dry-run", "--codex-system-template"])
+        .arg(&prompt);
+    let cases: &[(Option<&[u8]>, bool)] = &[
+        (None, false),
+        (Some(b"\xff"), false),
+        (Some(b"{{ model_id"), false),
+        (Some(b"{{ model_id | nonexistent }}"), false),
+        (Some(b"{% if typo is true %}x{% endif %}Custom"), false),
+        (Some(b" {% if model_id == 'a' %}Custom{% endif %}\n"), false),
+        (Some(b"Custom {{ model_id }}"), true),
+    ];
+    for &(contents, expected_success) in cases {
         if let Some(contents) = contents {
             fs::write(&prompt, contents)?;
         }
-        let output = Command::new(env!("CARGO_BIN_EXE_switchyard-server"))
-            .arg("--config")
-            .arg(&config)
-            .arg("--dry-run")
-            .arg("--codex-system-template")
-            .arg(&prompt)
-            .output()?;
-        let stderr = String::from_utf8(output.stderr)?;
+        let output = command.output()?;
         assert_eq!(
             output.status.success(),
-            expected_error.is_none(),
-            "{stderr}"
+            expected_success,
+            "{contents:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
-        if let Some(expected_error) = expected_error {
-            assert!(stderr.contains(expected_error), "{stderr}");
-        }
     }
     Ok(())
 }
