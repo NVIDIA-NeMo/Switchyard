@@ -145,11 +145,12 @@ fn emit_routing_observations(
     }
 }
 
-/// Serve one offloaded call and fulfill its promise.
+/// Run one model call and return its result to the algorithm.
 ///
-/// Errors only when the promise itself could not be fulfilled; a call that failed on every
-/// candidate is forwarded to the algorithm as an `Err`. A reader that stopped waiting (a judge
-/// past its deadline, a lost hedge) is not a failure of the run.
+/// If every candidate fails, pass the error to the algorithm. Ignore
+/// `DriverError::ResponseDropped` when the algorithm has stopped waiting, such
+/// as after a judge timeout or when another concurrent call supplied the answer.
+/// Return any other error from `CallModel::respond`.
 async fn serve(
     clients: ClientRouter,
     call: CallModel,

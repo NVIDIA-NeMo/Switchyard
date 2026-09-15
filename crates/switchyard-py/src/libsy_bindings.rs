@@ -76,6 +76,10 @@ fn header_map_from_python(headers: &HashMap<String, String>) -> PyResult<http::H
 }
 
 /// Classifier settings shared by standalone and stage-router classifiers.
+///
+/// `timeout_ms` limits the wait for a complete classifier response, including
+/// retries and stream reading. It defaults to `10000` milliseconds and must be
+/// at least `1`. The routing algorithm checks this minimum when it is constructed.
 #[pyclass(
     name = "TaskClassifierConfig",
     module = "switchyard.libsy",
@@ -94,6 +98,10 @@ impl PyTaskClassifierConfig {
 }
 
 /// Settings for response-based escalation classification.
+///
+/// `timeout_ms` limits the wait for a complete classifier response, including
+/// retries and stream reading. It defaults to `10000` milliseconds and must be
+/// at least `1`. The routing algorithm checks this minimum when it is constructed.
 #[pyclass(
     name = "EscalationClassifierConfig",
     module = "switchyard.libsy",
@@ -145,6 +153,10 @@ impl PyEscalationClassifierConfig {
 }
 
 /// Settings for a classifier with a user-supplied verdict schema.
+///
+/// `timeout_ms` limits the wait for a complete classifier response, including
+/// retries and stream reading. It defaults to `10000` milliseconds and must be
+/// at least `1`. The routing algorithm checks this minimum when it is constructed.
 #[pyclass(
     name = "CustomClassifierConfig",
     module = "switchyard.libsy",

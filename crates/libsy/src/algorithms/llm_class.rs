@@ -301,8 +301,8 @@ pub struct TaskClassifierConfig {
     pub contract: ClassifierContractConfig,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
-    /// Deadline in milliseconds for one judge call, retries included; past it the route
-    /// continues without a verdict.
+    /// Maximum wait in milliseconds for a complete judge response, including
+    /// retries and stream reading. The route continues without a verdict on timeout.
     pub timeout_ms: u64,
 }
 
@@ -403,7 +403,6 @@ impl TaskClassifierConfig {
                 ),
             });
         }
-        // The judge's runtime limits are checked by their constructor.
         JudgeRuntimeConfig::new(self.max_output_tokens, self.timeout_ms)?;
         if self.message_hash_fallback && self.classify_trigger != ClassifyTrigger::NewSession {
             return Err(LibsyError::AlgorithmError {
@@ -451,7 +450,8 @@ pub struct CustomClassifierConfig {
     pub recent_turn_window: Option<usize>,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
-    /// Deadline in milliseconds for one judge call, retries included.
+    /// Maximum wait in milliseconds for a complete judge response, including
+    /// retries and stream reading.
     pub timeout_ms: u64,
 }
 
@@ -475,7 +475,6 @@ impl CustomClassifierConfig {
     }
 
     fn validate(&self) -> Result<()> {
-        // The judge's runtime limits are checked by their constructor.
         JudgeRuntimeConfig::new(self.max_output_tokens, self.timeout_ms)?;
         if self.message_hash_fallback && self.classify_trigger != ClassifyTrigger::NewSession {
             return Err(LibsyError::AlgorithmError {
@@ -578,7 +577,8 @@ pub enum LlmClassifierConfig {
         config: EscalationJudgeConfig,
         /// Maximum completion tokens available to the escalation verdict.
         max_output_tokens: u64,
-        /// Deadline in milliseconds for one escalation judge call, retries included.
+        /// Maximum wait in milliseconds for a complete escalation judge response,
+        /// including retries and stream reading.
         timeout_ms: u64,
     },
     /// Routes among model categories using a user-supplied schema and policy.
@@ -763,7 +763,6 @@ impl Algorithm for LlmTaskClassifier {
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::Duration;
 
     use parking_lot::Mutex;
     use serde_json::Value;
@@ -975,49 +974,6 @@ mod tests {
             unreachable_judge(),
         )
         .await?;
-
-        assert_eq!(selected_model, "capable");
-        assert_eq!(
-            response.llm_response.as_agg().map(completion_text),
-            Some("answer from capable".to_string())
-        );
-        Ok(())
-    }
-
-    /// The judge accepts the call and never answers; every other target answers normally.
-    fn stalled_judge() -> impl Serve {
-        |model: ModelId, request: Request| async move {
-            let model = model.to_string();
-            if model == "judge" {
-                std::future::pending::<()>().await;
-            }
-            Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(None, format!("answer from {model}"))),
-                metadata: request.metadata,
-                upstream_headers: http::HeaderMap::new(),
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn a_stalled_judge_fails_open_at_its_deadline() -> Result<()> {
-        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
-            config: TaskClassifierConfig {
-                timeout_ms: 50,
-                ..test_config(TEST_THRESHOLD)
-            },
-        })?);
-
-        let run = test_drive_with_models(
-            router,
-            classify_request(),
-            runtime_models(),
-            stalled_judge(),
-        );
-        let (selected_model, response) =
-            tokio::time::timeout(Duration::from_secs(5), run)
-                .await
-                .map_err(|error| LibsyError::external("waiting for the judge deadline", error))??;
 
         assert_eq!(selected_model, "capable");
         assert_eq!(

@@ -37,6 +37,9 @@ use tower::ServiceExt;
 type TestError = Box<dyn Error + Send + Sync>;
 type TestResult<T = ()> = Result<T, TestError>;
 
+#[path = "support/judge_timeout.rs"]
+mod judge_timeout;
+
 const ROUTE_MODEL: &str = "switchyard/random";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 

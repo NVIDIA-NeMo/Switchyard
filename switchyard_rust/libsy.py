@@ -3,8 +3,6 @@
 
 """Minimal bindings for Rust-owned libsy algorithms."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -64,6 +62,10 @@ if TYPE_CHECKING:
 
         ``max_output_tokens`` must be positive. Enabling ``message_hash_fallback``
         requires ``session_affinity``.
+
+        ``timeout_ms`` limits the wait for a complete classifier response, including
+        retries and stream reading. It defaults to ``10000`` milliseconds and must be
+        at least ``1``. The routing algorithm checks this minimum when it is constructed.
         """
 
         def __init__(
@@ -76,6 +78,7 @@ if TYPE_CHECKING:
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
             max_output_tokens: int = 4096,
+            timeout_ms: int = 10_000,
         ) -> None: ...
 
     @final
@@ -84,6 +87,10 @@ if TYPE_CHECKING:
 
         Counts and token limits must be positive, and ``window_message_chars``
         must be at least 50.
+
+        ``timeout_ms`` limits the wait for a complete classifier response, including
+        retries and stream reading. It defaults to ``10000`` milliseconds and must be
+        at least ``1``. The routing algorithm checks this minimum when it is constructed.
         """
 
         def __init__(
@@ -93,6 +100,7 @@ if TYPE_CHECKING:
             recent_turn_window: int = 28,
             window_message_chars: int = 500,
             max_output_tokens: int = 4096,
+            timeout_ms: int = 10_000,
             prompt: str | None = None,
             response_format_type: Literal["json_schema", "json_object"] = "json_schema",
         ) -> None: ...
@@ -156,6 +164,10 @@ if TYPE_CHECKING:
 
         Thresholds must remain within ``[0, 1]``, ``max_output_tokens`` must be
         positive, and ``message_hash_fallback`` requires ``session_affinity``.
+
+        ``timeout_ms`` limits the wait for a complete classifier response, including
+        retries and stream reading. It defaults to ``10000`` milliseconds and must be
+        at least ``1``. The routing algorithm checks this minimum when it is constructed.
         """
 
         def __init__(
@@ -167,6 +179,7 @@ if TYPE_CHECKING:
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
             max_output_tokens: int = 4096,
+            timeout_ms: int = 10_000,
             prompt: str | None = None,
             response_format_type: Literal["json_schema", "json_object"] = "json_schema",
         ) -> None: ...
@@ -182,7 +195,7 @@ if TYPE_CHECKING:
         def capability(
             *,
             config: TaskClassifierConfig,
-        ) -> LlmClassifierConfig:
+        ) -> "LlmClassifierConfig":
             """Route by predicted task capability."""
             ...
 
@@ -190,7 +203,7 @@ if TYPE_CHECKING:
         def escalation(
             *,
             config: EscalationClassifierConfig,
-        ) -> LlmClassifierConfig:
+        ) -> "LlmClassifierConfig":
             """Call the efficient target first and escalate judged responses."""
             ...
 
@@ -199,7 +212,7 @@ if TYPE_CHECKING:
             *,
             default_target: str,
             config: CustomClassifierConfig,
-        ) -> LlmClassifierConfig:
+        ) -> "LlmClassifierConfig":
             """Route among runtime model groups using a schema-selected label.
 
             ``default_target`` names the group used when the judge fails or its

@@ -52,7 +52,7 @@ model name clients send to Switchyard.
 
 ## How the decision works
 
-The classifier target returns a structured verdict containing:
+The classifier target, called the judge, returns a structured verdict containing:
 
 - `p_solve`: the estimated probability that the weak model completes the task.
 - `capability_boundary`: `supported`, `uncertain`, `unsupported`, or `unmatched`.
@@ -69,11 +69,12 @@ greater than or equal to the applicable threshold. Otherwise it routes to
 
 An invalid, inconsistent, or unparseable verdict, or a judge failure, routes to
 `strong_target`. Raising either knob sends more traffic to the strong model.
-A judge call that has not answered within `timeout_ms` (default 10 seconds,
-client retries included) counts as a failure too: the route goes on without
-the verdict and records `reason=timeout` in the
-`switchyard_classifier_fail_open_total` counter, so a stalled judge provider
-never blocks the request.
+
+`timeout_ms` limits the wait for a complete judge response, including retries
+and stream reading. It defaults to `10000` milliseconds and must be at least
+`1`. On timeout, the route uses `strong_target` and records `reason=timeout`
+in `switchyard_classifier_fail_open_total`. The caller's deadline must allow
+time for both classification and completion; lower `timeout_ms` if needed.
 
 ## Judge model compatibility
 
@@ -116,7 +117,7 @@ for the server merge behavior.
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
-| `timeout_ms` | `10000` | Deadline for one judge call in milliseconds, client retries included. Past it the route fails open and records `reason=timeout`. Must be at least `1`. |
+| `timeout_ms` | `10000` | Maximum wait in milliseconds for a complete judge response, including retries and stream reading. On timeout, the route uses `strong_target` and records `reason=timeout`. Must be at least `1`. |
 
 ### Override the classifier prompt
 

@@ -207,7 +207,7 @@ pub trait Judge: Send + Sync {
         parse_json_verdict(response)
     }
 
-    /// How long one judge call may take, retries included, before the route goes on without it.
+    /// Maximum wait for a complete judge response, including retries and stream reading.
     fn timeout(&self) -> Duration {
         Duration::from_millis(DEFAULT_JUDGE_TIMEOUT_MS)
     }
@@ -274,13 +274,11 @@ where
         }
     }
 
-    /// Consults the judge, yielding `None` when it is unavailable or unintelligible.
+    /// Consults the judge and returns `None` when no usable verdict is available.
     ///
-    /// A judge is an optimization, not a dependency: failing the caller's request because the
-    /// judge is down would be worse than routing without it, so every failure — transport,
-    /// mid-stream, unparseable reply, or no reply within [`Judge::timeout`] — is logged and
-    /// folded into `None` for the policy's fallback branch. A closed driver stream is folded
-    /// too; the algorithm's next driver call surfaces it, so nothing is masked.
+    /// Logs request, stream, parsing, and timeout errors, then returns `None` so the
+    /// policy can choose a fallback. A closed driver stream also returns `None`;
+    /// the algorithm's next driver call reports that error.
     async fn verdict(
         &self,
         state: &mut State,
@@ -292,13 +290,37 @@ where
 
         tracing::info!(target = judge_model, "consulting llm judge");
         let deadline = self.judge.timeout();
-        let call = driver.call_model(
-            self.judge.build_request(state, request),
-            judge_models.to_vec(),
-        );
-        // Dropping the call abandons the host's in-flight request; the host tolerates the
-        // orphaned reply and `drive` cancels it once the run finishes.
-        let Ok(response) = tokio::time::timeout(deadline, call).await else {
+        let call = async {
+            let response = driver
+                .call_model(
+                    self.judge.build_request(state, request),
+                    judge_models.to_vec(),
+                )
+                .await
+                .inspect_err(|error| {
+                    self.report_fail_open(
+                        driver,
+                        safe_error_summary(error),
+                        libsy_error_reason(error),
+                    );
+                })
+                .ok()?;
+            response
+                .llm_response
+                .into_agg()
+                .await
+                .inspect_err(|error| {
+                    self.report_fail_open(
+                        driver,
+                        safe_client_error(error),
+                        client_error_reason(error),
+                    );
+                })
+                .ok()
+        };
+        // On timeout, stop waiting for the judge. `serve` ignores a late
+        // `ResponseDropped`, and `drive` cancels pending calls when the run ends.
+        let Ok(aggregate) = tokio::time::timeout(deadline, call).await else {
             self.report_fail_open(
                 driver,
                 format!("no verdict within {} ms", deadline.as_millis()),
@@ -306,21 +328,8 @@ where
             );
             return None;
         };
-        let response = response
-            .inspect_err(|error| {
-                self.report_fail_open(driver, safe_error_summary(error), libsy_error_reason(error));
-            })
-            .ok()?;
-        let aggregate = response
-            .llm_response
-            .into_agg()
-            .await
-            .inspect_err(|error| {
-                self.report_fail_open(driver, safe_client_error(error), client_error_reason(error));
-            })
-            .ok()?;
         self.judge
-            .parse(&aggregate)
+            .parse(&aggregate?)
             .inspect_err(|error| {
                 self.report_fail_open(driver, safe_error_summary(error), "parse_error");
             })

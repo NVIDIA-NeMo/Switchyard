@@ -256,8 +256,8 @@ pub struct LlmClassifierRouteConfig {
     /// Most completion tokens the judge verdict may use.
     #[serde(default = "default_classifier_max_output_tokens")]
     pub max_output_tokens: u64,
-    /// Deadline for one judge call in milliseconds, retries included. A judge that
-    /// has not answered by then fails open and the route continues without it.
+    /// Maximum wait in milliseconds for a complete judge response, including
+    /// retries and stream reading. On timeout, the route uses its fallback choice.
     #[serde(default = "default_classifier_timeout_ms")]
     pub timeout_ms: u64,
     /// Escalation mode: how many escalate verdicts latch the session, and how
@@ -481,8 +481,8 @@ pub struct StageClassifierConfig {
     /// Most completion tokens the judge verdict may use.
     #[serde(default = "default_classifier_max_output_tokens")]
     pub max_output_tokens: u64,
-    /// Deadline for one judge call in milliseconds, retries included. A judge that
-    /// has not answered by then fails open and the route continues without it.
+    /// Maximum wait in milliseconds for a complete judge response, including
+    /// retries and stream reading. On timeout, the route uses its fallback choice.
     #[serde(default = "default_classifier_timeout_ms")]
     pub timeout_ms: u64,
 }
