@@ -128,6 +128,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `input_text`, `input_image`, and `input_file` parts reached an Anthropic
   target as one JSON string. Both directions now carry typed text, image, and
   file blocks; plain-text results are unchanged.
+- **Stored Responses tool continuations stay on the selected model** — a
+  `function_call_output` sent with `previous_response_id`, where the matching
+  `function_call` lives in provider state, was decoded as ordinary user text. A
+  route with `classify_trigger = "user_turn"` then judged the turn again and
+  could switch models mid tool loop, and a Responses upstream received a user
+  message instead of the tool output. The output now stays a tool result, and
+  a stored `custom_tool_call_output` keeps its type when re-encoded. An output
+  with no matching call and no `previous_response_id` still degrades to
+  readable user text.
 - **Return HTTP 502 for failed Responses generations** — a provider's HTTP 200
   response with `status: "failed"` could appear as an empty successful answer.
   Switchyard now counts the call as an error and tries another model when the

@@ -3,7 +3,7 @@
 
 //! Buffered codec for OpenAI Responses request and response JSON.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
 
@@ -91,8 +91,17 @@ impl FormatCodec for OpenAiResponsesCodec {
                 }],
             });
         }
+        // With `previous_response_id`, the provider holds the earlier turns, so a tool output
+        // may answer a call that is not in this body.
+        let stored_state = body
+            .get("previous_response_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty());
+        let mut custom_call_outputs = Vec::new();
         let (messages, instructions) = decode_responses_input(
             body.get("input").unwrap_or(&Value::String(String::new())),
+            stored_state,
+            &mut custom_call_outputs,
             &mut diagnostics,
             policy,
         )?;
@@ -143,6 +152,10 @@ impl FormatCodec for OpenAiResponsesCodec {
         );
         crate::codex_namespaces::attach_tool_namespaces(&mut request.extensions, tool_namespaces);
         crate::codex_custom_tools::attach_custom_tools(&mut request.extensions, custom_tools);
+        crate::codex_custom_tools::attach_custom_call_outputs(
+            &mut request.extensions,
+            custom_call_outputs,
+        );
         crate::codex_custom_tools::attach_additional_tools(
             &mut request.extensions,
             additional_tools,
@@ -193,6 +206,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 _policy,
                 crate::codex_namespaces::tool_namespaces(&request.extensions),
                 &crate::codex_custom_tools::custom_tool_names(&request.extensions),
+                crate::codex_custom_tools::custom_call_outputs(&request.extensions),
             )?,
         );
         if let Some(additional) = crate::codex_custom_tools::additional_tools(&request.extensions) {
@@ -404,6 +418,8 @@ impl FormatCodec for OpenAiResponsesCodec {
 /// item from flushing pending reasoning or disturbing tool-call grouping.
 fn decode_responses_input(
     value: &Value,
+    stored_state: bool,
+    custom_call_outputs: &mut Vec<String>,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
 ) -> Result<(Vec<Message>, Vec<InstructionBlock>)> {
@@ -545,7 +561,7 @@ fn decode_responses_input(
                             arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
                         });
                     }
-                    Some("function_call_output") | Some("custom_tool_call_output") => {
+                    kind @ (Some("function_call_output") | Some("custom_tool_call_output")) => {
                         let tool_call_id = item
                             .get("call_id")
                             .and_then(Value::as_str)
@@ -559,6 +575,34 @@ fn decode_responses_input(
                                 text: output.map(json_string).unwrap_or_default(),
                             }],
                         };
+                        // An output whose call is not in this body answers a call the provider
+                        // holds behind `previous_response_id`; it stays a tool result so routing
+                        // sees a tool continuation, not a new user turn. Without stored state
+                        // the request is malformed, and the output becomes readable user text.
+                        let answers_pending_call = pending_tool_calls
+                            .iter()
+                            .any(|call| call.id == tool_call_id);
+                        if !answers_pending_call && !stored_state {
+                            let output_text = text_from_blocks(&content, " ");
+                            let message = Message::text(
+                                Role::User,
+                                format!("Tool result {tool_call_id}: {output_text}"),
+                            );
+                            push_responses_non_tool_message(
+                                &mut messages,
+                                &mut pending_tool_calls,
+                                &mut pending_tool_outputs,
+                                &mut deferred_messages,
+                                &mut pending_reasoning,
+                                message,
+                            );
+                            continue;
+                        }
+                        // The encoder types an output by the call it answers; a stored custom
+                        // output has no call in this body, so its type is carried separately.
+                        if !answers_pending_call && kind == Some("custom_tool_call_output") {
+                            custom_call_outputs.push(tool_call_id.clone());
+                        }
                         pending_tool_outputs.push(ToolResult {
                             tool_call_id,
                             content,
@@ -728,11 +772,6 @@ fn flush_responses_tool_block(
     deferred_messages: &mut Vec<Message>,
     pending_reasoning: &mut Vec<ContentBlock>,
 ) {
-    let tool_call_ids = pending_tool_calls
-        .iter()
-        .map(|call| call.id.clone())
-        .collect::<HashSet<_>>();
-
     if !pending_tool_calls.is_empty() {
         let mut content = std::mem::take(pending_reasoning);
         content.extend(
@@ -747,19 +786,10 @@ fn flush_responses_tool_block(
     }
 
     for output in std::mem::take(pending_tool_outputs) {
-        if tool_call_ids.contains(&output.tool_call_id) {
-            messages.push(Message {
-                role: Role::User,
-                content: vec![ContentBlock::ToolResult(output)],
-            });
-        } else {
-            let tool_call_id = output.tool_call_id;
-            let output_text = text_from_blocks(&output.content, " ");
-            messages.push(Message::text(
-                Role::User,
-                format!("Tool result {tool_call_id}: {output_text}"),
-            ));
-        }
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(output)],
+        });
     }
 
     messages.append(deferred_messages);
@@ -1142,11 +1172,12 @@ fn encode_responses_input(
     policy: &TranslationPolicy,
     namespaces: Option<&Map<String, Value>>,
     custom_tools: &std::collections::HashSet<String>,
+    mut custom_call_ids: std::collections::HashSet<String>,
 ) -> Result<Value> {
-    // Call ids of freeform tool calls emitted by this pass. A tool result is typed by the call it
-    // answers, and Responses history always lists the call before its output, so recording ids
-    // as calls are encoded is enough to type the outputs that follow.
-    let mut custom_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Call ids of freeform tool calls emitted by this pass, seeded with the ids of stored-state
+    // custom outputs. A tool result is typed by the call it answers, and Responses history
+    // always lists the call before its output, so recording ids as calls are encoded is enough
+    // to type the outputs that follow.
     if messages.len() == 1
         && matches!(messages[0].role, Role::User)
         && messages[0].content.len() == 1

@@ -8,8 +8,8 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    FormatId, LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
-    prepare_request_for_target, sanitize_anthropic_tool_use_id,
+    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationPolicy,
+    WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -3114,5 +3114,51 @@ fn tool_result_media_survives_anthropic_and_responses_translation() -> TestResul
             }
         ])
     );
+    Ok(())
+}
+
+// Verifies Responses tool outputs answering calls held behind `previous_response_id` stay
+// tool results, so a user-turn classifier does not treat them as a new user message, and
+// re-encode with their original item types.
+#[test]
+fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
+    let engine = TranslationEngine::default();
+    let outputs = json!([
+        {"type": "function_call_output", "call_id": "call_weather", "output": "sunny"},
+        {"type": "custom_tool_call_output", "call_id": "call_shell", "output": "README.md"}
+    ]);
+    let body = json!({
+        "model": "gpt-5.2",
+        "previous_response_id": "resp_1",
+        "input": outputs
+    });
+
+    let request = engine
+        .decode_request(
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .request;
+    let tool_call_ids = request
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .map(|block| match block {
+            ContentBlock::ToolResult(result) => Ok(result.tool_call_id.as_str()),
+            other => Err(format!("expected a tool result, got {other:?}")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(tool_call_ids, ["call_weather", "call_shell"]);
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &normalized_policy(),
+        )?
+        .body;
+    assert_eq!(output["input"], outputs);
     Ok(())
 }
