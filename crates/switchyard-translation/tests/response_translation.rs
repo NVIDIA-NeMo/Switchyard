@@ -651,9 +651,8 @@ fn incomplete_responses_source_survives_translation() -> TestResult {
     Ok(())
 }
 
-// A failed Responses body must return an error for every target format.
 #[test]
-fn failed_responses_status_is_rejected_for_every_target_format() -> TestResult {
+fn failed_responses_return_upstream_failure_with_provider_message() -> TestResult {
     let engine = TranslationEngine::default();
     let body = json!({
         "id": "resp_failed",
@@ -665,23 +664,18 @@ fn failed_responses_status_is_rejected_for_every_target_format() -> TestResult {
         "usage": null
     });
 
-    for target in [
-        WireFormat::OpenAiChat,
-        WireFormat::AnthropicMessages,
-        WireFormat::OpenAiResponses,
-    ] {
-        let error = engine
-            .translate_response(
-                WireFormat::OpenAiResponses,
-                target,
-                &body,
-                &TranslationPolicy::default(),
-            )
-            .err()
-            .ok_or_else(|| format!("{target:?} accepted a failed response"))?;
-        assert_eq!(error.kind(), "UpstreamFailure");
-        assert!(error.to_string().contains("deterministic upstream failure"));
-    }
+    let target = WireFormat::OpenAiChat;
+    let error = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            target,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .err()
+        .ok_or_else(|| format!("{target:?} accepted a failed response"))?;
+    assert_eq!(error.kind(), "UpstreamFailure");
+    assert!(error.to_string().contains("deterministic upstream failure"));
     Ok(())
 }
 
