@@ -809,15 +809,18 @@ mod tests {
         );
     }
 
+    /// Checks that the warning and the picker agree on the efficient ceiling.
     #[test]
     fn capable_first_warns_when_production_cannot_clear_threshold() {
         #[derive(Clone, Default)]
         struct Log(Arc<parking_lot::Mutex<Vec<u8>>>);
         impl std::io::Write for Log {
+            /// Captures tracing output for assertions after the subscriber scope ends.
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
                 self.0.lock().extend_from_slice(bytes);
                 Ok(bytes.len())
             }
+            /// No flush is needed because writes append directly to the shared buffer.
             fn flush(&mut self) -> std::io::Result<()> {
                 Ok(())
             }
