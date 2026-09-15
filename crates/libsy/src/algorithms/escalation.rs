@@ -107,10 +107,17 @@ impl Classifier<State> for EscalationClassifier {
             }
             Err(e) => return Err(e),
         };
-        // The call resolves when its stream handle arrives; transport can still fail while
-        // buffering. Fall back only for that availability failure and keep other errors typed.
+        // The call resolves when its stream handle arrives; context and transport failures can
+        // still occur while buffering.
         let agg = match efficient_response.llm_response.into_agg().await {
             Ok(agg) => agg,
+            Err(LlmClientError::ContextWindowExceeded { .. }) => {
+                driver.set_evidence(serde_json::json!({
+                    "source": "fallback",
+                    "reason_code": "context_window",
+                }));
+                return Ok((decisive(&capable), None));
+            }
             Err(LlmClientError::Transport { .. }) => {
                 driver.set_evidence(serde_json::json!({
                     "source": "fallback",
@@ -386,30 +393,38 @@ mod tests {
 
     #[tokio::test]
     async fn falls_back_to_capable_when_efficient_overflows() -> Result<()> {
-        let serve = |target: ModelId, _request: Request| async move {
-            match target.as_str() {
-                "efficient" => Err(LlmClientError::ContextWindowExceeded {
-                    model: target,
-                    message: "prompt is too long".to_string(),
-                }),
-                "judge" => panic!("the judge must not be consulted when efficient overflows"),
-                _ => Ok(reply("capable answer")),
-            }
-        };
+        for streamed in [false, true] {
+            let serve = move |target: ModelId, _request: Request| async move {
+                match target.as_str() {
+                    "efficient" if streamed => {
+                        Ok(streamed_then_error(LlmClientError::ContextWindowExceeded {
+                            model: target,
+                            message: "prompt is too long".to_string(),
+                        }))
+                    }
+                    "efficient" => Err(LlmClientError::ContextWindowExceeded {
+                        model: target,
+                        message: "prompt is too long".to_string(),
+                    }),
+                    "judge" => {
+                        panic!("the judge must not be consulted when efficient overflows")
+                    }
+                    _ => Ok(reply("capable answer")),
+                }
+            };
+            let mut request = classify_request();
+            request.llm_request.stream = streamed;
 
-        let (selected_model, response) = test_drive_with_models(
-            escalation_router()?,
-            classify_request(),
-            runtime_models(),
-            serve,
-        )
-        .await?;
+            let (selected_model, response) =
+                test_drive_with_models(escalation_router()?, request, runtime_models(), serve)
+                    .await?;
 
-        assert_eq!(selected_model, "capable");
-        assert_eq!(
-            response.llm_response.as_agg().map(completion_text),
-            Some("capable answer".to_string())
-        );
+            assert_eq!(selected_model, "capable");
+            assert_eq!(
+                response.llm_response.as_agg().map(completion_text),
+                Some("capable answer".to_string())
+            );
+        }
         Ok(())
     }
 

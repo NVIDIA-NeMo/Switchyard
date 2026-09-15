@@ -13,6 +13,7 @@ from switchyard.libsy import (
     Algorithm,
     ContextWindowExceededError,
     CustomClassifierConfig,
+    EscalationClassifierConfig,
     LlmClassifierConfig,
     LlmResponse,
     OutcomeMetadata,
@@ -461,6 +462,47 @@ async def test_context_window_failure_falls_back_to_the_next_model() -> None:
             "content": [{"type": "text", "text": "Use the efficient tier."}],
         }
     ]
+
+
+async def test_escalation_falls_back_on_first_stream_context_overflow() -> None:
+    async def overflow() -> AsyncIterator[dict[str, object]]:
+        if False:
+            yield {}
+        raise ContextWindowExceededError("weak first-event context overflow")
+
+    algorithm = algorithms.llm_classifier(
+        LlmClassifierConfig.escalation(
+            config=EscalationClassifierConfig(confirmations=1),
+        )
+    )
+    calls: list[list[str]] = []
+    outcome: RoutingOutcome | None = None
+    models = {
+        "judge": ["judge"],
+        "efficient": ["weak"],
+        "capable": ["strong"],
+        "any": ["weak", "strong"],
+    }
+
+    async for step in algorithm.run_stream(
+        {**request_body(), "stream": True}, models
+    ):
+        match step:
+            case Step.CallModel(call):
+                calls.append(call.models)
+                call.respond(LlmResponse.Stream(overflow()))
+            case Step.Done(done):
+                outcome = done
+
+    assert calls == [["weak"]]
+    assert outcome is not None
+    assert outcome.selected_model_ids == ["strong", "weak"]
+    assert outcome.response is None
+    assert outcome.metadata is not None
+    assert outcome.metadata.evidence == {
+        "source": "fallback",
+        "reason_code": "context_window",
+    }
 
 
 async def test_stage_router_applies_additive_tool_semantics() -> None:
