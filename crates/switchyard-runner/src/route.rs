@@ -26,6 +26,9 @@ pub struct ModelCapabilities {
     /// probe this, so a route opts in via config; undeclared routes advertise as
     /// non-reasoning to Codex (fail closed).
     pub reasoning: Option<bool>,
+    /// Whether the routed model accepts reasoning summary controls. When unset,
+    /// model discovery preserves the legacy behavior and follows `reasoning`.
+    pub reasoning_summaries: Option<bool>,
     /// Whether the routed model accepts image input. Declared per route for the same
     /// reason as `reasoning`, and failing closed matters more here: a route may
     /// resolve to a target with no vision at all.

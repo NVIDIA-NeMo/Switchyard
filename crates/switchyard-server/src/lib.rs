@@ -1548,6 +1548,7 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
     // Option separately for clients that want the undeclared state.
     let tool_calling = capabilities.tool_calling.unwrap_or(true);
     let reasoning = capabilities.reasoning.unwrap_or(false);
+    let reasoning_summaries = capabilities.reasoning_summaries.unwrap_or(reasoning);
     json!({
         "slug": model,
         "display_name": model,
@@ -1565,7 +1566,13 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         // Required `ModelInfo` string. Unlike the launcher, the server cannot read
         // Codex's bundled prompt, so it sends a minimal stub.
         "base_instructions": "You are Codex, a coding agent.",
-        "supports_reasoning_summaries": reasoning,
+        // Codex renamed this capability. 0.144.x reads `supports_reasoning_summaries`
+        // and gates the whole reasoning control on it, so a false there also drops
+        // reasoning effort. 0.145+ reads `supports_reasoning_summary_parameter` and
+        // only omits `reasoning.summary`. Publish both so either version sees the
+        // route's declared value.
+        "supports_reasoning_summaries": reasoning_summaries,
+        "supports_reasoning_summary_parameter": reasoning_summaries,
         "default_reasoning_summary": "none",
         "support_verbosity": reasoning,
         "default_verbosity": if reasoning { json!("low") } else { Value::Null },

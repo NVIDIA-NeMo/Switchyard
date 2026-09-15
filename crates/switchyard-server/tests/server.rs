@@ -2642,6 +2642,13 @@ type = "passthrough"
 target = "shared"
 reasoning = true
 
+[routes.reasoning_without_summaries]
+id = "reasoning-without-summaries"
+type = "passthrough"
+target = "shared"
+reasoning = true
+reasoning_summaries = false
+
 [routes.undeclared]
 id = "undeclared"
 type = "passthrough"
@@ -2671,7 +2678,7 @@ target = "shared"
         .collect::<BTreeMap<_, _>>();
     // This checks the shape the server emits. That Codex 0.144.5 actually decodes it
     // (context_window: null included) is verified by a live Codex run in SWITCH-1225.
-    assert_eq!(codex_metadata.len(), 4);
+    assert_eq!(codex_metadata.len(), 5);
     assert_eq!(
         codex_metadata["declared"]["context_window"],
         json!(1_000_000)
@@ -2718,10 +2725,34 @@ target = "shared"
         json!(true)
     );
     assert_eq!(
+        codex_metadata["reasoning"]["supports_reasoning_summary_parameter"],
+        json!(true)
+    );
+    assert_eq!(
         codex_metadata["reasoning"]["support_verbosity"],
         json!(true)
     );
     assert_eq!(codex_metadata["reasoning"]["default_verbosity"], "low");
+    // Summary support defaults to reasoning for existing configurations, but routes
+    // that may select a target rejecting `reasoning.summary` can disable it.
+    assert_eq!(
+        codex_metadata["reasoning-without-summaries"]["default_reasoning_level"],
+        "xhigh"
+    );
+    assert_eq!(
+        codex_metadata["reasoning-without-summaries"]["supported_reasoning_levels"]
+            .as_array()
+            .map(Vec::len),
+        Some(4)
+    );
+    assert_eq!(
+        codex_metadata["reasoning-without-summaries"]["supports_reasoning_summaries"],
+        json!(false)
+    );
+    assert_eq!(
+        codex_metadata["reasoning-without-summaries"]["supports_reasoning_summary_parameter"],
+        json!(false)
+    );
     // An undeclared route: null context window, non-reasoning, but tools default on so Codex
     // remains usable when connected directly to the server.
     assert_eq!(codex_metadata["undeclared"]["context_window"], json!(null));
@@ -2735,6 +2766,10 @@ target = "shared"
     );
     assert_eq!(
         codex_metadata["undeclared"]["supports_reasoning_summaries"],
+        json!(false)
+    );
+    assert_eq!(
+        codex_metadata["undeclared"]["supports_reasoning_summary_parameter"],
         json!(false)
     );
     assert_eq!(codex_metadata["undeclared"]["shell_type"], "shell_command");
