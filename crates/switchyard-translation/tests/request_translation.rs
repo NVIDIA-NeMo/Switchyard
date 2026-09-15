@@ -3085,7 +3085,11 @@ fn tool_result_media_survives_anthropic_and_responses_translation() -> TestResul
             {"type": "function_call_output", "call_id": "call_1", "output": [
                 {"type": "input_text", "text": "media attached"},
                 {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U=", "detail": "low"},
-                {"type": "input_file", "file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+                {
+                    "type": "input_file",
+                    "file_data": "data:application/pdf;base64,ZG9jdW1lbnQ=",
+                    "filename": "report.pdf"
+                }
             ]}
         ]
     });
@@ -3110,7 +3114,8 @@ fn tool_result_media_survives_anthropic_and_responses_translation() -> TestResul
             },
             {
                 "type": "document",
-                "source": {"type": "base64", "data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+                "title": "report.pdf",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": "ZG9jdW1lbnQ="}
             }
         ])
     );

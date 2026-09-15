@@ -127,7 +127,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   direction a Responses `function_call_output` whose `output` was an array of
   `input_text`, `input_image`, and `input_file` parts reached an Anthropic
   target as one JSON string. Both directions now carry typed text, image, and
-  file blocks; plain-text results are unchanged.
+  file blocks; plain-text results are unchanged. OpenAI `file_data` encodes as
+  a valid Anthropic `document`: raw base64 with a `media_type`, the data-URI
+  prefix stripped, and the file name as `title`.
 - **Stored Responses tool continuations stay on the selected model** — a
   `function_call_output` sent with `previous_response_id`, where the matching
   `function_call` lives in provider state, was decoded as ordinary user text. A
