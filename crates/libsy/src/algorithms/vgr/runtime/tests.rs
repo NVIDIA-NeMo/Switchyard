@@ -171,6 +171,59 @@ fn is_turn_verification(request: &Request) -> bool {
         })
 }
 
+/// QA's reproduction from the bug report, as filed.
+///
+/// Before the split this printed `target=cloud-tier calls=["local-tier",
+/// "cloud-tier"]`: the attempt, then an immediate escalation with no rung
+/// between them. The assertion pins that second call as local.
+///
+/// Note this closure answers every call with the same truncated response, so
+/// the readout it feeds the rung is itself truncated and reads as
+/// indeterminate -- the turn still escalates, but only after the evidence was
+/// gathered and judged, which is the behaviour the report asked for.
+#[tokio::test]
+async fn max_tokens_truncated_local_attempt_routing() -> Result<()> {
+    let log = CallLog::default();
+    let seen = log.clone();
+    let route = Arc::new(super::super::Vgr::new(active()).expect("builds"));
+
+    let (target, _response) = test_drive(
+        route,
+        request("Write a detailed explanation of quicksort."),
+        move |t: ModelId, _r: Request| {
+            let log = seen.clone();
+            async move {
+                log.record(&t);
+                // A substantial, mostly-complete local answer that got cut off
+                // by the token budget, not a genuinely empty/failed response.
+                let mut agg = text_response(
+                    None,
+                    "Quicksort is a divide-and-conquer algorithm. It picks a pivot, \
+                     partitions the array around it, then recurses on each half. The \
+                     average case is O(n log n) because"
+                        .to_string(),
+                );
+                agg.outputs[0].stop_reason = Some(StopReason::MaxTokens);
+                Ok(Response {
+                    llm_response: LlmResponse::Agg(agg),
+                    metadata: None,
+                })
+            }
+        },
+    )
+    .await?;
+
+    eprintln!("target={target:?} calls={:?}", log.targets());
+    // The regression's signature: exactly two calls, the second to cloud.
+    assert_ne!(
+        log.targets(),
+        vec![LOCAL, CLOUD],
+        "attempt escalated with no rung in between"
+    );
+    assert_eq!(log.targets()[1], LOCAL, "the second call must be a rung");
+    Ok(())
+}
+
 /// Records every target called, in order, so cost can be asserted.
 #[derive(Clone, Default)]
 struct CallLog(Arc<Mutex<Vec<String>>>);

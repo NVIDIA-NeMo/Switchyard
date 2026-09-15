@@ -332,7 +332,7 @@ pub(super) fn task_type_abstained(response: &AggLlmResponse) -> bool {
 
 fn normalized_task_type(response: &AggLlmResponse) -> Option<String> {
     Some(
-        response_text(response)?
+        verdict_text(response)?
             .trim()
             .to_lowercase()
             .trim_end_matches('.')
@@ -346,7 +346,7 @@ fn normalized_task_type(response: &AggLlmResponse) -> Option<String> {
 /// answer often still prefixes it with a sentence, and the concluding line is
 /// the part that is the answer.
 pub(super) fn parse_witness(response: &AggLlmResponse) -> Option<String> {
-    let text = response_text(response)?;
+    let text = verdict_text(response)?;
     let last = text
         .lines()
         .map(str::trim)
@@ -400,7 +400,7 @@ pub(super) fn build_request(
 /// and a trailing period or exclamation mark. Anything else — prose, hedging,
 /// a line carrying both words — is indeterminate.
 pub(super) fn parse_verdict(response: &AggLlmResponse) -> Tri {
-    let Some(text) = response_text(response) else {
+    let Some(text) = verdict_text(response) else {
         return Tri::Unknown;
     };
     let Some(last) = text.lines().map(str::trim).rfind(|line| !line.is_empty()) else {
@@ -413,8 +413,17 @@ pub(super) fn parse_verdict(response: &AggLlmResponse) -> Tri {
     }
 }
 
-/// The assistant text of a response, if it produced any.
-pub(super) fn response_text(response: &AggLlmResponse) -> Option<String> {
+/// The assistant text of a verifier's reply, if it answered.
+///
+/// A reply that stopped for any reason other than finishing its turn did not
+/// deliver a verdict: one cut off at the output limit is indeterminate, because
+/// the word that matters may be the one that was cut. Use this only for
+/// verifier questions.
+///
+/// Not for the local attempt. A truncated *answer* is partial evidence the
+/// verification pipeline exists to judge, not an absence of one -- see
+/// [`response_text`].
+pub(super) fn verdict_text(response: &AggLlmResponse) -> Option<String> {
     let output = response.first_output()?;
     if output
         .stop_reason
@@ -422,6 +431,20 @@ pub(super) fn response_text(response: &AggLlmResponse) -> Option<String> {
     {
         return None;
     }
+    assistant_text(output)
+}
+
+/// The assistant text of a response, if it produced any.
+///
+/// Deliberately permissive about how generation stopped: this reads the local
+/// model's own attempt, and a long answer that ran out of output budget is
+/// still the candidate the rungs are there to judge.
+pub(super) fn response_text(response: &AggLlmResponse) -> Option<String> {
+    assistant_text(response.first_output()?)
+}
+
+/// The joined text blocks of one output, if any are non-empty.
+fn assistant_text(output: &switchyard_protocol::ResponseOutput) -> Option<String> {
     let text: String = output
         .content
         .iter()
