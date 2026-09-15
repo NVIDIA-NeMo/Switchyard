@@ -217,6 +217,9 @@ where
     judge: J,
     policy: P,
     evidence: Option<EvidenceFn<J::Verdict, P>>,
+    /// Runtime category the judge models are taken from; `Judge` unless a caller needs a
+    /// second judge alongside the route's own (the escalation gate).
+    judge_category: Category,
 }
 
 impl<J, P> JudgeClassifier<J, P>
@@ -230,7 +233,14 @@ where
             judge,
             policy,
             evidence: None,
+            judge_category: Category::Judge,
         }
+    }
+
+    /// Takes the judge models from `category` instead of [`Category::Judge`].
+    pub(crate) fn with_judge_category(mut self, category: Category) -> Self {
+        self.judge_category = category;
+        self
     }
 
     /// Enables bounded evidence for built-in judges without widening the public policy trait.
@@ -242,7 +252,7 @@ where
     /// Adds fail-open evidence only for evidence-enabled judges and preserves an earlier decision.
     fn report_fail_open(&self, driver: &Driver, error: String, reason: &'static str) {
         let judge_target = driver
-            .first_model_for(&Category::Judge)
+            .first_model_for(&self.judge_category)
             .map(|c| c.as_str())
             .unwrap_or("missing");
         report_fail_open(judge_target, error, reason);
@@ -347,10 +357,13 @@ where
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
-        let judge_models = driver.models_for(&Category::Judge);
+        let judge_models = driver.models_for(&self.judge_category);
         if judge_models.is_empty() {
             return Err(LibsyError::AlgorithmError {
-                message: "no models available for category Judge".to_string(),
+                message: format!(
+                    "no models available for category {}",
+                    self.judge_category.as_str()
+                ),
             });
         }
         let verdict = self.verdict(state, request, driver, judge_models).await;

@@ -16,6 +16,7 @@ use super::llm_judge::{
     ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
     StructuredJudge,
 };
+use crate::algorithms::llm_class::{self, VerdictScale};
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
@@ -61,6 +62,100 @@ pub struct EscalationJudgeConfig {
     pub recent_turn_window: usize,
     /// Per-message cap inside the trailing window.
     pub window_message_chars: usize,
+    /// Optional up-front capability gate. When set, the first request of a session is judged
+    /// from the task framing alone with the packaged capability forecaster, and a solve
+    /// probability below the threshold latches the session to the capable tier before the
+    /// efficient tier has spent anything. The trajectory judge takes over afterwards.
+    pub gate: Option<EscalationGateConfig>,
+}
+
+/// Runtime model category the gate's forecaster is taken from when `gate.classifier_target` is
+/// set. The deployment loader registers that target under this named category; unset, the gate
+/// shares the route's `Judge` category.
+pub const GATE_JUDGE_CATEGORY: &str = "escalation_gate_judge";
+
+/// Numeric threshold for the escalation route's up-front capability gate.
+///
+/// Prose in the trajectory-judge prompt cannot set a split reliably: a task-level bar worded
+/// as "spans several modules" or "the hardest minority" latches almost every multi-file task.
+/// The gate reuses the capability classifier's forecast (`p_solve`) and threshold policy so the
+/// operator dials the split with a number, the same way capability mode does.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EscalationGateConfig {
+    /// Lowest solve probability that keeps the session on the efficient tier. In `[0, 1]`.
+    /// Exactly one of `base_threshold` and `min_confidence` must be set.
+    #[serde(default)]
+    pub base_threshold: Option<f64>,
+    /// The threshold as a ladder rung: the efficient tier keeps this rung and every rung above
+    /// it, and every rung below latches to the capable tier. Pairs naturally with
+    /// `verdict_scale = "ordinal"`, so an ordinal configuration carries no numbers at all.
+    #[serde(default)]
+    pub min_confidence: Option<String>,
+    /// Added once for uncertain or unmatched verdicts and twice for unsupported verdicts, as in
+    /// capability mode. `base_threshold + 2 * threshold_step` must be at most `1`.
+    #[serde(default)]
+    pub threshold_step: f64,
+    /// Replaces the packaged capability-classifier prompt for the gate call only.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// Target the gate forecast is called through, by target name. Defaults to the route's
+    /// `classifier_target`. The gate runs once per session and benefits from a strong forecaster,
+    /// while the trajectory judge runs on every weak turn and is better served by a cheap model;
+    /// naming them separately lets a deployment pay for each where it matters. Resolved by the
+    /// deployment loader, which is why it is a name here rather than a model id.
+    #[serde(default)]
+    pub classifier_target: Option<String>,
+    /// Whether the forecaster reports `p_solve` as a number (default) or `confidence` as one
+    /// of eight ladder rungs, mapped to band midpoints before the threshold is applied.
+    #[serde(default)]
+    pub verdict_scale: VerdictScale,
+}
+
+impl EscalationGateConfig {
+    /// The numeric threshold the gate applies, from whichever form the operator wrote.
+    pub(crate) fn threshold(&self) -> Result<f64> {
+        let reject = |message: String| Err(LibsyError::AlgorithmError { message });
+        match (self.base_threshold, self.min_confidence.as_deref()) {
+            (Some(threshold), None) => Ok(threshold),
+            (None, Some(rung)) => llm_class::rung_threshold(rung).ok_or_else(|| {
+                LibsyError::AlgorithmError {
+                    message: format!(
+                        "gate.min_confidence must be a ladder rung (surely, extremely_likely, very_likely, likely, uncertain, unlikely, very_unlikely, almost_surely_not), got {rung:?}"
+                    ),
+                }
+            }),
+            (Some(_), Some(_)) => reject(
+                "gate.base_threshold and gate.min_confidence cannot both be set".to_string(),
+            ),
+            (None, None) => reject(
+                "gate needs base_threshold or min_confidence".to_string(),
+            ),
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        let reject = |message: String| Err(LibsyError::AlgorithmError { message });
+        let threshold = self.threshold()?;
+        if !(0.0..=1.0).contains(&threshold) {
+            return reject(format!(
+                "gate.base_threshold must be between 0 and 1, got {threshold}"
+            ));
+        }
+        if !self.threshold_step.is_finite() || self.threshold_step < 0.0 {
+            return reject(format!(
+                "gate.threshold_step must be finite and non-negative, got {}",
+                self.threshold_step
+            ));
+        }
+        let unsupported_threshold = threshold + 2.0 * self.threshold_step;
+        if unsupported_threshold > 1.0 {
+            return reject(format!(
+                "gate.base_threshold + 2 * gate.threshold_step must be at most 1, got {unsupported_threshold}"
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl EscalationJudgeConfig {
@@ -69,6 +164,9 @@ impl EscalationJudgeConfig {
         let reject = |message: String| Err(LibsyError::AlgorithmError { message });
         if self.confirmations == 0 {
             return reject("confirmations must be at least 1".to_string());
+        }
+        if let Some(gate) = &self.gate {
+            gate.validate()?;
         }
         if self.recent_turn_window == 0 {
             return reject("recent_turn_window must be at least 1".to_string());
@@ -89,6 +187,7 @@ impl Default for EscalationJudgeConfig {
             confirmations: 2,
             recent_turn_window: 28,
             window_message_chars: 500,
+            gate: None,
         }
     }
 }

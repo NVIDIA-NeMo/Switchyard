@@ -12,10 +12,10 @@ use std::sync::Arc;
 use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
     ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
-    CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
-    ToolSemantics,
+    CustomClassifierPolicy, EscalationJudgeConfig, GATE_JUDGE_CATEGORY, GateTrigger,
+    HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, Random, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
+    TaskClassifierConfig, ToolSemantics, VerdictScale,
 };
 use serde::Deserialize;
 use switchyard_protocol::{Category, ModelId};
@@ -109,6 +109,7 @@ struct CapabilityClassifierRouteConfig {
     prompt: Option<String>,
     response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
+    verdict_scale: VerdictScale,
 }
 
 #[derive(Clone, Debug)]
@@ -253,6 +254,10 @@ pub struct LlmClassifierRouteConfig {
     /// Most completion tokens the judge verdict may use.
     #[serde(default = "default_classifier_max_output_tokens")]
     pub max_output_tokens: u64,
+    /// Capability mode: whether the forecaster reports `p_solve` as a probability or
+    /// `confidence` as one rung of the fixed ladder (the gate has its own `gate.verdict_scale`).
+    #[serde(default)]
+    pub verdict_scale: VerdictScale,
     /// Escalation mode: how many escalate verdicts latch the session, and how
     /// much of the transcript the judge sees.
     pub escalation: Option<EscalationJudgeConfig>,
@@ -511,6 +516,7 @@ impl StageClassifierConfig {
             contract: classifier_contract(self.prompt.as_deref())
                 .with_response_format_type(self.response_format_type),
             max_output_tokens: self.max_output_tokens,
+            verdict_scale: VerdictScale::default(),
         }
     }
 }
@@ -608,6 +614,14 @@ impl AlgorithmSpec {
                     );
                 } else {
                     names.push(&config.classifier_target);
+                    if let Some(gate_target) = config
+                        .escalation
+                        .as_ref()
+                        .and_then(|escalation| escalation.gate.as_ref())
+                        .and_then(|gate| gate.classifier_target.as_deref())
+                    {
+                        names.push(gate_target);
+                    }
                 }
             }
             Self::StageRouter {
@@ -787,15 +801,31 @@ fn classifier_runtime_model_names(
                 vec![config.weak_target, config.strong_target],
             ),
         ]),
-        LlmClassifierModeConfig::Escalation(config) => category_models([
-            (Category::Judge, vec![config.classifier_target]),
-            (Category::Efficient, vec![config.weak_target.clone()]),
-            (Category::Capable, vec![config.strong_target.clone()]),
-            (
-                Category::Any,
-                vec![config.strong_target, config.weak_target],
-            ),
-        ]),
+        LlmClassifierModeConfig::Escalation(config) => {
+            let mut models = category_models([
+                (Category::Judge, vec![config.classifier_target]),
+                (Category::Efficient, vec![config.weak_target.clone()]),
+                (Category::Capable, vec![config.strong_target.clone()]),
+                (
+                    Category::Any,
+                    vec![config.strong_target, config.weak_target],
+                ),
+            ]);
+            // The gate may name its own forecaster; it lives under a named category so the
+            // per-turn judge and the once-per-session gate can be different models.
+            if let Some(gate_target) = config
+                .judge
+                .gate
+                .as_ref()
+                .and_then(|gate| gate.classifier_target.clone())
+            {
+                models.insert(
+                    Category::Named(Arc::from(GATE_JUDGE_CATEGORY)),
+                    vec![gate_target],
+                );
+            }
+            models
+        }
         LlmClassifierModeConfig::Custom(config) => custom_runtime_model_names(&config.models),
     }
 }
@@ -847,6 +877,7 @@ impl LlmClassifierRouteConfig {
             prompt,
             response_format_type,
             max_output_tokens,
+            verdict_scale,
             escalation,
             models,
             default_target,
@@ -902,6 +933,7 @@ impl LlmClassifierRouteConfig {
                         prompt: prompt.clone(),
                         response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
+                        verdict_scale: *verdict_scale,
                     },
                 ))
             }
@@ -1179,6 +1211,7 @@ fn build_algorithm(
                         contract: classifier_contract(config.prompt.as_deref())
                             .with_response_format_type(config.response_format_type),
                         max_output_tokens: config.max_output_tokens,
+                        verdict_scale: config.verdict_scale,
                     };
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                         config: classifier_config,

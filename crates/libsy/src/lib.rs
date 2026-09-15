@@ -21,7 +21,7 @@ pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
 pub use algorithms::composite::{CompositeRouter, CompositeRouterConfig};
 pub use algorithms::llm_class::{
     CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
-    TaskClassifierConfig,
+    TaskClassifierConfig, VerdictScale,
 };
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
@@ -33,6 +33,7 @@ pub use algorithms::util::classifier_contract::{
     ClassifierContractConfig, ClassifierResponseFormat,
 };
 pub use algorithms::util::escalation::EscalationJudgeConfig;
+pub use algorithms::util::escalation::GATE_JUDGE_CATEGORY;
 pub use algorithms::util::prompts::append_note;
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignals};
