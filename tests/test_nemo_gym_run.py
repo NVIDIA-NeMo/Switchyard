@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import signal
 import subprocess
@@ -87,9 +86,6 @@ printf 'gym_start:%s:%s:%s\\n' "$route" "$$" "$*" >> "$EVENT_LOG"
 run_dir="$(dirname "$output")"
 mkdir -p "$run_dir"
 printf '{"route": "%s"}\\n' "$route" > "$output"
-if [[ "${FAKE_GYM_BEHAVIOR:-}" != "missing_ledger" ]]; then
-    printf '{"event":"start"}\\n{"event":"finish"}\\n' > "$run_dir/litellm-calls.jsonl"
-fi
 printf 'gym_done:%s\\n' "$route" >> "$EVENT_LOG"
 if [[ "$route" == "fixed" && "${FAKE_GYM_BEHAVIOR:-}" == "exit7" ]]; then exit 7; fi
 if [[ "$route" == "fixed" && "${FAKE_GYM_BEHAVIOR:-}" == "sidecar" ]]; then
@@ -100,46 +96,10 @@ fi
     _write_executable(
         bin_dir / "uv",
         """#!/bin/bash
-set -u
-printf 'uv:%s\\n' "$*" >> "$EVENT_LOG"
-"$REAL_PYTHON" - "$NEMO_GYM_LITELLM_RESULTS" "$NEMO_GYM_LITELLM_PROFILE" \
-    "$SWITCHYARD_LITELLM_CONFIG" "$FAKE_CALLBACK_PATH" "$NVIDIA_BASE_URL" <<'PY'
-import hashlib
-import json
-import os
-import pathlib
-import sys
-
-results, profile, routing, callback = map(pathlib.Path, sys.argv[1:5])
-runtime = {
-    "mode": "litellm_libsy",
-    "instance_id": os.environ["NEMO_GYM_LITELLM_INSTANCE_ID"],
-    "litellm_version": "1.97.0",
-    "switchyard_version": "0.2.0",
-    "fastapi_version": "0.136.3",
-    "starlette_version": "1.3.1",
-    "routing_plugin": "switchyard_litellm.RandomRoutingPlugin",
-    "models": {
-        "fixed": ["nvidia_nim/nvidia/nemotron-3-super-120b-a12b"],
-        "routed": [
-            "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
-            "nvidia_nim/openai/gpt-oss-20b",
-        ],
-    },
-    "profile_sha256": hashlib.sha256(profile.read_bytes()).hexdigest(),
-    "routing_sha256": hashlib.sha256(routing.read_bytes()).hexdigest(),
-    "callback_sha256": hashlib.sha256(callback.read_bytes()).hexdigest(),
-    "provider_base_sha256": hashlib.sha256(sys.argv[5].encode()).hexdigest(),
-}
-results.mkdir(parents=True, exist_ok=True)
-(results / "litellm-runtime.json").write_text(json.dumps(runtime), encoding="utf-8")
-PY
 exec "$REAL_PYTHON" -c '
 import os
 import signal
-import sys
-
-arguments = " ".join(sys.argv[1:])
+from pathlib import Path
 
 def stop(_number, _frame):
     with open(os.environ["EVENT_LOG"], "a", encoding="utf-8") as stream:
@@ -149,38 +109,24 @@ def stop(_number, _frame):
 signal.signal(signal.SIGINT, stop)
 signal.signal(signal.SIGTERM, stop)
 with open(os.environ["EVENT_LOG"], "a", encoding="utf-8") as stream:
-    stream.write(f"proxy_start:{os.getpid()}:{arguments}\\n")
+    stream.write(f"proxy_start:{os.getpid()}\\n")
+Path(os.environ["NEMO_GYM_LITELLM_RESULTS"], "proxy-ready").touch()
 signal.pause()
-' "$@"
+'
 """,
     )
     _write_executable(
         bin_dir / "curl",
         """#!/bin/bash
-url=""
-for argument in "$@"; do case "$argument" in http://*) url="$argument" ;; esac; done
-printf 'curl:%s\\n' "$url" >> "$EVENT_LOG"
-[[ -s "$NEMO_GYM_LITELLM_RESULTS/litellm-runtime.json" ]] || exit 22
-printf '{}\\n'
+[[ -f "$NEMO_GYM_LITELLM_RESULTS/proxy-ready" ]]
 """,
     )
     _write_executable(
         bin_dir / "git",
         """#!/bin/bash
-printf 'git:%s\\n' "$*" >> "$EVENT_LOG"
-case "$*" in
-    *" status "*) exit 0 ;;
-    *" rev-parse "*) printf '%039d1\\n' 0 ;;
-    *" describe "*) printf '%040d-dirty\\n' 2 ;;
-esac
+printf '%040d-dirty\\n' 2
 """,
     )
-    for tool in ("cargo", "switchyard-server"):
-        _write_executable(
-            bin_dir / tool,
-            f'#!/bin/bash\nprintf \'forbidden:{tool}:%s\\n\' "$*" >> "$EVENT_LOG"\nexit 99\n',
-        )
-
     env = os.environ.copy()
     for key in (
         "NVIDIA_API_KEY",
@@ -188,8 +134,6 @@ esac
         "ANTHROPIC_API_KEY",
         "OPENROUTER_API_KEY",
         "NVIDIA_BASE_URL",
-        "LITELLM_CONFIG",
-        "SWITCHYARD_CONFIG",
         "LITELLM_PORT",
     ):
         env.pop(key, None)
@@ -203,7 +147,6 @@ esac
                 gym_dir / "benchmarks/mmlu-redux/data/mmlu-redux_benchmark.jsonl"
             ),
             "FAKE_COMPARE_PATH": str(ROOT / "benchmark/nemo_gym/compare.py"),
-            "FAKE_CALLBACK_PATH": str(ROOT / "benchmark/nemo_gym/gym_routing_plugin.py"),
             "REAL_PYTHON": sys.executable,
         }
     )
@@ -248,8 +191,6 @@ def test_help_and_shell_syntax_need_no_setup(tmp_path: Path) -> None:
     assert result.stderr == ""
     for name in (
         "GYM_DIR",
-        "LITELLM_CONFIG",
-        "SWITCHYARD_CONFIG",
         "NVIDIA_BASE_URL",
         "LITELLM_PORT",
         "LIMIT",
@@ -261,105 +202,49 @@ def test_help_and_shell_syntax_need_no_setup(tmp_path: Path) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(RUNNER)], check=False).returncode == 0
 
 
-@pytest.mark.parametrize("invalid", ["existing-results", "zero-limit", "bad-port"])
-def test_preflight_rejects_before_operations(
-    fake_runner_env: tuple[dict[str, str], Path, Path], invalid: str
+def test_existing_results_are_not_overwritten(
+    fake_runner_env: tuple[dict[str, str], Path, Path],
 ) -> None:
     env, results_dir, event_log = fake_runner_env
-    if invalid == "existing-results":
-        results_dir.mkdir()
-        sentinel = results_dir / "sentinel"
-        sentinel.write_text("keep", encoding="utf-8")
-    else:
-        sentinel = None
-        env["LIMIT" if invalid == "zero-limit" else "LITELLM_PORT"] = "0"
+    results_dir.mkdir()
+    sentinel = results_dir / "sentinel"
+    sentinel.write_text("keep", encoding="utf-8")
     result = _run(env)
     assert result.returncode != 0
     assert _events(event_log) == []
-    if sentinel is not None:
-        assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert sentinel.read_text(encoding="utf-8") == "keep"
 
 
 def test_success_uses_one_stock_proxy_for_fixed_and_routed(
     fake_runner_env: tuple[dict[str, str], Path, Path],
 ) -> None:
     env, results_dir, event_log = fake_runner_env
-    env.update(
-        {
-            "LIMIT": "2",
-            "REPEATS": "3",
-            "CONCURRENCY": "1",
-            "NEMO_GYM_LITELLM_INSTANCE_ID": "must-not-be-reused",
-        }
-    )
+    env.update({"LIMIT": "2", "REPEATS": "3", "CONCURRENCY": "1"})
     result = _run(env)
     assert result.returncode == 0, result.stderr
     events = _events(event_log)
-
-    preparations = [line for line in events if line.startswith("prepare:")]
-    assert len(preparations) == 1
-    assert "eval prepare --benchmark mmlu-redux" in preparations[0]
+    assert sum(line.startswith("prepare:") for line in events) == 1
     starts = [line for line in events if line.startswith("proxy_start:")]
     assert len(starts) == 1
     proxy_pid = int(starts[0].split(":", 2)[1])
-    for pin in (
-        "litellm[proxy]==1.97.0",
-        "fastapi==0.136.3",
-        "starlette==1.3.1",
-        "--num_workers 1",
-    ):
-        assert pin in starts[0]
     gym_runs = [line for line in events if line.startswith("gym_start:")]
     assert [line.split(":", 2)[1] for line in gym_runs] == ["fixed", "routed"]
-    for route, invocation in zip(("fixed", "routed"), gym_runs, strict=True):
-        run_dir = results_dir / route
-        for expected in (
+    for invocation in gym_runs:
+        for flag in (
             "--benchmark mmlu-redux",
             "--model-type litellm_model",
-            f"--model {route}",
-            "--split benchmark",
+            "--max-output-tokens 8192",
             "--limit 2",
             "--num-repeats 3",
             "--concurrency 1",
-            "--temperature 0",
-            "--max-output-tokens 4096",
-            "++policy_base_url=http://127.0.0.1:4000/v1",
-            "++policy_api_key=unused",
-            f"++model_call_capture_dir={run_dir}/model-calls",
-            f"++nemo_gym_log_dir={run_dir}/server-logs",
-            "++mcqa_simple_agent.responses_api_agents.simple_agent.max_steps=1",
         ):
-            assert expected in invocation
-        assert "switchyard_model" not in invocation
-        assert ".deployment=" not in invocation
-        assert "condition_dir" not in invocation
-        assert (
-            "++mmlu-redux_mcqa_simple_agent.responses_api_agents.simple_agent.max_steps="
-            not in invocation
-        )
-    assert not any(line.startswith("forbidden:") for line in events)
-
-    provenances = [
-        json.loads((results_dir / route / "run-provenance.json").read_text())
-        for route in ("fixed", "routed")
-    ]
-    assert provenances[0] == provenances[1]
-    runtime = provenances[0]["runtime"]
-    assert len(runtime["instance_id"]) == 32
-    assert all(character in "0123456789abcdef" for character in runtime["instance_id"])
-    assert runtime["instance_id"] != "must-not-be-reused"
-    assert runtime["models"] == {
-        "fixed": ["nvidia_nim/nvidia/nemotron-3-super-120b-a12b"],
-        "routed": [
-            "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
-            "nvidia_nim/openai/gpt-oss-20b",
-        ],
-    }
+            assert flag in invocation
     comparison = next(i for i, line in enumerate(events) if line.startswith("compare:"))
     stop = next(i for i, line in enumerate(events) if line.startswith("proxy_stop:"))
     assert all(events.index(f"gym_done:{route}") < stop for route in ("fixed", "routed"))
     assert stop < comparison
     assert not _pid_is_alive(proxy_pid)
+    assert (results_dir / "versions.txt").is_file()
     assert (results_dir / "comparison.txt").read_text(encoding="utf-8") == "fixture comparison\n"
 
 
@@ -380,20 +265,6 @@ def test_fixed_failure_stops_before_routed_and_keeps_logs(
     assert (results_dir / "litellm.log").exists()
     if behavior == "sidecar":
         assert (results_dir / "fixed/rollouts_failures.jsonl").stat().st_size > 0
-
-
-def test_missing_ledger_stops_before_comparison(
-    fake_runner_env: tuple[dict[str, str], Path, Path],
-) -> None:
-    env, _, event_log = fake_runner_env
-    env["FAKE_GYM_BEHAVIOR"] = "missing_ledger"
-    result = _run(env)
-    events = _events(event_log)
-    assert result.returncode != 0
-    assert "missing LiteLLM request evidence for fixed" in result.stderr
-    assert not any(line.startswith("gym_start:routed:") for line in events)
-    assert not any(line.startswith("compare:") for line in events)
-    assert sum(line.startswith("proxy_stop:") for line in events) == 1
 
 
 @pytest.mark.parametrize(

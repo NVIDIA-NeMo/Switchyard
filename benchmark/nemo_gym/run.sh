@@ -11,8 +11,8 @@ set -euo pipefail
 # Environment variables override these defaults; each run needs a fresh results directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SWITCHYARD_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PROFILE="${LITELLM_CONFIG:-$SCRIPT_DIR/litellm.yaml}"
-ROUTING="${SWITCHYARD_CONFIG:-$SCRIPT_DIR/routes.toml}"
+PROFILE="$SCRIPT_DIR/litellm.yaml"
+ROUTING="$SCRIPT_DIR/routes.toml"
 RESULTS_DIR="${RESULTS_DIR:-$SCRIPT_DIR/results/$(date -u +%Y%m%dT%H%M%SZ)}"
 PORT="${LITELLM_PORT:-4000}"
 LIMIT="${LIMIT:-5}"
@@ -27,10 +27,8 @@ Set GYM_DIR to the Gym checkout from the README setup.
 Optional environment variables (defaults):
   LIMIT=5, REPEATS=1, CONCURRENCY=1, LITELLM_PORT=4000
   RESULTS_DIR         Fresh output directory (results/<UTC timestamp>)
-  LITELLM_CONFIG      Model inventory (litellm.yaml beside this script)
-  SWITCHYARD_CONFIG   Routing policy (routes.toml beside this script)
   NVIDIA_BASE_URL     Provider endpoint (NVIDIA API Catalog /v1)
-Provider credentials come from the environment variables named in the profile.
+Provider credentials come from the environment variables named in litellm.yaml.
 EOF
     [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]] && exit 0
     exit 2
@@ -39,8 +37,6 @@ fi
 die() { echo "error: $*" >&2; exit 1; }
 [[ -n "${GYM_DIR:-}" ]] || die "set GYM_DIR; see the README setup"
 GYM_DIR="$(cd "$GYM_DIR" && pwd)"
-[[ "$PROFILE" = /* ]] || PROFILE="$PWD/$PROFILE"
-[[ "$ROUTING" = /* ]] || ROUTING="$PWD/$ROUTING"
 [[ "$RESULTS_DIR" = /* ]] || RESULTS_DIR="$PWD/$RESULTS_DIR"
 [[ -f "$PROFILE" && -f "$ROUTING" ]] || die "LiteLLM profile or routing TOML does not exist"
 [[ ! -e "$RESULTS_DIR" && ! -L "$RESULTS_DIR" ]] || die "results path already exists: $RESULTS_DIR"
@@ -53,8 +49,7 @@ PYTHON="$GYM_DIR/.venv/bin/python"
 [[ -x "$GYM" && -x "$PYTHON" ]] || die "complete the README's Gym setup"
 export PATH="$GYM_DIR/.venv/bin:$PATH"
 for tool in git uv curl; do command -v "$tool" >/dev/null || die "missing required tool: $tool"; done
-GYM_REVISION="$(git -C "$GYM_DIR" rev-parse HEAD)"
-[[ -z "$(git -C "$GYM_DIR" status --porcelain --untracked-files=no)" ]] || die "tracked Gym source must be clean"
+GYM_REVISION="$(git -C "$GYM_DIR" describe --always --dirty --abbrev=40)"
 SWITCHYARD_REVISION="$(git -C "$SWITCHYARD_ROOT" describe --always --dirty --abbrev=40)"
 "$PYTHON" - "$PORT" <<'PY'
 import socket
@@ -129,10 +124,7 @@ fi
 # Switchyard runs as a library inside LiteLLM, not as a separate server.
 export NVIDIA_BASE_URL="${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}"
 export SWITCHYARD_LITELLM_CONFIG="$ROUTING"
-export NEMO_GYM_LITELLM_PROFILE="$PROFILE"
 export NEMO_GYM_LITELLM_RESULTS="$RESULTS_DIR"
-NEMO_GYM_LITELLM_INSTANCE_ID="$("$PYTHON" -c 'from uuid import uuid4; print(uuid4().hex)')"
-export NEMO_GYM_LITELLM_INSTANCE_ID
 echo "Starting LiteLLM at $ROOT_URL; see $RESULTS_DIR/litellm.log"
 PYTHONPATH="$SCRIPT_DIR:$SWITCHYARD_ROOT/examples/litellm/src${PYTHONPATH:+:$PYTHONPATH}" \
     uv run --project "$SWITCHYARD_ROOT/examples/litellm" --locked \
@@ -143,7 +135,7 @@ PROXY_PID=$!
 ready=false
 for _ in {1..240}; do
     kill -0 "$PROXY_PID" 2>/dev/null || die "LiteLLM exited; see $RESULTS_DIR/litellm.log"
-    if curl -fsS --max-time 2 "$ROOT_URL/health/readiness/details" >"$RESULTS_DIR/litellm-health.json" 2>/dev/null && [[ -s "$RESULTS_DIR/litellm-runtime.json" ]]; then
+    if curl -fsS --max-time 2 "$ROOT_URL/health/readiness/details" >/dev/null 2>&1; then
         ready=true
         break
     fi
@@ -151,26 +143,15 @@ for _ in {1..240}; do
 done
 [[ "$ready" == true ]] || die "LiteLLM readiness timed out; see $RESULTS_DIR/litellm.log"
 
-# Step 4: Save the shared runtime details alongside each condition's results.
-# The comparison uses these revisions and configuration fingerprints to check compatibility.
-"$PYTHON" - "$RESULTS_DIR" "$GYM_REVISION" "$SWITCHYARD_REVISION" <<'PY'
-import json
-import pathlib
-import sys
-
-results = pathlib.Path(sys.argv[1])
-runtime = json.loads((results / 'litellm-runtime.json').read_text())
-provenance = {'gym_revision': sys.argv[2], 'switchyard_revision': sys.argv[3], 'runtime': runtime}
-for route in ('fixed', 'routed'):
-    run_dir = results / route
-    (run_dir / 'model-calls').mkdir(parents=True, exist_ok=True)
-    (run_dir / 'run-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n', encoding='utf-8')
-PY
+# Step 4: Save the checkout versions once for reference and prepare the output folders.
+# Pairing uses Gym's materialized inputs, not configuration fingerprints.
+printf 'Gym: %s\nSwitchyard: %s\n' "$GYM_REVISION" "$SWITCHYARD_REVISION" >"$RESULTS_DIR/versions.txt"
+mkdir -p "$RESULTS_DIR"/{fixed,routed}/model-calls
 
 # Step 5: Evaluate the fixed baseline, then Random routing, on the same tasks.
 # Gym's litellm_model adapter calls the proxy; fixed and routed name its model groups.
 # Only the group and output paths change; the evaluation settings stay the same.
-# Both conditions use one dedicated LiteLLM instance and separate request ledgers.
+# Both conditions use one dedicated LiteLLM instance and separate Gym capture paths.
 for route in fixed routed; do
     run_dir="$RESULTS_DIR/$route"
     echo "Gym evaluation: gym eval run --benchmark mmlu-redux --model-type litellm_model --model $route"
@@ -179,15 +160,14 @@ for route in fixed routed; do
         --benchmark mmlu-redux --model-type litellm_model --model "$route" \
         --output "$run_dir/rollouts.jsonl" --split benchmark \
         --limit "$LIMIT" --num-repeats "$REPEATS" --concurrency "$CONCURRENCY" \
-        --temperature 0 --max-output-tokens 4096 \
+        --temperature 0 --max-output-tokens 8192 \
         "++policy_base_url=$ROOT_URL/v1" ++policy_api_key=unused \
         ++route_failures_to_sidecar=true ++observability_enabled=true \
         "++model_call_capture_dir=$run_dir/model-calls" \
         "++nemo_gym_log_dir=$run_dir/server-logs" \
         ++mcqa_simple_agent.responses_api_agents.simple_agent.max_steps=1 \
         "hydra.run.dir=$run_dir/hydra" || die "$route evaluation failed; see $run_dir/gym.log"
-    # Keep request evidence even when Gym collection fails.
-    [[ -s "$run_dir/litellm-calls.jsonl" ]] || die "missing LiteLLM request evidence for $route"
+    # Stop before the next condition if Gym reports terminal rollout failures.
     [[ ! -s "$run_dir/rollouts_failures.jsonl" ]] || die "$route has terminal rollout failures; see $run_dir/rollouts_failures.jsonl"
 done
 
@@ -196,5 +176,5 @@ done
 stop_process "$PROXY_PID"
 PROXY_PID=""
 echo "Comparing fixed and routed results"
-"$PYTHON" "$SCRIPT_DIR/compare.py" "$RESULTS_DIR/fixed" "$RESULTS_DIR/routed" 2>&1 | tee "$RESULTS_DIR/comparison.txt"
+"$PYTHON" "$SCRIPT_DIR/compare.py" "$RESULTS_DIR" 2>&1 | tee "$RESULTS_DIR/comparison.txt"
 echo "Comparison written to $RESULTS_DIR/comparison.txt"

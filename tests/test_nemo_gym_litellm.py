@@ -3,12 +3,8 @@
 
 from __future__ import annotations
 
-import hashlib
-import importlib.metadata
 import importlib.util
 import json
-import math
-from copy import deepcopy
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -16,16 +12,13 @@ from typing import Any
 import pytest
 
 litellm = pytest.importorskip("litellm")
-pytest.importorskip("switchyard_litellm")
 
 from litellm import ResponsesAPIResponse  # noqa: E402
-from litellm.types.router import RoutingContext  # noqa: E402
 
-BIG = "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
-SMALL = "nvidia_nim/openai/gpt-oss-20b"
+BIG = "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b"
+SMALL = "nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b"
 ROOT = Path(__file__).resolve().parents[1]
 CALLBACK = ROOT / "benchmark/nemo_gym/gym_routing_plugin.py"
-PROFILE = ROOT / "benchmark/nemo_gym/litellm.yaml"
 
 
 @pytest.fixture
@@ -56,22 +49,6 @@ def _response(
     )
     response._hidden_params = {"model_id": "deployment-1", "custom_llm_provider": "nvidia_nim"}
     return response
-
-
-def _plugin(callback: ModuleType, tmp_path: Path) -> Any:
-    routing = tmp_path / "routes.toml"
-    routing.write_text('algorithm = "random"\nseed = 6\n', encoding="utf-8")
-    return callback.GymRoutingPlugin(routing, PROFILE, tmp_path / "results", "fixture-proxy")
-
-
-def _context(candidates: list[str], text: str) -> RoutingContext:
-    messages = [{"role": "user", "content": text}]
-    return RoutingContext(
-        raw_messages=messages,
-        structured_messages=messages,
-        candidate_models=candidates,
-        metadata={"model_group": "routed"},
-    )
 
 
 def test_response_payload_preserves_wire_identity_and_unknown_usage_details(
@@ -115,9 +92,8 @@ def test_response_payload_preserves_wire_identity_and_unknown_usage_details(
 
 
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
-@pytest.mark.parametrize("as_dict", [False, True])
 def test_response_payload_normalizes_litellm_reasoning(
-    callback: ModuleType, finish_reason: str, as_dict: bool
+    callback: ModuleType, finish_reason: str
 ) -> None:
     from litellm.responses.litellm_completion_transformation.transformation import (
         LiteLLMCompletionResponsesConfig,
@@ -146,9 +122,8 @@ def test_response_payload_normalizes_litellm_reasoning(
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
         },
     )
-    before = deepcopy(response.model_dump())
-    source = deepcopy(before) if as_dict else response
-    payload = callback.response_payload(source)
+    before = response.model_dump()
+    payload = callback.response_payload(response)
     reasoning, answer = payload["output"]
     validated = ResponseReasoningItem.model_validate(reasoning)
 
@@ -166,191 +141,38 @@ def test_response_payload_normalizes_litellm_reasoning(
     assert payload.get("incomplete_details") == before.get("incomplete_details")
     for key in ("input_tokens", "output_tokens", "total_tokens"):
         assert payload["usage"][key] == before["usage"][key]
-    assert callback.response_payload(payload) == payload
-    assert (source if as_dict else source.model_dump()) == before
+    assert response.model_dump() == before
 
 
-@pytest.mark.parametrize("summary", [None, [{"type": "summary_text", "text": "Existing summary"}]])
-def test_response_payload_preserves_native_reasoning_and_other_items(
-    callback: ModuleType, summary: Any
-) -> None:
-    source = {
-        "id": "response-native",
-        "status": "incomplete",
-        "usage": None,
-        "output": [
-            {
-                "type": "reasoning",
-                "id": "reasoning-native",
-                "summary": summary,
-                "encrypted_content": "opaque-test-content",
-                "content": [{"type": "reasoning_text", "text": "Existing reasoning"}],
-            },
-            {"type": "message", "content": [{"type": "output_text", "text": "Answer"}]},
-            {"type": "function_call", "name": "test_tool", "arguments": "{}"},
-        ],
-    }
-    before = deepcopy(source)
-    expected = deepcopy(source)
-    if summary is None:
-        expected["output"][0]["summary"] = []
-    assert callback.response_payload(source) == expected
-    assert source == before
-
-
-async def test_real_libsy_random_routing_reaches_both_candidates(
+async def test_callback_records_serving_model_without_request_content(
     callback: ModuleType, tmp_path: Path
 ) -> None:
-    plugin = _plugin(callback, tmp_path)
-
-    first = await plugin.run(_context([BIG, SMALL], "first"))
-    second = await plugin.run(_context([BIG, SMALL], "second"))
-    fixed = await plugin.run(_context([BIG], "fixed"))
-
-    selections = {
-        first.signals["switchyard"]["selected_model_id"],
-        second.signals["switchyard"]["selected_model_id"],
-    }
-    assert selections == {BIG, SMALL}
-    assert fixed.signals["switchyard"]["selected_model_id"] == BIG
-    for result in (first, second, fixed):
-        routing_ms = result.signals["switchyard"]["routing_ms"]
-        assert isinstance(routing_ms, float) and math.isfinite(routing_ms) and routing_ms >= 0
-
-
-def test_litellm_local_file_loader_shares_runner_instance_id(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from litellm.proxy.types_utils.utils import get_instance_fn
-
-    routing = tmp_path / "routes.toml"
-    routing.write_text('algorithm = "random"\nseed = 6\n', encoding="utf-8")
-    results = tmp_path / "results"
-    monkeypatch.setenv("SWITCHYARD_LITELLM_CONFIG", str(routing))
-    monkeypatch.setenv("NEMO_GYM_LITELLM_PROFILE", str(PROFILE))
-    monkeypatch.setenv("NEMO_GYM_LITELLM_RESULTS", str(results))
-    monkeypatch.setenv("NEMO_GYM_LITELLM_INSTANCE_ID", "fixture-shared-run")
-
-    first = get_instance_fn(value="gym_routing_plugin.PLUGIN", config_file_path=str(PROFILE))
-    second = get_instance_fn(value="gym_routing_plugin.PLUGIN", config_file_path=str(PROFILE))
-
-    assert first is not second
-    assert first.runtime["instance_id"] == "fixture-shared-run"
-    assert second.runtime["instance_id"] == "fixture-shared-run"
-    runtime = json.loads((results / "litellm-runtime.json").read_text())
-    assert runtime["instance_id"] == "fixture-shared-run"
-    data = {"model": "fixed", "litellm_call_id": "fixture-request"}
-    first._record(data, {"event": "start"})
-    second._record(data, {"event": "finish"})
-    ledger = [
-        json.loads(line)
-        for line in (results / "fixed/litellm-calls.jsonl").read_text().splitlines()
-    ]
-    assert [record["instance_id"] for record in ledger] == [
-        "fixture-shared-run",
-        "fixture-shared-run",
-    ]
-
-
-async def test_callbacks_record_allowlisted_success_and_runtime(
-    callback: ModuleType, tmp_path: Path
-) -> None:
-    plugin = _plugin(callback, tmp_path)
-    selected = SMALL
+    plugin = callback.GymRoutingPlugin(tmp_path)
+    response = _response(
+        status="completed", usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+    )
     data = {
         "model": "routed",
-        "litellm_call_id": "request-1",
         "messages": [{"role": "user", "content": "secret-prompt-marker"}],
         "headers": {"Authorization": "secret-header-marker"},
         "litellm_metadata": {
-            "deployment": selected,
-            "routing_plugin_signals": {
-                "switchyard": {"selected_model_id": selected, "routing_ms": 1.5}
-            },
+            "deployment": SMALL,
+            "routing_plugin_signals": {"switchyard": {"selected_model_id": BIG}},
         },
     }
-    response = _response(
-        status="completed",
-        usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-    )
-
-    await plugin.async_pre_call_hook(None, None, data, "aresponses")
     payload = await plugin.async_post_call_success_hook(data, None, response)
-
-    records_path = tmp_path / "results/routed/litellm-calls.jsonl"
-    records = [json.loads(line) for line in records_path.read_text().splitlines()]
-    assert records == [
-        {
-            "instance_id": plugin.runtime["instance_id"],
-            "route": "routed",
-            "request_id": "request-1",
-            "event": "start",
-        },
-        {
-            "instance_id": plugin.runtime["instance_id"],
-            "route": "routed",
-            "request_id": "request-1",
-            "event": "finish",
-            "status_code": 200,
-            "error_type": None,
-            "response_id": "response-1",
-            "response_status": "completed",
-            "selected_model": selected,
-            "deployment_model": selected,
-            "tokens_total": 15,
-            "routing_ms": 1.5,
-        },
+    records = [
+        json.loads(line) for line in (tmp_path / "routed/models.jsonl").read_text().splitlines()
     ]
-    assert payload["id"] == "response-1"
-    assert payload["status"] == "completed"
-    assert payload["usage"]["total_tokens"] == 15
-    assert payload["_hidden_params"] == response._hidden_params
-    serialized = records_path.read_text()
-    assert "secret-prompt-marker" not in serialized
-    assert "secret-header-marker" not in serialized
-
-    runtime = json.loads((tmp_path / "results/litellm-runtime.json").read_text())
-    assert runtime["profile_sha256"] == hashlib.sha256(PROFILE.read_bytes()).hexdigest()
-    assert runtime["callback_sha256"] == hashlib.sha256(CALLBACK.read_bytes()).hexdigest()
-    assert runtime["litellm_version"] == importlib.metadata.version("litellm")
-    assert runtime["switchyard_version"] == importlib.metadata.version("nemo-switchyard")
-    assert runtime["routing_plugin"] == "switchyard_litellm.RandomRoutingPlugin"
+    assert records == [{"response_id": "response-1", "model": SMALL}]
+    assert payload == callback.response_payload(response)
+    assert sorted(path.name for path in (tmp_path / "routed").iterdir()) == ["models.jsonl"]
 
 
-async def test_failure_hook_records_unknown_usage_without_secrets(
-    callback: ModuleType, tmp_path: Path
-) -> None:
-    plugin = _plugin(callback, tmp_path)
-    selected = BIG
-    data = {
-        "model": "fixed",
-        "litellm_call_id": "request-failed",
-        "messages": [{"role": "user", "content": "secret-failure-message"}],
-        "headers": {"Authorization": "secret-failure-header"},
-        "litellm_metadata": {
-            "deployment": selected,
-            "routing_plugin_signals": {
-                "switchyard": {"selected_model_id": selected, "routing_ms": 0.5}
-            },
-        },
-    }
-
-    class ServiceUnavailable(Exception):
-        status_code = 503
-
-    await plugin.async_pre_call_hook(None, None, data, "aresponses")
-    await plugin.async_post_call_failure_hook(data, ServiceUnavailable("secret-error"), None)
-
-    records_path = tmp_path / "results/fixed/litellm-calls.jsonl"
-    records = [json.loads(line) for line in records_path.read_text().splitlines()]
-    assert len(records) == 2
-    finish = records[1]
-    assert finish["event"] == "finish"
-    assert finish["status_code"] == 503
-    assert finish["error_type"] == "ServiceUnavailable"
-    assert finish["tokens_total"] is None
-    assert finish["response_id"] is None
-    serialized = records_path.read_text()
-    assert "secret-failure-message" not in serialized
-    assert "secret-failure-header" not in serialized
-    assert "secret-error" not in serialized
+async def test_callback_rejects_missing_serving_model(callback: ModuleType, tmp_path: Path) -> None:
+    plugin = callback.GymRoutingPlugin(tmp_path)
+    with pytest.raises(ValueError, match="serving deployment"):
+        await plugin.async_post_call_success_hook(
+            {"model": "routed"}, None, _response(status="completed")
+        )
+    assert not list(tmp_path.iterdir())

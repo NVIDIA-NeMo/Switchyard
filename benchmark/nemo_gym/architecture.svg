@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title description">
   <title id="title">Evaluating Switchyard routing with NeMo Gym</title>
-  <desc id="description">MMLU-Redux 2.0 supplies the multiple-choice questions. Gym's simple_agent initializes each task session, obtains a model answer, and sends it to the mcqa resources server, which grades the boxed answer letter against the expected answer. Gym's litellm_model calls a runner-managed LiteLLM proxy through the OpenAI Responses API. Switchyard Random routing runs as a library inside LiteLLM, not as a separate Switchyard server. Compare fixed and routed runs on identical inputs using rewards, selected models, input and output tokens, latency and routing statistics.</desc>
+  <desc id="description">MMLU-Redux 2.0 supplies the multiple-choice questions. Gym's simple_agent initializes each task session, obtains a model answer, and sends it to the mcqa resources server, which grades the boxed answer letter against the expected answer. Gym's litellm_model calls a runner-managed LiteLLM proxy through the OpenAI Responses API. Switchyard Random routing runs as a library inside LiteLLM, not as a separate Switchyard server. Compare fixed and routed runs on identical inputs using rewards, serving models, Gym-captured input and output tokens, latency and captured errors.</desc>
   <metadata>SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0</metadata>
   <defs>
@@ -70,19 +70,19 @@ SPDX-License-Identifier: Apache-2.0</metadata>
   <path d="M 935 737 V 806" class="exchange"/>
   <text x="780" y="780" text-anchor="middle" class="caption">Upstream models</text>
   <rect x="510" y="808" width="230" height="62" rx="20" fill="#E6EDEA"/>
-  <text x="625" y="848" text-anchor="middle" class="body">GPT-OSS 20B</text>
+  <text x="625" y="848" text-anchor="middle" class="detail">Nemotron 3.5 Lightning</text>
   <rect x="820" y="808" width="230" height="62" rx="20" fill="#E6EDEA"/>
-  <text x="935" y="848" text-anchor="middle" class="body">Nemotron 3 Super</text>
+  <text x="935" y="848" text-anchor="middle" class="detail">Nemotron 3 Ultra</text>
 
   <path d="M 1043 676 H 1118" class="flow"/>
-  <text x="1080" y="632" text-anchor="middle" class="caption">Usage /</text>
-  <text x="1080" y="655" text-anchor="middle" class="caption">routing</text>
+  <text x="1080" y="632" text-anchor="middle" class="caption">Serving</text>
+  <text x="1080" y="655" text-anchor="middle" class="caption">model</text>
 
   <rect x="1120" y="555" width="435" height="245" fill="#fff" stroke="#76B900" stroke-width="3"/>
   <text x="1140" y="595" class="heading">Output:</text>
   <text x="1140" y="632" class="body">Compare fixed vs. routed runs</text>
   <text x="1140" y="676" class="body">Per-task rewards</text>
-  <text x="1140" y="708" class="body">Selected models</text>
+  <text x="1140" y="708" class="body">Serving models</text>
   <text x="1140" y="740" class="body">Input + output tokens</text>
-  <text x="1140" y="772" class="body">Latency and routing statistics</text>
+  <text x="1140" y="772" class="body">Latency and captured errors</text>
 </svg>
