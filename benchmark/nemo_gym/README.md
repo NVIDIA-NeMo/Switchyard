@@ -79,7 +79,7 @@ Gym components can outlive the command briefly; let them finish shutting down be
 
 ## 3. Understand the result
 
-Start with task coverage and serving models, then compare rewards, tokens, and latency. This is the output from a live NVIDIA run of the default five tasks per condition:
+Start with task coverage and serving models, then compare rewards, tokens, and latency. This is the output from a live run of the default five tasks per condition:
 
 ```text
 fixed: expected=5, completed=5, missing=0, unexpected=0, failures=0
@@ -158,4 +158,4 @@ Keep the saved inputs because the source dataset can change. Request logs contai
 
 </details>
 
-**Validation:** tested with Gym `v0.6.0`, and a fresh live NVIDIA run of five tasks per condition. Ultra and Lightning were both exercised, and all ten captured calls succeeded.
+**Validation:** tested with Gym `v0.6.0`, and as a live run of five tasks per condition. Ultra and Lightning were both exercised, and all ten captured calls succeeded.
