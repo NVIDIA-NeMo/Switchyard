@@ -803,6 +803,8 @@ async fn handle_llm_request(
     };
     // Only the Codex namespace mapping is needed downstream, not the whole request.
     let request_extensions = request.llm_request.extensions.clone();
+    // Record the request's input on the root span so Langfuse populates trace-level input.
+    observability::record_root_input(&tracing::Span::current(), &request.llm_request);
     let observer = stats_observer(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
@@ -818,6 +820,10 @@ async fn handle_llm_request(
     // The response carries the candidate that actually served it. Fall back to the routing
     // selection for algorithms that return a response without an offloaded model call.
     let served_model = response.served_model().cloned().or(Some(selected_model));
+    // Record the response's output on the root span while it is still available, before
+    // usage_metrics and into_http_response consume it. Streamed output is left to the
+    // nested generation span (see observability::record_root_output).
+    observability::record_root_output(&tracing::Span::current(), &response);
     let response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()

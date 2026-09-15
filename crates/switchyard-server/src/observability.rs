@@ -12,6 +12,7 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::SdkTracerProvider;
+use switchyard_protocol::{LlmRequest, LlmResponse, Response};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
@@ -55,9 +56,44 @@ pub(crate) fn request_span(headers: &HeaderMap) -> tracing::Span {
         "switchyard.request",
         otel.kind = "server",
         openinference.span.kind = "CHAIN",
+        // Langfuse derives trace-level input/output from the root observation's
+        // input/output, which map from these attributes.
+        gen_ai.prompt = tracing::field::Empty,
+        gen_ai.completion = tracing::field::Empty,
     );
     let _ = span.set_parent(parent);
     span
+}
+
+/// Records the request's messages on the root span so Langfuse populates trace-level input.
+///
+/// Mirrors the `gen_ai.prompt` attribute on the nested `libsy.client_call` span; Langfuse
+/// maps both to observation input, and trace-level input derives from the root observation.
+pub(crate) fn record_root_input(span: &tracing::Span, request: &LlmRequest) {
+    if request.messages.is_empty() {
+        return;
+    }
+    if let Ok(json) = serde_json::to_string(&request.messages) {
+        span.record("gen_ai.prompt", json);
+    }
+}
+
+/// Records a response's output on the root span so Langfuse populates trace-level output.
+///
+/// Only a buffered (`Agg`) response has its output here: a streamed response's body is drained
+/// by the host after this span closes, so its output is intentionally left to the nested
+/// `libsy.client_call` generation observation rather than extending this span. The streamed
+/// output is visible as a child observation, but a streamed request's trace-level output is
+/// not captured.
+pub(crate) fn record_root_output(span: &tracing::Span, response: &Response) {
+    if let LlmResponse::Agg(agg) = &response.llm_response {
+        if agg.outputs.is_empty() {
+            return;
+        }
+        if let Ok(json) = serde_json::to_string(&agg.outputs) {
+            span.record("gen_ai.completion", json);
+        }
+    }
 }
 
 struct HeaderExtractor<'a>(&'a HeaderMap);
@@ -196,5 +232,149 @@ mod tests {
             );
             assert_eq!(span_context.trace_state().header(), "vendor=opaque-value");
         });
+    }
+
+    #[test]
+    fn record_root_input_and_output_populates_gen_ai_prompt_and_completion() {
+        use opentelemetry_sdk::trace::InMemorySpanExporter;
+        use switchyard_protocol::{
+            AggLlmResponse, ContentBlock, LlmRequest, LlmResponse, Message, Response, ResponseOutput, Role,
+        };
+        use super::{record_root_input, record_root_output};
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("record-root-test");
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = request_span(&HeaderMap::new());
+            let request = LlmRequest {
+                messages: vec![Message::text(Role::User, "hello world")],
+                ..LlmRequest::default()
+            };
+            let response = Response {
+                llm_response: LlmResponse::Agg(AggLlmResponse {
+                    model: Some("test-model".to_string()),
+                    outputs: vec![ResponseOutput {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::Text {
+                            text: "the answer".into(),
+                        }],
+                        stop_reason: None,
+                    }],
+                    ..AggLlmResponse::default()
+                }),
+                metadata: None,
+            };
+            record_root_input(&span, &request);
+            record_root_output(&span, &response);
+        });
+
+        let spans = exporter
+            .get_finished_spans()
+            .expect("failed to get spans");
+        let root_span = spans
+            .iter()
+            .find(|s| s.name == "switchyard.request")
+            .expect("no switchyard.request span");
+        assert!(
+            root_span
+                .attributes
+                .iter()
+                .any(|a| a.key.as_str() == "gen_ai.prompt"),
+            "gen_ai.prompt should be recorded"
+        );
+        assert!(
+            root_span
+                .attributes
+                .iter()
+                .any(|a| a.key.as_str() == "gen_ai.completion"),
+            "gen_ai.completion should be recorded for non-streamed Agg response"
+        );
+    }
+
+    #[test]
+    fn record_root_input_skips_empty_messages() {
+        use opentelemetry_sdk::trace::InMemorySpanExporter;
+        use switchyard_protocol::LlmRequest;
+        use super::record_root_input;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("record-root-input-test");
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = request_span(&HeaderMap::new());
+            let request = LlmRequest::default();
+            record_root_input(&span, &request);
+        });
+
+        let spans = exporter
+            .get_finished_spans()
+            .expect("failed to get spans");
+        let root_span = spans
+            .iter()
+            .find(|s| s.name == "switchyard.request")
+            .expect("no switchyard.request span");
+        assert!(
+            !root_span
+                .attributes
+                .iter()
+                .any(|a| a.key.as_str() == "gen_ai.prompt"),
+            "gen_ai.prompt should not be recorded when messages are empty"
+        );
+    }
+
+    #[test]
+    fn record_root_output_skips_completion_for_agg_with_empty_outputs() {
+        use opentelemetry_sdk::trace::InMemorySpanExporter;
+        use switchyard_protocol::{
+            AggLlmResponse, LlmResponse, Response,
+        };
+        use super::record_root_output;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("record-root-output-test");
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = request_span(&HeaderMap::new());
+            let response = Response {
+                llm_response: LlmResponse::Agg(AggLlmResponse {
+                    model: Some("test-model".to_string()),
+                    outputs: vec![],
+                    ..AggLlmResponse::default()
+                }),
+                metadata: None,
+            };
+            record_root_output(&span, &response);
+        });
+
+        let spans = exporter
+            .get_finished_spans()
+            .expect("failed to get spans");
+        let root_span = spans
+            .iter()
+            .find(|s| s.name == "switchyard.request")
+            .expect("no switchyard.request span");
+        assert!(
+            !root_span
+                .attributes
+                .iter()
+                .any(|a| a.key.as_str() == "gen_ai.completion"),
+            "gen_ai.completion should not be recorded for Agg response with empty outputs"
+        );
     }
 }
