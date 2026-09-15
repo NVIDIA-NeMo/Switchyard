@@ -520,6 +520,23 @@ impl StageClassifier {
     /// Scores onto the runtime capable and efficient models, with the given
     /// default tier (`mode`) and `confidence_threshold`.
     pub fn new(mode: PickerMode, confidence_threshold: f64) -> Self {
+        if matches!(mode, PickerMode::CapableFirst) {
+            // Pure production is the strongest efficient signal. Use the scorer
+            // and its closed probability band so the warning shares its boundary.
+            let max_efficient_score = score_signal(&ToolSignals {
+                recent_write_count: 1,
+                ..Default::default()
+            });
+            if max_efficient_score.probability() >= 0.5 - confidence_threshold / 2.0 {
+                tracing::warn!(
+                    confidence_threshold,
+                    max_efficient_confidence = max_efficient_score.confidence,
+                    "stage_router capable_first scorer cannot select the efficient tier at this threshold; \
+                     set confidence_threshold below the efficient confidence ceiling to enable scorer-driven offloading. \
+                     Hard de-escalation and an optional LLM classifier can still select efficient."
+                );
+            }
+        }
         Self {
             mode,
             confidence_threshold,
@@ -669,6 +686,61 @@ mod tests {
             PickOutcome::Resolved {
                 tier: Tier::Capable,
                 source: DecisionSource::Override,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn capable_first_warns_when_production_cannot_clear_threshold() {
+        #[derive(Clone, Default)]
+        struct Log(Arc<parking_lot::Mutex<Vec<u8>>>);
+        impl std::io::Write for Log {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        // Pure production reaches the efficient ceiling without a hard override.
+        let mut signal = ToolSignals {
+            recent_write_count: 1,
+            ..Default::default()
+        };
+        let ceiling = score_signal(&signal).confidence;
+        for (threshold, warns) in [(0.45, false), (ceiling, true), (0.5, true)] {
+            let output = Log::default();
+            let writer = output.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(move || writer.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                StageClassifier::new(PickerMode::CapableFirst, threshold);
+                StageClassifier::new(PickerMode::EfficientFirst, threshold);
+            });
+            let log = String::from_utf8(output.0.lock().clone()).unwrap();
+            assert_eq!(
+                log.matches("cannot select the efficient tier").count(),
+                usize::from(warns)
+            );
+            assert_eq!(
+                matches!(
+                    pick_tier(&signal, PickerMode::CapableFirst, threshold),
+                    PickOutcome::ConsultClassifier { .. }
+                ),
+                warns
+            );
+        }
+        signal.tests_passed = true;
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::CapableFirst, 0.5),
+            PickOutcome::Resolved {
+                tier: Tier::Efficient,
+                source: DecisionSource::TestsPassed,
                 ..
             }
         ));
