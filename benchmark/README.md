@@ -13,6 +13,9 @@ Both paths use the same generated dataset, task proxy, pinned agent versions, an
 layout. Passing `--server-config` starts the Rust server; omitting it disables Switchyard and points
 Harbor directly at the upstream provider.
 
+For a small automated MMLU-Redux example using NeMo Gym instead of Harbor, see
+[Evaluate Switchyard routing with NeMo Gym](nemo_gym/README.md).
+
 ## Prerequisites
 
 From the repo root:
