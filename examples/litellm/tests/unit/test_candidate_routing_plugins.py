@@ -86,24 +86,22 @@ async def test_seeded_random_uses_and_retains_the_full_deployer_candidate_pool()
     assert plugin_type is not None, "RandomRoutingPlugin must be part of the public integration API"
     plugin = plugin_type(seed=6)
     assert isinstance(plugin, CustomLogger)
+    replay_plugin = plugin_type(seed=6)
     candidates = ["provider/alpha", "provider/beta", "provider/gamma"]
     selected: list[str] = []
 
-    for index in range(5):
-        context = routing_context(
-            [{"role": "user", "content": f"Request {index}."}],
-            candidates.copy(),
-        )
+    for index in range(100):
+        messages = [{"role": "user", "content": f"Request {index}."}]
+        context = routing_context(messages, candidates.copy())
+        replay_context = routing_context(messages, candidates.copy())
         await plugin.run(context)
+        await replay_plugin.run(replay_context)
+
+        assert len(context.candidate_models) == 1
+        assert context.candidate_models == replay_context.candidate_models
         selected.extend(context.candidate_models)
 
-    assert selected == [
-        "provider/beta",
-        "provider/gamma",
-        "provider/gamma",
-        "provider/gamma",
-        "provider/alpha",
-    ]
+    assert set(selected) == set(candidates)
 
 
 async def test_random_rejects_an_empty_candidate_pool() -> None:
@@ -114,8 +112,17 @@ async def test_random_rejects_an_empty_candidate_pool() -> None:
         await plugin.run(context)
 
 
-async def test_random_weights_apply_to_unique_candidate_models() -> None:
-    plugin = switchyard_litellm.RandomRoutingPlugin(weights=[0.0, 1.0], seed=6)
+@pytest.mark.parametrize(
+    ("weights", "expected"),
+    [
+        ([0.0, 1.0], ["provider/beta"]),
+        ([1.0, 0.0], ["provider/alpha", "provider/alpha"]),
+    ],
+)
+async def test_random_weights_apply_to_unique_candidate_models(
+    weights: list[float], expected: list[str]
+) -> None:
+    plugin = switchyard_litellm.RandomRoutingPlugin(weights=weights, seed=6)
     context = routing_context(
         [{"role": "user", "content": "Hello."}],
         ["provider/alpha", "provider/alpha", "provider/beta"],
@@ -123,4 +130,21 @@ async def test_random_weights_apply_to_unique_candidate_models() -> None:
 
     await plugin.run(context)
 
-    assert context.candidate_models == ["provider/beta"]
+    assert context.candidate_models == expected
+
+
+async def test_random_uses_the_current_candidate_pool() -> None:
+    plugin = switchyard_litellm.RandomRoutingPlugin(seed=6)
+    pools = [
+        ["provider/only"],
+        ["provider/alpha", "provider/beta"],
+        ["provider/other"],
+        ["provider/only"],
+    ]
+    for candidates in pools:
+        context = routing_context([{"role": "user", "content": "Hello."}], candidates.copy())
+
+        await plugin.run(context)
+
+        assert len(context.candidate_models) == 1
+        assert context.candidate_models[0] in candidates

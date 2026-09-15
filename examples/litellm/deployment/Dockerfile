@@ -33,7 +33,7 @@ RUN python -c "from importlib.metadata import version; \
 from switchyard.libsy import algorithms; \
 from switchyard_litellm import SwitchyardRoutingPlugin; \
 assert version('litellm') == '1.97.0'; \
-SwitchyardRoutingPlugin(algorithms.random(['smoke']))"
+SwitchyardRoutingPlugin(algorithms.random())"
 
 RUN addgroup -S -g 10001 litellm \
     && adduser -S -D -u 10001 -G litellm -h /home/litellm litellm

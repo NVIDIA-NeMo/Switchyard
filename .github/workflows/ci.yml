@@ -165,6 +165,31 @@ jobs:
       - name: pytest
         run: uv run pytest tests/ -v -m "not integration"
 
+  litellm:
+    name: LiteLLM unit tests
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/litellm
+    env:
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "examples/litellm/uv.lock"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: uv sync --locked
+      - name: pytest
+        run: uv run --no-sync pytest tests/unit -v
+
   # Regression guard: the default install of nemo-switchyard (without extras)
   # must NOT drag in torch / transformers / routellm / litellm /
   # openai-agents / docx. Catches accidental top-level imports of
@@ -227,7 +252,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [changes, lint, spdx-headers, rust, typecheck, test, slim-install-smoke]
+    needs: [changes, lint, spdx-headers, rust, typecheck, test, litellm, slim-install-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded
