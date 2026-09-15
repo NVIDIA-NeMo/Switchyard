@@ -207,7 +207,8 @@ impl DeploymentConfig {
             }
         }
 
-        let clients = self.build_clients()?;
+        let mut provider_api_keys = Vec::new();
+        let clients = self.build_clients(&mut provider_api_keys)?;
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
@@ -260,11 +261,16 @@ impl DeploymentConfig {
             );
             routes.push((config.id.clone(), route));
         }
-        let runner = Runner::new(routes).with_fallback_url(fallback_base_url);
+        let runner = Runner::new(routes)
+            .with_fallback_url(fallback_base_url)
+            .with_provider_api_keys(provider_api_keys);
         Ok(runner)
     }
 
-    fn build_clients(&self) -> RunnerResult<BTreeMap<String, Arc<TranslatingLlmClient>>> {
+    fn build_clients(
+        &self,
+        provider_api_keys: &mut Vec<String>,
+    ) -> RunnerResult<BTreeMap<String, Arc<TranslatingLlmClient>>> {
         let mut models_by_client = self
             .llm_clients
             .keys()
@@ -273,7 +279,13 @@ impl DeploymentConfig {
 
         for (name, client_config) in &self.llm_clients {
             validate_value("llm client name", name)?;
-            build_backend(name, client_config, &BTreeMap::new(), None)?;
+            let backend = build_backend(name, client_config, &BTreeMap::new(), None)?;
+            let (Backend::OpenAiChat(config)
+            | Backend::OpenAiResponses(config)
+            | Backend::Anthropic(config)) = backend;
+            if let Some(key) = config.api_key {
+                provider_api_keys.push(key);
+            }
         }
         for (target_name, target) in &self.targets {
             let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {

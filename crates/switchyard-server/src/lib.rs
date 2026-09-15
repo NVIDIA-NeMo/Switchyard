@@ -6,6 +6,7 @@
 pub mod config;
 mod metrics;
 mod observability;
+mod redaction;
 mod response;
 mod routing_log;
 mod shutdown;
@@ -157,6 +158,7 @@ struct DecisionLlmClientResponse {
 #[derive(Clone)]
 pub struct ServerState {
     runner: Arc<Runner>,
+    redactor: Arc<redaction::Redactor>,
     fallback_http: reqwest::Client,
     metrics: prometheus::Registry,
     stats: StatsAccumulator,
@@ -210,7 +212,9 @@ impl ServerState {
             metrics.clone(),
             runner.models().map(|model| model.algorithm),
         );
+        let redactor = redaction::Redactor::new(runner.provider_api_keys());
         Ok(Self {
+            redactor: Arc::new(redactor),
             runner: Arc::new(runner),
             fallback_http,
             metrics,
@@ -518,6 +522,10 @@ fn primary_llm_routes() -> Router<ServerState> {
 fn finish_router(router: Router<ServerState>, state: ServerState) -> Router {
     router
         .layer(DefaultBodyLimit::max(DEFAULT_MAX_REQUEST_BODY_BYTES))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            redaction::redact_response,
+        ))
         // `layer` only wraps routes registered before it, so this stays last.
         .layer(axum::middleware::from_fn(stamp_request_start))
         .with_state(state)
@@ -1060,11 +1068,16 @@ async fn handle_llm_request(
 
     let upstream_headers = std::mem::take(&mut response.upstream_headers);
     let response_model = served_model.as_ref().map(ToString::to_string);
-    let mut response =
-        match into_http_response(response, wire_format, response_model, request_extensions) {
-            Ok(response) => response,
-            Err(error) => return server_error(error.to_string()),
-        };
+    let mut response = match into_http_response(
+        response,
+        wire_format,
+        response_model,
+        request_extensions,
+        Arc::clone(&state.redactor),
+    ) {
+        Ok(response) => response,
+        Err(error) => return server_error(error.to_string()),
+    };
     // Forward upstream headers before Switchyard writes its own so any header
     // this server emits always overrides an upstream echo of the same name.
     let response_headers = response.headers_mut();

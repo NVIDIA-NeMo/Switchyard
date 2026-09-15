@@ -4,6 +4,7 @@
 //! Response encoding glue for libsy server endpoints.
 
 use std::error::Error;
+use std::sync::Arc;
 
 use axum::Json;
 use axum::response::{IntoResponse, Response as HttpResponse};
@@ -24,6 +25,7 @@ pub(crate) fn into_http_response(
     target_format: WireFormat,
     served_model: Option<String>,
     request_extensions: ProviderExtensions,
+    redactor: Arc<crate::redaction::Redactor>,
 ) -> Result<HttpResponse, BoxError> {
     match response.llm_response {
         LlmResponse::Agg(response) => {
@@ -42,7 +44,7 @@ pub(crate) fn into_http_response(
                 served_model,
                 &request_extensions,
             )?;
-            Ok(frame_stream(events, target_format).into_response())
+            Ok(frame_stream(events, target_format, redactor).into_response())
         }
     }
 }

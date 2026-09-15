@@ -4,11 +4,14 @@
 //! SSE framing helpers for OpenAI, Anthropic, and Responses endpoints.
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use axum::response::sse::{Event, Sse};
 use futures_util::Stream;
 use serde_json::{Value, json};
 use switchyard_translation::{LlmStreamError, RawEventStream, WireFormat};
+
+use crate::redaction::Redactor;
 
 /// Boxed stream type accepted by Axum's SSE response wrapper.
 pub(crate) type SseFrameStream =
@@ -18,32 +21,33 @@ pub(crate) type SseFrameStream =
 pub(crate) fn frame_stream(
     stream: RawEventStream,
     target_format: WireFormat,
+    redactor: Arc<Redactor>,
 ) -> Sse<SseFrameStream> {
     let framed = async_stream::stream! {
         let mut stream = stream;
         let mut failed = false;
         while let Some(item) = futures_util::StreamExt::next(&mut stream).await {
             let event = match item {
-                Ok(value) => match frame_event(target_format, value) {
+                Ok(value) => match frame_event(target_format, value, &redactor) {
                     Ok(event) => event,
                     Err(error) => {
                         failed = true;
-                        error_event(target_format, error.to_string())
+                        error_event(target_format, error.to_string(), &redactor)
                     }
                 },
-                // The upstream's own error event, already in the target format: forward it
-                // verbatim so its code and type survive, rather than synthesizing one.
+                // Preserve the upstream error's fields, apart from credential redaction,
+                // rather than replacing it with a synthesized error.
                 Err(LlmStreamError::Upstream(value)) => {
                     failed = true;
-                    frame_event(target_format, value.clone()).unwrap_or_else(|error| {
+                    frame_event(target_format, value.clone(), &redactor).unwrap_or_else(|error| {
                         tracing::warn!(error = %error, "in-band error event could not be framed");
-                        error_event(target_format, value.to_string())
+                        error_event(target_format, value.to_string(), &redactor)
                     })
                 }
                 Err(LlmStreamError::Client(error)) => {
                     tracing::warn!(error = %error, "stream iteration failed");
                     failed = true;
-                    error_event(target_format, error.to_string())
+                    error_event(target_format, error.to_string(), &redactor)
                 }
             };
             yield Ok(event);
@@ -62,41 +66,50 @@ pub(crate) fn frame_stream(
     Sse::new(Box::pin(framed) as SseFrameStream)
 }
 
-fn frame_event(target_format: WireFormat, value: Value) -> Result<Event, axum::Error> {
+fn frame_event(
+    target_format: WireFormat,
+    value: Value,
+    redactor: &Redactor,
+) -> Result<Event, serde_json::Error> {
+    let data = redactor.json(serde_json::to_string(&value)?);
     match target_format {
-        WireFormat::OpenAiChat => Event::default().json_data(value),
+        WireFormat::OpenAiChat => Ok(Event::default().data(data)),
         WireFormat::AnthropicMessages | WireFormat::OpenAiResponses => {
             let event_type = value
                 .get("type")
                 .and_then(Value::as_str)
                 .unwrap_or("message")
                 .to_string();
-            Event::default().event(event_type).json_data(value)
+            Ok(Event::default().event(event_type).data(data))
         }
     }
 }
 
-fn error_event(target_format: WireFormat, message: String) -> Event {
+fn error_event(target_format: WireFormat, message: String, redactor: &Redactor) -> Event {
     match target_format {
         WireFormat::OpenAiChat => Event::default().data(
-            json!({
-                "error": {
-                    "message": message,
-                    "type": "SwitchyardError",
-                }
-            })
-            .to_string(),
-        ),
-        WireFormat::AnthropicMessages | WireFormat::OpenAiResponses => {
-            Event::default().event("error").data(
+            redactor.json(
                 json!({
-                    "type": "error",
                     "error": {
                         "message": message,
                         "type": "SwitchyardError",
                     }
                 })
                 .to_string(),
+            ),
+        ),
+        WireFormat::AnthropicMessages | WireFormat::OpenAiResponses => {
+            Event::default().event("error").data(
+                redactor.json(
+                    json!({
+                        "type": "error",
+                        "error": {
+                            "message": message,
+                            "type": "SwitchyardError",
+                        }
+                    })
+                    .to_string(),
+                ),
             )
         }
     }
@@ -117,7 +130,12 @@ mod tests {
     // Renders a framed body for one Chat stream.
     async fn chat_body(items: Vec<Result<Value, LlmStreamError>>) -> TestResult<String> {
         let stream: RawEventStream = Box::pin(stream::iter(items));
-        let response = frame_stream(stream, WireFormat::OpenAiChat).into_response();
+        let response = frame_stream(
+            stream,
+            WireFormat::OpenAiChat,
+            Arc::new(Redactor::default()),
+        )
+        .into_response();
         Ok(String::from_utf8(
             to_bytes(response.into_body(), usize::MAX).await?.to_vec(),
         )?)
