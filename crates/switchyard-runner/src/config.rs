@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_MAX_RETRIES,
+    HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
 use switchyard_protocol::{Category, ModelId, RoutedLlmClient, WireFormat};
 
@@ -65,6 +65,7 @@ pub(crate) struct DeploymentConfig {
 #[derive(Debug)]
 struct RouteConfig {
     id: ModelId,
+    judge_timeout_ms: u64,
     context_window: Option<u32>,
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
@@ -84,6 +85,8 @@ impl<'de> Deserialize<'de> for RouteConfig {
     {
         let mut table = toml::Table::deserialize(deserializer)?;
         let id = take_required(&mut table, "id")?;
+        let judge_timeout_ms =
+            take_optional(&mut table, "judge_timeout_ms")?.unwrap_or(DEFAULT_JUDGE_TIMEOUT_MS);
         let context_window = take_optional(&mut table, "context_window")?;
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
@@ -92,6 +95,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
             id,
+            judge_timeout_ms,
             context_window,
             tool_calling,
             reasoning,
@@ -379,7 +383,9 @@ impl DeploymentConfig {
             routing_answer_target,
         } = self.build_route_target_prompts(route_name, route)?;
         let router =
-            ClientRouter::new_with_target_prompts(by_model, prompts, routing_answer_target);
+            ClientRouter::new_with_target_prompts(by_model, prompts, routing_answer_target)
+                .with_judge_timeout_ms(route.judge_timeout_ms)
+                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
         Ok((router, caller_auth))
     }
 
@@ -844,7 +850,7 @@ target = "strong"
     }
 
     fn error_message(toml: &str) -> String {
-        match Runner::from_toml(toml) {
+        match runner_from_toml(toml) {
             Ok(_) => "configuration unexpectedly succeeded".to_string(),
             Err(error) => error.to_string(),
         }
@@ -1278,8 +1284,8 @@ efficient_target = "weak"
     }
 
     #[test]
-    fn rejects_invalid_stage_classifier_fields() {
-        // Reject unknown classifier fields and zero timeouts.
+    fn rejects_unknown_stage_classifier_fields() {
+        // Nested classifier typos must fail instead of silently using a default.
         let config = format!(
             r#"{VALID_CONFIG}
 
@@ -1298,13 +1304,11 @@ classifier_magic = true
 "#
         );
 
-        for (field, expected) in [
-            ("timeout_mss = 75", "unknown field `timeout_mss`"),
-            ("timeout_ms = 0", "timeout_ms must be at least 1"),
-        ] {
-            let error = error_message(&config.replace("classifier_magic = true", field));
-            assert!(error.contains(expected), "{error}");
-        }
+        let error = error_message(&config);
+        assert!(
+            error.contains("unknown field `classifier_magic`"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1341,14 +1345,6 @@ classifier_magic = true
                     "targets = [\"strong\", \"weak\"]\nweights = [1]",
                 ),
                 "expected 2 weights, got 1",
-            ),
-            (
-                VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 0.5\ntimeout_ms = 0"),
-                "timeout_ms must be at least 1",
-            ),
-            (
-                VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 0.5\ntimeout_mss = 75"),
-                "unknown field `timeout_mss`",
             ),
             (
                 VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 1.5"),

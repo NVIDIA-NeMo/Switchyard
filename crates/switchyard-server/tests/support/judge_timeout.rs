@@ -42,12 +42,40 @@ strong = {{ id = "deadline/strong", llm_client = "upstream" }}
 weak = {{ id = "deadline/weak", llm_client = "upstream" }}
 [routes.deadline]
 id = "deadline"
+judge_timeout_ms = 75
 {classifier}
 base_threshold = 0.5
-timeout_ms = 75
 "#,
         streaming = scenario == "streaming",
     )
+}
+
+#[test]
+fn judge_deadline_configuration_is_validated() -> TestResult {
+    let config = deadline_config("http://127.0.0.1:9/v1", "classifier", "valid");
+    for setting in ["", "judge_timeout_ms = 1", "judge_timeout_ms = 10000"] {
+        load_test_config(&config.replace("judge_timeout_ms = 75", setting))?;
+    }
+    for setting in [
+        "judge_timeout_ms = 0",
+        "judge_timeout_ms = -1",
+        "judge_timeout_ms = 1.5",
+        "judge_timeout_ms = '75'",
+        "judge_timeout_ms = 75\njudge_timeout_ms = 100",
+        "judge_timeout_mss = 75",
+        "timeout_ms = 75",
+    ] {
+        let result = load_test_config(&config.replace("judge_timeout_ms = 75", setting));
+        assert!(result.is_err(), "{setting}");
+        if setting == "judge_timeout_ms = 0" {
+            assert!(result.is_err_and(|error| {
+                error
+                    .to_string()
+                    .contains("judge_timeout_ms must be at least 1")
+            }));
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -113,78 +141,48 @@ async fn configured_judge_deadline_covers_response_body_and_retries() -> TestRes
 }
 
 #[tokio::test]
-async fn late_judge_response_does_not_abort_the_next_judge() -> TestResult {
-    use libsy::{
-        ClassifyTrigger, CompositeRouter, CompositeRouterConfig, LlmFallback, PickerMode,
-        StageRouterConfig, TaskClassifierConfig,
-    };
-    use switchyard_protocol::{Request, text_request};
-
+async fn judge_deadline_does_not_limit_an_answer_from_the_same_model() -> TestResult {
     let upstream = MockUpstream::start().await?;
-    let mut stage = StageRouterConfig::new(PickerMode::CapableFirst, 1.0);
-    stage.llm_fallback = Some(LlmFallback {
-        config: TaskClassifierConfig {
-            timeout_ms: 750,
-            ..Default::default()
-        },
-    });
-    let algorithm = Arc::new(CompositeRouter::new(CompositeRouterConfig {
-        judge: TaskClassifierConfig {
-            classify_trigger: ClassifyTrigger::UserTurn,
-            timeout_ms: 75,
-            ..Default::default()
-        },
-        stage,
-    })?);
-    let backend = Backend::OpenAiChat(HttpBackendConfig {
-        base_url: upstream.base_url.clone(),
-        api_key: None,
-        forward_auth: false,
-        extra_headers: BTreeMap::new(),
-        extra_body: BTreeMap::new(),
-        reasoning_effort: None,
-        max_retries: 0,
-    });
-    let client = TranslatingLlmClient::new(&[
-        ModelConfig::new("judge/late", backend.clone(), None),
-        ModelConfig::new("late/weak", backend.clone(), None),
-        ModelConfig::new("late/strong", backend, None),
-    ])?;
-    let models = RuntimeModels::new(
-        [
-            (Category::Judge, vec!["judge/late".into()]),
-            (Category::Efficient, vec!["late/weak".into()]),
-            (Category::Capable, vec!["late/strong".into()]),
-            (
-                Category::Any,
-                vec!["late/strong".into(), "late/weak".into()],
-            ),
-        ]
-        .into(),
+    let config = format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{}"
+max_retries = 0
+[targets]
+shared = {{ id = "deadline/shared", llm_client = "upstream" }}
+weak = {{ id = "deadline/weak", llm_client = "upstream" }}
+[routes.deadline]
+id = "deadline"
+type = "llm_classifier"
+classifier_target = "shared"
+strong_target = "shared"
+weak_target = "weak"
+base_threshold = 0.5
+judge_timeout_ms = 75
+"#,
+        upstream.base_url,
     );
-    let (selected, response) = tokio::time::timeout(
+    let app = build_switchyard_router(load_test_config(&config)?);
+    let response = tokio::time::timeout(
         Duration::from_secs(1),
-        switchyard_llm_client::run(
-            algorithm,
-            ClientRouter::single(Arc::new(client)),
-            Request {
-                llm_request: text_request(Some("late".into()), "bounded task"),
-                raw_request: None,
-                metadata: None,
-            },
-            Arc::new(models),
-            None,
+        send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "deadline",
+                "messages": [{"role": "user", "content": "bounded task"}],
+            })),
         ),
     )
     .await??;
-    assert_eq!(selected, "late/weak");
-    assert_eq!(
-        switchyard_protocol::completion_text(&response.llm_response.into_agg().await?),
-        "ok"
-    );
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
     assert_eq!(
         upstream.models().await,
-        ["judge/late", "judge/late", "late/weak"]
+        ["deadline/shared", "deadline/shared"]
     );
     Ok(())
 }

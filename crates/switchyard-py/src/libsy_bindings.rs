@@ -9,15 +9,17 @@ use std::sync::Arc;
 use futures::StreamExt;
 use http::HeaderMap;
 use http::header::{HeaderName, HeaderValue};
-use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
+use pyo3::exceptions::{
+    PyBaseException, PyStopAsyncIteration, PyTimeoutError, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger,
-    CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
-    LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
-    PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter, StageRouterConfig,
-    Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
+    CustomClassifierConfig, CustomClassifierPolicy, DriverError, EscalationJudgeConfig,
+    HandoffNoteConfig, LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback,
+    LlmTaskClassifier, Noop, PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter,
+    StageRouterConfig, Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
     Category, LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata,
@@ -77,9 +79,8 @@ fn header_map_from_python(headers: &HashMap<String, String>) -> PyResult<http::H
 
 /// Classifier settings shared by standalone and stage-router classifiers.
 ///
-/// `timeout_ms` limits the wait for a complete classifier response, including
-/// retries and stream reading. It defaults to `10000` milliseconds and must be
-/// at least `1`. The routing algorithm checks this minimum when it is constructed.
+/// The Python host enforces judge deadlines. Pass `TimeoutError` to
+/// `ModelCall.fail` to continue routing without a verdict.
 #[pyclass(
     name = "TaskClassifierConfig",
     module = "switchyard.libsy",
@@ -99,9 +100,8 @@ impl PyTaskClassifierConfig {
 
 /// Settings for response-based escalation classification.
 ///
-/// `timeout_ms` limits the wait for a complete classifier response, including
-/// retries and stream reading. It defaults to `10000` milliseconds and must be
-/// at least `1`. The routing algorithm checks this minimum when it is constructed.
+/// The Python host enforces judge deadlines. Pass `TimeoutError` to
+/// `ModelCall.fail` to continue routing without a verdict.
 #[pyclass(
     name = "EscalationClassifierConfig",
     module = "switchyard.libsy",
@@ -113,19 +113,16 @@ struct PyEscalationClassifierConfig {
     contract: ClassifierContractConfig,
     judge: EscalationJudgeConfig,
     max_output_tokens: u64,
-    timeout_ms: u64,
 }
 
 #[pymethods]
 impl PyEscalationClassifierConfig {
     #[new]
     #[pyo3(signature = (
-        *,
         confirmations=2,
         recent_turn_window=28,
         window_message_chars=500,
         max_output_tokens=4096,
-        timeout_ms=10_000,
         prompt=None,
         response_format_type="json_schema"
     ))]
@@ -135,7 +132,6 @@ impl PyEscalationClassifierConfig {
         recent_turn_window: usize,
         window_message_chars: usize,
         max_output_tokens: u64,
-        timeout_ms: u64,
         prompt: Option<String>,
         response_format_type: &str,
     ) -> PyResult<Self> {
@@ -147,16 +143,14 @@ impl PyEscalationClassifierConfig {
                 window_message_chars,
             },
             max_output_tokens,
-            timeout_ms,
         })
     }
 }
 
 /// Settings for a classifier with a user-supplied verdict schema.
 ///
-/// `timeout_ms` limits the wait for a complete classifier response, including
-/// retries and stream reading. It defaults to `10000` milliseconds and must be
-/// at least `1`. The routing algorithm checks this minimum when it is constructed.
+/// The Python host enforces judge deadlines. Pass `TimeoutError` to
+/// `ModelCall.fail` to continue routing without a verdict.
 #[pyclass(
     name = "CustomClassifierConfig",
     module = "switchyard.libsy",
@@ -181,12 +175,10 @@ impl PyCustomClassifierConfig {
         prompt,
         response_schema,
         selector,
-        *,
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
-        max_output_tokens=4096,
-        timeout_ms=10_000
+        max_output_tokens=4096
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -197,7 +189,6 @@ impl PyCustomClassifierConfig {
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
         max_output_tokens: u64,
-        timeout_ms: u64,
     ) -> PyResult<Self> {
         // Convert the Python schema into serde JSON and pair it with the target-selector policy;
         // conversion failures propagate to Python through `PyResult`.
@@ -210,7 +201,6 @@ impl PyCustomClassifierConfig {
         inner.message_hash_fallback = message_hash_fallback;
         inner.recent_turn_window = recent_turn_window;
         inner.max_output_tokens = max_output_tokens;
-        inner.timeout_ms = timeout_ms;
         Ok(Self { inner })
     }
 }
@@ -230,7 +220,7 @@ struct PyLlmClassifierConfig {
 impl PyLlmClassifierConfig {
     /// Configure capability routing between efficient and capable targets.
     #[staticmethod]
-    #[pyo3(signature = (*, config))]
+    #[pyo3(signature = (config))]
     fn capability(py: Python<'_>, config: Py<PyTaskClassifierConfig>) -> PyResult<Self> {
         Ok(Self {
             inner: LlmClassifierConfig::Capability {
@@ -241,7 +231,7 @@ impl PyLlmClassifierConfig {
 
     /// Configure response-based escalation between efficient and capable targets.
     #[staticmethod]
-    #[pyo3(signature = (*, config))]
+    #[pyo3(signature = (config))]
     fn escalation(py: Python<'_>, config: Py<PyEscalationClassifierConfig>) -> PyResult<Self> {
         let config = config.bind(py).try_borrow()?;
         Ok(Self {
@@ -249,14 +239,13 @@ impl PyLlmClassifierConfig {
                 contract: config.contract.clone(),
                 config: config.judge.clone(),
                 max_output_tokens: config.max_output_tokens,
-                timeout_ms: config.timeout_ms,
             },
         })
     }
 
     /// Configure schema-driven routing across runtime model categories.
     #[staticmethod]
-    #[pyo3(signature = (*, default_target, config))]
+    #[pyo3(signature = (default_target, config))]
     fn custom(
         py: Python<'_>,
         default_target: String,
@@ -277,13 +266,11 @@ impl PyTaskClassifierConfig {
     #[new]
     #[pyo3(signature = (
         base_threshold,
-        *,
         threshold_step=0.0,
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
         max_output_tokens=4096,
-        timeout_ms=10_000,
         prompt=None,
         response_format_type="json_schema"
     ))]
@@ -295,7 +282,6 @@ impl PyTaskClassifierConfig {
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
         max_output_tokens: u64,
-        timeout_ms: u64,
         prompt: Option<String>,
         response_format_type: &str,
     ) -> PyResult<Self> {
@@ -308,7 +294,6 @@ impl PyTaskClassifierConfig {
                 recent_turn_window,
                 contract: classifier_contract(prompt, response_format_type)?,
                 max_output_tokens,
-                timeout_ms,
             },
         })
     }
@@ -356,7 +341,7 @@ impl PyLlmFallback {
 #[pymethods]
 impl PyLlmFallback {
     #[new]
-    #[pyo3(signature = (*, config))]
+    #[pyo3(signature = (config))]
     fn new(config: Py<PyTaskClassifierConfig>) -> Self {
         Self { config }
     }
@@ -391,7 +376,11 @@ fn ffi_error(error: PyErr) -> LlmClientError {
 }
 
 fn python_client_error(py: Python<'_>, error: PyErr, model: &ModelId) -> LlmClientError {
-    if error.is_instance_of::<ContextWindowExceededError>(py) {
+    if error.is_instance_of::<PyTimeoutError>(py) {
+        LlmClientError::Timeout {
+            source: Box::new(error),
+        }
+    } else if error.is_instance_of::<ContextWindowExceededError>(py) {
         LlmClientError::ContextWindowExceeded {
             model: model.clone(),
             message: error.value(py).to_string(),
@@ -434,7 +423,10 @@ fn python_response_stream(
                     }
                 }
             },
-            Err(error) => Some((Err(ffi_error(error)), None)),
+            Err(error) => {
+                let error = Python::attach(|py| python_client_error(py, error, &model));
+                Some((Err(error), None))
+            }
         }
     });
     Ok(Box::pin(stream))
@@ -445,6 +437,7 @@ fn python_response_stream(
 struct PyModelCall {
     inner: Option<CallModel>,
     algorithm: String,
+    category: Option<String>,
     request: Py<PyAny>,
     models: Vec<String>,
 }
@@ -454,6 +447,10 @@ impl PyModelCall {
         let request = to_python(py, &call.request.llm_request)?;
         Ok(Self {
             algorithm: call.algorithm.clone(),
+            category: call
+                .category
+                .as_ref()
+                .map(|category| category.as_str().to_owned()),
             models: call.models.iter().map(ToString::to_string).collect(),
             inner: Some(call),
             request,
@@ -465,6 +462,14 @@ impl PyModelCall {
             .take()
             .ok_or_else(|| py_libsy_error("model call has already been completed"))
     }
+
+    // A cancelled algorithm may stop waiting before the host finishes its call.
+    fn complete(call: CallModel, result: switchyard_libsy::Result<Response>) -> PyResult<()> {
+        match call.respond(result) {
+            Err(RustLibsyError::Driver(DriverError::ResponseDropped)) => Ok(()),
+            result => result.map_err(py_libsy_error),
+        }
+    }
 }
 
 #[pymethods]
@@ -473,6 +478,13 @@ impl PyModelCall {
     #[getter]
     fn algorithm(&self) -> &str {
         &self.algorithm
+    }
+
+    /// The requested model category, or `None` if no category was specified.
+    /// Python hosts enforce client deadlines; `"judge"` identifies verdict calls.
+    #[getter]
+    fn category(&self) -> Option<&str> {
+        self.category.as_deref()
     }
 
     /// The normalized LLM request to serve as a Python dictionary.
@@ -502,12 +514,14 @@ impl PyModelCall {
         let llm_response = response.to_core(py, model)?;
         let call = self.take()?;
         let metadata = call.request.metadata.clone();
-        call.respond(Ok(Response {
-            llm_response,
-            metadata,
-            upstream_headers: HeaderMap::new(),
-        }))
-        .map_err(py_libsy_error)
+        Self::complete(
+            call,
+            Ok(Response {
+                llm_response,
+                metadata,
+                upstream_headers: HeaderMap::new(),
+            }),
+        )
     }
 
     /// Fulfill this call with a Python client failure.
@@ -527,8 +541,7 @@ impl PyModelCall {
             .ok_or_else(|| py_libsy_error("model call request is missing its selected model"))?;
         let call = self.take()?;
         let source = python_client_error(error.py(), PyErr::from_value(error.clone()), &target);
-        call.respond(Err(RustLibsyError::client_call(target, source)))
-            .map_err(py_libsy_error)
+        Self::complete(call, Err(RustLibsyError::client_call(target, source)))
     }
 }
 
@@ -803,7 +816,7 @@ fn llm_classifier_algorithm(
 
 /// Construct capability classifier routing.
 #[pyfunction(name = "llm_task_classifier")]
-#[pyo3(signature = (*, config))]
+#[pyo3(signature = (config))]
 fn llm_task_classifier_algorithm(
     py: Python<'_>,
     config: Py<PyTaskClassifierConfig>,
@@ -824,7 +837,6 @@ fn build_llm_classifier(config: LlmClassifierConfig) -> PyResult<PyAlgorithm> {
 /// Construct signal-driven stage routing with an optional LLM classifier fallback.
 #[pyfunction(name = "stage_router")]
 #[pyo3(signature = (
-    *,
     picker,
     confidence_threshold,
     recent_window=None,

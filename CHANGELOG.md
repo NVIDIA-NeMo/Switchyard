@@ -136,9 +136,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Tool calls are now numbered within the Chat `tool_calls` array in order of
   first appearance.
 - **Continue routing when a classifier times out** — stalled classifiers could
-  delay requests even when completion models were available. `timeout_ms` now
-  limits the wait, including retries and stream reading, to `10000` milliseconds
-  by default (minimum `1`). On timeout, `llm_classifier`, `stage_router`,
+  delay requests even when answering models were available. The client limits
+  each judge call to the route's `judge_timeout_ms`, including candidate attempts,
+  retries, and reading the complete response. The default is `10000` milliseconds
+  and the minimum is `1`. On timeout, `llm_classifier`, `stage_router`,
   `composite`, and `subagents` classifiers use their fallback choice and record
   `reason=timeout` in `switchyard_classifier_fail_open_total`.
 - **Advisor stall checkpoint re-arms after a refunded review** — a

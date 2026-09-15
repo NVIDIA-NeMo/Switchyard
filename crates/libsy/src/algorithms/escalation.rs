@@ -53,11 +53,10 @@ pub(super) fn build_classifier(
     contract_config: ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
-    timeout_ms: u64,
 ) -> Result<Arc<dyn Classifier<State>>> {
     let confirmations = config.confirmations;
     let classifier: Arc<dyn Classifier<State>> = Arc::new(EscalationClassifier {
-        judge: escalation::build_judge(&contract_config, config, max_output_tokens, timeout_ms)?,
+        judge: escalation::build_judge(&contract_config, config, max_output_tokens)?,
         confirmations,
     });
     Ok(classifier)
@@ -192,7 +191,7 @@ mod tests {
 
     use super::*;
     use crate::algorithms::llm_class::{LlmClassifierConfig, LlmTaskClassifier};
-    use crate::algorithms::util::{DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, DEFAULT_JUDGE_TIMEOUT_MS};
+    use crate::algorithms::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
     use crate::core::testing::{Serve, reply, test_drive_with_models};
 
     /// A queue of replies, drained in order.
@@ -288,7 +287,6 @@ mod tests {
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-                timeout_ms: DEFAULT_JUDGE_TIMEOUT_MS,
             },
         )?))
     }
@@ -343,7 +341,6 @@ mod tests {
                 ..EscalationJudgeConfig::default()
             },
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-            timeout_ms: DEFAULT_JUDGE_TIMEOUT_MS,
         })?);
 
         test_drive_with_models(router, classify_request(), runtime_models(), serve).await?;

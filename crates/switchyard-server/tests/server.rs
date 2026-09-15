@@ -125,6 +125,14 @@ async fn upstream_chat(
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
+    if body["model"] == "deadline/shared" {
+        let delay = if body.get("response_format").is_some() {
+            std::time::Duration::from_secs(2)
+        } else {
+            std::time::Duration::from_millis(150)
+        };
+        tokio::time::sleep(delay).await;
+    }
     match body["scenario"].as_str() {
         Some("buffered") => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
         Some("streaming") => {
@@ -147,16 +155,6 @@ async fn upstream_chat(
                 .into_response();
         }
         _ => {}
-    }
-    if body["model"] == "judge/late" {
-        // The 150 ms first reply misses its 75 ms deadline and arrives while
-        // the second judge request is still waiting for its 250 ms reply.
-        let delay = if calls.lock().await.len() == 1 {
-            150
-        } else {
-            250
-        };
-        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
     let prompt = user_prompt(&body);
     if prompt == "fail" {

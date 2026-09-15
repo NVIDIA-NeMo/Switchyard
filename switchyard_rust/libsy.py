@@ -63,9 +63,8 @@ if TYPE_CHECKING:
         ``max_output_tokens`` must be positive. Enabling ``message_hash_fallback``
         requires ``session_affinity``.
 
-        ``timeout_ms`` limits the wait for a complete classifier response, including
-        retries and stream reading. It defaults to ``10000`` milliseconds and must be
-        at least ``1``. The routing algorithm checks this minimum when it is constructed.
+        The Python host enforces judge deadlines. Pass ``TimeoutError`` to
+        ``ModelCall.fail`` to continue routing without a verdict.
         """
 
         def __init__(
@@ -73,12 +72,10 @@ if TYPE_CHECKING:
             prompt: str,
             response_schema: Mapping[str, object],
             selector: str,
-            *,
             session_affinity: bool = False,
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
             max_output_tokens: int = 4096,
-            timeout_ms: int = 10_000,
         ) -> None: ...
 
     @final
@@ -88,25 +85,34 @@ if TYPE_CHECKING:
         Counts and token limits must be positive, and ``window_message_chars``
         must be at least 50.
 
-        ``timeout_ms`` limits the wait for a complete classifier response, including
-        retries and stream reading. It defaults to ``10000`` milliseconds and must be
-        at least ``1``. The routing algorithm checks this minimum when it is constructed.
+        The Python host enforces judge deadlines. Pass ``TimeoutError`` to
+        ``ModelCall.fail`` to continue routing without a verdict.
         """
 
         def __init__(
             self,
-            *,
             confirmations: int = 2,
             recent_turn_window: int = 28,
             window_message_chars: int = 500,
             max_output_tokens: int = 4096,
-            timeout_ms: int = 10_000,
             prompt: str | None = None,
             response_format_type: Literal["json_schema", "json_object"] = "json_schema",
         ) -> None: ...
 
     @final
     class ModelCall:
+        """A model call whose Python host enforces deadlines and retries.
+
+        For ``category == "judge"``, apply one deadline to the call and reading
+        its complete response. Pass ``TimeoutError`` to ``fail`` when the deadline
+        expires so routing can continue without a verdict. ``respond`` and ``fail``
+        ignore a late reply after cancellation. Completing the same call twice
+        still raises ``LibsyError``.
+        """
+
+        @property
+        def category(self) -> str | None: ...
+
         @property
         def algorithm(self) -> str: ...
 
@@ -165,21 +171,18 @@ if TYPE_CHECKING:
         Thresholds must remain within ``[0, 1]``, ``max_output_tokens`` must be
         positive, and ``message_hash_fallback`` requires ``session_affinity``.
 
-        ``timeout_ms`` limits the wait for a complete classifier response, including
-        retries and stream reading. It defaults to ``10000`` milliseconds and must be
-        at least ``1``. The routing algorithm checks this minimum when it is constructed.
+        The Python host enforces judge deadlines. Pass ``TimeoutError`` to
+        ``ModelCall.fail`` to continue routing without a verdict.
         """
 
         def __init__(
             self,
             base_threshold: float,
-            *,
             threshold_step: float = 0.0,
             session_affinity: bool = False,
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
             max_output_tokens: int = 4096,
-            timeout_ms: int = 10_000,
             prompt: str | None = None,
             response_format_type: Literal["json_schema", "json_object"] = "json_schema",
         ) -> None: ...
@@ -193,7 +196,6 @@ if TYPE_CHECKING:
 
         @staticmethod
         def capability(
-            *,
             config: TaskClassifierConfig,
         ) -> "LlmClassifierConfig":
             """Route by predicted task capability."""
@@ -201,7 +203,6 @@ if TYPE_CHECKING:
 
         @staticmethod
         def escalation(
-            *,
             config: EscalationClassifierConfig,
         ) -> "LlmClassifierConfig":
             """Call the efficient target first and escalate judged responses."""
@@ -209,7 +210,6 @@ if TYPE_CHECKING:
 
         @staticmethod
         def custom(
-            *,
             default_target: str,
             config: CustomClassifierConfig,
         ) -> "LlmClassifierConfig":
@@ -226,7 +226,6 @@ if TYPE_CHECKING:
     class LlmFallback:
         def __init__(
             self,
-            *,
             config: TaskClassifierConfig,
         ) -> None: ...
 
@@ -252,12 +251,10 @@ if TYPE_CHECKING:
         ...
 
     def llm_task_classifier(
-        *,
         config: TaskClassifierConfig,
     ) -> Algorithm: ...
 
     def stage_router(
-        *,
         picker: str,
         confidence_threshold: float,
         recent_window: int | None = None,

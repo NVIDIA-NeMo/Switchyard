@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use http::StatusCode;
 use parking_lot::Mutex;
@@ -23,12 +23,16 @@ use switchyard_libsy::{
     Algorithm, CallModel, DriverError, LibsyError, Result, RoutingOutcome, RuntimeModels, drive,
 };
 use switchyard_protocol::{
-    LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
+    Category, LlmClientError, LlmResponse, ModelId, Request, Response, RoutedLlmClient,
+    RoutingFallbackReason,
 };
 use switchyard_translation::prepare_request_for_target;
 
 use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
 use crate::{metrics, observability};
+
+/// Default judge deadline in milliseconds, including retries and reading the full response.
+pub const DEFAULT_JUDGE_TIMEOUT_MS: u64 = 10_000;
 
 /// Run one request to completion, serving every offloaded model call with `client`.
 ///
@@ -149,7 +153,7 @@ fn emit_routing_observations(
 ///
 /// If every candidate fails, pass the error to the algorithm. Ignore
 /// `DriverError::ResponseDropped` when the algorithm has stopped waiting, such
-/// as after a judge timeout or when another concurrent call supplied the answer.
+/// as when the run was cancelled or another concurrent call supplied the answer.
 /// Return any other error from `CallModel::respond`.
 async fn serve(
     clients: ClientRouter,
@@ -161,15 +165,39 @@ async fn serve(
             observations.lock().push(observation);
         }
     };
-    let result = call_first_available(
+    let request = call_first_available(
         &clients,
         &call.algorithm,
         &call.request,
         &call.models,
         CallPhase::Routing,
         &observe,
-    )
-    .await;
+    );
+    let result = if call.category == Some(Category::Judge) {
+        let model = call.models.first().ok_or(LibsyError::NoTargets)?.clone();
+        let complete = async {
+            let mut response = request.await?;
+            let aggregate = response
+                .llm_response
+                .into_agg()
+                .await
+                .map_err(|error| LibsyError::client_call(model.clone(), error))?;
+            response.llm_response = LlmResponse::Agg(aggregate);
+            Ok(response)
+        };
+        tokio::time::timeout(clients.judge_timeout, complete)
+            .await
+            .unwrap_or_else(|error| {
+                Err(LibsyError::client_call(
+                    model,
+                    LlmClientError::Timeout {
+                        source: Box::new(error),
+                    },
+                ))
+            })
+    } else {
+        request.await
+    };
     match call.respond(result) {
         Err(LibsyError::Driver(DriverError::ResponseDropped)) => Ok(()),
         fulfilled => fulfilled,
@@ -344,6 +372,7 @@ fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
 #[derive(Clone)]
 pub struct ClientRouter {
     inner: Arc<ClientRouting>,
+    judge_timeout: Duration,
 }
 
 struct ClientRouting {
@@ -376,6 +405,7 @@ impl ClientRouter {
         routing_answer_target: Option<ModelId>,
     ) -> Self {
         Self {
+            judge_timeout: Duration::from_millis(DEFAULT_JUDGE_TIMEOUT_MS),
             inner: Arc::new(ClientRouting {
                 routing: Routing::ByModel(by_model),
                 target_prompts,
@@ -391,12 +421,26 @@ impl ClientRouter {
     /// only duplicate that.
     pub fn single(client: Arc<dyn RoutedLlmClient>) -> Self {
         Self {
+            judge_timeout: Duration::from_millis(DEFAULT_JUDGE_TIMEOUT_MS),
             inner: Arc::new(ClientRouting {
                 routing: Routing::Single(client),
                 target_prompts: HashMap::new(),
                 routing_answer_target: None,
             }),
         }
+    }
+
+    /// Set the judge deadline in milliseconds, including retries and reading the full response.
+    /// Return a timeout to the algorithm so it can route without a verdict.
+    /// This deadline does not limit answer generation. Reject zero.
+    pub fn with_judge_timeout_ms(mut self, timeout_ms: u64) -> crate::Result<Self> {
+        if timeout_ms == 0 {
+            return Err(LlmClientError::Configuration {
+                message: "judge_timeout_ms must be at least 1".into(),
+            });
+        }
+        self.judge_timeout = Duration::from_millis(timeout_ms);
+        Ok(self)
     }
 
     /// The client that serves `model`.
