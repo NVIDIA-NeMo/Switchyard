@@ -169,6 +169,7 @@ impl PyCustomClassifierConfig {
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
+        judge_char_budget=18_000,
         max_output_tokens=4096
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -179,6 +180,7 @@ impl PyCustomClassifierConfig {
         session_affinity: bool,
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
+        judge_char_budget: usize,
         max_output_tokens: u64,
     ) -> PyResult<Self> {
         // Convert the Python schema into serde JSON and pair it with the target-selector policy;
@@ -191,6 +193,7 @@ impl PyCustomClassifierConfig {
         inner.classify_trigger = classify_trigger(session_affinity);
         inner.message_hash_fallback = message_hash_fallback;
         inner.recent_turn_window = recent_turn_window;
+        inner.judge_char_budget = judge_char_budget;
         inner.max_output_tokens = max_output_tokens;
         Ok(Self { inner })
     }
@@ -262,6 +265,7 @@ impl PyTaskClassifierConfig {
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
+        judge_char_budget=18_000,
         max_output_tokens=4096,
         prompt=None,
         response_format_type="json_schema"
@@ -273,6 +277,7 @@ impl PyTaskClassifierConfig {
         session_affinity: bool,
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
+        judge_char_budget: usize,
         max_output_tokens: u64,
         prompt: Option<String>,
         response_format_type: &str,
@@ -284,6 +289,7 @@ impl PyTaskClassifierConfig {
                 classify_trigger: classify_trigger(session_affinity),
                 message_hash_fallback,
                 recent_turn_window,
+                judge_char_budget,
                 contract: classifier_contract(prompt, response_format_type)?,
                 max_output_tokens,
             },

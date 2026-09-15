@@ -63,7 +63,8 @@ if TYPE_CHECKING:
         """Configure schema-validated routing across runtime model groups.
 
         ``max_output_tokens`` must be positive. Enabling ``message_hash_fallback``
-        requires ``session_affinity``.
+        requires ``session_affinity``. ``judge_char_budget`` caps the windowed judge
+        payload, must be at least 256, and is ignored without ``recent_turn_window``.
         """
 
         def __init__(
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
             session_affinity: bool = False,
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
+            judge_char_budget: int = 18_000,
             max_output_tokens: int = 4096,
         ) -> None: ...
 
@@ -156,6 +158,8 @@ if TYPE_CHECKING:
 
         Thresholds must remain within ``[0, 1]``, ``max_output_tokens`` must be
         positive, and ``message_hash_fallback`` requires ``session_affinity``.
+        ``judge_char_budget`` caps the windowed judge payload, must be at least 256,
+        and is ignored without ``recent_turn_window``.
         """
 
         def __init__(
@@ -166,6 +170,7 @@ if TYPE_CHECKING:
             session_affinity: bool = False,
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
+            judge_char_budget: int = 18_000,
             max_output_tokens: int = 4096,
             prompt: str | None = None,
             response_format_type: Literal["json_schema", "json_object"] = "json_schema",
