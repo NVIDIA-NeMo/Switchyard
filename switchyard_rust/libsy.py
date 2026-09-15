@@ -3,8 +3,6 @@
 
 """Minimal bindings for Rust-owned libsy algorithms."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -64,6 +62,9 @@ if TYPE_CHECKING:
 
         ``max_output_tokens`` must be positive. Enabling ``message_hash_fallback``
         requires ``session_affinity``.
+
+        The Python host enforces judge deadlines. Pass ``TimeoutError`` to
+        ``ModelCall.fail`` to continue routing without a verdict.
         """
 
         def __init__(
@@ -71,7 +72,6 @@ if TYPE_CHECKING:
             prompt: str,
             response_schema: Mapping[str, object],
             selector: str,
-            *,
             session_affinity: bool = False,
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
@@ -84,11 +84,13 @@ if TYPE_CHECKING:
 
         Counts and token limits must be positive, and ``window_message_chars``
         must be at least 50.
+
+        The Python host enforces judge deadlines. Pass ``TimeoutError`` to
+        ``ModelCall.fail`` to continue routing without a verdict.
         """
 
         def __init__(
             self,
-            *,
             confirmations: int = 2,
             recent_turn_window: int = 28,
             window_message_chars: int = 500,
@@ -99,6 +101,18 @@ if TYPE_CHECKING:
 
     @final
     class ModelCall:
+        """A model call whose Python host enforces deadlines and retries.
+
+        For ``category == "judge"``, apply one deadline to the call and reading
+        its complete response. Pass ``TimeoutError`` to ``fail`` when the deadline
+        expires so routing can continue without a verdict. ``respond`` and ``fail``
+        ignore a late reply after cancellation. Completing the same call twice
+        still raises ``LibsyError``.
+        """
+
+        @property
+        def category(self) -> str | None: ...
+
         @property
         def algorithm(self) -> str: ...
 
@@ -156,12 +170,14 @@ if TYPE_CHECKING:
 
         Thresholds must remain within ``[0, 1]``, ``max_output_tokens`` must be
         positive, and ``message_hash_fallback`` requires ``session_affinity``.
+
+        The Python host enforces judge deadlines. Pass ``TimeoutError`` to
+        ``ModelCall.fail`` to continue routing without a verdict.
         """
 
         def __init__(
             self,
             base_threshold: float,
-            *,
             threshold_step: float = 0.0,
             session_affinity: bool = False,
             message_hash_fallback: bool = False,
@@ -180,26 +196,23 @@ if TYPE_CHECKING:
 
         @staticmethod
         def capability(
-            *,
             config: TaskClassifierConfig,
-        ) -> LlmClassifierConfig:
+        ) -> "LlmClassifierConfig":
             """Route by predicted task capability."""
             ...
 
         @staticmethod
         def escalation(
-            *,
             config: EscalationClassifierConfig,
-        ) -> LlmClassifierConfig:
+        ) -> "LlmClassifierConfig":
             """Call the efficient target first and escalate judged responses."""
             ...
 
         @staticmethod
         def custom(
-            *,
             default_target: str,
             config: CustomClassifierConfig,
-        ) -> LlmClassifierConfig:
+        ) -> "LlmClassifierConfig":
             """Route among runtime model groups using a schema-selected label.
 
             ``default_target`` names the group used when the judge fails or its
@@ -213,7 +226,6 @@ if TYPE_CHECKING:
     class LlmFallback:
         def __init__(
             self,
-            *,
             config: TaskClassifierConfig,
         ) -> None: ...
 
@@ -239,12 +251,10 @@ if TYPE_CHECKING:
         ...
 
     def llm_task_classifier(
-        *,
         config: TaskClassifierConfig,
     ) -> Algorithm: ...
 
     def stage_router(
-        *,
         picker: str,
         confidence_threshold: float,
         recent_window: int | None = None,

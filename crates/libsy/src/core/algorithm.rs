@@ -105,6 +105,9 @@ pub struct CallModel {
     /// The name of the algorithm that produced this call, so a host instrumenting the
     /// calls it serves can attribute its own spans to the algorithm behind them.
     pub algorithm: String,
+    /// The model category requested by the algorithm, when one was specified.
+    /// Hosts can use this to distinguish judge calls from answer generation.
+    pub category: Option<Category>,
     /// The request to serve; its `model` is stamped with the first candidate.
     pub request: Request,
     /// Candidate models, tried in order until one answers. Never empty.
@@ -242,6 +245,21 @@ impl Driver {
     /// response resolves when its stream handle arrives); latency, outcome, and
     /// token usage are recorded when it resolves. The provider call itself is the
     /// host's, and is instrumented by whoever makes it.
+    pub async fn call_model(&self, request: Request, models: Vec<ModelId>) -> Result<Response> {
+        self.publish_call(request, models, None).await
+    }
+
+    /// Call models in a category from this driver's parent or subagent scope.
+    /// Pass the category and the ordered candidate models to the host.
+    pub async fn call_model_for_category(
+        &self,
+        request: Request,
+        category: Category,
+    ) -> Result<Response> {
+        let models = self.models_for(&category).to_vec();
+        self.publish_call(request, models, Some(category)).await
+    }
+
     #[tracing::instrument(
         target = "libsy",
         name = "libsy.llm_call",
@@ -257,7 +275,12 @@ impl Driver {
             reasoning_tokens = tracing::field::Empty,
         )
     )]
-    pub async fn call_model(&self, mut request: Request, models: Vec<ModelId>) -> Result<Response> {
+    async fn publish_call(
+        &self,
+        mut request: Request,
+        models: Vec<ModelId>,
+        category: Option<Category>,
+    ) -> Result<Response> {
         let Some(selected_model_id) = models.first().cloned() else {
             return Err(LibsyError::NoTargets);
         };
@@ -266,6 +289,7 @@ impl Driver {
         let (reply, response) = oneshot::channel::<Result<Response>>();
         let call = CallModel {
             algorithm: self.algorithm.clone(),
+            category,
             request,
             models,
             reply,

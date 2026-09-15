@@ -135,6 +135,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which subscripts its `tool_calls` array with that index, raised `IndexError`.
   Tool calls are now numbered within the Chat `tool_calls` array in order of
   first appearance.
+- **Continue routing when a classifier times out** — stalled classifiers could
+  delay requests even when answering models were available. The client limits
+  each judge call to the route's `judge_timeout_ms`, including candidate attempts,
+  retries, and reading the complete response. The default is `10000` milliseconds
+  and the minimum is `1`. On timeout, `llm_classifier`, `stage_router`,
+  `composite`, and `subagents` classifiers use their fallback choice and record
+  `reason=timeout` in `switchyard_classifier_fail_open_total`.
 - **Advisor stall checkpoint re-arms after a refunded review** — a
   stall-triggered consult that failed open or returned an unparseable verdict
   refunded the review budget but left the conversation's stall latch set, so

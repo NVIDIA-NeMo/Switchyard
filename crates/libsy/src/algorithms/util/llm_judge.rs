@@ -272,10 +272,7 @@ where
 
         tracing::info!(target = judge_model, "consulting llm judge");
         let response = driver
-            .call_model(
-                self.judge.build_request(state, request),
-                judge_models.to_vec(),
-            )
+            .call_model_for_category(self.judge.build_request(state, request), Category::Judge)
             .await
             .inspect_err(|error| {
                 self.report_fail_open(driver, safe_error_summary(error), libsy_error_reason(error));

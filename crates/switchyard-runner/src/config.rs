@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_MAX_RETRIES,
+    HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
 use switchyard_protocol::{Category, ModelId, RoutedLlmClient, WireFormat};
 
@@ -65,6 +65,7 @@ pub(crate) struct DeploymentConfig {
 #[derive(Debug)]
 struct RouteConfig {
     id: ModelId,
+    judge_timeout_ms: u64,
     context_window: Option<u32>,
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
@@ -84,6 +85,8 @@ impl<'de> Deserialize<'de> for RouteConfig {
     {
         let mut table = toml::Table::deserialize(deserializer)?;
         let id = take_required(&mut table, "id")?;
+        let judge_timeout_ms =
+            take_optional(&mut table, "judge_timeout_ms")?.unwrap_or(DEFAULT_JUDGE_TIMEOUT_MS);
         let context_window = take_optional(&mut table, "context_window")?;
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
@@ -92,6 +95,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
             id,
+            judge_timeout_ms,
             context_window,
             tool_calling,
             reasoning,
@@ -379,7 +383,9 @@ impl DeploymentConfig {
             routing_answer_target,
         } = self.build_route_target_prompts(route_name, route)?;
         let router =
-            ClientRouter::new_with_target_prompts(by_model, prompts, routing_answer_target);
+            ClientRouter::new_with_target_prompts(by_model, prompts, routing_answer_target)
+                .with_judge_timeout_ms(route.judge_timeout_ms)
+                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
         Ok((router, caller_auth))
     }
 

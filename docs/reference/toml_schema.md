@@ -113,10 +113,19 @@ Every route takes the common keys below, plus the keys for its type.
 |---|:---:|---|---|
 | `id` | Yes | — | Public model ID that callers send in requests. |
 | `type` | Yes | — | Routing algorithm for this route. |
+| `judge_timeout_ms` | No | `10000` | Maximum wait in milliseconds for each judge response, including candidate attempts, retries, retry delays, and reading the complete response. Must be at least `1`. On timeout, the client returns an error and the algorithm routes without a verdict. |
 | `context_window` | No | unset | Positive token count advertised for this route by `GET /v1/models`. Unset values appear as `null`. This does not enforce a request limit. |
 | `tool_calling` | No | unset | Whether `GET /v1/models` advertises tool-calling support for this route. Unset values appear as `null`. |
 | `reasoning` | No | unset | Declared reasoning support, stored in route metadata. The server does not include it in `GET /v1/models`. |
 | `vision` | No | unset | Image-input support advertised in `GET /v1/models` under `data[].capabilities.vision`. Unset values appear as `null`. Declare `true` only when every target the route can select accepts images. |
+
+A judge is a classifier model that helps select the answering model. The client
+applies the route's `judge_timeout_ms` separately to each judge call made by
+`llm_classifier`, `stage_router`, `composite`, or classifiers under `subagents`.
+Set it directly under `[routes.<name>]`, before any nested classifier table.
+This setting does not limit answer generation, including escalation's initial
+answer. On timeout, the classifier records `reason=timeout` in
+`switchyard_classifier_fail_open_total`.
 
 ### `noop`
 

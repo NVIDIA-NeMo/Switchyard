@@ -37,6 +37,9 @@ use tower::ServiceExt;
 type TestError = Box<dyn Error + Send + Sync>;
 type TestResult<T = ()> = Result<T, TestError>;
 
+#[path = "support/judge_timeout.rs"]
+mod judge_timeout;
+
 const ROUTE_MODEL: &str = "switchyard/random";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -122,6 +125,37 @@ async fn upstream_chat(
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
+    if body["model"] == "deadline/shared" {
+        let delay = if body.get("response_format").is_some() {
+            std::time::Duration::from_secs(2)
+        } else {
+            std::time::Duration::from_millis(150)
+        };
+        tokio::time::sleep(delay).await;
+    }
+    match body["scenario"].as_str() {
+        Some("buffered") => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+        Some("streaming") => {
+            let stream = async_stream::stream! {
+                yield Ok::<Event, Infallible>(Event::default().data(json!({
+                    "id": "judge-stream", "model": body["model"],
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "content": "{"}}]
+                }).to_string()));
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                yield Ok(Event::default().data("[DONE]"));
+            };
+            return Sse::new(stream).into_response();
+        }
+        Some("retry") => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [("retry-after", "1")],
+                Json(json!({"error": {"message": "unavailable"}})),
+            )
+                .into_response();
+        }
+        _ => {}
+    }
     let prompt = user_prompt(&body);
     if prompt == "fail" {
         return (
@@ -390,7 +424,7 @@ async fn upstream_chat(
         r#"{"escalate":false,"reason":"making progress"}"#.to_string()
     } else if model == "model/classifier" && requests_schema_invalid_verdict {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#.to_string()
-    } else if model == "model/classifier" {
+    } else if model == "model/classifier" || model.starts_with("judge/") {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
     } else {
         "ok".to_string()

@@ -52,7 +52,7 @@ model name clients send to Switchyard.
 
 ## How the decision works
 
-The classifier target returns a structured verdict containing:
+The classifier target, called the judge, returns a structured verdict containing:
 
 - `p_solve`: the estimated probability that the weak model completes the task.
 - `capability_boundary`: `supported`, `uncertain`, `unsupported`, or `unmatched`.
@@ -69,6 +69,29 @@ greater than or equal to the applicable threshold. Otherwise it routes to
 
 An invalid, inconsistent, or unparseable verdict, or a judge failure, routes to
 `strong_target`. Raising either knob sends more traffic to the strong model.
+
+`judge_timeout_ms`, set directly under `[routes.<name>]`, limits the client's
+wait for a complete judge response. One deadline covers candidate attempts,
+retries, retry delays, and reading the full response stream. It defaults to
+`10000` milliseconds and must be at least `1`. The client reports a timeout to
+the routing algorithm, which uses `strong_target` and records `reason=timeout`
+in `switchyard_classifier_fail_open_total`. Allow time in the caller's deadline
+for both classification and answer generation; lower `judge_timeout_ms` if needed.
+
+### Python hosts
+
+When driving `Algorithm.run_stream()` from Python, your application runs the
+upstream client and enforces its deadlines. `ModelCall.category == "judge"`
+identifies a verdict call, even if that model also generates answers. Apply one
+deadline to the client call, retries, and reading the complete verdict. Report
+a timeout while waiting for a buffered response with `call.fail(TimeoutError(...))`.
+A normalized response stream can raise `TimeoutError` while being read. Either
+error lets the classifier continue without a verdict. The Python classifier
+constructors do not accept a timeout setting.
+
+If the routing run was cancelled before the client finished, `call.respond()`
+and `call.fail()` ignore the late reply. Calling either method a second time
+on the same `ModelCall` still raises `LibsyError`.
 
 ## Judge model compatibility
 
@@ -111,6 +134,7 @@ for the server merge behavior.
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
+| `judge_timeout_ms` | `10000` | Maximum wait in milliseconds for a complete judge response, including retries and stream reading. On timeout, the route uses `strong_target` and records `reason=timeout`. Must be at least `1`. |
 
 ### Override the classifier prompt
 
