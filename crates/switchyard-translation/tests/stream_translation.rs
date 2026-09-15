@@ -1421,6 +1421,67 @@ fn responses_function_call_stream_ends_with_tool_use_on_every_wire() -> TestResu
     Ok(())
 }
 
+// Chat clients subscript `tool_calls` with the streamed index, so tool calls must be numbered
+// within that array. Anthropic and Responses index the whole content array, where text ahead
+// of the first tool call pushes it to 1; the OpenAI SDK then indexes past a one-element array.
+#[test]
+fn chat_tool_call_index_counts_tool_calls_not_content_blocks() -> TestResult {
+    let engine = TranslationEngine::default();
+    let tool_indices = |events: &[Value]| -> Vec<Value> {
+        events
+            .iter()
+            .filter_map(|event| event["choices"][0]["delta"]["tool_calls"].as_array())
+            .flat_map(|calls| calls.iter().map(|call| call["index"].clone()))
+            .collect()
+    };
+
+    // Anthropic: text at content index 0, then two tool calls at 1 and 2.
+    let tool_block = |index: usize, id: &str| {
+        vec![
+            json!({"type": "content_block_start", "index": index, "content_block": {"type": "tool_use", "id": id, "name": "lookup", "input": {}}}),
+            json!({"type": "content_block_delta", "index": index, "delta": {"type": "input_json_delta", "partial_json": "{\"q\":\"rust\"}"}}),
+            json!({"type": "content_block_stop", "index": index}),
+        ]
+    };
+    let mut anthropic = vec![
+        json!({"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-test", "content": [], "usage": {"input_tokens": 1, "output_tokens": 1}}}),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Checking now."}}),
+        json!({"type": "content_block_stop", "index": 0}),
+    ];
+    anthropic.extend(tool_block(1, "toolu_01"));
+    anthropic.extend(tool_block(2, "toolu_02"));
+    anthropic.push(json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 8}}));
+    anthropic.push(json!({"type": "message_stop"}));
+    let chat = translate_stream(
+        &engine,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &anthropic,
+    )?;
+    assert_eq!(
+        tool_indices(&chat),
+        vec![json!(0), json!(0), json!(1), json!(1)]
+    );
+
+    // Responses: a message item at output index 0, then a function call at 1.
+    let responses = [
+        json!({"type": "response.created", "response": {"id": "resp_1", "model": "gpt-5.6"}}),
+        json!({"type": "response.output_text.delta", "output_index": 0, "delta": "Checking now."}),
+        json!({"type": "response.output_item.added", "output_index": 1, "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": ""}}),
+        json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "{\"q\":\"rust\"}"}),
+        json!({"type": "response.completed", "response": {}}),
+    ];
+    let chat = translate_stream(
+        &engine,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &responses,
+    )?;
+    assert_eq!(tool_indices(&chat), vec![json!(0), json!(0)]);
+    Ok(())
+}
+
 // An OpenAI-shaped error frame carries no `choices`, so it must decode to a stream error
 // instead of a bare message start that silently drops the upstream message.
 #[test]

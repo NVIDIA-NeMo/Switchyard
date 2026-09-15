@@ -238,13 +238,29 @@ fn encode_openai_chat_stream(
             id,
             name,
             arguments_delta,
-        } => vec![openai_tool_call_chunk(
-            state,
-            index,
-            id,
-            name,
-            arguments_delta,
-        )],
+        } => {
+            // The source index counts every content block (Anthropic) or output item
+            // (Responses), so text ahead of the first tool call shifts it. Chat clients use
+            // the index as a subscript into `tool_calls`, so number calls in that array
+            // instead, in order of first appearance.
+            let tool = state.tool_states.entry(index).or_default();
+            let chat_index = match tool.chat_tool_index {
+                Some(chat_index) => chat_index,
+                None => {
+                    let chat_index = state.next_chat_tool_index;
+                    state.next_chat_tool_index += 1;
+                    state.tool_states.entry(index).or_default().chat_tool_index = Some(chat_index);
+                    chat_index
+                }
+            };
+            vec![openai_tool_call_chunk(
+                state,
+                chat_index,
+                id,
+                name,
+                arguments_delta,
+            )]
+        }
         LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;

@@ -128,6 +128,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Completions, Anthropic Messages, and Responses return HTTP 502. Error replies
   preserve the provider's message and, for OpenAI applications, a nonempty
   string error code. Switchyard removes echoed caller credentials.
+- **Chat tool-call index counts tool calls, not content blocks** — the OpenAI
+  Chat stream encoder copied the source index into `tool_calls[].index`.
+  Anthropic and Responses index the whole content array, so text ahead of the
+  first tool call pushed the sole call to index 1, and the official OpenAI SDK,
+  which subscripts its `tool_calls` array with that index, raised `IndexError`.
+  Tool calls are now numbered within the Chat `tool_calls` array in order of
+  first appearance.
 - **Advisor stall checkpoint re-arms after a refunded review** — a
   stall-triggered consult that failed open or returned an unparseable verdict
   refunded the review budget but left the conversation's stall latch set, so

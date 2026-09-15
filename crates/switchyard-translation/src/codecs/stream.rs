@@ -73,6 +73,7 @@ pub struct StreamTranslationState {
     pub(crate) decoded_reasoning_ids: std::collections::BTreeSet<usize>,
     pub(crate) next_response_output_index: usize,
     pub(crate) response_sequence_number: u64,
+    pub(crate) next_chat_tool_index: usize,
 
     pub(crate) reasoning_block_index: Option<usize>,
     pub(crate) reasoning_block_started: bool,
@@ -113,6 +114,10 @@ pub(crate) struct StreamToolState {
     pub(crate) pending_arguments: String,
     pub(crate) started: bool,
     pub(crate) content_index: Option<usize>,
+    /// Position in the OpenAI Chat `tool_calls` array, assigned when ENCODING. Chat numbers
+    /// tool calls on their own, while Anthropic and Responses index the whole content array,
+    /// so the source index cannot be reused.
+    pub(crate) chat_tool_index: Option<usize>,
     pub(crate) response_output_index: Option<usize>,
     pub(crate) response_item_id: Option<String>,
 }
