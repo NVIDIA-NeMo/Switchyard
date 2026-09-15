@@ -11,9 +11,9 @@ use crate::codecs::common::{
     collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
     is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
 };
-use crate::codecs::openai_chat::{
-    decode_file_source, decode_image_source, file_source_text, image_source_text, openai_file_part,
-    openai_image_part,
+use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
+use crate::codecs::openai_media::{
+    ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
 };
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
@@ -1472,31 +1472,21 @@ fn encode_responses_content(
     Ok(Value::Array(blocks))
 }
 
-// Maps IR image sources to Responses input_image parts when possible.
-//
-// Responses `image_url` is a plain string, unlike the Chat object shape, so
-// this reuses the Chat mapping (URL, data URI, raw-shape recognition) and
-// lifts its fields into the flat Responses layout.
 fn responses_image_part(source: &ImageSource) -> Option<Value> {
-    let chat_part = openai_image_part(source)?;
-    let image_url = chat_part.get("image_url")?;
-    let url = image_url.get("url")?.as_str()?;
-    let mut part = json!({"type": "input_image", "image_url": url});
-    if let Some(detail) = image_url.get("detail") {
-        part["detail"] = detail.clone();
+    let ImagePayload { url, detail } = image_payload(source)?;
+    let mut part = json!({"type": "input_image"});
+    part["image_url"] = Value::String(url);
+    if let Some(detail) = detail {
+        part["detail"] = Value::String(detail);
     }
     Some(part)
 }
 
-// Maps IR file sources to Responses input_file parts when possible.
 fn responses_file_part(source: &FileSource) -> Option<Value> {
-    let chat_part = openai_file_part(source)?;
-    let file = chat_part.get("file")?.as_object()?;
-    let mut part = json!({"type": "input_file"});
-    for (key, value) in file {
-        part[key] = value.clone();
-    }
-    Some(part)
+    let mut part = Map::new();
+    part.insert("type".to_string(), Value::String("input_file".to_string()));
+    part.extend(file_payload(source)?);
+    Some(Value::Object(part))
 }
 
 // Encodes normalized tool definitions into Responses tool JSON.

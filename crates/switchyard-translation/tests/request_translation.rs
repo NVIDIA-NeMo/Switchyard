@@ -2886,7 +2886,7 @@ fn responses_parallel_custom_tool_calls_pair_with_their_outputs() -> TestResult 
 }
 
 // Verifies Chat image and file parts encode as wire-valid Responses input parts,
-// not serialized IR enums (image_url must be a string, files keyed under "file").
+// not serialized IR enums (image_url must be a string and file fields must be flat).
 #[test]
 fn openai_chat_image_and_file_parts_translate_to_valid_responses_input() -> TestResult {
     let engine = TranslationEngine::default();
@@ -2943,9 +2943,9 @@ fn openai_chat_image_and_file_parts_translate_to_valid_responses_input() -> Test
     Ok(())
 }
 
-// Verifies Anthropic base64 images become Responses data-URI image_url strings.
+// Verifies Anthropic base64 media becomes valid Responses image and file parts.
 #[test]
-fn anthropic_base64_image_translates_to_responses_data_uri() -> TestResult {
+fn anthropic_base64_media_translates_to_responses() -> TestResult {
     let engine = TranslationEngine::default();
     let body = json!({
         "model": "claude-sonnet-4-20250514",
@@ -2960,6 +2960,15 @@ fn anthropic_base64_image_translates_to_responses_data_uri() -> TestResult {
                         "type": "base64",
                         "media_type": "image/png",
                         "data": "aW1hZ2U="
+                    }
+                },
+                {
+                    "type": "document",
+                    "title": "report.pdf",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": "ZG9jdW1lbnQ="
                     }
                 }
             ]
@@ -2979,7 +2988,12 @@ fn anthropic_base64_image_translates_to_responses_data_uri() -> TestResult {
         output["input"][0]["content"],
         json!([
             {"type": "input_text", "text": "What is this?"},
-            {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="}
+            {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
+            {
+                "type": "input_file",
+                "file_data": "ZG9jdW1lbnQ=",
+                "filename": "report.pdf"
+            }
         ])
     );
     Ok(())
