@@ -83,6 +83,11 @@ python-packages = ["switchyard", "switchyard_rust"]
 include = [
     { path = "LICENSE", format = "sdist" },
     { path = "NOTICE", format = "sdist" },
+    { path = "rust-toolchain.toml", format = "sdist" },
+    { path = "crates/prefill-router/Cargo.toml", format = "sdist" },
+    { path = "crates/prefill-router/build.rs", format = "sdist" },
+    { path = "crates/prefill-router/python/**/*", format = "sdist" },
+    { path = "crates/prefill-router/src/**/*", format = "sdist" },
 ]
 
 [tool.pytest.ini_options]

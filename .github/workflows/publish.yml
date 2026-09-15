@@ -157,6 +157,13 @@ jobs:
 
           print(f"{archives[0]} contains {', '.join(sorted(expected_suffixes))}")
           PY
+      - name: Smoke install source distribution
+        working-directory: /tmp
+        run: |
+          sdist="$(find "${GITHUB_WORKSPACE}/dist" -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          uv run --isolated --no-project --python 3.10 \
+            --with "${sdist}" \
+            python -c "from switchyard_rust import _switchyard_rust; print('sdist install OK:', _switchyard_rust.__name__)"
       - uses: actions/upload-artifact@v4
         with:
           name: nemo-switchyard-sdist
