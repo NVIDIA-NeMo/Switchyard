@@ -121,6 +121,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Cross-format tool results keep image and file content** — an Anthropic
+  `tool_result` carrying image or document blocks reached a Responses target
+  as text only, and an image-only result became an empty `output`. In the other
+  direction a Responses `function_call_output` whose `output` was an array of
+  `input_text`, `input_image`, and `input_file` parts reached an Anthropic
+  target as one JSON string. Both directions now carry typed text, image, and
+  file blocks; plain-text results are unchanged.
 - **Return HTTP 502 for failed Responses generations** — a provider's HTTP 200
   response with `status: "failed"` could appear as an empty successful answer.
   Switchyard now counts the call as an error and tries another model when the

@@ -551,10 +551,17 @@ fn decode_responses_input(
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string();
-                        let output_text = item.get("output").map(json_string).unwrap_or_default();
+                        // A structured output keeps its typed text, image, and file parts;
+                        // any other shape rides through as one text block.
+                        let content = match item.get("output") {
+                            Some(output @ Value::Array(_)) => decode_responses_content(output),
+                            output => vec![ContentBlock::Text {
+                                text: output.map(json_string).unwrap_or_default(),
+                            }],
+                        };
                         pending_tool_outputs.push(ToolResult {
                             tool_call_id,
-                            content: vec![ContentBlock::Text { text: output_text }],
+                            content,
                             is_error: None,
                         });
                     }
@@ -1184,15 +1191,19 @@ fn encode_responses_input(
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
-            encoded.extend(content.iter().filter_map(|block| {
-                encode_responses_special_input(
+            for block in &content {
+                if let Some(item) = encode_responses_special_input(
                     block,
                     namespaces,
                     &call_names,
                     custom_tools,
                     &mut custom_call_ids,
-                )
-            }));
+                    diagnostics,
+                    policy,
+                )? {
+                    encoded.push(item);
+                }
+            }
             continue;
         }
         let mut visible_content = Vec::new();
@@ -1205,7 +1216,9 @@ fn encode_responses_input(
                 &call_names,
                 custom_tools,
                 &mut custom_call_ids,
-            ) {
+                diagnostics,
+                policy,
+            )? {
                 encoded.push(item);
                 emitted_special = true;
             } else if !matches!(block, ContentBlock::Reasoning { .. }) {
@@ -1292,8 +1305,10 @@ fn encode_responses_special_input(
     call_names: &HashMap<&str, &str>,
     custom_tools: &std::collections::HashSet<String>,
     custom_call_ids: &mut std::collections::HashSet<String>,
-) -> Option<Value> {
-    match block {
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Option<Value>> {
+    Ok(match block {
         ContentBlock::Reasoning {
             text,
             signature: None,
@@ -1340,7 +1355,7 @@ fn encode_responses_special_input(
                     "function_call_output"
                 },
                 "call_id": result.tool_call_id,
-                "output": text_from_blocks(&result.content, " "),
+                "output": encode_responses_tool_output(&result.content, diagnostics, policy)?,
             });
             // Carry the paired call's name, un-qualified to match the emitted
             // function_call, for upstreams that resolve outputs by name.
@@ -1355,7 +1370,7 @@ fn encode_responses_special_input(
             Some(item)
         }
         _ => None,
-    }
+    })
 }
 
 // Encodes reasoning in the shape accepted for Responses input history. Response
@@ -1483,6 +1498,25 @@ fn encode_responses_content(
         }
     }
     Ok(Value::Array(blocks))
+}
+
+// Encodes tool-result content as a `function_call_output.output`: a string when it is
+// text only, otherwise the typed `input_text` / `input_image` / `input_file` parts.
+fn encode_responses_tool_output(
+    content: &[ContentBlock],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Value> {
+    let text_only = content.iter().all(|block| {
+        matches!(
+            block,
+            ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
+        )
+    });
+    if text_only {
+        return Ok(Value::String(text_from_blocks(content, " ")));
+    }
+    encode_responses_content(content, diagnostics, policy)
 }
 
 fn responses_image_part(source: &ImageSource) -> Option<Value> {
