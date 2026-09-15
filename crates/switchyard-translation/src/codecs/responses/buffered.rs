@@ -259,6 +259,19 @@ impl FormatCodec for OpenAiResponsesCodec {
 
     fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let body = crate::util::object(body, "$")?;
+        // A failed generation still arrives with HTTP 200; the body is the only
+        // failure signal, and an empty `output` must not read as a finished turn.
+        if body.get("status").and_then(Value::as_str) == Some("failed") {
+            return Err(TranslationError::UpstreamFailure {
+                error: body
+                    .get("error")
+                    .filter(|error| error.is_object())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        json!({ "message": "provider reported status \"failed\" without error details" })
+                    }),
+            });
+        }
         let mut diagnostics = Vec::new();
         let mut content = Vec::new();
         let mut role = Role::Assistant;

@@ -121,6 +121,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A failed buffered Responses result is an error on every endpoint** — an
+  upstream Responses provider that answered HTTP 200 with `status: "failed"`
+  and an `error` object reached Chat clients as an empty message with
+  `finish_reason: "stop"` and Anthropic clients as `stop_reason: "end_turn"`,
+  and Switchyard counted the call as a success. The decoder now refuses the
+  body, so every endpoint returns HTTP 502 with the provider's error message,
+  the call counts as an error, and routes with fallback candidates try the
+  next one. The Responses endpoint used to replay the raw failed body under
+  HTTP 200; it returns the 502 error envelope too.
 - **Advisor stall checkpoint re-arms after a refunded review** — a
   stall-triggered consult that failed open or returned an unparseable verdict
   refunded the review budget but left the conversation's stall latch set, so

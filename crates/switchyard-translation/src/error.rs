@@ -34,6 +34,11 @@ pub enum TranslationError {
     #[error("invalid value at {path}: {message}")]
     InvalidValue { path: String, message: String },
 
+    /// The provider answered with a success status but the body says the
+    /// generation itself failed, for example OpenAI Responses `status: "failed"`.
+    /// `error` is the provider's error object, kept verbatim for the caller.
+    #[error("upstream reported a failed response: {error}")]
+    UpstreamFailure { error: serde_json::Value },
     #[error("{0}")]
     Other(String),
 }
@@ -48,6 +53,7 @@ impl TranslationError {
             Self::LossyConversion(_) => "LossyConversion",
             Self::UnknownField { .. } => "UnknownField",
             Self::InvalidValue { .. } => "InvalidValue",
+            Self::UpstreamFailure { .. } => "UpstreamFailure",
             Self::Other(_) => "Other",
         }
     }

@@ -13,13 +13,13 @@ use futures_util::{StreamExt, stream};
 use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Metadata, ModelId, Request,
     Response, RoutedLlmClient,
 };
 use switchyard_translation::{
-    WireFormat, decode_aggregated_response, decode_request, decode_stream,
+    TranslationError, WireFormat, decode_aggregated_response, decode_request, decode_stream,
     encode_aggregated_response_with_extensions, encode_request, encode_stream_with_extensions,
 };
 use tracing::Instrument;
@@ -503,8 +503,21 @@ impl TranslatingLlmClient {
                 let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
                     LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
                 })?;
-                let agg = decode_aggregated_response(&body, wire_format)
-                    .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
+                // A body that reports its own failure is an upstream error, not a
+                // translation bug: 502 matches how a failed upstream call surfaces
+                // elsewhere, and the provider's error object rides along verbatim.
+                let agg =
+                    decode_aggregated_response(&body, wire_format).map_err(
+                        |error| match error {
+                            TranslationError::UpstreamFailure { error } => {
+                                LlmClientError::UpstreamHttp {
+                                    status: StatusCode::BAD_GATEWAY,
+                                    body: json!({ "error": error }).to_string(),
+                                }
+                            }
+                            error => LlmClientError::ResponseTranslation(error.to_string()),
+                        },
+                    )?;
                 (LlmResponse::Agg(agg), upstream_headers)
             }
         };
@@ -1564,6 +1577,43 @@ mod tests {
                 if message.contains("invalid upstream JSON")
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_responses_body_is_an_upstream_http_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_failed",
+                "object": "response",
+                "model": "gpt",
+                "status": "failed",
+                "error": {"code": "server_error", "message": "deterministic upstream failure"},
+                "output": [],
+                "usage": null
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&responses_map(&format!("{}/v1", server.uri())))?;
+        let Err(error) = client
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("expected a failed response to be an error");
+        };
+
+        let LlmClientError::UpstreamHttp { status, body } = error else {
+            panic!("expected an upstream HTTP error, got {error:?}");
+        };
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body)?,
+            json!({"error": {"code": "server_error", "message": "deterministic upstream failure"}})
+        );
         Ok(())
     }
 
