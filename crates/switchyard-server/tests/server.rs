@@ -1012,8 +1012,7 @@ fn load_test_config(toml: &str) -> TestResult<ServerState> {
     Ok(load_server_state(config.path())?)
 }
 
-/// A `random` route that selects `first` before any request-local fallback.
-fn fallback_state(base_url: &str) -> TestResult<ServerState> {
+fn weighted_random_state(base_url: &str, weights: [u32; 2]) -> TestResult<ServerState> {
     load_test_config(&format!(
         r#"
 schema_version = 1
@@ -1037,7 +1036,8 @@ system_prompt = "strong answer prompt"
 id = "{ROUTE_MODEL}"
 type = "random"
 targets = ["first", "second"]
-weights = [1, 0]
+weights = {weights:?}
+seed = 17
 "#,
         first = "model/weak",
         second = "model/strong",
@@ -3265,11 +3265,65 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
 }
 
 #[tokio::test]
+async fn random_zero_weight_target_is_not_advertised_or_called() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(weighted_random_state(&upstream.base_url, [1, 0])?);
+    let response = send(
+        &app,
+        "POST",
+        "/v1/decision",
+        Some(json!({
+            "input_format": "openai_chat",
+            "request": {
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "unavailable"}]
+            }
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    let decision = response.json()?;
+    assert_eq!(decision["selected"]["target"], "first");
+    assert_eq!(decision["fallbacks"], json!([]));
+    assert!(upstream.models().await.is_empty());
+
+    for (path, body) in [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "unavailable"}]
+            }),
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "unavailable"}]
+            }),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "unavailable"}),
+        ),
+    ] {
+        upstream.calls.lock().await.clear();
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(upstream.models().await, ["model/weak"]);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let temp_dir = tempfile::tempdir()?;
     let log_path = temp_dir.path().join("routing.jsonl");
-    let state = fallback_state(&upstream.base_url)?.with_routing_log(&log_path)?;
+    // The fixed seed selects `first` for these requests while keeping `second` enabled.
+    let state =
+        weighted_random_state(&upstream.base_url, [1000, 1])?.with_routing_log(&log_path)?;
     let app = build_switchyard_router(state);
     let cases = [
         (
