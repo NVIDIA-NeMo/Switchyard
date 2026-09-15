@@ -44,10 +44,9 @@ target = "invalid"
     Ok(())
 }
 
-/// Checks that `--dry-run` accepts valid UTF-8 instructions and rejects missing,
-/// blank, or invalid UTF-8 files.
+/// Checks template loading and rendering before the server binds a socket.
 #[test]
-fn dry_run_validates_codex_instruction_files() -> TestResult {
+fn dry_run_validates_codex_system_templates() -> TestResult {
     let directory = tempfile::tempdir()?;
     let config = directory.path().join("routes.toml");
     fs::write(
@@ -64,16 +63,46 @@ llm_client = "local"
 id = "test-route"
 type = "passthrough"
 target = "local"
+[routes.second]
+id = "second-route"
+type = "passthrough"
+target = "local"
 "#,
     )?;
-    let prompt = directory.path().join("instructions.txt");
-    for (contents, expected_success) in [
-        (None, false),
-        (Some(b" \n\t".as_slice()), false),
-        (Some(b"\xff".as_slice()), false),
+    let prompt = directory.path().join("system.jinja");
+    for (contents, expected_error) in [
+        (None, Some("invalid --codex-system-template")),
         (
-            Some(b"Configured instructions.\n  Keep whitespace.  \n".as_slice()),
-            true,
+            Some(b" \n\t".as_slice()),
+            Some("renders blank instructions"),
+        ),
+        (
+            Some(b"\xff".as_slice()),
+            Some("invalid --codex-system-template"),
+        ),
+        (
+            Some(b"{{ model_id".as_slice()),
+            Some("invalid Codex system template"),
+        ),
+        (
+            Some(b"{{ model_id | nonexistent }}".as_slice()),
+            Some("cannot render Codex system template"),
+        ),
+        (
+            Some(b"{% if typo is true %}tools{% endif %}Custom".as_slice()),
+            Some("unknown Codex system template variables: typo"),
+        ),
+        (
+            Some(b"{% if false %}{{ personality }}{% endif %}Custom".as_slice()),
+            Some("unknown Codex system template variables: personality"),
+        ),
+        (
+            Some(b"{% if model_id == 'second-route' %}Custom{% endif %}".as_slice()),
+            Some("renders blank instructions for model 'test-route'"),
+        ),
+        (
+            Some(b"Custom instructions for {{ model_id }}.\n  Keep whitespace.  \n".as_slice()),
+            None,
         ),
     ] {
         if let Some(contents) = contents {
@@ -83,13 +112,45 @@ target = "local"
             .arg("--config")
             .arg(&config)
             .arg("--dry-run")
-            .arg("--codex-base-instructions-file")
+            .arg("--codex-system-template")
             .arg(&prompt)
             .output()?;
-        assert_eq!(output.status.success(), expected_success);
-        if !expected_success {
-            assert!(String::from_utf8(output.stderr)?.contains("codex"));
+        let stderr = String::from_utf8(output.stderr)?;
+        assert_eq!(
+            output.status.success(),
+            expected_error.is_none(),
+            "{stderr}"
+        );
+        if let Some(expected_error) = expected_error {
+            assert!(stderr.contains(expected_error), "{stderr}");
         }
     }
+    Ok(())
+}
+
+#[test]
+fn dry_run_requires_routes_for_codex_system_template() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let config = directory.path().join("routes.toml");
+    fs::write(&config, "schema_version = 1\ntargets = {}\nroutes = {}\n")?;
+    let prompt = directory.path().join("system.jinja");
+    fs::write(&prompt, "Custom instructions for {{ model_id }}.\n")?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_switchyard-server"));
+    command.arg("--config").arg(&config).arg("--dry-run");
+    let output = command.output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = command
+        .arg("--codex-system-template")
+        .arg(&prompt)
+        .output()?;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)?
+            .contains("cannot use a Codex system template without configured routes")
+    );
     Ok(())
 }

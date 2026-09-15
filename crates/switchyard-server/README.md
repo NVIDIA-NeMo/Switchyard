@@ -144,27 +144,61 @@ handoff notes, per-tier system prompts, and a capability-judge fallback are docu
 
 ## Codex model discovery
 
-`GET /v1/models` includes a `models` array for Codex. Codex uses each entry's
-`base_instructions` as its system prompt, replacing its bundled instructions. By default,
-Switchyard sends the one-line placeholder `You are Codex, a coding agent.`.
+By default, `GET /v1/models` returns the standard `data` list and an empty Codex
+`models` list. Codex keeps its bundled model catalog and instructions. Switchyard route
+aliases remain usable through explicit model selection, such as `codex --model route-id`,
+but do not appear automatically in Codex's model picker. For names it does not recognize,
+Codex uses its own generic defaults; it does not receive Switchyard's custom context limits
+or tool settings.
 
-Use `--codex-base-instructions-file PATH` to choose the system prompt for routed Codex
-sessions. The server reads the UTF-8 file once at startup and preserves its whitespace. The
-same text applies to every route; the operator chooses the prompt independently of the
-target model.
+**Custom Codex model records require an explicit system template.** Set
+`--codex-system-template PATH` to publish a record for each route. Switchyard renders the
+UTF-8 template once per route at startup and sends the result as `base_instructions`.
+This is the complete replacement prompt for those records, including their tool-use
+instructions. It does not inherit or append Codex's bundled prompt.
 
-This example exports Codex's bundled prompt for `gpt-5.6-sol`:
+Save this minimal example as `codex-system.jinja` and adapt it for your models:
 
-```bash
-codex debug models --bundled \
-  | python3 -c 'import json,sys; m=json.load(sys.stdin)["models"]; print(next(x for x in m if x["slug"]=="gpt-5.6-sol")["base_instructions"], end="")' \
-  > codex-base-instructions.md
-switchyard-server --config routes.toml --codex-base-instructions-file codex-base-instructions.md
+```jinja
+You are a coding assistant working through route {{ model_id }}.
+Read the relevant code before editing. Verify changes with focused checks.
+{% if tool_calling is true %}
+Use the available tools to inspect files, make changes, and run checks.
+{% endif %}
+{% if context_window is not none %}
+The route advertises a context window of {{ context_window }} tokens.
+{% endif %}
 ```
 
-The server stops startup if the file is missing, unreadable, contains invalid UTF-8, or
-contains only whitespace. After updating Codex or choosing a different prompt, export the
-file again and restart the server.
+```bash
+switchyard-server --config routes.toml --codex-system-template codex-system.jinja
+```
+
+Switchyard renders [MiniJinja syntax](https://docs.rs/minijinja/2.24.0/minijinja/syntax/index.html),
+including expressions, conditionals, loops, and built-in filters. These variables describe
+the configured route:
+
+| Variable | Value |
+|---|---|
+| `model_id` | Public route ID from `/v1/models`, not the backend model selected later. |
+| `context_window` | Declared context limit in tokens, or `none`. |
+| `tool_calling` | Declared tool support: `true`, `false`, or `none`. |
+| `reasoning` | Declared reasoning support: `true`, `false`, or `none`. |
+| `vision` | Declared image support: `true`, `false`, or `none`. |
+
+Use `is true`, `is false`, or `is none` to distinguish supported, unsupported, and undeclared
+capabilities. The template has no access to Codex personality settings, session data,
+conversation messages, or environment variables. File includes and template imports are
+not supported.
+
+Startup rejects unreadable or invalid UTF-8 files, invalid syntax, rendering errors, and
+instructions that render as only whitespace for any route. It also checks undeclared names
+reported by MiniJinja. Using a template requires at least one configured route; without a
+template, an empty route configuration is valid.
+
+Rendered text preserves whitespace and does not use HTML escaping. Restart the server after
+editing the template. Existing Codex sessions may retain earlier instructions; use a fresh
+session when checking a changed template.
 
 ## Endpoints
 

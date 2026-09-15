@@ -34,6 +34,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use libsy::{LibsyError, RoutingOutcome};
+use minijinja::{AutoEscape, Environment, UndefinedBehavior};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -88,10 +89,6 @@ fn should_forward_upstream_header(name: &HeaderName) -> bool {
 /// downstream client disconnected before any response was written.
 const CLIENT_CLOSED_REQUEST: u16 = 499;
 
-/// Default `base_instructions` in `GET /v1/models`. Codex uses this placeholder
-/// as its system prompt. Operators can supply their chosen instructions with
-/// `--codex-base-instructions-file`.
-const DEFAULT_CODEX_BASE_INSTRUCTIONS: &str = "You are Codex, a coding agent.";
 const STARTUP_BANNER_ART: &str = include_str!("../assets/startup_banner.txt");
 
 /// Error returned while configuring or running the server.
@@ -167,7 +164,7 @@ pub struct ServerState {
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
-    codex_base_instructions: Arc<str>,
+    codex_models: Arc<[Value]>,
 }
 
 #[derive(Clone)]
@@ -223,7 +220,7 @@ impl ServerState {
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
-            codex_base_instructions: Arc::from(DEFAULT_CODEX_BASE_INSTRUCTIONS),
+            codex_models: Arc::from([]),
         })
     }
 
@@ -233,18 +230,76 @@ impl ServerState {
         Ok(self)
     }
 
-    /// Uses `text` as `base_instructions` for every Codex entry in `GET /v1/models`.
-    /// Preserves whitespace.
+    /// Publishes custom Codex records by rendering a Jinja system template per route.
     ///
-    /// Returns an error for blank text so Codex does not receive an empty system prompt.
-    pub fn with_codex_base_instructions(mut self, text: impl Into<String>) -> ServerResult<Self> {
-        let text = text.into();
-        if text.trim().is_empty() {
+    /// The context contains `model_id`, `context_window`, `tool_calling`, `reasoning`,
+    /// and `vision`. Undeclared capabilities are `none`. Returns an error if no routes
+    /// are configured, or for invalid syntax, rendering failures, or blank instructions
+    /// for any route. Also checks undeclared names reported by MiniJinja.
+    pub fn with_codex_system_template(mut self, source: &str) -> ServerResult<Self> {
+        let mut models = self.runner.models().collect::<Vec<_>>();
+        if models.is_empty() {
             return Err(ServerError::new(
-                "codex base instructions must not be blank",
+                "cannot use a Codex system template without configured routes",
             ));
         }
-        self.codex_base_instructions = Arc::from(text);
+        let mut environment = Environment::new();
+        environment.set_undefined_behavior(UndefinedBehavior::Strict);
+        environment.set_auto_escape_callback(|_| AutoEscape::None);
+        environment.set_keep_trailing_newline(true);
+        let template = environment
+            .template_from_named_str("codex-system-template", source)
+            .map_err(|error| ServerError::new(format!("invalid Codex system template: {error}")))?;
+        // Check names reported by MiniJinja before rendering each route.
+        let mut unknown_variables = template
+            .undeclared_variables(false)
+            .into_iter()
+            .filter(|name| {
+                !matches!(
+                    name.as_str(),
+                    "model_id" | "context_window" | "tool_calling" | "reasoning" | "vision"
+                ) && !environment.globals().any(|(global, _)| global == name)
+            })
+            .collect::<Vec<_>>();
+        if !unknown_variables.is_empty() {
+            unknown_variables.sort();
+            return Err(ServerError::new(format!(
+                "unknown Codex system template variables: {}",
+                unknown_variables.join(", ")
+            )));
+        }
+        models.sort_unstable_by_key(|model| model.id.as_str());
+        let mut records = Vec::with_capacity(models.len());
+        for (priority, model) in models.into_iter().enumerate() {
+            let capabilities = model.capabilities;
+            let instructions = template
+                .render(json!({
+                    "model_id": model.id.as_str(),
+                    "context_window": capabilities.context_window,
+                    "tool_calling": capabilities.tool_calling,
+                    "reasoning": capabilities.reasoning,
+                    "vision": capabilities.vision,
+                }))
+                .map_err(|error| {
+                    ServerError::new(format!(
+                        "cannot render Codex system template for model '{}': {error}",
+                        model.id
+                    ))
+                })?;
+            if instructions.trim().is_empty() {
+                return Err(ServerError::new(format!(
+                    "Codex system template renders blank instructions for model '{}'",
+                    model.id
+                )));
+            }
+            records.push(codex_model_entry_json(
+                model.id.as_str(),
+                capabilities,
+                priority,
+                &instructions,
+            ));
+        }
+        self.codex_models = records.into();
         Ok(self)
     }
 
@@ -1419,7 +1474,7 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
             .runner
             .models()
             .map(|model| (model.id.as_str(), model.capabilities)),
-        &state.codex_base_instructions,
+        &state.codex_models,
     ))
 }
 
@@ -1502,7 +1557,7 @@ async fn not_found() -> Response {
 
 fn model_list_payload<'a>(
     entries: impl IntoIterator<Item = (&'a str, ModelCapabilities)>,
-    base_instructions: &str,
+    codex_models: &[Value],
 ) -> Value {
     let mut entries = entries.into_iter().collect::<Vec<_>>();
     entries.sort_unstable_by_key(|(model_id, _)| *model_id);
@@ -1512,13 +1567,8 @@ fn model_list_payload<'a>(
     json!({
         "object": "list",
         "data": entries.iter().map(|(model, caps)| model_entry_json(model, *caps)).collect::<Vec<_>>(),
-        "models": entries
-            .iter()
-            .enumerate()
-            .map(|(priority, (model, caps))| {
-                codex_model_entry_json(model, *caps, priority, base_instructions)
-            })
-            .collect::<Vec<_>>(),
+        // Keep this key even when empty: Codex rejects a response without it.
+        "models": codex_models,
         "first_id": first_id,
         "last_id": last_id,
         "has_more": false,
@@ -1560,7 +1610,7 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 // facts a backend can publish; the route declares them in config today. The rest
 // (shell_type, apply_patch_tool_type, the reasoning-level presets, truncation_policy) are
 // Codex client conventions no backend returns, so they stay constant. `base_instructions`
-// is the operator's chosen text or the default placeholder. Codex uses it as the system prompt.
+// is rendered from the operator's explicit template. Codex uses it as the system prompt.
 //
 // TODO: source context_window, tool_calling, and reasoning from the backend, not route
 // config. Switchyard is a proxy, so it should re-publish what the backend advertises

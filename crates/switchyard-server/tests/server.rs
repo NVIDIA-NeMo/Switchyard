@@ -2664,14 +2664,47 @@ target = "shared"
     assert_eq!(capabilities["undeclared"]["context_window"], json!(null));
     assert_eq!(capabilities["undeclared"]["tool_calling"], json!(null));
 
+    assert_eq!(body["models"], json!([]));
+
+    let template = "Route {{ model_id }} <&>\n\
+        {% if context_window is not none %}Window {{ context_window }}. {% endif %}\
+        {% if tool_calling is true %}Tools. {% elif tool_calling is false %}No tools. {% endif %}\
+        {% if reasoning is true %}Reasoning. {% endif %}\
+        {% if vision is none %}Vision undeclared.{% endif %}  \n";
+    let state = load_test_config(CONFIG)?.with_codex_system_template(template)?;
+    let body = send(
+        &build_switchyard_router(state),
+        "GET",
+        "/v1/models?client_version=0.152.0",
+        None,
+    )
+    .await?
+    .json()?;
+    assert_eq!(body["data"], json!(data));
+
     let codex_models = body["models"].as_array().cloned().unwrap_or_default();
     let codex_metadata = codex_models
         .iter()
         .filter_map(|entry| entry["slug"].as_str().map(|slug| (slug, entry)))
         .collect::<BTreeMap<_, _>>();
-    // This checks the shape the server emits. That Codex 0.144.5 actually decodes it
-    // (context_window: null included) is verified by a live Codex run in SWITCH-1225.
     assert_eq!(codex_metadata.len(), 4);
+    for (id, expected) in [
+        (
+            "declared",
+            "Route declared <&>\nWindow 1000000. Tools. Vision undeclared.  \n",
+        ),
+        (
+            "reasoning",
+            "Route reasoning <&>\nReasoning. Vision undeclared.  \n",
+        ),
+        (
+            "restricted",
+            "Route restricted <&>\nWindow 262000. No tools. Vision undeclared.  \n",
+        ),
+        ("undeclared", "Route undeclared <&>\nVision undeclared.  \n"),
+    ] {
+        assert_eq!(codex_metadata[id]["base_instructions"], expected);
+    }
     assert_eq!(
         codex_metadata["declared"]["context_window"],
         json!(1_000_000)
@@ -2972,58 +3005,6 @@ subagents = {{ type = "passthrough", target = "strong" }}
     }
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(stats["classifier"]["total_requests"], 7);
-    Ok(())
-}
-
-#[tokio::test]
-async fn codex_catalog_serves_configured_base_instructions_verbatim() -> TestResult {
-    const CONFIG: &str = r#"
-schema_version = 1
-
-[llm_clients.primary]
-format = "openai_chat"
-base_url = "https://example.test/v1"
-
-[targets.shared]
-id = "nvidia/deepseek-ai/deepseek-v4-pro"
-llm_client = "primary"
-
-[routes.a]
-id = "route/a"
-type = "passthrough"
-target = "shared"
-
-[routes.b]
-id = "route/b"
-type = "passthrough"
-target = "shared"
-"#;
-    let codex_instructions = |state: ServerState| async move {
-        let body = send(&build_switchyard_router(state), "GET", "/v1/models", None)
-            .await?
-            .json()?;
-        TestResult::Ok(
-            body["models"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|entry| entry["base_instructions"].clone())
-                .collect::<Vec<_>>(),
-        )
-    };
-
-    // Without a configured prompt, every route uses the default placeholder.
-    assert_eq!(
-        codex_instructions(load_test_config(CONFIG)?).await?,
-        vec![json!("You are Codex, a coding agent."); 2]
-    );
-
-    // Preserve line breaks and trailing whitespace in the configured prompt.
-    let prompt = "You are Codex, an agent based on GPT-5.\n\n  # Tools\n\n- shell  \n";
-    let state = load_test_config(CONFIG)?.with_codex_base_instructions(prompt)?;
-    assert_eq!(codex_instructions(state).await?, vec![json!(prompt); 2]);
-
     Ok(())
 }
 
@@ -4451,7 +4432,10 @@ id = "blind"
 type = "passthrough"
 target = "shared"
 "#;
-    let app = build_switchyard_router(load_test_config(CONFIG)?);
+    let app = build_switchyard_router(
+        load_test_config(CONFIG)?
+            .with_codex_system_template("Custom instructions for {{ model_id }}.")?,
+    );
     let models = send(&app, "GET", "/v1/models", None).await?;
     assert_eq!(models.status, StatusCode::OK);
     let body = models.json()?;
