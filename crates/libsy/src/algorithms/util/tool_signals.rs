@@ -12,6 +12,8 @@
 
 #![allow(dead_code)]
 
+use std::path::Path;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
@@ -354,7 +356,7 @@ pub struct ToolSignals {
     /// Consecutive trailing tool calls in the `Unknown` category (no Write/Edit/Read/
     /// Plan match). Surfaced in the classifier state summary; not scored directly.
     pub pure_bash_streak: u32,
-    /// At least one of the last three tool results matched a test-pass pattern.
+    /// A tool result after the latest recent failure matched a test-pass pattern.
     pub tests_passed: bool,
     /// Total `ToolResult` blocks, counted per block (a message batching N
     /// results contributes N) and including empty-content results.
@@ -513,59 +515,93 @@ fn is_builtin_tool_name(lower: &str) -> bool {
         || BASH_TOOL_NAMES.contains(&lower)
 }
 
-/// Split a shell line at common command separators. This intentionally avoids
+/// Split a shell line at unquoted command separators. This intentionally avoids
 /// pretending to be a full shell parser; only the leading program and flags of
 /// each segment are inspected below.
 fn shell_segments(command: &str) -> impl Iterator<Item = &str> {
-    command
-        .split(['\n', ';', '|', '&'])
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
+    let mut chars = command.char_indices();
+    let mut start = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut finished = false;
+
+    std::iter::from_fn(move || {
+        loop {
+            for (index, character) in chars.by_ref() {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' && quote != Some('\'') {
+                    escaped = true;
+                } else if quote == Some(character) {
+                    quote = None;
+                } else if quote.is_none() && matches!(character, '\'' | '"') {
+                    quote = Some(character);
+                } else if quote.is_none() && matches!(character, '\n' | ';' | '|' | '&') {
+                    let segment = command[start..index].trim();
+                    start = index + character.len_utf8();
+                    if !segment.is_empty() {
+                        return Some(segment);
+                    }
+                }
+            }
+
+            if finished {
+                return None;
+            }
+            finished = true;
+            let segment = command[start..].trim();
+            if !segment.is_empty() {
+                return Some(segment);
+            }
+        }
+    })
 }
 
-fn shell_words(segment: &str) -> Vec<&str> {
-    let words: Vec<&str> = segment.split_ascii_whitespace().collect();
-    let mut start = 0usize;
+fn shell_words(segment: &str) -> std::iter::Peekable<std::str::SplitAsciiWhitespace<'_>> {
+    let mut words = segment.split_ascii_whitespace().peekable();
 
-    if words.first().is_some_and(|word| *word == "env") {
-        start += 1;
-        while words.get(start).is_some_and(|word| word.starts_with('-')) {
-            start += 1;
+    if words.peek().copied() == Some("env") {
+        words.next();
+        while words.peek().is_some_and(|word| word.starts_with('-')) {
+            words.next();
         }
     }
     while words
-        .get(start)
+        .peek()
         .is_some_and(|word| word.contains('=') && !word.starts_with('='))
     {
-        start += 1;
+        words.next();
     }
 
-    words[start..].to_vec()
+    words
 }
 
 fn program_name(word: &str) -> &str {
-    word.rsplit('/').next().unwrap_or(word)
+    Path::new(word)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(word)
 }
 
 fn shell_invokes_program(command: &str, expected: &str) -> bool {
     shell_segments(command).any(|segment| {
         shell_words(segment)
-            .first()
+            .next()
             .is_some_and(|word| program_name(word) == expected)
     })
 }
 
 fn shell_command_is_write(command: &str) -> bool {
     shell_segments(command).any(|segment| {
-        let words = shell_words(segment);
-        let Some(program) = words.first().map(|word| program_name(word)) else {
+        let mut words = shell_words(segment);
+        let Some(program) = words.next().map(program_name) else {
             return false;
         };
         if matches!(program, "cp" | "mkdir" | "touch" | "install") {
             return true;
         }
 
-        let redirects_output = words.iter().skip(1).any(|word| matches!(*word, ">" | ">>"));
+        let redirects_output = words.any(|word| matches!(word, ">" | ">>"));
         redirects_output
             && (matches!(program, "echo" | "printf" | "git")
                 || BASH_READ_COMMANDS.contains(&program))
@@ -574,17 +610,15 @@ fn shell_command_is_write(command: &str) -> bool {
 
 fn shell_command_is_edit(command: &str) -> bool {
     shell_segments(command).any(|segment| {
-        let words = shell_words(segment);
-        let Some(program) = words.first().map(|word| program_name(word)) else {
+        let mut words = shell_words(segment);
+        let Some(program) = words.next().map(program_name) else {
             return false;
         };
-        let has_arg = |arg: &str| words.iter().skip(1).any(|word| *word == arg);
+        let has_arg = |arg: &str| words.clone().any(|word| word == arg);
 
         match program {
             "mv" | "rm" => true,
             "perl" => words
-                .iter()
-                .skip(1)
                 .take_while(|word| word.starts_with('-'))
                 .any(|option| {
                     option
@@ -593,21 +627,22 @@ fn shell_command_is_edit(command: &str) -> bool {
                         .any(|flag| flag == 'i')
                 }),
             "git" => words
-                .get(1)
-                .is_some_and(|subcommand| matches!(*subcommand, "apply" | "am" | "restore")),
+                .next()
+                .is_some_and(|subcommand| matches!(subcommand, "apply" | "am" | "restore")),
             "gofmt" => has_arg("-w"),
-            "cargo" => words.get(1) == Some(&"fmt") && !has_arg("--check"),
+            "cargo" => words.clone().next() == Some("fmt") && !has_arg("--check"),
             "ruff" => {
-                (words.get(1) == Some(&"format") && !has_arg("--check"))
-                    || (words.get(1) == Some(&"check") && has_arg("--fix"))
+                let subcommand = words.clone().next();
+                (subcommand == Some("format") && !has_arg("--check"))
+                    || (subcommand == Some("check") && has_arg("--fix"))
             }
             "prettier" => has_arg("--write"),
             "black" => !has_arg("--check"),
             _ => {
-                (words.iter().any(|word| program_name(word) == "prettier") && has_arg("--write"))
-                    || (words.iter().any(|word| program_name(word) == "ruff")
-                        && ((words.contains(&"format") && !has_arg("--check"))
-                            || (words.contains(&"check") && has_arg("--fix"))))
+                (words.clone().any(|word| program_name(word) == "prettier") && has_arg("--write"))
+                    || (words.clone().any(|word| program_name(word) == "ruff")
+                        && ((has_arg("format") && !has_arg("--check"))
+                            || (has_arg("check") && has_arg("--fix"))))
             }
         }
     })
@@ -618,15 +653,15 @@ fn shell_command_is_read(command: &str) -> bool {
         if segment == "env" {
             return true;
         }
-        let words = shell_words(segment);
-        let Some(program) = words.first().map(|word| program_name(word)) else {
+        let mut words = shell_words(segment);
+        let Some(program) = words.next().map(program_name) else {
             return false;
         };
 
         if BASH_READ_COMMANDS.contains(&program) {
             return true;
         }
-        if program == "command" && words.get(1) == Some(&"-v") {
+        if program == "command" && words.next() == Some("-v") {
             return true;
         }
         if program == "type" {
@@ -636,14 +671,14 @@ fn shell_command_is_read(command: &str) -> bool {
             return false;
         }
 
-        match words.get(1).copied() {
-            Some("branch") => words.get(2).is_none_or(|arg| arg.starts_with('-')),
+        match words.next() {
+            Some("branch") => words.next().is_none_or(|arg| arg.starts_with('-')),
             Some("remote") => words
-                .get(2)
-                .is_none_or(|arg| arg.starts_with('-') || *arg == "get-url"),
+                .next()
+                .is_none_or(|arg| arg.starts_with('-') || arg == "get-url"),
             Some("config") => words
-                .get(2)
-                .is_some_and(|arg| matches!(*arg, "--get" | "--get-all" | "--list" | "-l")),
+                .next()
+                .is_some_and(|arg| matches!(arg, "--get" | "--get-all" | "--list" | "-l")),
             Some(subcommand) => GIT_READ_SUBCOMMANDS.contains(&subcommand),
             None => false,
         }
@@ -1106,7 +1141,12 @@ fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
 
 fn detect_tests_passed(tool_texts: &[String], recent_window: usize) -> bool {
     let start = tool_texts.len().saturating_sub(recent_window.max(1));
-    tool_texts[start..].iter().any(|text| {
+    let recent = &tool_texts[start..];
+    let after_latest_failure = recent
+        .iter()
+        .rposition(|text| classify_text(text).0 > 0.0)
+        .map_or(recent, |index| &recent[index + 1..]);
+    after_latest_failure.iter().any(|text| {
         let lower = text.to_lowercase();
         TEST_PASS_PHRASES.iter().any(|p| lower.contains(p))
             && !TEST_FAILURE_LITERAL.iter().any(|p| lower.contains(p))
@@ -1369,6 +1409,25 @@ mod tests {
     fn tests_passed_ignores_partial_failures() {
         assert!(!detect_tests_passed(
             &["2 failed, 5 passed in 0.56s".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
+    }
+
+    #[test]
+    fn tests_passed_must_follow_the_latest_failure() {
+        assert!(!detect_tests_passed(
+            &[
+                "5 passed in 0.12s".to_string(),
+                "Traceback (most recent call last):\nValueError".to_string(),
+                "edit applied".to_string(),
+            ],
+            DEFAULT_RECENT_WINDOW
+        ));
+        assert!(detect_tests_passed(
+            &[
+                "Traceback (most recent call last):\nValueError".to_string(),
+                "5 passed in 0.12s".to_string(),
+            ],
             DEFAULT_RECENT_WINDOW
         ));
     }
@@ -1804,6 +1863,17 @@ mod tests {
                 classify_tool_call("exec_command", Some(command)),
                 ToolSemantic::Observe,
                 "expected Read for {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_shell_separators_do_not_create_commands() {
+        for command in ["rg 'foo|rm obsolete.rs'", "rg \"foo; rm obsolete.rs\""] {
+            assert_eq!(
+                classify_tool_call("exec_command", Some(command)),
+                ToolSemantic::Observe,
+                "quoted text must not be parsed as a command: {command}"
             );
         }
     }

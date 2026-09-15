@@ -564,29 +564,39 @@ impl StageClassifier {
         }
     }
 
-    fn consume_capable_hold(state: &mut State) -> bool {
-        let Some(StateValue::Count(remaining)) = state.extra.get_mut(CAPABLE_HOLD_KEY) else {
+    fn capable_hold_key(request: &Request) -> String {
+        request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.agent_id.as_deref())
+            .map_or_else(
+                || CAPABLE_HOLD_KEY.to_string(),
+                |agent_id| format!("{CAPABLE_HOLD_KEY}:{agent_id}"),
+            )
+    }
+
+    fn consume_capable_hold(state: &mut State, key: &str) -> bool {
+        let Some(StateValue::Count(remaining)) = state.extra.get_mut(key) else {
             return false;
         };
         if *remaining == 0 {
-            state.extra.remove(CAPABLE_HOLD_KEY);
+            state.extra.remove(key);
             return false;
         }
         *remaining -= 1;
         if *remaining == 0 {
-            state.extra.remove(CAPABLE_HOLD_KEY);
+            state.extra.remove(key);
         }
         true
     }
 
-    fn set_capable_hold(&self, state: &mut State) {
+    fn set_capable_hold(&self, state: &mut State, key: &str) {
         if self.capable_hold_turns == 0 {
-            state.extra.remove(CAPABLE_HOLD_KEY);
+            state.extra.remove(key);
         } else {
-            state.extra.insert(
-                CAPABLE_HOLD_KEY.to_string(),
-                StateValue::Count(self.capable_hold_turns),
-            );
+            state
+                .extra
+                .insert(key.to_string(), StateValue::Count(self.capable_hold_turns));
         }
     }
 }
@@ -605,11 +615,12 @@ impl Classifier<State> for StageClassifier {
             return Ok((Self::abstain(state), None));
         };
 
+        let capable_hold_key = Self::capable_hold_key(request);
         let clean_test_pass = signal.tests_passed && signal.no_error_streak > 0;
         if clean_test_pass {
-            state.extra.remove(CAPABLE_HOLD_KEY);
+            state.extra.remove(&capable_hold_key);
         }
-        let outcome = if !clean_test_pass && Self::consume_capable_hold(state) {
+        let outcome = if !clean_test_pass && Self::consume_capable_hold(state, &capable_hold_key) {
             resolved(Tier::Capable, DecisionSource::CapableHold, 0.5, Some(1.0))
         } else {
             pick_tier(&signal, self.mode, self.confidence_threshold)
@@ -633,7 +644,7 @@ impl Classifier<State> for StageClassifier {
                         DecisionSource::Override | DecisionSource::Dimensions
                     )
                 {
-                    self.set_capable_hold(state);
+                    self.set_capable_hold(state, &capable_hold_key);
                 }
                 record_decision_source(state, source);
                 record_routing_decision(source, target);
@@ -990,6 +1001,38 @@ mod tests {
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
         assert!(!state.extra.contains_key(CAPABLE_HOLD_KEY));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capable_hold_is_isolated_per_agent() -> Result<()> {
+        let classifier = StageClassifier::new(PickerMode::EfficientFirst, 0.5);
+        let mut state = state_with(critical());
+        let driver = driver();
+        let mut parent = Request {
+            metadata: Some(Metadata {
+                agent_id: Some("parent".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        classifier.score(&mut state, &mut parent, &driver).await?;
+
+        state.tool_signals = Some(ToolSignals::default());
+        let mut child = Request {
+            metadata: Some(Metadata {
+                agent_id: Some("child".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let classification = classifier.score(&mut state, &mut child, &driver).await?;
+
+        assert!(classification.0.argmax(false)?.is_none());
+        assert!(matches!(
+            state.extra.get("capable_hold_turns:parent"),
+            Some(StateValue::Count(2))
+        ));
         Ok(())
     }
 
