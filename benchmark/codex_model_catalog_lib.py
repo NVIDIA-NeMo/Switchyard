@@ -48,6 +48,7 @@ def _fallback_codex_model_template() -> dict[str, Any]:
         "upgrade": None,
         "base_instructions": "You are Codex, a coding agent.",
         "supports_reasoning_summaries": True,
+        "supports_reasoning_summary_parameter": True,
         "default_reasoning_summary": "none",
         "support_verbosity": True,
         "default_verbosity": "low",
@@ -108,6 +109,7 @@ def _build_codex_model_catalog(
     """Build Codex catalog JSON for Switchyard route ids."""
     template = _load_codex_model_template(codex_bin)
     template.setdefault("supports_reasoning_summaries", True)
+    template.setdefault("supports_reasoning_summary_parameter", True)
     models: list[dict[str, Any]] = []
     for priority, (model_id, display_name, description) in enumerate(entries):
         model = copy.deepcopy(template)

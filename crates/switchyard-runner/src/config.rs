@@ -68,6 +68,7 @@ struct RouteConfig {
     context_window: Option<u32>,
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
+    reasoning_summaries: Option<bool>,
     vision: Option<bool>,
     algorithm: AlgorithmSpec,
 }
@@ -87,6 +88,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let context_window = take_optional(&mut table, "context_window")?;
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
+        let reasoning_summaries = take_optional(&mut table, "reasoning_summaries")?;
         let vision = take_optional(&mut table, "vision")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
@@ -95,6 +97,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             context_window,
             tool_calling,
             reasoning,
+            reasoning_summaries,
             vision,
             algorithm,
         })
@@ -127,6 +130,7 @@ impl RouteConfig {
             context_window: self.context_window,
             tool_calling: self.tool_calling,
             reasoning: self.reasoning,
+            reasoning_summaries: self.reasoning_summaries,
             vision: self.vision,
         }
     }
@@ -684,6 +688,7 @@ id = "switchyard/random"
 context_window = 128000
 tool_calling = true
 reasoning = false
+reasoning_summaries = true
 targets = ["fast", "strong"]
 weights = [1.0, 2.0]
 seed = 7
@@ -695,6 +700,7 @@ seed = 7
         assert_eq!(route.context_window, Some(128_000));
         assert_eq!(route.tool_calling, Some(true));
         assert_eq!(route.reasoning, Some(false));
+        assert_eq!(route.reasoning_summaries, Some(true));
         assert_eq!(route.algorithm.routing_target_names(), ["fast", "strong"]);
     }
 
