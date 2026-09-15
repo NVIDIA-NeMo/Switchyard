@@ -316,8 +316,8 @@ describes the surrounding event envelope.
 | `switchyard.routing.requested` | Info | Routing `algorithm` for a managed request. |
 | `switchyard.routing.llm_call` | Debug | `call_index`, `selected_model`, `call_role` (`routing` or `answer`), `outcome`, and `latency_ms` for each observed model call. |
 | `switchyard.routing.overhead` | Info | `latency_ms` spent producing the routing outcome, including routing-model calls. This is not the end-to-end request duration. |
-| `switchyard.routing.decision` | Info | `algorithm`, initial `selected_model`, nullable final `served_model`, and nullable `fallback_used`. |
-| `switchyard.routing.error` | Error | Generic failures contain `failure_kind`. Route-execution failures also contain `category` and `phase`, plus nullable `upstream_status` and `target`. |
+| `switchyard.routing.decision` | Info | `algorithm`, optional `outcome_id`, initial `selected_model`, nullable final `served_model`, nullable `fallback_used`, and optional `evidence`. |
+| `switchyard.routing.error` | Error | Generic failures contain `failure_kind`. Route-execution failures also contain `category`, `phase`, nullable `upstream_status` and `target`, and may contain `outcome_id` and `evidence`. |
 
 Call marks describe Switchyard observations, not every HTTP retry made inside a
 client. `call_role` records whether Switchyard classified the call as routing
@@ -336,6 +336,12 @@ telemetry can report the model that answered.
 selection and `false` when they match. It and `served_model` are `null` when the
 response does not provide serving metadata. If route execution fails before a
 response is available, the error mark describes the terminal failure instead.
+`outcome_id` is present when the algorithm runner supplies outcome metadata.
+When the algorithm supplies evidence, the plugin includes an object containing
+supported string fields (`source`, `verdict`, `trigger`, and `reason_code`) and
+numeric fields (`score`, `confidence`, and `threshold`). Other fields and values
+of the wrong type are omitted. String values longer than 64 bytes are also omitted
+and should be stable, non-sensitive labels.
 
 ### Metrics
 
