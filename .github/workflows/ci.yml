@@ -215,10 +215,10 @@ jobs:
         run: |
           uv run --isolated --no-project --python 3.10 \
             --with "${SWITCHYARD_DEFAULT_PACKAGE}" \
-            python -c "import switchyard; print('import OK, version:', switchyard.__version__)"
+            python -c "import switchyard; from switchyard_rust.server import Server; print('import OK, version:', switchyard.__version__, 'server:', Server)"
           uv run --isolated --no-project --python 3.14 \
             --with "${SWITCHYARD_DEFAULT_PACKAGE}" \
-            python -c "import switchyard; print('import OK, version:', switchyard.__version__)"
+            python -c "import switchyard; from switchyard_rust.server import Server; print('import OK, version:', switchyard.__version__, 'server:', Server)"
       - name: Assert heavy packages absent from slim install
         working-directory: /tmp
         run: |
