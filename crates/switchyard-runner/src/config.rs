@@ -844,7 +844,7 @@ target = "strong"
     }
 
     fn error_message(toml: &str) -> String {
-        match runner_from_toml(toml) {
+        match Runner::from_toml(toml) {
             Ok(_) => "configuration unexpectedly succeeded".to_string(),
             Err(error) => error.to_string(),
         }
@@ -1278,8 +1278,8 @@ efficient_target = "weak"
     }
 
     #[test]
-    fn rejects_unknown_stage_classifier_fields() {
-        // Nested classifier typos must fail instead of silently using a default.
+    fn rejects_invalid_stage_classifier_fields() {
+        // Reject unknown classifier fields and zero timeouts.
         let config = format!(
             r#"{VALID_CONFIG}
 
@@ -1298,11 +1298,13 @@ classifier_magic = true
 "#
         );
 
-        let error = error_message(&config);
-        assert!(
-            error.contains("unknown field `classifier_magic`"),
-            "{error}"
-        );
+        for (field, expected) in [
+            ("timeout_mss = 75", "unknown field `timeout_mss`"),
+            ("timeout_ms = 0", "timeout_ms must be at least 1"),
+        ] {
+            let error = error_message(&config.replace("classifier_magic = true", field));
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     #[test]
@@ -1339,6 +1341,14 @@ classifier_magic = true
                     "targets = [\"strong\", \"weak\"]\nweights = [1]",
                 ),
                 "expected 2 weights, got 1",
+            ),
+            (
+                VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 0.5\ntimeout_ms = 0"),
+                "timeout_ms must be at least 1",
+            ),
+            (
+                VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 0.5\ntimeout_mss = 75"),
+                "unknown field `timeout_mss`",
             ),
             (
                 VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 1.5"),

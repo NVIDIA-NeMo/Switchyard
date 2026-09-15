@@ -125,6 +125,39 @@ async fn upstream_chat(
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
+    match body["scenario"].as_str() {
+        Some("buffered") => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+        Some("streaming") => {
+            let stream = async_stream::stream! {
+                yield Ok::<Event, Infallible>(Event::default().data(json!({
+                    "id": "judge-stream", "model": body["model"],
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "content": "{"}}]
+                }).to_string()));
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                yield Ok(Event::default().data("[DONE]"));
+            };
+            return Sse::new(stream).into_response();
+        }
+        Some("retry") => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [("retry-after", "1")],
+                Json(json!({"error": {"message": "unavailable"}})),
+            )
+                .into_response();
+        }
+        _ => {}
+    }
+    if body["model"] == "judge/late" {
+        // The 150 ms first reply misses its 75 ms deadline and arrives while
+        // the second judge request is still waiting for its 250 ms reply.
+        let delay = if calls.lock().await.len() == 1 {
+            150
+        } else {
+            250
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
     let prompt = user_prompt(&body);
     if prompt == "fail" {
         return (
@@ -393,7 +426,7 @@ async fn upstream_chat(
         r#"{"escalate":false,"reason":"making progress"}"#.to_string()
     } else if model == "model/classifier" && requests_schema_invalid_verdict {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#.to_string()
-    } else if model == "model/classifier" {
+    } else if model == "model/classifier" || model.starts_with("judge/") {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
     } else {
         "ok".to_string()
