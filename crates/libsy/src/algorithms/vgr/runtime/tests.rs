@@ -213,14 +213,14 @@ async fn max_tokens_truncated_local_attempt_routing() -> Result<()> {
     )
     .await?;
 
-    eprintln!("target={target:?} calls={:?}", log.targets());
-    // The regression's signature: exactly two calls, the second to cloud.
-    assert_ne!(
-        log.targets(),
-        vec![LOCAL, CLOUD],
-        "attempt escalated with no rung in between"
-    );
-    assert_eq!(log.targets()[1], LOCAL, "the second call must be a rung");
+    // The whole ladder, in order: the attempt, then the readout and the
+    // deliberation that judged it, then the escalation they did not avert.
+    // The regression was ["local-tier", "cloud-tier"] -- the attempt and an
+    // immediate escalation with no rung between them. Pinning the exact
+    // sequence also catches a regression that runs the readout but skips the
+    // deliberation, which a positional check alone would let through.
+    assert_eq!(log.targets(), vec![LOCAL, LOCAL, LOCAL, CLOUD]);
+    assert_eq!(target, ModelId::from(CLOUD));
     Ok(())
 }
 
