@@ -872,8 +872,10 @@ id = "{ROUTE_MODEL}"
     Ok(build_switchyard_router(state))
 }
 
-fn buffered_response_requests() -> [(&'static str, Value); 3] {
-    [
+#[tokio::test]
+async fn failed_responses_return_errors_and_try_fallback_across_endpoints() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let requests = [
         (
             "/v1/chat/completions",
             json!({
@@ -891,50 +893,40 @@ fn buffered_response_requests() -> [(&'static str, Value); 3] {
             "/v1/responses",
             json!({"model": ROUTE_MODEL, "input": "hello"}),
         ),
-    ]
-}
-
-#[tokio::test]
-async fn failed_responses_return_errors_and_count_failures_across_endpoints() -> TestResult {
-    let upstream = MockUpstream::start().await?;
+    ];
     let failure = "deterministic upstream failure";
     let missing = "provider reported status \"failed\" without error details";
-    for (model, count, message, code) in [
-        ("model/failed", 3, failure, "server_error"),
-        ("model/missing-error", 1, missing, "upstream_error"),
-        ("model/invalid-error", 1, missing, "upstream_error"),
-        ("model/invalid-code", 1, failure, "upstream_error"),
-        ("model/empty-code", 1, failure, "upstream_error"),
+    for (model, message, code) in [
+        ("model/failed", failure, "server_error"),
+        ("model/missing-error", missing, "upstream_error"),
+        ("model/invalid-error", missing, "upstream_error"),
+        ("model/invalid-code", failure, "upstream_error"),
+        ("model/empty-code", failure, "upstream_error"),
     ] {
         let app = buffered_responses_app(&upstream, model, false, false)?;
-        for (path, body) in buffered_response_requests().into_iter().take(count) {
-            let response = send(&app, "POST", path, Some(body)).await?;
+        for (path, body) in &requests {
+            let response = send(&app, "POST", path, Some(body.clone())).await?;
             assert_eq!(response.status, StatusCode::BAD_GATEWAY, "{model}: {path}");
-            let expected = if path == "/v1/messages" {
+            let expected = if *path == "/v1/messages" {
                 json!({"type": "error", "error": {"type": "api_error", "message": message}})
             } else {
                 json!({"error": {"type": "upstream_error", "code": code, "message": message}})
             };
-            assert_eq!(response.json()?, expected);
+            assert_eq!(response.json()?, expected, "{model}: {path}");
         }
         let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-        assert_eq!(stats["total_requests"], count);
-        assert_eq!(stats["total_errors"], count);
-        assert_eq!(stats["models"][model]["errors"], count);
+        assert_eq!(stats["total_requests"], requests.len(), "{model}");
+        assert_eq!(stats["total_errors"], requests.len(), "{model}");
+        assert_eq!(stats["models"][model]["errors"], requests.len(), "{model}");
     }
-    Ok(())
-}
 
-#[tokio::test]
-async fn failed_responses_redact_forwarded_credentials() -> TestResult {
-    let upstream = MockUpstream::start().await?;
     let app = buffered_responses_app(&upstream, "model/failed", false, true)?;
-    let [(path, body), _, _] = buffered_response_requests();
+    let (path, body) = &requests[0];
     let response = send_with_headers(
         &app,
         "POST",
         path,
-        Some(body),
+        Some(body.clone()),
         &[("x-private-token", "test-private-credential")],
     )
     .await?;
@@ -944,26 +936,22 @@ async fn failed_responses_redact_forwarded_credentials() -> TestResult {
         "provider rejected [REDACTED]"
     );
     assert_eq!(response.json()?["error"]["code"], "[REDACTED]");
-    Ok(())
-}
 
-#[tokio::test]
-async fn failed_responses_try_the_next_candidate_across_endpoints() -> TestResult {
-    let upstream = MockUpstream::start().await?;
     let app = buffered_responses_app(&upstream, "model/failed", true, false)?;
-    for (path, body) in buffered_response_requests() {
+    for (path, body) in &requests {
         let previous_calls = upstream.models().await.len();
-        let response = send(&app, "POST", path, Some(body)).await?;
+        let response = send(&app, "POST", path, Some(body.clone())).await?;
         assert_eq!(response.status, StatusCode::OK, "{path}");
-        assert_eq!(response.json()?["model"], "model/fallback");
+        assert_eq!(response.json()?["model"], "model/fallback", "{path}");
         assert_eq!(
             &upstream.models().await[previous_calls..],
-            ["model/failed", "model/fallback"]
+            ["model/failed", "model/fallback"],
+            "{path}"
         );
     }
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-    assert_eq!(stats["models"]["model/failed"]["errors"], 3);
-    assert_eq!(stats["models"]["model/fallback"]["calls"], 3);
+    assert_eq!(stats["models"]["model/failed"]["errors"], requests.len());
+    assert_eq!(stats["models"]["model/fallback"]["calls"], requests.len());
     Ok(())
 }
 
