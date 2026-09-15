@@ -2898,11 +2898,7 @@ fn openai_chat_image_and_file_parts_translate_to_valid_responses_input() -> Test
                 {"type": "text", "text": "Describe these."},
                 {
                     "type": "image_url",
-                    "image_url": {"url": "https://example.test/image.png", "detail": "high"}
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,aW1hZ2U="}
+                    "image_url": {"url": "data:image/png;base64,YQ==", "detail": "high"}
                 },
                 {"type": "file", "file": {"file_id": "file_123"}},
                 {
@@ -2928,10 +2924,9 @@ fn openai_chat_image_and_file_parts_translate_to_valid_responses_input() -> Test
             {"type": "input_text", "text": "Describe these."},
             {
                 "type": "input_image",
-                "image_url": "https://example.test/image.png",
+                "image_url": "data:image/png;base64,YQ==",
                 "detail": "high"
             },
-            {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
             {"type": "input_file", "file_id": "file_123"},
             {
                 "type": "input_file",

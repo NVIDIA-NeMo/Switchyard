@@ -1483,9 +1483,8 @@ fn responses_image_part(source: &ImageSource) -> Option<Value> {
 }
 
 fn responses_file_part(source: &FileSource) -> Option<Value> {
-    let mut part = Map::new();
+    let mut part = file_payload(source)?;
     part.insert("type".to_string(), Value::String("input_file".to_string()));
-    part.extend(file_payload(source)?);
     Some(Value::Object(part))
 }
 
