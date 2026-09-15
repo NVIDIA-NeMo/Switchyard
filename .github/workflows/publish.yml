@@ -477,6 +477,7 @@ jobs:
             switchyard-translation \
             switchyard-libsy \
             switchyard-llm-client \
+            prefill-router \
             switchyard-runner \
             switchyard-server; do
             crate_version="$(jq -r --arg crate "${crate}" \
@@ -514,5 +515,6 @@ jobs:
           publish_crate switchyard-translation
           publish_crate switchyard-libsy
           publish_crate switchyard-llm-client
+          publish_crate prefill-router
           publish_crate switchyard-runner
           publish_crate switchyard-server
