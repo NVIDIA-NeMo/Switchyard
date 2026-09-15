@@ -675,13 +675,7 @@ fn extract_tool_signals_with_window_and_semantics(
     let messages = &request.llm_request.messages;
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    let mut compacted = request.metadata.as_ref().is_some_and(|metadata| {
-        metadata.is_subagent
-            && metadata
-                .agent_kind
-                .as_deref()
-                .is_some_and(|kind| kind.eq_ignore_ascii_case("compact"))
-    });
+    let mut compacted = false;
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
 
@@ -1571,14 +1565,14 @@ mod tests {
     }
 
     #[test]
-    fn codex_compaction_metadata_sets_compacted() {
+    fn codex_compaction_metadata_stays_on_parent_route() {
         let mut request = with_messages(vec![bash("ls")]);
         request.metadata = Some(Metadata {
             is_subagent: true,
             agent_kind: Some("compact".to_string()),
             ..Default::default()
         });
-        assert!(ToolSignals::from_request(&request, None).compacted);
+        assert!(!ToolSignals::from_request(&request, None).compacted);
     }
 
     #[test]
