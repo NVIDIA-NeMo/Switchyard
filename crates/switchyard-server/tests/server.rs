@@ -535,11 +535,7 @@ async fn upstream_buffered_responses(
         "error": {"code": "server_error", "message": "deterministic upstream failure"}
     });
     match model {
-        "model/missing-error" => {
-            if let Some(object) = response.as_object_mut() {
-                object.remove("error");
-            }
-        }
+        "model/missing-error" => response = json!({"status": "failed"}),
         "model/invalid-error" => response["error"] = json!("invalid error details"),
         "model/invalid-code" => response["error"]["code"] = json!(42),
         "model/empty-code" => response["error"]["code"] = json!(""),
@@ -901,25 +897,16 @@ fn buffered_response_requests() -> [(&'static str, Value); 3] {
 #[tokio::test]
 async fn failed_responses_return_errors_and_count_failures_across_endpoints() -> TestResult {
     let upstream = MockUpstream::start().await?;
-    for model in [
-        "model/failed",
-        "model/missing-error",
-        "model/invalid-error",
-        "model/invalid-code",
-        "model/empty-code",
+    let failure = "deterministic upstream failure";
+    let missing = "provider reported status \"failed\" without error details";
+    for (model, count, message, code) in [
+        ("model/failed", 3, failure, "server_error"),
+        ("model/missing-error", 1, missing, "upstream_error"),
+        ("model/invalid-error", 1, missing, "upstream_error"),
+        ("model/invalid-code", 1, failure, "upstream_error"),
+        ("model/empty-code", 1, failure, "upstream_error"),
     ] {
         let app = buffered_responses_app(&upstream, model, false, false)?;
-        let count = if model == "model/failed" { 3 } else { 1 };
-        let message = if matches!(model, "model/missing-error" | "model/invalid-error") {
-            "provider reported status \"failed\" without error details"
-        } else {
-            "deterministic upstream failure"
-        };
-        let code = if model == "model/failed" {
-            "server_error"
-        } else {
-            "upstream_error"
-        };
         for (path, body) in buffered_response_requests().into_iter().take(count) {
             let response = send(&app, "POST", path, Some(body)).await?;
             assert_eq!(response.status, StatusCode::BAD_GATEWAY, "{model}: {path}");

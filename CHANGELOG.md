@@ -121,13 +121,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **Return HTTP 502 for failed Responses generations** — a buffered provider
-  response with HTTP 200 and `status: "failed"` could produce an empty
-  successful answer and count as a success. Switchyard now returns HTTP 502
-  on Chat Completions, Anthropic Messages, and Responses, counts the call as
-  an error, and tries the next target when the route supports fallback. Error
-  responses preserve the provider's message and, for OpenAI callers, a
-  nonempty string error code. Echoed caller credentials are redacted.
+- **Return HTTP 502 for failed Responses generations** — a provider's HTTP 200
+  response with `status: "failed"` could appear as an empty successful answer.
+  Switchyard now counts the call as an error and tries another model when the
+  route supports fallback. If this failure reaches the application, Chat
+  Completions, Anthropic Messages, and Responses return HTTP 502. Error replies
+  preserve the provider's message and, for OpenAI applications, a nonempty
+  string error code. Switchyard removes echoed caller credentials.
 - **Advisor stall checkpoint re-arms after a refunded review** — a
   stall-triggered consult that failed open or returned an unparseable verdict
   refunded the review budget but left the conversation's stall latch set, so

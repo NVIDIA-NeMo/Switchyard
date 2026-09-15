@@ -1279,15 +1279,11 @@ fn client_error(error: &LlmClientError) -> Response {
 
 // Keep the provider's message and nonempty string code in our error JSON.
 fn upstream_error(status: StatusCode, body: &str) -> Response {
-    let parsed = serde_json::from_str::<Value>(body).ok();
-    let error = parsed.as_ref().and_then(|body| body.get("error"));
-    let message = error
-        .and_then(|error| error.get("message"))
-        .and_then(Value::as_str)
-        .unwrap_or(body);
-    let code = error
-        .and_then(|error| error.get("code"))
-        .and_then(Value::as_str)
+    let parsed = serde_json::from_str::<Value>(body).unwrap_or_default();
+    let error = &parsed["error"];
+    let message = error["message"].as_str().unwrap_or(body);
+    let code = error["code"]
+        .as_str()
         .filter(|code| !code.is_empty())
         .unwrap_or("upstream_error");
     error_response(status, message, "upstream_error", code)
