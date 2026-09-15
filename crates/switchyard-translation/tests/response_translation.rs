@@ -651,8 +651,7 @@ fn incomplete_responses_source_survives_translation() -> TestResult {
     Ok(())
 }
 
-// Verifies a Responses body that reports its own failure is refused instead of
-// becoming an empty finished turn, whatever format the caller asked for.
+// A failed Responses body must return an error for every target format.
 #[test]
 fn failed_responses_status_is_rejected_for_every_target_format() -> TestResult {
     let engine = TranslationEngine::default();

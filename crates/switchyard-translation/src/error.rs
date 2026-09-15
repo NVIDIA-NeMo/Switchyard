@@ -34,9 +34,9 @@ pub enum TranslationError {
     #[error("invalid value at {path}: {message}")]
     InvalidValue { path: String, message: String },
 
-    /// The provider answered with a success status but the body says the
-    /// generation itself failed, for example OpenAI Responses `status: "failed"`.
-    /// `error` is the provider's error object, kept verbatim for the caller.
+    /// The response body reports a failed generation, such as OpenAI Responses
+    /// `status: "failed"`. `error` contains the provider's error object or a
+    /// message explaining that the provider supplied no error details.
     #[error("upstream reported a failed response: {error}")]
     UpstreamFailure { error: serde_json::Value },
     #[error("{0}")]

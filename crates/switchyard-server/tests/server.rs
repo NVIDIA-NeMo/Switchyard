@@ -51,6 +51,7 @@ impl MockUpstream {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
             .route("/v1/chat/completions", post(upstream_chat))
+            .route("/buffered/responses", post(upstream_buffered_responses))
             .route(
                 "/v1/messages",
                 post(upstream_messages_requires_forwarded_oauth),
@@ -521,6 +522,55 @@ async fn upstream_responses_requires_forwarded_auth(
     .into_response()
 }
 
+async fn upstream_buffered_responses(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    calls.lock().await.push(body.clone());
+    let model = body["model"].as_str().unwrap_or_default();
+    let status = match model {
+        "model/completed" | "model/fallback" => "completed",
+        "model/incomplete" => "incomplete",
+        _ => "failed",
+    };
+    let mut response = json!({
+        "id": "resp_buffered", "object": "response", "model": model,
+        "status": status, "output": [], "usage": null,
+        "error": {"code": "server_error", "message": "deterministic upstream failure"}
+    });
+    match model {
+        "model/missing-error" => {
+            if let Some(object) = response.as_object_mut() {
+                object.remove("error");
+            }
+        }
+        "model/null-error" => response["error"] = Value::Null,
+        "model/invalid-error" => response["error"] = json!("invalid error details"),
+        "model/invalid-code" => response["error"]["code"] = json!(42),
+        "model/empty-code" => response["error"]["code"] = json!(""),
+        "model/completed" | "model/incomplete" | "model/fallback" => {
+            response["error"] = Value::Null;
+            response["output"] = json!([{
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "ok"}]
+            }]);
+            if status == "incomplete" {
+                response["incomplete_details"] = json!({"reason": "max_output_tokens"});
+            }
+        }
+        _ => {}
+    }
+    if let Some(secret) = headers.get("x-private-token") {
+        response["error"]["code"] = json!(secret.to_str().unwrap_or_default());
+        response["error"]["message"] = json!(format!(
+            "provider rejected {}",
+            secret.to_str().unwrap_or_default()
+        ));
+    }
+    Json(response)
+}
+
 async fn upstream_redirect_capture(
     State(calls): State<Arc<Mutex<Vec<Value>>>>,
     headers: HeaderMap,
@@ -800,6 +850,205 @@ async fn stats_accumulates_buffered_success_error_and_shared_routes() -> TestRes
     assert_eq!(stats["models"]["gemini-3.5-flash"]["errors"], 1);
     assert_eq!(stats["models"]["model/unknown"]["calls"], 1);
     assert_eq!(stats["routing_overhead"]["count"], 3);
+    Ok(())
+}
+
+fn buffered_responses_app(
+    upstream: &MockUpstream,
+    model: &str,
+    fallback: bool,
+    forward_auth: bool,
+) -> TestResult<Router> {
+    let route = if fallback {
+        "type = \"random\"\ntargets = [\"first\", \"second\"]\nweights = [1000, 1]\nseed = 17"
+    } else {
+        "type = \"passthrough\"\ntarget = \"first\""
+    };
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.mock]
+format = "openai_responses"
+base_url = "{base_url}/buffered"
+forward_auth = {forward_auth}
+max_retries = 0
+[targets.first]
+id = "{model}"
+llm_client = "mock"
+[targets.second]
+id = "model/fallback"
+llm_client = "mock"
+[routes.response]
+id = "{ROUTE_MODEL}"
+{route}
+"#,
+        base_url = upstream.base_url.trim_end_matches("/v1"),
+    ))?;
+    Ok(build_switchyard_router(state))
+}
+
+fn buffered_response_requests() -> [(&'static str, Value); 3] {
+    [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL, "messages": [{"role": "user", "content": "hello"}]
+            }),
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL, "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hello"}]
+            }),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "hello"}),
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn failed_responses_return_errors_and_count_failures_across_endpoints() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for (model, message) in [
+        ("model/failed", "deterministic upstream failure"),
+        ("model/invalid-code", "deterministic upstream failure"),
+        ("model/empty-code", "deterministic upstream failure"),
+        (
+            "model/missing-error",
+            "provider reported status \"failed\" without error details",
+        ),
+        (
+            "model/null-error",
+            "provider reported status \"failed\" without error details",
+        ),
+        (
+            "model/invalid-error",
+            "provider reported status \"failed\" without error details",
+        ),
+    ] {
+        let app = buffered_responses_app(&upstream, model, false, false)?;
+        for (path, body) in buffered_response_requests() {
+            let response = send(&app, "POST", path, Some(body)).await?;
+            assert_eq!(
+                response.status,
+                StatusCode::BAD_GATEWAY,
+                "{model}: {path}: {:?}",
+                response.json()?
+            );
+            let body = response.json()?;
+            assert_eq!(body["error"]["message"], message);
+            let expected_type = if path == "/v1/messages" {
+                "api_error"
+            } else {
+                "upstream_error"
+            };
+            assert_eq!(body["error"]["type"], expected_type);
+            if path != "/v1/messages" {
+                let expected_code = if model == "model/failed" {
+                    "server_error"
+                } else {
+                    "upstream_error"
+                };
+                assert_eq!(body["error"]["code"], expected_code);
+            }
+            assert!(body.get("choices").is_none());
+            assert!(body.get("stop_reason").is_none());
+            assert!(body.get("output").is_none());
+        }
+        let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+        assert_eq!(stats["total_requests"], 3);
+        assert_eq!(stats["total_errors"], 3);
+        assert_eq!(stats["models"][model]["errors"], 3);
+        assert_eq!(stats["total_tokens"], empty_token_totals());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_responses_redact_forwarded_credentials() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = buffered_responses_app(&upstream, "model/failed", false, true)?;
+    for (path, body) in buffered_response_requests()
+        .into_iter()
+        .filter(|(path, _)| *path != "/v1/messages")
+    {
+        let response = send_with_headers(
+            &app,
+            "POST",
+            path,
+            Some(body),
+            &[("x-private-token", "test-private-credential")],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            response.json()?["error"]["message"],
+            "provider rejected [REDACTED]"
+        );
+        assert_eq!(response.json()?["error"]["code"], "[REDACTED]");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_responses_try_the_next_candidate_across_endpoints() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = buffered_responses_app(&upstream, "model/failed", true, false)?;
+    for (path, body) in buffered_response_requests() {
+        let previous_calls = upstream.models().await.len();
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(
+            response.status,
+            StatusCode::OK,
+            "{path}: {:?}",
+            response.json()?
+        );
+        assert_eq!(response.json()?["model"], "model/fallback");
+        assert_eq!(
+            &upstream.models().await[previous_calls..],
+            ["model/failed", "model/fallback"]
+        );
+    }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["models"]["model/failed"]["errors"], 3);
+    assert_eq!(stats["models"]["model/fallback"]["calls"], 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn completed_and_incomplete_responses_keep_their_stop_reasons() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for (model, chat_stop, messages_stop, status) in [
+        ("model/completed", "stop", "end_turn", "completed"),
+        ("model/incomplete", "length", "max_tokens", "incomplete"),
+    ] {
+        let app = buffered_responses_app(&upstream, model, false, false)?;
+        for (path, body) in buffered_response_requests() {
+            let response = send(&app, "POST", path, Some(body)).await?;
+            assert_eq!(response.status, StatusCode::OK);
+            let body = response.json()?;
+            match path {
+                "/v1/chat/completions" => {
+                    assert_eq!(body["choices"][0]["finish_reason"], chat_stop);
+                    assert_eq!(body["choices"][0]["message"]["content"], "ok");
+                }
+                "/v1/messages" => {
+                    assert_eq!(body["stop_reason"], messages_stop);
+                    assert_eq!(body["content"][0]["text"], "ok");
+                }
+                _ => {
+                    assert_eq!(body["status"], status);
+                    assert_eq!(body["output"][0]["content"][0]["text"], "ok");
+                }
+            }
+        }
+        let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+        assert_eq!(stats["total_requests"], 3);
+        assert_eq!(stats["total_errors"], 0);
+    }
     Ok(())
 }
 
