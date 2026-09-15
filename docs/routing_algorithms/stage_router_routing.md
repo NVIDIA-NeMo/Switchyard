@@ -31,7 +31,7 @@ For each LLM call, stage-router estimates which stage the agent is in from the
 The axes are **corroborative**: the signed score is `tanh`-squashed to a
 confidence in `[0, 1]`, so one full signal alone scores ~`0.46` and a second
 corroborating signal is what pushes it decisively past a `0.5` threshold. A
-critical-error severity is a hard override that escalates on its own. The router
+repeated failures and critical-error severity are hard overrides that escalate. The router
 then routes:
 
 - the **capable** tier for uncertain, exploratory, or error-recovery turns, and
@@ -199,6 +199,7 @@ efficient_target = "weak"
 picker = "efficient_first"
 confidence_threshold = 0.5
 recent_turn_window = 3          # optional, defaults to 3
+capable_hold_turns = 2          # optional, defaults to 2
 ```
 
 Save as `routes.toml` and start the server:
@@ -242,8 +243,8 @@ rules are outside this exact-name configuration.
 
 Add a `[routes.stage.handoff_notes]` section to pass a contextual note to the
 model the router switches to. The escalation note is sent to the capable tier on
-a signal-driven escalation; the de-escalation note is sent back to the efficient
-tier when a settled signal drops the turn there.
+a signal-driven escalation; the de-escalation note is sent when the scorer
+decisively picks the efficient tier.
 
 ```toml
 [routes.stage.handoff_notes]
@@ -302,8 +303,8 @@ paths through its cascade:
 
 | Source | When |
 |---|---|
-| `override` | A critical-error severity (or a context-compaction marker) forced the capable tier. |
-| `tests_passed` | A settled run — a recent test pass with a recent write and no windowed error — landed the turn on the efficient tier. |
+| `override` | A repeated failure, critical-error severity, or context-compaction marker forced the capable tier. Structured logs set `override_reason` to `repeated_failure`, `critical_error`, or `compaction`. |
+| `capable_hold` | A recent escalation kept this recovery turn on the capable tier. |
 | `dimensions` | The corroborative scorer crossed `confidence_threshold` and picked the tier by the sign of the score. |
 | `llm-classifier` | The signals were ambiguous and the classifier returned a verdict. |
 | `fall_open` | The signals were ambiguous and the classifier failed or wasn't configured; the default tier was used. |

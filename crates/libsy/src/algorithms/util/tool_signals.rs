@@ -39,7 +39,7 @@ static ERROR_PATTERNS: &[(&str, f32, &[&str])] = &[
     ),
     (
         "connection_refused",
-        CRITICAL,
+        HARD,
         &[
             "connection refused",
             "connectionrefusederror",
@@ -199,8 +199,8 @@ static BASH_TOOL_NAMES: &[&str] = &[
     "exec_command", // codex
 ];
 
-// Prefer false negatives: tests_passed routes the picker to EFFICIENT, so a false
-// positive would drop tier on an unfinished task.
+// Prefer false negatives: tests_passed clears a capable hold, so a false positive
+// could hand an unfinished task back too early.
 static TEST_PASS_PHRASES: &[&str] = &[
     " passed",
     "passed in",
@@ -325,6 +325,9 @@ pub struct ToolSignals {
     /// Windowed so an error persists through the recovery turns instead of clearing
     /// the instant the next result is clean.
     pub severity: f32,
+    /// The same hard-or-critical failure appeared at least twice in the recent
+    /// tool-result window.
+    pub repeated_failure: bool,
     /// Consecutive clean tool results back from the most recent. `0` if the last failed.
     pub no_error_streak: u32,
     /// Total edit-style tool calls in the request.
@@ -672,7 +675,13 @@ fn extract_tool_signals_with_window_and_semantics(
     let messages = &request.llm_request.messages;
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    let mut compacted = false;
+    let mut compacted = request.metadata.as_ref().is_some_and(|metadata| {
+        metadata.is_subagent
+            && metadata
+                .agent_kind
+                .as_deref()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("compact"))
+    });
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
 
@@ -782,10 +791,16 @@ fn build_signal(
     // error signal instead of the router flapping straight back to the weak tier.
     let sev_start = tool_texts.len().saturating_sub(recent_window.max(1));
     let mut severity = 0.0f32;
+    let mut failure_fingerprints = Vec::new();
+    let mut repeated_failure = false;
     for text in &tool_texts[sev_start..] {
         let (sev, _patterns) = classify_text(text);
         if sev > severity {
             severity = sev;
+        }
+        if let Some(fingerprint) = failure_fingerprint(text) {
+            repeated_failure |= failure_fingerprints.contains(&fingerprint);
+            failure_fingerprints.push(fingerprint);
         }
     }
 
@@ -855,6 +870,7 @@ fn build_signal(
 
     ToolSignals {
         severity,
+        repeated_failure,
         no_error_streak,
         edit_count,
         write_count,
@@ -933,6 +949,70 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
         }
     }
     (severity, patterns)
+}
+
+/// Stable identity for a material failure. Soft non-zero exits are excluded:
+/// they are too generic to prove that an agent is repeating the same mistake.
+fn failure_fingerprint(text: &str) -> Option<String> {
+    let (severity, patterns) = classify_text(text);
+    if severity < HARD {
+        return None;
+    }
+
+    let lower = text.to_lowercase();
+    let diagnostic = lower
+        .lines()
+        .find(|line| is_failure_diagnostic(line))
+        .or_else(|| lower.lines().find(|line| !line.trim().is_empty()))
+        .unwrap_or_default();
+    let normalized = normalize_failure_text(diagnostic);
+    Some(format!("{}|{normalized}", patterns.join(",")))
+}
+
+fn is_failure_diagnostic(line: &str) -> bool {
+    let line = line.trim();
+    [
+        "error",
+        "exception",
+        "panic",
+        "failed",
+        "timed out",
+        "timeout",
+        "connection refused",
+        "cannot allocate memory",
+        "out of memory",
+        "not found",
+    ]
+    .iter()
+    .any(|marker| line.contains(marker))
+}
+
+/// Removes values that normally change between retries while retaining the
+/// diagnostic wording that distinguishes one failure from another.
+fn normalize_failure_text(text: &str) -> String {
+    let mut normalized = String::new();
+    for word in text.split_whitespace() {
+        if !normalized.is_empty() {
+            normalized.push(' ');
+        }
+        let mut in_digits = false;
+        if word.starts_with('/') || word.contains("/src/") || word.contains("/tmp/") {
+            normalized.push_str("<path>");
+            continue;
+        }
+        for character in word.chars() {
+            if character.is_ascii_digit() {
+                if !in_digits {
+                    normalized.push('#');
+                    in_digits = true;
+                }
+            } else {
+                normalized.push(character);
+                in_digits = false;
+            }
+        }
+    }
+    normalized.chars().take(240).collect()
 }
 
 fn has_compiler_diagnostic(lower: &str) -> bool {
@@ -1082,7 +1162,9 @@ mod tests {
     use super::*;
     use crate::algorithms::util::stage::score_signal;
     use serde_json::json;
-    use switchyard_protocol::{ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult};
+    use switchyard_protocol::{
+        ContentBlock, LlmRequest, Message, Metadata, Role, ToolCall, ToolResult,
+    };
 
     fn with_messages(messages: Vec<Message>) -> Request {
         Request {
@@ -1151,6 +1233,36 @@ mod tests {
     fn oom_is_critical() {
         let (sev, _) = classify_text("Out of memory: kill process 1234");
         assert_eq!(sev, CRITICAL);
+    }
+
+    #[test]
+    fn connection_refused_is_hard() {
+        let (severity, _) = classify_text("Connection refused on port 8000");
+        assert_eq!(severity, HARD);
+    }
+
+    #[test]
+    fn repeated_failure_ignores_volatile_paths_and_numbers() {
+        let request = with_messages(vec![
+            tr("error[E0308]: mismatched types at /tmp/a/src/lib.rs:12"),
+            tr("error[E0308]: mismatched types at /tmp/b/src/lib.rs:47"),
+        ]);
+        assert!(ToolSignals::from_request(&request, None).repeated_failure);
+    }
+
+    #[test]
+    fn different_failures_are_not_repeated() {
+        let request = with_messages(vec![
+            tr("error[E0308]: mismatched types"),
+            tr("error[E0509]: cannot move out"),
+        ]);
+        assert!(!ToolSignals::from_request(&request, None).repeated_failure);
+    }
+
+    #[test]
+    fn one_material_failure_is_not_repeated() {
+        let request = with_messages(vec![tr("Connection refused on port 8000")]);
+        assert!(!ToolSignals::from_request(&request, None).repeated_failure);
     }
 
     #[test]
@@ -1455,6 +1567,17 @@ mod tests {
             ),
             bash("ls"),
         ]);
+        assert!(ToolSignals::from_request(&request, None).compacted);
+    }
+
+    #[test]
+    fn codex_compaction_metadata_sets_compacted() {
+        let mut request = with_messages(vec![bash("ls")]);
+        request.metadata = Some(Metadata {
+            is_subagent: true,
+            agent_kind: Some("compact".to_string()),
+            ..Default::default()
+        });
         assert!(ToolSignals::from_request(&request, None).compacted);
     }
 

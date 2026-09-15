@@ -895,6 +895,7 @@ capable_target = "strong"
 efficient_target = "weak"
 picker = "efficient_first"
 confidence_threshold = 1.0
+capable_hold_turns = 2
 
 [routes.stage.tool_semantics]
 observe = ["lookup_customer"]
@@ -929,6 +930,7 @@ classify_trigger = "user_turn"
 capable_target = "strong"
 efficient_target = "weak"
 confidence_threshold = 0.5
+capable_hold_turns = 2
 
 [routes.composed.stage.tool_semantics]
 new = ["send_message"]

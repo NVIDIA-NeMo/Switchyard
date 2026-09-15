@@ -140,6 +140,9 @@ pub struct StageRouterConfig {
     pub recent_window: Option<usize>,
     /// Exact tool-name semantics added to the built-in coding vocabulary.
     pub tool_semantics: ToolSemantics,
+    /// Requests to keep on the capable tier after an escalation. A clean test
+    /// pass clears the hold early.
+    pub capable_hold_turns: u32,
     /// Note handed to the model on a signal-driven escalation, and on a
     /// hand-back to the efficient tier when a de-escalation note is configured.
     pub handoff_notes: Option<HandoffNoteConfig>,
@@ -161,6 +164,7 @@ impl StageRouterConfig {
             confidence_threshold,
             recent_window: None,
             tool_semantics: ToolSemantics::default(),
+            capable_hold_turns: 2,
             handoff_notes: None,
             capable_system_prompt: None,
             efficient_system_prompt: None,
@@ -218,7 +222,8 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
     let default_tier = config.mode.default_tier();
     let fall_open = FallOpen { default_tier };
 
-    let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold);
+    let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold)
+        .with_capable_hold_turns(config.capable_hold_turns);
     if let Some(notes) = config.handoff_notes {
         classifier = classifier.with_handoff_notes(notes);
     }
