@@ -68,6 +68,10 @@ const CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
 // Caller identification. Coding harnesses report their name and version here.
 const USER_AGENT_HEADER: &str = "user-agent";
 
+/// First Claude Code release whose sub-agents send `x-claude-code-agent-id`. Earlier builds
+/// send only the session id, so their delegated requests look like the parent's.
+const CLAUDE_CHILD_IDENTITY_VERSION: [u64; 3] = [2, 1, 139];
+
 /// Harness-defined sub-agent kinds that carry delegated user work rather than
 /// harness maintenance (`compact`, `memory_consolidation`, ...). Unknown kinds
 /// are excluded deliberately; extend with captured request fixtures.
@@ -189,9 +193,10 @@ pub struct Metadata {
     pub session_final: Option<bool>,
     /// External trace/request id for joining with the host's telemetry.
     pub correlation_id: Option<String>,
-    /// The caller's `User-Agent`, when present. Coding harnesses name themselves and
-    /// their version here, such as `claude-cli/2.1.139 (external, cli)`.
-    pub user_agent: Option<String>,
+    /// Whether the calling harness build is known not to send child-agent identity, so its
+    /// delegated sub-agent requests cannot be told apart from the parent's. Derived during
+    /// header normalization from the harness's `User-Agent`.
+    pub subagent_identity_unsupported: bool,
     /// Switchyard target that successfully served a response.
     pub served_model: Option<ModelId>,
     /// Arbitrary host-defined key/value metadata.
@@ -222,7 +227,7 @@ impl Metadata {
                 .as_deref()
                 .and_then(parse_bool),
             correlation_id: sy_header(headers, SWITCHYARD_REQUEST_ID_HEADER),
-            user_agent: header(headers, USER_AGENT_HEADER).map(str::to_string),
+            subagent_identity_unsupported: claude_lacks_child_identity(headers),
             ..Metadata::default()
         }
     }
@@ -297,6 +302,32 @@ fn claude_lineage(headers: &http::HeaderMap) -> (Option<&str>, bool) {
         .then(|| header(headers, CLAUDE_PARENT_AGENT_ID_HEADER).or(session))
         .flatten();
     (parent, is_subagent)
+}
+
+/// Whether the request comes from a Claude Code build that predates its child identity headers.
+///
+/// Claude Code names itself in `User-Agent` as `claude-cli/<version> (...)`. A prerelease of
+/// the first release with the headers (`2.1.139-beta.1`) predates it too. Build metadata after
+/// `+` is ignored. Other clients never match.
+fn claude_lacks_child_identity(headers: &http::HeaderMap) -> bool {
+    fn parse(user_agent: &str) -> Option<([u64; 3], bool)> {
+        let tagged = user_agent
+            .strip_prefix("claude-cli/")?
+            .split([' ', '+'])
+            .next()?;
+        let (version, prerelease) = match tagged.split_once('-') {
+            Some((version, _)) => (version, true),
+            None => (tagged, false),
+        };
+        let mut parts = version.split('.').map(|part| part.parse::<u64>().ok());
+        Some(([parts.next()??, parts.next()??, parts.next()??], prerelease))
+    }
+    header(headers, USER_AGENT_HEADER)
+        .and_then(parse)
+        .is_some_and(|(version, prerelease)| {
+            version < CLAUDE_CHILD_IDENTITY_VERSION
+                || (prerelease && version == CLAUDE_CHILD_IDENTITY_VERSION)
+        })
 }
 
 /// Parses the common textual spellings of a boolean header value.
@@ -495,19 +526,20 @@ mod tests {
     }
 
     #[test]
-    fn captures_the_user_agent_verbatim() {
-        let claude = metadata(&[
-            ("user-agent", " claude-cli/2.1.121 (external, cli) "),
-            ("x-claude-code-session-id", "claude-session"),
-        ]);
-        assert_eq!(
-            claude.user_agent.as_deref(),
-            Some("claude-cli/2.1.121 (external, cli)")
-        );
-        assert!(!claude.is_subagent);
-
-        assert_eq!(metadata(&[("user-agent", "")]).user_agent, None);
-        assert_eq!(metadata(&[]).user_agent, None);
+    fn flags_claude_code_builds_without_child_identity() {
+        let unsupported = |user_agent: &str| {
+            metadata(&[("user-agent", user_agent)]).subagent_identity_unsupported
+        };
+        // Builds before the headers existed, including a prerelease of the first build with them.
+        assert!(unsupported(" claude-cli/2.1.121 (external, cli) "));
+        assert!(unsupported("claude-cli/2.1.139-beta.1"));
+        // The first build with the headers and anything newer.
+        assert!(!unsupported("claude-cli/2.1.139 (external, cli)"));
+        assert!(!unsupported("claude-cli/2.1.211+build (external, cli)"));
+        // Other clients and unparseable versions are never flagged.
+        assert!(!unsupported("codex_cli_rs/0.120.0"));
+        assert!(!unsupported("claude-cli/nightly"));
+        assert!(!metadata(&[]).subagent_identity_unsupported);
     }
 
     #[test]

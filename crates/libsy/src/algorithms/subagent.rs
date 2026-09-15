@@ -41,40 +41,12 @@ impl SubagentRouterConfig {
     }
 }
 
-/// First Claude Code release whose sub-agents send `x-claude-code-agent-id`.
-const MIN_CLAUDE_CODE_VERSION: [u64; 3] = [2, 1, 139];
-
-/// Parses the version out of a Claude Code `User-Agent` such as
-/// `claude-cli/2.1.139 (external, cli)`, plus whether it carries a prerelease tag
-/// (`2.1.139-beta.1`). Returns `None` for any other client.
-fn claude_code_version(user_agent: &str) -> Option<([u64; 3], bool)> {
-    let tagged = user_agent
-        .strip_prefix("claude-cli/")?
-        .split([' ', '+'])
-        .next()?;
-    let (version, prerelease) = match tagged.split_once('-') {
-        Some((version, _)) => (version, true),
-        None => (tagged, false),
-    };
-    let mut parts = version.split('.').map(|part| part.parse::<u64>().ok());
-    Some(([parts.next()??, parts.next()??, parts.next()??], prerelease))
-}
-
-/// The Claude Code version behind `metadata` when it predates child identity headers.
-fn outdated_claude_code(metadata: Option<&Metadata>) -> Option<[u64; 3]> {
-    let (version, prerelease) = claude_code_version(metadata?.user_agent.as_deref()?)?;
-    // A prerelease of the floor itself predates the release that added the headers.
-    let outdated =
-        version < MIN_CLAUDE_CODE_VERSION || (prerelease && version == MIN_CLAUDE_CODE_VERSION);
-    outdated.then_some(version)
-}
-
 /// Routes delegated work independently while preserving the parent algorithm for other traffic.
 pub struct SubagentRouter {
     parent: Arc<dyn Algorithm>,
     subagent: FallThrough<State>,
-    /// Whether the one-time warning about an outdated Claude Code has been emitted.
-    outdated_claude_code_warned: AtomicBool,
+    /// Whether the one-time warning about a harness without sub-agent identity has been emitted.
+    identity_warning_emitted: AtomicBool,
 }
 
 impl SubagentRouter {
@@ -113,33 +85,28 @@ impl SubagentRouter {
         Ok(Self {
             parent,
             subagent,
-            outdated_claude_code_warned: AtomicBool::new(false),
+            identity_warning_emitted: AtomicBool::new(false),
         })
     }
 
-    /// Warns once when a Claude Code too old to identify its children reaches this route.
+    /// Warns once when a harness that cannot identify its children reaches this route.
     ///
     /// Such a build sends only the session id, so its sub-agent requests look like the
     /// parent's and route through the parent algorithm. Without this the route reports
     /// itself as configured while never routing any delegated work.
-    fn warn_if_outdated_claude_code(&self, request: &Request) {
-        let Some([major, minor, patch]) = outdated_claude_code(request.metadata.as_ref()) else {
-            return;
-        };
-        if self
-            .outdated_claude_code_warned
-            .swap(true, Ordering::Relaxed)
-        {
+    fn warn_if_subagent_identity_unsupported(&self, request: &Request) {
+        let unsupported = request
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.subagent_identity_unsupported);
+        if !unsupported || self.identity_warning_emitted.swap(true, Ordering::Relaxed) {
             return;
         }
-        let [min_major, min_minor, min_patch] = MIN_CLAUDE_CODE_VERSION;
         tracing::warn!(
             target: "libsy",
-            claude_code_version = %format!("{major}.{minor}.{patch}"),
-            "this route has sub-agent routing but Claude Code {major}.{minor}.{patch} does \
-             not send child identity (x-claude-code-agent-id), so its sub-agent requests \
-             route through the parent route; upgrade Claude Code to \
-             {min_major}.{min_minor}.{min_patch} or later"
+            "this route has sub-agent routing but the calling harness does not send \
+             sub-agent identity, so its delegated requests route through the parent route; \
+             a harness upgrade may be required"
         );
     }
 }
@@ -159,7 +126,7 @@ impl Algorithm for SubagentRouter {
             // Delegated work routes over the sub-agent's own models, never the parent's.
             self.subagent.execute(driver.for_subagent()?, request).await
         } else {
-            self.warn_if_outdated_claude_code(&request);
+            self.warn_if_subagent_identity_unsupported(&request);
             self.parent.clone().route(driver, request).await
         }
     }
@@ -173,7 +140,7 @@ mod tests {
     use async_trait::async_trait;
     use switchyard_protocol::{Category, Metadata, ModelId, Request, Response, text_request};
 
-    use super::{SubagentRouter, SubagentRouterConfig, outdated_claude_code};
+    use super::{SubagentRouter, SubagentRouterConfig};
     use crate::algorithms::passthrough::Passthrough;
     use crate::core::classifier::{Classification, Classifier, Score};
     use crate::core::testing::{echo, test_drive_with_models};
@@ -238,28 +205,17 @@ mod tests {
         )?))
     }
 
-    fn claude_code(user_agent: &str) -> Request {
+    fn without_subagent_identity() -> Request {
         request(Some(Metadata {
             session_id: Some("session-1".to_string()),
-            user_agent: Some(user_agent.to_string()),
+            subagent_identity_unsupported: true,
             ..Metadata::default()
         }))
     }
 
     #[tokio::test]
-    async fn outdated_claude_code_warns_once_and_routes_through_the_parent() -> crate::Result<()> {
-        let outdated =
-            |user_agent: &str| outdated_claude_code(claude_code(user_agent).metadata.as_ref());
-        // Only Claude Code builds below the identity floor are flagged, with their version.
-        assert_eq!(
-            outdated("claude-cli/2.1.121 (external, cli)"),
-            Some([2, 1, 121])
-        );
-        assert_eq!(outdated("claude-cli/2.1.139 (external, cli)"), None);
-        assert_eq!(outdated("claude-cli/2.1.139-beta.1"), Some([2, 1, 139]));
-        assert_eq!(outdated("codex_cli_rs/0.120.0"), None);
-        assert_eq!(outdated("claude-cli/nightly"), None);
-
+    async fn harness_without_subagent_identity_warns_once_and_routes_through_the_parent()
+    -> crate::Result<()> {
         // Without child identity the request is indistinguishable from the parent's, so it
         // keeps routing through the parent algorithm; the warning fires once per route.
         let router = configured(Arc::new(ScriptedClassifier {
@@ -268,12 +224,12 @@ mod tests {
         let models = RuntimeModels::new([(Category::Any, vec![ModelId::from("parent")])].into())
             .with_subagent([(Category::Any, vec![ModelId::from("worker")])].into());
         for _ in 0..2 {
-            let request = claude_code("claude-cli/2.1.121 (external, cli)");
+            let request = without_subagent_identity();
             let (selected, _) =
                 test_drive_with_models(router.clone(), request, models.clone(), echo()).await?;
             assert_eq!(selected, "parent");
         }
-        assert!(router.outdated_claude_code_warned.load(Ordering::Relaxed));
+        assert!(router.identity_warning_emitted.load(Ordering::Relaxed));
         Ok(())
     }
 

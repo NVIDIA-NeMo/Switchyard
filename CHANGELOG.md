@@ -135,15 +135,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the tool. The decoder now reports `tool_use` when the completed output holds
   a `function_call` or `custom_tool_call`, or when it already decoded tool
   deltas, matching the buffered decoder.
-- **Outdated Claude Code on sub-agent routes** — Claude Code sends the child
-  identity header (`x-claude-code-agent-id`) that sub-agent routing needs only
-  from version 2.1.139. Older builds send just the session id, so their
-  sub-agent requests silently routed through the parent route. A route with a
-  `subagents` table now logs one warning naming the Claude Code version when it
-  sees an older build, and the sub-agent routing guide states the version floor.
-  `switchyard_protocol::Metadata` gains a public `user_agent` field for this
-  check; downstream code that builds `Metadata` with a full struct literal must
-  add the field or use `..Metadata::default()`.
+- **Harnesses without sub-agent identity on sub-agent routes** — Claude Code
+  sends the child identity header (`x-claude-code-agent-id`) that sub-agent
+  routing needs only from version 2.1.139. Older builds send just the session
+  id, so their sub-agent requests silently routed through the parent route.
+  Header normalization now flags such builds on
+  `switchyard_protocol::Metadata` as `subagent_identity_unsupported`, a route
+  with a `subagents` table logs one warning when it sees one, and the sub-agent
+  routing guide states the version floor. The new public field means downstream
+  code that builds `Metadata` with a full struct literal must add it or use
+  `..Metadata::default()`.
 - **Encrypted-only reasoning items open no summary part** — the Responses
   stream encoder opened a `reasoning_summary_part` for every reasoning item and
   closed it only when text had streamed, so an encrypted-only item left a part
