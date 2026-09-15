@@ -2628,6 +2628,7 @@ type = "passthrough"
 target = "shared"
 context_window = 1000000
 tool_calling = true
+vision = true
 
 [routes.restricted]
 id = "restricted"
@@ -2635,12 +2636,7 @@ type = "passthrough"
 target = "shared"
 context_window = 262000
 tool_calling = false
-
-[routes.reasoning]
-id = "reasoning"
-type = "passthrough"
-target = "shared"
-reasoning = true
+vision = false
 
 [routes.undeclared]
 id = "undeclared"
@@ -2648,7 +2644,7 @@ type = "passthrough"
 target = "shared"
 "#;
     let app = build_switchyard_router(load_test_config(CONFIG)?);
-    let models = send(&app, "GET", "/v1/models", None).await?;
+    let models = send(&app, "GET", "/v1/models?client_version=0.152.0", None).await?;
     assert_eq!(models.status, StatusCode::OK);
     let body = models.json()?;
     let data = body["data"].as_array().cloned().unwrap_or_default();
@@ -2664,108 +2660,11 @@ target = "shared"
     assert_eq!(capabilities["undeclared"]["context_window"], json!(null));
     assert_eq!(capabilities["undeclared"]["tool_calling"], json!(null));
 
+    assert_eq!(capabilities["declared"]["vision"], json!(true));
+    assert_eq!(capabilities["restricted"]["vision"], json!(false));
+    assert_eq!(capabilities["undeclared"]["vision"], json!(null));
     assert_eq!(body["models"], json!([]));
 
-    let template = "{{ model_id }} <&> {{ context_window }} {{ tool_calling }} {{ reasoning }} {{ vision }}  \n";
-    let state = load_test_config(CONFIG)?.with_codex_system_template(template)?;
-    let body = send(
-        &build_switchyard_router(state),
-        "GET",
-        "/v1/models?client_version=0.152.0",
-        None,
-    )
-    .await?
-    .json()?;
-    assert_eq!(body["data"], json!(data));
-
-    let codex_models = body["models"].as_array().cloned().unwrap_or_default();
-    let codex_metadata = codex_models
-        .iter()
-        .filter_map(|entry| entry["slug"].as_str().map(|slug| (slug, entry)))
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(codex_metadata.len(), 4);
-    for (id, expected) in [
-        ("declared", "declared <&> 1000000 True None None  \n"),
-        ("reasoning", "reasoning <&> None None True None  \n"),
-        ("restricted", "restricted <&> 262000 False None None  \n"),
-        ("undeclared", "undeclared <&> None None None None  \n"),
-    ] {
-        assert_eq!(codex_metadata[id]["base_instructions"], expected);
-    }
-    assert_eq!(
-        codex_metadata["declared"]["context_window"],
-        json!(1_000_000)
-    );
-    assert_eq!(codex_metadata["declared"]["shell_type"], "shell_command");
-    assert_eq!(
-        codex_metadata["declared"]["apply_patch_tool_type"],
-        "freeform"
-    );
-    // Constant fields Codex requires: a typo here would fail its decode, so pin them.
-    assert_eq!(codex_metadata["declared"]["visibility"], "list");
-    assert_eq!(codex_metadata["declared"]["supported_in_api"], json!(true));
-    assert_eq!(codex_metadata["declared"]["web_search_tool_type"], "text");
-    assert_eq!(
-        codex_metadata["declared"]["input_modalities"],
-        json!(["text"])
-    );
-    assert_eq!(
-        codex_metadata["declared"]["truncation_policy"],
-        json!({"mode": "tokens", "limit": 10_000})
-    );
-    assert_eq!(
-        codex_metadata["restricted"]["context_window"],
-        json!(262_000)
-    );
-    assert_eq!(codex_metadata["restricted"]["shell_type"], "disabled");
-    assert_eq!(
-        codex_metadata["restricted"]["apply_patch_tool_type"],
-        json!(null)
-    );
-    // A reasoning route advertises the effort presets and reasoning controls.
-    assert_eq!(
-        codex_metadata["reasoning"]["default_reasoning_level"],
-        "xhigh"
-    );
-    assert_eq!(
-        codex_metadata["reasoning"]["supported_reasoning_levels"]
-            .as_array()
-            .map(Vec::len),
-        Some(4)
-    );
-    assert_eq!(
-        codex_metadata["reasoning"]["supports_reasoning_summaries"],
-        json!(true)
-    );
-    assert_eq!(
-        codex_metadata["reasoning"]["support_verbosity"],
-        json!(true)
-    );
-    assert_eq!(codex_metadata["reasoning"]["default_verbosity"], "low");
-    // An undeclared route: null context window, non-reasoning, but tools default on so Codex
-    // remains usable when connected directly to the server.
-    assert_eq!(codex_metadata["undeclared"]["context_window"], json!(null));
-    assert_eq!(
-        codex_metadata["undeclared"]["supported_reasoning_levels"],
-        json!([])
-    );
-    assert_eq!(
-        codex_metadata["undeclared"]["default_reasoning_level"],
-        json!(null)
-    );
-    assert_eq!(
-        codex_metadata["undeclared"]["supports_reasoning_summaries"],
-        json!(false)
-    );
-    assert_eq!(codex_metadata["undeclared"]["shell_type"], "shell_command");
-    assert_eq!(
-        codex_metadata["undeclared"]["apply_patch_tool_type"],
-        "freeform"
-    );
-    assert_eq!(
-        codex_metadata["undeclared"]["supports_parallel_tool_calls"],
-        json!(true)
-    );
     Ok(())
 }
 
@@ -4384,80 +4283,5 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
             .and_then(|value| value.to_str().ok()),
         Some("model/a")
     );
-    Ok(())
-}
-
-// Verifies a route declaring `vision = true` advertises image input, and that an
-// undeclared route still fails closed to text-only.
-//
-// This is not cosmetic metadata. Codex reads `input_modalities` from the model card
-// and, when it reads text-only, replaces an attached image with the literal text
-// "image content omitted because you do not support image input" before sending — so
-// a route whose target can see but which does not say so loses the image in the
-// client, and Switchyard never receives one to forward.
-#[tokio::test]
-async fn models_endpoint_advertises_image_input_only_for_vision_routes() -> TestResult {
-    const CONFIG: &str = r#"
-schema_version = 1
-
-[llm_clients.shared]
-format = "openai_responses"
-base_url = "http://127.0.0.1:1/v1"
-
-[targets.shared]
-id = "shared-model"
-llm_client = "shared"
-
-[routes.sees]
-id = "sees"
-type = "passthrough"
-target = "shared"
-vision = true
-
-[routes.blind]
-id = "blind"
-type = "passthrough"
-target = "shared"
-"#;
-    let app = build_switchyard_router(
-        load_test_config(CONFIG)?
-            .with_codex_system_template("Custom instructions for {{ model_id }}.")?,
-    );
-    let models = send(&app, "GET", "/v1/models", None).await?;
-    assert_eq!(models.status, StatusCode::OK);
-    let body = models.json()?;
-
-    let codex_metadata = body["models"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|entry| {
-            entry["slug"]
-                .as_str()
-                .map(|slug| (slug.to_string(), entry.clone()))
-        })
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(
-        codex_metadata["sees"]["input_modalities"],
-        json!(["text", "image"])
-    );
-    assert_eq!(codex_metadata["blind"]["input_modalities"], json!(["text"]));
-
-    // The OpenAI `data` entry reports the raw Option, so an undeclared route stays
-    // distinguishable from one that declared `false`.
-    let capabilities = body["data"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|entry| {
-            entry["id"]
-                .as_str()
-                .map(|id| (id.to_string(), entry["capabilities"].clone()))
-        })
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(capabilities["sees"]["vision"], json!(true));
-    assert_eq!(capabilities["blind"]["vision"], json!(null));
     Ok(())
 }

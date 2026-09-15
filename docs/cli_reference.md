@@ -20,7 +20,6 @@ switchyard-server --config <deployment.toml> [options]
 | `--shutdown-timeout SHUTDOWN_TIMEOUT` | `30s` | Maximum time active requests may drain during shutdown. |
 | `--dry-run` | Off | Validate the deployment without binding a socket. |
 | `--routing-log-file PATH` | None | Append durable per-request routing records to this JSONL file. |
-| `--codex-system-template PATH` | None | Publish custom Codex model records from a UTF-8 Jinja system template, rendered once per route at startup. Without this option, Codex keeps its bundled catalog and instructions. See [Codex model discovery](../crates/switchyard-server/README.md#codex-model-discovery) for an example and the available variables. |
 | `--tls-cert PATH` | None | PEM certificate path; requires `--tls-key`. |
 | `--tls-key PATH` | None | PEM private-key path; requires `--tls-cert`. |
 | `-h, --help` | — | Print command help. |

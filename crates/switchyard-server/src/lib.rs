@@ -34,7 +34,6 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use libsy::{LibsyError, RoutingOutcome};
-use minijinja::{AutoEscape, Environment, UndefinedBehavior};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -88,7 +87,6 @@ fn should_forward_upstream_header(name: &HeaderName) -> bool {
 /// Non-standard status used only in logs and metrics for a request whose
 /// downstream client disconnected before any response was written.
 const CLIENT_CLOSED_REQUEST: u16 = 499;
-
 const STARTUP_BANNER_ART: &str = include_str!("../assets/startup_banner.txt");
 
 /// Error returned while configuring or running the server.
@@ -164,7 +162,6 @@ pub struct ServerState {
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
-    codex_models: Arc<[Value]>,
 }
 
 #[derive(Clone)]
@@ -220,86 +217,12 @@ impl ServerState {
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
-            codex_models: Arc::from([]),
         })
     }
 
     /// Enables durable per-request routing records at `path`.
     pub fn with_routing_log(mut self, path: impl Into<PathBuf>) -> ServerResult<Self> {
         self.routing_log = Some(SharedRoutingLog::new(path.into())?);
-        Ok(self)
-    }
-
-    /// Publishes custom Codex records by rendering a Jinja system template per route.
-    ///
-    /// The context contains `model_id`, `context_window`, `tool_calling`, `reasoning`,
-    /// and `vision`. Undeclared capabilities are `none`. Returns an error if no routes
-    /// are configured, or for invalid syntax, rendering failures, or blank instructions
-    /// for any route. Also checks undeclared names reported by MiniJinja.
-    pub fn with_codex_system_template(mut self, source: &str) -> ServerResult<Self> {
-        let mut models = self.runner.models().collect::<Vec<_>>();
-        if models.is_empty() {
-            return Err(ServerError::new(
-                "cannot use a Codex system template without configured routes",
-            ));
-        }
-        let mut environment = Environment::new();
-        environment.set_undefined_behavior(UndefinedBehavior::Strict);
-        environment.set_auto_escape_callback(|_| AutoEscape::None);
-        environment.set_keep_trailing_newline(true);
-        let template = environment
-            .template_from_named_str("codex-system-template", source)
-            .map_err(|error| ServerError::new(format!("invalid Codex system template: {error}")))?;
-        // Check names reported by MiniJinja before rendering each route.
-        let mut unknown_variables = template
-            .undeclared_variables(false)
-            .into_iter()
-            .filter(|name| {
-                !matches!(
-                    name.as_str(),
-                    "model_id" | "context_window" | "tool_calling" | "reasoning" | "vision"
-                ) && !environment.globals().any(|(global, _)| global == name)
-            })
-            .collect::<Vec<_>>();
-        if !unknown_variables.is_empty() {
-            unknown_variables.sort();
-            return Err(ServerError::new(format!(
-                "unknown Codex system template variables: {}",
-                unknown_variables.join(", ")
-            )));
-        }
-        models.sort_unstable_by_key(|model| model.id.as_str());
-        let mut records = Vec::with_capacity(models.len());
-        for (priority, model) in models.into_iter().enumerate() {
-            let capabilities = model.capabilities;
-            let instructions = template
-                .render(json!({
-                    "model_id": model.id.as_str(),
-                    "context_window": capabilities.context_window,
-                    "tool_calling": capabilities.tool_calling,
-                    "reasoning": capabilities.reasoning,
-                    "vision": capabilities.vision,
-                }))
-                .map_err(|error| {
-                    ServerError::new(format!(
-                        "cannot render Codex system template for model '{}': {error}",
-                        model.id
-                    ))
-                })?;
-            if instructions.trim().is_empty() {
-                return Err(ServerError::new(format!(
-                    "Codex system template renders blank instructions for model '{}'",
-                    model.id
-                )));
-            }
-            records.push(codex_model_entry_json(
-                model.id.as_str(),
-                capabilities,
-                priority,
-                &instructions,
-            ));
-        }
-        self.codex_models = records.into();
         Ok(self)
     }
 
@@ -1474,7 +1397,6 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
             .runner
             .models()
             .map(|model| (model.id.as_str(), model.capabilities)),
-        &state.codex_models,
     ))
 }
 
@@ -1557,7 +1479,6 @@ async fn not_found() -> Response {
 
 fn model_list_payload<'a>(
     entries: impl IntoIterator<Item = (&'a str, ModelCapabilities)>,
-    codex_models: &[Value],
 ) -> Value {
     let mut entries = entries.into_iter().collect::<Vec<_>>();
     entries.sort_unstable_by_key(|(model_id, _)| *model_id);
@@ -1567,8 +1488,8 @@ fn model_list_payload<'a>(
     json!({
         "object": "list",
         "data": entries.iter().map(|(model, caps)| model_entry_json(model, *caps)).collect::<Vec<_>>(),
-        // Keep this key even when empty: Codex rejects a response without it.
-        "models": codex_models,
+        // Codex requires this key; an empty list preserves its own catalog and instructions.
+        "models": [],
         "first_id": first_id,
         "last_id": last_id,
         "has_more": false,
@@ -1597,86 +1518,6 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
             ],
         },
     })
-}
-
-// Builds the metadata Codex requires when it discovers models from a direct provider.
-//
-// This mirrors Codex's `ModelInfo` card. The benchmark harness builds the same card in
-// `benchmark/codex_model_catalog_lib.py`; keep the two in sync when Codex changes
-// the shape. Every field below is either derived from the route's declared capabilities or a
-// required `ModelInfo` field the server has no better value for.
-//
-// Two kinds of fields live here. context_window, tool_calling, and reasoning are model
-// facts a backend can publish; the route declares them in config today. The rest
-// (shell_type, apply_patch_tool_type, the reasoning-level presets, truncation_policy) are
-// Codex client conventions no backend returns, so they stay constant. `base_instructions`
-// is rendered from the operator's explicit template. Codex uses it as the system prompt.
-//
-// TODO: source context_window, tool_calling, and reasoning from the backend, not route
-// config. Switchyard is a proxy, so it should re-publish what the backend advertises
-// when it can — OpenRouter's /api/v1/models exposes context_length and
-// supported_parameters — and fall back to the route's declared value. Some backends
-// publish nothing (the NVIDIA gateway returns id-only models and blocks /model/info),
-// so keep failing closed to config.
-fn codex_model_entry_json(
-    model: &str,
-    capabilities: ModelCapabilities,
-    priority: usize,
-    base_instructions: &str,
-) -> Value {
-    // Codex is non-functional without shell and apply_patch, so an undeclared tool
-    // capability defaults to enabled here; the OpenAI `data` entry reports the raw
-    // Option separately for clients that want the undeclared state.
-    let tool_calling = capabilities.tool_calling.unwrap_or(true);
-    let reasoning = capabilities.reasoning.unwrap_or(false);
-    json!({
-        "slug": model,
-        "display_name": model,
-        "description": "Switchyard-routed model.",
-        "default_reasoning_level": if reasoning { json!("xhigh") } else { Value::Null },
-        "supported_reasoning_levels": if reasoning { reasoning_levels() } else { json!([]) },
-        "shell_type": if tool_calling { "shell_command" } else { "disabled" },
-        "visibility": "list",
-        "supported_in_api": true,
-        // Catalog list position (routes are listed in sorted id order), not a quality rank.
-        "priority": priority,
-        "additional_speed_tiers": [],
-        "availability_nux": null,
-        "upgrade": null,
-        "base_instructions": base_instructions,
-        "supports_reasoning_summaries": reasoning,
-        "default_reasoning_summary": "none",
-        "support_verbosity": reasoning,
-        "default_verbosity": if reasoning { json!("low") } else { Value::Null },
-        "apply_patch_tool_type": if tool_calling { Some("freeform") } else { None },
-        "web_search_tool_type": "text",
-        "truncation_policy": {"mode": "tokens", "limit": 10_000},
-        "supports_parallel_tool_calls": tool_calling,
-        "supports_image_detail_original": false,
-        "context_window": capabilities.context_window,
-        "max_context_window": capabilities.context_window,
-        "effective_context_window_percent": 95,
-        "experimental_supported_tools": [],
-        // Codex omits an attached image client-side when this says text-only, so a
-        // route whose target can see must declare `vision = true`. Fails closed.
-        "input_modalities": if capabilities.vision.unwrap_or(false) {
-            json!(["text", "image"])
-        } else {
-            json!(["text"])
-        },
-        "supports_search_tool": false,
-    })
-}
-
-// The reasoning-effort presets Codex offers for a reasoning-capable route. Kept in
-// step with the benchmark template in `codex_model_catalog_lib.py`.
-fn reasoning_levels() -> Value {
-    json!([
-        {"effort": "low", "description": "Fast responses with lighter reasoning"},
-        {"effort": "medium", "description": "Balances speed and reasoning depth"},
-        {"effort": "high", "description": "Greater reasoning depth"},
-        {"effort": "xhigh", "description": "Extra high reasoning depth"},
-    ])
 }
 
 fn startup_banner(options: &ServerRunOptions, state: &ServerState, color: bool) -> String {

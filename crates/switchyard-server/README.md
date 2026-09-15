@@ -144,61 +144,15 @@ handoff notes, per-tier system prompts, and a capability-judge fallback are docu
 
 ## Codex model discovery
 
-By default, `GET /v1/models` returns the standard `data` list and an empty Codex
-`models` list. Codex keeps its bundled model catalog and instructions. Switchyard route
-aliases remain usable through explicit model selection, such as `codex --model route-id`,
-but do not appear automatically in Codex's model picker. For names it does not recognize,
-Codex uses its own generic defaults; it does not receive Switchyard's custom context limits
-or tool settings.
+`GET /v1/models` returns the standard `data` list and an empty Codex `models` list.
+Codex keeps its own model catalog and instructions. Select a Switchyard route explicitly
+with `codex --model route-id`; route aliases do not appear automatically in Codex's model
+picker. Unknown aliases use Codex's generic defaults and do not receive Switchyard's
+route-specific context limits or tool settings.
 
-**Custom Codex model records require an explicit system template.** Set
-`--codex-system-template PATH` to publish a record for each route. Switchyard renders the
-UTF-8 template once per route at startup and sends the result as `base_instructions`.
-This is the complete replacement prompt for those records, including their tool-use
-instructions. It does not inherit or append Codex's bundled prompt.
-
-Save this minimal example as `codex-system.jinja` and adapt it for your models:
-
-```jinja
-You are a coding assistant working through route {{ model_id }}.
-Read the relevant code before editing. Verify changes with focused checks.
-{% if tool_calling is true %}
-Use the available tools to inspect files, make changes, and run checks.
-{% endif %}
-{% if context_window is not none %}
-The route advertises a context window of {{ context_window }} tokens.
-{% endif %}
-```
-
-```bash
-switchyard-server --config routes.toml --codex-system-template codex-system.jinja
-```
-
-Switchyard renders [MiniJinja syntax](https://docs.rs/minijinja/2.24.0/minijinja/syntax/index.html),
-including expressions, conditionals, loops, and built-in filters. These variables describe
-the configured route:
-
-| Variable | Value |
-|---|---|
-| `model_id` | Public route ID from `/v1/models`, not the backend model selected later. |
-| `context_window` | Declared context limit in tokens, or `none`. |
-| `tool_calling` | Declared tool support: `true`, `false`, or `none`. |
-| `reasoning` | Declared reasoning support: `true`, `false`, or `none`. |
-| `vision` | Declared image support: `true`, `false`, or `none`. |
-
-Use `is true`, `is false`, or `is none` to distinguish supported, unsupported, and undeclared
-capabilities. The template has no access to Codex personality settings, session data,
-conversation messages, or environment variables. File includes and template imports are
-not supported.
-
-Startup rejects unreadable or invalid UTF-8 files, invalid syntax, rendering errors, and
-instructions that render as only whitespace for any route. It also checks undeclared names
-reported by MiniJinja. Using a template requires at least one configured route; without a
-template, an empty route configuration is valid.
-
-Rendered text preserves whitespace and does not use HTML escaping. Restart the server after
-editing the template. Existing Codex sessions may retain earlier instructions; use a fresh
-session when checking a changed template.
+To add instructions for a target, set `system_prompt` on its `[targets.<name>]` entry.
+Switchyard prepends that text when the selected target serves a completion and retains
+the caller's instructions. Omit the setting to add no target instructions.
 
 ## Endpoints
 

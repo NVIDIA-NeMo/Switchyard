@@ -52,12 +52,6 @@ pub(crate) struct ServerArgs {
     #[arg(long, value_name = "PATH")]
     routing_log_file: Option<PathBuf>,
 
-    /// Publish custom Codex model records using this UTF-8 Jinja system template.
-    /// Render once per route at startup. Without this option, Codex keeps its
-    /// bundled model catalog and instructions.
-    #[arg(long, value_name = "PATH")]
-    codex_system_template: Option<PathBuf>,
-
     /// TLS certificate path in PEM format.
     #[arg(long, requires = "tls_key")]
     tls_cert: Option<PathBuf>,
@@ -77,15 +71,6 @@ impl ServerArgs {
         let mut state = load_server_state(&self.config)?;
         if let Some(path) = self.routing_log_file {
             state = state.with_routing_log(path)?;
-        }
-        if let Some(path) = self.codex_system_template {
-            let text = std::fs::read_to_string(&path).map_err(|error| {
-                ServerError::new(format!(
-                    "invalid --codex-system-template {}: {error}",
-                    path.display()
-                ))
-            })?;
-            state = state.with_codex_system_template(&text)?;
         }
         let tls = match (self.tls_cert, self.tls_key) {
             (Some(cert), Some(key)) => {

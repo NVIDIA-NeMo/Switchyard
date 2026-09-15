@@ -62,10 +62,9 @@ inside the TOML file. Their `id` fields have different external meanings:
 
 The server lists route IDs on `GET /v1/models`. A request selects a route by
 putting that ID in its `model` field. The native Rust server does not discover
-or register additional provider models automatically. The same response also
-carries a Codex-compatible `models` array so Codex can use the server as a direct
-provider; each entry reflects the route's declared context window, tool support,
-and reasoning.
+or register additional provider models automatically. The response includes an empty
+Codex `models` array so Codex keeps its own catalog and instructions. Select route
+aliases explicitly; they do not appear automatically in Codex's model picker.
 
 ## Routing Algorithms
 

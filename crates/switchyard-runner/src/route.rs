@@ -14,27 +14,17 @@ use thiserror::Error;
 
 use crate::DecisionTarget;
 
-/// Capabilities that one route advertises on `GET /v1/models`.
+/// Capabilities declared for one route.
 ///
-/// An unset capability is undeclared: it serializes as `null` in the OpenAI
-/// `data` entry, and the Codex entry falls back to a safe default for it.
+/// `GET /v1/models` includes `context_window`, `tool_calling`, and `vision` in each
+/// standard `data` entry, using `null` for unset values. `reasoning` remains route metadata.
 #[derive(Clone, Copy, Default)]
 pub struct ModelCapabilities {
     pub context_window: Option<u32>,
     pub tool_calling: Option<bool>,
-    /// Whether the routed model takes reasoning controls. A serving surface cannot
-    /// probe this, so a route opts in via config; undeclared routes advertise as
-    /// non-reasoning to Codex (fail closed).
+    /// Whether the routed model accepts reasoning controls, as declared in config.
     pub reasoning: Option<bool>,
-    /// Whether the routed model accepts image input. Declared per route for the same
-    /// reason as `reasoning`, and failing closed matters more here: a route may
-    /// resolve to a target with no vision at all.
-    ///
-    /// This is not cosmetic metadata. Codex reads `input_modalities` from the model
-    /// card and, when it reads text-only, replaces an attached image with the literal
-    /// text `image content omitted because you do not support image input` *before
-    /// sending*. An undeclared vision-capable route therefore loses the image in the
-    /// client, and the proxy never receives one to forward.
+    /// Whether the routed model accepts image input, as declared in config.
     pub vision: Option<bool>,
 }
 
