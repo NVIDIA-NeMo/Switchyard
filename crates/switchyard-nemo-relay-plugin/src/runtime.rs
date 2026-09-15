@@ -23,6 +23,7 @@ use crate::config::SwitchyardConfig;
 use crate::translation;
 
 const ROUTING_MARK_SCHEMA_VERSION: &str = "1";
+const MAX_EVIDENCE_STRING_BYTES: usize = 64;
 
 #[derive(Debug)]
 pub(crate) struct RoutingMark {
@@ -68,6 +69,11 @@ pub(crate) type RoutingEventEmitter = Arc<dyn Fn(RoutingEvent) + Send + Sync>;
 pub(crate) struct Execution<T> {
     pub(crate) result: Result<T, String>,
     pub(crate) events: Vec<RoutingEvent>,
+}
+
+struct RoutedResponse {
+    response: Response,
+    outcome_fields: Map<String, Json>,
 }
 
 pub(crate) struct SwitchyardRuntime {
@@ -122,11 +128,11 @@ impl SwitchyardRuntime {
         let request_extensions = request.llm_request.extensions.clone();
         let Execution { result, mut events } = self.execute(inbound, request).await;
         let (result, finalization_failed) = match result {
-            Ok(response) => {
+            Ok(routed) => {
                 let result = finalize_buffered_response(
                     &self.translation,
                     inbound,
-                    response,
+                    routed.response,
                     &request_extensions,
                 );
                 let failed = result.is_err();
@@ -149,7 +155,7 @@ impl SwitchyardRuntime {
         let request_extensions = request.llm_request.extensions.clone();
         let Execution { result, mut events } = self.execute(inbound, request).await;
         let (result, finalization_failed) = match result {
-            Ok(response) => {
+            Ok(routed) => {
                 let metadata = events
                     .iter()
                     .find_map(|event| match event {
@@ -157,8 +163,14 @@ impl SwitchyardRuntime {
                         RoutingEvent::Metric(_) => None,
                     })
                     .unwrap_or_else(|| Json::Object(Map::new()));
-                let result =
-                    returned_events(response, inbound, &request_extensions, metadata, emit_event);
+                let result = returned_events(
+                    routed.response,
+                    inbound,
+                    &request_extensions,
+                    metadata,
+                    routed.outcome_fields,
+                    emit_event,
+                );
                 let failed = result.is_err();
                 (result, failed)
             }
@@ -170,7 +182,7 @@ impl SwitchyardRuntime {
         Execution { result, events }
     }
 
-    async fn execute(&self, inbound: WireFormat, request: Request) -> Execution<Response> {
+    async fn execute(&self, inbound: WireFormat, request: Request) -> Execution<RoutedResponse> {
         let Some(route) = self.route(&request) else {
             return Execution {
                 result: Err("Switchyard has no route for this request model".into()),
@@ -202,12 +214,13 @@ impl SwitchyardRuntime {
         });
         match route.execute(request, Some(observer)).await {
             Ok(output) => {
-                let mut outcome_fields = self.emit_observations(
+                let outcome_fields = self.emit_observations(
                     &mut events,
                     take_observations(&observations),
                     &metadata,
                 );
                 let served_model = output.response.served_model().map(|model| model.as_str());
+                let mut decision_outcome_fields = outcome_fields.clone();
                 let mut data = json!({
                     "algorithm": route.algorithm_name(),
                     "selected_model": output.selected_model.as_str(),
@@ -216,7 +229,7 @@ impl SwitchyardRuntime {
                         .map(|model| model != output.selected_model.as_str()),
                 });
                 if let Json::Object(data) = &mut data {
-                    data.append(&mut outcome_fields);
+                    data.append(&mut decision_outcome_fields);
                 }
                 events.push(RoutingEvent::Mark(RoutingMark {
                     name: "switchyard.routing.decision".into(),
@@ -225,7 +238,10 @@ impl SwitchyardRuntime {
                     severity: Some(LogSeverity::Info),
                 }));
                 Execution {
-                    result: Ok(output.response),
+                    result: Ok(RoutedResponse {
+                        response: output.response,
+                        outcome_fields,
+                    }),
                     events,
                 }
             }
@@ -375,12 +391,15 @@ impl SwitchyardRuntime {
     }
 }
 
+/// Keeps supported telemetry fields while rejecting wrong types and overlong string values.
 fn evidence_for_mark(evidence: Option<Json>) -> Option<Json> {
     let Some(Json::Object(mut evidence)) = evidence else {
         return None;
     };
     evidence.retain(|name, value| match name.as_str() {
-        "source" | "verdict" | "trigger" | "reason_code" => value.is_string(),
+        "source" | "verdict" | "trigger" | "reason_code" => value
+            .as_str()
+            .is_some_and(|value| value.len() <= MAX_EVIDENCE_STRING_BYTES),
         "score" | "confidence" | "threshold" => value.is_number(),
         _ => false,
     });
@@ -441,6 +460,7 @@ fn returned_events(
     inbound: WireFormat,
     request_extensions: &ProviderExtensions,
     metadata: Json,
+    mut outcome_fields: Map<String, Json>,
     emit_event: RoutingEventEmitter,
 ) -> Result<ReturnedEventStream, String> {
     let served_model = response.served_model().cloned();
@@ -466,7 +486,7 @@ fn returned_events(
             for event in route_execution_error_events(
                 &stream_error_summary(error, served_model.as_ref()),
                 metadata.clone(),
-                Map::new(),
+                std::mem::take(&mut outcome_fields),
             ) {
                 emit_event(event);
             }
@@ -1171,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn decision_evidence_keeps_only_documented_typed_fields() {
+    fn decision_evidence_keeps_only_documented_bounded_fields() {
         let evidence = evidence_for_mark(Some(json!({
             "source": "llm-classifier",
             "score": 0.9,
@@ -1179,9 +1199,9 @@ mod tests {
             "threshold": 0.5,
             "verdict": "continue",
             "trigger": "turn",
-            "reason_code": "test",
-            "unknown": "patient name is Jane Doe",
-            "prompt": {"secret": "do not export"},
+            "reason_code": "x".repeat(MAX_EVIDENCE_STRING_BYTES + 1),
+            "unknown": "ignored",
+            "prompt": {"text": "ignored"},
         })));
 
         assert_eq!(
@@ -1192,7 +1212,6 @@ mod tests {
                 "threshold": 0.5,
                 "verdict": "continue",
                 "trigger": "turn",
-                "reason_code": "test",
             }))
         );
     }
@@ -1434,6 +1453,7 @@ mod tests {
             WireFormat::OpenAiChat,
             &ProviderExtensions::default(),
             json!({"session_id": "session"}),
+            Map::new(),
             Arc::new(move |event| emitted.lock().unwrap().push(event)),
         )
         .expect("stream setup should succeed");
@@ -1486,6 +1506,7 @@ mod tests {
             WireFormat::OpenAiChat,
             &ProviderExtensions::default(),
             json!({}),
+            Map::new(),
             Arc::new(move |event| emitted.lock().unwrap().push(event)),
         )
         .expect("stream setup should succeed");
@@ -1515,11 +1536,16 @@ mod tests {
         };
         let captured = Arc::new(Mutex::new(Vec::new()));
         let emitted = Arc::clone(&captured);
+        // Routing has completed before this response stream reports its failure.
         let stream = returned_events(
             response,
             WireFormat::OpenAiChat,
             &ProviderExtensions::default(),
             json!({"session_id": "session"}),
+            Map::from_iter([
+                ("outcome_id".into(), json!("outcome-test")),
+                ("evidence".into(), json!({"source": "fall_open"})),
+            ]),
             Arc::new(move |mark| emitted.lock().unwrap().push(mark)),
         )
         .expect("stream setup should succeed");
@@ -1540,6 +1566,8 @@ mod tests {
         assert_eq!(mark.data["category"], "context_window_exceeded");
         assert_eq!(mark.data["phase"], "during_stream");
         assert_eq!(mark.data["target"], "strong");
+        assert_eq!(mark.data["outcome_id"], "outcome-test");
+        assert_eq!(mark.data["evidence"], json!({"source": "fall_open"}));
         assert_eq!(mark.severity, Some(LogSeverity::Error));
         assert!(!mark.data.to_string().contains(secret));
         let RoutingEvent::Metric(metric) = &events[1] else {
@@ -1578,6 +1606,7 @@ mod tests {
             WireFormat::OpenAiChat,
             &ProviderExtensions::default(),
             json!({"session_id": "session"}),
+            Map::new(),
             Arc::new(move |event| emitted.lock().unwrap().push(event)),
         )
         .expect("stream setup should succeed");

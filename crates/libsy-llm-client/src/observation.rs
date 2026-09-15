@@ -22,7 +22,7 @@ pub struct LlmCallObservation {
     pub usage: Option<Usage>,
 }
 
-/// One request-scoped observation emitted by the algorithm runner.
+/// A request-scoped observation emitted inline while serving an algorithm run.
 #[derive(Clone, Debug)]
 pub enum RunObservation {
     /// Metadata attached to the completed routing outcome.

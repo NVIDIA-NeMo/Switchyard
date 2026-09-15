@@ -1211,6 +1211,7 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
         Some(Some(MODEL))
     );
     let observations = observations.lock();
+    // Outcome metadata precedes the answer call and final overhead observation.
     assert_eq!(observations.len(), 3);
     let RunObservation::Outcome(metadata) = &observations[0] else {
         return Err(test_error("expected an outcome observation"));
