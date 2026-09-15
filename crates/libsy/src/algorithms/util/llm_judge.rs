@@ -8,6 +8,7 @@
 //! the route.
 
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -17,6 +18,7 @@ use switchyard_protocol::{
     completion_text,
 };
 
+use super::DEFAULT_JUDGE_TIMEOUT_MS;
 use super::robustness::{safe_client_error, safe_error_summary};
 
 use super::classifier_contract::ClassifierContract;
@@ -106,16 +108,25 @@ impl VerdictDecoder for JsonSchemaDecoder {
 /// Runtime limits shared by structured classifier judges.
 pub(crate) struct JudgeRuntimeConfig {
     max_output_tokens: u64,
+    timeout: Duration,
 }
 
 impl JudgeRuntimeConfig {
-    pub(crate) fn new(max_output_tokens: u64) -> Result<Self> {
+    pub(crate) fn new(max_output_tokens: u64, timeout_ms: u64) -> Result<Self> {
         if max_output_tokens == 0 {
             return Err(LibsyError::AlgorithmError {
                 message: "max_output_tokens must be at least 1".to_string(),
             });
         }
-        Ok(Self { max_output_tokens })
+        if timeout_ms == 0 {
+            return Err(LibsyError::AlgorithmError {
+                message: "timeout_ms must be at least 1".to_string(),
+            });
+        }
+        Ok(Self {
+            max_output_tokens,
+            timeout: Duration::from_millis(timeout_ms),
+        })
     }
 }
 
@@ -180,6 +191,10 @@ where
     fn parse(&self, response: &AggLlmResponse) -> Result<Self::Verdict> {
         self.decoder.decode(response, &self.contract)
     }
+
+    fn timeout(&self) -> Duration {
+        self.runtime.timeout
+    }
 }
 
 /// Builds and parses requests for one algorithm-specific LLM judge.
@@ -190,6 +205,11 @@ pub trait Judge: Send + Sync {
 
     fn parse(&self, response: &AggLlmResponse) -> Result<Self::Verdict> {
         parse_json_verdict(response)
+    }
+
+    /// How long one judge call may take, retries included, before the route goes on without it.
+    fn timeout(&self) -> Duration {
+        Duration::from_millis(DEFAULT_JUDGE_TIMEOUT_MS)
     }
 }
 
@@ -258,9 +278,9 @@ where
     ///
     /// A judge is an optimization, not a dependency: failing the caller's request because the
     /// judge is down would be worse than routing without it, so every failure — transport,
-    /// mid-stream, or unparseable reply — is logged and folded into `None` for the policy's
-    /// fallback branch. A closed driver stream is folded too; the algorithm's next driver
-    /// call surfaces it, so nothing is masked.
+    /// mid-stream, unparseable reply, or no reply within [`Judge::timeout`] — is logged and
+    /// folded into `None` for the policy's fallback branch. A closed driver stream is folded
+    /// too; the algorithm's next driver call surfaces it, so nothing is masked.
     async fn verdict(
         &self,
         state: &mut State,
@@ -271,12 +291,22 @@ where
         let judge_model = judge_models.first()?.as_str();
 
         tracing::info!(target = judge_model, "consulting llm judge");
-        let response = driver
-            .call_model(
-                self.judge.build_request(state, request),
-                judge_models.to_vec(),
-            )
-            .await
+        let deadline = self.judge.timeout();
+        let call = driver.call_model(
+            self.judge.build_request(state, request),
+            judge_models.to_vec(),
+        );
+        // Dropping the call abandons the host's in-flight request; the host tolerates the
+        // orphaned reply and `drive` cancels it once the run finishes.
+        let Ok(response) = tokio::time::timeout(deadline, call).await else {
+            self.report_fail_open(
+                driver,
+                format!("no verdict within {} ms", deadline.as_millis()),
+                "timeout",
+            );
+            return None;
+        };
+        let response = response
             .inspect_err(|error| {
                 self.report_fail_open(driver, safe_error_summary(error), libsy_error_reason(error));
             })

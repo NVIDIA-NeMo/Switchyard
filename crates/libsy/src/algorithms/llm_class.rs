@@ -13,7 +13,6 @@ use switchyard_protocol::{Category, ContentBlock, Message, Role};
 
 use super::escalation;
 use super::fall_through::FallThrough;
-use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
 use super::util::affinity::{AffinityRouter, ClassifyTrigger};
 use super::util::classifier_contract::{
     ClassifierContract, ClassifierContractConfig, ClassifierResponseFormat,
@@ -24,6 +23,7 @@ use super::util::llm_judge::{
     SerdeDecoder, StructuredJudge,
 };
 use super::util::target_selector::TargetSelectorPolicy;
+use super::util::{DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, DEFAULT_JUDGE_TIMEOUT_MS};
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::State;
@@ -301,6 +301,9 @@ pub struct TaskClassifierConfig {
     pub contract: ClassifierContractConfig,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
+    /// Deadline in milliseconds for one judge call, retries included; past it the route
+    /// continues without a verdict.
+    pub timeout_ms: u64,
 }
 
 /// Flat serialized shape that maps prompt settings into the runtime contract.
@@ -322,6 +325,8 @@ struct TaskClassifierConfigWire {
     response_format_type: ClassifierResponseFormat,
     #[serde(default = "default_judge_max_output_tokens")]
     max_output_tokens: u64,
+    #[serde(default = "default_judge_timeout_ms")]
+    timeout_ms: u64,
 }
 
 impl<'de> Deserialize<'de> for TaskClassifierConfig {
@@ -343,12 +348,17 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
             recent_turn_window: wire.recent_turn_window,
             contract,
             max_output_tokens: wire.max_output_tokens,
+            timeout_ms: wire.timeout_ms,
         })
     }
 }
 
 const fn default_judge_max_output_tokens() -> u64 {
     DEFAULT_JUDGE_MAX_OUTPUT_TOKENS
+}
+
+const fn default_judge_timeout_ms() -> u64 {
+    DEFAULT_JUDGE_TIMEOUT_MS
 }
 
 impl Default for TaskClassifierConfig {
@@ -361,6 +371,7 @@ impl Default for TaskClassifierConfig {
             recent_turn_window: None,
             contract: ClassifierContractConfig::default(),
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            timeout_ms: DEFAULT_JUDGE_TIMEOUT_MS,
         }
     }
 }
@@ -392,11 +403,8 @@ impl TaskClassifierConfig {
                 ),
             });
         }
-        if self.max_output_tokens == 0 {
-            return Err(LibsyError::AlgorithmError {
-                message: "max_output_tokens must be at least 1".to_string(),
-            });
-        }
+        // The judge's runtime limits are checked by their constructor.
+        JudgeRuntimeConfig::new(self.max_output_tokens, self.timeout_ms)?;
         if self.message_hash_fallback && self.classify_trigger != ClassifyTrigger::NewSession {
             return Err(LibsyError::AlgorithmError {
                 message: "message_hash_fallback requires classify_trigger = new_session"
@@ -443,6 +451,8 @@ pub struct CustomClassifierConfig {
     pub recent_turn_window: Option<usize>,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
+    /// Deadline in milliseconds for one judge call, retries included.
+    pub timeout_ms: u64,
 }
 
 impl CustomClassifierConfig {
@@ -460,15 +470,13 @@ impl CustomClassifierConfig {
             message_hash_fallback: false,
             recent_turn_window: None,
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            timeout_ms: DEFAULT_JUDGE_TIMEOUT_MS,
         }
     }
 
     fn validate(&self) -> Result<()> {
-        if self.max_output_tokens == 0 {
-            return Err(LibsyError::AlgorithmError {
-                message: "max_output_tokens must be at least 1".to_string(),
-            });
-        }
+        // The judge's runtime limits are checked by their constructor.
+        JudgeRuntimeConfig::new(self.max_output_tokens, self.timeout_ms)?;
         if self.message_hash_fallback && self.classify_trigger != ClassifyTrigger::NewSession {
             return Err(LibsyError::AlgorithmError {
                 message: "message_hash_fallback requires classify_trigger = new_session"
@@ -570,6 +578,8 @@ pub enum LlmClassifierConfig {
         config: EscalationJudgeConfig,
         /// Maximum completion tokens available to the escalation verdict.
         max_output_tokens: u64,
+        /// Deadline in milliseconds for one escalation judge call, retries included.
+        timeout_ms: u64,
     },
     /// Routes among model categories using a user-supplied schema and policy.
     Custom {
@@ -594,7 +604,8 @@ impl LlmTaskClassifier {
                 contract,
                 config,
                 max_output_tokens,
-            } => Self::build_escalation(contract, config, max_output_tokens),
+                timeout_ms,
+            } => Self::build_escalation(contract, config, max_output_tokens, timeout_ms),
             LlmClassifierConfig::Custom {
                 default_target,
                 config,
@@ -615,7 +626,7 @@ impl LlmTaskClassifier {
                     },
                     contract,
                     SerdeDecoder::new(),
-                    JudgeRuntimeConfig::new(config.max_output_tokens)?,
+                    JudgeRuntimeConfig::new(config.max_output_tokens, config.timeout_ms)?,
                 ),
                 TaskClassifierPolicy::new(&config),
             )
@@ -641,6 +652,7 @@ impl LlmTaskClassifier {
             message_hash_fallback,
             recent_turn_window,
             max_output_tokens,
+            timeout_ms,
         } = config;
         let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
         let policy = match policy {
@@ -653,7 +665,7 @@ impl LlmTaskClassifier {
                 TaskInput { recent_turn_window },
                 contract,
                 JsonSchemaDecoder::new(),
-                JudgeRuntimeConfig::new(max_output_tokens)?,
+                JudgeRuntimeConfig::new(max_output_tokens, timeout_ms)?,
             ),
             policy,
         ));
@@ -672,8 +684,10 @@ impl LlmTaskClassifier {
         contract_config: ClassifierContractConfig,
         config: EscalationJudgeConfig,
         max_output_tokens: u64,
+        timeout_ms: u64,
     ) -> Result<Self> {
-        let inner = escalation::build_classifier(contract_config, config, max_output_tokens)?;
+        let inner =
+            escalation::build_classifier(contract_config, config, max_output_tokens, timeout_ms)?;
         Ok(Self {
             route: FallThrough::<State>::new_with_state()
                 .with_name(ALGORITHM_NAME)
@@ -749,6 +763,7 @@ impl Algorithm for LlmTaskClassifier {
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use parking_lot::Mutex;
     use serde_json::Value;
@@ -960,6 +975,49 @@ mod tests {
             unreachable_judge(),
         )
         .await?;
+
+        assert_eq!(selected_model, "capable");
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("answer from capable".to_string())
+        );
+        Ok(())
+    }
+
+    /// The judge accepts the call and never answers; every other target answers normally.
+    fn stalled_judge() -> impl Serve {
+        |model: ModelId, request: Request| async move {
+            let model = model.to_string();
+            if model == "judge" {
+                std::future::pending::<()>().await;
+            }
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(None, format!("answer from {model}"))),
+                metadata: request.metadata,
+                upstream_headers: http::HeaderMap::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stalled_judge_fails_open_at_its_deadline() -> Result<()> {
+        let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+            config: TaskClassifierConfig {
+                timeout_ms: 50,
+                ..test_config(TEST_THRESHOLD)
+            },
+        })?);
+
+        let run = test_drive_with_models(
+            router,
+            classify_request(),
+            runtime_models(),
+            stalled_judge(),
+        );
+        let (selected_model, response) =
+            tokio::time::timeout(Duration::from_secs(5), run)
+                .await
+                .map_err(|error| LibsyError::external("waiting for the judge deadline", error))??;
 
         assert_eq!(selected_model, "capable");
         assert_eq!(
@@ -1323,7 +1381,7 @@ mod tests {
             TaskInput { recent_turn_window },
             LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?,
             SerdeDecoder::new(),
-            JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?,
+            JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, DEFAULT_JUDGE_TIMEOUT_MS)?,
         ))
     }
 
@@ -1706,7 +1764,7 @@ mod tests {
             },
             contract,
             SerdeDecoder::new(),
-            JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?,
+            JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, DEFAULT_JUDGE_TIMEOUT_MS)?,
         );
 
         let verdict = judge.parse(&text_response(None, reply))?;

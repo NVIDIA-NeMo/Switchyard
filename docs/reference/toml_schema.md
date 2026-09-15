@@ -183,13 +183,14 @@ checkpoint = "/models/router.pt"
 ### `llm_classifier`
 
 Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
-`max_output_tokens` applies to all three.
+`max_output_tokens` and `timeout_ms` apply to all three.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Capability, escalation | — | Target the judge is called through. Not a routing destination. Custom mode uses `models.judge`. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+| `timeout_ms` | No | `10000` | Deadline for one judge call in milliseconds, client retries included. A judge that has not answered by then fails open: the route continues without a verdict and records `reason=timeout`. Must be at least `1`. |
 | `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
 
 Capability mode classifies before serving. See
@@ -272,6 +273,7 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `tool_semantics.new` | No | `[]` | Exact ASCII case-insensitive domain tool names that demonstrate forward activity without favoring either tier. |
 | `classifier.classify_trigger` | No | `every_request` | When the judge runs. See the `llm_classifier` route. `new_session` has no effect here. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
+| `classifier.timeout_ms` | No | `10000` | Deadline for one classifier judge call in milliseconds, client retries included. Past it the route falls open to `picker` and records `reason=timeout`. Must be at least `1`. |
 | `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
 ### `auto`
@@ -301,6 +303,7 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | `classifier.base_threshold` | Yes | — | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the `llm_classifier` route, this works on either trigger. Conversations opening with the same text share a tier. |
+| `classifier.timeout_ms` | No | `10000` | Deadline for one tier-judge call in milliseconds, client retries included. Past it the retained tier stands and the route records `reason=timeout`. Must be at least `1`. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
 | `stage.confidence_threshold` | Yes | — | Corroboration a decisive signal needs. In `[0, 1]`. |

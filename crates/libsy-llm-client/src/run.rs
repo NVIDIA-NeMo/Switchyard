@@ -20,7 +20,7 @@ use std::time::Instant;
 use http::StatusCode;
 use parking_lot::Mutex;
 use switchyard_libsy::{
-    Algorithm, CallModel, LibsyError, Result, RoutingOutcome, RuntimeModels, drive,
+    Algorithm, CallModel, DriverError, LibsyError, Result, RoutingOutcome, RuntimeModels, drive,
 };
 use switchyard_protocol::{
     LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
@@ -148,7 +148,8 @@ fn emit_routing_observations(
 /// Serve one offloaded call and fulfill its promise.
 ///
 /// Errors only when the promise itself could not be fulfilled; a call that failed on every
-/// candidate is forwarded to the algorithm as an `Err`.
+/// candidate is forwarded to the algorithm as an `Err`. A reader that stopped waiting (a judge
+/// past its deadline, a lost hedge) is not a failure of the run.
 async fn serve(
     clients: ClientRouter,
     call: CallModel,
@@ -168,7 +169,10 @@ async fn serve(
         &observe,
     )
     .await;
-    call.respond(result)
+    match call.respond(result) {
+        Err(LibsyError::Driver(DriverError::ResponseDropped)) => Ok(()),
+        fulfilled => fulfilled,
+    }
 }
 
 enum CallPhase {

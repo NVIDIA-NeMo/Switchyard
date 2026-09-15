@@ -135,6 +135,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which subscripts its `tool_calls` array with that index, raised `IndexError`.
   Tool calls are now numbered within the Chat `tool_calls` array in order of
   first appearance.
+- **Classifier and escalation judges have a deadline** — a judge provider that
+  accepted the request and never answered blocked routing until the client
+  gave up, even with healthy completion targets, because no upstream call had
+  a timeout. Every judge call now fails open after `timeout_ms` (default
+  `10000`, client retries included) on `llm_classifier`, `stage_router`,
+  `composite`, and `subagents` classifiers, recording `reason=timeout` in
+  `switchyard_classifier_fail_open_total` and routing to the fallback target.
 - **Advisor stall checkpoint re-arms after a refunded review** — a
   stall-triggered consult that failed open or returned an unparseable verdict
   refunded the review budget but left the conversation's stall latch set, so

@@ -29,3 +29,7 @@ pub(crate) fn decisive(target: &ModelId) -> Classification {
 
 /// Default completion budget for internal classifier and escalation judge calls.
 pub(crate) const DEFAULT_JUDGE_MAX_OUTPUT_TOKENS: u64 = 4_096;
+
+/// Default deadline, in milliseconds, for one classifier or escalation judge call. A judge
+/// is an optimization: past this the route continues without a verdict.
+pub(crate) const DEFAULT_JUDGE_TIMEOUT_MS: u64 = 10_000;

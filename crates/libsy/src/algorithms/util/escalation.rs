@@ -179,6 +179,7 @@ pub(crate) fn build_judge(
     contract_config: &ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
+    timeout_ms: u64,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
     config.validate()?;
     let contract =
@@ -188,7 +189,7 @@ pub(crate) fn build_judge(
             EscalationInput { config },
             contract,
             SerdeDecoder::new(),
-            JudgeRuntimeConfig::new(max_output_tokens)?,
+            JudgeRuntimeConfig::new(max_output_tokens, timeout_ms)?,
         ),
         EscalationPolicy,
     )
@@ -392,7 +393,7 @@ mod tests {
                 SCHEMA_TEMPLATE,
             )?,
             SerdeDecoder::new(),
-            JudgeRuntimeConfig::new(max_output_tokens)?,
+            JudgeRuntimeConfig::new(max_output_tokens, super::super::DEFAULT_JUDGE_TIMEOUT_MS)?,
         ))
     }
 

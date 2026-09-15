@@ -1384,6 +1384,10 @@ classifier_magic = true
                 "max_output_tokens must be at least 1",
             ),
             (
+                VALID_CONFIG.replace("base_threshold = 0.5", "base_threshold = 0.5\ntimeout_ms = 0"),
+                "timeout_ms must be at least 1",
+            ),
+            (
                 VALID_CONFIG.replace(
                     "base_threshold = 0.5",
                     "base_threshold = 0.5\nmessage_hash_fallback = true",

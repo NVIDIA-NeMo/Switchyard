@@ -69,6 +69,11 @@ greater than or equal to the applicable threshold. Otherwise it routes to
 
 An invalid, inconsistent, or unparseable verdict, or a judge failure, routes to
 `strong_target`. Raising either knob sends more traffic to the strong model.
+A judge call that has not answered within `timeout_ms` (default 10 seconds,
+client retries included) counts as a failure too: the route goes on without
+the verdict and records `reason=timeout` in the
+`switchyard_classifier_fail_open_total` counter, so a stalled judge provider
+never blocks the request.
 
 ## Judge model compatibility
 
@@ -111,6 +116,7 @@ for the server merge behavior.
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
+| `timeout_ms` | `10000` | Deadline for one judge call in milliseconds, client retries included. Past it the route fails open and records `reason=timeout`. Must be at least `1`. |
 
 ### Override the classifier prompt
 
