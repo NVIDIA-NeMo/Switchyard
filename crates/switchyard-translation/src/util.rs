@@ -277,8 +277,8 @@ pub fn exact_preserved_response(
 
 /// Applies a selected target model and optionally prepends its system prompt.
 ///
-/// Model-only preparation restamps built-in preserved bodies so exact replay uses the target.
-/// Adding a prompt invalidates preserved bodies because they predate that content mutation.
+/// Preserved built-in bodies are updated in their native format when possible so exact replay
+/// keeps caller fields that are not represented in the normalized request.
 /// Call this once per candidate using a request that has not already received a target prompt.
 pub fn prepare_request_for_target(
     request: &mut LlmRequest,
@@ -297,14 +297,16 @@ pub fn prepare_request_for_target(
                 }],
             },
         );
-        request.preservation.requests.clear();
-    } else {
-        stamp_preserved_request_models(&mut request.preservation, &target);
     }
+    prepare_preserved_requests(&mut request.preservation, &target, prompt);
 }
 
-// Retains exact replay only where the built-in wire model field can be updated safely.
-fn stamp_preserved_request_models(preservation: &mut PreservationMetadata, target: &str) {
+// Retains exact replay only where the built-in wire body can receive the target changes safely.
+fn prepare_preserved_requests(
+    preservation: &mut PreservationMetadata,
+    target: &str,
+    prompt: Option<&str>,
+) {
     preservation.requests.retain(|format, body| {
         let is_builtin = format.as_str() == WireFormat::OpenAiChat.as_str()
             || format.as_str() == WireFormat::OpenAiResponses.as_str()
@@ -313,8 +315,39 @@ fn stamp_preserved_request_models(preservation: &mut PreservationMetadata, targe
             return false;
         };
         body.insert("model".to_string(), Value::String(target.to_string()));
-        true
+        match prompt {
+            None => true,
+            Some(prompt) if format.as_str() == WireFormat::AnthropicMessages.as_str() => {
+                body.remove(crate::codecs::common::ANTHROPIC_REQUEST_KEY);
+                prepend_anthropic_system(body, prompt)
+            }
+            Some(_) => false,
+        }
     });
+}
+
+// Prepends a target prompt without rebuilding or otherwise changing an Anthropic request.
+fn prepend_anthropic_system(body: &mut Map<String, Value>, prompt: &str) -> bool {
+    match body.get_mut("system") {
+        None | Some(Value::Null) => {
+            body.insert("system".to_string(), Value::String(prompt.to_string()));
+        }
+        Some(Value::String(system)) if system.is_empty() => {
+            *system = prompt.to_string();
+        }
+        Some(Value::String(system)) => {
+            system.insert_str(0, &format!("{prompt}\n\n"));
+        }
+        Some(Value::Array(blocks)) => blocks.insert(
+            0,
+            json!({
+                "type": "text",
+                "text": prompt,
+            }),
+        ),
+        Some(_) => return false,
+    }
+    true
 }
 
 /// Embeds preservation metadata into a translated wire body when requested.

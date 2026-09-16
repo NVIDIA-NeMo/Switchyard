@@ -53,6 +53,74 @@ fn preparing_a_target_prompt_invalidates_exact_replay() -> TestResult {
 fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();
+    for thinking in [
+        Some(json!({"type": "enabled", "budget_tokens": 2048})),
+        Some(json!({"type": "adaptive"})),
+        Some(json!({"type": "disabled"})),
+        None,
+    ] {
+        let mut body = json!({
+            "model": "route",
+            "max_tokens": 32,
+            "system": [{
+                "type": "text",
+                "text": "caller prompt",
+                "cache_control": {"type": "ephemeral"}
+            }],
+            "messages": [{"role": "user", "content": "hi"}],
+            "mcp_servers": [{
+                "type": "url",
+                "name": "inventory",
+                "url": "https://fixture.invalid/mcp",
+                "authorization_token": "fixture-token-not-a-secret",
+                "tool_configuration": {
+                    "enabled": true,
+                    "allowed_tools": ["lookup_sku"]
+                }
+            }],
+            "container": {
+                "id": "container_fixture",
+                "skills": [{
+                    "type": "custom",
+                    "skill_id": "skill_fixture_qa",
+                    "version": "latest"
+                }]
+            },
+            "output_config": {
+                "effort": "low",
+                "format": {
+                    "type": "json_schema",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"marker": {"type": "string"}},
+                        "required": ["marker"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "stop_sequences": ["<END>"]
+        });
+        if let Some(thinking) = thinking {
+            body["thinking"] = thinking;
+        }
+        let mut expected = body.clone();
+        expected["model"] = json!("target/model");
+        expected["system"]
+            .as_array_mut()
+            .ok_or("expected system blocks")?
+            .insert(0, json!({"type": "text", "text": "target prompt"}));
+
+        let mut request = engine
+            .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+            .request;
+        prepare_request_for_target(&mut request, &"target/model".into(), Some("target prompt"));
+        let output = engine
+            .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+            .body;
+
+        assert_eq!(output, expected);
+    }
+
     let fields = json!({
         "inference_geo": "us",
         "service_tier": "standard_only",
@@ -63,22 +131,15 @@ fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
         "speed": "fast",
         "diagnostics": {"previous_message_id": "msg_previous"}
     });
-    for source in [
-        WireFormat::AnthropicMessages,
-        WireFormat::OpenAiChat,
-        WireFormat::OpenAiResponses,
-    ] {
+    for source in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
         for has_fields in [true, false] {
             let mut body = match source {
-                WireFormat::AnthropicMessages => json!({
-                    "model": "route", "max_tokens": 32, "system": "caller prompt",
-                    "messages": [{"role": "user", "content": "hi"}]
-                }),
                 WireFormat::OpenAiChat => json!({
                     "model": "route",
                     "messages": [{"role": "user", "content": "hi"}]
                 }),
-                _ => json!({"model": "route", "input": "hi"}),
+                WireFormat::OpenAiResponses => json!({"model": "route", "input": "hi"}),
+                WireFormat::AnthropicMessages => unreachable!(),
             };
             if has_fields {
                 for (key, value) in fields.as_object().ok_or("expected fields object")? {
@@ -95,18 +156,9 @@ fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
                 .body;
 
             assert_eq!(output["model"], "target/model");
-            assert_eq!(
-                output["system"],
-                if source == WireFormat::AnthropicMessages {
-                    "target prompt\n\ncaller prompt"
-                } else {
-                    "target prompt"
-                }
-            );
-            for (key, value) in fields.as_object().ok_or("expected fields object")? {
-                if source == WireFormat::AnthropicMessages && has_fields {
-                    assert_eq!(&output[key], value, "{source:?}: {key}");
-                } else if key == "stop_sequences" {
+            assert_eq!(output["system"], "target prompt");
+            for (key, _value) in fields.as_object().ok_or("expected fields object")? {
+                if key == "stop_sequences" {
                     assert_eq!(output[key], json!(["FALLBACK"]));
                 } else {
                     assert!(output.get(key).is_none(), "{source:?}: {key}");
