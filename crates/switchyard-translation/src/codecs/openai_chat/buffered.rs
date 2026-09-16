@@ -26,8 +26,8 @@ use crate::llm::{
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response, json_string, object, push_lossy, stable_id,
-    string_value, validate_request_capabilities,
+    exact_preserved_request, exact_preserved_response, json_string, object, push_lossy,
+    reject_responses_builtin_tool_item, stable_id, string_value, validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Chat Completions payloads.
@@ -1067,7 +1067,8 @@ pub(crate) fn encode_openai_content(
                 )?;
                 blocks.push(openai_text_part(&media_source_text(source)));
             }
-            ContentBlock::Unknown { raw, .. } => {
+            ContentBlock::Unknown { provider, raw } => {
+                reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)?;
                 push_lossy(
                     diagnostics,
                     policy,

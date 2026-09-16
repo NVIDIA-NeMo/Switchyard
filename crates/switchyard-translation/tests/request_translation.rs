@@ -176,6 +176,95 @@ fn anthropic_tool_result_error_survives_target_prompt() -> TestResult {
     Ok(())
 }
 
+// Target prompts force normalized re-encoding; built-in tool history must retain its wire shape.
+#[test]
+fn responses_builtin_tool_history_survives_target_prompt() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let input = json!([
+        {
+            "type": "apply_patch_call", "call_id": "patch_1",
+            "operation": {"type": "update_file", "path": "src/lib.rs"}
+        },
+        {
+            "type": "apply_patch_call_output", "call_id": "patch_1", "output": "done"
+        },
+        {
+            "type": "shell_call", "call_id": "shell_1",
+            "action": {"commands": ["pwd"]}, "environment": {"type": "local"}
+        },
+        {
+            "type": "shell_call_output", "call_id": "shell_1",
+            "output": [{"stdout": "/workspace", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}]
+        },
+        {
+            "type": "computer_call", "call_id": "computer_1",
+            "action": {"type": "screenshot"}, "pending_safety_checks": []
+        },
+        {
+            "type": "computer_call_output", "call_id": "computer_1",
+            "output": {"type": "computer_screenshot", "file_id": "file_1"},
+            "acknowledged_safety_checks": []
+        }
+    ]);
+    let body = json!({
+        "model": "route",
+        "instructions": "caller instructions",
+        "input": input
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(&mut request, &"target".into(), Some("target prompt"));
+
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+    assert_eq!(output["input"], input);
+    assert_eq!(
+        output["instructions"],
+        "target prompt\n\ncaller instructions"
+    );
+
+    for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+        let error = engine
+            .encode_request(target, &request, &policy)
+            .expect_err("built-in Responses tool history must not become target text");
+        assert_eq!(error.kind(), "UnsupportedTranslation");
+    }
+    Ok(())
+}
+
+// Built-in Responses tool history is valid only as top-level input items.
+#[test]
+fn responses_builtin_tool_history_must_be_top_level() {
+    for (content, path) in [
+        (
+            json!([{"type": "shell_call", "call_id": "shell_1"}]),
+            "$.input[0].content[0].type",
+        ),
+        (
+            json!({"type": "shell_call", "call_id": "shell_1"}),
+            "$.input[0].content.type",
+        ),
+    ] {
+        let body = json!({
+            "model": "route",
+            "input": [{"type": "message", "role": "user", "content": content}]
+        });
+        let error = TranslationEngine::default()
+            .decode_request(
+                WireFormat::OpenAiResponses,
+                &body,
+                &TranslationPolicy::default(),
+            )
+            .expect_err("built-in tool history inside message content should be rejected");
+
+        assert!(error.to_string().contains(path));
+    }
+}
+
 // Model-only preparation retains provider fields while aligning exact replay with the target.
 #[test]
 fn preparing_without_a_prompt_preserves_exact_replay() -> TestResult {

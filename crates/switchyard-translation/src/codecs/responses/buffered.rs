@@ -29,8 +29,8 @@ use crate::llm::{
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response, json_string, push_lossy, stable_id,
-    string_value, validate_request_capabilities,
+    exact_preserved_request, exact_preserved_response, is_responses_builtin_tool_item, json_string,
+    push_lossy, stable_id, string_value, validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Responses payloads.
@@ -480,8 +480,26 @@ fn decode_responses_input(
                             item.get("role").and_then(Value::as_str),
                             &format!("$.input[{index}].role"),
                         )?;
-                        let content =
-                            decode_responses_content(item.get("content").unwrap_or(&Value::Null));
+                        let content_value = item.get("content").unwrap_or(&Value::Null);
+                        if is_responses_builtin_tool_item(content_value) {
+                            return Err(TranslationError::InvalidValue {
+                                path: format!("$.input[{index}].content.type"),
+                                message:
+                                    "built-in tool items must be top-level Responses input items"
+                                        .to_string(),
+                            });
+                        }
+                        if let Some(content_index) = content_value.as_array().and_then(|blocks| {
+                            blocks.iter().position(is_responses_builtin_tool_item)
+                        }) {
+                            return Err(TranslationError::InvalidValue {
+                                path: format!("$.input[{index}].content[{content_index}].type"),
+                                message:
+                                    "built-in tool items must be top-level Responses input items"
+                                        .to_string(),
+                            });
+                        }
+                        let content = decode_responses_content(content_value);
                         // Inline system and developer input items are instructions, not
                         // conversation turns. Classify them before any state-machine
                         // transitions so they do not flush pending reasoning or disturb
@@ -1217,6 +1235,16 @@ fn encode_responses_input(
         }
     }
     for message in messages {
+        // The decoder carries each valid top-level built-in tool item as one
+        // provider-qualified block, so replay that block in place.
+        if message.role == Role::User
+            && let [ContentBlock::Unknown { provider, raw }] = message.content.as_slice()
+            && provider.as_str() == WireFormat::OpenAiResponses.as_str()
+            && is_responses_builtin_tool_item(raw)
+        {
+            encoded.push(raw.clone());
+            continue;
+        }
         // Anthropic-signed thinking cannot be sent as Responses input.
         let content = message
             .content

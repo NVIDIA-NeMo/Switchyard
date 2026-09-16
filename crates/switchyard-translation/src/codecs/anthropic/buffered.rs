@@ -27,7 +27,8 @@ use crate::util::{
     sanitize_anthropic_tool_use_id,
 };
 use crate::util::{
-    json_string, push_lossy, stable_id, string_value, validate_request_capabilities,
+    json_string, push_lossy, reject_responses_builtin_tool_item, stable_id, string_value,
+    validate_request_capabilities,
 };
 
 /// Format codec for Anthropic Messages payloads.
@@ -846,7 +847,8 @@ fn encode_anthropic_content_with_policy(
     let mut blocks = Vec::new();
     for block in content {
         match block {
-            ContentBlock::Unknown { raw, .. } => {
+            ContentBlock::Unknown { provider, raw } => {
+                reject_responses_builtin_tool_item(provider, raw, WireFormat::AnthropicMessages)?;
                 push_lossy(
                     diagnostics,
                     policy,
