@@ -4,7 +4,7 @@
 //! Tool-result context signals extracted from the conversation history.
 //!
 //! The extractor walks normalized messages, finds tool calls and results,
-//! pattern-matches their text against a curated error table, and aggregates
+//! reads explicit failure flags, matches text against an error table, and aggregates
 //! conversation-history metrics used by [`crate::StageRouter`] and the
 //! advisor gate's request-side guards.
 //!
@@ -708,7 +708,7 @@ fn extract_tool_signals_with_window_and_semantics(
     // in the same shape here, so the signals do not depend on knowing which one it
     // arrived as.
     let messages = &request.llm_request.messages;
-    let mut tool_texts: Vec<String> = Vec::new();
+    let mut tool_texts: Vec<(String, bool)> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     let mut compacted = false;
     let mut tool_result_count = 0usize;
@@ -735,8 +735,10 @@ fn extract_tool_signals_with_window_and_semantics(
                         .filter_map(text_of)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    if !text.is_empty() {
-                        tool_texts.push(text);
+                    let is_error = result.is_error == Some(true);
+                    // An explicit failure remains a signal even without text.
+                    if !text.is_empty() || is_error {
+                        tool_texts.push((text, is_error));
                     }
                 }
                 // Compaction is detected anywhere in the conversation: the summary
@@ -807,7 +809,7 @@ fn text_of(block: &ContentBlock) -> Option<&str> {
 }
 
 fn build_signal(
-    tool_texts: Vec<String>,
+    tool_texts: Vec<(String, bool)>,
     tool_calls: Vec<ObservedToolCall>,
     turn_depth: u32,
     recent_window: usize,
@@ -822,12 +824,14 @@ fn build_signal(
     let mut severity = 0.0f32;
     let mut failure_fingerprints = Vec::new();
     let mut repeated_failure = false;
-    for text in &tool_texts[sev_start..] {
+    for (text, is_error) in &tool_texts[sev_start..] {
         let (sev, _patterns) = classify_text(text);
+        // Explicit failure is at least hard; retain stronger text diagnostics.
+        let sev = if *is_error { sev.max(HARD) } else { sev };
         if sev > severity {
             severity = sev;
         }
-        if let Some(fingerprint) = failure_fingerprint(text) {
+        if let Some(fingerprint) = failure_fingerprint(text, *is_error) {
             repeated_failure |= failure_fingerprints.contains(&fingerprint);
             failure_fingerprints.push(fingerprint);
         }
@@ -980,11 +984,11 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
     (severity, patterns)
 }
 
-/// Stable identity for a material failure. Soft non-zero exits are excluded:
-/// they are too generic to prove that an agent is repeating the same mistake.
-fn failure_fingerprint(text: &str) -> Option<String> {
+/// Stable identity for a material failure. Soft non-zero exits need an explicit
+/// failure flag to count as a repeated mistake.
+fn failure_fingerprint(text: &str, is_error: bool) -> Option<String> {
     let (severity, patterns) = classify_text(text);
-    if severity < HARD {
+    if severity < HARD && !is_error {
         return None;
     }
 
@@ -1127,11 +1131,11 @@ fn phrase_followed_by_nonzero_integer(lower: &str, phrase: &str) -> bool {
     false
 }
 
-fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
+fn compute_no_error_streak(tool_texts: &[(String, bool)]) -> u32 {
     let mut streak = 0u32;
-    for text in tool_texts.iter().rev() {
+    for (text, is_error) in tool_texts.iter().rev() {
         let (sev, _) = classify_text(text);
-        if sev > 0.0 {
+        if *is_error || sev > 0.0 {
             break;
         }
         streak += 1;
@@ -1139,14 +1143,14 @@ fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
     streak
 }
 
-fn detect_tests_passed(tool_texts: &[String], recent_window: usize) -> bool {
+fn detect_tests_passed(tool_texts: &[(String, bool)], recent_window: usize) -> bool {
     let start = tool_texts.len().saturating_sub(recent_window.max(1));
     let recent = &tool_texts[start..];
     let after_latest_failure = recent
         .iter()
-        .rposition(|text| classify_text(text).0 > 0.0)
+        .rposition(|(text, is_error)| *is_error || classify_text(text).0 > 0.0)
         .map_or(recent, |index| &recent[index + 1..]);
-    after_latest_failure.iter().any(|text| {
+    after_latest_failure.iter().any(|(text, _)| {
         let lower = text.to_lowercase();
         TEST_PASS_PHRASES.iter().any(|p| lower.contains(p))
             && !TEST_FAILURE_LITERAL.iter().any(|p| lower.contains(p))
@@ -1299,6 +1303,33 @@ mod tests {
         assert!(!ToolSignals::from_request(&request, None).repeated_failure);
     }
 
+    /// Explicit failures count even without diagnostic text and cannot signal recovery.
+    #[test]
+    fn structured_tool_failures_feed_error_and_recovery_signals() {
+        for text in ["Dependency unavailable", "", "5 passed in 0.12s"] {
+            let mut failed = tr(text);
+            let ContentBlock::ToolResult(result) = &mut failed.content[0] else {
+                panic!("expected tool result");
+            };
+            result.is_error = Some(true);
+            let mut request = with_messages(vec![tr("5 passed in 0.12s"), failed.clone()]);
+            let signals = ToolSignals::from_request(&request, Some(3));
+            assert_eq!(signals.severity, HARD);
+            assert!(!signals.repeated_failure);
+            assert_eq!(signals.no_error_streak, 0);
+            assert!(!signals.tests_passed);
+
+            request.llm_request.messages.push(failed);
+            assert!(ToolSignals::from_request(&request, Some(3)).repeated_failure);
+            request.llm_request.messages.push(tr("5 passed in 0.12s"));
+            let recovered = ToolSignals::from_request(&request, Some(1));
+            assert_eq!(recovered.severity, 0.0);
+            assert!(!recovered.repeated_failure);
+            assert_eq!(recovered.no_error_streak, 1);
+            assert!(recovered.tests_passed);
+        }
+    }
+
     #[test]
     fn severity_is_max_across_patterns() {
         // exit_nonzero (SOFT) + traceback (HARD) → HARD.
@@ -1383,16 +1414,16 @@ mod tests {
 
     #[test]
     fn no_error_streak_all_clean() {
-        let texts = vec!["ok".to_string(), "all good".to_string()];
+        let texts = vec![("ok".to_string(), false), ("all good".to_string(), false)];
         assert_eq!(compute_no_error_streak(&texts), 2);
     }
 
     #[test]
     fn no_error_streak_stops_at_error() {
         let texts = vec![
-            "Traceback (most recent call last):".to_string(),
-            "ok".to_string(),
-            "ok".to_string(),
+            ("Traceback (most recent call last):".to_string(), false),
+            ("ok".to_string(), false),
+            ("ok".to_string(), false),
         ];
         assert_eq!(compute_no_error_streak(&texts), 2);
     }
@@ -1400,7 +1431,7 @@ mod tests {
     #[test]
     fn tests_passed_detects_pytest_output() {
         assert!(detect_tests_passed(
-            &["====== 5 passed in 0.12s ======".to_string()],
+            &[("====== 5 passed in 0.12s ======".to_string(), false)],
             DEFAULT_RECENT_WINDOW
         ));
     }
@@ -1408,7 +1439,7 @@ mod tests {
     #[test]
     fn tests_passed_ignores_partial_failures() {
         assert!(!detect_tests_passed(
-            &["2 failed, 5 passed in 0.56s".to_string()],
+            &[("2 failed, 5 passed in 0.56s".to_string(), false)],
             DEFAULT_RECENT_WINDOW
         ));
     }
@@ -1417,16 +1448,22 @@ mod tests {
     fn tests_passed_must_follow_the_latest_failure() {
         assert!(!detect_tests_passed(
             &[
-                "5 passed in 0.12s".to_string(),
-                "Traceback (most recent call last):\nValueError".to_string(),
-                "edit applied".to_string(),
+                ("5 passed in 0.12s".to_string(), false),
+                (
+                    "Traceback (most recent call last):\nValueError".to_string(),
+                    false
+                ),
+                ("edit applied".to_string(), false),
             ],
             DEFAULT_RECENT_WINDOW
         ));
         assert!(detect_tests_passed(
             &[
-                "Traceback (most recent call last):\nValueError".to_string(),
-                "5 passed in 0.12s".to_string(),
+                (
+                    "Traceback (most recent call last):\nValueError".to_string(),
+                    false
+                ),
+                ("5 passed in 0.12s".to_string(), false),
             ],
             DEFAULT_RECENT_WINDOW
         ));
@@ -1679,7 +1716,7 @@ mod tests {
     fn tests_passed_detects_pytest_with_failure_block() {
         // Mixed pytest run: 2 failed + 5 passed → NOT considered tests_passed.
         assert!(!detect_tests_passed(
-            &["2 failed, 5 passed in 0.56s".to_string()],
+            &[("2 failed, 5 passed in 0.56s".to_string(), false)],
             DEFAULT_RECENT_WINDOW
         ));
     }
@@ -1689,7 +1726,10 @@ mod tests {
         // Cargo's clean-run summary contains "0 failed" — must not trip the
         // failure list (regression: previously substring-matched "failed").
         assert!(detect_tests_passed(
-            &["running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored".to_string()],
+            &[(
+                "running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored".to_string(),
+                false
+            )],
             DEFAULT_RECENT_WINDOW
         ));
     }
@@ -1698,7 +1738,10 @@ mod tests {
     fn tests_passed_rejects_cargo_real_failure() {
         // Cargo's actual-failure summary: nonzero count before "failed".
         assert!(!detect_tests_passed(
-            &["running 3 tests\ntest result: FAILED. 2 passed; 1 failed; 0 ignored".to_string()],
+            &[(
+                "running 3 tests\ntest result: FAILED. 2 passed; 1 failed; 0 ignored".to_string(),
+                false
+            )],
             DEFAULT_RECENT_WINDOW
         ));
     }
@@ -1707,7 +1750,10 @@ mod tests {
     fn tests_passed_accepts_go_clean_summary() {
         // Go test's clean-run "0 errors" must not trip (regression).
         assert!(detect_tests_passed(
-            &["ok  github.com/foo/bar\t0.012s (5 passed, 0 errors)".to_string()],
+            &[(
+                "ok  github.com/foo/bar\t0.012s (5 passed, 0 errors)".to_string(),
+                false
+            )],
             DEFAULT_RECENT_WINDOW
         ));
     }
@@ -1716,7 +1762,7 @@ mod tests {
     fn tests_passed_accepts_pytest_zero_errors() {
         // Pytest long-form: "0 errors in 0.3s" on a clean run.
         assert!(detect_tests_passed(
-            &["5 passed, 0 errors in 0.30s".to_string()],
+            &[("5 passed, 0 errors in 0.30s".to_string(), false)],
             DEFAULT_RECENT_WINDOW
         ));
     }
@@ -1724,7 +1770,7 @@ mod tests {
     #[test]
     fn tests_passed_detects_diy_checkmark() {
         assert!(detect_tests_passed(
-            &["✓ all checks passed".to_string()],
+            &[("✓ all checks passed".to_string(), false)],
             DEFAULT_RECENT_WINDOW
         ));
     }

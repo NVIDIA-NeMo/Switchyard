@@ -539,7 +539,7 @@ async fn upstream_buffered_responses(
         "model/invalid-error" => response["error"] = json!("invalid error details"),
         "model/invalid-code" => response["error"]["code"] = json!(42),
         "model/empty-code" => response["error"]["code"] = json!(""),
-        "model/fallback" => {
+        "model/fallback" | "model/efficient" => {
             response["status"] = json!("completed");
             response["error"] = Value::Null;
             response["output"] = json!([{
@@ -1579,6 +1579,81 @@ confidence_threshold = 0.5
         stats["algorithm_stats"]["stage_router"]["routing_decisions"]["override"]["targets"]["model/stats-strong"],
         1
     );
+    Ok(())
+}
+
+/// Anthropic failure flags must affect routing before translating to Responses.
+#[tokio::test]
+async fn stage_route_honors_anthropic_tool_result_errors() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_responses"
+base_url = "{}/buffered"
+[targets.capable]
+id = "model/fallback"
+llm_client = "upstream"
+[targets.efficient]
+id = "model/efficient"
+llm_client = "upstream"
+[routes.stage]
+id = "switchyard/stage-structured-failure"
+type = "stage_router"
+capable_target = "capable"
+efficient_target = "efficient"
+picker = "efficient_first"
+confidence_threshold = 0.5
+capable_hold_turns = 0
+recent_turn_window = 3
+context_window = 131072
+tool_calling = true
+reasoning = true
+"#,
+        upstream.base_url.trim_end_matches("/v1")
+    ))?);
+    let neutral = "Synthetic dependency unavailable; retry with the recovery path.";
+    for (is_error, text, expected) in [
+        (false, neutral, "model/efficient"),
+        (true, neutral, "model/fallback"),
+        (
+            false,
+            "fatal runtime error: out of memory",
+            "model/fallback",
+        ),
+    ] {
+        let mut messages = vec![json!({
+            "role": "user", "content": "Run the synthetic dependency probe."
+        })];
+        for id in ["toolu_probe_1", "toolu_probe_2"] {
+            messages.push(json!({"role": "assistant", "content": [{
+                "type": "tool_use", "id": id,
+                "name": "synthetic_dependency_probe", "input": {}
+            }]}));
+            messages.push(json!({"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": id,
+                "content": text, "is_error": is_error
+            }]}));
+        }
+        let body = json!({
+            "model": "switchyard/stage-structured-failure",
+            "max_tokens": 16, "messages": messages
+        });
+        for _ in 0..3 {
+            let response = send(&app, "POST", "/v1/messages", Some(body.clone())).await?;
+            assert_eq!(response.status, StatusCode::OK);
+            assert_eq!(
+                response.json()?["model"],
+                expected,
+                "is_error={is_error}, text={text}"
+            );
+            assert_eq!(
+                upstream.models().await.last().map(String::as_str),
+                Some(expected)
+            );
+        }
+    }
     Ok(())
 }
 
