@@ -11,7 +11,11 @@
 
 use switchyard_protocol::Request;
 
+mod config;
 mod decide;
+mod readout;
+mod runtime;
+mod safety;
 mod text;
 
 #[cfg(test)]

@@ -15,7 +15,7 @@ use crate::{LibsyError, Result};
 // ── Turn buffering and replay ───────────────────────────────────────────────
 
 /// One fully generated executor turn held while the gate decides.
-pub(super) struct GatedTurn {
+pub(crate) struct GatedTurn {
     /// Buffered provider events for streamed turns, preservation included, so
     /// replay re-emits them verbatim (signed thinking and provider extensions
     /// survive; folding to an aggregate and re-synthesizing would drop them).
@@ -29,9 +29,13 @@ pub(super) struct GatedTurn {
 }
 
 impl GatedTurn {
+    pub(crate) fn aggregate(&self) -> &AggLlmResponse {
+        &self.agg
+    }
+
     /// Releases the turn to the client: streamed turns replay their buffered
     /// events verbatim, buffered turns return the original aggregate.
-    pub(super) fn into_response(self) -> Response {
+    pub(crate) fn into_response(self) -> Response {
         let llm_response = match self.events {
             Some(events) => {
                 LlmResponse::Stream(Box::pin(futures::stream::iter(events.into_iter().map(Ok))))
@@ -50,7 +54,7 @@ impl GatedTurn {
 /// errors and in-band error chunks — become typed client-call errors exactly
 /// as [`LlmResponse::into_agg`] maps them; the client saw nothing yet, so the
 /// turn fails whole.
-pub(super) async fn buffer_turn(executor: &str, response: Response) -> Result<GatedTurn> {
+pub(crate) async fn buffer_turn(executor: &str, response: Response) -> Result<GatedTurn> {
     let metadata = response.metadata;
     let upstream_headers = response.upstream_headers;
     match response.llm_response {
@@ -103,7 +107,7 @@ pub(super) async fn buffer_turn(executor: &str, response: Response) -> Result<Ga
 /// Whether the turn carries tool use on either signal: a `ToolUse` stop
 /// reason, or any tool-call block (some OSS servers mislabel tool-call turns
 /// as an ordinary stop, so block presence wins).
-pub(super) fn has_tool_use(agg: &AggLlmResponse) -> bool {
+pub(crate) fn has_tool_use(agg: &AggLlmResponse) -> bool {
     agg.outputs.iter().any(|output| {
         output.stop_reason == Some(StopReason::ToolUse)
             || output

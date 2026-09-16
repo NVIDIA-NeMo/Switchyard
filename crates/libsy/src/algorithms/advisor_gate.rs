@@ -51,6 +51,8 @@ mod transcript;
 mod trigger;
 mod turn;
 
+pub(crate) use turn::{GatedTurn, buffer_turn, has_tool_use};
+
 use budget::{ReviewBudget, ScopeKey, budget_scope, stall_key};
 use signals::{GateSignalProcessor, GateSignals};
 use telemetry::{
@@ -59,9 +61,7 @@ use telemetry::{
 };
 use transcript::{VERDICT_PATTERN, Verdict, advisor_reply_text, parse_verdict, review_transcript};
 use trigger::TriggerClassifier;
-#[cfg(test)]
-use turn::has_tool_use;
-use turn::{GatedTurn, buffer_turn, reasoning_text, visible_text};
+use turn::{reasoning_text, visible_text};
 
 /// APPROVE/REDO reviewer contract sent as the advisor's system prompt.
 pub const REVIEWER_SYSTEM_PROMPT: &str =

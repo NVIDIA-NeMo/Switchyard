@@ -2349,12 +2349,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_overflow_400_is_mapped()
+    async fn llama_cpp_context_overflow_400_is_mapped()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-                "error": {"code": "context_length_exceeded", "message": "too big"}
+                "error": {
+                    "message": "request (6016 tokens) exceeds the available context size (4096 tokens), try increasing it"
+                }
             })))
             .mount(&server)
             .await;
